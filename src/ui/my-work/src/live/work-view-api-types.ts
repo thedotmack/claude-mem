@@ -276,8 +276,7 @@ export interface WorkViewSnapshot {
   /** The worker's automatic refresh of goals and progress (refresh.json); null before its first check. Older workers leave it out. */
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
-  /** Configured language for dashboard UI (e.g. 'en', 'zh-CN'). */
-  language?: string
+  suggestions?: WorkViewRequestSuggestion[]
 }
 
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */

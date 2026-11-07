@@ -232,7 +232,7 @@ describe('display preferences', () => {
     first.getState().setFilter('closed')
     first.getState().goToPage('rules')
     const saved = JSON.parse(storage.items.get('claude-mem:my-work:preferences')!)
-    assert.deepEqual(saved.state, { listView: 'list', filter: 'closed', sort: 'attention', language: 'en' })
+    assert.deepEqual(saved.state, { listView: 'list', filter: 'closed', sort: 'attention' })
     const next = testStore({ storage }).store.getState().view
     assert.deepEqual([next.listView, next.filter, next.section], ['list', 'closed', 'work'])
   })
@@ -240,22 +240,7 @@ describe('display preferences', () => {
   it('leaves unknown saved values at their defaults, drops the team view, and starts the theme from ?theme=', () => {
     const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { dark: false, listView: 'team', filter: 'mine', sort: 7 } }) })
     const view = testStore({ storage, href: 'http://localhost/?theme=dark' }).store.getState().view
-    assert.deepEqual([view.dark, view.listView, view.filter, view.sort, view.language], [true, 'cards', 'all', 'attention', 'en'])
-  })
-
-  it('persists language selection and reads it back from URL or storage', () => {
-    const storage = memoryStorage()
-    const first = testStore({ storage }).store
-    first.getState().setLanguage('zh-CN')
-    const saved = JSON.parse(storage.items.get('claude-mem:my-work:preferences')!)
-    assert.equal(saved.state.language, 'zh-CN')
-    assert.equal(storage.items.get('claude-mem:my-work:language'), 'zh-CN')
-
-    const next = testStore({ storage }).store.getState().view
-    assert.equal(next.language, 'zh-CN')
-
-    const urlStore = testStore({ href: 'http://localhost/?lang=zh' }).store.getState().view
-    assert.equal(urlStore.language, 'zh-CN')
+    assert.deepEqual([view.dark, view.listView, view.filter, view.sort], [true, 'cards', 'all', 'attention'])
   })
 })
 

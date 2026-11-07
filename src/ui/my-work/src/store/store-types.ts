@@ -57,7 +57,6 @@ export type Section = NavPage | 'suggested' | 'past-focus'
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
 export type WorkFilter = 'all' | 'needs-you' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'
-export type Language = 'en' | 'zh-CN'
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
 
@@ -80,7 +79,6 @@ export interface ViewState {
   listView: WorkListView
   filter: WorkFilter
   sort: WorkSort
-  language: Language
 }
 
 export interface ViewSlice {
@@ -102,7 +100,6 @@ export interface ViewSlice {
   setListView: (listView: WorkListView) => void
   setFilter: (filter: WorkFilter) => void
   setSort: (sort: WorkSort) => void
-  setLanguage: (language: Language) => void
 }
 
 // ---------- Rules: the receipts and Undo for My Rules saves ----------
@@ -165,7 +162,6 @@ export interface StoreEnvironment {
   href: () => string
   writeUrl: (url: URL, replace: boolean) => void
   prefersDark: boolean
-  browserLanguage?: string
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null
   /** Usage counts describe real local work only; the sample fixtures are not usage. */
   reportsUsage: boolean

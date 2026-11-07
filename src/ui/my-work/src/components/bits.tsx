@@ -14,7 +14,6 @@ import { agentById, deviceById, useConnection, useWorkModel, useWorkspace } from
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
-import { useTranslation } from '@/i18n/use-translation'
 
 /**
  * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
@@ -65,7 +64,6 @@ export const STATE_SURFACE: Record<LiveState, string> = {
 
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
 export function StateBadge({ state }: { state: LiveState }) {
-  const { t } = useTranslation()
   return (
     <Req ids={['R6.2']}>
       <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
@@ -76,7 +74,7 @@ export function StateBadge({ state }: { state: LiveState }) {
           'bg-idle-foreground': state === 'idle',
           'bg-shipped-foreground': state === 'shipped',
         })} />
-        {t(`state.${state}`)}
+        {STATE_LABEL[state]}
       </Badge>
     </Req>
   )
@@ -109,44 +107,34 @@ export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; o
 export function NextMove({ next, className }: { next: Request['next']; className?: string }) {
   if (!next.text) return null
   const human = next.who === 'human'
-  const { t } = useTranslation()
   return (
     <Req ids={['R5.8', 'R6.3']}>
       <div className={cn('flex items-start gap-2 text-[0.84rem] leading-snug', human ? 'font-medium text-attention-foreground' : 'text-foreground/80', className)}>
         <span className={cn('mt-px flex size-5 shrink-0 items-center justify-center rounded-full', human ? 'bg-attention' : 'bg-muted')}>
           {human ? <UserIcon className="size-3" /> : <BotIcon className="size-3" />}
         </span>
-        <span><span className="sr-only">{human ? t('card.yourMove') : t('card.agentMove')}</span>{next.text}</span>
+        <span><span className="sr-only">{human ? 'Your move: ' : 'Agent’s move: '}</span>{next.text}</span>
       </div>
     </Req>
   )
 }
 
 /** What the last memory review covered: "2 of 3 workstreams reviewed". */
-export function reviewCoverage(request: Request, t?: (key: string, params?: Record<string, any>) => string) {
+export function reviewCoverage(request: Request) {
   const { coverage, readings, reviewedAt } = request.progress
-  if (!readings) return t ? t('card.notReviewedYet') : 'Not reviewed yet'
-  if (!coverage) return t ? t('card.reviewedAt', { time: reviewedAt }) : `reviewed ${reviewedAt}`
-  const key = coverage.total === 1 ? 'card.reviewedCoverageSingle' : 'card.reviewedCoverage'
-  return t
-    ? t(key, { reviewed: coverage.reviewed, total: coverage.total, time: reviewedAt })
-    : `${coverage.reviewed} of ${coverage.total} workstream${coverage.total === 1 ? '' : 's'} reviewed ${reviewedAt}`
+  if (!readings) return 'Not reviewed yet'
+  if (!coverage) return `reviewed ${reviewedAt}`
+  return `${coverage.reviewed} of ${coverage.total} workstream${coverage.total === 1 ? '' : 's'} reviewed ${reviewedAt}`
 }
 
 /** Progress from the last memory review (§5), with the measured-pace estimate only when it exists (decision 3). */
 export function ProgressMeter({ request, compact = false }: { request: Request; compact?: boolean }) {
   const { progress } = request
-  const { t, language } = useTranslation()
-  const rawEstimate = measuredEstimate(request)
-  const estimate = rawEstimate
-    ? language === 'zh-CN' && rawEstimate.startsWith('at this pace, about ')
-      ? `按此速度，预计约 ${rawEstimate.replace('at this pace, about ', '')}`
-      : rawEstimate
-    : null
+  const estimate = measuredEstimate(request)
   return (
     <Req ids={['R5.9', 'R5.6', 'R5.11']}>
       <div className="space-y-1.5">
-        <Progress value={progress.percent ?? 0} aria-label={progress.percent === null ? t('card.notReviewedYet') : `${progress.percent}% complete`} className={cn('h-1.5 bg-muted', {
+        <Progress value={progress.percent ?? 0} aria-label={progress.percent === null ? 'Not reviewed yet' : `${progress.percent}% complete`} className={cn('h-1.5 bg-muted', {
           '[&_[data-slot=progress-indicator]]:bg-working-foreground/75': request.state === 'working',
           '[&_[data-slot=progress-indicator]]:bg-review-foreground/75': request.state === 'needs-check',
           '[&_[data-slot=progress-indicator]]:bg-attention-foreground/75': request.state === 'your-move',
@@ -154,7 +142,7 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
           '[&_[data-slot=progress-indicator]]:bg-shipped-foreground/75': request.state === 'shipped',
         })} />
         <div className="flex flex-wrap justify-between gap-x-2 text-xs text-muted-foreground">
-          <span>{progress.completedAt ? t('card.completed', { time: progress.completedAt }) : progress.readings ? <><span className="font-medium text-foreground/80 tabular-nums">{progress.percent}%</span>{compact ? '' : ` · ${reviewCoverage(request, t)}`}</> : t('card.notReviewedYet')}</span>
+          <span>{progress.completedAt ? `Completed ${progress.completedAt}` : progress.readings ? <><span className="font-medium text-foreground/80 tabular-nums">{progress.percent}%</span>{compact ? '' : ` · ${reviewCoverage(request)}`}</> : 'Not reviewed yet'}</span>
           {!compact && estimate && <span>{estimate}</span>}
         </div>
       </div>
@@ -188,7 +176,6 @@ export function LiveIndicator() {
   const { mode } = useWorkspace()
   const { sourceKind } = useWorkModel()
   const connection = useConnection()
-  const { t } = useTranslation()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
   return (
@@ -201,7 +188,7 @@ export function LiveIndicator() {
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
             {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
-            <span className="sr-only sm:not-sr-only">{demonstration ? t('header.live') : connection.label}</span>
+            <span className="sr-only sm:not-sr-only">{demonstration ? 'Live' : connection.label}</span>
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
@@ -218,24 +205,22 @@ export function LiveIndicator() {
 export function DeviceFreshness() {
   const { sourceKind, devices } = useWorkModel()
   const connection = useConnection()
-  const { t } = useTranslation()
   const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
-  const machineCountLabel = devices.length === 1 ? t('header.machines', { count: devices.length }) : t('header.machines_plural', { count: devices.length })
   return (
     <Req ids={['R13.8', 'R13.2']}>
       <HoverCard openDelay={100}>
         <HoverCardTrigger asChild>
-          <Button variant="ghost" size="sm" className="px-2 text-xs text-muted-foreground">{machineCountLabel}</Button>
+          <Button variant="ghost" size="sm" className="px-2 text-xs text-muted-foreground">{devices.length}<span className="hidden sm:inline">{devices.length === 1 ? 'machine' : 'machines'}</span><span className="sr-only sm:hidden">{devices.length === 1 ? 'machine' : 'machines'}</span></Button>
         </HoverCardTrigger>
         <HoverCardContent className="w-64 space-y-2">
-          <p className="text-xs font-medium">{t('header.reportingMachines')}</p>
+          <p className="text-xs font-medium">Machines reporting into this view</p>
           {devices.map((device) => (
             <div key={device.id} className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-2">
                 <span className={cn('size-1.5 rounded-full', reportingNow(device) ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />
                 {device.name}
               </span>
-              <span className="text-muted-foreground">{device.syncedMinutesAgo !== 0 ? t('header.syncedAgo', { minutes: device.syncedMinutesAgo }) : sourceKind === 'sample' ? t('header.thisMachine') : connection.label}</span>
+              <span className="text-muted-foreground">{device.syncedMinutesAgo !== 0 ? `synced ${device.syncedMinutesAgo} min ago` : sourceKind === 'sample' ? 'this machine' : connection.label}</span>
             </div>
           ))}
           {sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">{connection.tooltip}</p>}
@@ -250,7 +235,6 @@ const CLAUDE_MEM_REPO_API_URL = 'https://api.github.com/repos/thedotmack/claude-
 
 /** The repo's GitHub star count, read once from the public API. Shows no number until a real one arrives. */
 export function GitHubStars() {
-  const { t, formatNumber } = useTranslation()
   const [stargazerCount, setStargazerCount] = useState<number | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -267,8 +251,8 @@ export function GitHubStars() {
     <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
       <a href={CLAUDE_MEM_REPO_URL} target="_blank" rel="noreferrer" aria-label="Star claude-mem on GitHub">
         <StarIcon className="size-3.5" />
-        <span className="hidden sm:inline">{t('header.star')}</span>
-        {stargazerCount !== null && <span className="tabular-nums">{formatNumber(stargazerCount, { notation: 'compact', maximumFractionDigits: 1 })}</span>}
+        <span className="hidden sm:inline">Star</span>
+        {stargazerCount !== null && <span className="tabular-nums">{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(stargazerCount)}</span>}
       </a>
     </Button>
   )
@@ -278,12 +262,11 @@ export function GitHubStars() {
 const MY_WORK_FEEDBACK_URL = `${CLAUDE_MEM_REPO_URL}/issues/new?template=my-work-feedback.yml`
 
 export function FeedbackLink() {
-  const { t } = useTranslation()
   return (
     <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
       <a href={MY_WORK_FEEDBACK_URL} target="_blank" rel="noreferrer" aria-label="Send feedback about My Work on GitHub">
         <MessageSquareIcon className="size-3.5" />
-        <span className="hidden sm:inline">{t('header.feedback')}</span>
+        <span className="hidden sm:inline">Feedback</span>
       </a>
     </Button>
   )
@@ -291,10 +274,9 @@ export function FeedbackLink() {
 
 /** The previous memory viewer, still served by the worker at /viewer. */
 export function ClassicViewerLink() {
-  const { t } = useTranslation()
   return (
-    <a href="/viewer" className="hidden text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:inline" title={t('header.classicViewerTitle')}>
-      {t('header.classicViewer')}
+    <a href="/viewer" className="hidden text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:inline" title="Open the previous memory viewer">
+      Classic viewer
     </a>
   )
 }
@@ -302,7 +284,6 @@ export function ClassicViewerLink() {
 /** Sample runs only (their machines are fixtures). Runs a skill from the GUI (§14): last run time, machine and progress (cost display dropped by the owner, Oct 20, 2026). On the web it queues for an online machine. */
 export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
   const { mode } = useWorkspace()
-  const { t } = useTranslation()
   const [state, setState] = useState(run.state)
   const nextMachine = SAMPLE_DEVICES.find((device) => device.online)!
   const runMachine = SAMPLE_DEVICES.find((device) => device.id === run.deviceId)
@@ -315,13 +296,13 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
     <Req ids={[...ids, 'R14.10', 'R14.11']}>
       <div className="flex w-full items-center gap-3 sm:w-auto">
         <span className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:text-right" aria-live="polite">
-          {state === 'queued' && <>{t('refresh.queuedFor', { device: nextMachine.name })}</>}
-          {state === 'running' && <>{t('refresh.runningOn', { label: run.label, device: runMachine.name })}</>}
-          {state === 'idle' && <>{t('refresh.lastRunOn', { time: run.lastRunAt, device: runMachine.name })}</>}
+          {state === 'queued' && <>Queued for {nextMachine.name}</>}
+          {state === 'running' && <>Running {run.label} on {runMachine.name}…</>}
+          {state === 'idle' && <>Last run {run.lastRunAt}<br />on {runMachine.name}</>}
         </span>
         <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={state !== 'idle'} aria-label={`Refresh ${run.label}`}>
           {state === 'idle' ? <RefreshCwIcon /> : <Spinner />}
-          {t('refresh.refresh')}
+          Refresh
         </Button>
       </div>
     </Req>
@@ -334,12 +315,11 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
  * command to copy. Before its first run, the last saved run shows instead.
  */
 export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refresh: AutoRefresh | null; run: SkillRun | null; ids: string[]; label?: string }) {
-  const { t } = useTranslation()
   let text: ReactNode = null
-  if (refresh?.state === 'running') text = <span className="inline-flex items-center gap-1.5"><Spinner />{t('refresh.updating')}</span>
-  else if (refresh?.error) text = refresh.state === 'waiting-for-agent' ? <>{t('refresh.waitingToRefresh', { error: refresh.error })}</> : <>{t('refresh.refreshFailed', { error: refresh.error })}</>
-  else if (refresh?.finishedAt) text = <>{t('refresh.lastRefreshed', { time: refresh.finishedAt })}</>
-  else if (run) text = <>{label === 'Last run' ? t('refresh.lastRunOn', { time: run.lastRunAt, device: run.deviceName }) : `${label} ${run.lastRunAt} on ${run.deviceName}`}</>
+  if (refresh?.state === 'running') text = <span className="inline-flex items-center gap-1.5"><Spinner />Updating your goals and progress…</span>
+  else if (refresh?.error) text = refresh.state === 'waiting-for-agent' ? <>Waiting to refresh: {refresh.error}</> : <>Refresh failed: {refresh.error}</>
+  else if (refresh?.finishedAt) text = <>Last refreshed {refresh.finishedAt}</>
+  else if (run) text = <>{label} {run.lastRunAt}<br />on {run.deviceName}</>
   if (!text) return null
   return (
     <Req ids={[...ids, 'R14.10']}>

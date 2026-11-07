@@ -8,7 +8,6 @@ import { Req } from '@/spec/req'
 import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
 import { useWorkModel } from '@/store'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
-import { useTranslation } from '@/i18n/use-translation'
 
 /** What the rail can select: My Work filtered to one area (or Other), the Suggested queue, or Past focus. */
 /** App's page buttons use the same layoutId, so selecting anything in the rail slides the one pill there. */
@@ -21,36 +20,33 @@ interface FocusNavEntry { key: string; label: string; count: number; selection: 
 /** The entries in rail order. Rail and chip row read the same list. */
 function useFocusNavEntries(): { focus: FocusNavEntry[]; pastFocus: FocusNavEntry } {
   const { focusAreas, requests } = useWorkModel()
-  const { t } = useTranslation()
   const needsYouIn = (id: string) => requests.filter((request) => needsYou(request) && resolveFocusAreaId(request.focusAreaId, focusAreas) === id).length
   const kept = focusAreas.filter((area) => area.status === 'kept' && !area.mergedInto)
   const suggested = focusAreas.filter((area) => area.status === 'suggested' && !area.mergedInto).length
   return {
     focus: [
       ...kept.map((area) => ({ key: area.id, label: area.name, count: needsYouIn(area.id), selection: { kind: 'area' as const, focusAreaId: area.id } })),
-      { key: OTHER_FOCUS_AREA_ID, label: t('nav.other'), count: needsYouIn(OTHER_FOCUS_AREA_ID), selection: { kind: 'area', focusAreaId: OTHER_FOCUS_AREA_ID } },
-      ...(suggested > 0 ? [{ key: 'suggested', label: t('nav.suggestedCount', { count: suggested }), count: 0, selection: { kind: 'suggested' as const }, muted: true }] : []),
+      { key: OTHER_FOCUS_AREA_ID, label: 'Other', count: needsYouIn(OTHER_FOCUS_AREA_ID), selection: { kind: 'area', focusAreaId: OTHER_FOCUS_AREA_ID } },
+      ...(suggested > 0 ? [{ key: 'suggested', label: `${suggested} suggested`, count: 0, selection: { kind: 'suggested' as const }, muted: true }] : []),
     ],
-    pastFocus: { key: 'past-focus', label: t('nav.pastFocus'), count: 0, selection: { kind: 'past-focus' }, muted: true },
+    pastFocus: { key: 'past-focus', label: 'Past focus', count: 0, selection: { kind: 'past-focus' }, muted: true },
   }
 }
 
 const sameSelection = (a: FocusSelection, b: FocusSelection) => !!a && !!b && a.kind === b.kind && (a.kind !== 'area' || (b.kind === 'area' && a.focusAreaId === b.focusAreaId))
 
 function Count({ count, className }: { count: number; className?: string }) {
-  const { t } = useTranslation()
   if (count === 0) return null
-  return <span className={cn('flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground tabular-nums', className)}>{count}<span className="sr-only"> {t('nav.needYou')}</span></span>
+  return <span className={cn('flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground tabular-nums', className)}>{count}<span className="sr-only"> need you</span></span>
 }
 
 /** The wide rail's MY FOCUS section (lg and up). */
 export function FocusRail({ selected, onSelect }: { selected: FocusSelection; onSelect: (selection: FocusSelection) => void }) {
   const { focus } = useFocusNavEntries()
-  const { t } = useTranslation()
   return (
     <Req ids={['R16.1', 'R16.3']}>
       <div className="space-y-0.5">
-        <p className="section-label px-2 pb-1">{t('nav.focus')}</p>
+        <p className="section-label px-2 pb-1">My focus</p>
         {focus.map((entry) => (
           <button key={entry.key} type="button" onClick={() => onSelect(entry.selection)} aria-current={sameSelection(selected, entry.selection) ? 'page' : undefined}
             className={cn('relative flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-[0.88rem] leading-snug transition-colors',
@@ -69,14 +65,13 @@ export function FocusRail({ selected, onSelect }: { selected: FocusSelection; on
 /** Past focus, at the bottom of the rail. */
 export function PastFocusLink({ selected, onSelect }: { selected: FocusSelection; onSelect: (selection: FocusSelection) => void }) {
   const { pastFocus } = useFocusNavEntries()
-  const { t } = useTranslation()
   const active = sameSelection(selected, pastFocus.selection)
   return (
     <Req ids={['R16.7']}>
       <button type="button" onClick={() => onSelect(pastFocus.selection)} aria-current={active ? 'page' : undefined}
         className={cn('relative flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 text-left text-xs transition-colors', active ? 'font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-card/70')}>
         {active && <ActivePill layoutId={SIDE_NAV_PILL} />}
-        <HistoryIcon className="relative size-3.5" /><span className="relative">{t('nav.pastFocus')}</span>
+        <HistoryIcon className="relative size-3.5" /><span className="relative">Past focus</span>
       </button>
     </Req>
   )
@@ -86,10 +81,9 @@ export function PastFocusLink({ selected, onSelect }: { selected: FocusSelection
  * fades while more chips are off screen, and the row ends with room to scroll the last chip clear of the fade. */
 export function FocusChipRow({ selected, onSelect }: { selected: FocusSelection; onSelect: (selection: FocusSelection) => void }) {
   const { focus, pastFocus } = useFocusNavEntries()
-  const { t } = useTranslation()
   return (
     <Req ids={['R16.1', 'R11.1']} className="lg:hidden">
-      <nav aria-label={t('nav.focus')} className="relative -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [mask-image:linear-gradient(to_right,black_calc(100%-2.5rem),transparent)] after:shrink-0 after:basis-6 after:content-[''] md:mx-0 md:px-0 lg:hidden">
+      <nav aria-label="My focus" className="relative -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [mask-image:linear-gradient(to_right,black_calc(100%-2.5rem),transparent)] after:shrink-0 after:basis-6 after:content-[''] md:mx-0 md:px-0 lg:hidden">
         {[...focus, pastFocus].map((entry) => {
           const active = sameSelection(selected, entry.selection)
           return (

@@ -13,13 +13,12 @@ import { Req } from '@/spec/req'
 import { OTHER_FOCUS_AREA_ID, type Request } from '@/data'
 import { useStore, useWorkModel, useWorkspace } from '@/store'
 import { isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
-import type { ReviewResult } from '@/live/review-response'
+import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
-import { useTranslation } from '@/i18n/use-translation'
 
 const RECENT_RECORDS = 5
 
@@ -46,7 +45,6 @@ function Disclosure({ label, children }: { label: string; children: React.ReactN
 }
 
 function Records({ records }: { records: Request['granular'] }) {
-  const { t } = useTranslation()
   return (
     <QueueList>
       {records.map((record, index) => (
@@ -54,7 +52,7 @@ function Records({ records }: { records: Request['granular'] }) {
           <div className="flex items-center gap-2">
             <QueueItemIndicator completed={record.kind === 'memory'} />
             <QueueItemContent className="text-xs">{record.text}</QueueItemContent>
-            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{record.kind === 'memory' ? t('detail.memory') : t('detail.work')} · {record.at}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{record.kind === 'memory' ? 'memory' : 'work'} · {record.at}</span>
           </div>
         </QueueItem>
       ))}
@@ -65,10 +63,10 @@ function Records({ records }: { records: Request['granular'] }) {
 type CheckNotice = { tone: 'saved' | 'problem'; message: string }
 
 /** What the person is told after the worker answers (app.js `saveReview` toasts). */
-function noticeFor(result: ReviewResult, checked: boolean, t: (key: string) => string): CheckNotice {
+function noticeFor(result: ReviewResult, checked: boolean): CheckNotice {
   switch (result.outcome) {
-    case 'saved': return { tone: 'saved', message: checked ? t('detail.checkedLocally') : t('detail.checkUndone') }
-    case 'changed-while-reading': return { tone: 'problem', message: t('detail.changedWhileReading') }
+    case 'saved': return { tone: 'saved', message: checked ? CHECKED_LOCALLY_MESSAGE : CHECK_UNDONE_MESSAGE }
+    case 'changed-while-reading': return { tone: 'problem', message: CHANGED_WHILE_READING_MESSAGE }
     case 'refused': return { tone: 'problem', message: result.serverMessage }
     case 'unavailable': return { tone: 'problem', message: result.serverMessage }
   }
@@ -81,7 +79,6 @@ function noticeFor(result: ReviewResult, checked: boolean, t: (key: string) => s
 function CheckAction({ request }: { request: Request }) {
   const { mode } = useWorkspace()
   const { sourceKind, devices } = useWorkModel()
-  const { t } = useTranslation()
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<CheckNotice | null>(null)
   // Resolves false when the save did not happen, so the button shows no check; the notice line says why.
@@ -90,7 +87,7 @@ function CheckAction({ request }: { request: Request }) {
     let next: CheckNotice
     try {
       // The version on screen is the one checked; the worker refuses any other.
-      next = noticeFor(await useStore.getState().setRequestChecked(request.id, checked, request.contentFingerprint), checked, t)
+      next = noticeFor(await useStore.getState().setRequestChecked(request.id, checked, request.contentFingerprint), checked)
     } catch (error) {
       next = { tone: 'problem', message: error instanceof Error ? error.message : String(error) }
     } finally {
@@ -106,8 +103,8 @@ function CheckAction({ request }: { request: Request }) {
     return (
       <Req ids={['R6.2', 'R13.7']}>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-review-border bg-review p-4 text-sm text-review-foreground">
-          <span>{t('detail.doneCheckIt')}</span>
-          <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />{t('detail.markChecked')}</SaveButton>
+          <span>Done. Check it, then mark this version checked.</span>
+          <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />Mark checked</SaveButton>
           {noticeLine}
         </div>
       </Req>
@@ -115,12 +112,12 @@ function CheckAction({ request }: { request: Request }) {
   }
   if (!request.checkedAt) return noticeLine
   // A check is private review metadata (review-store), not work state: it does not sync.
-  const savedWhere = sourceKind === 'cloud' ? t('detail.savedCloudOnly') : sourceKind !== 'sample' ? t('detail.savedOnMachine') : mode === 'web' ? `Saved from the web · syncing to ${devices.length} machines (demonstration)` : 'Saved on this machine (demonstration)'
+  const savedWhere = sourceKind === 'cloud' ? 'Saved in your cloud viewer only. Your computers do not see this check.' : sourceKind !== 'sample' ? 'Saved on this machine.' : mode === 'web' ? `Saved from the web · syncing to ${devices.length} machines (demonstration)` : 'Saved on this machine (demonstration)'
   return (
     <Req ids={['R6.2', 'R13.7']}>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-surface p-4 text-sm">
-        <span role="status">{notice?.tone === 'saved' ? notice.message : t('detail.checkedNotice', { time: request.checkedAt })} <span className="text-muted-foreground">{savedWhere}</span></span>
-        <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />{t('detail.undo')}</SaveButton>
+        <span role="status">{notice?.tone === 'saved' ? notice.message : `Checked ${request.checkedAt}.`} Shipping is still your call. <span className="text-muted-foreground">{savedWhere}</span></span>
+        <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />Undo</SaveButton>
         {notice?.tone === 'problem' && noticeLine}
       </div>
     </Req>
@@ -130,7 +127,6 @@ function CheckAction({ request }: { request: Request }) {
 /** Move to…: puts the request in another area or Other, as the owner's placement (a refresh never overrides it). */
 function MoveTo({ request }: { request: Request }) {
   const { focusAreas } = useWorkModel()
-  const { t } = useTranslation()
   // The shared save: a second pick while one move is saving does nothing, and the move shows with Undo.
   const changes = useFocusChanges()
   const current = resolveFocusAreaId(request.focusAreaId, focusAreas)
@@ -143,10 +139,10 @@ function MoveTo({ request }: { request: Request }) {
     <Req ids={['R16.6']}>
       <div className="space-y-1">
         <Select value="" onValueChange={move} disabled={changes.saving}>
-          <SelectTrigger aria-label={t('detail.moveToAria')} size="sm" className="h-11 text-xs md:h-8"><SelectValue placeholder={changes.saving ? t('detail.moving') : t('detail.moveTo')} /></SelectTrigger>
+          <SelectTrigger aria-label="Move to another focus area" size="sm" className="h-11 text-xs md:h-8"><SelectValue placeholder={changes.saving ? 'Moving…' : 'Move to…'} /></SelectTrigger>
           <SelectContent>
-            {targets.map((area) => <SelectItem key={area.id} value={area.id}>{area.name}{area.status === 'suggested' ? ` · ${t('rules.statusSuggested')}` : ''}</SelectItem>)}
-            {current !== OTHER_FOCUS_AREA_ID && <SelectItem value={OTHER_FOCUS_AREA_ID}>{t('detail.other')}</SelectItem>}
+            {targets.map((area) => <SelectItem key={area.id} value={area.id}>{area.name}{area.status === 'suggested' ? ' · suggested' : ''}</SelectItem>)}
+            {current !== OTHER_FOCUS_AREA_ID && <SelectItem value={OTHER_FOCUS_AREA_ID}>Other</SelectItem>}
           </SelectContent>
         </Select>
         <FocusChangeBar changes={changes} />
@@ -158,21 +154,9 @@ function MoveTo({ request }: { request: Request }) {
 /** The request page (§3): whose move and what's next first, then outcome, then the layers underneath, collapsed. */
 export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   if (!request) return null
-  const { t, formatRecordTime, formatDuration } = useTranslation()
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
-  const startedAt = request.startedEpoch
-    ? formatRecordTime(request.startedEpoch)
-    : request.startedAt === 'Not recorded' ? t('card.notRecorded') : request.startedAt
-  const runningFor = request.runningForMs !== undefined
-    ? formatDuration(request.runningForMs)
-    : request.runningFor === 'Not recorded' ? t('card.notRecorded') : request.runningFor
-  const sourcesText = request.evidence.length ? t('detail.sourcesCount', { count: request.evidence.length }) : ''
-  const convCount = request.conversations.length || 1
-  const whereFromLabel = convCount === 1
-    ? t('detail.whereFromSingle', { sources: sourcesText })
-    : t('detail.whereFrom', { conversations: convCount, sources: sourcesText })
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
       <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
@@ -195,13 +179,13 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
               <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
               {/* Sample fixtures change in memory; live requests save as my-focus rows. */}
               <MoveTo request={request} />
-              <span>{t('card.askedBy', { name: request.askedBy })} · {t('card.started')} {startedAt} · {runningFor} · {request.stage}</span>
+              <span>Asked by {request.askedBy} · started {request.startedAt} · {request.runningFor} · {request.stage}</span>
             </div>
           </div>
 
           <Req ids={['R5.10', 'R5.12']}>
-            <Section title={t('detail.deliverables')}>
-              {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">{t('detail.nothingAttached')}</p> : (
+            <Section title="Deliverables">
+              {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">Nothing attached yet.</p> : (
                 <div className="-mx-3 flex flex-col">
                   {request.workProduct.map((product, index) => {
                     const Icon = PRODUCT_ICON[product.kind]
@@ -220,11 +204,11 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
 
           {request.workstreams.length > 0 && (
             <Req ids={['R3.4']}>
-              <Section title={t('detail.workstreams')}>
+              <Section title="Workstreams">
                 <div className="divide-y divide-border/70">
                   {request.workstreams.map((stream, index) => (
                     <Task key={`${index}-${stream.title}`} defaultOpen={false} className="py-0.5">
-                      <TaskTrigger title={`${stream.title} · ${t('detail.workstreamDone', { done: stream.tasks.filter((task) => task.done).length, total: stream.tasks.length })}`} />
+                      <TaskTrigger title={`${stream.title} · ${stream.tasks.filter((task) => task.done).length} of ${stream.tasks.length} done`} />
                       <TaskContent className="pb-3">
                         {stream.tasks.map((task, index) => <TaskItem key={`${index}-${task.name}`} className={task.done ? 'line-through' : ''}>{task.name}</TaskItem>)}
                       </TaskContent>
@@ -238,7 +222,7 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
           {(request.story.length > 0 || request.storyNarrative) && (
             <Req ids={['R7.2', 'R3.2']}>
               <ChainOfThought defaultOpen={false}>
-                <ChainOfThoughtHeader>{t('detail.buildStory')}</ChainOfThoughtHeader>
+                <ChainOfThoughtHeader>Build story</ChainOfThoughtHeader>
                 <ChainOfThoughtContent>
                   {request.storyNarrative && <p className="text-sm text-muted-foreground">{request.storyNarrative}</p>}
                   {request.story.map((step, index) => <ChainOfThoughtStep key={`${index}:${step.label}`} label={step.label} description={step.description} status={step.status} />)}
@@ -248,16 +232,16 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
           )}
 
           <Req ids={['R3.5']}>
-            <Section title={t('detail.latestRecords')}>
-              {recent.length === 0 ? <p className="text-sm text-muted-foreground">{t('detail.noRecordsYet')}</p> : <Records records={recent} />}
-              {earlier.length > 0 && <Disclosure label={earlier.length === 1 ? t('detail.earlierRecordsSingle', { count: earlier.length }) : t('detail.earlierRecords', { count: earlier.length })}><Records records={earlier} /></Disclosure>}
+            <Section title="Latest records">
+              {recent.length === 0 ? <p className="text-sm text-muted-foreground">No records yet.</p> : <Records records={recent} />}
+              {earlier.length > 0 && <Disclosure label={`${earlier.length} earlier record${earlier.length === 1 ? '' : 's'}`}><Records records={earlier} /></Disclosure>}
             </Section>
           </Req>
 
           <Req ids={['R2.5', 'R2.2', 'R5.11']}>
-            <Disclosure label={whereFromLabel}>
+            <Disclosure label={`Where this came from · ${request.conversations.length || 1} conversation${request.conversations.length > 1 ? 's' : ''}${request.evidence.length ? `, ${request.evidence.length} sources` : ''}`}>
               <div className="space-y-2.5 pb-2">
-                {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">{t('detail.oneConversation')}</p>}
+                {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">One conversation so far.</p>}
                 {request.conversations.map((conversation, index) => (
                   <p key={`${index}-${conversation.at}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {conversation.at}</span> — {conversation.title}</p>
                 ))}

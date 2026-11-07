@@ -14,7 +14,6 @@ import { Req } from '@/spec/req'
 import { SAMPLE_RUNS, type PastPeriod } from '@/data'
 import { useWorkModel } from '@/store'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
-import { useTranslation } from '@/i18n/use-translation'
 
 /**
  * Areas marked done, as a shelf of foil cards (GlareCard): a finished area is a win, not a list row. Each still
@@ -22,25 +21,24 @@ import { useTranslation } from '@/i18n/use-translation'
  */
 function DoneAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   const { focusAreas, requests } = useWorkModel()
-  const { t } = useTranslation()
   const done = focusAreas.filter((area) => area.status === 'done' && !area.mergedInto)
   if (done.length === 0) return null
   const shippedIn = (id: string) => requests.filter((request) => request.state === 'shipped' && resolveFocusAreaId(request.focusAreaId, focusAreas) === id).length
   return (
     <div className="space-y-2">
-      <h2 className="text-base font-semibold">{t('pastFocus.doneAreas')}</h2>
+      <h2 className="text-base font-semibold">Done areas</h2>
       <ul className="flex flex-wrap gap-4">
         {done.map((area) => (
           <li key={area.id}>
             <button type="button" onClick={() => onOpenFocus(area.id)} className="done-area-glare block rounded-[18px] text-left focus-visible:outline-2 focus-visible:outline-ring">
               <GlareCard className="done-area-face">
                 <span className="flex h-full flex-col justify-between gap-2 p-4">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-shipped-foreground"><CheckIcon className="size-3.5" />{t('pastFocus.done')}</span>
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-shipped-foreground"><CheckIcon className="size-3.5" />Done</span>
                   <span className="space-y-1">
                     <span className="block text-[15px] leading-snug font-semibold">{area.name}</span>
                     {area.goal && <span className="line-clamp-2 block text-xs text-muted-foreground">{area.goal}</span>}
                   </span>
-                  <span className="flex items-center justify-between text-xs text-muted-foreground"><span><span className="font-medium text-foreground tabular-nums">{shippedIn(area.id)}</span> {t('pastFocus.shippedCount', { count: shippedIn(area.id) }).replace(`${shippedIn(area.id)} `, '')}</span><ChevronRightIcon className="size-4" /></span>
+                  <span className="flex items-center justify-between text-xs text-muted-foreground"><span><span className="font-medium text-foreground tabular-nums">{shippedIn(area.id)}</span> shipped</span><ChevronRightIcon className="size-4" /></span>
                 </span>
               </GlareCard>
             </button>
@@ -56,15 +54,13 @@ function DoneAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void
  * headline's first lines; opening it shows the whole headline and every area with its quote.
  */
 function PastMonth({ period }: { period: PastPeriod }) {
-  const { t, language } = useTranslation()
   const [open, setOpen] = useState(false)
   const [top] = period.areas
-  const areasLabel = language === 'zh-CN' ? `${period.areas.length} 个领域` : plural(period.areas.length, 'area')
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border bg-card shadow-panel">
       <CollapsibleTrigger className="group grid w-full grid-cols-[minmax(0,1fr)_1rem] items-start gap-3 p-4 text-left">
         <span className="min-w-0 space-y-1">
-          <span className="block text-xs text-muted-foreground">{t('pastFocus.archivedHeader', { prompts: period.promptCount, areas: areasLabel })}</span>
+          <span className="block text-xs text-muted-foreground">Archived · {period.promptCount} prompts · {plural(period.areas.length, 'area')}</span>
           {top && <span className="block text-sm font-medium">{top.title}</span>}
           <span className={cn('block text-sm text-foreground/85', !open && 'line-clamp-2')}>{period.headline}</span>
         </span>
@@ -76,12 +72,12 @@ function PastMonth({ period }: { period: PastPeriod }) {
             <li key={entry.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
               <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
               <p className="text-sm font-medium">{entry.title}</p>
-              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {language === 'zh-CN' ? `提过 ${entry.timesAsked} 次` : timesLabel(entry.timesAsked)}</p>
+              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {timesLabel(entry.timesAsked)}</p>
               {entry.quote && <div className="col-start-2"><Quotes quotes={[entry.quote]} /></div>}
             </li>
           ))}
         </ol>
-        <p className="text-xs text-muted-foreground">{t('pastFocus.noReviewsCover')}</p>
+        <p className="text-xs text-muted-foreground">No request reviews cover this month, so it shows what you asked for, not what moved.</p>
       </CollapsibleContent>
     </Collapsible>
   )
@@ -122,15 +118,14 @@ function MonthByMonth({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => v
 
 export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   const { sourceKind, currentPeriod, goalsReadError, lastRuns, refresh, focusAreas } = useWorkModel()
-  const { t, language } = useTranslation()
   const hasDone = focusAreas.some((area) => area.status === 'done' && !area.mergedInto)
   return (
     <Req ids={['R16.7', 'R12.1']}>
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="space-y-0.5">
-            <h2 className="text-lg font-semibold tracking-tight">{t('pastFocus.title')}</h2>
-            <p className="text-sm text-muted-foreground">{language === 'zh-CN' ? '已完成的领域，以及前几个月提出最多的要求。' : 'Areas you finished, and what you asked for in earlier months.'}</p>
+            <h2 className="text-lg font-semibold tracking-tight">Past focus</h2>
+            <p className="text-sm text-muted-foreground">Areas you finished, and what you asked for in earlier months.</p>
           </div>
           {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} /> : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} />}
         </div>
@@ -138,7 +133,7 @@ export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) 
         {currentPeriod ? <MonthByMonth onOpenFocus={onOpenFocus} /> : !hasDone && (
           <Empty className="border bg-card/60">
             <EmptyHeader>
-              <EmptyTitle>{goalsReadError ? (language === 'zh-CN' ? '当前无法读取过往月份' : 'Can’t read your past months right now') : (language === 'zh-CN' ? '暂无内容' : 'Nothing here yet')}</EmptyTitle>
+              <EmptyTitle>{goalsReadError ? 'Can’t read your past months right now' : 'Nothing here yet'}</EmptyTitle>
               <EmptyDescription>
                 {goalsReadError ? <>{goalsReadError}. claude-mem rewrites them on its next automatic refresh.</> : <>claude-mem reads your recent prompts and fills this in automatically.</>}
               </EmptyDescription>

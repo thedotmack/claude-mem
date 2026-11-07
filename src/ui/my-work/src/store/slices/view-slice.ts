@@ -4,18 +4,16 @@ import { OTHER_FOCUS_AREA_ID } from '../../data.ts'
 import { resolveFocusAreaId } from '../../live/to-focus-model.ts'
 import { usageReport } from '../../live/usage.ts'
 import type { SliceCreator } from '../create-store.ts'
-import type { Language, OpenRequest, Page, Section, StoreEnvironment, ViewSlice, ViewState } from '../store-types.ts'
+import type { OpenRequest, Page, Section, StoreEnvironment, ViewSlice, ViewState } from '../store-types.ts'
 
 const SECTIONS: readonly Section[] = ['work', 'rules', 'suggested', 'past-focus']
 
-interface Route { page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: boolean | null; language: Language | null }
+interface Route { page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: boolean | null }
 
-/** `?setup=1` is the installer handoff; `?view=` a page other than My Work; `?focus=` an area; `?request=` the open drawer; `?lang=` the language. */
+/** `?setup=1` is the installer handoff; `?view=` a page other than My Work; `?focus=` an area; `?request=` the open drawer. */
 export function readRoute(url: URL): Route {
   const view = url.searchParams.get('view') as Section | null
   const section = view && SECTIONS.includes(view) ? view : 'work'
-  const langParam = url.searchParams.get('lang')?.trim().toLowerCase()
-  const language: Language | null = langParam === 'zh' || langParam === 'zh-cn' ? 'zh-CN' : langParam === 'en' ? 'en' : null
   return {
     page: url.searchParams.get('setup') === '1' ? 'setup' : 'app',
     section,
@@ -23,7 +21,6 @@ export function readRoute(url: URL): Route {
     requestId: url.searchParams.get('request') || null,
     // `?theme=dark|light` starts the wireframe's theme switch; without it, the system preference does.
     theme: url.searchParams.get('theme') === 'dark' ? true : url.searchParams.get('theme') === 'light' ? false : null,
-    language,
   }
 }
 
@@ -69,7 +66,6 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       listView: 'cards',
       filter: 'all',
       sort: 'attention',
-      language: route.language ?? (environment.storage?.getItem('claude-mem:my-work:language') as Language) ?? (environment.browserLanguage?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'),
     },
 
     goToPage: (page) => navigate({ section: page, focusChoice: null }),
@@ -133,12 +129,6 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
     setListView: (listView) => set((state) => { state.view.listView = listView }),
     setFilter: (filter) => set((state) => { state.view.filter = filter }),
     setSort: (sort) => set((state) => { state.view.sort = sort }),
-    setLanguage: (language) => {
-      set((state) => { state.view.language = language })
-      try {
-        environment.storage?.setItem('claude-mem:my-work:language', language)
-      } catch {}
-    },
   }
 }
 

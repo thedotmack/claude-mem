@@ -52,8 +52,6 @@ export interface WorkModel {
   sourceHealth: { connected: boolean; error: string | null }
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */
   connection: ConnectionStatus
-  /** Configured language from worker snapshot if provided. */
-  language?: string
 }
 
 /** What the automatic refresh is doing. `finishedAt` is display text. */

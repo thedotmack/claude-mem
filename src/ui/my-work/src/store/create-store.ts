@@ -21,12 +21,11 @@ export type SliceCreator<Slice> = StateCreator<BoundStore, Mutators, [], Slice>
 /** Bump when a persisted field changes meaning; older saved preferences are then dropped. */
 const PREFERENCES_VERSION = 1
 // The theme is not saved: it follows the system preference (or `?theme=`), as it always has.
-type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort' | 'language'>
+type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort'>
 
 const LIST_VIEWS: readonly ViewState['listView'][] = ['cards', 'list', 'agents', 'team']
 const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'shipped', 'closed']
 const SORTS: readonly ViewState['sort'][] = ['attention', 'started', 'progress']
-const LANGUAGES: readonly ViewState['language'][] = ['en', 'zh-CN']
 
 /** Saved preferences are read back field by field; a value this version doesn't know is left at its default. */
 function validPreferences(saved: unknown): Partial<Preferences> {
@@ -35,7 +34,6 @@ function validPreferences(saved: unknown): Partial<Preferences> {
   if (LIST_VIEWS.includes(value.listView as ViewState['listView'])) preferences.listView = value.listView as ViewState['listView']
   if (FILTERS.includes(value.filter as ViewState['filter'])) preferences.filter = value.filter as ViewState['filter']
   if (SORTS.includes(value.sort as ViewState['sort'])) preferences.sort = value.sort as ViewState['sort']
-  if (LANGUAGES.includes(value.language as ViewState['language'])) preferences.language = value.language as ViewState['language']
   return preferences
 }
 
@@ -57,7 +55,7 @@ export function createBoundStore(environment: StoreEnvironment) {
         version: PREFERENCES_VERSION,
         ...(environment.storage ? { storage: createJSONStorage(() => environment.storage!) } : {}),
         // Only how the person likes to see My Work is saved. Server records stay in memory.
-        partialize: ({ view: { listView, filter, sort, language } }): Preferences => ({ listView, filter, sort, language }),
+        partialize: ({ view: { listView, filter, sort } }): Preferences => ({ listView, filter, sort }),
         merge: (saved, current) => {
           const view = { ...current.view, ...validPreferences(saved) }
           // The team view needs the team switch, which is not saved.

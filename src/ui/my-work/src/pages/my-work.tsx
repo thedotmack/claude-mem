@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_SURFACE, StateBadge } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
@@ -26,7 +26,6 @@ import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useStore
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
-import { useTranslation } from '@/i18n/use-translation'
 
 type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
@@ -62,7 +61,6 @@ function sortRequests(requests: Request[], sort: SortKey) {
 
 /** One actionable sentence that leads the page (§12): what needs you is a link straight to it. */
 function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; onOpen: (request: Request) => void; onShowNeedsYou: () => void }) {
-  const { t } = useTranslation()
   const yourMove = requests.filter((request) => request.state === 'your-move')
   const toCheck = requests.filter((request) => request.state === 'needs-check')
   const working = requests.filter((request) => request.state === 'working').length
@@ -75,16 +73,16 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
         <p className="flex flex-wrap items-center gap-x-2 text-[0.95rem] leading-snug md:text-base">
           {first ? (
             <>
-              <span className="font-semibold">{waiting === 1 ? t('summary.oneNeedsYou') : t('summary.manyNeedYou', { count: waiting })}</span>
+              <span className="font-semibold">{waiting === 1 ? 'One thing needs you:' : `${waiting} need you. First:`}</span>
               <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
                 {reduceMotion ? first.next.text : <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight>}<ArrowRightIcon className="size-4 shrink-0" />
               </button>
             </>
-          ) : <span className="font-semibold">{t('summary.nothingNeedsYou')}</span>}
+          ) : <span className="font-semibold">Nothing needs you right now.</span>}
         </p>
         <p className="flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
-          <span>{t('summary.workingCount', { count: working })}{toCheck.length ? t('summary.waitingCheck', { count: toCheck.length }) : ''}</span>
-          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">{t('summary.showAll', { count: waiting })}</button></>}
+          <span>{working} working{toCheck.length ? ` · ${toCheck.length} waiting for your check` : ''}</span>
+          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">Show all {waiting}</button></>}
         </p>
       </div>
     </Req>
@@ -94,7 +92,6 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
 /** The build story's recap, after the work: its first paragraph, plus the hero image and sync funnel in the sample (§7, §8). */
 function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: () => void }) {
   const { mode, connected } = useWorkspace()
-  const { t, language } = useTranslation()
   // The daily recap image is not generated from real records yet, so live mode leaves its slot out.
   const sample = useWorkModel().sourceKind === 'sample'
   return (
@@ -107,9 +104,9 @@ function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: ()
       <div className="min-w-0 space-y-3">
         <Req ids={['R7.1', 'R7.2']}>
           <div className="space-y-1">
-            <p className="section-label">{story.writtenAt ? `${t('detail.buildStory')} · ${story.writtenAt}` : t('detail.buildStory')}</p>
+            <p className="section-label">{story.writtenAt ? `Build story · ${story.writtenAt}` : 'Build story'}</p>
             <p className="text-sm">{story.recap}</p>
-            <Button variant="link" className="h-11 p-0 text-sm text-accent-foreground md:h-auto" onClick={onOpenStory}>{language === 'zh-CN' ? '阅读构建故事' : 'Read the build story'}</Button>
+            <Button variant="link" className="h-11 p-0 text-sm text-accent-foreground md:h-auto" onClick={onOpenStory}>Read the build story</Button>
           </div>
         </Req>
         {sample && mode === 'home' && !connected && (
@@ -129,7 +126,6 @@ function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: ()
 
 /** Shipping velocity, the narrative, and the preferences it found (§7). Preferences are the same records My Rules shows. */
 function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boolean; story: BuildStory; requests: Request[]; onClose: () => void; onOpenRules: () => void }) {
-  const { t, language } = useTranslation()
   const shipped = requests.filter((request) => request.state === 'shipped').length
   const waiting = requests.filter(needsYou).length
   const { rules } = useWorkModel()
@@ -140,30 +136,30 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose() }}>
       <SheetContent ref={scrollRef} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>{t('detail.buildStory')}</SheetTitle>
+          <SheetTitle>Build story</SheetTitle>
           <SheetDescription>From request-progress, reviewed from memory{story.writtenAt ? `, written ${story.writtenAt}` : ''}.</SheetDescription>
         </SheetHeader>
         <TracingBeam scrollContainer={scrollRef} className="pr-4 pb-6 pl-10">
         <div className="space-y-6">
           <Req ids={['R7.1']}>
-            <p className="text-sm">{language === 'zh-CN' ? `已交付 ${shipped} 项任务，${waiting} 项等待你处理。` : `${shipped} request${shipped === 1 ? '' : 's'} shipped and ${waiting} waiting on you.`}</p>
+            <p className="text-sm">{shipped} request{shipped === 1 ? '' : 's'} shipped and {waiting} waiting on you.</p>
           </Req>
           <Req ids={['R7.2']}>
             <div className="space-y-3">{story.paragraphs.map((paragraph, index) => <p key={index} className="text-sm text-muted-foreground">{paragraph}</p>)}</div>
           </Req>
           <Req ids={['R7.3']}>
             <div className="space-y-2">
-              <h4 className="section-label">{language === 'zh-CN' ? '自动学习到的工作偏好' : 'What it learned about how you work'}</h4>
-              {learned.length === 0 && <p className="text-sm text-muted-foreground">{language === 'zh-CN' ? '暂未学习到工作偏好。' : 'No preferences learned yet.'}</p>}
+              <h4 className="section-label">What it learned about how you work</h4>
+              {learned.length === 0 && <p className="text-sm text-muted-foreground">No preferences learned yet.</p>}
               <ul className="space-y-2">
                 {learned.map((rule) => (
                   <li key={rule.id} className="text-sm">
-                    {rule.when ? <>{t('rules.when')} {rule.when}: {rule.then}</> : rule.then}
-                    {rule.status === 'suggested' && <span className="ml-1.5 text-xs text-muted-foreground">{language === 'zh-CN' ? '· 建议，尚未批准' : '· suggested, not approved yet'}</span>}
+                    {rule.when ? <>When {rule.when}: {rule.then}</> : rule.then}
+                    {rule.status === 'suggested' && <span className="ml-1.5 text-xs text-muted-foreground">· suggested, not approved yet</span>}
                   </li>
                 ))}
               </ul>
-              <Button variant="outline" className="h-11 md:h-9" onClick={onOpenRules}>{language === 'zh-CN' ? '在“我的规则”中审查' : 'Review in My Rules'}</Button>
+              <Button variant="outline" className="h-11 md:h-9" onClick={onOpenRules}>Review in My Rules</Button>
             </div>
           </Req>
         </div>
@@ -188,8 +184,7 @@ function HoverCell({ children }: { children: ReactNode }) {
  * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
  */
 function FlipStatus({ state }: { state: LiveState }) {
-  const { t } = useTranslation()
-  return <SplitFlapText text={t(`state.${state}`)} tileClassName={STATE_SURFACE[state]} />
+  return <SplitFlapText text={STATE_LABEL[state]} tileClassName={STATE_SURFACE[state]} />
 }
 
 // The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
@@ -198,7 +193,6 @@ const TABLE_QUERY = '(min-width: 768px)'
 function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
   const wide = useMatchesMedia(TABLE_QUERY)
-  const { t, language, formatRecordTime } = useTranslation()
   const sortHead = (label: string, value: SortKey) => (
     <TableHead aria-sort={sort === value ? 'descending' : undefined}>
       <Button variant="ghost" size="sm" className="-ml-3 h-8 text-[0.82rem] font-medium text-muted-foreground" onClick={() => onSort(value)}>{label}<ArrowUpDownIcon className={sort === value ? '' : 'opacity-30'} /></Button>
@@ -229,12 +223,12 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
           <TableHeader className="bg-surface/60">
             <TableRow>
               <TableHead className="w-10"><span className="sr-only">Agent</span></TableHead>
-              <TableHead>{language === 'zh-CN' ? '任务' : 'Request'}</TableHead>
-              {team && <TableHead>{language === 'zh-CN' ? '提出者' : 'Asked by'}</TableHead>}
-              {sortHead(language === 'zh-CN' ? '状态' : 'Status', 'attention')}
-              <TableHead>{language === 'zh-CN' ? '后续操作' : 'Next step'}</TableHead>
-              {sortHead(language === 'zh-CN' ? '进度' : 'Progress', 'progress')}
-              {sortHead(t('card.started'), 'started')}
+              <TableHead>Request</TableHead>
+              {team && <TableHead>Asked by</TableHead>}
+              {sortHead('Status', 'attention')}
+              <TableHead>Next step</TableHead>
+              {sortHead('Progress', 'progress')}
+              {sortHead('Started', 'started')}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -249,7 +243,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
                 <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
                 <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
                 <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
-                <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{request.startedEpoch ? formatRecordTime(request.startedEpoch) : request.startedAt}</time></TableCell>
+                <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{request.startedAt}</time></TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -259,16 +253,16 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   )
 }
 
+const AGENT_STATUS_LABEL: Record<NonNullable<WorkAgent['status']>, string> = { working: 'Working', quiet: 'No recent step', finished: 'Finished' }
+
 /**
  * A subagent's recorded state. Finished only on a recorded stop; a quiet subagent stays quiet, never guessed done.
  * One that finished before stops were recorded can be marked finished by the owner (saved as a work-state row).
  */
 function SubagentStatus({ agent }: { agent: WorkAgent }) {
-  const { t, language } = useTranslation()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   if (!agent.status) return null
-  const statusLabel = agent.status === 'working' ? t('state.working') : agent.status === 'quiet' ? (language === 'zh-CN' ? '近期无操作' : 'No recent step') : (language === 'zh-CN' ? '已完成' : 'Finished')
   // Resolves false on failure so the button shows no check; the error line below says what went wrong.
   const mark = async () => {
     setSaving(true)
@@ -287,11 +281,11 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
     <div className="space-y-1 px-3 pb-2">
       <div className="flex min-h-9 items-center justify-between gap-2 text-xs">
         <span className={cn('text-muted-foreground', agent.status === 'finished' && 'text-shipped-foreground')}>
-          {statusLabel}{agent.status === 'finished' && agent.finishedAt ? ` · ${agent.finishedAt}` : ''}
+          {AGENT_STATUS_LABEL[agent.status]}{agent.status === 'finished' && agent.finishedAt ? ` · ${agent.finishedAt}` : ''}
         </span>
         {agent.canMarkFinished && (
           <SaveButton className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} disabled={saving} onClick={mark}>
-            {language === 'zh-CN' ? '标记为已完成' : 'Mark finished'}
+            Mark finished
           </SaveButton>
         )}
       </div>
@@ -303,22 +297,20 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
 /** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
 function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
-  const { t, language } = useTranslation()
   return (
     <Req ids={['R4.3', 'R13.2', 'R13.4']}>
       <div className="grid min-w-0 items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
         {agents.map((agent) => {
           const device = deviceById(agent.deviceId)
           const theirs = requests.filter((request) => request.agentId === agent.id)
-          const machineStatus = device.syncedMinutesAgo === 0 ? t('header.thisMachine') : t('header.syncedAgo', { minutes: device.syncedMinutesAgo })
           return (
             <HoverCell key={agent.id}>
             <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
-                model={`${device.name} · ${machineStatus}`} />
+                model={`${device.name} · ${device.syncedMinutesAgo === 0 ? 'this machine' : `synced ${device.syncedMinutesAgo} min ago`}`} />
               <AgentContent className="space-y-0 px-2 pb-2">
                 <SubagentStatus agent={agent} />
-                {theirs.length === 0 && <p className="px-3 pb-3 text-sm text-muted-foreground">{language === 'zh-CN' ? '当前视图下无任务。' : 'Nothing on it in this view.'}</p>}
+                {theirs.length === 0 && <p className="px-3 pb-3 text-sm text-muted-foreground">Nothing on it in this view.</p>}
                 {theirs.map((request) => (
                   <button key={request.id} type="button" onClick={() => onOpen(request)} className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg px-3 py-2.5 text-left hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring">
                     <span className="flex w-full min-w-0 items-start justify-between gap-2">
@@ -341,14 +333,13 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
 /** TeamBrain on the same GUI: one column per person, with collisions called out (§9). */
 function TeamBoard({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { sourceKind, people } = useWorkModel()
-  const { language } = useTranslation()
   return (
     <Req ids={['R9.2', 'R9.1', 'R9.3']}>
       <div className="space-y-4">
         {sourceKind === 'sample' && (
           <Alert className="border-attention-border bg-attention text-attention-foreground">
             <TriangleAlertIcon />
-            <AlertTitle>{language === 'zh-CN' ? '可能存在冲突（示例）' : 'Possible collision (sample)'}</AlertTitle>
+            <AlertTitle>Possible collision (sample)</AlertTitle>
             <AlertDescription className="text-attention-foreground">Alex and Priya both have agents changing the price forecast page.</AlertDescription>
           </Alert>
         )}
@@ -392,7 +383,6 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
  */
 export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focusAreaId: string | null; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void; onOpenRules: () => void }) {
   const { team } = useWorkspace()
-  const { t, language } = useTranslation()
   const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas } = useWorkModel()
   const area = focusAreaId && focusAreaId !== OTHER_FOCUS_AREA_ID ? focusAreas.find((entry) => entry.id === focusAreaId) ?? null : null
   const requests = useMemo(() => focusAreaId ? allRequests.filter((request) => resolveFocusAreaId(request.focusAreaId, focusAreas) === focusAreaId) : allRequests, [allRequests, focusAreas, focusAreaId])
@@ -412,7 +402,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       {!sourceHealth.connected && (
         <Alert className="border-attention-border bg-attention text-attention-foreground">
           <TriangleAlertIcon />
-          <AlertTitle>{t('loading.failed')}</AlertTitle>
+          <AlertTitle>Can't read local work right now</AlertTitle>
           {sourceHealth.error && <AlertDescription className="text-attention-foreground">{sourceHealth.error}</AlertDescription>}
         </Alert>
       )}
@@ -425,15 +415,12 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={view} onValueChange={(next) => next && setView(next as View)} aria-label="View">
-            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value }) => {
-              const label = value === 'cards' ? t('view.cards') : value === 'list' ? t('view.list') : value === 'agents' ? t('view.agents') : t('view.team')
-              return (
-                <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
-                  {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
-                  <span className="relative">{label}</span>
-                </ToggleGroupItem>
-              )
-            })}
+            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value, label }) => (
+              <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
+                {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
+                <span className="relative">{label}</span>
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
         </Req>
         {/* Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. */}
@@ -449,24 +436,18 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
         <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
-            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, dot, matches: test }) => {
-              const label = value === 'all' ? t('filter.all') : value === 'needs-you' ? t('filter.needsYou') : value === 'shipped' ? t('filter.shipped') : t('filter.closed')
-              return (
-                <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
-                  {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
-                  {label}
-                  <span className="text-muted-foreground tabular-nums group-data-[state=on]/toggle:text-accent-foreground">{requests.filter(test).length}</span>
-                </ToggleGroupItem>
-              )
-            })}
+            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
+              <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
+                {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
+                {label}
+                <span className="text-muted-foreground tabular-nums group-data-[state=on]/toggle:text-accent-foreground">{requests.filter(test).length}</span>
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
           {view !== 'agents' && view !== 'team' && (
             <Select value={sort} onValueChange={(next) => setSort(next as SortKey)}>
               <SelectTrigger aria-label="Sort" className="h-11 border-transparent bg-transparent px-2.5 text-[0.82rem] text-muted-foreground shadow-none data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8 [&>svg:last-child]:hidden sm:[&>svg:last-child]:inline"><ArrowUpDownIcon className="size-4" /><span className="hidden sm:inline"><SelectValue /></span></SelectTrigger>
-              <SelectContent>{SORTS.map(({ value }) => {
-                const label = value === 'attention' ? t('sort.attention') : value === 'started' ? t('sort.started') : t('sort.progress')
-                return <SelectItem key={value} value={value}>{label}</SelectItem>
-              })}</SelectContent>
+              <SelectContent>{SORTS.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
             </Select>
           )}
         </div>
@@ -477,8 +458,8 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
           <Empty className="border bg-card/60">
             <EmptyHeader>
               <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
-              <EmptyTitle>{focusAreaId ? (language === 'zh-CN' ? '该领域暂无任务。' : 'No requests in this area yet.') : (language === 'zh-CN' ? '暂未记录任何任务。' : 'No requests recorded yet.')}</EmptyTitle>
-              <EmptyDescription>{focusAreaId ? (language === 'zh-CN' ? '刷新后新任务将归入此处，或在任务页面中将其移动至此。' : 'A refresh places new requests here, or move one here from its page.') : (language === 'zh-CN' ? '向智能体提出要求后，任务将显示在此处。' : 'Ask an agent for something and it appears here.')}</EmptyDescription>
+              <EmptyTitle>{focusAreaId ? 'No requests in this area yet.' : 'No requests recorded yet.'}</EmptyTitle>
+              <EmptyDescription>{focusAreaId ? 'A refresh places new requests here, or move one here from its page.' : 'Ask an agent for something and it appears here.'}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         </Req>
@@ -487,8 +468,8 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
           <Empty className="border bg-card/60">
             <EmptyHeader>
               <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
-              <EmptyTitle>{language === 'zh-CN' ? '此处空空如也' : 'Nothing here'}</EmptyTitle>
-              <EmptyDescription>{language === 'zh-CN' ? '没有匹配的任务。智能体记录新工作后将立即显示。' : 'No requests match. New work shows up as soon as an agent writes it.'}</EmptyDescription>
+              <EmptyTitle>Nothing here</EmptyTitle>
+              <EmptyDescription>No requests match. New work shows up as soon as an agent writes it.</EmptyDescription>
             </EmptyHeader>
           </Empty>
         </Req>
