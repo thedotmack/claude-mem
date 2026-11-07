@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { setFakeSpawn } from '../helpers/fake-spawn.js';
 import { EventEmitter } from 'node:events';
@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolvePreferredRefreshAgent, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { logger } from '../../src/utils/logger.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -1224,22 +1225,22 @@ describe('My Work refresh agent preference (#5435)', () => {
   };
 
   it('names the agent CLAUDE_MEM_PROVIDER names', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('gemini'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('codex'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('claude-code'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('gemini'));
   });
 
   it('a provider that names no local agent leaves the detect order in charge', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBeUndefined());
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBeUndefined());
   });
 
   it('an unset provider keeps today\'s first choice, Claude Code', async () => {
-    await withProvider(null, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+    await withProvider(null, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('claude-code'));
   });
 
   it('lets the environment override the settings file, like every other setting', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('codex'));
   });
 
   it('a refresh task built under CLAUDE_MEM_PROVIDER=codex names codex as its preferred agent', async () => {
@@ -1252,6 +1253,59 @@ describe('My Work refresh agent preference (#5435)', () => {
       const database = fixtureDatabase();
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
       expect(task.preferredAgent).toBe('claude-code');
+    });
+  });
+});
+
+describe('My Work refresh stays on one agent (#5189)', () => {
+  const withSettings = async <T>(file: Record<string, string> | null, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-allowed-'));
+    const saved = { provider: process.env.CLAUDE_MEM_PROVIDER, agent: process.env.CLAUDE_MEM_WORK_VIEW_AGENT };
+    try {
+      delete process.env.CLAUDE_MEM_PROVIDER;
+      delete process.env.CLAUDE_MEM_WORK_VIEW_AGENT;
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      if (saved.provider === undefined) delete process.env.CLAUDE_MEM_PROVIDER; else process.env.CLAUDE_MEM_PROVIDER = saved.provider;
+      if (saved.agent === undefined) delete process.env.CLAUDE_MEM_WORK_VIEW_AGENT; else process.env.CLAUDE_MEM_WORK_VIEW_AGENT = saved.agent;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('a provider that names an agent allows only that agent', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['claude-code'], preferredAgent: 'claude-code', stayOnFirstUsableAgent: true }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['codex'], preferredAgent: 'codex', stayOnFirstUsableAgent: true }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'gemini' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['gemini'], preferredAgent: 'gemini', stayOnFirstUsableAgent: true }));
+  });
+
+  it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one', async () => {
+    for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
+      await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ stayOnFirstUsableAgent: true }));
+    }
+  });
+
+  it('CLAUDE_MEM_WORK_VIEW_AGENT picks the agent, turns the runs off, or opts into falling through', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'codex' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['codex'], preferredAgent: 'codex', stayOnFirstUsableAgent: true }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'off' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: [], stayOnFirstUsableAgent: true }));
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'codex', CLAUDE_MEM_WORK_VIEW_AGENT: 'all' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ preferredAgent: 'codex', stayOnFirstUsableAgent: false }));
+  });
+
+  it('an unrecognized CLAUDE_MEM_WORK_VIEW_AGENT is logged and the provider decides', async () => {
+    const warnings: unknown[][] = [];
+    const warn = spyOn(logger, 'warn').mockImplementation((...args: unknown[]) => { warnings.push(args); });
+    try {
+      await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'claude' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['claude-code'], preferredAgent: 'claude-code', stayOnFirstUsableAgent: true }));
+      expect(warnings.some(args => String(args[1]).includes('Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT'))).toBe(true);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('a refresh task built under CLAUDE_MEM_PROVIDER=claude may run only on Claude Code', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.allowedAgents).toEqual(['claude-code']);
+      expect(task.stayOnFirstUsableAgent).toBe(true);
     });
   });
 });

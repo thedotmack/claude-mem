@@ -359,6 +359,60 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('allowedAgents confines the run: a failed agent does not fall through to unallowed ones (#5189)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'rate limit' }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => {
+      call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
+      call.child.emit('close', 0);
+    });
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.agent).toBe('claude-code');
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(result.error).toMatch(/^Claude Code: .*rate limit/);
+    expect(calls).toEqual([]);
+  });
+
+  it('allowedAgents reports waiting-for-agent when none of the allowed agents are available (#5189)', async () => {
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('codex'), query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('waiting-for-agent');
+    expect(result.agent).toBeNull();
+    expect(result.error).toBe('None of the allowed agents (Claude Code) is logged in on this computer.');
+  });
+
+  it('an empty allowedAgents list runs nothing and never detects agents (#5189: CLAUDE_MEM_WORK_VIEW_AGENT=off)', async () => {
+    let detectCalls = 0;
+    const result = await runTask({ ...task('/data'), allowedAgents: [] }, {
+      detect: async () => { detectCalls++; return agents('claude-code', 'codex'); }, query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env,
+    });
+    expect(result).toEqual({ state: 'waiting-for-agent', agent: null, result: null, error: 'No agent is allowed to run this task.', attempts: [] });
+    expect(detectCalls).toBe(0);
+  });
+
+  it('stayOnFirstUsableAgent: a Claude Code session limit is not handed to Codex (#5189)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: "You've hit your session limit" }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => { call.child.emit('close', 0); });
+    const result = await runTask({ ...task('/data'), stayOnFirstUsableAgent: true }, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result).toMatchObject({ state: 'failed', agent: 'claude-code' });
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(calls).toEqual([]);
+  });
+
+  it('stayOnFirstUsableAgent still runs the only logged-in agent, whichever it is', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-stay-first-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const result = await runTask({ ...task(cwd), stayOnFirstUsableAgent: true }, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'codex' });
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it('an answer claude-mem refused is not handed to another agent (#5189: a too-long Claude review ran on the owner\'s Codex)', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: '{"narrative":"far too long"}' }; })()) as never;
     const calls: SpawnCall[] = [];

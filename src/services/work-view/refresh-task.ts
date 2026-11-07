@@ -20,6 +20,7 @@ import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
@@ -79,16 +80,46 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
   return Object.fromEntries((Object.keys(STEP_MODELS) as Step[]).map(step => [step, withOverrides(STEP_MODELS[step])])) as Record<Step, StepModels>;
 }
 
-/** The agent the refresh tries first: the one CLAUDE_MEM_PROVIDER names (#5435). The worker builds a fresh
- * task for every run, so reading it here applies a provider change to the next refresh. A provider that names
- * an API endpoint instead of a local agent ('openrouter', 'openai-compatible') names no agent, and the
- * runner's detect order decides, as before. */
-export function resolvePreferredRefreshAgent(dataDir: string): UsableAgentId | undefined {
-  const provider = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_PROVIDER ?? '').trim();
-  if (provider === 'codex') return 'codex';
-  if (provider === 'gemini') return 'gemini';
-  if (provider === 'claude') return 'claude-code';
-  return undefined;
+/** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'off', 'all'] as const;
+
+export interface RefreshAgentChoice {
+  /** The only agents the refresh may run on; absent means every logged-in agent. */
+  allowedAgents?: UsableAgentId[];
+  /** Tried first when it is logged in (#5435). */
+  preferredAgent?: UsableAgentId;
+  /** A failed run is never handed to a second agent. */
+  stayOnFirstUsableAgent: boolean;
+}
+
+const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini'];
+
+/** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
+ * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
+ * `codex exec` runs to one owner's ChatGPT plan. So the refresh stays on one agent unless the owner opts in:
+ * - CLAUDE_MEM_WORK_VIEW_AGENT names an agent: only that agent runs;
+ * - `off`: no agent runs;
+ * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
+ * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
+ *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
+export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
+  const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
+  const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
+  const providerAgent: UsableAgentId | undefined = provider === 'claude' ? 'claude-code'
+    : provider === 'codex' || provider === 'gemini' ? provider : undefined;
+  const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
+  if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
+  const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
+  if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
+  if (configuredAgent) {
+    logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
+      value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
+    });
+  }
+  if (providerAgent) return { allowedAgents: [providerAgent], preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
+  return { stayOnFirstUsableAgent: true };
 }
 
 /** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
@@ -581,8 +612,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   return {
     reason,
     steps,
-    // The refresh runs on the agent the owner's provider setting names first (#5435).
-    preferredAgent: resolvePreferredRefreshAgent(dataDir),
+    // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
+    ...resolveRefreshAgents(dataDir),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {
