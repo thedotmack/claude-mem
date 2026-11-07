@@ -99,6 +99,7 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `popnow` | `https://api.popnow.ai/v1` | yes |
 | `runcrate` | `https://api.runcrate.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
@@ -341,6 +342,24 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atlascloud",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Atlas Cloud key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
+}
+```
+
+## PopNow
+
+[PopNow](https://popnow.ai/api) serves chat models from DeepSeek, Moonshot, Google,
+OpenAI and other vendors behind one OpenAI-compatible API key, billed per token in
+USD. Model ids end in a task suffix, such as `deepseek/v4-flash/chat` (the preset's
+default) or `moonshot/kimi-k3/chat`, and are passed verbatim. The chat model list
+is at `https://api.popnow.ai/v1/models` (it needs the key), and keys come from
+[popnow.ai/api/console/keys](https://popnow.ai/api/console/keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "popnow",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your PopNow key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/v4-flash/chat"
 }
 ```
 
