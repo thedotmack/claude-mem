@@ -21,8 +21,8 @@ const UNKNOWN_PROJECT_NAME = 'unknown-project';
  * authoritative cwd (worker, transcript, worktree) must not route through this.
  */
 export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
-  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
-  if (claudeProjectDir) {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+  if (claudeProjectDir?.trim()) {
     return claudeProjectDir;
   }
   if (!cwd || cwd.trim() === '') {
@@ -45,7 +45,10 @@ function findGitRepoRoot(dir: string): string | null {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-    }).trim();
+    }).replace(/\n$/, '');
+    // Git adds one LF. Whitespace before it belongs to the checkout path:
+    // trim() collapses distinct repositories and can point worktree detection
+    // at a different checkout (for example `topic ` versus `topic`).
     return root || null;
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -351,7 +354,7 @@ export function buildWorktreeProjectKey(parentProjectName: string, worktreeName:
 function submoduleLeaf(info: WorktreeInfo, repoRoot: string): string | null {
   if (!info.isSubmodule || !info.parentRepoPath) return null;
   const relative = path.relative(info.parentRepoPath, repoRoot);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
 }
 
@@ -439,8 +442,14 @@ function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: strin
     let primary: string;
     let legacyKeys: string[];
     if (worktreeInfo.isSubmodule) {
-      primary = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
+      primary = `${parent}/${leaf ?? cwdProjectName}`;
       legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+      // The former raw '..' prefix check collapsed these nested paths to
+      // the basename. Keep that shared historical key readable.
+      if (leaf?.startsWith('..') && leaf !== cwdProjectName) {
+        legacyKeys.push(`${parent}/${cwdProjectName}`);
+      }
     } else {
       primary = buildWorktreeProjectKey(parent, cwdProjectName);
       legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];

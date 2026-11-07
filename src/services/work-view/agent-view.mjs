@@ -7,6 +7,7 @@ import { buildFocusAreas, isMyFocusList, placeRequests } from './my-focus.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
 import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
+import { observationMediaFromMetadata } from '../media/feed.js';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -82,11 +83,23 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const calls = safeRead(database, `SELECT id, project, platform_source, agent_id, agent_type, session_db_id, memory_session_id, content_session_id, prompt_number, tool_input, created_at_epoch
     FROM tool_uses WHERE tool_name IN (SELECT DISTINCT tool_name FROM tool_uses WHERE tool_name LIKE '%work_state_write%')
     AND created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [workSinceEpoch, workCallLimit]);
-  const observations = safeRead(database, `SELECT id, project, memory_session_id, content_session_id, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
+  // No migration adds observations.content_session_id; only databases from older releases have it. Selecting it on a
+  // fresh database would make safeRead return no observations at all, so a database without it reads NULL there, the
+  // same as a row whose column is empty.
+  const observationContentSession = safeRead(database, 'PRAGMA table_info(observations)').some((column) => column.name === 'content_session_id')
+    ? 'content_session_id' : 'NULL AS content_session_id';
+  const observations = safeRead(database, `SELECT id, project, memory_session_id, ${observationContentSession}, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
+  // Image refs come from their own read: safeRead turns a missing column into no rows, so a database without
+  // `metadata` then loses only its images, never its observations. Only the validated refs are kept on the row;
+  // the metadata column itself never leaves this function.
+  const withMetadata = observations.length ? safeRead(database, `SELECT id, metadata FROM observations
+    WHERE metadata IS NOT NULL AND id IN (${observations.map(() => '?')})`, observations.map((row) => row.id)) : [];
+  const mediaById = new Map(withMetadata.map((row) => [row.id, observationMediaFromMetadata(row.metadata)]).filter(([, media]) => media));
+  for (const observation of observations) if (mediaById.has(observation.id)) observation.media = mediaById.get(observation.id);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
-  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
+  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch, 2000, { database });
   const ids = [...new Set([...calls, ...productCalls].map((call) => call.session_db_id).filter((id) => id != null))];
   const memoryIds = [...new Set([...observations, ...summaries, ...productObservations].map((row) => row.memory_session_id).filter(Boolean))];
   const predicates = [], args = [];
@@ -143,6 +156,7 @@ export function readAgentLaunches(rows) {
     const isAsync = row.is_async === 1 || row.is_async === true || row.status === 'async_launched';
     launches.set(key, {
       toolUseId: row.id, promptNumber: row.prompt_number ?? null, launchedAtEpoch: row.created_at_epoch,
+      shared: row.shared === true,
       isAsync, returnedAtEpoch: !isAsync && row.status === 'completed' ? row.created_at_epoch : null,
       description: compactText(row.description, 160), prompt: compactText(row.prompt, 500),
     });
@@ -153,7 +167,7 @@ export function readAgentLaunches(rows) {
 function launchRequest(launch) {
   if (!launch) return null;
   const text = launch.description ?? launch.prompt;
-  return text ? { text, source: 'agent-launch', sourceId: launch.toolUseId, url: `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
+  return text ? { text, source: 'agent-launch', sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
 
 export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
@@ -273,7 +287,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const original = prompt ? { source: 'user-prompt', sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}` } : null;
     if (summary && readableRequest(summary.request)) return { key, text: readableRequest(summary.request), source: 'session-summary-request', sourceId: summary.id, url: `/api/work-view/evidence/summary/${summary.id}`, original };
     if (prompt && readableRequest(prompt.prompt_text)) return { key, text: readableRequest(prompt.prompt_text), ...original };
-    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}` };
+    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: 'session-initial-request', sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
     return null;
   }
 
@@ -292,7 +306,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? [])
       .filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5000);
     // Repeated identical writes are deliberately left unlinked when ambiguous.
-    return matches.length === 1 ? matches[0] : null;
+    return matches.length === 1 ? matches[0] : records.sharedAttributions?.get(event.id) ?? null;
   }
   const eventsByItem = new Map();
   for (const event of state.events) {
@@ -331,8 +345,8 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
       requestComplete: typeof (item.fields.request_complete ?? item.list.fields.request_complete) === 'boolean' ? (item.fields.request_complete ?? item.list.fields.request_complete) : null,
       ...metadataFor(item),
       lastUpdateAt: stamp(item.updatedAtEpoch), lastUpdateEpoch: item.updatedAtEpoch,
-      attribution: session ? { source: 'captured-work-state-call', toolUseId: call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: linkedEvent.id === event?.id ? 'update-author' : 'latest-linked-update-author', linkedEntryId: linkedEvent.id, match: 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
-      sourceRefs: [{ kind: 'work-state', id: event?.id ?? item.latestEntryId }, ...(call ? [{ kind: 'tool-use', id: call.id }] : [])],
+      attribution: session ? { source: call.shared ? 'synced-work-state-provenance' : 'captured-work-state-call', toolUseId: call.shared ? null : call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: linkedEvent.id === event?.id ? 'update-author' : 'latest-linked-update-author', linkedEntryId: linkedEvent.id, match: call.shared ? 'stable-origin-entry' : 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
+      sourceRefs: [{ kind: 'work-state', id: event?.id ?? item.latestEntryId }, ...(call && !call.shared ? [{ kind: 'tool-use', id: call.id }] : [])],
       url: `/api/work-view/evidence/work-state/${event?.id ?? item.latestEntryId}`,
     };
     group.work.push(entry);
@@ -364,7 +378,9 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   for (const observation of observations) {
     const session = sessionsByMemory.get(observation.memory_session_id);
     const group = getGroup({ session, agentId: observation.agent_id, agentType: observation.agent_type, project: observation.project });
-    const observationActivity = { id: `observation:${observation.id}`, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` };
+    // Validated image refs only (readAgentRecords); an image-free observation gains no key.
+    const media = observation.media;
+    const observationActivity = { id: `observation:${observation.id}`, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}`, ...(media ? { media } : {}) };
     if (!group.isSubagent) {
       const requestKey = confirmedRequestKey(session, observation.prompt_number);
       observationBucket(group, observation, session, requestFor(session, observation.prompt_number), requestKey, mainKey(group, observation), { withSummary: true });
@@ -402,7 +418,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const evidence = [];
     const stop = agentStopFor(stops, group.platformSource, group.contentSessionId, group.agentId);
     if (stop) evidence.push({ evidence: stop.source, atEpoch: stop.stoppedAtEpoch, sourceRef: { kind: 'work-state', id: stop.entryId } });
-    if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: { kind: 'tool-use', id: group.launch.toolUseId } });
+    if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: group.launch.shared ? null : { kind: 'tool-use', id: group.launch.toolUseId } });
     return evidence.filter((entry) => entry.atEpoch >= lastActive).sort((a, b) => b.atEpoch - a.atEpoch)[0] ?? null;
   }
 

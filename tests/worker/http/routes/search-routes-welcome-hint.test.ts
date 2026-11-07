@@ -118,6 +118,34 @@ describe('SearchRoutes Welcome Hint', () => {
     if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
 
+  it('passes dynamic notice reserves to whole-item rendering without overwriting the ordinary cache', async () => {
+    process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED = 'false';
+    process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+    const recordLiveRender = mock(async () => {});
+    const cache = {
+      recordLiveRender,
+      removalGenerationNow: () => 0,
+      warmVariant: mock(async () => {}),
+    };
+    const routes = new SearchRoutes(mockSearchManager, cache as any);
+    const handler = captureContextInjectHandler(routes);
+    const invoke = async (reserveChars?: string) => {
+      generateContextStub.mockClear();
+      const res = createMockRes();
+      await handler({ query: { projects: 'demo', ...(reserveChars === undefined ? {} : { reserveChars }) } } as any, res as any);
+      await new Promise(resolve => setImmediate(resolve));
+      return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+    };
+    const baseline = (await invoke()).reserveChars;
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('251')).reserveChars).toBe(baseline + 251);
+    expect(cache.warmVariant).toHaveBeenCalledTimes(1);
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('-1')).reserveChars).toBe(baseline);
+    expect((await invoke('NaN')).reserveChars).toBe(baseline);
+    expect((await invoke('100000')).reserveChars).toBe(baseline + 10_000);
+  });
+
   afterAll(() => {
     mock.module('../../../../src/services/context-generator.js', () => realContextGeneratorSnapshot);
     mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
@@ -213,11 +241,11 @@ describe('SearchRoutes Welcome Hint', () => {
 
     expect(res.send).toHaveBeenCalledTimes(1);
     const body = (res.send as any).mock.calls[0][0] as string;
-    expect(body).toContain('paused while a provider quota cooldown is active');
-    expect(body).toContain('This is not a failure');
+    expect(body).toContain('claude-mem has paused saving memories');
+    expect(body).toContain("Activity during the pause isn't saved");
     expect(body).toContain('# claude-mem status');
     expect(body).not.toContain("can't save memories");
-    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('has paused saving memories'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
@@ -256,7 +284,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
+  it('trims hand-typed spacing in a comma-separated project list', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
 
@@ -272,6 +300,27 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/worktree',
       '/path/parent',
       '/path/worktree',
+      null,
+      null,
+    );
+  });
+
+  it('keeps exact keys when the project list repeats the query key', async () => {
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: ['/path/parent', ' /path/worktree'] } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    expect(countQueryStub).toHaveBeenCalledWith(
+      '/path/parent',
+      ' /path/worktree',
+      '/path/parent',
+      ' /path/worktree',
       null,
       null,
     );

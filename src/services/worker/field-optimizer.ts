@@ -16,12 +16,23 @@
  * the class of bug this whole change exists to remove:
  *  - one attempt per field, never a retry ladder;
  *  - a wall-clock timeout, so a hung compressor cannot stall the observer;
- *  - any failure — throw, timeout, empty, a reply cut off at the output-token
- *    limit, or output that still does not fit — falls through to the existing
- *    truncation, so an observation is degraded rather than lost.
+ *  - any failure — throw, timeout, empty, or a reply cut off at the
+ *    output-token limit — falls through to the existing truncation, so an
+ *    observation is degraded rather than lost;
+ *  - a reply that still does not fit once wrapped and JSON-encoded is kept,
+ *    not thrown away (its tokens are spent and it carries more of the field
+ *    than a raw cut would): its head and tail are kept and the cut is marked
+ *    `reason="condense-over-budget"`, sized so the prompt builder never cuts
+ *    it a second time (#5450).
  */
 
-import { OBS_PROMPT_FIELD_MAX_CHARS, stripImagePayloadsFromField } from '../../sdk/prompts.js';
+import {
+  OBS_PROMPT_FIELD_HEAD_RATIO,
+  OBS_PROMPT_FIELD_MAX_CHARS,
+  OBS_PROMPT_FIELD_TAIL_RATIO,
+  stripImagePayloadsFromField,
+} from '../../sdk/prompts.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
 import { logger } from '../../utils/logger.js';
 import { condenseInputMaxTokens, estimateCondenseTokens } from './context-window.js';
@@ -187,29 +198,101 @@ export async function optimizeField(
   // A reply cut at max_tokens is a fragment however well it fits: accepting it
   // would store half a summary marked as the whole field.
   const trimmed = condensed?.text.trim();
-  if (!trimmed || condensed?.truncated || trimmed.length > maxChars) {
+  if (!trimmed || condensed?.truncated) {
     logger.warn('SDK', 'Oversized field compression unusable; falling back to truncation', {
       sessionId: context.sessionDbId,
       field: context.field,
       toolName: context.toolName,
       originalChars: raw.length,
       returnedChars: trimmed?.length ?? 0,
-      reason: !trimmed ? 'empty-or-timeout' : condensed?.truncated ? 'cut-at-max-tokens' : 'still-over-budget',
+      reason: !trimmed ? 'empty-or-timeout' : 'cut-at-max-tokens',
     });
     return value;
   }
+  // Marked as condensed, not elided: the observer should treat this as a
+  // faithful summary of the whole field rather than a fragment with a gap.
+  // The prompt builder measures the JSON-encoded value (quotes, escaped
+  // newlines and attribute quotes), so the fit is checked in that form.
+  const whole = wrapCondensed(raw.length, trimmed);
+  if (encodedLength(whole) <= maxChars) {
+    logger.info('SDK', 'Condensed an oversized observation field to fit', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      condensedChars: trimmed.length,
+    });
+    return whole;
+  }
 
-  logger.info('SDK', 'Condensed an oversized observation field to fit', {
+  // Still over budget: the reply shortened the field (median ~77% in the
+  // wild) but missed the target. Its tokens are already spent and it carries
+  // more of the field than a raw truncation would, so keep its head and tail
+  // and mark the cut, instead of throwing it away (#5450).
+  const clamped = clampCondensed(raw.length, trimmed, maxChars);
+  if (clamped === null) {
+    logger.warn('SDK', 'Oversized field compression over budget and the cap cannot hold its marks; falling back to truncation', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      returnedChars: trimmed.length,
+      budgetChars: maxChars,
+    });
+    return value;
+  }
+  logger.warn('SDK', 'Oversized field compression still over budget; kept the head and tail of the condensed text', {
     sessionId: context.sessionDbId,
     field: context.field,
     toolName: context.toolName,
     originalChars: raw.length,
-    condensedChars: trimmed.length,
+    returnedChars: trimmed.length,
+    budgetChars: maxChars,
   });
+  return clamped;
+}
 
-  // Marked as condensed, not elided: the observer should treat this as a
-  // faithful summary of the whole field rather than a fragment with a gap.
-  return `<condensed original_size_chars="${raw.length}" reason="oversize">\n${trimmed}\n</condensed>`;
+/** The size truncateObservationField measures: the value as JSON. */
+function encodedLength(text: string): number {
+  return JSON.stringify(text).length;
+}
+
+function wrapCondensed(originalChars: number, body: string): string {
+  return `<condensed original_size_chars="${originalChars}" reason="oversize">\n${body}\n</condensed>`;
+}
+
+/**
+ * The head and tail of an over-budget condensed reply, with the cut marked,
+ * at the longest kept length whose encoded result fits `maxChars`; null when
+ * not even one kept character fits beside the wrapper and marker.
+ */
+function clampCondensed(originalChars: number, text: string, maxChars: number): string | null {
+  const build = (keep: number): string => {
+    const { head, tail } = retainTextHeadTail(
+      text,
+      Math.floor(keep * OBS_PROMPT_FIELD_HEAD_RATIO / (OBS_PROMPT_FIELD_HEAD_RATIO + OBS_PROMPT_FIELD_TAIL_RATIO)),
+      Math.floor(keep * OBS_PROMPT_FIELD_TAIL_RATIO / (OBS_PROMPT_FIELD_HEAD_RATIO + OBS_PROMPT_FIELD_TAIL_RATIO)),
+    );
+    const elided = text.length - head.length - tail.length;
+    return wrapCondensed(originalChars,
+      `${head}\n... <elided chars="${elided}" reason="condense-over-budget" /> ...\n${tail}`);
+  };
+  // Binary search for the longest kept excerpt whose encoded form fits:
+  // log2(maxChars) passes, since escapes make the encoded size non-linear.
+  let best: string | null = null;
+  let low = 1;
+  let high = Math.min(text.length - 1, maxChars);
+  while (low <= high) {
+    const keep = Math.floor((low + high) / 2);
+    const candidate = build(keep);
+    if (encodedLength(candidate) <= maxChars) {
+      best = candidate;
+      low = keep + 1;
+    } else {
+      high = keep - 1;
+    }
+  }
+  return best;
 }
 
 /**

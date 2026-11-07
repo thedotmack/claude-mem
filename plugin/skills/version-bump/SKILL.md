@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing.
+description: Maintainer release workflow for the thedotmack/claude-mem repository only. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing. Does not apply to any other repository or npm package.
 ---
 
 # Version Bump & Release Workflow
@@ -9,10 +9,25 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 **CRITICAL:** Commit EVERYTHING (including build artifacts). At the end of this workflow, NOTHING should be left uncommitted or unpushed. Run `git status` at the end to verify.
 
+## Scope — check this first
+
+This workflow is for **one repository and one npm package**: `thedotmack/claude-mem`,
+published as `claude-mem`. It is not a general release recipe. Do not adapt any
+step of it to another repository or package.
+
+Before doing anything else, run:
+
+```bash
+git remote get-url origin   # must be github.com/thedotmack/claude-mem(.git)
+node -p "require('./package.json').name"   # must print claude-mem
+```
+
+If either check fails, stop and tell the user this skill does not apply here.
+
 ## Preparation
 
 1.  **Analyze**: Determine if the change is **PATCH** (bug fixes), **MINOR** (features), or **MAJOR** (breaking).
-2.  **Environment**: Identify repository owner/name from `git remote -v`.
+2.  **Environment**: The repository is `thedotmack/claude-mem`, confirmed by the scope check above.
 3.  **Paths — every file that carries the version string**:
     - `package.json` — **the npm/npx-published version** (`npx claude-mem@X.Y.Z` resolves from this)
     - `plugin/package.json` — bundled plugin runtime deps
@@ -34,7 +49,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 ## Workflow
 
-1.  **Update**: Increment the version string in every path above. Do NOT touch `CHANGELOG.md` — it's regenerated.
+1.  **Update**: Increment the version string in every path above. Do NOT touch `docs/CHANGELOG.md` — it's regenerated.
 2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fourteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
@@ -45,8 +60,8 @@ description: Automated semantic versioning and release workflow for Claude Code 
     ```bash
     npm run changelog:generate
     ```
-    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `CHANGELOG.md`.)
-9.  **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
+    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `docs/CHANGELOG.md`.)
+9.  **Sync changelog**: Commit and push the updated `docs/CHANGELOG.md`.
 10. **Pre-publish audit**: Verify the release commit, tag, GitHub release, and
     changelog are pushed, and the release worktree has no pending tracked changes.
 11. **Publish to npm — the workflow does it.** Pushing the `vX.Y.Z` tag triggers
@@ -94,7 +109,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
 - [ ] GitHub release created with notes
-- [ ] `CHANGELOG.md` updated and pushed
+- [ ] `docs/CHANGELOG.md` updated and pushed
 - [ ] Pre-publish audit passed
 - [ ] `Publish to npm` workflow run for the tag succeeded (no local `npm publish`)
 - [ ] Exact npm version and `latest` both verified after publishing

@@ -1,6 +1,7 @@
 import React, { type SVGProps, useState } from "react";
 import { motion, useMotionValueEvent, useScroll } from "motion/react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 export const StickyBanner = ({
   className,
@@ -11,6 +12,7 @@ export const StickyBanner = ({
   children: React.ReactNode;
   hideOnScroll?: boolean;
 }) => {
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const { scrollY } = useScroll();
 
@@ -52,7 +54,7 @@ export const StickyBanner = ({
         }}
         // Local fix: labelled, thumb-sized, and in the text color (white was invisible on light surfaces).
         type="button"
-        aria-label="Hide banner"
+        aria-label={t('Hide banner')}
         className="absolute top-1/2 right-1 flex size-11 -translate-y-1/2 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground md:size-8"
         onClick={() => setOpen(!open)}
       >

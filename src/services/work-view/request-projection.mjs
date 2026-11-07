@@ -3,6 +3,21 @@
 import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
 import { NO_PROJECT, projectRoot } from './session-project.mjs';
 
+// The card shows at most four thumbnails: the card strip in both existing
+// galleries shows four (MAX_CARD_THUMBNAILS in src/ui/viewer/utils/media.ts,
+// THUMBNAIL_LIMIT in claude-mem-pro's observation-media/media.ts).
+export const REQUEST_MEDIA_PREVIEW_LIMIT = 4;
+
+/** The request's images for its card: how many distinct images its observations
+ * link, and the newest few by observation recency. `activity` is newest first.
+ * An image several observations link counts once. No images, no summary. */
+export function requestMediaSummary(activity) {
+  const refs = new Map();
+  for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
+  if (!refs.size) return null;
+  return { count: refs.size, preview: [...refs.values()].slice(0, REQUEST_MEDIA_PREVIEW_LIMIT) };
+}
+
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
   const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
@@ -82,9 +97,10 @@ export function originalFor(session, prompts) {
   const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id)
     .sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
   const first = ordered.find((prompt) => isHumanActionRequest(prompt.prompt_text));
-  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return { text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}`, promptNumber: 1, atEpoch: session.started_at_epoch ?? null };
+  const initial = () => ({ text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}`, ...(session.sharedOnly ? { sourceIdentity: { kind: 'session', conversation: conversationKey(session) } } : {}), promptNumber: 1, atEpoch: session.started_at_epoch ?? null });
+  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return initial();
   if (first) return { text: requestText(first.prompt_text), source: 'user-prompt', sourceId: first.id, url: `/api/work-view/evidence/prompt/${first.id}`, promptNumber: first.prompt_number, atEpoch: first.created_at_epoch ?? null };
-  if (isHumanActionRequest(session.user_prompt)) return { text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}`, promptNumber: 1, atEpoch: session.started_at_epoch ?? null };
+  if (isHumanActionRequest(session.user_prompt)) return initial();
   return null;
 }
 
@@ -260,6 +276,10 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   for (const observation of records.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
   // A deliverables row names its conversation itself (platform + content session), so it needs no loaded session row.
   for (const row of records.productDeliverables ?? []) attach(row, productsFromDeliverable(row));
+  for (const record of records.sharedProducts ?? []) {
+    const session = sessionsByKey.get(record.conversationKey);
+    if (session) attach(session, record.products ?? []);
+  }
 
   const sessionIdsByKey = new Map(), promptsBySession = new Map();
   for (const session of sessions.values()) {
@@ -299,6 +319,9 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
     for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
     request.activity = activityFor(request.items, request.id, 40);
+    // Counted over the same rows the drawer lists, so the card's count is the number of images the drawer can show.
+    const media = requestMediaSummary(request.activity);
+    if (media) request.media = media;
     const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
     const lifecycleRecords = request.items.flatMap((item) => [
       ...(typeof item.requestStatus === 'string' && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: 'request_status', sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : []),

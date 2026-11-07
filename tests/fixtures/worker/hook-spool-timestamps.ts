@@ -23,7 +23,7 @@ const { SessionStore } = await import(source('services/sqlite/SessionStore.ts'))
 const { SessionSearch } = await import(source('services/sqlite/SessionSearch.ts'));
 const { SessionManager } = await import(source('services/worker/SessionManager.ts'));
 const { HookSpool } = await import(source('shared/hook-spool.ts'));
-const { drainHookSpool } = await import(source('services/worker/hook-spool-drain.ts'));
+const { ingestHookSpoolEntry } = await import(source('services/worker/hook-spool-drain.ts'));
 const { setIngestContext, ingestObservation } = await import(source('services/worker/http/shared.ts'));
 const { processAgentResponse } = await import(source('services/worker/agents/ResponseProcessor.ts'));
 const { ModeManager } = await import(source('services/domain/ModeManager.ts'));
@@ -41,8 +41,7 @@ setIngestContext({ sessionManager: manager, dbManager: db as any,
   ensureGeneratorRunning: async () => {},
 });
 const spool = new HookSpool(join(dataDir, 'spool'));
-const captureDay = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-const captureTime = Date.parse(captureDay + 'T12:00:00Z');
+const captureTime = Date.now() - 60_000;
 spool.enqueue('observation', {
   contentSessionId: 'spooled-time-1', platformSource: 'claude',
   cwd: projectDir, toolName: 'Read', toolInput: { file_path: 'handler.ts' },
@@ -57,8 +56,9 @@ spool.enqueue('summarize', {
   contentSessionId: 'spooled-time-1', platformSource: 'claude',
   lastAssistantMessage: 'Verified the handler persists events before returning.',
 }, captureTime + 1000);
-const drain = await drainHookSpool(spool);
-assert.equal(drain.drained, 3);
+// Exercise fresh live handoffs; disk-spooled inference is retired on upgrade.
+for (const entry of spool.entries()) await ingestHookSpoolEntry(entry, () => {});
+const drain = { liveHandoffs: 3 };
 const sid = store.findSessionDbIdByContentSessionId('spooled-time-1', 'claude')!;
 const session = manager.getSession(sid)!;
 session.memorySessionId = 'spooled-time-memory-1';

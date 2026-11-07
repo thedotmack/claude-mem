@@ -13,6 +13,7 @@ import {
 } from '../../src/utils/observer-audit.js';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
 import { createSdkSpawnFactory, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
 const BASE_INPUT = {
   source: 'Observer' as const,
@@ -281,6 +282,64 @@ describe('F1: the empty tool list reaches the Claude CLI', () => {
         expect(flagValue('--permission-mode')).toBe('dontAsk');
       } finally {
         rmSync(fakeCliDir, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+});
+
+describe('#5346: the beta compatibility opt-out reaches the Observer child', () => {
+  it.skipIf(process.platform === 'win32')(
+    'passes the opt-out through both Observer spawn paths while unrelated CLAUDE_CODE_* settings stay isolated',
+    async () => {
+      for (const spawnPath of ['generation', 'standalone'] as const) {
+        const fakeCliDir = mkdtempSync(join(tmpdir(), `claude-mem-beta-env-${spawnPath}-`));
+        const envOutPath = join(fakeCliDir, 'env.txt');
+        const requestOutPath = join(fakeCliDir, 'request.txt');
+        const fakeCliPath = join(fakeCliDir, 'claude');
+        writeFileSync(
+          fakeCliPath,
+          `#!/bin/sh\nprintf '%s\\n%s\\n' "$CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" "$CLAUDE_CODE_EFFORT_LEVEL" > '${envOutPath}'\nIFS= read -r request\nprintf '%s\\n' "$request" > '${requestOutPath}'\n`,
+        );
+        chmodSync(fakeCliPath, 0o755);
+        const sessionDbId = 2_000_000 + process.pid;
+
+        try {
+          const observerQuery = query({
+            prompt: 'observer beta compatibility request',
+            options: buildHardenedSdkOptions({
+              ...BASE_INPUT,
+              sessionDbId,
+              env: sanitizeEnv({
+                PATH: process.env.PATH,
+                HOME: process.env.HOME,
+                CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+                CLAUDE_CODE_EFFORT_LEVEL: 'high',
+              }),
+              pathToClaudeCodeExecutable: fakeCliPath,
+              ...(spawnPath === 'generation'
+                ? { spawnClaudeCodeProcess: createSdkSpawnFactory(sessionDbId) }
+                : {}),
+            }),
+          });
+          try {
+            for await (const _message of observerQuery) {
+              // The fake CLI records the request but emits no stream-json response.
+            }
+          } catch {
+            // Expected: the stand-in CLI is not a real Claude Code process.
+          }
+
+          expect(readFileSync(envOutPath, 'utf8')).toBe('1\n\n');
+          const outgoing = JSON.parse(readFileSync(requestOutPath, 'utf8')) as {
+            type?: string;
+            request?: { subtype?: string };
+          };
+          expect(outgoing.type).toBe('control_request');
+          expect(outgoing.request?.subtype).toBe('initialize');
+        } finally {
+          rmSync(fakeCliDir, { recursive: true, force: true });
+        }
       }
     },
     20_000,

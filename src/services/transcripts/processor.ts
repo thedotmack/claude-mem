@@ -10,8 +10,9 @@ import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { spoolHookEvent } from '../../cli/spool-hook-event.js';
-import { ingestObservation } from '../worker/http/shared.js';
+import { ingestObservation, ingestSummarize } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
   /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
@@ -43,6 +44,15 @@ export class TranscriptObservationError extends Error {
   constructor(sessionId: string, cause: unknown) {
     super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = 'TranscriptObservationError';
+    this.cause = cause;
+  }
+}
+
+/** A summary declined before the worker accepted it must retain its line. */
+export class TranscriptSummaryError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`summary not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptSummaryError';
     this.cause = cause;
   }
 }
@@ -688,28 +698,25 @@ export class TranscriptEventProcessor {
       }
       return;
     }
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) return;
-
-    const lastAssistantMessage = session.lastAssistantMessage ?? '';
-    const requestBody = JSON.stringify({
-      contentSessionId: session.sessionId,
-      last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource,
-      // Lets the worker skip a session in an excluded project; sent only when known.
-      ...(session.cwd ? { cwd: session.cwd } : {}),
-    });
-
+    // The worker's watcher shares the ingest context with observations. HTTP
+    // cannot tell a rejected queue operation from a failed generator kick
+    // after acceptance; the synchronous handoff marks that boundary exactly.
+    let accepted = false;
     try {
-      await workerHttpRequest('/api/sessions/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: requestBody
-      });
-    } catch (error: unknown) {
-      logger.warn('TRANSCRIPT', 'Summary request failed', {
-        error: error instanceof Error ? error.message : String(error)
-      });
+      await ingestSummarize({
+        contentSessionId: session.sessionId,
+        platformSource: session.platformSource,
+        lastAssistantMessage: session.lastAssistantMessage ?? '',
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+      }, undefined, { markHandedOff: () => { accepted = true; } });
+    } catch (error) {
+      if (accepted) {
+        logger.warn('TRANSCRIPT', 'Summary accepted before generator kick failed', {
+          sessionId: session.sessionId,
+        }, error instanceof Error ? error : undefined);
+        return;
+      }
+      throw new TranscriptSummaryError(session.sessionId, error);
     }
   }
 
@@ -725,9 +732,9 @@ export class TranscriptEventProcessor {
     if (!cwd) return;
 
     const context = getProjectContext(cwd);
-    const projectsParam = context.allProjects.join(',');
+    const projectsQuery = projectsQueryString(context.allProjects);
 
-    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const contextUrl = `/api/context/inject?${projectsQuery}&platformSource=${encodeURIComponent(session.platformSource)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
     const resolvedAgentsPath = path.resolve(agentsPath);

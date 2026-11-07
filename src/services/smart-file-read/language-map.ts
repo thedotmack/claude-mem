@@ -41,6 +41,11 @@ export const LANG_MAP: Record<string, string> = {
   ".yml": "yaml",
   ".yaml": "yaml",
   ".sql": "sql",
+  ".pas": "pascal",
+  ".dpr": "pascal",
+  ".dpk": "pascal",
+  ".lpr": "pascal",
+  ".pp": "pascal",
   ".md": "markdown",
   ".mdx": "markdown",
 };

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import {
   DEDUP_CANDIDATE_STATUSES, DEDUP_CANDIDATE_VERDICTS, type DedupCandidateStatus,
@@ -54,6 +55,12 @@ export class DedupRoutes extends BaseRouteHandler {
   });
 
   private handleResolveCandidate = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // A reviewer verdict is durable state, so other localhost pages may not
+    // record one. Origin-less callers (CLI, tests) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Dedup requests from a different localhost origin are not allowed' });
+      return;
+    }
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
     const store = this.dbManager.getSessionStore();
@@ -69,9 +76,15 @@ export class DedupRoutes extends BaseRouteHandler {
     res.json({ candidate: { id, status } });
   });
 
-  private handleScan = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
-    // Scan MUTATES observation rows (title_norm_key) — gate on the feature flag so a
-    // disabled install stays byte-identical to legacy behavior.
+  private handleScan = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Scan MUTATES observation rows (title_norm_key) and blocks the event loop
+    // for its whole run, so other localhost pages may not trigger it.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Dedup requests from a different localhost origin are not allowed' });
+      return;
+    }
+    // Gate on the feature flag so a disabled install stays byte-identical to
+    // legacy behavior.
     if (!this.dbManager.getSessionStore().isDedupEnabled()) {
       res.status(409).json({ error: 'dedup_disabled', message: 'Set CLAUDE_MEM_DEDUP_ENABLED=true before running a dedup scan.' });
       return;

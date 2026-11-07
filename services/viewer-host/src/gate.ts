@@ -10,21 +10,27 @@
  *     here once for an HttpOnly session cookie. Only VIEWER_OWNER_USER_ID gets in.
  *   - Reads pass, except the routes that expose settings, logs, backups or
  *     setup on the machine. Writes pass only for the My Work actions that save
- *     work state (review, rules, focus, suggestions, agent finished, usage);
- *     the worker syncs those rows back to the owner's other devices.
+ *     reviews, rules, focus, suggestions, agent-finished and usage actions.
+ *     The worker owns persistence and reports whether a save is local or
+ *     queued for sync; this gate never claims another replica applied it.
  *   - A write must come from this origin. The request then goes to the worker
  *     as if made on that machine: loopback Host and Origin, proxy headers
  *     and cookies removed.
  */
 import { signToken, verifyToken } from './token.js';
+import { anonymousDistinctId, anonCookie, hostedUsageEvent, requestHostname, sendPostHogEvent, VIEWER_USAGE_PATH } from './usage.js';
 
 export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
-/** Read routes that would show the cloud machine's own configuration. */
-const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/restart'];
+/**
+ * Read routes that would show the cloud machine's own configuration. Recovery
+ * reads are local-only on the worker, but this gate makes every request look
+ * local, so the worker's own check cannot stop them here.
+ */
+const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/api/sync/recovery', '/restart'];
 
-/** The My Work actions that save work state. Everything else that writes stays on the owner's own computer. */
+/** Narrow owner actions. Persistence scope is determined by the worker and its writer setting. */
 const ALLOWED_WRITES = new Set([
   '/api/work-view/review',
   '/api/work-view/rules',
@@ -58,6 +64,11 @@ export interface GateOptions {
   signInUrl: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** Ingestion POST. Defaults to fetch. Tests pass a stub so nothing leaves the process. */
+  posthogFetch?: typeof fetch;
+  /** Random anonymous id minted when the browser has none. Tests pin it. */
+  mintAnonymousId?: () => string;
+  env?: NodeJS.ProcessEnv;
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -128,12 +139,18 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
+      // The gate answers this itself: a worker busy applying a large pull can
+      // take seconds per request, and a check that waits on it gets the only
+      // machine pulled from the load balancer. The worker's state rides along
+      // for people, never as the status code; index.ts restarts a dead worker.
+      let worker: 'ready' | 'busy' | 'down' = 'down';
       try {
-        const health = await fetchImpl(new URL('/api/health', upstream), { signal: AbortSignal.timeout(4000) });
-        return json(health.ok ? 200 : 503, { ok: health.ok });
-      } catch {
-        return json(503, { ok: false });
+        const health = await fetchImpl(new URL('/api/health', upstream), { signal: AbortSignal.timeout(1000) });
+        worker = health.ok ? 'ready' : 'busy';
+      } catch (error) {
+        worker = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError') ? 'busy' : 'down';
       }
+      return json(200, { ok: true, worker });
     }
 
     if (url.pathname === '/auth') {
@@ -157,6 +174,31 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     if (!sessionOwner(request)) {
       if (wantsHtml(request)) return Response.redirect(options.signInUrl, 302);
       return json(401, { error: 'Sign in at cmem.ai to open your viewer.' });
+    }
+
+    if (request.method === 'POST' && url.pathname === VIEWER_USAGE_PATH) {
+      if (request.headers.get('origin') !== publicOrigin || request.headers.get('sec-fetch-site') === 'cross-site') {
+        return json(403, { error: 'Changes must come from your viewer page.' });
+      }
+      let body: unknown;
+      try { body = await request.json(); } catch { return json(400, { error: 'Usage report must be JSON.' }); }
+      const hostname = requestHostname(request);
+      const pageUrl = `${publicOrigin}/`;
+      const parsed = hostedUsageEvent(body, hostname, pageUrl);
+      if (!parsed) return json(400, { error: 'Unknown usage report.' });
+      const anon = anonymousDistinctId(request.headers.get('cookie'), options.mintAnonymousId?.() ?? crypto.randomUUID());
+      const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+      if (anon.setCookie) headers['Set-Cookie'] = anonCookie(anon.id, secure);
+      try {
+        await sendPostHogEvent(
+          { event: parsed.event, distinctId: anon.id, properties: parsed.properties },
+          options.env ?? process.env,
+          options.posthogFetch ?? fetch,
+        );
+      } catch {
+        // The page does not retry on a failed ingest; answering 204 keeps the viewer quiet.
+      }
+      return new Response(null, { status: 204, headers });
     }
 
     if (!isAllowed(request.method, url.pathname)) {

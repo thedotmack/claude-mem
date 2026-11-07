@@ -4,10 +4,12 @@ import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -22,6 +24,7 @@ import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -34,10 +37,10 @@ import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { logChromaWriteFailure } from '../search/errors.js';
 import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
 import { observationMediaFromMetadata } from '../../media/feed.js';
-import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import { captureOnlyLinkWrites, hasWaitingCaptureOnlyEvents, skippedTurnCaptureOnlyLinkWrites, withWaitingCaptureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
-type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
 export interface ObservationFileEvidence {
   files_read: string[];
@@ -64,6 +67,13 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
       continue;
     }
 
+    // A denied, failed or timed-out call changed nothing, so the paths in its
+    // input are not evidence of a read or an edit. Cursor's postToolUseFailure
+    // reports failures this way (#5371).
+    if (toolResponseIndicatesError(message.tool_response)) {
+      continue;
+    }
+
     if (READ_TOOL_NAMES.has(toolName)) {
       for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
         pushUnique(seenRead, filesRead, filePath);
@@ -87,6 +97,16 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
     files_read: filesRead,
     files_modified: filesModified,
   };
+}
+
+/**
+ * True when a tool response is marked as an error rather than a result.
+ * Pending messages store tool_response as text (ingest JSON.stringify()s it),
+ * so a JSON-string response is parsed the same way tool_input is.
+ */
+function toolResponseIndicatesError(toolResponse: unknown): boolean {
+  const record = maybeParseObject(toolResponse);
+  return record !== null && (record.is_error === true || record.isError === true);
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
@@ -334,14 +354,28 @@ function errorCode(error: unknown): string {
 
 /**
  * Record a confirmed-without-storage outcome (skip, dropped batch) on the
- * turn's source events before the batch is confirmed. A failure propagates,
- * so the batch is not confirmed with its events still unprocessed (a replay
- * would otherwise re-queue them).
+ * turn's source events before the batch is confirmed, and hand the turn's
+ * images on within its prompt (capture-only linkage, a turn that stored no
+ * observation). A failure of the outcome write propagates, so the batch is not
+ * confirmed with its events still unprocessed (a replay would otherwise
+ * re-queue them); a failed link write only degrades the images to event-level.
  */
-function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys): void {
+function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys, sessionDbId: number, promptNumber: number): void {
   if (!hasMediaEvents(keys)) return;
   const db = dbManager.getSessionStore().db;
-  db.transaction(() => writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []))();
+  const linkResult = db.transaction(() => {
+    writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []);
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  })();
+  if (!linkResult) return;
+  logger.info('DB', 'Observation media linked capture-only (uninspected) from a turn that stored no observation', {
+    sessionId: sessionDbId,
+    changedRows: linkResult.changedNativeRows.length,
+    eventLevelRefs: linkResult.eventLevelRefs,
+  });
+  if (linkResult.changedNativeRows.length > 0) dbManager.getCloudSync()?.notify();
 }
 
 /**
@@ -358,27 +392,64 @@ function commitTurnMediaLinkage(
   media: ResponseMediaContext | undefined,
   keys: TurnMediaEventKeys,
   sessionDbId: number,
+  promptNumber: number,
 ): MediaLinkageWriteResult | null {
   writeMediaEventResults(db, keys.attributed, stored.observationIds.length > 0 ? 'stored' : 'skipped', stored.observationIds);
   writeMediaEventResults(db, keys.unattributed, 'skipped', []);
-  if (!media?.imagesDelivered) return null;
+  if (stored.observationIds.length === 0) {
+    // Capture-only linkage, a turn that stored no observation: its images go
+    // to the prompt's most recent observation, or wait for its next one.
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  }
+  const inserted = stored.insertedObservationIds ?? [];
+  return writeLinksInSavepoint(db, sessionDbId, () => withWaitingCaptureOnlyLinkWrites(
+    db, sessionDbId, promptNumber, stored.observationIds, inserted, turnLinkWrites(db, stored, storedLinks, media, keys)));
+}
+
+/** This turn's own links: capture-only when the request carried none of its images, else the model's labels. */
+function turnLinkWrites(
+  db: Database,
+  stored: StorageResult,
+  storedLinks: string[][],
+  media: ResponseMediaContext | undefined,
+  keys: TurnMediaEventKeys,
+): ObservationLinkWrite[] {
+  if (!media?.imagesDelivered) {
+    // Capture-only linkage (docs/media-contract-v1.md): the request carried
+    // none of the turn's images, so every stored observation links every
+    // retained image of the attributed events as uninspected.
+    if (keys.attributed.length === 0) return [];
+    return captureOnlyLinkWrites(db, keys.attributed, stored.observationIds, stored.insertedObservationIds ?? []);
+  }
+  const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
+  const inserted = new Set(stored.insertedObservationIds ?? []);
+  const writes = new Map<number, ObservationLinkWrite>();
+  storedLinks.forEach((requestLabels, index) => {
+    const observationId = stored.observationIds[index];
+    if (observationId === undefined || requestLabels.length === 0) return;
+    const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
+    for (const requestLabel of requestLabels) {
+      const image = imageByRequestLabel.get(requestLabel);
+      if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
+      write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
+    }
+    writes.set(observationId, write);
+  });
+  return [...writes.values()];
+}
+
+/** The manifest and junction writes in a savepoint of the storage transaction; a failure degrades the images to event-level. */
+function writeLinksInSavepoint(
+  db: Database,
+  sessionDbId: number,
+  buildWrites: () => ObservationLinkWrite[],
+): MediaLinkageWriteResult | null {
   try {
     return db.transaction(() => {
-      const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
-      const inserted = new Set(stored.insertedObservationIds ?? []);
-      const writes = new Map<number, ObservationLinkWrite>();
-      storedLinks.forEach((requestLabels, index) => {
-        const observationId = stored.observationIds[index];
-        if (observationId === undefined || requestLabels.length === 0) return;
-        const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
-        for (const requestLabel of requestLabels) {
-          const image = imageByRequestLabel.get(requestLabel);
-          if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
-          write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
-        }
-        writes.set(observationId, write);
-      });
-      return writeObservationMediaLinks(db, [...writes.values()]);
+      const writes = buildWrites();
+      return writes.length === 0 ? null : writeObservationMediaLinks(db, writes);
     })();
   } catch (error) {
     logger.error('DB', 'Observation media links were not written; images stay event-level and uninspected', {
@@ -549,6 +620,8 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isRateLimitedObserverOutput(text) ||
+      isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
 
@@ -595,6 +668,47 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    // A 429 the CLI wrote as the reply (#5428). The provider never ran the
+    // batch, so confirming it would lose the work; it is a throttle, not a
+    // spent allowance, so it pauses under its own 'rate_limit' category and
+    // the runner books the short rate-limit window a thrown 429 gets.
+    if (isRateLimitedObserverOutput(text)) {
+      logger.warn('PARSER', `${agentName} returned a rate-limit reply — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON;
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    if (isAnthropicVerificationHoldObserverOutput(text)) {
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_verification_hold';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      // Do not log the response preview: its verification URL contains an account identifier.
+      logger.error('PARSER', `${agentName} refused: Claude account verification is required; queued batch preserved`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: 'anthropic_verification_portal',
+      });
       return null;
     }
 
@@ -731,7 +845,7 @@ export async function processAgentResponse(
         ...replyDiagnostics,
       });
       recordObserverFailure(providerName, `The observer answered a queued batch twice without observation XML (${outputClass}); the batch was dropped`);
-      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
     } else {
       logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response to a prompt with no queued batch`, {
         sessionId: session.sessionDbId,
@@ -789,7 +903,7 @@ export async function processAgentResponse(
     // same batch, for the same final answer, until the id appeared.
     if (parsed.summary?.skipped) {
       session.lastSummaryStored = false;
-      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
@@ -841,7 +955,8 @@ export async function processAgentResponse(
   // skipped row in the middle would shift every later id onto the wrong one.
   // Attachment refs are resolved against the labels frozen when the request
   // was sent, and only when that accepted request carried the pixels. A
-  // text-only turn, skip or fallback links nothing.
+  // text-only turn or fallback gets capture-only links instead, and a turn
+  // that stores nothing hands its images on within its prompt.
   const mediaEventKeys = turnMediaEventKeys(context, sessionManager, session.sessionDbId);
   const attachmentLinkage = context.media?.imagesDelivered
     ? linkAttachmentRefs(sanitizedObservations, context.media.images.map(image => ({ label: image.requestLabel, event: image.eventOrdinal })))
@@ -875,7 +990,12 @@ export async function processAgentResponse(
       originalTimestamp ?? undefined,
       modelId
     );
-    if (!hasMediaEvents(mediaEventKeys)) {
+    // Events a skipped turn of this prompt left waiting link to this turn's
+    // observations even when the turn has no images of its own.
+    const linksMedia = hasMediaEvents(mediaEventKeys)
+      || (labeledObservations.length > 0
+        && hasWaitingCaptureOnlyEvents(sessionStore.db, session.sessionDbId, context.promptNumber));
+    if (!linksMedia) {
       result = storeTurn();
     } else {
       // Observation rows, manifests, junctions and the durable event result
@@ -884,7 +1004,7 @@ export async function processAgentResponse(
         const stored = storeTurn();
         mediaLinkResult = commitTurnMediaLinkage(
           sessionStore.db, stored, storableEntries.map(entry => entry.requestLabels),
-          context.media, mediaEventKeys, session.sessionDbId,
+          context.media, mediaEventKeys, session.sessionDbId, context.promptNumber,
         );
         return stored;
       })();
@@ -912,6 +1032,13 @@ export async function processAgentResponse(
       rejected: rejectionCounts,
       changedRows: linkResult?.changedNativeRows.length ?? 0,
       eventLevelRefs: linkResult?.eventLevelRefs ?? 0,
+    });
+  } else if (mediaLinkResult) {
+    const linkResult = mediaLinkResult as MediaLinkageWriteResult;
+    logger.info('DB', 'Observation media linked capture-only (uninspected)', {
+      sessionId: session.sessionDbId,
+      changedRows: linkResult.changedNativeRows.length,
+      eventLevelRefs: linkResult.eventLevelRefs,
     });
   }
   if ((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows.length) {
@@ -941,7 +1068,7 @@ export async function processAgentResponse(
   // at the observation that now summarizes them. It has to happen here and not
   // at ingest — the observation did not exist yet, and neither did
   // memorySessionId. The batch's FIRST observation id owns the link (see
-  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
   // per-call join stays (content_session_id, tool_use_id).
   //
@@ -1102,6 +1229,7 @@ export async function processAgentResponse(
     worker,
     agentName,
     registeredMemorySessionId,
+    new Set((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows ?? []),
     projectRoot
   );
 
@@ -1224,6 +1352,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   agentName: string,
   memorySessionId: string,
+  /** Rows whose manifest this turn's linkage changed. */
+  mediaLinkedObservationIds: ReadonlySet<number>,
   projectRoot?: string
 ): Promise<void> {
   if (!memorySessionId) {
@@ -1282,11 +1412,11 @@ async function syncAndBroadcastObservations(
 
     // Media refs come from the committed row, so SSE carries exactly what the
     // paged and by-id feeds serialize. A row can hold a manifest when this
-    // turn delivered pixels (linkage runs only then) or when the turn reused
-    // an earlier stored row, which may already have images; a newly inserted
-    // row of a text-only turn cannot, so it skips the read.
+    // turn delivered pixels, when this turn's capture-only linkage wrote one,
+    // or when the turn reused an earlier stored row, which may already have
+    // images; any other newly inserted row cannot, so it skips the read.
     const reusedStoredRow = result.insertedObservationIds !== undefined && !result.insertedObservationIds.includes(obsId);
-    const media = context.media?.imagesDelivered || reusedStoredRow
+    const media = context.media?.imagesDelivered || mediaLinkedObservationIds.has(obsId) || reusedStoredRow
       ? observationMediaFromMetadata(
           (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
         )
@@ -1365,7 +1495,8 @@ async function syncAndBroadcastSummary(
     summaryForStore,
     context.promptNumber,
     result.createdAtEpoch,
-    session.platformSource
+    session.platformSource,
+    result.summaryUpdated === true
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

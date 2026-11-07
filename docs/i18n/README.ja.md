@@ -390,7 +390,6 @@ Claude-Memは Apache License 2.0 の下でライセンスされています。
 境界については[docs/license.md](docs/license.md)および[docs/ip-boundary.md](docs/ip-boundary.md)
 を参照してください。
 
-**Ragtimeに関する注記**: `ragtime/`ディレクトリは**Apache License 2.0**の下でライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
 
 ---
 

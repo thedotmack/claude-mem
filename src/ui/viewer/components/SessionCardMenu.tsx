@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useI18n } from '../../i18n';
 
 interface SessionCardMenuProps {
   onClose: () => void;
@@ -7,6 +8,7 @@ interface SessionCardMenuProps {
 }
 
 export function SessionCardMenu({ onClose, onOpen, onDelete }: SessionCardMenuProps) {
+  const { t } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,10 +33,10 @@ export function SessionCardMenu({ onClose, onOpen, onDelete }: SessionCardMenuPr
   return (
     <div className="session-card-menu" ref={menuRef} onClick={e => e.stopPropagation()}>
       <button className="session-card-menu-item" onClick={() => { onClose(); onOpen(); }}>
-        Open
+        {t('Open')}
       </button>
       <button className="session-card-menu-item session-card-menu-item--danger" onClick={() => { onClose(); onDelete(); }}>
-        Delete
+        {t('Delete')}
       </button>
     </div>
   );

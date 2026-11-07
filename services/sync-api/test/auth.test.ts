@@ -131,7 +131,7 @@ describe("authenticateRequest", () => {
 		expect(first.ok).toBe(true);
 		const cached: AuthDependencies = {
 			...dependencies,
-			async readCachedVerdict() { return "1"; },
+			async readCachedVerdict() { return String(Date.now() + 60_000); },
 		};
 		const second = await authenticateRequest(request, env, cached);
 		expect(second.ok).toBe(true);

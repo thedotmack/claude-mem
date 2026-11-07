@@ -1,5 +1,9 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { rmSync } from 'fs';
+import path from 'path';
 
+import { PRO_FALLBACK_NOTICE_MARKER } from '../../../src/shared/cmem-gateway.js';
+import { paths } from '../../../src/shared/paths.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
@@ -24,10 +28,12 @@ let projectCatalog: string[] | 'reject' = ['other-project', 'repo-project', 'thi
 let showTerminalOutput = false;
 let workerUnreachable = false;
 let provider = 'claude';
+let providerBySource = '';
 let quotaFallbackProvider = '';
 let proFallbackAt = '';
 let openRouterBaseUrl = '';
 let staleReason: string | null = null;
+let workerContext = 'context from worker';
 let memoryInstructions: string | undefined = 'false';
 const outageNoticeRequests: Array<string | undefined> = [];
 
@@ -38,6 +44,7 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
     CLAUDE_MEM_CONTEXT_PROJECTS: contextProjects,
     CLAUDE_MEM_EXCLUDED_PROJECTS: excludedProjects,
     CLAUDE_MEM_PROVIDER: provider,
+    CLAUDE_MEM_PROVIDER_BY_SOURCE: providerBySource,
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
     CLAUDE_MEM_OPENROUTER_BASE_URL: openRouterBaseUrl,
@@ -63,7 +70,7 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
       if (projectCatalog === 'reject') throw new Error('catalog unavailable');
       return { projects: projectCatalog };
     }
-    return 'context from worker';
+    return workerContext;
   },
   getWorkerPort: () => 37777,
   isWorkerFallback: () => workerUnreachable,
@@ -82,10 +89,12 @@ afterAll(() => {
 
 beforeEach(() => {
   provider = 'claude';
+  providerBySource = '';
   quotaFallbackProvider = '';
   proFallbackAt = '';
   openRouterBaseUrl = '';
   staleReason = null;
+  workerContext = 'context from worker';
   memoryInstructions = 'false';
 });
 
@@ -181,6 +190,82 @@ describe('contextHandler SessionStart path', () => {
       expect(fallback.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
     } finally { workerUnreachable = false; }
   });
+  it('explicitly omits an oversized old-worker body without cutting its records', async () => {
+    memoryInstructions = undefined;
+    staleReason = 'expired keychain entry';
+    workerContext = 'recent observation\n'.repeat(600).slice(0, 10_000);
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({ sessionId: 'full-context', cwd: '/tmp/repo', platform: 'codex' });
+    const output = result.hookSpecificOutput!.additionalContext!;
+    expect(output.length).toBeLessThanOrEqual(10_000);
+    expect(output).toContain('claude auth login');
+    expect(output).toContain('Recent context omitted');
+    const url = new URL(String(calls.at(-1)![0]), 'http://worker');
+    expect(Number(url.searchParams.get('reserveChars'))).toBeGreaterThan(0);
+    expect(output).toContain('save_memory tool is available');
+  });
+
+  it('keeps a budgeted body under the cap when only the OAuth notice is added', async () => {
+    staleReason = 'expired keychain entry';
+    workerContext = 'recent observation\n'.repeat(600).slice(0, 10_000);
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({ sessionId: 'full-context-no-instructions', cwd: '/tmp/repo', platform: 'codex' });
+    expect(result.hookSpecificOutput!.additionalContext!.length).toBeLessThanOrEqual(10_000);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('claude auth login');
+  });
+
+  it('bounds an oversized stale reason without losing its login remedy', async () => {
+    staleReason = 'expired '.repeat(2_000);
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({ sessionId: 'long-stale-reason', cwd: '/tmp/repo', platform: 'codex' });
+    expect(result.hookSpecificOutput!.additionalContext!.length).toBeLessThanOrEqual(10_000);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('claude auth login');
+  });
+
+  it('keeps the gateway notice and instructions when the body fills the budget', async () => {
+    const marker = path.join(paths.dataDir(), PRO_FALLBACK_NOTICE_MARKER);
+    rmSync(marker, { force: true });
+    providerBySource = '{"codex":"openrouter"}';
+    openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
+    proFallbackAt = new Date().toISOString();
+    memoryInstructions = undefined;
+    staleReason = 'expired keychain entry';
+    workerContext = 'recent observation\n'.repeat(600).slice(0, 10_000);
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({ sessionId: 'full-context-fallback', cwd: '/tmp/repo', platform: 'codex' });
+      const output = result.hookSpecificOutput!.additionalContext!;
+      expect(output.length).toBeLessThanOrEqual(10_000);
+      expect(output).toContain('Memory is using your Anthropic plan for now.');
+      expect(output).toContain('claude auth login');
+      expect(output).toContain('save_memory tool is available');
+    } finally { rmSync(marker, { force: true }); }
+  });
+
+  it('preserves exact fits and fits TeamBrain after accounting for every separator', async () => {
+    const { composeSessionStartContext } = await import('../../../src/cli/handlers/context.js');
+    expect(composeSessionStartContext('body', 'notice', 'instructions', 'team', 32))
+      .toBe('notice\n\nbody\n\nteam\n\ninstructions');
+    const output = composeSessionStartContext('row\n'.repeat(300), 'notice', 'instructions', 'brief '.repeat(300), 1_000);
+    expect(output.length).toBeLessThanOrEqual(1_000);
+    expect(output.startsWith('notice\n\n')).toBe(true);
+    expect(output.endsWith('instructions')).toBe(true);
+    expect(composeSessionStartContext('x'.repeat(1_100), 'notice', 'instructions', '', 1_000))
+      .toContain('Recent context omitted');
+  });
+
+  it('preserves complete records and code fences when they fit, and never cuts them when they do not', async () => {
+    const { composeSessionStartContext } = await import('../../../src/cli/handlers/context.js');
+    const body = '# old\n# newest\n```js\nconst emoji = "😀";\n```';
+    expect(composeSessionStartContext(body, 'notice', 'instructions', '', 200))
+      .toBe('notice\n\n' + body + '\n\ninstructions');
+    const omitted = composeSessionStartContext(body.repeat(100), 'notice', 'instructions', '', 200);
+    expect(omitted).toContain('Recent context omitted');
+    expect(omitted).not.toContain('```');
+    expect(omitted).not.toContain('# old');
+    expect(omitted.endsWith('instructions')).toBe(true);
+  });
+
   it('skips the model and terminal timeline on Claude resume before contacting the worker', async () => {
     calls.length = 0;
     outageNoticeRequests.length = 0;
@@ -245,6 +330,21 @@ describe('contextHandler SessionStart path', () => {
 
     expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
     expect(calls).toHaveLength(1);
+  });
+
+  it('re-injects context after Devin compaction and names PostCompaction in the reply', async () => {
+    calls.length = 0;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-devin-compaction',
+      cwd: '/tmp/repo',
+      platform: 'devin',
+      hookEventName: 'PostCompaction',
+    });
+
+    expect(result.hookSpecificOutput).toMatchObject({ hookEventName: 'PostCompaction', additionalContext: 'context from worker' });
+    const startup = await contextHandler.execute({ sessionId: 'session-devin-startup', cwd: '/tmp/repo', platform: 'devin', hookEventName: 'SessionStart' });
+    expect(startup.hookSpecificOutput?.hookEventName).toBe('SessionStart');
   });
 
   for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
@@ -315,6 +415,84 @@ describe('contextHandler SessionStart path', () => {
       platform: 'codex',
     });
     expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
+  });
+
+  it('keeps the Claude login hint when a source is mapped to Claude, whatever the global provider', async () => {
+    provider = 'codex';
+    quotaFallbackProvider = 'gemini';
+    staleReason = 'expired keychain entry';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const hintFor = async (bySource: string, sessionId: string) => {
+      providerBySource = bySource;
+      const result = await contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'codex' });
+      return result.hookSpecificOutput?.additionalContext;
+    };
+
+    expect(await hintFor('{"claude":"claude"}', 'session-stale-mapped')).toContain('claude auth login');
+    expect(await hintFor('{"cursor":"gemini"}', 'session-stale-mapped-other')).not.toContain('claude auth login');
+    // A malformed map is ignored, as dispatch ignores it.
+    expect(await hintFor('{"claude":"nope"}', 'session-stale-malformed')).not.toContain('claude auth login');
+  });
+
+  describe('cmem fallback notice with a source mapped to the gateway', () => {
+    const noticeMarker = path.join(paths.dataDir(), PRO_FALLBACK_NOTICE_MARKER);
+
+    beforeEach(() => rmSync(noticeMarker, { force: true }));
+    afterEach(() => rmSync(noticeMarker, { force: true }));
+
+    it('tells the user once that memory moved to the Anthropic plan', async () => {
+      provider = 'claude';
+      providerBySource = '{"codex":"openrouter"}';
+      openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
+      proFallbackAt = new Date().toISOString();
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+
+      const first = await contextHandler.execute({ sessionId: 'session-mapped-gateway', cwd: '/tmp/repo', platform: 'codex' });
+      expect(first.hookSpecificOutput?.additionalContext).toContain('Memory is using your Anthropic plan for now.');
+
+      const second = await contextHandler.execute({ sessionId: 'session-mapped-gateway-2', cwd: '/tmp/repo', platform: 'codex' });
+      expect(second.hookSpecificOutput?.additionalContext).not.toContain('Memory is using your Anthropic plan');
+    });
+
+    it('delivers the gateway notice only once across concurrent session starts', async () => {
+      provider = 'claude';
+      providerBySource = '{"codex":"openrouter"}';
+      openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
+      proFallbackAt = new Date().toISOString();
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const results = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        contextHandler.execute({ sessionId: 'notice-concurrent-' + i, cwd: '/tmp/repo', platform: 'codex' })));
+      expect(results.filter(result => result.hookSpecificOutput?.additionalContext?.includes('Memory is using your Anthropic plan'))).toHaveLength(1);
+      expect(results.every(result => result.hookSpecificOutput?.additionalContext?.includes('context from worker'))).toBe(true);
+    });
+
+    it('does not consume the fallback notice when the worker is unavailable', async () => {
+      provider = 'claude';
+      providerBySource = '{"codex":"openrouter"}';
+      openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
+      proFallbackAt = new Date().toISOString();
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      workerUnreachable = true;
+      try {
+        const failed = await contextHandler.execute({ sessionId: 'notice-outage', cwd: '/tmp/repo', platform: 'codex' });
+        expect(failed.hookSpecificOutput?.additionalContext).not.toContain('Memory is using your Anthropic plan');
+      } finally { workerUnreachable = false; }
+      const retry = await contextHandler.execute({ sessionId: 'notice-retry', cwd: '/tmp/repo', platform: 'codex' });
+      expect(retry.hookSpecificOutput?.additionalContext).toContain('Memory is using your Anthropic plan for now.');
+      const next = await contextHandler.execute({ sessionId: 'notice-next', cwd: '/tmp/repo', platform: 'codex' });
+      expect(next.hookSpecificOutput?.additionalContext).not.toContain('Memory is using your Anthropic plan');
+    });
+
+    it('stays silent for a source mapped to OpenRouter on a personal key', async () => {
+      provider = 'claude';
+      providerBySource = '{"codex":"openrouter"}';
+      openRouterBaseUrl = 'https://openrouter.ai/api/v1';
+      proFallbackAt = new Date().toISOString();
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+
+      const result = await contextHandler.execute({ sessionId: 'session-mapped-personal', cwd: '/tmp/repo', platform: 'codex' });
+      expect(result.hookSpecificOutput?.additionalContext).not.toContain('Memory is using your Anthropic plan');
+    });
   });
 
   it('injects Codex context with one bounded worker startup and request', async () => {

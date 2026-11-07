@@ -1,5 +1,7 @@
 // Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
 import type { WorkModel } from './live/work-data-source.ts'
+import type { WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
+import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -25,7 +27,17 @@ export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Do
 
 export interface Request {
   id: string
+  /** False only for a compact overview; the drawer loads authoritative detail before showing its evidence. */
+  detailLoaded?: boolean
+  /** The content version used to request/cache detail, independent of unrelated snapshot changes. */
+  detailRevision?: string
+  /** Exact card counts when the overview carries only a bounded preview. */
+  detailCounts?: { workProduct: number }
+  /** The images its listed records link: the count and the newest four. Rides the compact overview; absent when it has none. */
+  media?: WorkViewRequestMedia
   title: string | null
+  /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
+  titleRepeatsPrompt?: boolean
   summary: string | null
   /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
   focusAreaId?: string
@@ -56,13 +68,14 @@ export interface Request {
   terminal: string[]
   activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
-  granular: { kind: 'work' | 'memory'; text: string; at: string }[]
+  /** `media`: the record's image refs (ids and labels only); absent when it has none. */
+  granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
   conversations: { tool: string; at: string; title: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
   /** `deliverable` marks a copy claude-mem keeps in the project's deliverables bucket: a file the agent made, kept after its source is gone. */
-  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean }[]
+  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean; availability?: 'origin-only' }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
@@ -72,6 +85,9 @@ export interface Request {
   resolvesTo?: { title: string; summary: string }
   /** Set when a person marks this version checked (§6). Checking never marks a request shipped. */
   checkedAt?: string
+  /** Whether this acknowledgement is local-only or a shared, versioned decision. */
+  review?: { mode: 'local' | 'shared'; hash: string | null; version?: number; available: boolean; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string }
+  suggestion?: { conversationKey: string; requestId: string; requestTitle: string; evidence: string; expectedSuggestionHash?: string | null; sharedConflict?: boolean }
   /** Live records only: the version a check certifies. */
   contentFingerprint?: string
   /** Free-text stage from the title writer. Hover text only; the stage chip comes from the recorded status. */
@@ -174,10 +190,12 @@ export const SAMPLE_REQUESTS: Request[] = [
       { title: 'Spec', tasks: [{ name: 'Derive from 466 prompts', done: true }, { name: 'Decide open questions', done: true }] },
       { title: 'Wireframe', tasks: [{ name: 'Requirement ledger', done: true }, { name: 'My Work screens', done: true }, { name: 'My Rules screens', done: false }] },
     ],
+    // Six sample images (sample-media.ts): one record holds all six, a second shares the first and says more stayed on its event.
+    media: { count: SAMPLE_MEDIA_REFS.length, preview: SAMPLE_MEDIA_REFS.slice(0, 4) },
     granular: [
-      { kind: 'work', text: 'Wireframe: My Work screens done', at: '1:56 pm' },
+      { kind: 'work', text: 'Wireframe: My Work screens done', at: '1:56 pm', media: { version: 1, attachments: SAMPLE_MEDIA_REFS } },
       { kind: 'work', text: 'Wireframe: requirement ledger done', at: '1:51 pm' },
-      { kind: 'memory', text: 'Card animation redesigned: terminal output that becomes human text', at: '1:45 pm' },
+      { kind: 'memory', text: 'Card animation redesigned: terminal output that becomes human text', at: '1:45 pm', media: { version: 1, attachments: SAMPLE_MEDIA_REFS.slice(0, 1), overflow: true } },
       { kind: 'work', text: 'Spec: open questions decided', at: '1:41 pm' },
       { kind: 'memory', text: 'My Rules named, replacing “Manual”', at: '1:33 pm' },
       { kind: 'work', text: 'Spec: home and on the go section written', at: '1:28 pm' },

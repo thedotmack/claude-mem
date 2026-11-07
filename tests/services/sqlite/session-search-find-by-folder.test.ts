@@ -82,4 +82,38 @@ describe('SessionSearch.findByFile for a folder', () => {
 
     expect(observations.map(obs => obs.id).sort()).toEqual([forwardSlashes, backslashes].sort());
   });
+
+  for (const folder of ['.', './', '.\\']) {
+    for (const surface of ['observations', 'sessions'] as const) {
+      it(`finds extensionless root ${surface} for ${JSON.stringify(folder)} without admitting nested files`, () => {
+        const expected: number[] = [];
+        const summaryIds: number[] = [];
+        for (const [index, path] of ['Makefile', 'LICENSE', 'Dockerfile', 'README.md', './NOTICE', '.\\COPYING', 'src/nested.ts', 'src/LICENSE'].entries()) {
+          const memoryId = `root-${index}`;
+          const modified = index % 2 === 1;
+          const observation = seedObservation(memoryId, path, modified ? [] : [path], modified ? [path] : []);
+          const epoch = 100 + index;
+          store.db.run('UPDATE observations SET created_at_epoch = ? WHERE id = ?', [epoch, observation]);
+          const summary = store.importSessionSummary({
+            memory_session_id: memoryId, project, request: path, investigated: null,
+            learned: null, completed: null, next_steps: null, notes: null,
+            files_read: modified ? null : JSON.stringify([path]),
+            files_edited: modified ? JSON.stringify([path]) : null,
+            prompt_number: 1, discovery_tokens: 0,
+            created_at: new Date(epoch).toISOString(), created_at_epoch: epoch,
+          }).id;
+          if (index < 6) { expected.unshift(observation); summaryIds.unshift(summary); }
+        }
+
+        const result = search.findByFile(folder, { project, isFolder: true });
+        const wanted = surface === 'observations' ? expected : summaryIds;
+        expect(result[surface].map(row => row.id)).toEqual(wanted);
+        const page = search.findByFile(folder, { project, isFolder: true, limit: 2, offset: 3 });
+        expect(page[surface].map(row => row.id)).toEqual(wanted.slice(3, 5));
+        expect(search.findByFile(folder, { project, isFolder: true, offset: 6 }))
+          .toEqual({ observations: [], sessions: [] });
+      });
+    }
+  }
+
 });

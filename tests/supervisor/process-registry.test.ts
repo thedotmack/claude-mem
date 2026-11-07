@@ -13,6 +13,7 @@ import {
   waitForSlot,
   getParkedSlotWaiterCount,
   isSessionParkedForSlot,
+  getReservedSlotCount,
   setRegistryDegradedReporter,
   type SlotReservation,
 } from '../../src/supervisor/process-registry.js';
@@ -706,14 +707,50 @@ describe('waitForSlot / parked waiters (#2756)', () => {
     expect(getParkedSlotWaiterCount()).toBe(0);
   });
 
-  it('rejects immediately when the hard cap is already exceeded, without parking', async () => {
-    for (let i = 0; i < 10; i++) {
+  it('rejects immediately when the registry is already over the hard cap, without parking', async () => {
+    for (let i = 0; i < 11; i++) {
       registerFakeSdk(`hardcap-${i}`);
     }
 
     await expect(waitForSlot(1, undefined, 'sess-hardcap')).rejects.toThrow(/Hard cap exceeded/);
     expect(isSessionParkedForSlot('sess-hardcap')).toBe(false);
     expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+
+  // #5376: with CLAUDE_MEM_MAX_CONCURRENT_AGENTS=10 a full pool reached the
+  // hard cap, so starts threw and the session discarded its queued messages.
+  it('parks (does not throw) when a limit of 10 fills the pool to the hard cap', async () => {
+    const occupants: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      occupants.push(registerFakeSdk(`full-${i}`));
+    }
+
+    const parked = waitForSlot(10, undefined, 'sess-full-pool');
+    expect(isSessionParkedForSlot('sess-full-pool')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(1);
+
+    registry.unregister(occupants[0]);
+    grantedReservations.push(await parked);
+    expect(isSessionParkedForSlot('sess-full-pool')).toBe(false);
+    expect(getReservedSlotCount()).toBe(1);
+  });
+
+  it('treats a limit above the hard cap as the hard cap', async () => {
+    for (let i = 0; i < 9; i++) {
+      registerFakeSdk(`over-${i}`);
+    }
+
+    // 9 in use, limit 15: one slot left under the cap of 10.
+    grantedReservations.push(await waitForSlot(15, undefined, 'sess-ninth'));
+    expect(isSessionParkedForSlot('sess-ninth')).toBe(false);
+
+    // Now 10 (9 + 1 reservation): the next caller waits instead of spawning an 11th.
+    const parked = waitForSlot(15, undefined, 'sess-eleventh');
+    expect(isSessionParkedForSlot('sess-eleventh')).toBe(true);
+
+    grantedReservations.pop()!.release();
+    grantedReservations.push(await parked);
+    expect(getReservedSlotCount()).toBe(1);
   });
 
   it('resolves immediately (no parking) when the active count is already under the limit', async () => {

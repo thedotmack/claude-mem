@@ -18,6 +18,29 @@ function texts(prompts: OwnerPrompt[], agent: OwnerPrompt['agent']): string[] {
 }
 
 describe('prompt readers on recorded transcript lines', () => {
+  it('preserves owner and agent-written classification when JSON type fields contain whitespace', async () => {
+    const expected = await scan();
+    const home = mkdtempSync(join(tmpdir(), 'spaced-prompt-scan-'));
+    try {
+      cpSync(FIXTURE_HOME, home, { recursive: true });
+      const rewrite = (folder: string) => {
+        for (const entry of readdirSync(folder, { withFileTypes: true })) {
+          const file = join(folder, entry.name);
+          if (entry.isDirectory()) rewrite(file);
+          else if (entry.name.endsWith('.jsonl')) {
+            const lines = readFileSync(file, 'utf8').split('\n').map(line =>
+              line.replace(/"type":/g, '"type" :\t').replace(/"role":/g, '"role" :\t'));
+            writeFileSync(file, lines.join('\n'));
+          }
+        }
+      };
+      rewrite(home);
+      const result = await scanOwnerPrompts({ sinceEpochMs: SINCE, homeDirectory: home, resolveProject: cwd => cwd ?? 'unknown' });
+      expect(result.ownerPrompts).toEqual(expected.ownerPrompts);
+      expect(result.agentWritten).toEqual(expected.agentWritten);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it('keeps excluded projects out of scan results, memory ids and extraction files', async () => {
     const options = { sinceEpochMs: SINCE, homeDirectory: FIXTURE_HOME, excludedProjects: '/work/alpha/**',
       resolveProject: (cwd: string | null) => cwd ?? 'unknown',

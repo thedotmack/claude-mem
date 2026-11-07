@@ -128,7 +128,7 @@ export function contextCacheKeys(
   cwd?: string,
 ): ContextCacheKeys {
   return {
-    projects: projects.map(project => project.trim()).filter(Boolean),
+    projects: projects.filter(project => project.trim().length > 0),
     platformSource: platformSource || ALL_PLATFORM_SOURCES_CACHE_KEY,
     colors,
     ...(colors && cwd ? { cwd } : {}),

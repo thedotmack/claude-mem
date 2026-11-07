@@ -2,9 +2,29 @@
 
 A worker shared by several machines owns the database, vector index, observer
 and processing spool. Each client runs its existing hooks and MCP connection.
-Set `CLAUDE_MEM_WORKER_HOST` and `CLAUDE_MEM_WORKER_PORT` to that worker and set
-`CLAUDE_MEM_WORKER_AUTOSTART=false` on the clients so their hooks never manage
-the remote process.
+Set `CLAUDE_MEM_WORKER_URL` on each client to that worker's address, for example
+`https://memory.example.com`. Remote workers need `https`; plain `http` is
+accepted only on loopback, such as an SSH port forward. An invalid value fails
+with an error and never falls back to host and port. A non-empty URL also means
+the worker is managed elsewhere: hooks, the MCP server, `start` and the installer
+never launch, kill or recycle a worker on that client, and `restart` refuses to
+run. Stop any local worker the client was already running, because it would keep
+draining the client's outbox until it exits.
+
+`CLAUDE_MEM_WORKER_HOST` and `CLAUDE_MEM_WORKER_PORT` still work on a network you
+trust, together with `CLAUDE_MEM_WORKER_AUTOSTART=false`. That path uses plain
+HTTP, so event content and the ingest token travel unencrypted, and the uploader
+logs a warning each time it runs.
+
+The worker checks the `Host` header of each request. When the URL's host is a DNS
+name, add its origin to `CLAUDE_MEM_ALLOWED_ORIGINS` on the worker and restart it,
+or the worker answers 403. A TLS proxy on the worker's own machine connects from
+loopback, so the worker treats every request through it as local, including
+`/api/admin/*`. Block those paths at the proxy.
+
+The URL applies to the hook commands, the MCP server and the `npx claude-mem`
+commands. The Hermes, OpenClaw and OpenCode integrations keep their own host and
+port settings and do not read it.
 
 Configure `CLAUDE_MEM_WORKER_INGEST_TOKEN` with the same shared secret on the
 worker and every client. Set it in the environment or in each machine's
@@ -12,11 +32,10 @@ worker and every client. Set it in the environment or in each machine's
 `POST /api/spool/ingest` endpoint requires this token in `Authorization: Bearer`.
 An unset worker token disables this endpoint. Settings replies mask the token.
 
-`CLAUDE_MEM_HOOK_SPOOL_TRANSPORT=auto` selects HTTP for non-loopback worker hosts.
-Local hosts keep filesystem capture. A loopback SSH port forward needs
-`CLAUDE_MEM_HOOK_SPOOL_TRANSPORT=http`, because its URL alone cannot tell the
-client that the worker has a different disk. Use `filesystem` only where both
-processes actually share the spool directory.
+`CLAUDE_MEM_HOOK_SPOOL_TRANSPORT=auto` selects HTTP when `CLAUDE_MEM_WORKER_URL`
+is set, including a loopback SSH port forward, and for non-loopback worker hosts.
+Local hosts keep filesystem capture. Use `filesystem` only where both processes
+actually share the spool directory.
 
 The ingest token authenticates only `POST /api/spool/ingest`. It does not protect
 the rest of the worker API. Keep the worker reachable only over a network you

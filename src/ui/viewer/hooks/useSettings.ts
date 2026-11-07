@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useI18n } from '../../i18n';
+import { translateSettingsStatus } from '../../i18n/errors';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
@@ -76,6 +78,7 @@ export async function saveSettings(
 }
 
 export function useSettings() {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   // `settings` holds DEFAULT_SETTINGS until the first GET succeeds. A save
   // before then would post those defaults over settings.json (provider,
@@ -117,7 +120,7 @@ export function useSettings() {
   return {
     settings,
     isLoaded,
-    loadError,
+    loadError: loadError === null ? null : translateSettingsStatus(loadError, t),
     reload,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
       fetchImpl: fetch.bind(globalThis) as typeof fetch,
@@ -126,6 +129,6 @@ export function useSettings() {
       setIsSaving,
     }, settings),
     isSaving,
-    saveStatus,
+    saveStatus: translateSettingsStatus(saveStatus, t),
   };
 }

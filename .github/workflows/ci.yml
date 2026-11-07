@@ -55,7 +55,7 @@ jobs:
       # checks the viewer responds. This gives every PR real server-runtime
       # coverage. The full pg+redis e2e is the docker-gated job below.
       #
-      # Scoped to tests/ because workers/sync-hub/test is a vitest-pool-workers
+      # Scoped to tests/ because services/sync-hub/test is a vitest-pool-workers
       # suite (imports cloudflare:test — unresolvable under bun test); it runs
       # in the dedicated sync-hub job below.
       # The root suite runs as two lanes (scripts/test-lanes.ts): the fast unit
@@ -184,7 +184,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Dumb-grep guard for the Durable Object source (plan Phase 4 / Phase 0.4):
-      # complements the ESLint rules in workers/sync-hub/eslint.config.mjs and
+      # complements the ESLint rules in services/sync-hub/eslint.config.mjs and
       # catches the `globalThis.setTimeout` evasion ESLint misses. The DO's
       # hibernation WebSocket upgrade handler is necessarily a method named
       # `fetch`, so exactly its definition line (`async fetch(request`) is
@@ -193,8 +193,8 @@ jobs:
       - name: Durable Object anti-pattern grep
         run: |
           set -u
-          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" workers/sync-hub/src/do/ || true)
-          fetch_hits=$(grep -rn "fetch(" workers/sync-hub/src/do/ | grep -v "async fetch(request" || true)
+          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" services/sync-hub/src/do/ || true)
+          fetch_hits=$(grep -rn "fetch(" services/sync-hub/src/do/ | grep -v "async fetch(request" || true)
           if [ -n "$hits$fetch_hits" ]; then
             echo "Durable Object anti-pattern hits (timers pin the DO awake; outbound I/O and legacy accept defeat hibernation):"
             echo "$hits"
@@ -209,18 +209,18 @@ jobs:
           bun-version: latest
 
       - name: Install sync-hub dependencies
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun install --frozen-lockfile
 
       - name: sync-hub tests (main suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test
 
       # The WS + DO tests need their own invocation with --maxWorkers=1
       # --no-isolate (documented @cloudflare/vitest-pool-workers limitation),
       # which is exactly what the test:ws script pins.
       - name: sync-hub tests (WebSocket suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test:ws
 
   sync-api:
@@ -276,6 +276,17 @@ jobs:
       - name: viewer-host gate tests
         working-directory: services/viewer-host
         run: bun install --frozen-lockfile && bun test test
+
+      # The matrix's browser pages compile the real My Work source, whose
+      # dependencies live in that app's own package.
+      - name: Install My Work dependencies
+        working-directory: src/ui/my-work
+        run: npm ci --no-audit --no-fund
+
+      # The matrix allows a browser 10 s to start. This is the runner's first
+      # Chrome launch, so run one first and record how long it takes.
+      - name: Warm Chrome
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
 
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts

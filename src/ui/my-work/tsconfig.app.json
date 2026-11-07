@@ -29,7 +29,8 @@
     }
   },
   "include": [
-    "src"
+    "src",
+    "../i18n"
   ],
   "exclude": [
     "src/**/*.test.ts"

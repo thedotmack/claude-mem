@@ -24,8 +24,8 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   const text = input.text.trim();
   if (!text) throw new Error('Memory text must not be empty');
   const { title, metadata } = input;
-  const metadataProject = typeof metadata?.project === 'string' ? metadata.project.trim() : '';
-  const project = input.project?.trim() || metadataProject || defaultProject;
+  const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim() ? metadata.project : '';
+  const project = (input.project?.trim() ? input.project : '') || metadataProject || defaultProject;
   const platformSource = typeof metadata?.platformSource === 'string' ? metadata.platformSource.trim() : undefined;
   const sourceFingerprint = typeof metadata?.sourceFingerprint === 'string' ? metadata.sourceFingerprint : undefined;
   if (sourceFingerprint) {

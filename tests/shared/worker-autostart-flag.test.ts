@@ -129,6 +129,19 @@ describe('isWorkerAutostartDisabled', () => {
   });
 });
 
+describe('isWorkerAutostartDisabled with CLAUDE_MEM_WORKER_URL', () => {
+  it('treats any non-empty URL as externally managed, even an invalid one', () => {
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_URL: 'https://worker.example' })).toBe(true);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_URL: 'not a url' })).toBe(true);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: 'true', CLAUDE_MEM_WORKER_URL: 'https://worker.example' })).toBe(true);
+  });
+
+  it('keeps the default for an empty URL', () => {
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_URL: '' })).toBe(false);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_URL: '   ' })).toBe(false);
+  });
+});
+
 describe('CLAUDE_MEM_WORKER_AUTOSTART opt-out in the hook path', () => {
   const originalFetch = global.fetch;
   const originalScript = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;

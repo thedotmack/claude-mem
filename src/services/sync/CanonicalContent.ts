@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { redactSyncDiagnostic } from './diagnostic-redaction.js';
 import { MEDIA_METADATA_NAMESPACE, MediaError, validateMediaManifest } from '../../shared/media-contract.js';
 
 export const CONTENT_BODY_SCHEMA_VERSION = 1 as const;
@@ -67,8 +68,9 @@ const ENVELOPE_KEYS = [
 ] as const;
 
 function jsonError(message: string): never {
-  logger.debug('CLOUD_SYNC', 'Rejected invalid canonical content', { reason: message });
-  throw new Error(`canonical content: ${message}`);
+  const reason = redactSyncDiagnostic(message);
+  logger.debug('CLOUD_SYNC', 'Rejected invalid canonical content', { reason });
+  throw new Error(`canonical content: ${reason}`);
 }
 
 /** RFC-8259 JSON with recursively sorted object keys and preserved array order. */
