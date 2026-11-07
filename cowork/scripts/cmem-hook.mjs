@@ -268,7 +268,17 @@ const SECRET_PATTERNS = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,                                           // Slack tokens
   /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g,               // AWS access key ids
   /\bAIza[0-9A-Za-z_-]{35}\b/g,                                                  // Google API keys
-  /\bnpm_[A-Za-z0-9]{36}\b/g                                                     // npm tokens
+  /\bnpm_[A-Za-z0-9]{36}\b/g,                                                    // npm tokens
+  // Vendor provider keys, matching the worker's redaction set
+  // (src/utils/redaction.ts): NVIDIA NIM, Runcrate, Groq, xAI and Perplexity
+  // all issue prefixed keys that no pattern above claims, so a key pasted as
+  // bare prose reached the ingest verbatim. The (?!\w) tail is the same
+  // "the token ends here" check the worker uses (\b cannot follow a `-`).
+  /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g,                                           // NVIDIA NIM keys
+  /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g,                                         // Runcrate keys
+  /\bgsk_[A-Za-z0-9]{52}(?!\w)/g,                                                // Groq keys
+  /\bxai-[A-Za-z0-9_]{80}(?!\w)/g,                                               // xAI keys
+  /\bpplx-[A-Za-z0-9]{48}(?!\w)/g                                                // Perplexity keys
 ];
 // `password: …` / `api_key=…` style assignments — keep the key, redact the
 // ENTIRE value through the line or record delimiter (quote, backtick, comma,

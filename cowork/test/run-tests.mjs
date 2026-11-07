@@ -146,6 +146,29 @@ check('slash-containing URI password fully redacted', !in2e.includes('pa/ss'), i
 check('at-sign-containing URI password fully redacted', !in2e.includes('pa@ss') && !in2e.includes(']@ss@'), in2e);
 check('URI host survives userinfo redaction', in2e.includes('db.internal/app'), in2e);
 check('Cookie header value redacted', !out2e.includes('opaque-session-secret-value'), out2e);
+// Bare vendor provider keys (the prefixed shapes the worker's redaction
+// covers): none of them is named api_key=/token:, so KEYVALUE_RE cannot catch
+// them — only the vendor shapes can.
+const nvapiKey = 'nvapi-' + 'Aa1'.repeat(11);
+const groqKey = 'gsk_' + 'A'.repeat(52);
+const runcrateKey = 'rc_live_' + 'Aa1'.repeat(9);
+const xaiKey = 'xai-' + 'A'.repeat(80);
+const pplxKey = 'pplx-' + 'A'.repeat(48);
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2v',
+  tool_input: { command: `echo pinned to ${nvapiKey} for build.nvidia.com` },
+  tool_response: `keys on record: ${groqKey}, ${runcrateKey}, ${xaiKey}, ${pplxKey}`
+});
+const ing2v = received.find(r => r.body?.payload?.tool_use_id === 'tu_2v');
+const in2v = String(ing2v?.body.payload.tool_input || '');
+const out2v = String(ing2v?.body.payload.tool_response || '');
+check('bare nvidia key redacted', !in2v.includes(nvapiKey) && in2v.includes('[cmem-redacted]'), in2v);
+check('bare groq key redacted', !out2v.includes(groqKey), out2v);
+check('bare runcrate key redacted', !out2v.includes(runcrateKey), out2v);
+check('bare xai key redacted', !out2v.includes(xaiKey), out2v);
+check('bare perplexity key redacted', !out2v.includes(pplxKey), out2v);
+check('vendor-key marker kept', out2v.includes('[cmem-redacted]'), out2v);
 // Token-scheme Authorization: redacted in the request body AND in the spool on failed delivery
 received = [];
 await run('observation', {
