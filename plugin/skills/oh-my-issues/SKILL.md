@@ -9,7 +9,7 @@ Turn an issue backlog into a roadmap. Issues are symptom data, not units of work
 
 ## Core principle
 
-Stop closing issues one at a time. Group symptoms that share a single architectural fix into a cluster, give the cluster one canonical home (a plan-master issue + a `plans/0X-*.md` design doc), close every child with a standardized redirect, and ship one PR per cluster that closes all children atomically. New incoming bugs get appended to the matching master as a "Round N" comment, not opened as new tracked issues.
+Stop closing issues one at a time. Group symptoms that share a single architectural fix into a cluster, give the cluster one canonical home (a plan-master issue whose body is the design), close every child with a standardized redirect, and ship one PR per cluster that closes all children atomically. New incoming bugs get appended to the matching master as a "Round N" comment, not opened as new tracked issues.
 
 This compounds three ways: architectural fixes retire whole symptom families, the plan's test matrix institutionalizes prevention in CI, and standardized triage makes residual inflow cheap.
 
@@ -24,7 +24,7 @@ This compounds three ways: architectural fixes retire whole symptom families, th
 
 - Fewer than ~15 open issues: just close them.
 - Issues are genuinely independent (no shared root causes): one fix per issue is correct.
-- The repo lacks `plans/` discipline and the user does not want to introduce one — propose first, do not impose.
+- The repo has no plan-master discipline (one tracked master issue per root cause) and the user does not want to introduce one — propose first, do not impose.
 
 ## Three modes
 
@@ -32,13 +32,13 @@ This compounds three ways: architectural fixes retire whole symptom families, th
 
 Use when the backlog has never been consolidated, or when the user wants a fresh re-cluster. Goal: go from N issues to N_plans masters in one operation.
 
-**Start blind.** Do NOT read prior plan docs (`plans/*.md`, in the working tree or in git history), prior `[plan-XX]` master issues, `plan`-labeled issues, or closed-issue redirect trails before clustering. Prior clusterings anchor the new one to their surfaces and defeat the point of re-running the pass. Cluster from the open issues alone; only after the new clusters are named may you diff against existing masters to decide which to close/supersede.
+**Start blind.** Do NOT read prior plan notes (local drafts, or `plans/*.md` in git history), prior `[plan-XX]` master issues, `plan`-labeled issues, or closed-issue redirect trails before clustering. Prior clusterings anchor the new one to their surfaces and defeat the point of re-running the pass. Cluster from the open issues alone; only after the new clusters are named may you diff against existing masters to decide which to close/supersede.
 
 1. **Read everything in full.** Fetch every open issue's body *and* its comment thread — not just titles — **excluding** issues labeled `plan` (the existing masters; see "Start blind" above — they are compared against only after clustering). Surface-level grouping fails without full text, and reproduction steps, linked duplicates, and diagnostic output often live in comments rather than the original body. See "GitHub CLI primitives" below for the correct paginated listing + per-issue comment fetch (a single `gh issue list` call does **not** return comment bodies).
 2. **Cluster by root cause, not by surface.** The clustering question is *would one architectural change retire all of these?* — not *do these mention the same word?*. "Windows" is a surface; "spawn contract violated by host shells" is a root cause. Two issues with different surfaces can share a cluster (e.g. an env-var leak in two different code paths sharing one missing env-isolation boundary).
 3. **Name each cluster as an architectural problem.** Title format: `[plan-XX] <Architectural Defect> — <one-line scope>`. Example: `[plan-14] Child Process Ownership — every process the worker spawns dies with the worker`. The title must imply a fix, not a topic.
 4. **Open one master issue per cluster** with a body that lists: the architectural defect, the children (by issue number), the fix sequence, and a required test matrix (host × IDE × shell, etc.) that prevents regression.
-5. **Mirror each master as `plans/0X-<slug>.md`** in the repo. The issue is the public tracker; the doc is the design. They reference each other.
+5. **Keep the design in the master issue body.** It is the public tracker and the canonical design. Do not commit plan docs to the repo or open a PR for them: plans, research and notes never go in a PR. If you want a working draft, keep it in a gitignored local folder (for example `.scratch/plans/`).
 6. **Close every child** with the standardized redirect comment (see below) and state `not planned`.
 7. **Verify end state:** `gh issue list --state open` returns exactly the masters and nothing else.
 
@@ -56,7 +56,7 @@ Use when a new issue is filed after consolidation is in place. Goal: never let t
    - Sketches the concrete fix (1–3 lines, e.g. "guard with `case "$_SH" in /*.exe|"") _SH=bash ;; esac`")
    - Adds any new test-matrix cell the bug exposes
 4. **Close the child** with the standardized redirect comment, `not planned`.
-5. **If no match exists** and the bug is genuinely novel: open a new plan master + `plans/0X-*.md`. Resist this. Most bugs are children of existing plans.
+5. **If no match exists** and the bug is genuinely novel: open a new plan master. Resist this. Most bugs are children of existing plans.
 
 ### Mode 3: Bundle (ship the cluster)
 
@@ -76,7 +76,7 @@ An open-PR backlog is the same symptom data in a different shape: each PR is a p
 2. **Card each PR** with: root cause targeted (mechanism, not symptom), fix-sequence step it implements, review state, already-on-main?, and a verdict — `BUNDLE-CANDIDATE` (sound fix to fold into the plan's bundle PR with author credit), `STANDALONE` (small, self-contained, merge ahead of the bundle), `NEEDS-REWORK` (right diagnosis, blocked on a named item), `OUT-OF-SCOPE` (capability, not a defect — route to the roadmap master), `SUPERSEDED` (already on main / obsoleted by another PR), `JUNK`.
 3. **Route every PR to a master.** Post one roster comment per master grouping its PRs by verdict and fix-sequence step; post one short routing note per PR pointing at the master and stating its verdict and blocker. Do not post routing notes on the maintainer's own PRs.
 4. **Close only `SUPERSEDED` and `JUNK`** (with the commit/PR that superseded them). Bundle candidates stay open until the plan's bundle PR (Mode 3) lands and closes them; needs-rework PRs stay open until their blocker is addressed or the bundle covers them.
-5. **A PR cluster with no master is a new plan** — same bar as an issue cluster (one architectural change would retire all of them). Open the master + `plans/` doc before routing.
+5. **A PR cluster with no master is a new plan** — same bar as an issue cluster (one architectural change would retire all of them). Open the master before routing.
 
 End state: every open PR carries a routing note to exactly one master; open PR count == bundle candidates + standalone + needs-rework + product decisions.
 
@@ -138,14 +138,32 @@ for n in $(gh issue list --state open --limit "$total" --search "-label:plan" --
 done
 ```
 
-If `total > 1000`, paginate via the REST API: `gh api "repos/$owner/$repo/issues?state=open&per_page=100&page=N"` looped until the result array is empty (note this includes PRs, so filter `select(.pull_request|not)`).
+If `total > 1000`, paginate via the REST API instead. Its issue list includes PRs and the `plan` masters, so filter both out, and stop on an empty raw page (a page can be all PRs and still have more pages after it). Use the saved numbers for the comment pass too, so the masters stay out of it:
+
+```bash
+mkdir -p .scratch/oh-my-issues   # gitignored local working folder
+page=1
+while :; do
+  raw=$(gh api "repos/$owner/$repo/issues?state=open&per_page=100&page=$page")
+  [ "$(jq length <<<"$raw")" -eq 0 ] && break
+  jq -c '.[] | select(.pull_request | not) | select(any(.labels[]?; .name == "plan") | not)
+         | {number, title, body, labels: [.labels[].name], author: .user.login, createdAt: .created_at}' <<<"$raw"
+  page=$((page + 1))
+done > .scratch/oh-my-issues/open-issues.jsonl
+
+for n in $(jq -r '.number' .scratch/oh-my-issues/open-issues.jsonl); do
+  echo "=== Issue #$n ==="
+  gh issue view "$n" --json comments \
+    --jq '.comments[] | "\(.author.login) (\(.createdAt)): \(.body)"'
+done
+```
 
 Open a plan master:
 
 ```bash
 gh issue create \
   --title "[plan-14] Child Process Ownership — every process the worker spawns dies with the worker" \
-  --body-file plans/14-child-process-ownership.md \
+  --body-file .scratch/plans/plan-14-child-process-ownership.md \
   --label plan,plan-14
 ```
 
@@ -182,7 +200,7 @@ Output should be exactly the plan masters.
 
 ## Plan master body template
 
-Save as `plans/0X-<slug>.md` and use as `--body-file` for the master issue.
+Draft it in a gitignored local file (for example `.scratch/plans/plan-XX-<slug>.md`) and pass it as `--body-file` for the master issue. After that, the issue body is the canonical copy; edit the issue, not the draft.
 
 ```markdown
 # [plan-XX] <Architectural Defect> — <one-line scope>
@@ -223,7 +241,7 @@ Run periodically against the plan masters to catch the failure modes.
 - **Graveyard master:** master issue has accumulated 5+ "Round N" comments without a shipping PR. The plan needs a forcing PR or it must be split.
 - **Over-broad master:** the children's fixes cannot fit one PR. Split into two plans with narrower scope.
 - **Surface-clustered master:** the children share a topic but not a fix. Re-cluster by root cause; some children belong to different plans.
-- **Drift between issue and doc:** the plan master body and `plans/0X-*.md` disagree. Pick one as canonical (the doc) and regenerate the issue body from it.
+- **Stale master body:** the master body no longer matches its Round-N comments. Fold the rounds into the body so the issue stays the one place the design lives.
 
 ## Stop conditions
 
@@ -236,7 +254,7 @@ For a bundle: stop when the PR is merged and every listed child is auto-closed b
 ## Failure modes worth refusing
 
 - **Premature clustering** before reading every issue body in full. Don't.
-- **Reading prior plans/masters before clustering.** A cluster pass starts blind (see Mode 1). Consulting old `plans/*.md` or `[plan-XX]` issues first anchors the result to the previous clustering.
+- **Reading prior plans/masters before clustering.** A cluster pass starts blind (see Mode 1). Consulting old plan notes or `[plan-XX]` issues first anchors the result to the previous clustering.
 - **Closing children before the master is open.** Children must always have a redirect target.
 - **Using the redirect comment for issues that aren't symptoms** (e.g. genuine feature requests with no shared root cause). Those stay open or get their own track.
 - **Closing a master before every listed child is shipped.** The master is the contract; closing it early breaks the audit trail.
