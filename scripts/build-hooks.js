@@ -492,6 +492,14 @@ async function buildHooks() {
         // https://sharp.pixelplumbing.com/install/#bundlers
         'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
+        // better-auth stays external in the bundles below (~3.7MB), so the
+        // worker's /api/auth/* routes (Pro sign-in) resolve it from
+        // plugin/node_modules at request time — the same pattern as sharp.
+        // Without these entries a plugin install has no better-auth at all
+        // and every auth request 500s with "Cannot find module 'better-auth'"
+        // (#5453).
+        'better-auth': packageJson.dependencies['better-auth'],
+        '@better-auth/api-key': packageJson.dependencies['@better-auth/api-key'],
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -623,13 +631,15 @@ async function buildHooks() {
         // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
         // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
         // inlines that dynamic-import target into the worker bundle, dragging in the full
-        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
-        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
-        // and the route handler already wraps the import in try/catch → graceful 500).
-        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
+        // better-auth library (kysely, oauth, nanoid, …). Keeping it external strips
+        // the dead weight from worker-service.cjs. The routes DO exercise it (Pro
+        // sign-in), so plugin/package.json ships better-auth + @better-auth/api-key
+        // (see the generated manifest above) and the imports resolve from
+        // plugin/node_modules. See #2584, #5453.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
+        'better-auth/db/migration',
         '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
@@ -678,7 +688,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite', 'bun:ffi', 'cohere-ai', 'ollama', '@chroma-core/default-embed', 'onnxruntime-node',
-        'better-auth', 'better-auth/node', 'better-auth/plugins', '@better-auth/api-key',
+        'better-auth', 'better-auth/node', 'better-auth/plugins', 'better-auth/db/migration', '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
@@ -762,6 +772,7 @@ async function buildHooks() {
           'better-auth',
           'better-auth/node',
           'better-auth/plugins',
+          'better-auth/db/migration',
           '@better-auth/api-key',
         ],
         define: {
