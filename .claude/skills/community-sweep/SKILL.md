@@ -1,6 +1,6 @@
 ---
 name: community-sweep
-description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included; their new features wait for approval, and experimental ones stay out until they graduate) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
+description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included, except the ones the owner marked experimental) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
 ---
 
 # Community Sweep
@@ -42,7 +42,7 @@ To append a ledger row (tab-separated; PR and issue numbers share one namespace)
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" <number> "$RUN_ID" <action> <merge_sha|-> <author> <coauthors|-> "<one-line note>" >> "$STATE/ledger.tsv"
 ```
 
-- **Actions for PRs:** `merged`, `closed`, `held`, `blocked`, `skipped`; for the owner's held features, also `approved` and `experimental`.
+- **Actions for PRs:** `merged`, `closed`, `held`, `blocked`, `skipped`; for the owner's PRs, also `experimental`.
 - **Actions for issues:** `issue-closed`, `issue-answered`, `issue-routed`, `issue-held`.
 - **New ledger:** if `ledger.tsv` doesn't exist, create it with the header `ts pr phase action merge_sha pr_author coauthors note` (tab-separated).
 
@@ -57,9 +57,7 @@ Put every open PR in exactly one bucket, using its last ledger row. Use the firs
 
 | Bucket | Rule | What to do |
 |---|---|---|
-| Approved | the owner's PR, last row is `approved` | Re-triage on a fresh head and land it (step 2, the owner's own PRs). |
 | Experimental | the owner's PR, last row is `experimental` | Leave it alone. Report any new activity. |
-| Maintainer | the owner's PR with no row, or the owner pushed after its last `held` row | Triage it (step 2) under the owner's rules. |
 | Held | last row is `held` | Never comment, push, close or approve CI. Report any new activity to the owner. |
 | Blocked | last row is `blocked` | Re-triage only if the author pushed or replied after that row. |
 | Done | last row is `merged` or `closed` | It shouldn't be open, so find out why. |
@@ -114,20 +112,11 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 
 ### The owner's own PRs (author `thedotmack`)
 
-The owner's PRs go through the same triage and landing as everyone's, with these differences:
+The owner's PRs go through the same triage and landing as everyone's.
 
-- **A new feature needs the owner's approval.** If the PR adds a capability that didn't exist (a new command, skill, setting, hook, host or provider integration, provider, plugin, sync or backup path, or UI surface), use `HOLD` with the line `new feature: needs owner approval`. Until it has an `approved` row, don't push, comment or merge. When it's unclear whether the PR is a fix or a feature, treat it as a feature.
-- **A PR the owner is still pushing to is in progress.** If the owner pushed to it during or since the last run, triage it but don't push, and report what's left. Pushing alongside them would race their work.
-- **Approved features land, experimental ones stay out.** The owner sorts held features into two groups, recorded in the ledger:
-  - `approved`: quality-of-life features the product should already have. Re-triage from scratch on a fresh head against current main and the plan masters (approval doesn't wave through a branch that main has moved past), then land it like any other owner PR. If main went another direction, ledger it `held` with the evidence and report it.
-  - `experimental`: stays held until the owner graduates it with an `approved` row. Don't push, merge or refresh it. Each run, list any new activity on it.
-  - A held feature with neither row goes in the report's decisions with a suggested group.
-- **Everything else lands:** bug fixes, docs, tests, refactors, removing dead code, performance work, and fixes or follow-ups to features that already shipped. Merge main into the branch, resolve conflicts, finish gaps with our own commits, and merge.
-- **Plans, research, specs and notes** (a PR that is mostly `plans/`, or only docs for work that isn't built yet) are `HOLD` with `plan-only PR: owner's call`. The owner's rule is that these don't go in PRs.
-- **Never close the owner's PRs.** For `SUPERSEDED`, `DECLINE` or `CONSOLIDATE`, record the verdict and the evidence in the report and leave the PR open.
-- The hosted-service boundary still applies. A boundary change in the owner's own PR is the owner's intent, so it doesn't need a `HOLD` for that reason. Do check that it doesn't clash with a boundary change already on main, and list any clash for the owner.
+- **Experimental.** The owner marks a PR `experimental` in the ledger. It stays out of the sweep until the owner takes it out of experimental; each run, list any new activity on it.
+- A boundary change in the owner's own PR is the owner's intent, so it doesn't need a `HOLD` for that reason. Check that it doesn't clash with a boundary change already on main, and list any clash for the owner.
 - **No thank-you comment.** After a merge, post a 1–3 bullet note only if we pushed changes (what we changed and why). Don't add the owner to the roster.
-- Ledger these PRs like any other, with `thedotmack` as the author.
 
 ### The hosted-service boundary (verdict `HOLD`)
 
@@ -280,7 +269,7 @@ Make them warm, specific and short: name the person, and say what changed for us
 4. **Report.** Write `$RUN/REPORT.md`, then post a short version in chat:
    - a table of outcomes `| # | author | verdict | outcome | merge SHA | author on main | note |`;
    - the issue actions;
-   - **decisions for the owner:** every `HOLD`/`OWNER` item with one line on why; each held feature of the owner's that has neither an `approved` nor an `experimental` row, with a suggested group; and new activity on held and experimental PRs;
+   - **decisions for the owner:** every `HOLD`/`OWNER` item with one line on why, and new activity on held and experimental PRs;
    - post-plans owed, follow-ups, incidents;
    - the roster delta (new authors, new PRs, totals).
 
@@ -304,7 +293,6 @@ Make them warm, specific and short: name the person, and say what changed for us
 
 ## Never
 
-- Land a new feature from a maintainer (`thedotmack`) PR without the owner's approval (an `approved` ledger row), land an `experimental` one, or close a maintainer PR.
 - Comment on, push to, close, or approve CI for a held PR.
 - Force-push, rebase, or rewrite a contributor's commits.
 - Override the squash author or body: no `--admin`, `--body` or `--author-email`.
