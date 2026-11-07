@@ -15,9 +15,10 @@ This is the protocol from the 2026-09-30 open-PR merge sweep, which took 257 ope
 2. **Finish, don't reject.** If the intent is right but the fix is partial or buggy, finish it on the contributor's branch, or land only its additive piece (a trim). Either way the credit stays with them.
 3. **No band-aids, but no bleeding.** A fix walks the issue down to its root cause. A band-aid that stops active user harm ships only with a written post-plan: the root-cause follow-up, specified well enough to execute.
 4. **The contributor is the author.** A merge that puts the maintainer's name on someone else's work is a failed merge.
-5. **Respect the hosted-service boundary** (step 2). Anything that touches cmem.ai cloud sync or the gateway's sign-in and trial path goes to the owner.
+5. **Respect the hosted-service boundary** (step 2). A PR may not change how cmem.ai cloud sync or the gateway's sign-in and trial path behave. You decide: trim or rework that part out and land the rest, or decline it with the reason.
 6. **Security and privacy regressions block a merge.** That covers secrets in logs, data sent to third parties, and injection.
-7. **Critical bug fixes ship now.** A PR that fixes a break users are hitting goes out right away, so nobody's service stays interrupted: sign-in or activation that errors, a worker that won't start, hooks that fail, capture or search that stops working, data loss. It lands first in the run and a patch release follows (step 3). It is never `HOLD` and never waits for the owner, including when the broken path is cmem.ai sign-in, sync or the gateway. The boundary in step 2 covers changes to how those paths behave, not fixes that make them work again. On 2026-11-07 the owner was wrongly asked about #5455, which fixed Pro sign-in returning 500 on every install.
+7. **Critical bug fixes ship now.** A PR that fixes a break users are hitting goes out right away, so nobody's service stays interrupted: sign-in or activation that errors, a worker that won't start, hooks that fail, capture or search that stops working, data loss. It lands first in the run and a patch release follows (step 3). It never waits for the owner, including when the broken path is cmem.ai sign-in, sync or the gateway. The boundary in step 2 covers changes to how those paths behave, not fixes that make them work again. On 2026-11-07 the owner was wrongly asked about #5455, which fixed Pro sign-in returning 500 on every install.
+8. **Nothing needs the owner.** The owner set this on 2026-11-07. Every PR and issue in a sweep gets decided and carried through by you: merge, close, release, X post. The report says what you decided and why. It never asks the owner a question or lists decisions for them.
 
 Count humans, not tools. A PR written with Claude, Codex, Cursor or Copilot is credited to the human who opened it. Bot PRs (PostHog, Copilot agent, Dependabot) land on merit, but they never go on the roster.
 
@@ -43,8 +44,8 @@ To append a ledger row (tab-separated; PR and issue numbers share one namespace)
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" <number> "$RUN_ID" <action> <merge_sha|-> <author> <coauthors|-> "<one-line note>" >> "$STATE/ledger.tsv"
 ```
 
-- **Actions for PRs:** `merged`, `closed`, `held`, `blocked`, `skipped`; for the owner's PRs, also `experimental`.
-- **Actions for issues:** `issue-closed`, `issue-answered`, `issue-routed`, `issue-held`.
+- **Actions for PRs:** `merged`, `closed`, `blocked`, `skipped`; for the owner's PRs, also `experimental`. Older runs also wrote `held`.
+- **Actions for issues:** `issue-closed`, `issue-answered`, `issue-routed`. Older runs also wrote `issue-held`.
 - **New ledger:** if `ledger.tsv` doesn't exist, create it with the header `ts pr phase action merge_sha pr_author coauthors note` (tab-separated).
 
 ## 1. Take stock
@@ -59,7 +60,7 @@ Put every open PR in exactly one bucket, using its last ledger row. Use the firs
 | Bucket | Rule | What to do |
 |---|---|---|
 | Experimental | the owner's PR, last row is `experimental` | Leave it alone. Report any new activity. |
-| Held | last row is `held` | Never comment, push, close or approve CI. Report any new activity to the owner. |
+| Held | last row is `held` (written before 2026-11-07) | Triage it from scratch this run and settle it yourself, like a new PR. |
 | Blocked | last row is `blocked` | Re-triage only if the author pushed or replied after that row. |
 | Done | last row is `merged` or `closed` | It shouldn't be open, so find out why. |
 | New | no row | Triage it (step 2). |
@@ -107,7 +108,7 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 | `TRIM` | Only part of it is additive | Keep that part on their branch and land it as their PR. Say what was dropped and why. |
 | `CONSOLIDATE→#M` | Overlaps #M | Prefer landing the additive piece as its own trimmed PR. Otherwise fold it into #M with credit (step 4). |
 | `SUPERSEDED` | `main` already fixes it | Cite the commit or `file:line`. Close with precise credit. |
-| `HOLD` | Crosses the hosted-service boundary, or needs a product call | Leave it untouched for the owner to decide. |
+| `BOUNDARY` | Crosses the hosted-service boundary as written | Trim or rework the boundary-crossing part out on their branch and land the rest, or decline it with the reason if nothing else is left. |
 | `DECLINE` | Wrong direction, harmful, not worth finishing, or does nothing (a no-op change) | Close with thanks and the reason yourself. Never hand the owner a decision to not merge something useless. |
 | `SPAM` / `EMPTY` | Unrelated to claude-mem, or no code. This includes rewrites of SECURITY.md, README or LICENSE with someone else's details, and CLAUDE.md or AGENTS.md replaced with a tool's generated output | Close with one neutral line. |
 
@@ -116,12 +117,12 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 The owner's PRs go through the same triage and landing as everyone's.
 
 - **Experimental.** The owner marks a PR `experimental` in the ledger. It stays out of the sweep until the owner takes it out of experimental; each run, list any new activity on it.
-- A boundary change in the owner's own PR is the owner's intent, so it doesn't need a `HOLD` for that reason. Check that it doesn't clash with a boundary change already on main, and list any clash for the owner.
+- A boundary change in the owner's own PR is the owner's intent, so it isn't trimmed for that reason. Check that it doesn't clash with a boundary change already on main, and resolve any clash yourself.
 - **No thank-you comment.** After a merge, post a 1–3 bullet note only if we pushed changes (what we changed and why). Don't add the owner to the roster.
 
-### The hosted-service boundary (verdict `HOLD`)
+### The hosted-service boundary (verdict `BOUNDARY`)
 
-claude-mem is open source. cmem.ai is the hosted service: cloud sync, plus the inference gateway with its sign-in and trial. Leave a PR for the owner if it does any of the following:
+claude-mem is open source. cmem.ai is the hosted service: cloud sync, plus the inference gateway with its sign-in and trial. A PR must not do any of the following as written. Trim or rework that part out and land the rest, or decline it:
 
 1. Changes the installer's provider screen or defaults, exempts a provider from sign-in, or changes the cmem.ai sign-in, trial or activation steps (`src/npx-cli/commands/install.ts`, `src/npx-cli/cmem-memory-credentials.ts`, `src/npx-cli/cmem-pro-costs.ts`).
 2. Lets the cmem.ai memory key reach any host but the gateway, or loosens gateway detection (`src/shared/cmem-gateway.ts`, the `keysForEndpoint` lock).
@@ -131,7 +132,7 @@ claude-mem is open source. cmem.ai is the hosted service: cloud sync, plus the i
 6. Changes cloud-sync semantics: data loss, a weaker ack contract, or sync without entitlement (`src/services/sync/`, `services/sync-api/`).
 7. Adds a new default-on path that spends model tokens, such as extra observer calls, backfills or new ingestion. The same feature as an opt-in that defaults off is fine.
 
-These are not conflicts, so judge them on merit: opt-in bring-your-own providers, hosts and knobs that leave the gateway path first; token-spend optimizations; correct fixes to our own sync client; IDE and host integrations; and fixes to the self-hosted server runtime. Supporting a new IDE or host is never a product call: the goal is to support every IDE, so a new adapter or `install --ide <host>` gets judged on merit, and an issue asking for one gets a go-ahead, not `OWNER`. A new provider preset never goes above cmem.ai and never edits the installer, sign-in or cost files. A fix that makes a broken boundary path work again (sign-in that 500s, sync that stalls, a gateway call that crashes) is not a boundary change: it is a critical fix (philosophy 7), so land it. Hold it only if the fix also changes what the path does: different steps, defaults, notices or entitlement. If you're unsure, use `HOLD` with one line saying why. Don't guess.
+These are not conflicts, so judge them on merit: opt-in bring-your-own providers, hosts and knobs that leave the gateway path first; token-spend optimizations; correct fixes to our own sync client; IDE and host integrations; and fixes to the self-hosted server runtime. Supporting a new IDE or host is never a product call: the goal is to support every IDE, so a new adapter or `install --ide <host>` gets judged on merit, and an issue asking for one gets a go-ahead. A new provider preset never goes above cmem.ai and never edits the installer, sign-in or cost files. A fix that makes a broken boundary path work again (sign-in that 500s, sync that stalls, a gateway call that crashes) is not a boundary change: it is a critical fix (philosophy 7), so land it. If the fix also changes what the path does (different steps, defaults, notices or entitlement), land the fix and trim that change. If you're unsure, take the reading that leaves cmem.ai's path unchanged, land it, and say in the report what you decided.
 
 ### The live-only observer rule (never `MERGE` as-is)
 
@@ -189,7 +190,7 @@ If the push is rejected as non-fast-forward, they pushed meanwhile. Run `git pul
   gh api -X POST repos/thedotmack/claude-mem/actions/runs/<id>/approve
   ```
 
-- Never approve CI for `SPAM`, `DECLINE` or `HOLD`.
+- Never approve CI for `SPAM` or `DECLINE`.
 - Never approve the "Claude Code" runs. Those are the `@claude` responder (`.github/workflows/claude.yml`); they carry a secret and aren't needed to merge.
 - Watch with `gh pr checks <N> --repo thedotmack/claude-mem --watch --interval 60`.
 - Rerun a flake once (`gh run rerun <id> --failed`). Fix a real failure.
@@ -207,9 +208,9 @@ If the push is rejected as non-fast-forward, they pushed meanwhile. Run `git pul
 
    Add `--subject "<type>(<scope>): <summary> (#<N>)"` only when the PR title would mislead, for example on a trimmed or re-scoped PR.
 
-The author on main must be the contributor. If it isn't, stop and tell the owner. Then comment (step 6), ledger the merge with the full SHA, and close any issue the PR fixed that GitHub didn't auto-close (step 5).
+The author on main must be the contributor. If it isn't, stop merging and record it as an incident in the report. Then comment (step 6), ledger the merge with the full SHA, and close any issue the PR fixed that GitHub didn't auto-close (step 5).
 
-**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges still wait for the owner's normal release.
+**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. The release includes the X post from `@Claude_Memory` (version-bump step 12). Post it at any hour without asking. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges ride along in the next release.
 
 ## 4. Help the PRs that aren't ready
 
@@ -238,7 +239,7 @@ git log origin/main --oneline --grep="#<N>\b"
 | `CONFIRMED` | A real bug on main with no PR. | Reply with the root cause (`file:line` on main) and invite a PR ("happy to help land it"). Alternatively, fix it in our own PR that credits the reporter. If it interrupts service (philosophy 7), don't wait for a contributor: fix it in our own PR this run and ship it. |
 | `NEEDS-INFO` | Can't be reproduced or located from the report. | Ask once for exactly what's missing: version, OS, the log lines. |
 | `DUPLICATE→#M` | The same defect as #M. | Comment "Duplicate of #M", then close it as not planned. |
-| `OWNER` | Billing, cmem.ai, the roadmap, or a product call. A new IDE or host integration is not one (step 2's boundary section), and neither is a break in a cmem.ai path such as sign-in that 500s: that is `CONFIRMED` or `HAS-PR`, handled as a critical fix. | No comment. List it for the owner. |
+| `PRODUCT` | Billing, cmem.ai, the roadmap, or a product question. A break in a cmem.ai path such as sign-in that 500s is not one: that is `CONFIRMED` or `HAS-PR`, handled as a critical fix. | Answer it yourself from the docs, the code and the owner's past decisions in memory, or route it to the plan master it belongs to. |
 | `SPAM` | Unrelated to claude-mem. | Close with one neutral line. |
 
 Before posting, reconcile the claims. If a PR's triage and an issue's triage disagree about what fixes an issue (for example `project=` versus `projects=`), read main yourself. Never credit the wrong person.
@@ -256,7 +257,6 @@ Make them warm, specific and short: name the person, and say what changed for us
 - **Close (superseded, consolidated or declined):** thank them and link what landed. State the credit precisely ("your commits are included as co-author on #M", or "main already fixed this in `<sha>` (#X)"), and invite the next contribution.
 - **Issue fixed:** "Fixed by #4162 (6cec29395): the SDK child now keeps `CLAUDE_CODE_TMPDIR`, so pointing it at a private directory works for the Observer too. Thanks @reporter for the report and @fixer for the fix."
 - **Spam:** "Closing — this doesn't relate to claude-mem."
-- **Held PRs and `OWNER` issues:** no comment. The owner handles them.
 - **The owner's PRs:** no thanks. Comment only to say what we pushed.
 
 ## 7. Record and report
@@ -272,7 +272,7 @@ Make them warm, specific and short: name the person, and say what changed for us
 4. **Report.** Write `$RUN/REPORT.md`, then post a short version in chat:
    - a table of outcomes `| # | author | verdict | outcome | merge SHA | author on main | note |`;
    - the issue actions;
-   - **decisions for the owner:** every `HOLD`/`OWNER` item with one line on why, and new activity on held and experimental PRs;
+   - **what you decided:** every boundary or product call, with one line on why, and new activity on experimental PRs;
    - post-plans owed, follow-ups, incidents;
    - the roster delta (new authors, new PRs, totals).
 
@@ -296,11 +296,10 @@ Make them warm, specific and short: name the person, and say what changed for us
 
 ## Never
 
-- Comment on, push to, close, or approve CI for a held PR.
 - Force-push, rebase, or rewrite a contributor's commits.
 - Override the squash author or body: no `--admin`, `--body` or `--author-email`.
-- Commit generated bundles or `CHANGELOG.md` from a PR. Bump the version or publish only through the release skill for a critical fix (step 3); other releases are the owner's step.
-- Hold a critical bug fix, or list it as a decision for the owner.
+- Commit generated bundles or `CHANGELOG.md` from a PR. Bump the version or publish only through the release skill (step 3).
+- Ask the owner a question or hand them a decision. Decide, do it, and report it.
 - Merge a band-aid without a written post-plan.
 - Approve CI for a diff you haven't read.
 - Close a PR without saying exactly how its author is credited.
