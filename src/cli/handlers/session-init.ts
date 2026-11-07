@@ -140,6 +140,9 @@ const sessionInit = {
   async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
     // The transcript anchor has no original event time. A real hook does.
     const telemetryPromptEpochMs = requireRecordedPrompt ? undefined : Date.now();
+    // Separate from telemetry: the transcript anchor passes its line's own
+    // timestamp, so a deleted session takes only prompts made after deletion.
+    const eventOccurredAtEpochMs = input.eventOccurredAtEpochMs === undefined ? Date.now() : input.eventOccurredAtEpochMs;
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
     const cwd = input.cwd ?? process.cwd();  
 
@@ -308,6 +311,7 @@ const sessionInit = {
         platformSource,
         telemetryPlatformSource: workStatePlatform(input.platform),
         telemetryPromptEpochMs,
+        eventOccurredAtEpochMs,
         agentId: input.agentId,
         agentType: input.agentType,
         // Where `project` was resolved from and how, so the worker can record
@@ -332,6 +336,12 @@ const sessionInit = {
         exitCode: HOOK_EXIT_CODES.SUCCESS,
         ...(outageNotice ? { systemMessage: outageNotice } : {}),
       };
+    }
+
+    if (initResult?.skipped && initResult.reason === 'session_deleted') {
+      // The worker logged why; the prompt predates the session's deletion.
+      logger.info('HOOK', 'session-init: prompt not recorded, its session was deleted', { contentSessionId: sessionId });
+      return { continue: true, suppressOutput: true };
     }
 
     if (typeof initResult?.sessionDbId !== 'number') {

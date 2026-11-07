@@ -343,6 +343,7 @@ describe('POST /api/advisor-calls origin guard', () => {
     it(`allows ${label} and records the calls`, () => {
       const { dbManager, getSessionStore } = stubStore({
         createSDKSession: () => 42,
+        isBeforeSessionDeletion: () => false,
         recordAdvisorCall: () => ({ inserted: true }),
       });
       const routes = new AdvisorRoutes(dbManager);

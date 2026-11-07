@@ -29,6 +29,23 @@ function parsePath(path: string): Array<string | number> {
   return tokens;
 }
 
+/**
+ * When a transcript record says it was written: a top-level `timestamp`
+ * (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness), as an ISO
+ * string or epoch seconds/milliseconds. Null when the record carries none.
+ */
+export function recordTimeEpochMs(record: unknown): number | null {
+  if (!record || typeof record !== 'object') return null;
+  for (const key of ['timestamp', 'time', 'createdAt']) {
+    const value = (record as Record<string, unknown>)[key];
+    const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
+      : typeof value === 'string' ? Date.parse(value)
+        : Number.NaN;
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return null;
+}
+
 export function getValueByPath(input: unknown, path: string): unknown {
   if (!path) return undefined;
   const tokens = parsePath(path);
