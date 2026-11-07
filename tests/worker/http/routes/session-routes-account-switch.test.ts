@@ -28,7 +28,7 @@ import { logger } from '../../../../src/utils/logger.js';
 
 guardSharedQuotaCooldownSingleton('session-routes-account-switch.test.ts');
 
-const PAUSE_NOTICE = 'paused while a provider quota cooldown is active';
+const PAUSE_NOTICE = 'claude-mem has paused saving memories';
 const healthPath = () => join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
 
 function fixture() {

@@ -44,6 +44,9 @@ import { resolveConfigDirProfileKey } from './EnvManager.js';
 import {
   clearObserverQuotaCooldown,
   recordObserverQuotaCooldown,
+  type ObserverQuotaCooldown,
+  type ObserverQuotaNoticeContext,
+  type ObserverQuotaReason,
 } from './observer-health.js';
 
 export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'cmem-gateway';
@@ -64,6 +67,7 @@ interface PersistedQuotaCooldown {
   armedAtMs: number;
   cause?: 'auth';
   auth?: ClaudeCredential;
+  reason?: ObserverQuotaReason;
 }
 
 /**
@@ -131,6 +135,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(entry.profile ? { profile: entry.profile } : {}),
         ...(entry.cause === 'auth' ? { cause: 'auth' as const } : {}),
         ...(entry.auth === 'api-key' || entry.auth === 'subscription' ? { auth: entry.auth } : {}),
+        ...(entry.reason ? { reason: entry.reason } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -163,6 +168,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
         armedAtMs: state.armedAtMs,
         ...(state.cause ? { cause: state.cause } : {}),
         ...(state.auth ? { auth: state.auth } : {}),
+        ...(state.reason ? { reason: state.reason } : {}),
       }));
     if (rows.length === 0) {
       if (existsSync(filePath)) unlinkSync(filePath);
@@ -258,6 +264,8 @@ export interface QuotaCooldownState {
    * when a quota-fallback run was refused too: both are spent.
    */
   auth?: ClaudeCredential;
+  /** Structured facts for the SessionStart notice, independent of log wording. */
+  reason?: ObserverQuotaReason;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
@@ -317,8 +325,16 @@ export function recordQuotaExhausted(
   profile?: string,
   /** 'claude' only: the credential the refused generator billed (QuotaCooldownState.auth). */
   auth?: ClaudeCredential,
+  reason?: ObserverQuotaReason,
 ): QuotaCooldownState {
-  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile, ...(auth ? { auth } : {}) });
+  const noticeReason: ObserverQuotaReason = reason ?? (window === 'unavailable'
+    ? { kind: 'unavailable' }
+    : window === 'rate_limit'
+      ? { kind: 'busy' }
+      : provider === 'claude'
+        ? auth === 'api-key' ? { kind: 'api_key_limit' } : { kind: 'used_up', ...(window ? { window } : {}) }
+        : { kind: 'out_of_quota' });
+  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile, ...(auth ? { auth } : {}), reason: noticeReason });
 }
 
 /**
@@ -336,7 +352,7 @@ export function recordAuthCooldown(
 }
 
 function armCooldown(
-  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause' | 'auth'>,
+  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause' | 'auth' | 'reason'>,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const { profile, ...rest } = armed;
@@ -541,7 +557,16 @@ export function resetQuotaCooldownsForTesting(): void {
  * answer when it loads; in any process that never loads it, this stays null
  * and the mirror carries no serving provider.
  */
-export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => QuotaProvider | null;
+export interface QuotaFallbackResolution {
+  servingProvider: QuotaProvider | null;
+  notice: ObserverQuotaNoticeContext;
+}
+
+export type QuotaFallbackResolver = (
+  provider: QuotaProvider,
+  nowMs: number,
+  holds: readonly ObserverQuotaCooldown[],
+) => QuotaProvider | QuotaFallbackResolution | null;
 
 let quotaFallbackResolver: QuotaFallbackResolver | null = null;
 
@@ -599,10 +624,9 @@ export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null)
  * concurrent caller at once — the request burst the breaker exists to prevent.
  * It leaves the map only on a successful generation (`clearQuotaCooldown`).
  *
- * Each window lasts what its own kind is entitled to (`resolveQuotaCooldownMs`),
- * so the mirror carries the pause that holds LONGEST, not the one armed last: a
- * fresh ninety-second throttle must not hide a spent allowance that still has
- * half an hour to run.
+ * The legacy fields retain the longest hold for health API compatibility.
+ * The notice also carries both roles' holds, so it can name the earliest retry
+ * when neither provider can serve.
  *
  * When another provider is serving (a quota fallback), the mirror names it, so
  * the session-start notice says capture continues instead of saying it is
@@ -621,12 +645,22 @@ export function syncObserverHealthQuotaCooldown(
   try {
     let latest: QuotaCooldownState | null = null;
     let latestUntil = 0;
+    const holds: ObserverQuotaCooldown[] = [];
     for (const state of cooldowns.values()) {
       // Neither the gateway's claim holder nor a refused credential is a quota
       // pause to announce (see isClaimOnly and QuotaCooldownState.cause).
       if (isClaimOnly(state) || state.cause === 'auth') continue;
       const until = state.armedAtMs + (cooldownMs ?? resolveQuotaCooldownMs(state.window));
       if (until <= nowMs) continue;
+      holds.push({
+        active: true,
+        provider: state.provider,
+        ...(state.profile ? { profile: state.profile } : {}),
+        armedAt: state.armedAtMs,
+        until,
+        ...(state.auth ? { auth: state.auth } : {}),
+        ...(state.reason ? { reason: state.reason } : {}),
+      });
       if (!latest || until > latestUntil) {
         latest = state;
         latestUntil = until;
@@ -637,14 +671,10 @@ export function syncObserverHealthQuotaCooldown(
       clearObserverQuotaCooldown();
       return;
     }
-    let servingProvider: QuotaProvider | null = null;
-    try {
-      servingProvider = quotaFallbackResolver?.(latest.provider, nowMs) ?? null;
-    } catch {
-      // A resolver fault must never cost the mirror itself; with no serving
-      // provider the notice says paused, which is the safe reading.
-      servingProvider = null;
-    }
+    const resolution = quotaFallbackResolver?.(latest.provider, nowMs, holds) ?? null;
+    const servingProvider = typeof resolution === 'object' && resolution !== null
+      ? resolution.servingProvider : resolution;
+    const notice = typeof resolution === 'object' && resolution !== null ? resolution.notice : undefined;
     recordObserverQuotaCooldown({
       active: true,
       provider: latest.provider,
@@ -655,8 +685,10 @@ export function syncObserverHealthQuotaCooldown(
       until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
       ...(latest.auth ? { auth: latest.auth } : {}),
+      ...(latest.reason ? { reason: latest.reason } : {}),
       message: latest.message,
       ...(servingProvider ? { servingProvider } : {}),
+      ...(notice ? { notice } : {}),
     });
   } catch (err) {
     logger.warn('SESSION', 'Failed to mirror quota cooldown into observer-health', {}, err as Error);

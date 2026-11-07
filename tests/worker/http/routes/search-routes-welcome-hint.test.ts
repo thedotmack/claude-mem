@@ -241,11 +241,11 @@ describe('SearchRoutes Welcome Hint', () => {
 
     expect(res.send).toHaveBeenCalledTimes(1);
     const body = (res.send as any).mock.calls[0][0] as string;
-    expect(body).toContain('paused while a provider quota cooldown is active');
-    expect(body).toContain('This is not a failure');
+    expect(body).toContain('claude-mem has paused saving memories');
+    expect(body).toContain("Activity during the pause isn't saved");
     expect(body).toContain('# claude-mem status');
     expect(body).not.toContain("can't save memories");
-    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('has paused saving memories'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 

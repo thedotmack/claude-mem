@@ -149,7 +149,7 @@ describe('Cowork hook image capture', () => {
     ingestStatus = 503;
     const { stderr } = await runHook(observation(SHAPES.anthropic_base64.response()));
     // One bounded code; never ids, labels, paths or bytes.
-    expect(stderr.trim()).toBe('claude-mem-cowork: media upload failed (storage_unavailable)');
+    expect(stderr.trim()).toBe('cmem-pro: media upload failed (storage_unavailable)');
     expect(uploads()).toHaveLength(1);
     expect(ingests()).toHaveLength(1);
     expect(String(ingests()[0].json.payload.tool_response)).toContain('upload_failed');

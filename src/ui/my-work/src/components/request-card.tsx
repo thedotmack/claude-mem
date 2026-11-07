@@ -16,6 +16,7 @@ import { Req } from '@/spec/req'
 import type { Request } from '@/data'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -169,6 +170,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           </div>
           <div className="flex items-center gap-1.5">
             <StateBadge state={request.state} />
+            {request.media && <MediaCountBadge media={{ version: 1, attachments: request.media.preview }} count={request.media.count} />}
             {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
           </div>
         </CardHeader>
@@ -197,6 +199,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           )}
 
           <Deliverables request={request} onOpen={onOpen} />
+
+          {/* The request's images: its first few, with "+N" opening the drawer that holds every one. */}
+          {request.media && <ObsMediaStrip media={{ version: 1, attachments: request.media.preview }} total={request.media.count} title={text?.title ?? 'Untitled request'} onMore={onOpen} />}
 
           {/* Shipped work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
           {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}

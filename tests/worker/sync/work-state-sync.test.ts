@@ -522,7 +522,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
   // Roll back everything after v65, not just the work-state steps: v68's
-  // observation_files row and the v69-v71 media schema would otherwise remain
+  // observation_files row and the v69-v72 media schema would otherwise remain
   // the newest applied versions and the fixture would no longer be a database
   // main left at v65.
   db.run('DROP TABLE IF EXISTS observation_files');
@@ -532,7 +532,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
     'media_cloud_deletions', 'media_attachments', 'media_events']) {
     db.run(`DROP TABLE IF EXISTS ${table}`);
   }
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71)');
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

@@ -220,7 +220,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 - 👥 **TeamBrain** - My Work 旁的可选共享工作区,提供真实的团队工作清单、成员归属和关联发现。每个人自行选择分享内容;个人请求与复核笔记保持独立。[组建团队](https://cmem.ai/teambrain/start)。
 - 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索记忆
 - 🔒 **隐私控制** - 使用 `<private>` 标签排除敏感内容的存储
-- 🖼️ **截图(可选,默认关闭)** - 将工具截图的转换副本保存在 `~/.claude-mem/media-v1/`,仅在开启 Cloud Sync 时上传到 cmem.ai,仅在单独启用图像推理时发送给观察模型([详情](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in))
+- 🖼️ **截图(默认开启,可用"Keep images"开关关闭)** - 将工具截图的转换副本保存在 `~/.claude-mem/media-v1/` 并在 My Work 中显示,仅在开启 Cloud Sync 时上传到 cmem.ai,仅在单独启用图像推理时发送给观察模型([详情](https://docs.claude-mem.ai/configuration#screenshots-and-images))
 - ⚙️ **上下文配置** - 精细控制注入的上下文内容
 - 🤖 **自动操作** - 无需手动干预
 - 🔗 **引用** - 通过 worker API 使用 ID 引用过去的观察,或在 Web 查看器中查看全部
