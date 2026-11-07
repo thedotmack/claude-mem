@@ -36,9 +36,19 @@ let workerPortConnections: number;
 let openSockets: Socket[];
 let fakeServer: ReturnType<typeof Bun.serve> | null;
 let contextRequests: RecordedContextRequest[];
+let denseRows = false;
 
 function serverRows(project: string): Array<Record<string, unknown>> {
   const now = Date.now();
+  if (denseRows) return Array.from({ length: 20 }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    projectId: 'server-project-1', teamId: 'team-1',
+    serverSessionId: 'b1d2c3e4-0000-4000-8000-000000000001',
+    kind: 'discovery', content: 'narrative',
+    metadata: { title: 'RECORD_' + i + '_' + 'x'.repeat(440), project },
+    createdAtEpoch: now - (20 - i) * 60_000,
+    updatedAtEpoch: now - (20 - i) * 60_000,
+  })).reverse(); // /v1/context returns newest first.
   return [
     {
       id: '3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b',
@@ -180,6 +190,7 @@ beforeEach(async () => {
   mkdirSync(projectDir, { recursive: true });
   projectName = basename(projectDir);
   contextRequests = [];
+  denseRows = false;
   fakeServer = null;
 
   // Something other than a worker owns the worker port: it accepts
@@ -204,6 +215,32 @@ afterEach(async () => {
 });
 
 describe('SessionStart in server runtime (plan-24 step 4)', () => {
+  it('reserves the OAuth hint before selecting whole server records', async () => {
+    denseRows = true;
+    writeSettings(startFakeServer(), {
+      CLAUDE_MEM_PROVIDER: 'claude',
+      CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false',
+      CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false',
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: '20',
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
+    });
+    const before = await runWorkerService(['hook', 'claude-code', 'context'], sessionStartInput());
+    writeFileSync(join(dataDir, 'oauth-stale.marker'), 'expired '.repeat(150));
+    const after = await runWorkerService(['hook', 'claude-code', 'context'], sessionStartInput());
+    expect(before.exitCode).toBe(0);
+    expect(after.exitCode).toBe(0);
+    const plain = parseHookOutput(before.stdout).hookSpecificOutput!.additionalContext!;
+    const warned = parseHookOutput(after.stdout).hookSpecificOutput!.additionalContext!;
+    const newest = 'RECORD_19_' + 'x'.repeat(440);
+    expect(plain).toContain(newest);
+    expect(warned).toContain(newest);
+    expect(warned).toContain('claude auth login');
+    expect(warned.length).toBeLessThanOrEqual(10_000);
+    expect(warned).not.toContain('Recent context omitted');
+    expect(warned.match(/RECORD_/g)!.length).toBeLessThan(plain.match(/RECORD_/g)!.length);
+    expect(workerPortConnections).toBe(0);
+  }, 30_000);
+
   it('returns no timeline on Claude resume without reading the server or worker', async () => {
     writeSettings(startFakeServer());
 

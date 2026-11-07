@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
+import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolvePreferredRefreshAgent, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
@@ -1087,6 +1087,53 @@ describe('automatic refresh timer', () => {
       await new Promise(resolve => setImmediate(resolve));
       worker.close();
       expect(logs).toEqual(['Work view refresh check failed: unable to open database file']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('automatic refresh interval setting', () => {
+  it('keeps the ten-minute default when the value is empty, not a number, or not positive', () => {
+    for (const value of [undefined, null, '', '   ', 'abc', '0', '-5', NaN]) expect(refreshIntervalMs(value as any)).toBe(10 * 60000);
+  });
+
+  it('turns minutes into milliseconds, so 1440 is one day', () => {
+    expect(refreshIntervalMs('10')).toBe(10 * 60000);
+    expect(refreshIntervalMs('60')).toBe(60 * 60000);
+    expect(refreshIntervalMs(' 1440 ')).toBe(86400000);
+    expect(refreshIntervalMs(30)).toBe(30 * 60000);
+  });
+
+  it('never goes under one minute or over what setInterval can hold', () => {
+    expect(refreshIntervalMs('0.01')).toBe(60000);
+    expect(refreshIntervalMs('99999999')).toBe(2 ** 31 - 1);
+  });
+
+  it('records the next check one interval after this one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, checkMs: refreshIntervalMs('1440'), runJob: async () => ({ state: 'ok', agent: null, result: null, error: null }) });
+      expect(await worker.check()).toBe('idle');
+      const status = worker.status()!;
+      expect(Date.parse(status.nextAt!) - Date.parse(status.checkedAt!)).toBe(86400000);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('after a failed run with an interval longer than four hours, the next check shown is the next tick, not four hours out', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const DAY = 86400000;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, checkMs: refreshIntervalMs('1440'),
+        runJob: async () => ({ state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' }) });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(NOW + DAY).toISOString() });
+      // The wait never grows past one interval when that is longer than four hours, and a failure before
+      // the run starts (runNow) reports the same next check.
+      writeFileSync(join(dir, 'request-groups.json'), '{not json');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(NOW + DAY).toISOString() });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

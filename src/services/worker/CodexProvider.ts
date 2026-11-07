@@ -392,6 +392,12 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     // recorded meanwhile (each record installs a new object).
     const admittedQuota = getQuotaCooldown('codex');
     const admittedSetup = getDependencyStatus('codex_cli');
+    // Auth recovery probe: the running app-server children still hold the old
+    // OAuth token in memory. Kill the idle ones so ensureStarted() spawns
+    // fresh processes that read the current auth.json from disk.
+    if (admittedQuota?.cause === 'auth' && admittedQuota.probeClaimId !== null) {
+      await this.appServer.recycleIdle();
+    }
     let result: CodexAppServerTurnResult;
     try {
       result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal, paidSendBudget);
