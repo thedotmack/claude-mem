@@ -221,7 +221,7 @@ Trình cài đặt lo phần phụ thuộc, thiết lập plugin, cấu hình nh
 - 👥 **TeamBrain** - Không gian làm việc chung (tùy chọn) bên cạnh My Work, với danh sách công việc thật của nhóm, ghi nhận từng thành viên và các phát hiện được liên kết. Mỗi người tự chọn những gì muốn chia sẻ; yêu cầu cá nhân và ghi chú review được giữ riêng. [Thiết lập nhóm](https://cmem.ai/teambrain/start).
 - 💻 **Skill cho Claude Desktop** - Tìm kiếm bộ nhớ từ các cuộc trò chuyện trên Claude Desktop
 - 🔒 **Kiểm soát quyền riêng tư** - Dùng thẻ `<private>` để không lưu nội dung nhạy cảm
-- 🖼️ **Ảnh chụp màn hình (tùy chọn, tắt theo mặc định)** - Lưu bản chuyển đổi của ảnh chụp màn hình từ công cụ trong `~/.claude-mem/media-v1/`, chỉ tải lên cmem.ai khi bật Cloud Sync, và chỉ gửi cho mô hình observer khi bật riêng tính năng suy luận hình ảnh ([chi tiết](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in))
+- 🖼️ **Ảnh chụp màn hình (bật theo mặc định, tắt bằng công tắc "Keep images")** - Lưu bản chuyển đổi của ảnh chụp màn hình từ công cụ trong `~/.claude-mem/media-v1/` và hiển thị trong My Work, chỉ tải lên cmem.ai khi bật Cloud Sync, và chỉ gửi cho mô hình observer khi bật riêng tính năng suy luận hình ảnh ([chi tiết](https://docs.claude-mem.ai/configuration#screenshots-and-images))
 - ⚙️ **Cấu hình ngữ cảnh** - Kiểm soát chi tiết ngữ cảnh nào được đưa vào
 - 🤖 **Hoạt động tự động** - Không cần thao tác thủ công
 - 🔗 **Trích dẫn** - Tham chiếu các quan sát trước đây bằng ID qua worker API, hoặc xem tất cả trong web viewer

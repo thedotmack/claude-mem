@@ -35,7 +35,9 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 /**
  * Consecutive stall resumes allowed before the observer stops restarting on its
  * own. An answered queued-work turn resets the count, so this only trips when
- * the provider keeps going silent. The next hook event can still start one.
+ * the provider keeps going silent. Once it trips, the session's buffered work
+ * is discarded rather than held for an event that may never come (#5405); the
+ * next hook event can still start fresh work.
  */
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
 

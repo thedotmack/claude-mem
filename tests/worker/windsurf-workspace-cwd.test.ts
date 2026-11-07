@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 for (const event of ['post_mcp_tool_use', 'post_cascade_response', 'post_run_command']) {
-it(`installed Windsurf ${event} hooks spool observations for the active workspace`, async () => {
+it(`installed Windsurf ${event} hooks hand off observations live for the active workspace`, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'owned-windsurf-cwd-'));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;

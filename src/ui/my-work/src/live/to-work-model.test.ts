@@ -429,3 +429,20 @@ test('minimal shipped progress retains its date and survives mapping without opt
   assert.deepEqual(model.requests[0].story, [])
   assert.equal(model.requests[0].progress.history, undefined)
 })
+
+test('image refs ride through: the card summary to Request.media, each record\'s refs to its granular row', () => {
+  const ref = (n: number) => ({ id: `00000000-0000-4000-8000-00000000000${n}`, label: `image-${n}`, inspection: 'uninspected' as const })
+  const at = Date.UTC(2026, 9, 21)
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(),
+    activity: [
+      { id: 'observation:2', kind: 'observation', title: 'Read the screenshot', detail: null, atEpoch: at, url: '/api/work-view/evidence/observation/2', media: { version: 1, attachments: [ref(1), ref(2)], overflow: true } },
+      { id: 'observation:1', kind: 'observation', title: 'Planned the layout', detail: null, atEpoch: at - 1000, url: '/api/work-view/evidence/observation/1' },
+    ],
+    media: { count: 2, preview: [ref(1), ref(2)] } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.media, { count: 2, preview: [ref(1), ref(2)] })
+  assert.deepEqual(request.granular[0].media, { version: 1, attachments: [ref(1), ref(2)], overflow: true })
+  assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
+  const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal('media' in plain, false, 'an image-free request gains no key')
+})

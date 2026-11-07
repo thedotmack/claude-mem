@@ -7,6 +7,7 @@ import { buildFocusAreas, isMyFocusList, placeRequests } from './my-focus.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
 import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
+import { observationMediaFromMetadata } from '../media/feed.js';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -82,8 +83,20 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const calls = safeRead(database, `SELECT id, project, platform_source, agent_id, agent_type, session_db_id, memory_session_id, content_session_id, prompt_number, tool_input, created_at_epoch
     FROM tool_uses WHERE tool_name IN (SELECT DISTINCT tool_name FROM tool_uses WHERE tool_name LIKE '%work_state_write%')
     AND created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [workSinceEpoch, workCallLimit]);
-  const observations = safeRead(database, `SELECT id, project, memory_session_id, content_session_id, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
+  // No migration adds observations.content_session_id; only databases from older releases have it. Selecting it on a
+  // fresh database would make safeRead return no observations at all, so a database without it reads NULL there, the
+  // same as a row whose column is empty.
+  const observationContentSession = safeRead(database, 'PRAGMA table_info(observations)').some((column) => column.name === 'content_session_id')
+    ? 'content_session_id' : 'NULL AS content_session_id';
+  const observations = safeRead(database, `SELECT id, project, memory_session_id, ${observationContentSession}, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
+  // Image refs come from their own read: safeRead turns a missing column into no rows, so a database without
+  // `metadata` then loses only its images, never its observations. Only the validated refs are kept on the row;
+  // the metadata column itself never leaves this function.
+  const withMetadata = observations.length ? safeRead(database, `SELECT id, metadata FROM observations
+    WHERE metadata IS NOT NULL AND id IN (${observations.map(() => '?')})`, observations.map((row) => row.id)) : [];
+  const mediaById = new Map(withMetadata.map((row) => [row.id, observationMediaFromMetadata(row.metadata)]).filter(([, media]) => media));
+  for (const observation of observations) if (mediaById.has(observation.id)) observation.media = mediaById.get(observation.id);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
   const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch, 2000, { database });
@@ -365,7 +378,9 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   for (const observation of observations) {
     const session = sessionsByMemory.get(observation.memory_session_id);
     const group = getGroup({ session, agentId: observation.agent_id, agentType: observation.agent_type, project: observation.project });
-    const observationActivity = { id: `observation:${observation.id}`, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` };
+    // Validated image refs only (readAgentRecords); an image-free observation gains no key.
+    const media = observation.media;
+    const observationActivity = { id: `observation:${observation.id}`, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}`, ...(media ? { media } : {}) };
     if (!group.isSubagent) {
       const requestKey = confirmedRequestKey(session, observation.prompt_number);
       observationBucket(group, observation, session, requestFor(session, observation.prompt_number), requestKey, mainKey(group, observation), { withSummary: true });

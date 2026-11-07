@@ -28,7 +28,7 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
 import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
 import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
-import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
+import { AutoRefreshWorker, refreshIntervalMs } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js';
@@ -45,6 +45,7 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
+import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
@@ -277,6 +278,7 @@ interface WorkViewOptions {
   setupScan?: SetupScan | null;
   /** The install funnel's per-machine state file (choice, installer stage, completion). */
   setupStatePath?: string;
+  setupTelemetry?: ReturnType<typeof createSetupTelemetry>;
   /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
   settingsPath?: string;
   /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
@@ -313,6 +315,8 @@ const setupCheckoutBody = z.object({}).strict();
 const setupCompleteBody = z.object({
   /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
   tools: z.array(z.string().min(1).max(40)).max(20).optional(),
+  // Checked separately so a bad analytics payload cannot block real setup.
+  telemetry: z.unknown().optional(),
 }).strict();
 const setupImportBody = z.object({}).strict();
 
@@ -399,6 +403,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     dir: ledgerDir,
     openDatabase,
     setupRunning,
+    checkMs: refreshIntervalMs(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN),
     enabled: () => !setupRunning()
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
@@ -459,6 +464,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
   private setupStatePath: string;
+  private setupTelemetry: ReturnType<typeof createSetupTelemetry> | null = null;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
   private ledgerDir: string | null;
@@ -509,6 +515,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
     this.setupScan = options.setupScan ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
+    this.setupTelemetry = options.setupTelemetry ?? null;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.historyImport = options.historyImport ?? null;
     this.hostedIntent = options.hostedIntent === undefined
@@ -638,6 +645,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    const setupTelemetry = this.setupTelemetry ?? createSetupTelemetry(this.setupStatePath);
+    this.setupTelemetry = setupTelemetry;
+    app.get('/api/setup/telemetry', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler((_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ context: setupTelemetry.context() });
+    }));
+    app.post('/api/setup/telemetry', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler((req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      // Opt-out is intentionally indistinguishable from an accepted event to the UI.
+      setupTelemetry.receive(req.body);
+      res.status(204).end();
+    }));
     // The owner-goals script already writes through this loopback worker. Its
     // story update commits shared facts before the compatibility file changes.
     app.post('/api/work-view/shared-ledger', workViewLoopbackOnly, requireWorkViewOrigin,
@@ -895,7 +914,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'Finish checkout before finishing setup.', state: this.setupStateView(state) });
       return;
     }
+    const captureCompletion = this.setupTelemetry?.prepareCompletion(req.body.telemetry);
     this.saveSetupState({ ...state, status: 'complete', tools: tools ?? state.tools, completedAt: new Date().toISOString() }, res);
+    // Synchronous enqueue after the successful write, before the installer can
+    // remove its session marker or restart this worker.
+    captureCompletion?.();
   };
 
   private broadcast(event: string, value: unknown): void {

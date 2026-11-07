@@ -118,6 +118,34 @@ describe('SearchRoutes Welcome Hint', () => {
     if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
 
+  it('passes dynamic notice reserves to whole-item rendering without overwriting the ordinary cache', async () => {
+    process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED = 'false';
+    process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+    const recordLiveRender = mock(async () => {});
+    const cache = {
+      recordLiveRender,
+      removalGenerationNow: () => 0,
+      warmVariant: mock(async () => {}),
+    };
+    const routes = new SearchRoutes(mockSearchManager, cache as any);
+    const handler = captureContextInjectHandler(routes);
+    const invoke = async (reserveChars?: string) => {
+      generateContextStub.mockClear();
+      const res = createMockRes();
+      await handler({ query: { projects: 'demo', ...(reserveChars === undefined ? {} : { reserveChars }) } } as any, res as any);
+      await new Promise(resolve => setImmediate(resolve));
+      return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+    };
+    const baseline = (await invoke()).reserveChars;
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('251')).reserveChars).toBe(baseline + 251);
+    expect(cache.warmVariant).toHaveBeenCalledTimes(1);
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('-1')).reserveChars).toBe(baseline);
+    expect((await invoke('NaN')).reserveChars).toBe(baseline);
+    expect((await invoke('100000')).reserveChars).toBe(baseline + 10_000);
+  });
+
   afterAll(() => {
     mock.module('../../../../src/services/context-generator.js', () => realContextGeneratorSnapshot);
     mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
