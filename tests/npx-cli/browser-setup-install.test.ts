@@ -45,6 +45,8 @@ process.env.CLAUDE_CONFIG_DIR = join(fixture, 'claude');
 process.env.CLAUDE_MEM_ENV_FILE = join(data, '.env');
 process.env.PATH = `${bin}:/usr/bin:/bin`;
 process.env.DO_NOT_TRACK = '1';
+// CI hides the optional email question; these cases play a person at a terminal.
+delete process.env.CI;
 for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_API_KEY']) delete process.env[key];
 
 // A free loopback port for the fixture worker.
@@ -69,6 +71,7 @@ const usage = { ...await import('../../src/npx-cli/install/usage-summary.js') };
 const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const spawner = { ...await import('../../src/services/worker-spawner.js') };
 const cliPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
+const memoryCredentials = { ...await import('../../src/npx-cli/cmem-memory-credentials.js') };
 const packageVersion = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')).version;
 mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPluginVersion: () => packageVersion }));
 
@@ -85,7 +88,12 @@ mock.module('@clack/prompts', () => ({
   intro: () => {}, outro: (value: string) => lines.push(value), cancel: (value: string) => lines.push(value),
   note: (value: string, title?: string) => lines.push(`${title}\n${value}`),
   spinner: () => ({ start: (value: string) => lines.push(value), stop: (value: string) => lines.push(value), message: () => {} }),
-  multiselect: async (options: { message: string }) => { questions.push(options.message); return ['claude-code']; },
+  multiselect: async (options: { message: string }) => {
+    questions.push(options.message);
+    // The terminal flow's provider prompt: CMEM Pro, whose sign-in is the login boundary below.
+    if (options.message.startsWith('Select Provider')) return ['cmem'];
+    return ['claude-code'];
+  },
   select: async (options: { message: string }) => {
     questions.push(options.message);
     if (options.message.startsWith('Which runtime')) return 'worker';
@@ -93,6 +101,8 @@ mock.module('@clack/prompts', () => ({
     return 'claude-haiku-4-5-20251001';
   },
   confirm: async (options: { message: string }) => { questions.push(options.message); return false; },
+  // The optional email opt-in: Enter (empty) skips it, so the note question never follows.
+  text: async (options: { message: string }) => { questions.push(options.message); return ''; },
   // Plugin copy and dependency installs are other suites' business; IDE hooks and the worker start run for real.
   tasks: async (tasks: Array<{ title: string; task: (message: (value: string) => void) => Promise<string> }>) => {
     for (const task of tasks) {
@@ -105,6 +115,11 @@ mock.module('@clack/prompts', () => ({
   log: Object.fromEntries(['info', 'success', 'warn', 'error', 'message', 'step'].map(key => [key, (value: string) => lines.push(value)])),
 }));
 mock.module('../../src/npx-cli/banner.js', () => ({ ...banner, playBanner: async () => {} }));
+// Host mode probes for an observer the user already runs; the host case only needs the settings it writes.
+mock.module('../../src/npx-cli/cmem-memory-credentials.js', () => ({
+  ...memoryCredentials,
+  buildHostObserverSettings: () => ({ CLAUDE_MEM_PROVIDER: 'openrouter' }),
+}));
 mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...spawnGate, holdSpawnLock: async () => () => {} }));
 
@@ -263,8 +278,11 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
     expect(pairingStarts).toEqual([]);
+    // The optional email is asked once up front; skipping it skips the note too.
+    expect(questions.filter(q => q.startsWith('Your work email'))).toHaveLength(1);
+    expect(questions.some(q => q.includes('how can we help'))).toBe(false);
     // No provider multiselect and no model question: the browser made the choice, the model keeps its default.
-    expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code'))).toEqual([]);
+    expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code') && !q.startsWith('Your work email'))).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(lines.join('\n')).toContain('Not required (local provider)');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
@@ -417,13 +435,22 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   it('a machine that already finished setup keeps the terminal flow', async () => {
     const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' };
     writeFileSync(statePath, JSON.stringify(completed));
-    // The terminal flow's login step reaches cmem.ai, which this fixture refuses outside the pairing start.
-    // Stopping at the login boundary is enough to show no browser hand-off ran.
+    // The terminal flow's login step (after picking CMEM Pro) reaches cmem.ai, which this fixture refuses
+    // outside the pairing start. Stopping at the login boundary is enough to show no browser hand-off ran.
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(opened).toEqual([]);
     expect(setupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
+    // Sign-in waited for the provider choice instead of gating the install.
+    expect(questions.some(q => q.startsWith('Select Provider'))).toBe(true);
+    expect(lines.join('\n')).toContain('CMEM Pro needs a claude-mem sign-in.');
+  });
+
+  it('a --provider host install says no account is needed', async () => {
+    await runInstallCommand({ provider: 'host' });
+    expect(pairingStarts).toEqual([]);
+    expect(lines.join('\n')).toContain('Not required (host observer)');
   });
 
   it('releases the GUI session when the worker fails while preserving saved setup state', async () => {

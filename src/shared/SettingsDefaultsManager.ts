@@ -399,6 +399,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_TRIAL_AT: string;
   CLAUDE_MEM_PRO_TRIAL_STATE: string;
   CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  // The installer's optional email opt-in (install.ts promptEmailOptIn).
+  // Declared so loadFromFile round-trips them: a dropped email would re-ask
+  // and POST the waitlist again.
+  CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_NOTE: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_AT: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_SENT: string;
   CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_PRO_FALLBACK_AT: string;
   // The gateway's own words for the rejection that set CLAUDE_MEM_PRO_FALLBACK_AT,
@@ -714,6 +721,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
     CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
     CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
+    // Installer email opt-in: empty until someone shares an email.
+    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_SENT: '',  // 'true' once the waitlist accepted it, 'false' to retry next install
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
     CLAUDE_MEM_PRO_FALLBACK_MESSAGE: '', // The gateway's message for that rejection ('' = plan-neutral notice copy)

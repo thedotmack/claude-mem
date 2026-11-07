@@ -1154,6 +1154,23 @@ describe('SettingsDefaultsManager', () => {
     // sign-in keys were declared, an installer-written settings.json lost
     // them on every load (the round-trip-loss gap fixed by the install-first
     // login flow plan, Phase 4).
+    // The installer's email opt-in reads these back to avoid asking twice;
+    // an undeclared key would be dropped on the next settings rewrite.
+    it('round-trips the installer email opt-in keys', () => {
+      const signup = {
+        CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: 'dev@example.com',
+        CLAUDE_MEM_ONLINE_SIGNUP_NOTE: 'onboarding a team',
+        CLAUDE_MEM_ONLINE_SIGNUP_AT: '2026-11-07T12:00:00.000Z',
+        CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'false',
+      };
+      writeFileSync(settingsPath, JSON.stringify({ env: signup }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result).toMatchObject(signup);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toMatchObject(signup);
+    });
+
     describe('CMEM Pro sign-in keys round-trip', () => {
       const proKeys = {
         CLAUDE_MEM_PRO_TRIAL_EMAIL: 'dev@example.com',

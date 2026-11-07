@@ -57,6 +57,11 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
   'CLAUDE_MEM_NOTION_TOKEN',
+  // Contact details, not credentials, but this GET answers any localhost page.
+  // The viewer never shows them, and HTTP cannot write them.
+  'CLAUDE_MEM_ONLINE_SIGNUP_EMAIL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_NOTE',
+  'CLAUDE_MEM_PRO_TRIAL_EMAIL',
 ]);
 
 function maskSecretString(value: string): string {
