@@ -181,7 +181,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
     runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
-    runningLive: started && completedEpoch === null && status !== 'closed' ? true : undefined,
+    // Counts up only while the request is open: not closed, and not completed by a recorded time or a lifecycle that
+    // says complete (the projection's own rule, even when the lifecycle carries no time).
+    runningLive: started && completedEpoch === null && status !== 'closed' && raw.lifecycle?.complete !== true ? true : undefined,
     stage,
     state,
     closed: status === 'closed' || undefined,

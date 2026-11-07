@@ -117,6 +117,8 @@ test('a closed request with a start and no completion does not count up as runni
   assert.equal(request.closed, true)
   assert.ok(request.startedAtIso, 'the fixture has a recorded start')
   assert.equal(request.runningLive, undefined)
+  const complete = mapOne({ lifecycle: { explicit: true, complete: true, status: 'done' }, completedAtEpoch: null }).request
+  assert.equal(complete.runningLive, undefined, 'a lifecycle that says complete has finished, even without a time')
   const open = mapOne({ completedAtEpoch: null }).request
   assert.equal(open.runningLive, true, 'an open request with a start and no completion still counts up')
 })
