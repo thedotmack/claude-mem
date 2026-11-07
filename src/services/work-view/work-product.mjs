@@ -116,7 +116,9 @@ function commitSubjects(command) {
     const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
     const text = inline ? (inline[1] ?? inline[2]).replace(/\\(.)/g, '$1') : heredoc?.[1];
-    return short(text?.split('\n')[0]);
+    // -m "$(cat <<'EOF'\n<subject>\n...EOF\n)": the subject is the heredoc's first line.
+    const substituted = text?.match(/^\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    return short((substituted ? substituted[1] : text)?.split('\n')[0]);
   });
 }
 
@@ -201,8 +203,9 @@ function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
   const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
   const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
   if (!url) return [];
-  const title = command.match(/--title\s+(?:"([^"]+)"|'([^']+)')/);
-  return [{ kind: 'pull-request', title: short(title?.[1] ?? title?.[2]) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
+  const title = command.match(/(?:--title(?:=|\s+)|\s-t\s+)(?:"((?:[^"\\]|\\.)+)"|'([^']+)')/);
+  const titleText = title?.[1]?.replace(/\\(.)/g, '$1') ?? title?.[2];
+  return [{ kind: 'pull-request', title: short(titleText) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
 }
 
 /** Commits and branches one recorded Bash command made. */
