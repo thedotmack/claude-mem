@@ -51,7 +51,7 @@ label; it never includes an arbitrary decoder exception message.
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 25 GiB converted assets, atomically reserved. Reason: abuse protection; it caps one account's stored images at about $0.57 a month (26.8 GB at Supabase Storage's $0.0213 per GB a month, read 2026-11-05). A heavy real user, 100 screenshots a day at the measured median lossy converted pair of 138 KiB (2026-11-06), stores about 4.8 GiB a year |
+| Initial owner quota | 256 MiB converted assets, atomically reserved. Pro enforces it (uploads past it answer 413 `quota_exceeded`); the value matches Pro's contract |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 

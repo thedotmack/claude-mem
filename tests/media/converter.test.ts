@@ -329,3 +329,9 @@ test('missing decoder is a safe media failure and larger deadlines cannot bypass
   await assert.rejects(missing(await makePng(), 'image/png'), rejects('decoder_unavailable'));
   assert.throws(() => createMediaConverter({ deadlineMs: LOCAL_CONVERSION_DEADLINE_MS + 1000 }), rejects('invalid_manifest'));
 });
+
+test('the owner quota stays at the value Pro enforces', () => {
+  // Pro's src/lib/media/contract.ts enforces 256 MiB (uploads past it answer 413
+  // quota_exceeded). The shared contract must not promise more until Pro changes first.
+  assert.equal(MEDIA_LIMITS.ownerQuotaBytes, 256 * 1024 * 1024);
+});
