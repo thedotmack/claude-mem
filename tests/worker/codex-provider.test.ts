@@ -24,6 +24,7 @@ import {
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' };
 
@@ -122,7 +123,7 @@ describe('Codex provider integration', () => {
     const store = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 1 }));
     const confirm = mock(async () => 1);
     const db = { getSessionStore: () => ({ storeObservations: store,
-      ensureMemorySessionIdRegistered: () => 'codex-test' }),
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => 'codex-test' }),
       getChromaSync: () => null, getCloudSync: () => null };
     const manager = { getClaimedMessages: () => [], confirmClaimedMessages: confirm };
     const process = (text: string, s = session()) =>

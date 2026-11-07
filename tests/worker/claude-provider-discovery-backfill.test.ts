@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // #3664: a gateway that synthesizes streaming for the Claude path reports
 // input_tokens: 0 on every assistant frame, so discovery_tokens collapsed to
@@ -149,7 +150,7 @@ function createHarness(session: ActiveSession) {
   const dbManager = {
     getSessionStore: () => ({
       updateMemorySessionId: () => {},
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       getSessionById: () => ({ memory_session_id: MEMORY_SESSION_ID }),
       storeObservations,
       updateDiscoveryTokens,

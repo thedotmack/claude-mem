@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
 import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // bun's mock.module is process-global and sticky: it is never auto-unregistered
 // and leaks into every file that runs afterwards. Snapshot each real module
@@ -170,7 +171,7 @@ function createHarness(session: ActiveSession) {
   const dbManager = {
     getSessionStore: () => ({
       updateMemorySessionId: () => {},
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       getSessionById: () => ({ memory_session_id: MEMORY_SESSION_ID }),
       storeObservations,
     }),
