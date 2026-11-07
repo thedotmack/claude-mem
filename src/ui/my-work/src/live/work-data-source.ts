@@ -4,7 +4,7 @@
 import type { Agent, CurrentPeriod, Device, FocusArea, FocusAsk, FocusChange, PastPeriod, Request, SkillRun } from '../data.ts'
 import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from '../data-rules.ts'
 import type { ConnectionStatus } from './connection-status.ts'
-import type { ReviewResult } from './review-response.ts'
+import type { ReviewResult, SaveReceipt } from './review-response.ts'
 
 export type SourceKind = 'sample' | 'local' | 'cloud'
 
@@ -50,6 +50,7 @@ export interface WorkModel {
   refresh: AutoRefresh | null
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
   sourceHealth: { connected: boolean; error: string | null }
+  sharedState?: import('./work-view-api-types.ts').WorkViewSharedState
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */
   connection: ConnectionStatus
 }
@@ -61,7 +62,8 @@ export interface AutoRefresh { state: 'idle' | 'running' | 'ok' | 'failed' | 'wa
 export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }
 
 /** A saved rule change: the model right after it, and the rule it saved (null from workers that don't say). */
-export interface RuleSaveResult { model: WorkModel; savedRuleId: string | null }
+export interface RuleSaveResult { model: WorkModel; savedRuleId: string | null; save?: SaveReceipt }
+export interface SuggestionSaveResult { model: WorkModel; save?: SaveReceipt }
 
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>
@@ -69,13 +71,17 @@ export type MappedWorkModel = Omit<WorkModel, 'connection'>
 export interface WorkDataSource {
   readonly sourceKind: SourceKind
   loadWorkModel(): Promise<WorkModel>
+  /** Optional for compact sources; old workers and sample data already carry complete request detail. */
+  loadRequestDetail?(requestId: string, expectedFingerprint?: string, options?: { signal?: AbortSignal }): Promise<Request>
   /** Streams new models and connection changes until the returned function is called. */
   subscribeToLiveUpdates(onWorkModel: (model: WorkModel) => void, onConnectionChange: (status: ConnectionStatus) => void): () => void
   /**
    * Marks one version of a request checked, or undoes that. `expectedFingerprint` is the version on screen: the
    * worker refuses a check for any other version. Rejects when the save fails for a reason it can't name.
    */
-  setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean): Promise<ReviewResult>
+  setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean, expectedReviewHash?: string | null): Promise<ReviewResult>
+  /** Answers the exact suggestion the owner read; a refusal carries the newest model. */
+  answerRequestSuggestion?(suggestion: NonNullable<Request['suggestion']>, action: 'join' | 'not-this'): Promise<SuggestionSaveResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
   saveRuleChange(change: RuleChange): Promise<RuleSaveResult>
   /** Saves one change to My Focus and answers with the model after it. Rejects with the reason it was not saved. */

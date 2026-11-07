@@ -35,7 +35,7 @@ export const setupZh: Record<string, string> = {
   "detected, can't run setup": '已检测到，无法运行设置',
   '{count} messages': '{count} 条消息',
   'Scan progress': '扫描进度',
-  'Also share my anonymized setup results to help improve claude-mem (optional)': '同时共享我的匿名设置结果以帮助改进 claude-mem（可选）',
+  'Share anonymous usage statistics to help improve your Claude-mem experience': '共享匿名使用统计数据，帮助改进您的 Claude-mem 体验',
   'Discover your work': '发现您的工作',
   'Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.': 'Claude-Mem 会扫描您的会话记录，自动发现您现有的工作、偏好以及关注的重点。',
   'Selected messages are sent to cmem.ai and an AI provider.': '选中的消息将发送至 cmem.ai 和 AI 提供商。',

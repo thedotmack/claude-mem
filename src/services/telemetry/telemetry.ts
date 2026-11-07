@@ -17,6 +17,7 @@ import {
 } from './error-scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 import { telemetryBuffer } from './buffer.js';
+import { parseSetupEvent, type SetupEvent } from '../../shared/setup-funnel.js';
 // logger.warn ONLY in this module — logger.error routes through the error sink
 // back into captureException (logger.ts setErrorSink), which would recurse.
 import { logger } from '../../utils/logger.js';
@@ -44,6 +45,21 @@ function hasConsent(): boolean {
 
 /** Worker-side collectors share the transport's bounded consent cache. */
 export function hasTelemetryConsent(): boolean { return hasConsent(); }
+
+/** Structural setup events must retain their episode identity and order, never enter daily rollups. */
+export function captureSetupEvent(value: SetupEvent): void {
+  try {
+    const safe = parseSetupEvent(value);
+    if (!safe || isShutdown || !resolveTelemetryConsent(process.env, loadTelemetryConfig())) return;
+    const { event, occurred_at, ...fields } = safe;
+    const properties = { ...scrubProperties(buildBaseProperties()), ...fields, $process_person_profile: false };
+    if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
+      process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');
+      return;
+    }
+    getClient().capture({ distinctId: `setup:${safe.setup_flow_id}`, event, timestamp: new Date(occurred_at), properties });
+  } catch { /* An unavailable analytics service cannot interrupt setup. */ }
+}
 
 /**
  * Whether THIS process is the long-lived worker. Only the worker enables

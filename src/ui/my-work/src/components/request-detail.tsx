@@ -1,13 +1,14 @@
 import { displayTime } from '@/lib/display-time'
 import { interpolate, t, useI18n } from '../../../i18n'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-react'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
 import { QueueItem, QueueItemContent, QueueItemIndicator, QueueList } from '@/components/ai-elements/queue'
 import { Task, TaskContent, TaskItem, TaskTrigger } from '@/components/ai-elements/task'
 import { SaveButton } from '@/components/save-button'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -21,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
+import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
 
 const RECENT_RECORDS = 5
 
@@ -65,10 +67,26 @@ function Records({ records }: { records: Request['granular'] }) {
 type CheckNotice = { tone: 'saved' | 'problem'; message: string }
 
 /** What the person is told after the worker answers (app.js `saveReview` toasts). */
-function noticeFor(result: ReviewResult, checked: boolean): CheckNotice {
+function noticeFor(result: ReviewResult, checked: boolean, requestId: string, expectedFingerprint?: string): CheckNotice {
   switch (result.outcome) {
-    case 'saved': return { tone: 'saved', message: checked ? CHECKED_LOCALLY_MESSAGE : CHECK_UNDONE_MESSAGE }
-    case 'changed-while-reading': return { tone: 'problem', message: CHANGED_WHILE_READING_MESSAGE }
+    case 'saved': {
+      const latest = result.model.requests.find((request) => request.id === requestId)
+      const review = latest?.review
+      const shared = (result.save?.scope ?? review?.mode) === 'shared'
+      const pending = result.save ? result.save.state === 'queued' : review?.pending
+      if (shared && review?.conflict) return {
+        tone: 'problem', message: `Your review decision was saved here, but your viewers still have conflicting decisions. Read this version and choose again.${pending ? ' The saved decision is waiting to sync.' : ''}`,
+      }
+      if (expectedFingerprint && latest?.contentFingerprint !== expectedFingerprint) return {
+        tone: 'problem', message: `Your review decision was saved for the version you read. The current work changed; review it again.${shared && pending ? ' The saved decision is waiting to sync.' : ''}`,
+      }
+      return { tone: 'saved', message: shared
+        ? `${checked ? 'Checked' : 'Check undone'} for this shared version.${pending ? ' Saved here; waiting to sync to your other viewers.' : ''}`
+        : result.model.sourceKind === 'cloud'
+          ? `${checked ? 'Checked' : 'Check undone'} in your cloud viewer only. My Work sharing is off.`
+          : checked ? CHECKED_LOCALLY_MESSAGE : CHECK_UNDONE_MESSAGE }
+    }
+    case 'changed-while-reading': return { tone: 'problem', message: result.serverMessage ?? CHANGED_WHILE_READING_MESSAGE }
     case 'refused': return { tone: 'problem', message: result.serverMessage }
     case 'unavailable': return { tone: 'problem', message: result.serverMessage }
   }
@@ -89,7 +107,7 @@ function CheckAction({ request }: { request: Request }) {
     let next: CheckNotice
     try {
       // The version on screen is the one checked; the worker refuses any other.
-      next = noticeFor(await useStore.getState().setRequestChecked(request.id, checked, request.contentFingerprint), checked)
+      next = noticeFor(await useStore.getState().setRequestChecked(request.id, checked, request.contentFingerprint, request.review?.hash), checked, request.id, request.contentFingerprint)
     } catch (error) {
       next = { tone: 'problem', message: error instanceof Error ? error.message : String(error) }
     } finally {
@@ -100,6 +118,17 @@ function CheckAction({ request }: { request: Request }) {
   }
   const noticeLine = notice && (
     <p role="status" className={cn('w-full text-xs', notice.tone === 'problem' ? 'font-medium text-foreground' : 'text-muted-foreground')}>{t(notice.message)}</p>
+  )
+  if (request.review?.available === false) return (
+    <p role="status" className="rounded-xl border p-4 text-sm text-muted-foreground">{request.review.message ?? 'This review is unavailable until the shared state is complete. Nothing was changed.'}</p>
+  )
+  if (request.review?.conflict) return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border p-4 text-sm">
+      <p role="status" className="basis-full">{request.review.message ?? 'Your viewers recorded different review decisions. Read this version, then choose the decision to keep.'}</p>
+      {request.state === 'needs-check' && <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />Mark checked</SaveButton>}
+      <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />Keep unchecked</SaveButton>
+      {noticeLine}
+    </div>
   )
   if (request.state === 'needs-check') {
     return (
@@ -113,17 +142,53 @@ function CheckAction({ request }: { request: Request }) {
     )
   }
   if (!request.checkedAt) return noticeLine
-  // A check is private review metadata (review-store), not work state: it does not sync.
-  const savedWhere = sourceKind === 'cloud' ? t("Saved in your cloud viewer only. Your computers do not see this check.") : sourceKind !== 'sample' ? t("Saved on this machine.") : mode === 'web' ? interpolate(t('Saved from the web · syncing to {count} machines (demonstration)'), { count: devices.length }) : t("Saved on this machine (demonstration)")
+  const savedWhere = request.review?.mode === 'shared'
+    ? request.review.pending ? t('Saved here; waiting to sync to your other viewers.') : t('Saved as a shared review decision.')
+    : sourceKind === 'cloud' ? t('Saved in your cloud viewer only. My Work sharing is off.') : sourceKind !== 'sample' ? t('Saved on this machine only.') : mode === 'web' ? interpolate(t('Saved from the web · syncing to {count} machines (demonstration)'), { count: devices.length }) : t('Saved on this machine (demonstration)')
   return (
     <Req ids={['R6.2', 'R13.7']}>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-surface p-4 text-sm">
-        <span role="status">{interpolate(t('{checked} Shipping is still your call. '), { checked: notice?.tone === 'saved' ? t(notice.message) : interpolate(t('Checked {checkedAt}.'), { checkedAt: request.checkedAt }) })}<span className="text-muted-foreground">{savedWhere}</span></span>
+        <span role="status">{interpolate(t('{checked} Shipping is still your call. '), { checked: notice?.tone === 'saved' ? t(notice.message) : interpolate(t('Checked {checkedAt}.'), { checkedAt: request.checkedAt }) })}{notice?.tone !== 'saved' && <span className="text-muted-foreground">{savedWhere}</span>}</span>
         <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />{t("Undo")}</SaveButton>
         {notice?.tone === 'problem' && noticeLine}
       </div>
     </Req>
   )
+}
+
+function SuggestionAction({ request }: { request: Request }) {
+  const { sourceKind } = useWorkModel()
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<CheckNotice | null>(null)
+  const suggestion = request.suggestion
+  if (!suggestion) return notice ? <p role="status" className="text-sm text-muted-foreground">{notice.message}</p> : null
+  const save = async (action: 'join' | 'not-this') => {
+    setSaving(true)
+    try {
+      const result = await useStore.getState().answerRequestSuggestion(suggestion, action)
+      const shared = result.save?.scope === 'shared'
+      const localCopy = result.save?.localMaterialization === 'pending' ? " This viewer's local work copy is still updating." : ''
+      const conflict = result.model.requests.some((current) => current.suggestion?.conversationKey === suggestion.conversationKey && current.suggestion.sharedConflict)
+      if (conflict) {
+        setNotice({ tone: 'problem', message: `Your decision was saved here, but grouping decisions still conflict. Read this suggestion and choose again.${shared && result.save?.state === 'queued' ? ' The saved decision is waiting to sync.' : ''}${localCopy}` })
+        return
+      }
+      setNotice({ tone: 'saved', message: `${action === 'join' ? 'Joined the request.' : 'Kept these requests separate.'} ${shared
+        ? result.save?.state === 'queued' ? 'Saved here; waiting to sync to your other viewers.' : 'Saved as a shared decision.'
+        : sourceKind === 'cloud' ? 'Saved in your cloud viewer only.' : 'Saved on this machine only.'}${localCopy}` })
+    } catch (error) { setNotice({ tone: 'problem', message: error instanceof Error ? error.message : String(error) }) }
+    finally { setSaving(false) }
+  }
+  return <div className="space-y-2 rounded-xl border p-4 text-sm">
+    <p>{suggestion.sharedConflict ? 'Your viewers recorded different grouping decisions. Read this suggestion, then choose again to resolve them.' : 'This work may be part of another request.'}</p>
+    <p className="font-medium">{suggestion.requestTitle}</p>
+    {suggestion.evidence && <p className="text-muted-foreground">{suggestion.evidence}</p>}
+    <div className="flex gap-2">
+      <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save('join')} disabled={saving}>Join</SaveButton>
+      <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save('not-this')} disabled={saving}>Not this</SaveButton>
+    </div>
+    {notice && <p role="status" className={notice.tone === 'problem' ? 'font-medium' : 'text-muted-foreground'}>{notice.message}</p>}
+  </div>
 }
 
 /** Move to…: puts the request in another area or Other, as the owner's placement (a refresh never overrides it). */
@@ -156,7 +221,49 @@ function MoveTo({ request }: { request: Request }) {
 /** The request page (§3): whose move and what's next first, then outcome, then the layers underneath, collapsed. */
 export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
+  const readDetail = useStore((state) => state.loadRequestDetail)
+  const [retry, setRetry] = useState(0)
+  const [detail, setDetail] = useState<{ key: string; request?: Request; error?: string } | null>(null)
+  const key = request ? requestDetailKey(request) : ''
+  const needsDetail = request?.detailLoaded === false
+  const requestRef = useRef(request)
+  requestRef.current = request
+  useEffect(() => {
+    const summary = requestRef.current
+    if (!summary || !needsDetail) return
+    const controller = new AbortController()
+    let active = true
+    setDetail({ key })
+    void readDetail(summary, { signal: controller.signal }).then(
+      (loaded) => { if (active) setDetail({ key, request: loaded }) },
+      (error: unknown) => {
+        if (active && !controller.signal.aborted) setDetail({ key, error: error instanceof Error ? error.message : 'Request detail could not be loaded.' })
+      },
+    )
+    return () => { active = false; controller.abort() }
+    // The detail version changes only when recorded content changes. A new overview object must not restart this read.
+  }, [key, needsDetail, readDetail, retry])
   if (!request) return null
+  if (!needsDetail) return <LoadedRequestDetail request={request} onClose={onClose} onOpenFocus={onOpenFocus} />
+  const current = detail?.key === key ? detail : null
+  if (current?.request) return <LoadedRequestDetail request={mergeRequestDetail(request, current.request)} onClose={onClose} onOpenFocus={onOpenFocus} />
+  return (
+    <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
+      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="gap-3 border-b p-5 md:p-6">
+          <SheetTitle className="pr-8 text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? t('Untitled request')}</SheetTitle>
+          <SheetDescription>{request.summary ?? request.resolvesTo?.summary ?? t('Request details')}</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-3 p-5 md:p-6" aria-live="polite">
+          {current?.error ? <><p role="alert" className="text-sm text-muted-foreground">{t(current.error)}</p><Button variant="outline" onClick={() => setRetry((value) => value + 1)}>{t('Try again')}</Button></> : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner className="size-4" />{t('Loading request detail…')}</p>}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Request; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  useI18n()
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
@@ -174,6 +281,7 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
 
         <div className="space-y-6 p-5 md:p-6">
           <CheckAction key={request.id} request={request} />
+          <SuggestionAction key={`suggestion:${request.id}`} request={request} />
           <OpenFollowUps request={request} />
 
           <div className="space-y-3">
@@ -193,9 +301,11 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
                   {request.workProduct.map((product, index) => {
                     const Icon = PRODUCT_ICON[product.kind]
                     return (
-                      <ProductLink key={`${index}-${product.label}`} href={product.href} className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm hover:bg-surface">
+                      <ProductLink key={`${index}-${product.label}`} href={product.href} className={cn('flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm', product.href && 'hover:bg-surface')}>
                         <Icon className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 truncate">{product.label}</span>
+                        <span className="min-w-0"><span className="block truncate">{product.label}</span>
+                          {product.availability === 'origin-only' && <span className="block text-xs text-muted-foreground">{t('Local file — check the original computer')}</span>}
+                        </span>
                         <Badge variant="outline" className="ml-auto shrink-0 font-normal">{t(product.kind)}</Badge>
                       </ProductLink>
                     )

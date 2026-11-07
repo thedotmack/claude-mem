@@ -1482,16 +1482,14 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
-        // Windows: Start-Process -WindowStyle Hidden (never Node detached —
-        // detached allocates its own console on win32, #3521). POSIX: setsid /
-        // detached. Either way the daemon's cwd is claude-mem's data dir, not
-        // the user's project that this hook inherited: a daemon holds its cwd
-        // open for its whole life, and on Windows that locks the folder against
-        // rename or move long after the session ends (#3706). The helper also
-        // listens for the async spawn 'error' (a dangling runtime shim), which
-        // would otherwise escape as an uncaught exception (#4039).
-        // A budgeted hook caps the Windows launch (a synchronous PowerShell
-        // Start-Process) at what is left of its deadline.
+        // One detached spawnHidden launch on every platform, so the daemon's
+        // cwd is claude-mem's data dir, not the user's project that this hook
+        // inherited: a daemon holds its cwd open for its whole life, and on
+        // Windows that locks the folder against rename or move long after the
+        // session ends (#3706). The helper also listens for the async spawn
+        // 'error' (a dangling runtime shim), which would otherwise escape as
+        // an uncaught exception (#4039). No PowerShell on Windows: the encoded
+        // Start-Process command line is a behavioural-AV fingerprint (#5240).
         const spawned = spawnDetachedWorkerDaemon(
           runtimePath,
           scriptPath,
@@ -1500,7 +1498,6 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
             CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
           }),
           process.platform,
-          remainingBudgetMs(deadlineAt) ?? undefined,
         );
         if (spawned === undefined) {
           return false;
@@ -1644,7 +1641,7 @@ async function preSpawnPortIsFree(
     return true;
   }
   if (reclaim.reason === 'out-of-budget' && hookDeadlineAt !== null) {
-    handOffReclaimToDaemon(port, scriptPath, hookDeadlineAt);
+    handOffReclaimToDaemon(port, scriptPath);
   }
   if (readOwnedWorkerPidInfo() === null) {
     orphanedPortDiagnosis = port;
@@ -1666,13 +1663,13 @@ const RECLAIM_HANDOFF_MIN_SPACING_MS = 30_000;
 
 /**
  * Upper bound on one handoff while its daemon is alive (or its pid is unknown:
- * the Windows launch goes through Start-Process and returns none). The
- * unbudgeted reclaim's slowest path is Windows: a health wait, two health
- * probes (4 s), the listener read (up to 15 s), the process-table read for the
- * identity check (up to 30 s), the tree-kill (5.5 s) and a second listener
- * read (15 s), about 75 s. A daemon that wins the port becomes the worker and
- * stays alive, so the bound also keeps a later wedge of that worker from being
- * blocked forever by its own handoff.
+ * a launch that never yielded a pid). The unbudgeted reclaim's slowest path is
+ * on Windows: a health wait, two health probes (4 s), the listener read (up to
+ * 15 s), the process-table read for the identity check (up to 30 s), the
+ * tree-kill (5.5 s) and a second listener read (15 s), about 75 s. A daemon
+ * that wins the port becomes the worker and stays alive, so the bound also
+ * keeps a later wedge of that worker from being blocked forever by its own
+ * handoff.
  */
 const RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS = 120_000;
 
@@ -1747,7 +1744,7 @@ function reclaimHandoffInFlight(): boolean {
  * lock, so at most one hook launches it, and the in-flight marker keeps the
  * next hook events from launching another while it runs.
  */
-function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDeadlineAt: number): void {
+function handOffReclaimToDaemon(port: number, scriptPath: string | null): void {
   if (reclaimHandoffInFlight()) {
     logger.debug('SYSTEM', 'A detached reclaim is already in flight; not launching another', { port });
     return;
@@ -1778,7 +1775,6 @@ function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDea
       scriptPath,
       sanitizeEnv({ ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }),
       process.platform,
-      remainingBudgetMs(hookDeadlineAt) ?? undefined,
     );
     if (spawned === undefined) {
       // No daemon started: let the next hook event try again.
@@ -1861,9 +1857,8 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
-      // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
-      // with the daemon's cwd pinned to the data dir, not the caller's project
-      // (#3706).
+      // One detached spawnHidden launch on every platform, with the daemon's
+      // cwd pinned to the data dir, not the caller's project (#3521, #3706).
       const spawned = spawnDetachedWorkerDaemon(
         runtimePath,
         scriptPath,
@@ -1872,7 +1867,6 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
           CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
         }),
         process.platform,
-        Math.max(1, remainingMs()),
       );
       if (spawned === undefined) return false;
     }

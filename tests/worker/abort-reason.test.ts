@@ -34,11 +34,11 @@ describe('abort-reason authority', () => {
     expect(normalizeAbortReason(reason)).toBe(expected);
   });
 
-  it('preserves every pause that keeps its buffered work, drift included', () => {
-    for (const category of ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport', 'output_retry', 'drift']) {
+  it('preserves every pause that keeps its buffered work, drift included; quota and auth discard it', () => {
+    for (const category of ['rate_limit', 'overflow', 'provider_switch', 'transport', 'output_retry', 'drift']) {
       expect(PRESERVED_ABORT_CATEGORIES.has(category)).toBe(true);
     }
-    for (const category of ['idle', 'shutdown', 'restart-guard', '']) {
+    for (const category of ['quota', 'auth', 'idle', 'shutdown', 'restart-guard', '']) {
       expect(PRESERVED_ABORT_CATEGORIES.has(category)).toBe(false);
     }
   });

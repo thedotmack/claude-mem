@@ -877,6 +877,33 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('transient');
   });
 
+  it('classifies unrecognized_model message as unrecoverable', () => {
+    const err = classifyClaudeError(
+      new Error('[claude-code:unrecognized_model] {"model":"auto","query_source":"sdk"}')
+    );
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  it('classifies "There\'s an issue with the selected model" message as unrecoverable', () => {
+    const err = classifyClaudeError(
+      new Error(
+        "There's an issue with the selected model (auto). It may not exist or you may not have access to it."
+      )
+    );
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+  });
+
+  it('classifies the SDK error that follows a model refusal as model_unavailable', () => {
+    // Text thrown by SDK 0.3.318 for the refusal in #5315.
+    const err = classifyClaudeError(
+      new Error("Claude Code returned an error result: There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.")
+    );
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+    expect(err.action).toContain('CLAUDE_MEM_MODEL');
+  });
+
   it('classifies unknown error as transient (preserve old default)', () => {
     const err = classifyClaudeError(new Error('something weird happened'));
     expect(err.kind).toBe('transient');

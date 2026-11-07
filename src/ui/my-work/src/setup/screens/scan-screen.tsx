@@ -65,7 +65,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
         </div>
         <label className="scan-improve-product">
           <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading'} onChange={(event) => onImproveProductChange(event.target.checked)} />
-          <span>{t('Also share my anonymized setup results to help improve claude-mem (optional)')}</span>
+          <span>{t('Share anonymous usage statistics to help improve your Claude-mem experience')}</span>
         </label>
         {scan.phase === 'awaiting-consent' && (
           <div className="scan-consent" role="group" aria-label={t('Discover your work')}>

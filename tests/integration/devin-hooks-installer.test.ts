@@ -52,11 +52,12 @@ describe('devinMcpConfigPath', () => {
 describe('hook merge', () => {
   const ours = buildDevinHooks('/usr/local/bin/bun', '/plugin/scripts/worker-service.cjs');
 
-  test('registers the Claude Code handlers Devin has, and no PreToolUse', () => {
-    expect(Object.keys(ours)).toEqual(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']);
+  test('registers the Claude Code handlers Devin has, context again after compaction, and no PreToolUse', () => {
+    expect(Object.keys(ours)).toEqual(['SessionStart', 'PostCompaction', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']);
     const commands = Object.values(ours).flatMap((rules) => rules.flatMap((rule) => rule.hooks.map((hook) => hook.command)));
     expect(commands).toEqual([
       '"/usr/local/bin/bun" "/plugin/scripts/worker-service.cjs" start',
+      '"/usr/local/bin/bun" "/plugin/scripts/worker-service.cjs" hook devin context',
       '"/usr/local/bin/bun" "/plugin/scripts/worker-service.cjs" hook devin context',
       '"/usr/local/bin/bun" "/plugin/scripts/worker-service.cjs" hook devin session-init',
       '"/usr/local/bin/bun" "/plugin/scripts/worker-service.cjs" hook devin observation',

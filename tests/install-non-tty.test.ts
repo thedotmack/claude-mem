@@ -54,6 +54,20 @@ describe('Install Non-TTY Support', () => {
       expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
     });
 
+    it('prints the agent browser-setup hint only on the non-interactive path, after the sign-in offer', () => {
+      const hintIndex = installSource.indexOf('log.info(AGENT_BROWSER_SETUP_HINT)');
+      const gateIndex = installSource.indexOf('shouldPrintAgentBrowserSetupHint({');
+      const nonInteractiveSuccessIndex = installSource.indexOf("console.log('\\nclaude-mem installed successfully!')");
+      expect(gateIndex).toBeGreaterThan(-1);
+      expect(gateIndex).toBeLessThan(hintIndex);
+      expect(hintIndex).toBeGreaterThan(nonInteractiveSuccessIndex);
+      expect(hintIndex).toBeGreaterThan(installSource.indexOf('await offerDeferredLogin(options, version)'));
+      expect(hintIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+      const gateCall = installSource.slice(gateIndex, hintIndex);
+      expect(gateCall).toContain('ci: Boolean(process.env.CI)');
+      expect(gateCall).toContain('providerSource: options.providerSource');
+    });
+
     it('never opens an API-key prompt on non-interactive stdin', () => {
       const passwordIndex = installSource.indexOf('const apiKeyResult = await p.password');
       const guardIndex = installSource.lastIndexOf('if (!isInteractive)', passwordIndex);

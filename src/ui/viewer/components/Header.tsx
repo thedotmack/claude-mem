@@ -5,6 +5,7 @@ import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL, TEAMBRAIN_PITCH, TEAMBRAIN_START_URL } from '../constants/promo';
+import type { SyncPresentation } from '../utils/sync-presentation';
 
 interface HeaderProps {
   projects: string[];
@@ -12,6 +13,8 @@ interface HeaderProps {
   onFilterChange: (filter: string) => void;
   isProcessing: boolean;
   queueDepth: number;
+  isConnected?: boolean;
+  syncStatus?: SyncPresentation;
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
@@ -26,6 +29,8 @@ export function Header({
   onFilterChange,
   isProcessing,
   queueDepth,
+  isConnected = false,
+  syncStatus,
   themePreference,
   onThemeChange,
   onContextPreviewToggle,
@@ -81,6 +86,9 @@ export function Header({
         )}
       </div>
       <div className="status">
+        {syncStatus && <span data-sync-state={syncStatus.state} title={`${isConnected ? 'Feed connected.' : 'Feed disconnected.'} ${syncStatus.detail}`} style={{ fontSize: 12, color: syncStatus.tone === 'warning' ? 'var(--warning-color, #b86b15)' : 'var(--text-secondary)' }}>
+          {isConnected ? 'Feed connected' : 'Feed disconnected'} · {syncStatus.label}
+        </span>}
         <a
           href="https://docs.claude-mem.ai"
           target="_blank"

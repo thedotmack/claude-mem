@@ -36,7 +36,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -155,16 +155,41 @@ const codexUsage: UsageReader = {
     for (const source of sources) {
       try {
         let previousTotal: number | null = null;
+        let ownThreadId: string | null = null;
+        let sawSessionMeta = false;
+        let awaitingForkSettings = false;
         for await (const line of readLines(source.path)) {
-          if (!line.includes('"token_count"')) continue;
+          if (!line.includes('"token_count"') && !line.includes('"session_meta"')
+            && !line.includes('"thread_settings_applied"')) continue;
           const record = parseLine(line);
+          if (record?.type === 'session_meta' && !sawSessionMeta) {
+            sawSessionMeta = true;
+            const id = record.payload?.id;
+            if (typeof id === 'string' && id) {
+              ownThreadId = id;
+              // These creator versions persist a child-owned startup snapshot
+              // before any child turn. Resume retains the original header, so
+              // an older fork's later upgrade snapshot must not erase its usage.
+              awaitingForkSettings = codexForkThreadId(record.payload) !== null;
+            }
+            continue;
+          }
+          if (awaitingForkSettings && record?.type === 'event_msg'
+            && record.payload?.type === 'thread_settings_applied'
+            && record.payload.thread_id === ownThreadId) {
+            // Copied fork history is re-timestamped when written. This
+            // snapshot ends that inherited prefix; retain its counter as the
+            // baseline, but only later increments belong to the child.
+            awaitingForkSettings = false;
+            continue;
+          }
           const info = record?.payload?.type === 'token_count' ? record.payload.info : null;
           const total = info?.total_token_usage?.total_tokens;
           if (record?.type !== 'event_msg' || typeof total !== 'number') continue;
           // The first count in a file may continue an earlier session's running total; only its own turn is new.
           const increase = previousTotal === null ? count(info.last_token_usage?.total_tokens) : Math.max(0, total - previousTotal);
           previousTotal = total;
-          tally(usage, isoToEpochMs(record.timestamp), increase, sinceEpochMs);
+          if (!awaitingForkSettings) tally(usage, isoToEpochMs(record.timestamp), increase, sinceEpochMs);
         }
       } catch (error) { skip(source, error); }
     }

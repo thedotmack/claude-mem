@@ -60,6 +60,15 @@ function mockVerifyEndpoint(request: Request): Response {
 	}
 	if (token === "denied-401") return new Response("denied", { status: 401 });
 	if (token === "denied-403") return new Response("denied", { status: 403 });
+	// A lapsed/cancelled/unpaid plan. The Pro verifier answers 402 for it (see
+	// services/sync-api/src/auth.ts authRejection); the Hub must treat it as
+	// terminal exactly like 401/403, not as a retryable outage.
+	if (token === "denied-402") {
+		return Response.json(
+			{ error: "Subscription not active", code: "subscription_inactive", status: "past_due" },
+			{ status: 402 },
+		);
+	}
 	if (token === "upstream-500") return new Response("boom", { status: 500 });
 	if (token === "wrong-user") return Response.json({ userId: "someone-else" });
 	if (token === "no-id") return Response.json({ ok: true });

@@ -66,6 +66,7 @@ function dependencies(overrides: Partial<AgentDetectionDependencies>): Partial<A
     readClaudeOAuthToken: async (): Promise<OAuthTokenResult> => ({ kind: 'absent', reason: 'no credential' }),
     hasAnthropicApiKey: () => false,
     hasAnthropicAuthToken: () => false,
+    hasConfiguredClaudeOAuthToken: () => false,
     fileExists: () => false,
     readTextFile: () => {
       throw new Error('ENOENT');
@@ -131,6 +132,24 @@ describe('detectUsableAgents', () => {
     it('logged in through an API key', async () => {
       const agent = await detectOne('claude-code', { ...installed, hasAnthropicApiKey: () => true });
       expect(agent).toMatchObject({ authenticated: true });
+    });
+
+    it('logged in through a long-lived CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env, without reading the stored login', async () => {
+      const calls: string[] = [];
+      let storeRead = false;
+      const agent = await detectOne('claude-code', {
+        ...installed,
+        spawn: fakeSpawn({}, calls),
+        hasConfiguredClaudeOAuthToken: () => true,
+        readClaudeOAuthToken: async () => {
+          storeRead = true;
+          return { kind: 'expired', reason: 'stored login expired', expiresAt: 1 };
+        },
+      });
+      expect(agent).toMatchObject({ path: CLAUDE_PATH, authenticated: true });
+      expect(agent.reason).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+      expect(storeRead).toBe(false);
+      expect(calls.some(call => call.startsWith(CLAUDE_PATH))).toBe(false);
     });
 
     it('falls back to `claude auth status` when the stored token is expired', async () => {

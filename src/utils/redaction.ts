@@ -142,6 +142,11 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
   { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+  // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
+  // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
+  // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
+  // JSON print them; each grants an hour of the account's API access.
+  { name: 'google_oauth_token', regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
   // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
   // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
   // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
@@ -152,6 +157,13 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
+  // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
+  // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
+  // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
+  // `secret_` words and short look-alikes out.
+  { name: 'linear_key',      regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
+  { name: 'notion_token',    regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
   // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
   // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
   // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
@@ -164,6 +176,45 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
   // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
+  // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
+  // `databricks tokens create` print, and HashiCorp Vault service and batch
+  // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
+  // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
+  // print.
+  { name: 'databricks_token', regex: /\bdapi[a-f0-9]{32}(?:-\d)?(?!\w)/g },
+  { name: 'vault_token',     regex: /\b(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g },
+  // Two OpenAI-compatible providers this project onboards users for
+  // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
+  // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
+  // their installer hint, and neither was claimed by openai_key (`sk-`), so a
+  // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
+  // verbatim. 32+ trailing chars keeps short placeholders out.
+  { name: 'nvidia_nim_key',  regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
+  { name: 'runcrate_key',    regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
+  // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
+  // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
+  // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
+  // print. Neither prefix is claimed by openai_key, so they stayed in the text.
+  { name: 'groq_key',        regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
+  { name: 'xai_key',         regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+  // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+  // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+  // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+  // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+  // the fixed 48-char alphanumeric body keeps the model ids out. The worker
+  // scans JSON.stringify(toolResponse), where a newline right before the key
+  // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
+  // there and the lookbehind also accepts the escaped whitespace pair, like
+  // generic_token's ASSIGNMENT_START.
+  { name: 'perplexity_key',  regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, 'g') },
+  // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
+  // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
+  // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
+  // payload + `_` + a 43-char base64 secret), which SENTRY_AUTH_TOKEN lines,
+  // `.sentryclirc` dumps and source-map upload commands print.
+  { name: 'supabase_token',  regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
+  { name: 'sentry_token',    regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
   // Incoming webhook URLs carry their secret in the path, so anyone holding
   // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
   // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/

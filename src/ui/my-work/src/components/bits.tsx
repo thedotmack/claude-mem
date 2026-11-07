@@ -1,7 +1,7 @@
 import { displayTime } from '@/lib/display-time'
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { BotIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '../../../i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, OTHER_FOCUS_AREA_ID, ty
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
+import { presentSharedState } from '@/live/shared-state-presentation'
 import { AgentMark } from './brand'
 
 /**
@@ -191,7 +192,8 @@ export function ProductLink({ href, children, className }: { href?: string; chil
 export function LiveIndicator() {
   const { t } = useI18n()
   const { mode } = useWorkspace()
-  const { sourceKind } = useWorkModel()
+  const { sourceKind, sharedState } = useWorkModel()
+  const shared = sourceKind === 'sample' ? null : presentSharedState(sharedState)
   const connection = useConnection()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
@@ -204,14 +206,26 @@ export function LiveIndicator() {
               {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
-            {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
+            {/* Keep transport and cloud freshness distinct on phones as well as wider screens. */}
             <span className="sr-only sm:not-sr-only">{demonstration ? t('Live') : t(connection.label)}</span>
+            {!demonstration && connection.sync && (
+              <span role="status" aria-label={`${connection.sync.label}. ${connection.sync.detail}`} data-sync-state={connection.sync.state} className={cn('inline-flex items-center border-l pl-2', connection.sync.tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>
+                {connection.sync.tone === 'warning' ? <CloudAlertIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                  : connection.sync.isCurrent ? <CloudCheckIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                    : <CloudIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />}
+                <span className="sr-only sm:not-sr-only">{connection.sync.label}</span>
+              </span>
+            )}
+            {shared && <span role="status" aria-label={`${shared.label}. ${shared.detail}`} data-shared-state={shared.state} className={cn('inline-flex items-center border-l pl-2', shared.attention && 'text-attention-foreground')}>
+              {shared.attention ? <CloudAlertIcon aria-hidden="true" className="size-4 sm:hidden" /> : shared.state === 'disabled' ? <CloudOffIcon aria-hidden="true" className="size-4 sm:hidden" /> : <CloudIcon aria-hidden="true" className="size-4 sm:hidden" />}
+              <span className="sr-only sm:not-sr-only">{shared.label}</span>
+            </span>}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
           {demonstration
             ? mode === 'home' ? t('Streams from the local worker, localhost:37777 (demonstration)') : t('Checks cmem.ai for new sync changes every few seconds (demonstration)')
-            : <>{t(connection.detail)} {connection.tooltip}</>}
+            : <>{t(connection.detail)} {connection.tooltip} {connection.sync?.detail} {shared?.detail}</>}
         </TooltipContent>
       </Tooltip>
     </Req>

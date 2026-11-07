@@ -9,6 +9,21 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 ## Quick Start
 
+### When an AI agent installs for a user
+
+1. On the user's computer, run `npx claude-mem install --runtime worker` in an interactive terminal. Enable PTY if your shell tool offers it. Leave `--provider` and `--no-auto-start` unset so first-time setup can open in the browser.
+2. Before the browser opens, the installer asks in the terminal:
+   - **Overwrite existing installation?**, only when claude-mem is already installed.
+   - **Which agents to set up.** Pass `--ide <id>` (for example `--ide claude-code`) to skip this question.
+   - **Disable Claude Code auto-memory?**, only when Claude Code is one of the agents. Passing `--disable-auto-memory` answers "disable" and skips it; there is no flag for "leave enabled", so ask the user.
+
+   Relay each question to the user and type the answer they give.
+3. Keep that terminal running. When it prints **Continue setup in your browser**, open the printed URL in the user's browser if the page hasn't opened automatically. If you can't open their browser, give them that exact URL to open on the same computer.
+4. At the end, the installer may ask in the terminal whether to share anonymized usage data. Relay that question too. It is skipped when `CI` or `DO_NOT_TRACK` is set, or when the user already answered it.
+5. Hand control to the user. They choose how to use memory and complete any sign-in themselves. Wait for the installer to report the outcome before confirming setup.
+
+If you only have a remote sandbox or can't allocate a local PTY, give the user the same command to run in their own terminal.
+
 ### Option 1: Grok Bot
 
 Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:
@@ -45,7 +60,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 
 ### Skipping the Sign-In
 
-Interactive `--provider claude` skips the sign-in step. Non-interactive runs (no TTY, as when an AI agent runs the installer) without `--provider` default to the Anthropic plan on a fresh install and reuse the configured provider otherwise. Every non-interactive install that skipped sign-in prints an optional sign-in link at the very end; it is best-effort, never blocks or changes the exit status, and is skipped when `CI` is set. Local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
+Interactive `--provider claude` skips the sign-in step. Unattended runs (no TTY) without `--provider` default to the Anthropic plan on a fresh install and reuse the configured provider otherwise. After an unattended install that skipped sign-in, the CLI offers an optional sign-in link; it is best-effort, never blocks or changes the exit status, and is skipped when `CI` is set. Local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
 
 ### Option 3: Plugin Marketplace
 

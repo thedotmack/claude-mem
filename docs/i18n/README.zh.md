@@ -9,57 +9,61 @@
       <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
-  <br>
-  <a href="https://vercel.com/open-source-program">
-    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-  </a>
 </h1>
 
 <p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="Greptile" src="../public/greptile-wordmark-green.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="SerpApi" src="../public/serpapi-logo-with-wordmark-gradient.svg" height="24" />
+</p>
+
+<p align="center">
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化记忆压缩系统。</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
-    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
+  <a href="../../package.json">
+    <img src="https://img.shields.io/badge/version-15.9.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -68,13 +72,9 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/15496" target="_blank">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
-    </picture>
-  </a>
+ <a href="https://www.star-history.com/thedotmack/claude-mem">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /></picture>
+ </a>
 </p>
 
 <br>
@@ -132,11 +132,25 @@
 
 ## 快速开始
 
+为 Grok Bot 安装 claude-mem:
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Grok Bot 没有宿主钩子,因此我们改为监控聊天日志文件。默认使用 CMEM Pro(托管记忆)。本地观察器需手动开启:传入 `--provider host`。安装本插件不会安装 Cursor。
+
+**意识推送试点(LFG + Orifice):** 关键观察(`decision`、`bugfix`、`security_alert`、`sensitive` 类型)会以带日期的 `- YYYY-MM-DD [awareness] …` 形式追加到对应机器人的 `memory/log/YYYY-MM.md` 文件中。Grok Bot 本身会从磁盘重新读取该日志。此功能不会写入 `profile.md`、用户记忆或项目记忆。通过 `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false` 可将其关闭。
+
 使用一条命令即可安装:
 
 ```bash
 npx claude-mem install
 ```
+
+安装器会先完成所有设置,然后引导你在浏览器中登录 claude-mem(邮箱魔法链接——无需绑卡)。登录会为你的账户开通记忆密钥,并解锁附带 **30 天免费试用**的 **claude-mem 观察器**:记忆在套餐之外运行,你的套餐用量最多可提升 100%。免费试用结束后,记忆会自动回退到你的 Anthropic 套餐,除非你另行订阅。登录后你可以选择记忆提供商——claude-mem 观察器、你自己的 OpenRouter 或 Gemini 密钥,或你的 Anthropic 套餐。
+
+想跳过登录?传入显式的 `--provider` 标志、设置 `CLAUDE_MEM_ONLINE_OPTIN=false`,或在 CI/非交互 shell 中运行——安装器无需任何账户交互即可完成。
 
 或为 OpenCode 安装:
 
@@ -144,11 +158,36 @@ npx claude-mem install
 npx claude-mem install --ide opencode
 ```
 
+适用于 OpenCode 1.3.4 及更高版本,包括 OpenCode 2。安装后请重启 OpenCode。
+
+或为 **T3 Code**(Codex 与 Claude Code 提供商)安装:
+
+```bash
+npx claude-mem install --ide t3code
+```
+
+安装器会发现 T3 Code 已启用的提供商,在其各自的配置目录中注册原生 Claude-Mem 插件,并支持 T3 管理的 Codex。重启 T3 Code,在出现提示时信任该提供商的钩子,然后开启新会话。自定义服务器设置、状态查看与卸载方法请参阅 [T3 Code 集成指南](https://docs.claude-mem.ai/t3code-integration)。
+
 或为 Antigravity CLI 安装([设置指南](https://docs.claude-mem.ai/antigravity-cli/setup)):
 
 ```bash
 npx claude-mem install --ide antigravity
 ```
+
+或为 OMP(Oh My Pi)安装:
+
+```bash
+npx claude-mem install --ide omp
+```
+
+或安装原生 Pi 扩展或 DeepSeek Harness 插件:
+
+```bash
+npx claude-mem install --ide pi
+npx claude-mem install --ide dsh --dsh-profile tui
+```
+
+Pi 与 DeepSeek Harness 使用 worker 运行时。捕获、召回与故障排除请参阅[原生 harness 设置](../native-harness-integrations.md)。
 
 或在 Claude Code 内部从插件市场安装:
 
@@ -176,10 +215,12 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - 🧠 **持久化记忆** - 上下文跨会话保留
 - 📊 **渐进式披露** - 分层记忆检索,具有令牌成本可见性
-- 🔍 **基于技能的搜索** - 使用 mem-search 技能查询项目历史
-- 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看记忆流
+- 🔍 **智能搜索(默认)** - 使用三步 mem-search 技能查询项目历史
+- 🖥️ **本地 My Work** - 在启动时打印的 worker URL 上查看实时请求、进度、人工交接与已保存的复核队列,详见[指南](https://docs.claude-mem.ai/usage/my-work)。记忆、会话与设置仍位于 `/viewer`。
+- 👥 **TeamBrain** - My Work 旁的可选共享工作区,提供真实的团队工作清单、成员归属和关联发现。每个人自行选择分享内容;个人请求与复核笔记保持独立。[组建团队](https://cmem.ai/teambrain/start)。
 - 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索记忆
 - 🔒 **隐私控制** - 使用 `<private>` 标签排除敏感内容的存储
+- 🖼️ **截图(可选,默认关闭)** - 将工具截图的转换副本保存在 `~/.claude-mem/media-v1/`,仅在开启 Cloud Sync 时上传到 cmem.ai,仅在单独启用图像推理时发送给观察模型([详情](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in))
 - ⚙️ **上下文配置** - 精细控制注入的上下文内容
 - 🤖 **自动操作** - 无需手动干预
 - 🔗 **引用** - 通过 worker API 使用 ID 引用过去的观察,或在 Web 查看器中查看全部
@@ -195,6 +236,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 - **[安装指南](https://docs.claude-mem.ai/installation)** - 快速开始与高级安装
 - **[使用指南](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem 如何自动工作
 - **[搜索工具](https://docs.claude-mem.ai/usage/search-tools)** - 使用自然语言查询项目历史
+- **[Cloud Sync](https://docs.claude-mem.ai/cloud-sync)** - 将你的记忆备份到 cmem.ai——无需守护进程,worker 会在写入时同步
 
 ### 最佳实践
 
@@ -206,7 +248,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 - **[概述](https://docs.claude-mem.ai/architecture/overview)** - 系统组件与数据流
 - **[架构演进](https://docs.claude-mem.ai/architecture-evolution)** - 从 v3 到 v5 的旅程
 - **[钩子架构](https://docs.claude-mem.ai/hooks-architecture)** - Claude-Mem 如何使用生命周期钩子
-- **[钩子参考](https://docs.claude-mem.ai/architecture/hooks)** - 7 个钩子脚本详解
+- **[钩子参考](https://docs.claude-mem.ai/architecture/hooks)** - 逐条讲解每个钩子
 - **[Worker 服务](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API 与 Bun 管理
 - **[数据库](https://docs.claude-mem.ai/architecture/database)** - SQLite 模式与 FTS5 搜索
 - **[搜索架构](https://docs.claude-mem.ai/architecture/search-architecture)** - 使用 Chroma 向量数据库的混合搜索
@@ -223,8 +265,8 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 **核心组件:**
 
-1. **5 个生命周期钩子** - SessionStart、UserPromptSubmit、PostToolUse、Stop、SessionEnd(6 个钩子脚本)
-2. **智能安装** - 缓存依赖检查器(预钩子脚本,不是生命周期钩子)
+1. **生命周期钩子** - SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop、SessionEnd。每个钩子都是一条无 shell 命令 `claude-mem hook claude-code <event>`,由安装器放入 PATH 的小型启动器运行
+2. **智能安装** - 带缓存的依赖检查器(`claude --init` / `--maintenance` 时的 Setup 钩子,以及 `npx claude-mem install` / `repair`)
 3. **Worker 服务** - 本地 HTTP API,带有 Web 查看器界面和搜索端点,由 Bun 管理
 4. **SQLite 数据库** - 存储会话、观察、摘要
 5. **mem-search 技能** - 具有渐进式披露的自然语言查询
@@ -292,11 +334,15 @@ npm : The term 'npm' is not recognized as the name of a cmdlet
 
 请确保 Node.js 和 npm 已安装并已添加到您的 PATH 中。请从 https://nodejs.org 下载最新的 Node.js 安装程序,并在安装后重启终端。
 
+Claude Code 钩子不需要 Git Bash。每个钩子都直接运行 `claude-mem`,而 `npx claude-mem install` 会将该启动器放在 `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` 并把该目录加入用户 Path。之后请重启终端或 IDE,让 Claude Code 识别新的 Path。如果钩子报告 `Executable not found in $PATH: "claude-mem"`,请运行 `npx claude-mem doctor` 并参阅[故障排除](https://docs.claude-mem.ai/troubleshooting#claude-mem-command-not-found-in-hooks)。
+
 ---
 
 ## 配置
 
 设置在 `~/.claude-mem/settings.json` 中管理(首次运行时自动创建默认设置)。可配置 AI 模型、worker 端口、数据目录、日志级别和上下文注入设置。
+
+要在 Claude Code 与 Codex 的 SessionStart 上下文中纳入来自所有 harness 的观察,可在该文件中设置 `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"`,或在查看器设置中启用 **Include all sources at session start**。默认值为 `"false"`,即启动上下文仅限当前 harness。所选来源仍受观察数量上限约束。
 
 详见 **[配置指南](https://docs.claude-mem.ai/configuration)** 了解所有可用设置和示例。
 
@@ -329,16 +375,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | 模式 | 描述 |
 |------------|-------------------------|
 | `code` | 默认英文模式 |
-| `code--zh` | 简体中文模式 |
-| `code--ja` | 日文模式 |
+| `code--chill` | 记录更少的观察,只保留日后重新发现会很费力的内容 |
+| `code--[lang]` | 与 `code` 相同,但观察和摘要用另一种语言撰写 |
 
-特定语言模式遵循 `code--[lang]` 的模式,其中 `[lang]` 是 ISO 639-1 语言代码(例如中文为 `zh`,日语为 `ja`,西班牙语为 `es`)。
+内置语言代码:`ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`。例如,`code--ko` 会用韩语写入记忆。
 
-> 注意:`code--zh`(简体中文)已内置 —— 无需额外安装或更新插件。
+各语言的名称、电子邮件调查模式和自定义模式,请参阅[模式文档](https://docs.claude-mem.ai/modes)。
+
+> 注意:以上模式均已内置,无需额外安装或更新插件。
 
 #### 更改模式后
 
 重启 Claude Code 以应用新的模式配置。
+
 ---
 
 ## 开发
@@ -372,7 +421,9 @@ npm run bug-report
 2. 创建功能分支
 3. 进行更改并添加测试
 4. 更新文档
-5. 提交 Pull Request
+5. 提交 Pull Request(目标分支为 `main`)
+
+发布版本从 `main` 分支构建,并发布到 npm。
 
 详见[开发指南](https://docs.claude-mem.ai/development)了解贡献工作流程。
 
@@ -386,15 +437,15 @@ Claude-Mem 根据 Apache License 2.0 授权。
 开发者工具、本地代理、MCP 服务器、企业系统、机器人技术栈,
 以及生产环境的代理运行框架中。
 
-完整详情请参阅 [LICENSE](LICENSE) 文件。授权范围及开源/商业边界
-请参阅 [docs/license.md](docs/license.md) 和 [docs/ip-boundary.md](docs/ip-boundary.md)。
+完整详情请参阅 [LICENSE](../../LICENSE) 文件。授权范围及开源/商业边界
+请参阅 [docs/license.md](../license.md) 和 [docs/ip-boundary.md](../ip-boundary.md)。
 
 
 ---
 
 ## 支持
 
-- **文档**: [docs/](docs/)
+- **文档**: [docs/](../)
 - **问题反馈**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **仓库**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **官方 X 账号**: [@Claude_Memory](https://x.com/Claude_Memory)
@@ -409,6 +460,6 @@ Claude-Mem 根据 Apache License 2.0 授权。
 
 ### CMEM 是什么?
 
-CMEM 是由第三方创建、但获得 Claude-Mem 创建者(Alex Newman,@thedotmack)正式认可的代币。该代币作为社区增长的催化剂,以及将 CMEM 带给最需要它的开发者和知识工作者的载体。
+CMEM 是由第三方创建、但获得 Claude-Mem 创建者(Alex Newman,@thedotmack)正式认可的代币。该代币是社区增长的催化剂,也是把 CMEM 带给最需要它的开发者与知识工作者的载体。
 
 官方 BASE 合约地址:0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

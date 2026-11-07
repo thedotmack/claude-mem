@@ -43,8 +43,8 @@ export const viewerZh: Record<string, string> = {
   'Not deleted: the claude-mem worker could not be reached.': '未删除：无法连接 claude-mem worker。',
   'Not deleted: the worker answered HTTP {status}.': '未删除：worker 返回 HTTP {status}。',
 
-  "No memories to show": "暂无记忆展示",
-  "Memories appear here as you work. If a filter is selected, try another project or category.": "随着您的工作，记忆会显示在此处。如果已选择筛选条件，请尝试其他项目或分类。",
+  "No observations to show": "暂无观察记录",
+  "Observations appear here as you work. If a filter is selected, try another project or category.": "随着您的工作，观察记录会显示在此处。如果已选择筛选条件，请尝试其他项目或分类。",
   "Loading more...": "正在加载更多...",
   "Retry": "重试",
   "No more items to load": "已无更多内容可加载",
@@ -147,6 +147,9 @@ export const viewerZh: Record<string, string> = {
 
   'Saved sessions': '已保存的会话',
   'Loading sessions…': '正在加载会话…',
+  'Refresh latest memories': '刷新最新记忆',
+  'Refresh latest sessions': '刷新最新会话',
+  'Showing the newest memories. Load more to browse older history.': '正在显示最新的记忆。加载更多以浏览更早的历史。',
   'No sessions to show': '暂无会话',
   'Sessions appear as work is captured. Try another project if a filter is selected.': '工作内容被记录后，会话将显示在这里。如果已选择筛选条件，请尝试其他项目。',
   'Loading older sessions…': '正在加载更早的会话…',

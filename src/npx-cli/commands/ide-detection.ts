@@ -1,11 +1,12 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
+import { getGooseConfigPath } from '../../services/integrations/McpIntegrations.js';
 import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export interface IDEInfo {
@@ -154,7 +155,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'goose',
       label: 'Goose',
       detected:
-        existsSync(join(home, '.config', 'goose')) || isCommandInPath('goose'),
+        existsSync(dirname(getGooseConfigPath())) || isCommandInPath('goose'),
       hint: 'MCP-based integration',
     },
     {

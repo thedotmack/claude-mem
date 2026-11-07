@@ -4,8 +4,8 @@
 // Go only) → Finish Setup → Import (only when there is history to import) → Launch → What's next?.
 // The retired PROTO routes (savings selection, the second usage scan, device, tools, home, trial, cloud-sync) are gone.
 
-export const SETUP_STEPS = ['scan', 'reveal', 'choice', 'savings', 'checkout', 'finish-setup', 'import', 'launch', 'workspace'] as const
-export type SetupStep = (typeof SETUP_STEPS)[number]
+import { SETUP_STEPS, type SetupStep } from '../../../../shared/setup-funnel.ts'
+export { SETUP_STEPS, type SetupStep }
 
 export type MemoryBranch = 'home' | 'go'
 /** Who generates memories: CMEM Pro (hosted) or the person's own token plan. On The Go is always hosted (gap G1). */

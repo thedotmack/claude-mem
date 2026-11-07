@@ -53,6 +53,10 @@ describe('devinAdapter against Devin payloads', () => {
     expect(devinAdapter.normalizeInput(fixture.payloads.SessionEnd).reason).toBe('prompt_input_exit');
   });
 
+  test('keeps PostCompaction as the event name, which the context reply must echo', () => {
+    expect(devinAdapter.normalizeInput(fixture.payloads.PostCompaction).hookEventName).toBe('PostCompaction');
+  });
+
   test('maps SessionStart source and has no prompt-scoped turn yet', () => {
     const input = devinAdapter.normalizeInput(fixture.payloads.SessionStart);
     expect(input.sessionSource).toBe('startup');
