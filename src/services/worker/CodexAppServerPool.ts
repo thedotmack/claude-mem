@@ -78,8 +78,9 @@ export class CodexAppServerPool {
   /**
    * Kill idle app-server children so the next `ensureStarted()` spawns fresh
    * processes that read the current credentials from disk. Active clients
-   * (mid-turn) are left alone: they finish their turn, return to idle, and
-   * their stale child is recycled on the next dispatch.
+   * (mid-turn) are left alone and keep their child; the next auth probe
+   * recycles them if they are idle by then. While an auth cooldown holds,
+   * new starts are withheld, so a client is rarely mid-turn at probe time.
    *
    * Called before auth recovery probes, after a `codex login` may have
    * written new tokens while the running app-server still holds the old ones.
