@@ -25,11 +25,24 @@ export const SERVER_POSTGRES_TABLES = [
   'rate_limit_counters'
 ] as const;
 
-export async function bootstrapServerPostgresSchema(client: PostgresQueryable): Promise<void> {
+/**
+ * 'on' creates the vector table where pgvector is installable and 'off' leaves
+ * it out. 'auto' creates it on a new database and keeps one already there, so
+ * a deployment from before search by meaning stays keyword-only.
+ */
+export type VectorSchemaMode = 'on' | 'off' | 'auto';
+
+export async function bootstrapServerPostgresSchema(
+  client: PostgresQueryable,
+  vectors: VectorSchemaMode = 'on',
+  // all-MiniLM-L6-v2's width, the default model's (services/vector/models.ts).
+  embeddingDims = 384,
+): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
     try {
-      await bootstrapServerPostgresSchema(poolClient);
+      await bootstrapServerPostgresSchema(poolClient, vectors, embeddingDims);
+      bm25InUse.set(client, usesBm25Index(poolClient));
     } finally {
       poolClient.release();
     }
@@ -38,7 +51,10 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
 
   await client.query('BEGIN');
   try {
+    const createVectors = vectors === 'on' || (vectors === 'auto' && await isNewOrVectorDatabase(client));
     await applyPhase1Migration(client);
+    await applyBm25Index(client);
+    if (createVectors) await applyVectorSchema(client, embeddingDims);
     await client.query('COMMIT');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -46,6 +62,44 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
     await client.query('ROLLBACK');
     throw error;
   }
+}
+
+// Checked before the migration runs: no migrations table means a new database.
+// Looked up in the schema the tables are created in, not the whole search_path.
+async function isNewOrVectorDatabase(client: PostgresQueryable): Promise<boolean> {
+  const result = await client.query<{ create: boolean }>(
+    `SELECT to_regclass(format('%I.server_beta_schema_migrations', current_schema())) IS NULL
+         OR to_regclass(format('%I.observation_embeddings', current_schema())) IS NOT NULL AS create`
+  );
+  return result.rows[0]?.create === true;
+}
+
+// #2541 — the api_keys upgrade DDL, shared by the full phase-1 bootstrap and
+// the standalone ensureApiKeySchema() below. Both statements are idempotent:
+// fresh installs get key_prefix from CREATE TABLE, existing databases add it
+// here, and the index keeps the prefix lookup from scanning every hosted
+// team's keys.
+export const API_KEY_SCHEMA_SQL = `
+ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
+`;
+
+/**
+ * #2541 — apply the api_keys upgrade without running the full server
+ * bootstrap. The standalone key commands (`server api-key create`,
+ * `server keys rotate`, `keys rotate` in the npx CLI) may run against an
+ * existing database before any new server process has started, and they
+ * query/write `key_prefix`. Called at each of those entry points so the
+ * column and its index exist first. A no-op on a database where api_keys
+ * has not been created yet — a fresh database gets the full schema from
+ * the server's normal bootstrap.
+ */
+export async function ensureApiKeySchema(client: PostgresQueryable): Promise<void> {
+  const table = await client.query<{ present: boolean }>(
+    `SELECT to_regclass('api_keys') IS NOT NULL AS present`,
+  );
+  if (table.rows[0]?.present !== true) return;
+  await client.query(API_KEY_SCHEMA_SQL);
 }
 
 async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
@@ -58,6 +112,119 @@ async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
     `,
     [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
   );
+}
+
+const BM25_INDEX_NAME = 'idx_observations_content_bm25';
+
+// On the postgres-pgvector-textsearch image, which installs and preloads
+// pg_textsearch, keyword search ranks by bm25 through an index over
+// observation content, tokenized as content_search is. On other Postgres the
+// extension cannot be created or used (not installed, not preloaded, or not a
+// superuser), so this fails under a savepoint, the bootstrap goes on, and
+// search is unchanged. Recorded per pool or client, so a search runs no query
+// to find out.
+const bm25InUse = new WeakMap<PostgresQueryable, boolean>();
+
+async function applyBm25Index(client: PostgresQueryable): Promise<void> {
+  await client.query('SAVEPOINT bm25_index');
+  try {
+    await client.query('CREATE EXTENSION IF NOT EXISTS pg_textsearch SCHEMA public');
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS ${BM25_INDEX_NAME} ON observations USING bm25 (content) WITH (text_config = 'english')`
+    );
+    // search()'s ordering, run once: it fails if the library is not
+    // preloaded or the extension is outside public.
+    await client.query(`SELECT 1 FROM observations ORDER BY ${bm25Order('$1')} LIMIT 1`, ['probe']);
+    await client.query('RELEASE SAVEPOINT bm25_index');
+    bm25InUse.set(client, true);
+  } catch (error) {
+    await client.query('ROLLBACK TO SAVEPOINT bm25_index');
+    bm25InUse.set(client, false);
+    // Expected on Postgres without pg_textsearch; the reason tells that apart
+    // from a broken setup on an image that has it.
+    logger.info('SYSTEM', 'pg_textsearch bm25 is not in use; keyword search ranks by ts_rank', {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** ORDER BY for search() on pg_textsearch: its operator and function in public, given the query's parameter. */
+export function bm25Order(queryParam: string): string {
+  return `observations.content OPERATOR(public.<@>) public.to_bm25query(${queryParam}, '${BM25_INDEX_NAME}'), observations.id`;
+}
+
+export function usesBm25Index(client: PostgresQueryable): boolean {
+  return bm25InUse.get(client) === true;
+}
+
+// Search by meaning needs the pgvector extension, which stock postgres images
+// do not ship. Where it is not installable the table is not created and
+// search stays keyword-only, so an existing deployment boots unchanged.
+async function applyVectorSchema(client: PostgresQueryable, dims: number): Promise<void> {
+  const available = await client.query(
+    `SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`
+  );
+  if (available.rows.length === 0) {
+    logger.info('SYSTEM', 'pgvector is not installed in this Postgres; search stays keyword-only');
+    return;
+  }
+  // pgvector is not a trusted extension: only a superuser can create it. It
+  // is created only where it is missing, under a savepoint, so a role that
+  // may not create it boots keyword-only instead of failing the bootstrap.
+  const installed = await client.query(`SELECT 1 FROM pg_extension WHERE extname = 'vector'`);
+  if (installed.rows.length === 0) {
+    await client.query('SAVEPOINT create_vector');
+    try {
+      await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+      await client.query('RELEASE SAVEPOINT create_vector');
+    } catch (error) {
+      await client.query('ROLLBACK TO SAVEPOINT create_vector');
+      logger.warn('SYSTEM', 'this role cannot create the pgvector extension; search stays keyword-only until an administrator runs CREATE EXTENSION vector', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+  }
+  // An extension lives in one schema per database. Installed earlier into a
+  // schema outside this connection's search_path, its type cannot be named
+  // here, so this schema goes without vectors rather than failing to boot.
+  const visible = await client.query<{ visible: boolean }>(
+    `SELECT to_regtype('vector') IS NOT NULL AS visible`
+  );
+  if (visible.rows[0]?.visible !== true) {
+    logger.warn('SYSTEM', 'pgvector is installed in a schema outside the search_path; search stays keyword-only');
+    return;
+  }
+  // Vector search is filtered to one project, and only HNSW iterative scans
+  // (pgvector 0.8.0) keep reading the index until the filter is satisfied;
+  // without them a project whose rows are not among the nearest overall
+  // would get no semantic matches at all.
+  const version = await client.query<{ supported: boolean }>(
+    `SELECT string_to_array(extversion, '.')::int[] >= '{0,8,0}' AS supported
+     FROM pg_extension WHERE extname = 'vector'`
+  );
+  if (version.rows[0]?.supported !== true) {
+    logger.warn('SYSTEM', 'pgvector is older than 0.8.0; search stays keyword-only');
+    return;
+  }
+  // The column's width is the embedding model's (models.ts). Vectors of
+  // another width can be neither indexed with these nor compared to them, so
+  // a model of a different width starts from an empty table, which the
+  // backfill refills; one of the same width keeps the table and is re-embedded
+  // row by row, since rows from another model count as missing.
+  const stored = await client.query<{ dims: number }>(
+    `SELECT atttypmod AS dims FROM pg_attribute
+     WHERE attrelid = to_regclass('observation_embeddings') AND attname = 'embedding' AND NOT attisdropped`
+  );
+  const storedDims = stored.rows[0]?.dims;
+  if (storedDims !== undefined && storedDims !== dims) {
+    logger.warn('SYSTEM', 'embedding model width changed; dropping stored vectors to re-embed them', {
+      from: storedDims,
+      to: dims,
+    });
+    await client.query('DROP TABLE observation_embeddings');
+  }
+  await client.query(vectorSchemaSql(dims));
 }
 
 interface PostgresPoolLike extends PostgresQueryable {
@@ -119,6 +286,10 @@ CREATE TABLE IF NOT EXISTS team_members (
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY,
   key_hash TEXT NOT NULL UNIQUE,
+  -- Non-secret first-N-chars of the raw key. Salted scrypt hashes are not
+  -- deterministic per raw key, so verification narrows candidates by this
+  -- prefix (mirrors the SQLite backend's prefix column, #2541).
+  key_prefix TEXT,
   team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
   project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
   actor_id TEXT NOT NULL,
@@ -268,6 +439,11 @@ CREATE TABLE IF NOT EXISTS observation_generation_job_events (
 CREATE INDEX IF NOT EXISTS idx_agent_events_project_session ON agent_events(project_id, server_session_id, occurred_at);
 ALTER TABLE server_sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 ALTER TABLE server_sessions DROP CONSTRAINT IF EXISTS server_sessions_project_id_external_session_id_key;
+-- #2541 — non-secret key prefix for salted-hash candidate narrowing (the
+-- CREATE TABLE above carries it for fresh installs; existing DBs upgrade here),
+-- plus the lookup index so auth does not scan the table.
+ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- #2560 — platform_source on agent_events (consistent with server_sessions and
 -- the plan-09 scoping): which platform produced the event (claude-code,
 -- opencode, cursor, ...). Idempotent so an existing DB upgrades in place.
@@ -337,4 +513,26 @@ CREATE TABLE IF NOT EXISTS rate_limit_counters (
   PRIMARY KEY (subject_id, window_start)
 );
 CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_window ON rate_limit_counters(window_start);
+`;
+
+// One vector per part of an observation (narrative, legacy text, each fact,
+// or each summary field), not per observation: all-MiniLM-L6-v2 reads 256
+// word pieces, about 1,000 characters, and observations average more than
+// that. Part names match the Chroma document suffixes (obs_<id>_<part>,
+// summary_<id>_<part>) so vectors carried over from Chroma line up.
+const vectorSchemaSql = (dims: number) => `
+CREATE TABLE IF NOT EXISTS observation_embeddings (
+  observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  part TEXT NOT NULL,
+  model TEXT NOT NULL,
+  embedding vector(${dims}) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (observation_id, part)
+);
+CREATE INDEX IF NOT EXISTS idx_observation_embeddings_hnsw
+  ON observation_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_observation_embeddings_scope
+  ON observation_embeddings(team_id, project_id);
 `;

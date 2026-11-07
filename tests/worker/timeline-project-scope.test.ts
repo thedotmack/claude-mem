@@ -25,6 +25,7 @@ describe('Smart search project scope across index, timeline, and selected detail
   let base: string;
   let sequence: number;
   let anchor: number;
+  let parentAnchor: number;
   let summary: number;
   let foreign: number;
   let partialAdopted: number;
@@ -49,7 +50,7 @@ describe('Smart search project scope across index, timeline, and selected detail
     store = new SessionStore(':memory:');
     sequence = 0;
     seed(project, 'Current worktree');
-    seed(parent, 'Parent memory');
+    parentAnchor = seed(parent, 'Parent memory').id;
     const merged = seed(source, 'Needle merged decision', parent);
     anchor = merged.id;
     const mergedPrompt = store.saveUserPrompt(merged.session, 1, 'Allowed merged prompt', merged.sid);
@@ -63,7 +64,13 @@ describe('Smart search project scope across index, timeline, and selected detail
     partialUnmerged = partial.id;
     const partialPrompt = store.saveUserPrompt(partial.session, 1, 'Unadopted private prompt', partial.sid);
     store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(epoch, partialPrompt);
-    foreign = seed('unrelated', 'Unrelated private memory').id;
+    const unrelated = seed('unrelated', 'Unrelated private memory');
+    foreign = unrelated.id;
+    const foreignPrompt = store.saveUserPrompt(unrelated.session, 1, 'Unrelated private prompt', unrelated.sid);
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(epoch, foreignPrompt);
+    store.storeSummary(unrelated.session, 'unrelated', {
+      request: 'Unrelated private summary', investigated: '', learned: '', completed: '', next_steps: '', notes: null,
+    }, 1, 0, epoch);
     otherPlatform = seed(parent, 'Different platform memory', undefined, 'codex').id;
     manager = new SearchManager(new SessionSearch(store.db), store, null, new FormattingService(), new TimelineService());
     const app = express(); app.use(express.json());
@@ -107,6 +114,76 @@ describe('Smart search project scope across index, timeline, and selected detail
     }
   });
 
+  it.each(['observation', 'query', 'session'] as const)(
+    'defaults an unscoped %s timeline to the anchor project over HTTP',
+    async kind => {
+      const params = new URLSearchParams({ depth_before: '20', depth_after: '20' });
+      if (kind === 'query') params.set('query', 'Needle');
+      else params.set('anchor', kind === 'session' ? `S${summary}` : String(anchor));
+      const response = await fetch(`${base}/api/timeline?${params}`);
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.isError).not.toBe(true);
+      const body = text(result);
+      expect(body).not.toContain('Unrelated private prompt');
+      expect(ids(body)).toEqual([anchor]);
+      expect(body).toContain('Allowed merged prompt');
+      expect(body).toContain('Merged session decision');
+      expect(body).not.toContain('Unrelated private memory');
+      expect(body).not.toContain('Unrelated private summary');
+      expect(body).not.toContain('Unadopted private prompt');
+    },
+  );
+
+  it('expands the inferred project aliases while preserving partial-adoption and platform filters', async () => {
+    const result = await manager.timeline({
+      anchor: parentAnchor, platformSource: 'claude', depth_before: 20, depth_after: 20,
+    });
+    expect(result.isError).not.toBe(true);
+    const body = text(result);
+    expect(ids(body)).toEqual([parentAnchor, anchor, partialAdopted]);
+    expect(body).toContain('Allowed merged prompt');
+    expect(body).not.toContain('Unadopted private prompt');
+    expect(body).not.toContain('Unrelated private prompt');
+    expect(ids(body)).not.toContain(otherPlatform);
+  });
+
+  it('preserves an explicit multi-project timeline', async () => {
+    const result = await manager.timeline({
+      anchor, projects: [parent, 'unrelated'], depth_before: 20, depth_after: 20,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(ids(text(result))).toContain(anchor);
+    expect(ids(text(result))).toContain(foreign);
+    expect(text(result)).toContain('Unrelated private prompt');
+    expect(ids(text(result))).not.toContain(partialUnmerged);
+  });
+
+  it('keeps a timestamp-only timeline unscoped when no record identifies a project', async () => {
+    const result = await manager.timeline({
+      anchor: new Date(epoch).toISOString(), depth_before: 20, depth_after: 20,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(ids(text(result))).toContain(anchor);
+    expect(ids(text(result))).toContain(foreign);
+    expect(text(result)).toContain('Unrelated private prompt');
+  });
+
+  it('uses a semantic query anchor project to scope the surrounding timeline', async () => {
+    const localSearch = new SessionSearch(store.db);
+    localSearch.searchObservations = () => { throw new Error('Semantic anchor should not need keyword fallback'); };
+    const semantic = new SearchManager(localSearch, store, {
+      queryChroma: async () => ({ ids: [anchor], metadatas: [
+        { doc_type: 'observation', created_at_epoch: epoch },
+      ] }),
+    } as never, new FormattingService(), new TimelineService(), 0);
+    const result = await semantic.timeline({ query: 'Needle', depth_before: 20, depth_after: 20 });
+    expect(result.isError).not.toBe(true);
+    expect(ids(text(result))).toEqual([anchor]);
+    expect(text(result)).not.toContain('Unrelated private prompt');
+    expect(text(result)).not.toContain('Unrelated private summary');
+  });
+
   it('keeps platform filters and rejects unrelated or unadopted anchors', async () => {
     const scope = { project, projects: `${project},${parent}`, platformSource: 'claude', depth_before: 10, depth_after: 10 };
     const result = await manager.timeline({ ...scope, anchor });
@@ -127,7 +204,7 @@ describe('Smart search project scope across index, timeline, and selected detail
         { doc_type: 'observation', created_at_epoch: epoch },
         { doc_type: 'observation', created_at_epoch: epoch },
       ] }),
-    } as never, new FormattingService(), new TimelineService());
+    } as never, new FormattingService(), new TimelineService(), 0);
     const result = await semantic.timeline({ query: 'Needle', project, projects: [project, parent], depth_before: 10, depth_after: 10 });
     expect(result.isError).not.toBe(true);
     expect(ids(text(result))).toContain(anchor);

@@ -18,7 +18,7 @@
 import { execFileSync } from 'child_process';
 import { readFileSync, readdirSync } from 'fs';
 import { captureProcessStartToken, isPidAlive } from '../../../src/supervisor/process-registry.js';
-import { hasMatchingProcessStartToken } from '../../../src/shared/process-identity.js';
+import { hasMatchingProcessStartToken, startTokenProbeEnv, withUtcStartTokenPrefix } from '../../../src/shared/process-identity.js';
 import { sanitizeEnv } from '../../../src/supervisor/env-sanitizer.js';
 
 export interface ProcessIdentity {
@@ -97,20 +97,24 @@ function readProcessTablePosix(): ProcessRow[] {
     encoding: 'utf-8',
     timeout: 30_000,
     maxBuffer: 32 * 1024 * 1024,
-    // The production token reader forces this locale. lstart must have the
-    // same 24-byte shape in both reads or a valid owner looks unrelated.
-    env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' },
+    // The production token reader pins locale AND time zone. lstart must have
+    // the same 24-byte shape in both reads or a valid owner looks unrelated.
+    env: startTokenProbeEnv(sanitizeEnv(process.env)),
   });
 
   const rows: ProcessRow[] = [];
   for (const line of stdout.split('\n')) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.{24})\s+(.*)$/);
     if (!match) continue;
+    // Mirror production: captureProcessStartToken stamps utc: onto the raw
+    // read, so this table-side token must carry the same prefix or every
+    // comparison across the two readers would degrade to "proceed".
+    const startToken = match[3]!.trim();
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
       name: match[4]!.trim(),
-      startToken: match[3]!.trim() || null,
+      startToken: startToken.length > 0 ? withUtcStartTokenPrefix(startToken) : null,
     });
   }
   return rows;

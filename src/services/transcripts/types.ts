@@ -99,3 +99,14 @@ export interface TranscriptWatchConfig {
   watches: WatchTarget[];
   stateFile?: string;
 }
+
+/**
+ * Lets the watcher hold a file's durable checkpoint until the work its lines
+ * buffered is stored. Without one, every checkpoint is saved as it is taken.
+ */
+export interface TranscriptCheckpointGate {
+  /** The newest buffered message's sequence number; later messages get higher ones. */
+  sequence(): number;
+  /** True when none of these sessions (content session id → platform source) has unstored work at or below `sequence`. */
+  drainedThrough(sessions: ReadonlyMap<string, string>, sequence: number): boolean;
+}

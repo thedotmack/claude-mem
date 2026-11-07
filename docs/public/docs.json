@@ -103,8 +103,10 @@
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
+          "devin-integration",
           "qoder-integration",
-          "screenpipe-integration"
+          "screenpipe-integration",
+          "notion-export"
         ]
       },
       {
@@ -113,7 +115,8 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
-          "cmem-pro-headless"
+          "cmem-pro-headless",
+          "usage/backups"
         ]
       },
       {
@@ -126,8 +129,7 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture",
-          "architecture/pm2-to-bun-migration"
+          "architecture/search-architecture"
         ]
       }
     ]
@@ -187,6 +189,10 @@
     {
       "source": "/branches",
       "destination": "/development"
+    },
+    {
+      "source": "/architecture/pm2-to-bun-migration",
+      "destination": "/architecture-evolution"
     }
   ]
 }

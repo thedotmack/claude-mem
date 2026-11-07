@@ -630,6 +630,28 @@ describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
     expect(killed).toEqual([]);
   });
 
+  it('tolerates a PID-file token from the pre-UTC-pin era and falls through to the command line (#5311)', async () => {
+    // A record written before the TZ pin holds a local-time token; a pinned
+    // read of the SAME live worker can never reproduce it. A strict ===
+    // calls that PID reuse and refuses the reclaim forever — the exact
+    // deadlock #5311 reports (pidFilePid=null on every version check). The
+    // era-aware comparison declines to call it reuse, and the command-line
+    // check vouches for the worker instead, so the stale worker is recycled.
+    // The token is written as the literal 'utc:'-prefixed string (not a
+    // helper import) so this file loads — and this test FAILS — against the
+    // pre-fix sources too, pinning the regression itself.
+    const pinnedRead = 'utc:Wed Sep 30 15:00:00 2026';
+    const { deps: testDeps, killed } = wedgedDeps({
+      identity: { startToken: pinnedRead, cmdline: 'bun worker-service.cjs --daemon' },
+    });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: true, killedPids: [WEDGED_WORKER_PID] });
+    // The kill pins to the FRESH read, the strongest identity on record.
+    expect(killed).toEqual([
+      { pid: WEDGED_WORKER_PID, signalMode: 'graceful', expectedStartToken: pinnedRead },
+    ]);
+  });
+
   it('never kills a process whose command line is not a claude-mem worker', async () => {
     const { deps: testDeps, killed } = wedgedDeps({
       identity: { startToken: WEDGED_WORKER_TOKEN, cmdline: '/usr/bin/python3 -m http.server 37777' },

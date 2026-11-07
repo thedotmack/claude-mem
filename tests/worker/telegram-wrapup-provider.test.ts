@@ -93,6 +93,17 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(sdkQuery).not.toHaveBeenCalled();
   });
 
+  it('does not start field compression after observer capture is disabled', async () => {
+    settings.CLAUDE_MEM_OBSERVER_ENABLED = 'false';
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect((provider as any).compressField(
+      'large field', 100, { ...input, abortController: new AbortController() },
+      'model', '/mock/claude', new AbortController().signal,
+    )).resolves.toBeNull();
+    expect(sdkQuery).not.toHaveBeenCalled();
+  });
+
   for (const Provider of [GeminiProvider, OpenRouterProvider, CodexProvider]) {
     it(`${Provider.name} uses its normal query/config and summary-tier model even for a live session`, async () => {
       const provider = new Provider({} as never, {} as never);
@@ -217,7 +228,7 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(result).toMatchObject({ content: '', tokensUsed: 20, inputTokens: 12, outputTokens: 8 });
     const body = JSON.parse(String(network.mock.calls[0][1]?.body));
     expect(body.response_format).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.max_tokens).toBe(4096);
   });
 });

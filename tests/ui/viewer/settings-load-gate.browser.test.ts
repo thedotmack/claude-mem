@@ -1,35 +1,18 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-
-if (process.env.CI && !chrome) {
-  throw new Error('CI requires Chrome or Chromium for the settings load-gate regressions.');
-}
+failOnCiWithoutChrome('CI requires Chrome or Chromium for the settings load-gate regressions.');
 
 // Until GET /api/settings succeeds the form holds DEFAULT_SETTINGS. A save
 // then would post those defaults over settings.json: provider, worker port,
 // and blank API keys. Save has to wait for the load, and a failed load offers
 // Retry instead of a save.
 for (const scenario of ['held', 'failed'] as const) {
-  (chrome ? it : it.skip)(`keeps Save from posting defaults while the settings load is ${scenario}`, async () => {
-    // The one-shot compiler exits before Chrome starts, keeping the browser
-    // phase free of shared esbuild service handles.
-    const esbuildBinary = createRequire(import.meta.url).resolve(
-      `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
-    );
-    const bundle = execFileSync(esbuildBinary, [
-      '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-      '--define:process.env.NODE_ENV="production"', '--log-level=error',
-    ], {
-      cwd: resolve(import.meta.dir, '../../..'),
-      input: `
+  (chromeExecutablePath ? it : it.skip)(`keeps Save from posting defaults while the settings load is ${scenario}`, async () => {
+    const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { ContextSettingsModal } from './src/ui/viewer/components/ContextSettingsModal';
@@ -79,9 +62,7 @@ for (const scenario of ['held', 'failed'] as const) {
             await fetch('/result', { method: 'POST', body: JSON.stringify({ blocked, loaded }) });
           } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ blocked, failure: String(error) }) }); }
         })();
-      `,
-      encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024,
-    });
+      `);
     const stored = { CLAUDE_MEM_PROVIDER: 'codex', CLAUDE_MEM_CONTEXT_OBSERVATIONS: '7', CLAUDE_MEM_WORKER_PORT: '41234' };
     const posts: any[] = [];
     let postsWhenLoaded: number | null = null;
@@ -96,7 +77,7 @@ for (const scenario of ['held', 'failed'] as const) {
     const result = new Promise<any>(resolve => { report = resolve; });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === '/fixture.js') return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/fixture.js') return scriptResponse(bundle);
       if (path === '/ready') { markReady(); return new Response('ready'); }
       if (path === '/api/settings' && request.method === 'POST') { posts.push(await request.json()); return Response.json({ success: true }); }
       if (path === '/api/settings') {
@@ -111,22 +92,14 @@ for (const scenario of ['held', 'failed'] as const) {
       if (path === '/release-load') { releaseLoad(); return new Response('released'); }
       if (path === '/api/projects') return Response.json({ projects: [], sources: [], projectsBySource: {} });
       if (path === '/result') { report(await request.json()); return new Response('received'); }
-      return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
+      return htmlResponse(FIXTURE_PAGE_HTML);
     } });
-    const profile = mkdtempSync(join(tmpdir(), 'claude-mem-settings-load-gate-'));
-    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking',
-      '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run',
-      `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let chrome: OwnedChrome | undefined;
     try {
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-settings-load-gate-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
       // Separate Chrome startup from the fixture's own load and save steps.
-      await Promise.race([ready, new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('Settings browser did not become ready')), 30000);
-      })]);
-      clearTimeout(timeout);
-      const reported = await Promise.race([result, new Promise(resolve => {
-        timeout = setTimeout(() => resolve({ failure: 'Settings fixture timed out' }), 25000);
-      })]);
+      await withTimeout(ready, 30000, 'Settings browser did not become ready');
+      const reported = await withTimeout(result, 25000, 'Settings fixture timed out');
       // Before the load: the form and Save are disabled, and a Save click
       // posts nothing (it would have posted the defaults).
       expect({ ...reported.blocked, postsBeforeLoad: posts.slice(0, postsWhenLoaded ?? posts.length) }).toEqual({
@@ -143,8 +116,7 @@ for (const scenario of ['held', 'failed'] as const) {
       expect(postsWhenLoaded).toBe(0);
       expect(posts).toEqual([{}]);
     } finally {
-      clearTimeout(timeout); releaseLoad(); child.kill(); await child.exited; server.stop(true);
-      rmSync(profile, { recursive: true, force: true });
+      releaseLoad(); await chrome?.close(); server.stop(true);
     }
   }, 80000);
 }

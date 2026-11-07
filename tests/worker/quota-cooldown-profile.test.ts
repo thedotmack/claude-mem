@@ -131,6 +131,8 @@ describe('quota cooldown breaker — per-account claude profile', () => {
     const sessionManager = {
       getSession: () => session,
       getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+      // A quota/auth exit discards the buffered work (handleGeneratorExit).
+      discardBufferedWork: () => 1,
       removeSessionImmediate: () => {},
     };
     const claude = {

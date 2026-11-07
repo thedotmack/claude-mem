@@ -2,7 +2,7 @@
 import path from 'path';
 import { homedir, tmpdir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
-import { execFileSync, execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -11,21 +11,6 @@ import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } fr
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
-import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
-
-/** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
-export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
-
-/**
- * The Windows launch timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, cut to
- * `launchCapMs` (what is left of a caller's hook deadline) when there is one,
- * so a slow PowerShell cannot push a hook past its host timeout.
- */
-export function windowsDaemonLaunchTimeoutMs(launchCapMs?: number): number {
-  return launchCapMs === undefined
-    ? WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS
-    : Math.max(1, Math.min(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, launchCapMs));
-}
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -441,7 +426,7 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
 export function daemonWorkingDirectory(): string {
   const dir = paths.dataDir();
   // Created here rather than assumed: a cwd that does not exist makes spawn fail with
-  // ENOENT and Start-Process fail outright, so passing one turns a first run on a fresh
+  // ENOENT and spawn fail outright, so passing one turns a first run on a fresh
   // install into a launch failure. paths.ts resolves DATA_DIR but does not create it --
   // today something else happens to create it first, which is a coupling this must not
   // depend on. mkdir -p is idempotent, so the usual case costs one stat.
@@ -479,22 +464,6 @@ export function pinDaemonWorkingDirectory(
   return null;
 }
 
-export function buildWindowsDaemonStartCommand(
-  runtimePath: string,
-  scriptPath: string,
-  workingDirectory: string = daemonWorkingDirectory()
-): string {
-  const psSingleQuote = (value: string) => value.replace(/'/g, "''");
-  // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
-  // quoting them when it builds the child's native command line, so a script
-  // path under a spaced %USERPROFILE% splits into multiple argv entries and
-  // bun exits instantly with "Module not found" (#3195). Embedding literal
-  // double quotes inside the single-quoted PS string keeps the path a single
-  // argument. -FilePath is safe as-is: it is a single-string parameter and
-  // never goes through that join.
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WorkingDirectory '${psSingleQuote(workingDirectory)}' -WindowStyle Hidden`;
-}
-
 export const WORKER_BOOT_PROBE_TIMEOUT_MS = 5000;
 const WORKER_BOOT_PROBE_MAX_LINES = 8;
 
@@ -522,8 +491,8 @@ export function shouldRetryWorkerBootProbe(
  * Re-run the worker bundle in the foreground to recover the stderr spawnDaemon
  * threw away.
  *
- * The daemon is detached with its stdio discarded (Start-Process -WindowStyle
- * Hidden on Windows, stdio:'ignore' elsewhere), so a bundle that dies during
+ * The daemon is detached with its stdio discarded (stdio:'ignore' on every
+ * platform), so a bundle that dies during
  * module resolution — a truncated `bun install` in the plugin cache, a pruned
  * dependency — leaves the caller with nothing but "worker exited", and the
  * operator is left guessing between Bun, the bundle and the port. Running the
@@ -590,33 +559,52 @@ export function probeWorkerBootFailure(
   return output.split(/\r?\n/).slice(0, WORKER_BOOT_PROBE_MAX_LINES).join('\n');
 }
 
-/** Absolute powershell.exe when SystemRoot is set; otherwise PATH lookup. */
-export function resolveWindowsPowerShellPath(
-  env: NodeJS.ProcessEnv = process.env
-): string {
-  const systemRoot = env.SystemRoot || env.SYSTEMROOT;
-  if (systemRoot) {
-    return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-  }
-  return 'powershell.exe';
+const SETSID_PATH = '/usr/bin/setsid';
+
+export interface DetachedWorkerDaemonSpawn {
+  command: string;
+  args: string[];
+  options: {
+    detached: true;
+    stdio: 'ignore';
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+  };
 }
 
 /**
- * Argv for launching a hidden worker daemon via Start-Process.
- * -WindowStyle Hidden on powershell.exe itself plus Start-Process
- * -WindowStyle Hidden inside the encoded script (#3521). Never use
- * Node `detached: true` for this on Windows — that allocates a console.
+ * Argv and options for the detached worker daemon.
+ *
+ * The launch is a plain CreateProcess spawn on every platform: no shell, no
+ * PowerShell and no base64 command line. The Windows arm used to go through
+ * `powershell -EncodedCommand Start-Process`, whose native command line is the
+ * fingerprint of a fileless-malware dropper; behaviour-blocking AVs killed the
+ * launching node.exe and the worker never started (#3831, #5240).
+ *
+ * `detached: true` is required on Windows too so the daemon outlives the hook,
+ * MCP server or CLI that started it; spawnHidden adds `windowsHide: true`, so
+ * the child gets no console window. `setsid` is POSIX-only — dropping it would
+ * let the daemon keep the caller's process group and receive its terminal's
+ * signals.
  */
-export function buildWindowsHiddenDaemonPowerShellArgs(
+export function buildDetachedWorkerDaemonSpawn(
   runtimePath: string,
   scriptPath: string,
-  workingDirectory: string = daemonWorkingDirectory()
-): string[] {
-  const encodedCommand = Buffer.from(
-    buildWindowsDaemonStartCommand(runtimePath, scriptPath, workingDirectory),
-    'utf16le'
-  ).toString('base64');
-  return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  setsidAvailable: boolean = existsSync(SETSID_PATH)
+): DetachedWorkerDaemonSpawn {
+  const useSetsid = platform !== 'win32' && setsidAvailable;
+  return {
+    command: useSetsid ? SETSID_PATH : runtimePath,
+    args: useSetsid ? [runtimePath, scriptPath, '--daemon'] : [scriptPath, '--daemon'],
+    options: {
+      detached: true,
+      stdio: 'ignore',
+      cwd: daemonWorkingDirectory(),
+      env
+    }
+  };
 }
 
 // Why the last daemon launch returned undefined, so callers can show the user
@@ -631,80 +619,29 @@ export function getLastWorkerDaemonLaunchError(): string | undefined {
  * Spawn the worker as a background daemon without a visible console, with its
  * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
  *
- * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync,
- * bounded by WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, or by `launchCapMs` when
- * the caller is spending a hook deadline). Returns 0 as a success sentinel
- * (Start-Process does not yield the child pid), so callers must treat only
- * `> 0` as a real pid.
- *
- * POSIX: setsid/detached spawnHidden; returns the child pid.
- *
- * Returns undefined when the launch itself failed. Used by spawnDaemon
- * (CLI/MCP) and both hook lazy-spawn paths in worker-utils.ts.
+ * Every platform uses detached spawnHidden, so the daemon survives the
+ * launcher and returns its real pid. Returns undefined when the launch itself
+ * failed. Used by spawnDaemon (CLI/MCP) and both hook lazy-spawn paths in
+ * worker-utils.ts.
  */
 export function spawnDetachedWorkerDaemon(
   runtimePath: string,
   scriptPath: string,
   env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform,
-  launchCapMs?: number
+  platform: NodeJS.Platform = process.platform
 ): number | undefined {
   lastWorkerDaemonLaunchError = undefined;
-  if (platform === 'win32') {
-    const powershell = resolveWindowsPowerShellPath(env);
-    const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
-    const launchTimeoutMs = windowsDaemonLaunchTimeoutMs(launchCapMs);
-    try {
-      // argv spawnSync — never `execSync('powershell ...')` shell string.
-      // A shell-string launch can allocate a console before windowsHide
-      // applies; argv + -WindowStyle Hidden keeps the flash off (#3521).
-      const result = spawnSync(powershell, args, {
-        stdio: 'ignore',
-        windowsHide: true,
-        env,
-        timeout: launchTimeoutMs,
-        killSignal: 'SIGTERM',
-      });
-      if (result.error) {
-        throw result.error;
-      }
-      if (result.signal) {
-        throw new Error(
-          `powershell Start-Process killed by signal=${result.signal}` +
-            ` after ${launchTimeoutMs}ms`
-        );
-      }
-      if (result.status !== 0) {
-        throw new Error(`powershell Start-Process exited ${result.status ?? 'null'}`);
-      }
-      return 0;
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      lastWorkerDaemonLaunchError = `${powershell} could not launch the worker: ${err.message}`;
-      logger.error(
-        'SYSTEM',
-        'Failed to spawn worker daemon on Windows',
-        { runtimePath, powershell },
-        err
-      );
-      return undefined;
-    }
+  const plan = buildDetachedWorkerDaemonSpawn(runtimePath, scriptPath, env, platform);
+
+  let child: ReturnType<typeof spawnHidden>;
+  try {
+    child = spawnHidden(plan.command, plan.args, plan.options);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    lastWorkerDaemonLaunchError = `${plan.command} could not launch the worker: ${err.message}`;
+    logger.error('SYSTEM', 'Failed to spawn worker daemon', { runtimePath, command: plan.command }, err);
+    return undefined;
   }
-
-  const setsidPath = '/usr/bin/setsid';
-  const useSetsid = existsSync(setsidPath);
-
-  const execPath = useSetsid ? setsidPath : runtimePath;
-  const args = useSetsid
-    ? [runtimePath, scriptPath, '--daemon']
-    : [scriptPath, '--daemon'];
-
-  const child = spawnHidden(execPath, args, {
-    detached: true,
-    stdio: 'ignore',
-    cwd: daemonWorkingDirectory(),
-    env
-  });
 
   // Node reports a bad runtime path (dangling shim, missing binary) as an
   // asynchronous 'error' event, not a synchronous throw. Without this listener
@@ -712,11 +649,12 @@ export function spawnDetachedWorkerDaemon(
   // Degrade to the Bun-not-found log; the caller sees the failure through the
   // worker never binding its port.
   child.on('error', (error: Error) => {
-    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE, { runtimePath, execPath }, error);
+    lastWorkerDaemonLaunchError = `${plan.command} could not launch the worker: ${error.message}`;
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE, { runtimePath, command: plan.command }, error);
   });
 
   if (child.pid === undefined) {
-    lastWorkerDaemonLaunchError = `could not launch ${execPath}`;
+    lastWorkerDaemonLaunchError ??= `could not launch ${plan.command}`;
     return undefined;
   }
 

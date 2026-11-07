@@ -1,4 +1,4 @@
-import { ProgressiveSearch, projectMemoryContent, type ProgressiveSearchInput, type MemoryIndexRow, type MemoryDetail } from '../../shared/progressive-search.js';
+import { ProgressiveSearch, projectMemoryContent, isMemoryDetailCandidate, type ProgressiveSearchInput, type MemoryIndexRow, type MemoryDetail } from '../../shared/progressive-search.js';
 import type { SearchManager } from './SearchManager.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { SEARCH_CONSTANTS } from './search/types.js';
@@ -41,12 +41,16 @@ export class ProgressiveMemorySearch {
         ];
         // The underlying search has a separate per-kind budget. Merge compact
         // candidates by title evidence, then round-robin their per-kind ranks;
-        // a full observation page must never hide a stronger summary/prompt.
+        // a full observation page must never hide a stronger summary.
+        // Prompts remain useful index entries, but cannot anchor a detail
+        // fetch. Keep selectable memories ahead of them before truncation.
         return categories.flatMap(([kind, rows]) => rows.map((stored, position) => {
           const row = indexRow(stored, kind);
           const titleWords = new Set(row.title.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
-          return { row, position, score: terms.filter(term => titleWords.has(term)).length };
-        })).sort((a, b) => b.score - a.score || a.position - b.position)
+          const score = terms.filter(term => titleWords.has(term)).length;
+          return { row, position, score, fetchableMatch: isMemoryDetailCandidate(row, query) };
+        })).sort((a, b) => Number(b.fetchableMatch) - Number(a.fetchableMatch)
+          || b.score - a.score || a.position - b.position)
           .slice(0, limit).map(candidate => candidate.row);
       },
       timeline: async ({ anchor, depthBefore, depthAfter }) => this.timeline(anchor, depthBefore, depthAfter),
@@ -64,22 +68,39 @@ export class ProgressiveMemorySearch {
     const epoch = anchor.createdAt;
     if (epoch === null) return [anchor];
     const numericId = Number(anchor.id.replace(/^[SP]/, ''));
+    // Each arm is a subquery so its boundary predicate, ORDER BY and LIMIT stay
+    // inside it: the arm then reads its project index in order and stops at
+    // `limit` instead of materialising every row of the project. SQLite rejects
+    // an ORDER BY placed directly between UNION ALL arms, hence the wrapper.
     const query = (comparison: '<' | '>', order: 'ASC' | 'DESC', limit: number) => this.store.db.prepare(`
       WITH memory_index AS (
-        SELECT id, project, title, type, created_at_epoch, 'observation' AS kind FROM observations
-        WHERE project COLLATE NOCASE = ?
+        SELECT * FROM (
+          SELECT id, project, title, type, created_at_epoch, 'observation' AS kind FROM observations
+          WHERE project COLLATE NOCASE = ? AND (created_at_epoch, 'observation', id) ${comparison} (?, ?, ?)
+          ORDER BY created_at_epoch ${order}, id ${order} LIMIT ?
+        )
         UNION ALL
-        SELECT id, project, request AS title, NULL AS type, created_at_epoch, 'summary' AS kind FROM session_summaries
-        WHERE project COLLATE NOCASE = ?
+        SELECT * FROM (
+          SELECT id, project, request AS title, NULL AS type, created_at_epoch, 'summary' AS kind FROM session_summaries
+          WHERE project COLLATE NOCASE = ? AND (created_at_epoch, 'summary', id) ${comparison} (?, ?, ?)
+          ORDER BY created_at_epoch ${order}, id ${order} LIMIT ?
+        )
         UNION ALL
-        SELECT up.id, s.project, substr(up.prompt_text, 1, 160) AS title, NULL AS type, up.created_at_epoch, 'prompt' AS kind
-        FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id
-        WHERE s.project COLLATE NOCASE = ?
+        SELECT * FROM (
+          SELECT up.id, s.project, substr(up.prompt_text, 1, 160) AS title, NULL AS type, up.created_at_epoch, 'prompt' AS kind
+          FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id
+          WHERE s.project COLLATE NOCASE = ? AND (up.created_at_epoch, 'prompt', up.id) ${comparison} (?, ?, ?)
+          ORDER BY up.created_at_epoch ${order}, up.id ${order} LIMIT ?
+        )
       )
       SELECT * FROM memory_index
-      WHERE (created_at_epoch, kind, id) ${comparison} (?, ?, ?)
       ORDER BY created_at_epoch ${order}, kind ${order}, id ${order} LIMIT ?
-    `).all(anchor.project, anchor.project, anchor.project, epoch, anchor.kind, numericId, limit) as Array<StoredRow & { kind: MemoryIndexRow['kind'] }>;
+    `).all(
+      anchor.project, epoch, anchor.kind, numericId, limit,
+      anchor.project, epoch, anchor.kind, numericId, limit,
+      anchor.project, epoch, anchor.kind, numericId, limit,
+      limit,
+    ) as Array<StoredRow & { kind: MemoryIndexRow['kind'] }>;
     return [
       ...query('<', 'DESC', before).reverse().map(row => indexRow(row, row.kind)),
       anchor,

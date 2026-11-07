@@ -2,6 +2,7 @@ import type { DatabaseManager } from '../worker/DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { notifyGrokBotIndex } from '../integrations/GrokBotIndexWriter.js';
+import { notifyNotion } from '../integrations/NotionExporter.js';
 
 export interface SaveMemoryInput {
   text: string;
@@ -23,8 +24,8 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   const text = input.text.trim();
   if (!text) throw new Error('Memory text must not be empty');
   const { title, metadata } = input;
-  const metadataProject = typeof metadata?.project === 'string' ? metadata.project.trim() : '';
-  const project = input.project?.trim() || metadataProject || defaultProject;
+  const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim() ? metadata.project : '';
+  const project = (input.project?.trim() ? input.project : '') || metadataProject || defaultProject;
   const platformSource = typeof metadata?.platformSource === 'string' ? metadata.platformSource.trim() : undefined;
   const sourceFingerprint = typeof metadata?.sourceFingerprint === 'string' ? metadata.sourceFingerprint : undefined;
   if (sourceFingerprint) {
@@ -51,6 +52,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   if (!result.mergedIntoExisting) dbManager.getChromaSync()?.syncObservation(result.id, sessionId, project, observation, 0, result.createdAtEpoch, platformSource).catch(error => {
       logChromaWriteFailure('CHROMA', 'Manual memory sync failed', { id: result.id }, error);
     });
+  if (!result.mergedIntoExisting) notifyNotion({ observations: [observation], observationIds: [result.id], project, memorySessionId: sessionId, createdAtEpoch: result.createdAtEpoch });
   return { success: true, id: result.id, title: observation.title, project,
     message: result.mergedIntoExisting ? `Memory matches existing observation #${result.id} (counted as a repeat)` : `Memory saved as observation #${result.id}` };
 }

@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterAll } from 'bun:test';
 import { execFileSync, spawnSync } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -7,7 +9,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
 
 // Plugin installs run the files committed under plugin/, not a fresh build.
-// CI runs this before `npm run build`, which would overwrite a broken bundle (#4728).
+// A build overwrites the working tree (#4728) and renames hashed My Work assets,
+// so the syntax check runs on the committed blobs, extracted from HEAD.
+const committedPluginRoot = mkdtempSync(path.join(tmpdir(), 'committed-plugin-'));
+execFileSync('sh', ['-c', `git archive HEAD plugin | tar -x -C "${committedPluginRoot}"`], { cwd: projectRoot });
+afterAll(() => rmSync(committedPluginRoot, { recursive: true, force: true }));
+
 const committedPluginScripts = execFileSync(
   'git',
   ['ls-files', '--', 'plugin/scripts', 'plugin/sqlite', 'plugin/ui'],
@@ -35,7 +42,7 @@ describe('Committed plugin bundles', () => {
   for (const scriptPath of committedPluginScripts) {
     it(`parses ${scriptPath}`, () => {
       const syntaxCheck = spawnSync('node', ['--check', scriptPath], {
-        cwd: projectRoot,
+        cwd: committedPluginRoot,
         encoding: 'utf-8',
       });
       expect(syntaxCheck.stderr).toBe('');

@@ -1,28 +1,18 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, chromeExecutablePath, compileBrowserFixture, htmlResponse, launchChrome, scriptResponse, withTimeout,
+  type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-
-(chrome ? it : it.skip)('turns every chip on when Select all is clicked with only some chips on', async () => {
-  const owned = mkdtempSync(join(tmpdir(), 'claude-mem-log-select-all-'));
-  const profile = join(owned, 'browser');
-  let child: ReturnType<typeof Bun.spawn> | undefined;
+(chromeExecutablePath ? it : it.skip)('turns every chip on when Select all is clicked with only some chips on', async () => {
+  let chrome: OwnedChrome | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const logs = [
       '[2026-10-08 10:00:00.000] [INFO ] [WORKER] OWNED_INFO',
       '[2026-10-08 10:00:01.000] [ERROR] [DB    ] OWNED_ERROR',
     ].join('\n');
-    const bundle = await build({
-      write: false, bundle: true, platform: 'browser', format: 'iife',
-      define: { 'process.env.NODE_ENV': '"production"' },
-      stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+    const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { LogsDrawer } from './src/ui/viewer/components/LogsModal';
@@ -55,24 +45,19 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
             await fetch('/result', { method: 'POST', body: JSON.stringify(report) });
           } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
         })();
-      ` },
-    });
+      `);
     let report!: (value: unknown) => void;
     const result = new Promise(resolve => { report = resolve; });
     server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+      if (path === '/fixture.js') return scriptResponse(bundle);
       if (path === '/api/logs') return Response.json({ logs });
       if (path === '/result') { report(await request.json()); return new Response('received'); }
       return new Response('not found', { status: 404 });
     } });
-    child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu',
-      '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href],
-      { stdout: 'ignore', stderr: 'ignore' });
-    const received = await Promise.race([result, new Promise(resolve => {
-      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000);
-    })]);
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-log-select-all-' });
+    const received = await withTimeout(result, 25000, 'Browser timed out');
     const all = ['OWNED_INFO', 'OWNED_ERROR'];
     // With one chip off the button reads "Select all", so clicking it must turn that chip back on
     // rather than clearing the whole row.
@@ -87,9 +72,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
       },
     });
   } finally {
-    clearTimeout(timeout);
-    if (child) { child.kill(); await child.exited; }
+    await chrome?.close();
     server?.stop(true);
-    rmSync(owned, { recursive: true, force: true });
   }
 }, 40000);

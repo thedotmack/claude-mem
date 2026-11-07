@@ -24,7 +24,7 @@ import { logger } from '../../src/utils/logger.js';
 // Checked-in host contract (plan-23 step 1): the OpenCode local-MCP entry
 // schema the installer must emit. `mcp.claude-mem` is validated against it
 // below so a drift from the host's real schema fails CI, not a user install.
-const OPENCODE_MCP_FIXTURE_PATH = join(import.meta.dir, '../../fixtures/hosts/opencode-mcp.json');
+const OPENCODE_MCP_FIXTURE_PATH = join(import.meta.dir, '../fixtures/hosts/opencode-mcp.json');
 const opencodeMcpFixture = JSON.parse(
   readFileSync(OPENCODE_MCP_FIXTURE_PATH, 'utf-8'),
 ) as {

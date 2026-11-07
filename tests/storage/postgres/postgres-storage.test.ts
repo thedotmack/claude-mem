@@ -5,6 +5,7 @@ import {
   bootstrapServerPostgresSchema,
   buildObservationGenerationKey,
   createPostgresStorageRepositories,
+  usesBm25Index,
   type PostgresPoolClient,
   type PostgresStorageRepositories
 } from '../../../src/storage/postgres/index.js';
@@ -269,6 +270,45 @@ describe('server beta postgres observation storage', () => {
     expect(await storage.observations.getManyForScope({ ...scope, teamId: foreign.project.teamId, ids: [created[1].id] })).toEqual([]);
     expect(await storage.observations.getManyForScope({ ...scope, ids: [] })).toEqual([]);
     await expect(storage.observations.timelineAround({ ...scope, anchorId: created[1].id, depthBefore: 21 })).rejects.toThrow('depth');
+  });
+
+  it('matches any term of a question, rare terms first, by bm25 on postgres-pgvector-textsearch', async () => {
+    if (!usesBm25Index(client)) {
+      // A server that preloads pg_textsearch must end up using it; only
+      // Postgres without it may skip.
+      const preload = await client.query<{ libs: string }>(`SELECT current_setting('shared_preload_libraries') AS libs`);
+      expect(preload.rows[0]!.libs).not.toContain('pg_textsearch');
+      console.warn('pg_textsearch is not installed and preloaded here; bm25 ranking not tested');
+      return;
+    }
+    const team = await storage.teams.create({ name: 'team' });
+    const project = await storage.projects.create({ teamId: team.id, name: 'project' });
+    const create = (content: string) =>
+      storage.observations.create({ projectId: project.id, teamId: team.id, content });
+    const retry = await create('Raised the retry limit to five for the gateway client.');
+    const changes = [
+      await create('Change of plans: change the changelog format again.'),
+      await create('Change the header font.'),
+      await create('Change the footer colour.'),
+    ];
+    const lunch = await create('Lunch is at noon.');
+    const search = async (query: string) =>
+      (await storage.observations.search({ projectId: project.id, teamId: team.id, query })).map(o => o.id);
+
+    // "change" is in three observations and "retry" and "limit" in one, so
+    // the rare terms rank first; rows with no term are left out.
+    const results = await search('when did we change the retry limit');
+    expect(results[0]).toBe(retry.id);
+    expect(new Set(results)).toEqual(new Set([retry.id, ...changes.map(o => o.id)]));
+    expect(await search('retry pizza')).toEqual([retry.id]);
+
+    // Web-search syntax keeps its meaning on the bm25 path: a quoted phrase,
+    // an excluded -term and "or" filter as websearch_to_tsquery always did.
+    expect(await search('"header font"')).toEqual([changes[1]!.id]);
+    expect(await search('"font header"')).toEqual([]);
+    expect(await search('retry -gateway')).toEqual([]);
+    expect(new Set(await search('change -font'))).toEqual(new Set([changes[0]!.id, changes[2]!.id]));
+    expect(new Set(await search('retry or lunch'))).toEqual(new Set([retry.id, lunch.id]));
   });
 
   it('scopes observation generation_key idempotency to project and team', async () => {

@@ -1,0 +1,244 @@
+diff --git a/.env.schema.json b/.env.schema.json
+index 86130b2..03cc163 100644
+--- a/.env.schema.json
++++ b/.env.schema.json
+@@ -11,6 +11,24 @@
+     "LITELLM_KEY"
+   ],
+   "properties": {
++    "ODS_CLAUDE_MEM_ENABLED": {
++      "type": "string",
++      "enum": ["true", "false", "1", "0"],
++      "default": "false",
++      "description": "Native ODS conversation capture and memory recall"
++    },
++    "ODS_CLAUDE_MEM_PORT": {
++      "type": "string",
++      "pattern": "^[0-9]{1,5}$",
++      "default": "37778",
++      "description": "Loopback port for the ODS Claude-Mem service"
++    },
++    "ODS_CLAUDE_MEM_SCOPE": {
++      "type": "string",
++      "enum": ["conversation", "installation"],
++      "default": "conversation",
++      "description": "Conversation-isolated memory, or shared memory for a single-owner installation"
++    },
+     "ODS_VERSION": {
+       "type": "string",
+       "description": "ODS version for update compatibility checks"
+diff --git a/extensions/services/pixel-agent/host/pixel_ingress.mjs b/extensions/services/pixel-agent/host/pixel_ingress.mjs
+index 4acec8b..70138f1 100644
+--- a/extensions/services/pixel-agent/host/pixel_ingress.mjs
++++ b/extensions/services/pixel-agent/host/pixel_ingress.mjs
+@@ -23,6 +23,7 @@ import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
+ import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
+ import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
+ import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
++import {createOdsMemory, memoryConfigFromEnv} from './claude_mem.mjs';
+
+ // ---------------------------------------------------------------------------
+ // Constants
+@@ -1141,11 +1142,12 @@ function completionSse(completion, verification) {
+ }
+
+ // Side-channel observations only. Answer bytes still wait for final verification.
+-export function streamTaskActivity(res, user, token, gatewayPort, signal, deps = defaultDeps) {
++export function streamTaskActivity(res, user, token, gatewayPort, signal, deps = defaultDeps, onActivity, emit = true) {
+   const since = new Date().toISOString();
+-  let stopped = false, timer, inFlight, last = '', runId;
+-  async function poll() {
+-    if (stopped || signal.aborted || res.destroyed || res.writableEnded) return;
++  let stopped = false, timer, inFlight, last = '', runId, currentPoll = Promise.resolve();
++  const schedule = delay => { timer = deps.setTimeout(() => { currentPoll = poll(); return currentPoll; }, delay); };
++  async function poll(finalRunId) {
++    if ((stopped && !finalRunId) || signal.aborted || res.destroyed || res.writableEnded) return;
+     const controller = new AbortController();
+     inFlight = controller;
+     const abort = () => controller.abort();
+@@ -1159,20 +1161,29 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
+       const value = JSON.parse((await readBounded(response.body, 1024 * 1024)).toString('utf8'));
+       if (!value || Object.keys(value).join() !== 'task') return;
+       const task = parseTaskActivity(value.task, value.task?.runId);
+-      if (!task || task.state !== 'running' || task.startedAt < since || (runId && task.runId !== runId)) return;
++      if (!task || task.startedAt < since || (finalRunId ? task.runId !== finalRunId : runId && task.runId !== runId)) return;
+       runId = task.runId;
++      if (!signal.aborted && (!stopped || finalRunId)) onActivity?.(task);
+       const packet = JSON.stringify({object:'ods.task.activity', id:runId, pixel_task:task});
+-      if (!stopped && !signal.aborted && !res.destroyed && !res.writableEnded && !res.writableNeedDrain && packet !== last) {
++      if (emit && task.state === 'running' && !stopped && !signal.aborted && !res.destroyed && !res.writableEnded && !res.writableNeedDrain && packet !== last) {
+         res.write(`data: ${packet}\n\n`); last = packet;
+       }
+     } catch { /* Optional telemetry must not fail or repeat the actual task. */ }
+     finally {
+       deps.clearTimeout(deadline); signal.removeEventListener('abort', abort); inFlight = null;
+-      if (!stopped && !signal.aborted && !res.destroyed && !res.writableEnded) timer = deps.setTimeout(poll, 1500);
++      if (!stopped && !signal.aborted && !res.destroyed && !res.writableEnded) schedule(1500);
+     }
+   }
+-  timer = deps.setTimeout(poll, 250);
+-  return () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
++  schedule(250);
++  const stop = () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
++  // Finish with the exact delivered run, including a fast task that completed
++  // before the first poll. Drain the poll before queuing the final snapshot.
++  stop.finish = async finalRunId => {
++    stop();
++    await currentPoll;
++    if (OPENAI_RUN_ID.test(finalRunId ?? '')) await poll(finalRunId);
++  };
++  return stop;
+ }
+
+ function registerActiveGatewayTransport(activeGatewayTransports, user, controller) {
+@@ -1334,12 +1345,17 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
+       "X-Accel-Buffering": "no",
+     });
+     res.flushHeaders?.();
+-    stopActivity = streamTaskActivity(res, outgoing.user, token, gatewayPort, controller.signal, deps);
+   }
+   try {
+     await hooks.beforeRequest?.(controller.signal);
++    const memoryContext = await hooks.memory?.prepare();
++    if (memoryContext) gatewayOutgoing.messages = [memoryContext, ...gatewayOutgoing.messages];
+     if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
+     hooks.onSubmitted?.();
++    if (wantsStream || hooks.memory) {
++      stopActivity = streamTaskActivity(res, outgoing.user, token, gatewayPort, controller.signal, deps,
++        task => hooks.memory?.activity(task), wantsStream);
++    }
+     gatewayResponsePending = true;
+     const upstream = await deps.fetch(
+       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
+@@ -1407,6 +1423,8 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
+           deps
+         ));
+         await hooks.onComplete?.(completion,verification);
++        if (hooks.memory) await stopActivity?.finish(completion?.id);
++        hooks.memory?.complete(applyVerificationToCompletion(completion, verification), verification);
+         deliveryStage = "delivery";
+         res.end(completionSse(
+           applyVerificationToCompletion(completion, verification),
+@@ -1446,6 +1464,8 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
+       deps
+     ));
+     await hooks.onComplete?.(completion,verification);
++    if (hooks.memory) await stopActivity?.finish(completion?.id);
++    hooks.memory?.complete(applyVerificationToCompletion(completion, verification), verification);
+     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
+     const responseBody = verifiedCompletion === completion && completion === originalCompletion
+       ? body
+@@ -1883,7 +1903,7 @@ export async function writeStatus(
+   return projection;
+ }
+
+-export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, imageStore = null, accessOwnerKey = null }) {
++export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, imageStore = null, accessOwnerKey = null, memory = null }) {
+   // Cancellation is scoped to this ingress instance and the opaque ODS user.
+   // A Set preserves correct behavior if one chat has overlapping transports.
+   const activeGatewayTransports = new Map();
+@@ -1908,7 +1928,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
+       return;
+     }
+     if(pathname==='/v1/chat/images-delete') {
+-      void handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps});
++      void handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps,memory});
+       return;
+     }
+     if (pathname === '/v1/access-mode') {
+@@ -1958,7 +1978,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
+       if(imageTurn && imageTurnActive) {sendError(res,429,'image turn capacity is busy');return;}
+       if(imageTurn) imageTurnActive=true;
+       void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports, imageStore, imageRoutes,
+-        Boolean(imageTurn)).finally(()=>{if(imageTurn) imageTurnActive=false;});
++        Boolean(imageTurn), memory).finally(()=>{if(imageTurn) imageTurnActive=false;});
+       return;
+     }
+
+@@ -2046,7 +2066,7 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
+   } catch {sendError(res,503,'cancellation-unconfirmed');}
+ }
+
+-async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
++async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps,memory}) {
+   let release;
+   try {
+     if(req.method!=='POST' || req.url!=='/v1/chat/images-delete' || String(req.headers['content-type']||'').split(';',1)[0]!=='application/json') throw new HistoryError('invalid-image-deletion-request',400);
+@@ -2068,6 +2088,8 @@ async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,t
+     const receipt=await nativeContextRequest('images-delete',{user},token,gatewayPort,deps);
+     if(receipt?.schemaVersion!==1 || receipt.deleted!==true)throw new HistoryError('image-deletion-unconfirmed',503);
+     imageStore.deleteConversation(user);
++    try { await memory?.forget(user); }
++    catch { throw new HistoryError('memory-deletion-unconfirmed',503); }
+     sendJson(res,200,{schemaVersion:1,deleted:true});
+   } catch(error) {sendError(res,error instanceof HistoryError || error instanceof ChatImageError?error.status:400,error instanceof HistoryError || error instanceof ChatImageError?error.message:'invalid-image-deletion-request');}
+   finally {try {release?.();}catch{/* Keep failed lock custody closed. */}}
+@@ -2094,7 +2116,7 @@ async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imag
+   }
+ }
+
+-async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports, imageStore, imageRoutes, imageTurn=false) {
++async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports, imageStore, imageRoutes, imageTurn=false, memory=null) {
+   let raw;
+   try {
+     raw = await readBody(req, imageTurn?MAX_IMAGE_BODY:MAX_HISTORY_BODY);
+@@ -2132,7 +2154,10 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
+     const outgoing = buildOutgoing(parsed, user ?? (!parsed.history_snapshot ? `ods-${randomBytes(32).toString('hex')}` : undefined));
+     if(historyLedger && user) release=historyLedger.lock(user);
+     if(historyLedger && user && historyLedger.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
+-    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
++    if(!parsed.history_snapshot) {
++      const turn=memory?.turn({sessionId:outgoing.user,messages:outgoing.messages});
++      await forwardChat(res,outgoing,token,gatewayPort,deps,{memory:turn},activeGatewayTransports);return;
++    }
+     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
+     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
+     const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
+@@ -2165,6 +2190,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
+     // snapshot is data only; it cannot introduce system/developer instructions.
+     outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...nativeHistoryMessages(prepared.delta.slice(0,-1)),nativeLatest];
+     await forwardChat(res,outgoing,token,gatewayPort,deps,{
++      memory:memory?.turn({sessionId:user,requestId:parsed.request_id,messages:[archivedLatest]}),
+       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
+       beforeRequest:async signal=>{
+         if(!prepared.hydrate) return;
+@@ -2292,7 +2318,8 @@ export async function start(cfg = configFromEnv(), opts = {}) {
+     // Re-read on access requests so credential rotation or first installation
+     // does not restart an active chat. Missing/unsafe key disables only access.
+     const accessOwnerKey = () => readAccessOwnerKey(cfg.accessOwnerKeyFile, opts.euid);
+-    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps, historyLedger, imageStore, accessOwnerKey });
++    const memory = opts.memory ?? createOdsMemory(memoryConfigFromEnv());
++    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps, historyLedger, imageStore, accessOwnerKey, memory });
+     startupStage = "socket-listen";
+     await listenUnix(server, cfg.socketPath);
+     startupStage = "runtime-state";
+diff --git a/installers/lib/pixel-host-install.sh b/installers/lib/pixel-host-install.sh
+index ea639c3..cc55b4f 100644
+--- a/installers/lib/pixel-host-install.sh
++++ b/installers/lib/pixel-host-install.sh
+@@ -4992,9 +4992,17 @@ if "__PIXEL_" in text:
+     raise SystemExit("unresolved Pixel systemd placeholder")
+ pathlib.Path(target).write_text(text, encoding="utf-8", newline="\n")
+ PY
++    # Only validated, nonsecret native-memory settings enter the ingress env.
++    [[ "${ODS_CLAUDE_MEM_ENABLED:-false}" =~ ^(true|false|1|0)$ ]] || return 1
++    [[ "${ODS_CLAUDE_MEM_PORT:-37778}" =~ ^[0-9]{1,5}$ ]] || return 1
++    (( 10#${ODS_CLAUDE_MEM_PORT:-37778} >= 1 && 10#${ODS_CLAUDE_MEM_PORT:-37778} <= 65535 )) || return 1
++    [[ "${ODS_CLAUDE_MEM_SCOPE:-conversation}" =~ ^(conversation|installation)$ ]] || return 1
+     cat > "$stage/pixel-agent.env" <<EOF
+ PIXEL_INGRESS_SOCKET=/run/ods-pixel/pixel-ingress.sock
+ PIXEL_CHAT_STATE_DIR=/var/lib/ods-pixel-chat
++ODS_CLAUDE_MEM_ENABLED=${ODS_CLAUDE_MEM_ENABLED:-false}
++ODS_CLAUDE_MEM_PORT=${ODS_CLAUDE_MEM_PORT:-37778}
++ODS_CLAUDE_MEM_SCOPE=${ODS_CLAUDE_MEM_SCOPE:-conversation}
+ PIXEL_ACCESS_OWNER_KEY_FILE=/etc/ods/pixel-access-relay.key
+ PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID:?}
+ PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file
+@@ -5060,6 +5068,7 @@ EOF
+         and (.matches | type == "array") and (.matches | length) <= 10
+         and (.boundary | type == "string")' <<<"$extension_probe" >/dev/null || return 1
+     ods_sudo install -o root -g root -m 0755 "$plugin_root/host/pixel_ingress.mjs" /usr/local/libexec/ods-pixel-ingress.mjs
++    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/claude_mem.mjs" /usr/local/libexec/claude_mem.mjs
+     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_history_ledger.mjs" /usr/local/libexec/chat_history_ledger.mjs
+     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_store.mjs" /usr/local/libexec/chat_image_store.mjs
+     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_transport.mjs" /usr/local/libexec/chat_image_transport.mjs

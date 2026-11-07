@@ -6,6 +6,14 @@ import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE 
 import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
 import { withOpenRouterExtraBody } from '../../../shared/openrouter-extra-body.js';
 import { isCmemGatewayUrl } from '../../../shared/cmem-gateway.js';
+import { isOpenRouterApiUrl } from '../../../shared/openrouter-base-url.js';
+import {
+  billedTokensAcrossRetry,
+  isLengthTruncatedEmptyReply,
+  reasoningBudgetGiveUpMessage,
+  reasoningBudgetRetryMessage,
+  requestDisablesReasoning,
+} from '../../../services/worker/reasoning-budget.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 import {
@@ -44,8 +52,8 @@ export interface OpenRouterObservationProviderOptions {
 }
 
 interface OpenRouterResponse {
-  choices?: Array<{ message?: { content?: unknown } }>;
-  usage?: { total_tokens?: number };
+  choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>;
+  usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number };
   error?: { code?: string | number; message?: string };
 }
 
@@ -104,9 +112,80 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       };
     }
 
+    const firstBody = this.buildChatBody(prompt, false);
+    const disabledOnSend = requestDisablesReasoning(firstBody);
+    let data = await this.postAndRead(firstBody, signal);
+    let rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
+    let finishReason = typeof data.choices?.[0]?.finish_reason === 'string' ? data.choices[0].finish_reason : undefined;
+
+    // Same bug as the worker: an empty finish_reason=length reply spent the
+    // output budget on reasoning. One retry with reasoning forced off. A
+    // custom gateway does not get the field on the first request (strict
+    // schemas 400); openrouter.ai and cmem already send it, so they give up
+    // here instead of sending the same body again. Both calls were billed.
+    if (isLengthTruncatedEmptyReply(rawText, finishReason)) {
+      if (!disabledOnSend) {
+        const firstUsage = data.usage;
+        logger.error('SDK', reasoningBudgetRetryMessage('OpenRouter'), { provider: 'openrouter', model: this.model, finishReason });
+        try {
+          data = await this.postAndRead(this.buildChatBody(prompt, true), signal);
+          const billed = billedTokensAcrossRetry(firstUsage, data.usage);
+          if (billed !== undefined) data = { ...data, usage: { ...data.usage, total_tokens: billed } };
+          rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
+          finishReason = typeof data.choices?.[0]?.finish_reason === 'string' ? data.choices[0].finish_reason : undefined;
+          if (isLengthTruncatedEmptyReply(rawText, finishReason)) {
+            logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), { provider: 'openrouter', model: this.model });
+          }
+        } catch (error) {
+          logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
+            provider: 'openrouter',
+            model: this.model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        }
+      } else {
+        logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), { provider: 'openrouter', model: this.model });
+      }
+    }
+
+    if (!rawText) {
+      logger.warn('SDK', 'OpenRouter returned empty content', {
+        provider: 'openrouter',
+        model: this.model,
+        finishReason,
+      });
+    }
+
+    const tokensUsed = typeof data.usage?.total_tokens === 'number' ? data.usage.total_tokens : undefined;
+
+    return {
+      rawText,
+      ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+      providerLabel: this.providerLabel,
+      modelId: this.model,
+    };
+  }
+
+  private buildChatBody(prompt: string, forceReasoningOff: boolean): Record<string, unknown> {
+    const reachesOpenRouter = isOpenRouterApiUrl(this.apiUrl) || isCmemGatewayUrl(this.apiUrl);
+    return withOpenRouterExtraBody({
+      model: this.model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      // Ask for one JSON body, as the worker does (#3668). A gateway that
+      // streams by default answers with text/event-stream, which
+      // response.json() cannot read, and `stream` is protected from the extra
+      // body. The cmem gateway never streams unasked; its requests stay as
+      // they are. Reasoning off wherever the body reaches OpenRouter, and on
+      // the one-shot retry for a custom gateway.
+      ...(reachesOpenRouter || forceReasoningOff ? { reasoning: { enabled: false } } : {}),
+      ...(isCmemGatewayUrl(this.apiUrl) ? {} : { stream: false }),
+    }, this.extraBody, this.apiUrl, forceReasoningOff);
+  }
+
+  private async postAndRead(body: Record<string, unknown>, signal?: AbortSignal): Promise<OpenRouterResponse> {
     let response: Response;
     try {
-      response = await this.postChatCompletion(prompt, signal);
+      response = await this.postChatCompletion(body, signal);
     } catch (networkError) {
       const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyHttpProviderError({
@@ -146,26 +225,10 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
         providerLabel: 'OpenRouter',
       });
     }
-
-    const rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
-    if (!rawText) {
-      logger.warn('SDK', 'OpenRouter returned empty content', {
-        provider: 'openrouter',
-        model: this.model,
-      });
-    }
-
-    const tokensUsed = typeof data.usage?.total_tokens === 'number' ? data.usage.total_tokens : undefined;
-
-    return {
-      rawText,
-      ...(tokensUsed !== undefined ? { tokensUsed } : {}),
-      providerLabel: this.providerLabel,
-      modelId: this.model,
-    };
+    return data;
   }
 
-  private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
+  private postChatCompletion(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     return fetchWithOpenRouterTokenCompatibility(this.fetchImpl, this.apiUrl, {
       method: 'POST',
       headers: {
@@ -174,17 +237,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
         'Content-Type': 'application/json',
       },
       signal,
-    }, withOpenRouterExtraBody({
-      model: this.model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      // Ask for one JSON body, as the worker does (#3668). A gateway that
-      // streams by default answers with text/event-stream, which
-      // response.json() cannot read, and `stream` is protected from the extra
-      // body. The cmem gateway never streams unasked; its requests stay as
-      // they are.
-      ...(isCmemGatewayUrl(this.apiUrl) ? {} : { stream: false }),
-    }, this.extraBody, this.apiUrl), this.maxOutputTokens);
+    }, body, this.maxOutputTokens);
   }
 }
 

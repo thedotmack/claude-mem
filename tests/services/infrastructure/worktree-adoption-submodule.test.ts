@@ -23,6 +23,7 @@ import {
   adoptMergedWorktreesForAllKnownRepos
 } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { getPathModeProjectContext } from '../../../src/utils/project-name.js';
 
 let tempRoot: string | undefined;
 
@@ -88,7 +89,7 @@ interface Fixture {
   obsId: number;
 }
 
-function buildFixture(): Fixture {
+function buildFixture(submoduleName = 'peerless'): Fixture {
   tempRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'claude-mem-2842-adopt-')));
   const superproject = path.join(tempRoot, 'react');
   const child = path.join(tempRoot, 'peerless-origin');
@@ -99,18 +100,19 @@ function buildFixture(): Fixture {
   initRepo(child);
   execFileSync(
     'git',
-    ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', child, 'peerless'],
+    ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'fixture', child, submoduleName],
     { stdio: 'ignore' }
   );
   git(superproject, 'commit', '-m', 'add submodule');
 
-  const submodule = path.join(superproject, 'peerless');
+  const submodule = path.join(superproject, submoduleName);
+  const project = `react/${submoduleName}`;
   const dbPath = path.join(dataDirectory, 'claude-mem.db');
   const store = new SessionStore(dbPath);
-  const sessionDbId = store.createSDKSession('content-sub', 'react/peerless', 'prompt');
+  const sessionDbId = store.createSDKSession('content-sub', project, 'prompt');
   store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-sub');
   store.setSessionCwd(sessionDbId, submodule);
-  const obsId = seedObservation(store, 'memory-sub', 'react/peerless');
+  const obsId = seedObservation(store, 'memory-sub', project);
   store.close();
 
   return { superproject, submodule, dataDirectory, dbPath, obsId };
@@ -185,3 +187,106 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
     expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
   }, 30_000);
 });
+
+for (const name of ['peer (copy)', 'peer\nless']) {
+  const filesystemIt = process.platform === 'win32' && name.includes('\n') ? it.skip : it;
+  filesystemIt(`preserves live submodule routing for path ${JSON.stringify(name)}`, async () => {
+    const fx = buildFixture(name);
+    const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status', '--recursive'], { encoding: 'utf8' });
+    expect(status).toContain(name);
+    const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+    expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
+    expect(result.orphanedWorktrees).toEqual([]);
+  }, 30_000);
+}
+
+it('keeps initialized nested submodules separate while their described paths remain live', async () => {
+  const fx = buildFixture();
+  const origin = path.join(tempRoot!, 'nested-origin');
+  initRepo(origin);
+  execFileSync('git', ['-C', fx.submodule, '-c', 'protocol.file.allow=always', 'submodule', 'add', origin, 'nested (main)'], { stdio: 'ignore' });
+  git(fx.submodule, 'config', 'user.email', 'test@example.com');
+  git(fx.submodule, 'config', 'user.name', 'Test');
+  git(fx.submodule, 'commit', '-m', 'add nested module');
+  const nested = path.join(fx.submodule, 'nested (main)');
+  const project = 'react/peerless/nested (main)';
+  const store = new SessionStore(fx.dbPath);
+  const session = store.createSDKSession('content-nested', project, 'prompt');
+  store.ensureMemorySessionIdRegistered(session, 'memory-nested');
+  store.setSessionCwd(session, nested, 'path');
+  const observation = seedObservation(store, 'memory-nested', project);
+  store.close();
+  const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status', '--recursive'], { encoding: 'utf8' });
+  expect(status).toContain('peerless/nested (main) (heads/main)');
+
+  const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+  expect(result.orphanedWorktrees).toEqual([]);
+  expect(mergedInto(fx.dbPath, observation)).toBeNull();
+  expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
+});
+
+it('still adopts a deinitialized submodule without recursing into its empty checkout', async () => {
+  const fx = buildFixture();
+  git(fx.superproject, 'submodule', 'deinit', '--force', '--', 'peerless');
+  const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status'], { encoding: 'utf8' });
+  expect(status.startsWith('-')).toBe(true);
+
+  const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+  expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
+  expect(result.orphanedWorktrees).toEqual(['react/peerless']);
+});
+
+it('keeps sessions and observations in distinct ..-prefixed submodule paths', async () => {
+  const fx = buildFixture();
+  const origin = path.join(tempRoot!, 'shared-origin');
+  initRepo(origin);
+  const store = new SessionStore(fx.dbPath);
+  try {
+    for (const folder of ['..alpha', '..beta']) {
+      const relative = `${folder}/shared`;
+      execFileSync('git', ['-C', fx.superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', folder, origin, relative], { stdio: 'ignore' });
+      const checkout = path.join(fx.superproject, relative);
+      const context = getPathModeProjectContext(checkout);
+      const project = context.primary;
+      expect(context.allProjects).toContain('react/shared');
+      const session = store.createSDKSession(`content-${folder}`, project, 'prompt');
+      const memory = `memory-${folder}`;
+      store.ensureMemorySessionIdRegistered(session, memory);
+      store.setSessionCwd(session, checkout, 'path');
+      seedObservation(store, memory, project);
+    }
+    const rows = store.db.prepare(
+      "SELECT project, COUNT(*) AS count FROM observations WHERE memory_session_id IN ('memory-..alpha', 'memory-..beta') GROUP BY project ORDER BY project"
+    ).all();
+    expect(rows).toEqual([
+      { project: 'react/..alpha/shared', count: 1 },
+      { project: 'react/..beta/shared', count: 1 },
+    ]);
+    const legacySession = store.createSDKSession('content-legacy-collapsed', 'react/shared', 'prompt');
+    store.ensureMemorySessionIdRegistered(legacySession, 'legacy-collapsed');
+    store.setSessionCwd(legacySession, path.join(fx.superproject, '..alpha', 'shared'), 'path');
+    const legacyObservation = seedObservation(store, 'legacy-collapsed', 'react/shared');
+    for (const folder of ['..alpha', '..beta']) {
+      const keys = getPathModeProjectContext(path.join(fx.superproject, folder, 'shared')).allProjects;
+      const history = store.db.prepare(
+        `SELECT memory_session_id FROM observations WHERE project IN (${keys.map(() => '?').join(',')}) ORDER BY memory_session_id`
+      ).all(...keys) as Array<{ memory_session_id: string }>;
+      expect(history.some(row => row.memory_session_id === 'legacy-collapsed')).toBe(true);
+      expect(history.some(row => row.memory_session_id === `memory-${folder}`)).toBe(true);
+      const other = folder === '..alpha' ? '..beta' : '..alpha';
+      expect(history.some(row => row.memory_session_id === `memory-${other}`)).toBe(false);
+    }
+    const projects = store.db.prepare(
+      "SELECT project FROM sdk_sessions WHERE memory_session_id IN ('memory-..alpha', 'memory-..beta') ORDER BY project"
+    ).all();
+    expect(projects).toEqual([{ project: 'react/..alpha/shared' }, { project: 'react/..beta/shared' }]);
+
+    // Both checkouts still read the collapsed key, so the sweep must leave it shared between them.
+    const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+    expect(result.orphanedWorktrees).not.toContain('react/shared');
+    expect(mergedInto(fx.dbPath, legacyObservation)).toBeNull();
+    expect(store.db.prepare("SELECT body FROM sync_outbox WHERE body LIKE '%remap_project%'").all()).toEqual([]);
+  } finally {
+    store.close();
+  }
+}, 30_000);

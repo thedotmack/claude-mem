@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 const sourceRoot = resolve(import.meta.dir, '../..');
 
 describe('JSON null observation capture', () => {
-  it('durably spools parsed-null input alongside ordinary input controls', () => {
+  it('hands parsed-null input off live alongside ordinary input controls, without a disk spool', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'cmem-null-observation-'));
     const home = join(fixture, 'home');
     mkdirSync(home);
@@ -19,8 +19,8 @@ describe('JSON null observation capture', () => {
       const data = process.env.CLAUDE_MEM_DATA_DIR;
       mkdirSync(data, { recursive: true });
       const requests = [];
-      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
-        requests.push(new URL(request.url).pathname);
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+        requests.push({ path: new URL(request.url).pathname, body: await request.json().catch(() => null) });
         return new Response('{}', { headers: { 'content-type': 'application/json' } });
       } });
       writeFileSync(join(data, 'settings.json'), JSON.stringify({
@@ -34,6 +34,10 @@ describe('JSON null observation capture', () => {
         const { settleHookSpoolNudges } = await load('src/cli/spool-hook-event.ts');
         const { resolveHookSpoolDirectory } = await load('src/shared/hook-spool.ts');
         const results = [];
+        const count = () => {
+          try { return readdirSync(resolveHookSpoolDirectory()).filter(x => x.endsWith('.json')).length; }
+          catch { return 0; }
+        };
         for (const [name, toolInput] of [
           ['json-null', 'null'], ['json-object', '{"command":"owned"}'],
           ['direct-null', null], ['json-number', '12345'],
@@ -42,19 +46,12 @@ describe('JSON null observation capture', () => {
             sessionId: name, cwd: process.cwd(), toolName: 'Bash',
             toolInput, toolResponse: 'owned result',
           });
-          const count = () => {
-            try { return readdirSync(resolveHookSpoolDirectory()).filter(x => x.endsWith('.json')).length; }
-            catch { return 0; }
-          };
-          const before = count();
+          const before = requests.length;
           const output = await observationHandler.execute(input);
           await settleHookSpoolNudges();
-          results.push({ name, output, spooled: count() - before });
+          results.push({ name, output, handoffs: requests.length - before });
         }
-        const entries = readdirSync(resolveHookSpoolDirectory())
-          .filter(x => x.endsWith('.json'))
-          .map(x => JSON.parse(readFileSync(join(resolveHookSpoolDirectory(), x), 'utf8')));
-        console.log(JSON.stringify({ results, requests, entries, runtime: Bun.version }));
+        console.log(JSON.stringify({ results, requests, spooled: count(), runtime: Bun.version }));
       } finally { server.stop(true); }
     `);
     try {
@@ -74,14 +71,14 @@ describe('JSON null observation capture', () => {
       expect(child.stderr.toString()).toBe('');
       const receipt = JSON.parse(child.stdout.toString());
       expect(receipt.runtime).toBe(Bun.version);
-      expect(receipt.results.map((r: { spooled: number }) => r.spooled)).toEqual([1, 1, 1, 1]);
+      expect(receipt.results.map((r: { handoffs: number }) => r.handoffs)).toEqual([1, 1, 1, 1]);
       expect(receipt.results.every((r: { output: { continue: boolean } }) => r.output.continue)).toBe(true);
-      expect(receipt.requests).toEqual(Array(4).fill('/api/spool/nudge'));
-      expect(receipt.entries).toHaveLength(4);
-      const captured = receipt.entries.find((entry: { payload: { contentSessionId: string } }) =>
-        entry.payload.contentSessionId === 'json-null');
-      expect(captured.payload.toolInput).toBe('null');
-      expect(captured.payload.toolResponse).toBe('owned result');
+      expect(receipt.requests.map((r: { path: string }) => r.path)).toEqual(Array(4).fill('/api/sessions/observations'));
+      expect(receipt.spooled).toBe(0);
+      const captured = receipt.requests.find((r: { body: { contentSessionId: string } }) =>
+        r.body.contentSessionId === 'json-null').body;
+      expect(captured.tool_input).toBe('null');
+      expect(captured.tool_response).toBe('owned result');
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }

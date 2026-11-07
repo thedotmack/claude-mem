@@ -2,21 +2,16 @@ import { expect, it } from 'bun:test';
 import express from 'express';
 import { createServer } from 'node:http';
 import type { Socket } from 'node:net';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ViewerRoutes } from '../../../../src/services/worker/http/routes/ViewerRoutes.js';
+import {
+  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, failOnCiWithoutChrome, launchChrome, withTimeout, type OwnedChrome,
+} from '../../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome for restart recovery tests');
+failOnCiWithoutChrome('CI requires Chrome for restart recovery tests');
 
 for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-successor'] as const) {
-  (chrome ? it : it.skip)(`restart page recovers after a stalled ${stalled} request`, async () => {
-    const owned=mkdtempSync(join(tmpdir(),'claude-mem-restart-timeout-'));
-    let child:ReturnType<typeof Bun.spawn>|undefined;
-    let timer:ReturnType<typeof setTimeout>|undefined;
+  (chromeExecutablePath ? it : it.skip)(`restart page recovers after a stalled ${stalled} request`, async () => {
+    let chrome:OwnedChrome|undefined;
     let markReady!:()=>void;
     const ready=new Promise<void>(resolve=>{markReady=resolve});
     let report!:(result:unknown)=>void;
@@ -72,14 +67,10 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
       const address=server.address();
       if(!address||typeof address==='string')throw Error('No native TCP address');
-      child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
-        '--disable-background-timer-throttling','--disable-renderer-backgrounding',
-        '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,`http://127.0.0.1:${address.port}/restart`],
-        {stdout:'ignore',stderr:'ignore'});
+      chrome=launchChrome(`http://127.0.0.1:${address.port}/restart`,{profilePrefix:'claude-mem-restart-timeout-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
       // Chrome's cold start gets its own window; the page's phases start at /ready.
-      await Promise.race([ready,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Restart page did not become ready')),30000)})]);
-      clearTimeout(timer);
-      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),25000)})]);
+      await withTimeout(ready,30000,'Restart page did not become ready');
+      const received=await withTimeout(result,25000,'Browser timed out');
       const observation=received as {status:string;disabled:boolean;elapsed:number};
       if(stalled==='no-successor') {
         expect(observation.status).toContain('doctor');
@@ -92,11 +83,9 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       }
       expect(healthRequests).toBeGreaterThanOrEqual(stalled==='post'?1:2);
     } finally {
-      clearTimeout(timer);
-      if(child){child.kill();await child.exited;}
+      await chrome?.close();
       for(const socket of sockets)socket.destroy();
       await new Promise<void>(resolve=>server.close(()=>resolve()));
-      rmSync(owned,{recursive:true,force:true});
     }
   },80000);
 }

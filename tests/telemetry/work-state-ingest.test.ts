@@ -10,10 +10,12 @@ import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRout
 import express from 'express';
 import { sessionInitHandler, setSessionInitDependenciesForTesting } from '../../src/cli/handlers/session-init';
 import { observationHandler } from '../../src/cli/handlers/observation';
-import * as spoolHooks from '../../src/cli/spool-hook-event';
+import { settleHookSpoolNudges } from '../../src/cli/spool-hook-event';
+import * as workerUtils from '../../src/shared/worker-utils';
 import { HookSpool } from '../../src/shared/hook-spool';
-import { drainHookSpool } from '../../src/services/worker/hook-spool-drain';
-import { useTempHookSpoolDataDir } from '../helpers/temp-hook-spool';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const ENV = ['CLAUDE_MEM_TELEMETRY', 'DO_NOT_TRACK', 'CLAUDE_MEM_SKIP_TOOLS', 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS', 'CLAUDE_MEM_EXCLUDED_PROJECTS'];
 let previous: Array<string | undefined>;
@@ -103,14 +105,20 @@ describe('work-state capture boundary', () => {
     expect(rows()[0].properties.unidentified_tool_event_count).toBe(1);
   });
 
-  it('records captured usage through the normal prompt hook, observation hook, and spool drain', async () => {
-    const temporary = useTempHookSpoolDataDir();
-    const spool = new HookSpool();
-    // Keep the real durable spool while avoiding a nudge to any external worker.
-    const spoolSpy = spyOn(spoolHooks, 'spoolHookEvent').mockImplementation((kind: any, data: any) => spool.enqueue(kind, data));
+  it('records captured usage through the normal prompt hook and the live observation handoff', async () => {
+    // A private data dir, without the helper's live-handoff stub: the real handoff runs.
+    const savedDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-work-state-live-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
     process.env.CLAUDE_MEM_SKIP_TOOLS = 'work_state_write';
+    const liveHandoffs: string[] = [];
     try {
       await withRoutes(async port => {
+        // The hook's one live handoff goes to these real routes, not an external worker.
+        const request = spyOn(workerUtils, 'workerHttpRequest').mockImplementation(async (path: string, init: any = {}) => {
+          liveHandoffs.push(path);
+          return fetch(`http://127.0.0.1:${port}${path}`, { method: init.method, headers: init.headers, body: init.body });
+        });
         setSessionInitDependenciesForTesting({
           shouldTrackProject: () => true,
           loadFromFileOnce: () => ({ CLAUDE_MEM_SEMANTIC_INJECT: 'false' }),
@@ -121,20 +129,24 @@ describe('work-state capture boundary', () => {
             return response.json();
           },
         });
-        const input = { sessionId: 'normal-hook-path', cwd: temporary.dataDir, platform: 'codex', agentId: 'main-agent' };
-        recordWorkStateInstruction(store.db, { contentSessionId: input.sessionId, platformSource: 'codex', agentId: input.agentId, enqueuedAtEpochMs: Date.now() - 10 }, 'returned', 'normal-context');
-        await sessionInitHandler.execute({ ...input, prompt: 'Read and update the saved progress' });
-        await observationHandler.execute({ ...input, toolName: 'work_state_write', toolUseId: 'normal-write', toolResponse: 'Saved to "progress" in project.' });
-        await drainHookSpool(spool);
-        const metrics = rows().map(row => row.properties);
-        expect(metrics.some(row => row.captured_write_ok_count === 1 && row.platform === 'codex' && row.agent_role === 'main')).toBe(true);
-        expect(metrics.some(row => row.captured_prompt_count === 1 && row.instruction_state === 'returned')).toBe(true);
-        expect(queue).not.toHaveBeenCalled();
+        try {
+          const input = { sessionId: 'normal-hook-path', cwd: dataDir, platform: 'codex', agentId: 'main-agent' };
+          recordWorkStateInstruction(store.db, { contentSessionId: input.sessionId, platformSource: 'codex', agentId: input.agentId, enqueuedAtEpochMs: Date.now() - 10 }, 'returned', 'normal-context');
+          await sessionInitHandler.execute({ ...input, prompt: 'Read and update the saved progress' });
+          await observationHandler.execute({ ...input, toolName: 'work_state_write', toolUseId: 'normal-write', toolResponse: 'Saved to "progress" in project.' });
+          await settleHookSpoolNudges();
+          expect(liveHandoffs).toEqual(['/api/sessions/observations']);
+          const metrics = rows().map(row => row.properties);
+          expect(metrics.some(row => row.captured_write_ok_count === 1 && row.platform === 'codex' && row.agent_role === 'main')).toBe(true);
+          expect(metrics.some(row => row.captured_prompt_count === 1 && row.instruction_state === 'returned')).toBe(true);
+          expect(queue).not.toHaveBeenCalled();
+          expect(new HookSpool().entries()).toEqual([]);
+        } finally { request.mockRestore(); }
       });
     } finally {
       setSessionInitDependenciesForTesting();
-      spoolSpy.mockRestore();
-      temporary.restore();
+      if (savedDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR; else process.env.CLAUDE_MEM_DATA_DIR = savedDataDir;
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 

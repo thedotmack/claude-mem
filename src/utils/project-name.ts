@@ -21,8 +21,8 @@ const UNKNOWN_PROJECT_NAME = 'unknown-project';
  * authoritative cwd (worker, transcript, worktree) must not route through this.
  */
 export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
-  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
-  if (claudeProjectDir) {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+  if (claudeProjectDir?.trim()) {
     return claudeProjectDir;
   }
   if (!cwd || cwd.trim() === '') {
@@ -45,7 +45,10 @@ function findGitRepoRoot(dir: string): string | null {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-    }).trim();
+    }).replace(/\n$/, '');
+    // Git adds one LF. Whitespace before it belongs to the checkout path:
+    // trim() collapses distinct repositories and can point worktree detection
+    // at a different checkout (for example `topic ` versus `topic`).
     return root || null;
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -179,7 +182,7 @@ function readIdentitySettings(): SettingsDefaults {
   return settings;
 }
 
-function useGitRemoteProjectNames(): boolean {
+export function useGitRemoteProjectNames(): boolean {
   const source = process.env[PROJECT_NAME_SOURCE_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_NAME_SOURCE;
   return String(source ?? 'path').trim().toLowerCase() === 'git-remote';
 }
@@ -190,7 +193,7 @@ let environmentsCache: { raw: unknown; environments: ProjectEnvironment[] } | nu
 /**
  * Named environments (CLAUDE_MEM_PROJECT_ENVIRONMENTS, env wins), read live
  * like the other identity settings and re-parsed only when the raw value
- * changes, so an invalid value warns once rather than on every resolution.
+ * changes, so invalid legacy values warn once rather than on every resolution.
  */
 export function loadProjectEnvironments(): ProjectEnvironment[] {
   const raw = process.env[PROJECT_ENVIRONMENTS_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_ENVIRONMENTS;
@@ -281,7 +284,7 @@ export function getProjectName(
   // identity, so it wins over every derived name.
   const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
   if (environment) {
-    return environment;
+    return environment.name;
   }
 
   // #2663 — inside a repo, the git root names the project so the name is stable
@@ -351,7 +354,7 @@ export function buildWorktreeProjectKey(parentProjectName: string, worktreeName:
 function submoduleLeaf(info: WorktreeInfo, repoRoot: string): string | null {
   if (!info.isSubmodule || !info.parentRepoPath) return null;
   const relative = path.relative(info.parentRepoPath, repoRoot);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
 }
 
@@ -382,20 +385,25 @@ export function getProjectContext(
   const derivedContext = slug ? withPrimaryKey(pathContext, slug, 'git-remote') : pathContext;
 
   // #2737 — a configured environment wins over every derived name, and the
-  // derived keys stay readable so memory stored before the environment existed
-  // is not hidden (`project merge` folds it in permanently).
+  // derived keys stay readable by default. An explicit inherit list replaces
+  // them, letting a child project choose its own read boundary (#4782).
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment, 'environment') : derivedContext;
+  return environment ? withPrimaryKey(derivedContext, environment.name, 'environment', environment.inherit) : derivedContext;
 }
 
-/** Re-key a context to `primary`, keeping every key it already read as a read-only alias. */
-function withPrimaryKey(context: ProjectContext, primary: string, keySource: ProjectKeySource): ProjectContext {
+/** Re-key a context, retaining its read keys unless an explicit scope replaces them. */
+function withPrimaryKey(
+  context: ProjectContext,
+  primary: string,
+  keySource: ProjectKeySource,
+  readKeys: string[] = context.allProjects,
+): ProjectContext {
   return {
     primary,
     parent: null,
     isWorktree: context.isWorktree,
     isSubmodule: context.isSubmodule,
-    allProjects: [...context.allProjects.filter(key => key !== primary), primary],
+    allProjects: [...new Set(readKeys.filter(key => key !== primary)), primary],
     keySource,
   };
 }
@@ -434,8 +442,14 @@ function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: strin
     let primary: string;
     let legacyKeys: string[];
     if (worktreeInfo.isSubmodule) {
-      primary = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
+      primary = `${parent}/${leaf ?? cwdProjectName}`;
       legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+      // The former raw '..' prefix check collapsed these nested paths to
+      // the basename. Keep that shared historical key readable.
+      if (leaf?.startsWith('..') && leaf !== cwdProjectName) {
+        legacyKeys.push(`${parent}/${cwdProjectName}`);
+      }
     } else {
       primary = buildWorktreeProjectKey(parent, cwdProjectName);
       legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];

@@ -17,6 +17,7 @@ import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
+import { stripMemoryTags } from "../../utils/tag-stripping.js";
 import { retryWhileRefused } from "./worker-retry.js";
 
 export interface OpenCodeClient {
@@ -232,9 +233,13 @@ async function initializeSessionForUserPrompt(
 }
 
 function truncate(text: string): string {
-  return text.length > MAX_TOOL_RESPONSE_LENGTH
-    ? text.slice(0, MAX_TOOL_RESPONSE_LENGTH)
-    : text;
+  // Strip tagged private sections before the length cap, not after: a cut
+  // through a block would drop its closing tag and the worker-side stripper
+  // then keeps the (now unbalanced) remainder verbatim.
+  const stripped = stripMemoryTags(text);
+  return stripped.length > MAX_TOOL_RESPONSE_LENGTH
+    ? stripped.slice(0, MAX_TOOL_RESPONSE_LENGTH)
+    : stripped;
 }
 
 /**

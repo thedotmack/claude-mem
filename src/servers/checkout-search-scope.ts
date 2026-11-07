@@ -13,9 +13,9 @@ export function withCheckoutProjects<T extends { project?: unknown; projects?: u
   checkout: Pick<ProjectContext, 'primary' | 'allProjects'>
 ): T & { projects?: unknown } {
   if (args.projects !== undefined || typeof args.project !== 'string') return args;
-  const project = args.project.trim();
-  if (!project || project.toLowerCase() !== checkout.primary.toLowerCase() || checkout.allProjects.length < 2) {
+  const project = args.project;
+  if (!project.trim() || project.toLowerCase() !== checkout.primary.toLowerCase() || checkout.allProjects.length < 2) {
     return args;
   }
-  return { ...args, projects: checkout.allProjects.join(',') };
+  return { ...args, projects: checkout.allProjects };
 }

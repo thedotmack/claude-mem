@@ -2,8 +2,9 @@ import { mkdirSync, watch as fsWatch } from 'fs';
 import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
 import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
+import { isLiveObserverEvent, isExpiredObserverEvent } from '../../shared/observer-work-policy.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
@@ -15,7 +16,11 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
  * `markHandedOff` goes to ingest, which calls it synchronously at the exact
  * point the entry is irrevocably accepted (see HookSpool.drain).
  */
-async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+export async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+  if (isLiveObserverEvent(entry.kind) && isExpiredObserverEvent(entry.enqueuedAtEpochMs)) {
+    logger.debug('HOOK', 'Skipped expired live observer handoff', { kind: entry.kind });
+    return true;
+  }
   switch (entry.kind) {
     case 'work_state_telemetry': {
       const { payload } = entry;
@@ -63,8 +68,18 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       if (outcome !== 'unknown_session') return true;
       return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
     }
+    case 'subagent_stop':
+      // Stamped with the hook's time, not the drain's, so a late drain never
+      // makes the stop look newer than work the agent did after it resumed.
+      ingestSubagentStop({ ...entry.payload, stoppedAtEpoch: entry.enqueuedAtEpochMs }, { markHandedOff });
+      return true;
     case 'advisor_calls':
       ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
+      return true;
+    case 'deliverables':
+      // The copies are already in the bucket; stamped with the hook's time so
+      // the record says when the turn made them, not when the drain ran.
+      ingestDeliverables({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
       return true;
   }
 }
@@ -80,7 +95,15 @@ export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumed
 }
 
 export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
-  const result = await spool.drain(ingestHookSpoolEntry, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
+  const result = await spool.drain((entry, markHandedOff) => {
+    // Compatibility cleanup only. Before this change hooks persisted these
+    // inputs; replaying them now would restart a paid observer backlog.
+    if (isLiveObserverEvent(entry.kind)) {
+      logger.debug('HOOK', 'Discarded legacy observer spool entry without inference', { kind: entry.kind });
+      return true;
+    }
+    return ingestHookSpoolEntry(entry, markHandedOff);
+  }, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
   if (result.drained > 0 || result.quarantined > 0 || result.expired > 0) {
     logger.info('HOOK', 'Drained hook spool', { ...result });
   }

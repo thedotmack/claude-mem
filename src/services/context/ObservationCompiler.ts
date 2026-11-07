@@ -372,10 +372,24 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
+  // The session id arrives from host payloads and synced rows and becomes a
+  // path segment below, so refuse anything that can leave its directory.
   const priorSessionId = priorSessionObs.content_session_id ?? priorSessionObs.memory_session_id;
+  if (typeof priorSessionId !== 'string' || !isSafeTranscriptSessionId(priorSessionId)) {
+    return { assistantMessage: '' };
+  }
   const dashedCwd = cwdToDashed(cwd);
   const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);
+}
+
+function isSafeTranscriptSessionId(value: string): boolean {
+  return value.length > 0
+    && value !== '.'
+    && value !== '..'
+    && !value.includes('/')
+    && !value.includes('\\')
+    && !value.includes('\0');
 }
 
 export function prepareSummariesForTimeline(
