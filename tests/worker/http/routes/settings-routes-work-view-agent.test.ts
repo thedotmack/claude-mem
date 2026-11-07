@@ -25,7 +25,7 @@ function capturePost(): (req: Request, res: Response) => void {
   return (req, res) => handler(req, res);
 }
 
-describe('SettingsRoutes — CLAUDE_MEM_WORK_VIEW_AGENT (#5241)', () => {
+describe('SettingsRoutes — CLAUDE_MEM_WORK_VIEW_AGENT (#5189)', () => {
   const settingsPath = paths.settings();
   let prior: string | undefined;
   let post: (req: Request, res: Response) => void;
@@ -40,7 +40,7 @@ describe('SettingsRoutes — CLAUDE_MEM_WORK_VIEW_AGENT (#5241)', () => {
   });
 
   it('validates and persists valid CLAUDE_MEM_WORK_VIEW_AGENT values', async () => {
-    for (const valid of ['', 'claude-code', 'claude', 'codex', 'gemini', 'off', 'all', 'any']) {
+    for (const valid of ['', 'claude-code', 'codex', 'gemini', 'off', 'all']) {
       const { req, res, statusSpy } = createMockReqRes({ CLAUDE_MEM_WORK_VIEW_AGENT: valid });
       await post(req as Request, res as Response);
       expect(statusSpy).not.toHaveBeenCalledWith(400);
@@ -50,7 +50,7 @@ describe('SettingsRoutes — CLAUDE_MEM_WORK_VIEW_AGENT (#5241)', () => {
   });
 
   it('rejects invalid CLAUDE_MEM_WORK_VIEW_AGENT values with 400', async () => {
-    const { req, res, statusSpy, jsonSpy } = createMockReqRes({ CLAUDE_MEM_WORK_VIEW_AGENT: 'unsupported-agent' });
+    const { req, res, statusSpy, jsonSpy } = createMockReqRes({ CLAUDE_MEM_WORK_VIEW_AGENT: 'any' });
     await post(req as Request, res as Response);
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
