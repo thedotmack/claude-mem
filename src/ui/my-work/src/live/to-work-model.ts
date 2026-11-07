@@ -9,13 +9,12 @@ import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
+import { SOLO_REQUESTER } from './work-view-overview.ts'
 import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
 const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
-/** In solo mode every human request comes from the owner's own prompts. */
-const SOLO_REQUESTER = 'You'
 const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 /** A request is built from its prompts; until an agent records work it has only asks. */
 const NO_WORK_YET = 'No agent work recorded yet'
@@ -28,13 +27,14 @@ const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
   deck: 'Deck', document: 'Doc', documentation: 'Doc', image: 'File', video: 'File', spreadsheet: 'File', file: 'File',
 }
 
-/** Recorded work product the drawer can show. A local file that is gone is left out; a bucket copy keeps its deliverable mark for the card's front. */
+/** Origin-only metadata stays visible without an href; unavailable local files remain hidden. */
 function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
-  return (products ?? []).filter((product) => product.available !== false).map((product) => ({
+  return (products ?? []).filter((product) => product.available !== false || product.availability === 'origin-only').map((product) => ({
     kind: WORK_PRODUCT_KIND[product.kind] ?? 'Link',
     label: cleanText(product.title, 140) || product.kind,
-    href: product.url ?? product.fileUrl ?? undefined,
+    href: product.availability === 'origin-only' ? undefined : product.url ?? product.fileUrl ?? undefined,
     ...(product.deliverable === true ? { deliverable: true as const } : {}),
+    ...(product.availability === 'origin-only' ? { availability: 'origin-only' as const } : {}),
   }))
 }
 const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session' }
@@ -113,7 +113,7 @@ function nextTextFor(status: NormalizedStatus, recordedNext: string) {
 
 /** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
 function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
-  return [...progress.milestones]
+  return [...(progress.milestones ?? [])]
     .sort((a, b) => (Date.parse(a.at ?? '') || 0) - (Date.parse(b.at ?? '') || 0))
     .map((milestone) => {
       const at = Date.parse(milestone.at ?? '')
@@ -125,7 +125,7 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
 /** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
 function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
-  const reviewedAt = Date.parse(review.checkedAt)
+  const reviewedAt = Date.parse(review.checkedAt ?? '')
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
 }
 
@@ -152,7 +152,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
-  const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
+  const reviewedAt = review ? Date.parse(review.checkedAt ?? '') : NaN
   const readings = review?.readings ?? []
   // A recorded ship completes the request at 100%; review readings that stopped short of it are not its trace.
   const readingsStopShort = status === 'shipped' && !!review && review.percent < 100
@@ -171,7 +171,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     // Group reviews already contain display copy; their source is independent of the optional human-copy writer.
     title,
     ...(titleRepeatsPrompt ? { titleRepeatsPrompt } : {}),
-    summary: raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
+    summary: raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary?.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
     ...(focusAreaId ? { focusAreaId } : {}),
     canMoveFocus: !!raw.anchorConversationKey,
@@ -188,7 +188,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
-      history: readingsStopShort ? undefined : readings.map((reading) => reading.percent),
+      // A current progress record is one assessment, not an invented historical reading.
+      history: readingsStopShort || (review && readings.length === 0) ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
@@ -225,6 +226,13 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     storyNarrative: review?.narrative?.trim() || undefined,
     evidence,
     checkedAt: raw.review?.checked && raw.review.checkedAtEpoch ? formatDateTime(raw.review.checkedAtEpoch) : undefined,
+    ...(raw.review?.mode ? { review: { mode: raw.review.mode, hash: raw.review.hash ?? null,
+      available: raw.review.available, version: raw.review.version, conflict: raw.review.conflict,
+      legacy: raw.review.legacy, pending: raw.review.pending, message: raw.review.message } } : {}),
+    ...(raw.suggestion ? { suggestion: { conversationKey: raw.suggestion.conversationKey,
+      requestId: raw.suggestion.requestId, requestTitle: cleanText(raw.suggestion.requestTitle, 200),
+      evidence: cleanText(raw.suggestion.evidence, 500), expectedSuggestionHash: raw.suggestion.expectedSuggestionHash,
+      sharedConflict: raw.suggestion.sharedConflict } } : {}),
   })
 }
 
@@ -448,6 +456,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     people: [...new Set(requests.map((request) => request.askedBy))],
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
+    ...(snapshot.sharedState ? { sharedState: snapshot.sharedState } : {}),
     ...goalsModel,
     focusAreas,
     otherAsks,

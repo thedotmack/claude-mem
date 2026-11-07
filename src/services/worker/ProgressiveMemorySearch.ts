@@ -1,4 +1,4 @@
-import { ProgressiveSearch, projectMemoryContent, type ProgressiveSearchInput, type MemoryIndexRow, type MemoryDetail } from '../../shared/progressive-search.js';
+import { ProgressiveSearch, projectMemoryContent, isMemoryDetailCandidate, type ProgressiveSearchInput, type MemoryIndexRow, type MemoryDetail } from '../../shared/progressive-search.js';
 import type { SearchManager } from './SearchManager.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { SEARCH_CONSTANTS } from './search/types.js';
@@ -41,12 +41,16 @@ export class ProgressiveMemorySearch {
         ];
         // The underlying search has a separate per-kind budget. Merge compact
         // candidates by title evidence, then round-robin their per-kind ranks;
-        // a full observation page must never hide a stronger summary/prompt.
+        // a full observation page must never hide a stronger summary.
+        // Prompts remain useful index entries, but cannot anchor a detail
+        // fetch. Keep selectable memories ahead of them before truncation.
         return categories.flatMap(([kind, rows]) => rows.map((stored, position) => {
           const row = indexRow(stored, kind);
           const titleWords = new Set(row.title.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
-          return { row, position, score: terms.filter(term => titleWords.has(term)).length };
-        })).sort((a, b) => b.score - a.score || a.position - b.position)
+          const score = terms.filter(term => titleWords.has(term)).length;
+          return { row, position, score, fetchableMatch: isMemoryDetailCandidate(row, query) };
+        })).sort((a, b) => Number(b.fetchableMatch) - Number(a.fetchableMatch)
+          || b.score - a.score || a.position - b.position)
           .slice(0, limit).map(candidate => candidate.row);
       },
       timeline: async ({ anchor, depthBefore, depthAfter }) => this.timeline(anchor, depthBefore, depthAfter),

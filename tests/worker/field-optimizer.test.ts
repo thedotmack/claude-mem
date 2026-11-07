@@ -10,6 +10,7 @@ import {
 } from '../../src/services/worker/field-optimizer.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../src/services/context/types.js';
 import { logger } from '../../src/utils/logger.js';
+import { buildObservationPromptParts } from '../../src/sdk/prompts.js';
 import {
   condenseInputMaxTokens,
   estimateCondenseTokens,
@@ -59,11 +60,6 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
 
   it('falls back to the original (so truncation still applies) when the model returns nothing', async () => {
     const compress: FieldCompressor = async () => null;
-    expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
-  });
-
-  it('falls back when the model returns something still over budget', async () => {
-    const compress: FieldCompressor = async () => ok('y'.repeat(MAX * 2));
     expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
   });
 
@@ -290,5 +286,79 @@ describe('a field too large for the observer model\'s condense prompt skips the 
     expect(calls).toBe(0);
     await optimizeField(huge, compress, CTX, MAX);
     expect(calls).toBe(1);
+  });
+});
+
+// #5450: a condensed reply that still misses the cap is kept, not thrown
+// away. What the observer reads is the field after the prompt builder
+// encodes it, so these go through buildObservationPromptParts the way both
+// providers do (JSON.stringify of the optimized value, then the field cap).
+describe('an over-budget condense reply is clamped once, and marked as clamped (#5450)', () => {
+  /** The truncation marker truncateObservationField adds when a field is cut. */
+  const PROMPT_CUT_MARKER = /<elided chars="\d+" original_size_chars="\d+" reason="oversize" \/>/;
+
+  function asPromptOutcome(optimized: unknown): string {
+    return buildObservationPromptParts({
+      id: 0,
+      tool_name: 'Read',
+      tool_input: JSON.stringify({ small: 1 }),
+      tool_output: JSON.stringify(optimized),
+      created_at_epoch: 0,
+    }, MAX).outcome;
+  }
+
+  it('keeps the head and tail of the reply, marks the cut, and is not cut again by the prompt', async () => {
+    const reply = 'HEAD-' + 'y'.repeat(MAX * 2) + '-TAIL';
+    const out = await optimizeField(oversized, async () => ok(reply), CTX, MAX) as string;
+
+    expect(out).toContain('<condensed');
+    expect(out).toContain('HEAD-');
+    expect(out).toContain('-TAIL');
+    expect(out).toMatch(/<elided chars="\d+" reason="condense-over-budget" \/>/);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(MAX);
+
+    const outcome = asPromptOutcome(out);
+    expect(outcome).not.toMatch(PROMPT_CUT_MARKER);
+    expect(outcome).toBe(JSON.stringify(out));
+  });
+
+  it('counts JSON escapes, so a reply full of quotes and newlines still fits once encoded', async () => {
+    const reply = Array.from({ length: MAX }, (_, i) => `"q${i}"\n`).join('');
+    const out = await optimizeField(oversized, async () => ok(reply), CTX, MAX) as string;
+
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(MAX);
+    expect(asPromptOutcome(out)).not.toMatch(PROMPT_CUT_MARKER);
+  });
+
+  it('clamps a reply that fits as raw text but not once wrapped and encoded, instead of letting the prompt cut it', async () => {
+    const reply = 'line\n'.repeat(Math.floor((MAX - 10) / 5));
+    expect(reply.trim().length).toBeLessThanOrEqual(MAX);
+    const out = await optimizeField(oversized, async () => ok(reply), CTX, MAX) as string;
+
+    expect(out).toContain('<condensed');
+    expect(out).toContain('reason="condense-over-budget"');
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(MAX);
+    expect(asPromptOutcome(out)).not.toMatch(PROMPT_CUT_MARKER);
+  });
+
+  it('leaves a reply that fits once encoded whole, with no clamp marker', async () => {
+    const out = await optimizeField(oversized, async () => ok('short summary'), CTX, MAX) as string;
+
+    expect(out).not.toContain('<elided');
+    expect(asPromptOutcome(out)).toBe(JSON.stringify(out));
+  });
+
+  it('never splits a surrogate pair at the cut', async () => {
+    const reply = '\u{1F600}'.repeat(MAX);
+    const out = await optimizeField(oversized, async () => ok(reply), CTX, MAX) as string;
+    const body = out.replace(/^<condensed[^>]*>\n/, '').replace(/\n<\/condensed>$/, '');
+
+    expect(body).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
+  it('falls back to prompt truncation when the cap cannot hold the wrapper and marker at all', async () => {
+    const tiny = 40;
+    const field = { body: 'x'.repeat(tiny * 3) };
+    expect(await optimizeField(field, async () => ok('y'.repeat(tiny * 2)), CTX, tiny)).toBe(field);
   });
 });

@@ -55,3 +55,15 @@ describe('resolveMcpProjectCwd', () => {
       .toEqual({ cwd: processCwd, source: 'process' });
   });
 });
+
+(process.platform === 'win32' ? describe.skip : describe)('literal MCP checkout whitespace', () => {
+  for (const suffix of [' ', '\t', '\n']) {
+    it(`does not replace a checkout ending in ${JSON.stringify(suffix)} with its sibling`, () => {
+      const plain = directory('topic');
+      const checkout = directory('topic' + suffix);
+      expect(resolveMcpProjectCwd({ headerCwd: checkout, fallbackCwd: plain })).toEqual({ cwd: checkout, source: 'header' });
+      expect(resolveMcpProjectCwd({ roots: [{ uri: pathToFileURL(checkout).href }], fallbackCwd: plain })).toEqual({ cwd: checkout, source: 'roots' });
+      expect(resolveMcpProjectCwd({ fallbackCwd: checkout })).toEqual({ cwd: checkout, source: 'process' });
+    });
+  }
+});

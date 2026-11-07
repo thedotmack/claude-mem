@@ -13,7 +13,7 @@ import { logger } from '../../utils/logger.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import type { UsableAgent, UsableAgentId } from '../agent-runner/detect.js';
 import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
-import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
+import { scanOwnerPrompts, scanWindowStart, type AgentScanSummary, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
 
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
 export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
@@ -60,6 +60,8 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
+  /** Set when hosted extraction was unavailable (budget/rate limit) and setup finished locally without it. */
+  hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
 }
@@ -104,14 +106,19 @@ const AGENT_LABELS: Array<[PromptAgentId, string]> = [
   ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['opencode', 'OpenCode'],
 ];
 
+/** Absence is evidence only when every known source for this session was read. */
+function completeTranscript(summary: AgentScanSummary | undefined, sessionId: string): boolean {
+  return !!summary && summary.sessions.has(sessionId) && !summary.incompleteSessions?.has(sessionId);
+}
+
 function idleState(): SetupScanState {
   return {
-    // Opt-in: nothing about setup results is shared unless the person ticks this.
-    improveProduct: false,
+    // This preference does not start an upload; discovery still requires the person's confirmation.
+    improveProduct: true,
     uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
   };
 }
 
@@ -238,9 +245,22 @@ export class SetupScan {
       await this.extract!(selected, this.current.improveProduct);
       this.finish(pending.summary, pending.startedAt);
     } catch (error) {
+      if ((error as { code?: string } | null)?.code === 'hosted-unavailable') {
+        // Preserve setup progress if automatic organization cannot run right now.
+        logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
+        try {
+          await this.extract!([], this.current.improveProduct);
+          // A refusal of the upload itself arrives after the request was sent; a preflight or cooldown refusal sent nothing.
+          const sent = (error as { sent?: boolean }).sent !== false;
+          if (!sent) this.current = { ...this.current, uploadedAgents: [] };
+          this.finish({ ...pending.summary, hostedNotice: 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.' }, pending.startedAt);
+          return this.state();
+        } catch { /* fall through to the failure below */ }
+      }
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
-      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+      const nothingSent = (error as { sent?: boolean } | null)?.sent === false;
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt, ...(nothingSent ? { uploadedAgents: [] } : {}) }, true);
     }
     return this.state();
   }
@@ -301,23 +321,23 @@ export class SetupScan {
 
       await runnerCheck;
       // Hook-recorded prompts count once: matched to a transcript copy, or, when
-      // the transcripts no longer hold that session, on their own. A hook row in
-      // a session the transcripts hold but did not match was not typed by the owner.
+      // the transcripts cannot be completely read for that session, on their own. A hook row in
+      // a completely read session that did not match was not typed by the owner.
       const agents = this.current.agents.map(agent => {
         const summary = result.agents.find(entry => entry.id === agent.id);
         if (!summary) return { ...agent, prompts: 0, fromMemory: 0, fromTranscripts: 0 };
         const fromMemory = memoryPrompts.filter(prompt => prompt.platformSource === summary.platformSource
           && result.ownerMemoryPromptIds.has(prompt.id)
-          && (claimedHookRowIds.has(prompt.id) || !summary.sessions.has(prompt.contentSessionId))).length;
+          && (claimedHookRowIds.has(prompt.id) || !completeTranscript(summary, prompt.contentSessionId))).length;
         const transcriptOnly = fromTranscripts.get(agent.id) ?? 0;
         return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
       });
-      const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary.sessions]));
-      // Prompts the owner typed whose transcripts are gone exist only in memory; extraction reads them too.
+      const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary]));
+      // Prompts whose transcripts are missing or incomplete can still exist in memory; extraction reads them too.
       // They get the same tag stripping and current redaction as transcript prompts: they may predate both.
       const memoryOnly: OwnerPrompt[] = memoryPrompts.flatMap(prompt => {
         const summary = result.agents.find(entry => entry.platformSource === prompt.platformSource);
-        if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || summary.sessions.has(prompt.contentSessionId)) return [];
+        if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || completeTranscript(summary, prompt.contentSessionId)) return [];
         const text = stripMemoryTags(prompt.promptText).trim();
         if (!text) return [];
         return [{ agent: summary.id, platformSource: prompt.platformSource, sessionId: prompt.contentSessionId, nativePromptId: `memory-${prompt.id}`,
@@ -325,7 +345,7 @@ export class SetupScan {
       });
       const ownerPrompts = [...result.ownerPrompts, ...memoryOnly];
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
-        || (!claimedHookRowIds.has(prompt.id) && Boolean(sessionsByPlatform.get(prompt.platformSource)?.has(prompt.contentSessionId))));
+        || (!claimedHookRowIds.has(prompt.id) && completeTranscript(sessionsByPlatform.get(prompt.platformSource), prompt.contentSessionId)));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)

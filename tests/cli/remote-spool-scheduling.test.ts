@@ -137,7 +137,7 @@ describe('remote upload scheduling', () => {
         spyOn(HookSpool.prototype, 'drain').mockImplementation(() => { throw new Error('hook drained payloads'); });
         const started = performance.now();
         for (let i = 0; i < 8; i++) {
-          spoolHookEvent('observation', { contentSessionId: 'scheduling-session', platformSource: 'codex', toolName: 'exec_command', toolUseId: 'schedule-' + i, toolInput: { cmd: 'read fixture' }, toolResponse: 'detached capture', cwd: '/repo' });
+          spoolHookEvent('advisor_calls', { contentSessionId: 'scheduling-session', platformSource: 'codex', calls: [{ toolUseId: 'schedule-' + i, advice: 'metadata', occurredAtEpoch: Date.now() }], cwd: '/repo' });
         }
         await settleHookSpoolNudges();
         const elapsedMs = performance.now() - started;
@@ -147,7 +147,7 @@ describe('remote upload scheduling', () => {
           const ready = ${JSON.stringify(join(directory, 'upload-started'))};
           while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
           expect(existsSync(ready)).toBe(true);
-          spoolHookEvent('observation', { contentSessionId: 'scheduling-session', platformSource: 'codex', toolName: 'exec_command', toolUseId: 'late-event', toolInput: {}, toolResponse: 'arrived during delivery', cwd: '/repo' });
+          spoolHookEvent('advisor_calls', { contentSessionId: 'scheduling-session', platformSource: 'codex', calls: [{ toolUseId: 'late-event', advice: 'arrived during delivery', occurredAtEpoch: Date.now() }], cwd: '/repo' });
           await settleHookSpoolNudges();
           expect(uploads).toBe(1);
           while (new HookSpool().hasEntries() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));

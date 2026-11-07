@@ -9,7 +9,7 @@ icon: terminal
 The Devin integration gives claude-mem persistent memory to agents running in Devin CLI, which Devin Desktop also uses. It handles four things:
 
 1. **Observation recording** — Captures tool usage from Devin's lifecycle hooks and sends it to the claude-mem worker for AI processing
-2. **Context injection** — Injects the observation timeline at session start through the `SessionStart` hook's `additionalContext`, the same envelope Claude Code uses
+2. **Context injection** — Injects the observation timeline at session start through the `SessionStart` hook's `additionalContext`, the same envelope Claude Code uses, and again after Devin compacts the conversation (`PostCompaction`)
 3. **Session summaries** — Summarizes each session from the last assistant message Devin sends on `Stop`
 4. **MCP search tools** — Registers the claude-mem stdio server in `mcp_config.json`, so `mcp__claude-mem__*` memory search tools are available inside Devin
 
@@ -38,6 +38,7 @@ Start a new Devin session afterwards and run `/hooks` to confirm the claude-mem 
 | Devin hook event | claude-mem internal event | Notes |
 | --- | --- | --- |
 | `SessionStart` | worker start, then `context` | the timeline is returned as `hookSpecificOutput.additionalContext` |
+| `PostCompaction` | `context` | Devin's `SessionStart` does not fire after compaction, so the timeline is re-injected here; the reply names `PostCompaction`, since Devin drops a reply that names another event |
 | `UserPromptSubmit` | `session-init` | |
 | `PostToolUse` | `observation` | `tool_response` is Devin's `{ success, output, error }` |
 | `Stop` | `summarize` | uses `last_assistant_message`; Devin sends no transcript path |

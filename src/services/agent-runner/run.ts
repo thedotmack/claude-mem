@@ -75,6 +75,9 @@ export interface AgentTask {
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
   prepare?: () => Promise<void>;
+  /** Tried first when it is logged in; the other usable agents keep detect order behind it. Absent: detect
+   * order alone decides. The My Work refresh sets this from CLAUDE_MEM_PROVIDER (#5435). */
+  preferredAgent?: UsableAgentId;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -321,7 +324,8 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
 }
 
 /**
- * Run the task on the first usable agent, falling through to the next only
+ * Run the task on the first usable agent — the task's preferred agent when it names one and that agent
+ * is usable — falling through to the next only
  * when a run fails, not when the agent's answer was refused. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
@@ -331,7 +335,10 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
-  const usable = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const detected = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const usable = task.preferredAgent
+    ? [...detected.filter(agent => agent.id === task.preferredAgent), ...detected.filter(agent => agent.id !== task.preferredAgent)]
+    : detected;
   if (!usable.length) {
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
   }

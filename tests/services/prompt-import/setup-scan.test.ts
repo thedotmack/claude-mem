@@ -153,11 +153,65 @@ describe('setup prompt scan', () => {
     scan.start();
     const waiting = await scan.finished();
     expect(waiting.phase).toBe('awaiting-consent');
-    expect(waiting.improveProduct).toBe(false);
+    expect(waiting.improveProduct).toBe(true);
     expect(batches).toEqual([]);
     const done = await scan.confirmUpload(false);
     expect(done).toMatchObject({ phase: 'done', done: true });
     expect(batches).toEqual([[]]);
+  });
+
+  it('finishes locally with a notice when hosted extraction is unavailable', async () => {
+    hookRecorded('claude', 'session-budget', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const batches: unknown[][] = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      batches.push(prompts);
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 503): daily budget reached'), { code: 'hosted-unavailable' });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'done', done: true, error: null });
+    expect(done.hostedNotice).toContain('Automatic organization is temporarily unavailable');
+    expect(done.hostedNotice).not.toContain('stayed on this machine');
+    expect(batches[1]).toEqual([]);
+  });
+
+  it('does not mark selected tools as uploaded when preflight refuses them', async () => {
+    hookRecorded('claude', 'session-preflight', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      if (prompts.length) throw Object.assign(new Error('at capacity'), { code: 'hosted-unavailable', sent: false });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'done', done: true, uploadedAgents: [], error: null });
+    expect(done.hostedNotice).toContain('You can continue');
+  });
+
+  it('fails with no tools marked uploaded when the run stopped before sending anything', async () => {
+    hookRecorded('claude', 'session-unsent', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 500): oops'), { sent: false });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'failed', uploadedAgents: [], error: 'Hosted setup failed (HTTP 500): oops' });
+  });
+
+  it('keeps the selected tools marked uploaded when the failure came after sending', async () => {
+    hookRecorded('claude', 'session-sent', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 500): oops'), { sent: true });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true, ['claude-code']);
+    expect(done).toMatchObject({ phase: 'failed', uploadedAgents: ['claude-code'] });
   });
 
   it('uses the sharing choice sent with the consent, not a stale stored one', async () => {

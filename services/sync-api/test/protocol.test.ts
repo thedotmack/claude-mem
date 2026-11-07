@@ -18,12 +18,15 @@ describe("protocol v2 hub", () => {
 			projected_seq: string;
 			op_count: number;
 			device_count: number;
+			content_kinds: string[];
 		};
 		expect(status.protocol_version).toBe(2);
 		expect(status.head_seq).toBe("0");
 		expect(status.projected_seq).toBe("0");
 		expect(status.op_count).toBe(0);
 		expect(status.device_count).toBe(0);
+		// Real clients hold work-state uploads until the server advertises this exact capability.
+		expect(status.content_kinds).toEqual(["observation", "summary", "prompt", "work_state"]);
 		expect(status.epoch).toMatch(/^[1-9][0-9]*$/);
 		expect(status.epoch).not.toBe("0");
 	});

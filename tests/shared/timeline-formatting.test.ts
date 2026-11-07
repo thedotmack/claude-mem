@@ -20,6 +20,7 @@ mock.module('../../src/utils/logger.js', () => ({
 
 import {
   extractFirstFile,
+  toRelativePath,
   groupByDate,
   formatDate,
   formatTime,
@@ -34,6 +35,32 @@ afterEach(() => {
 
 afterAll(() => {
   mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
+});
+
+describe('toRelativePath', () => {
+  const home = '/Users/test';
+  const cwd = '/Users/test/Code/org/team/repo/packages/app';
+
+  it('keeps files inside the project relative to it', () => {
+    expect(toRelativePath(`${cwd}/src/index.ts`, cwd, home)).toBe('src/index.ts');
+  });
+
+  it('labels files outside the project but under home as ~/...', () => {
+    expect(toRelativePath('/Users/test/.ssh/config', cwd, home)).toBe('~/.ssh/config');
+    expect(toRelativePath('/Users/test/.gemini/settings.json', cwd, home)).toBe('~/.gemini/settings.json');
+  });
+
+  it('keeps an absolute path for files outside both the project and home', () => {
+    expect(toRelativePath('/etc/hosts', cwd, home)).toBe('/etc/hosts');
+  });
+
+  it('does not mistake a sibling directory with a shared prefix for home', () => {
+    expect(toRelativePath('/Users/tester/notes.md', cwd, home)).toBe('/Users/tester/notes.md');
+  });
+
+  it('leaves relative input untouched', () => {
+    expect(toRelativePath('src/app.ts', cwd, home)).toBe('src/app.ts');
+  });
 });
 
 describe('extractFirstFile', () => {

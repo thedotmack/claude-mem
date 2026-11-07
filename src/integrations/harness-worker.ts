@@ -5,12 +5,16 @@ import { spawn } from 'node:child_process';
 import { isConnectionRefusedError } from '../shared/connection-errors.js';
 import { expandHome } from '../shared/expand-home.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
+import { getDefaultWorkerPort } from '../shared/install-port.js';
 
 const TIMEOUT_MS = 5_000;
 const CONTEXT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
 
-function harnessSetting(): (key: string, fallback: string) => string {
-  const dataDir = expandHome(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'));
+function dataDirectory(): string {
+  return expandHome(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'));
+}
+
+function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: string) => string {
   let settings: Record<string, unknown> = {};
   try {
     const document = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
@@ -24,12 +28,13 @@ function harnessSetting(): (key: string, fallback: string) => string {
     process.env[key] || (typeof settings[key] === 'string' && settings[key] ? String(settings[key]) : fallback);
 }
 
-/** Resolve the same per-user address as the worker, including persisted settings. */
+/** Resolve the same per-install address as the worker, including persisted settings. */
 export function resolveHarnessWorkerUrl(): string {
-  const setting = harnessSetting();
+  const dataDir = dataDirectory();
+  const setting = harnessSetting(dataDir);
   const configuredHost = setting('CLAUDE_MEM_WORKER_HOST', '127.0.0.1');
   const host = configuredHost === 'localhost' ? '127.0.0.1' : configuredHost;
-  const port = setting('CLAUDE_MEM_WORKER_PORT', String(37700 + ((process.getuid?.() ?? 77) % 100)));
+  const port = setting('CLAUDE_MEM_WORKER_PORT', String(getDefaultWorkerPort(dataDir)));
   return 'http://' + (host.includes(':') && !host.startsWith('[') ? '[' + host + ']' : host) + ':' + port;
 }
 

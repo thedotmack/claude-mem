@@ -86,3 +86,42 @@ describe('SettingsRoutes — quota fallback keys', () => {
     expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
   });
 });
+
+describe('SettingsRoutes — CLAUDE_MEM_PROVIDER_BY_SOURCE', () => {
+  const settingsPath = paths.settings();
+  let priorSettingsContent: string | undefined;
+  let handler: (req: Request, res: Response) => void;
+
+  beforeEach(() => {
+    priorSettingsContent = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : undefined;
+    handler = captureSettingsPostHandler(new SettingsRoutes({} as any));
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude' }));
+  });
+
+  afterEach(() => {
+    if (priorSettingsContent === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, priorSettingsContent, 'utf-8');
+  });
+
+  function postValue(value: unknown) {
+    return post(handler, { CLAUDE_MEM_PROVIDER_BY_SOURCE: value } as any);
+  }
+
+  it('accepts a JSON string, a plain object, and empty', () => {
+    for (const value of ['{"codex":"codex","claude":"claude"}', { codex: 'codex' }, '']) {
+      const { jsonSpy } = postValue(value);
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
+    }
+  });
+
+  it('rejects bad JSON, an unknown provider, an empty key, colliding keys, and a non-object value', () => {
+    const before = readFileSync(settingsPath, 'utf-8');
+    for (const value of ['{nope', '{"codex":"anthropic"}', '{"":"codex"}', '{"codex":"codex","Codex CLI":"claude"}', '["codex"]', 5]) {
+      const { jsonSpy, statusSpy } = postValue(value);
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(jsonSpy.mock.calls[0][0]).toMatchObject({ success: false });
+      expect((jsonSpy.mock.calls[0][0] as any).error).toContain('CLAUDE_MEM_PROVIDER_BY_SOURCE');
+    }
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
+  });
+});
