@@ -16,3 +16,5 @@ The server container uses:
 - `CLAUDE_MEM_AUTH_MODE=api-key`
 
 Create an API key inside the container before using protected V1 write routes.
+
+The queue is BullMQ, so `CLAUDE_MEM_REDIS_URL` can point at any Redis-compatible server that runs BullMQ's Lua scripts.

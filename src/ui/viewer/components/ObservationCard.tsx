@@ -1,12 +1,22 @@
 import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
+import { DeleteButton } from './DeleteButton';
+import { ObservationMediaSection } from './ObservationMedia';
+import type { DeletableItemType } from '../utils/feed-deletion';
+import { parseStoredStringList } from '../utils/stored-string-list';
 
+export type ObservationViewMode = 'summary' | 'facts' | 'narrative';
 interface ObservationCardProps {
   observation: Observation;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
+  viewMode?: ObservationViewMode;
+  onViewModeChange?: (mode: ObservationViewMode) => void;
 }
 
-function stripProjectRoot(filePath: string): string {
+function stripProjectRoot(storedPath: string): string {
+  // Windows sessions record `C:\Users\…\src\app.ts`; shorten it like a `/` path.
+  const filePath = storedPath.replace(/\\/g, '/');
   const markers = ['/Scripts/', '/src/', '/plugin/', '/docs/'];
 
   for (const marker of markers) {
@@ -25,15 +35,21 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation }: ObservationCardProps) {
-  const [showFacts, setShowFacts] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+export function ObservationCard({ observation, onDeleted, viewMode, onViewModeChange }: ObservationCardProps) {
+  const [localViewMode, setLocalViewMode] = useState<ObservationViewMode>('summary');
+  const mode = viewMode ?? localViewMode;
+  const showFacts = mode === 'facts';
+  const showNarrative = mode === 'narrative';
+  const setMode = (next: ObservationViewMode) => {
+    if (viewMode === undefined) setLocalViewMode(next);
+    onViewModeChange?.(next);
+  };
   const date = formatDate(observation.created_at_epoch);
 
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const facts = parseStoredStringList(observation.facts);
+  const concepts = parseStoredStringList(observation.concepts);
+  const filesRead = parseStoredStringList(observation.files_read).map(stripProjectRoot);
+  const filesModified = parseStoredStringList(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
@@ -59,9 +75,9 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {hasFactsContent && (
             <button
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
+              aria-pressed={showFacts}
               onClick={() => {
-                setShowFacts(!showFacts);
-                if (!showFacts) setShowNarrative(false); 
+                setMode(showFacts ? 'summary' : 'facts');
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -74,9 +90,9 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {observation.narrative && (
             <button
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
+              aria-pressed={showNarrative}
               onClick={() => {
-                setShowNarrative(!showNarrative);
-                if (!showNarrative) setShowFacts(false); 
+                setMode(showNarrative ? 'summary' : 'narrative');
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -88,11 +104,12 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               <span>narrative</span>
             </button>
           )}
+          <DeleteButton itemType="observation" id={observation.id} onDeleted={onDeleted} />
         </div>
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <h3 className="card-title">{observation.title || 'Untitled'}</h3>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
@@ -112,6 +129,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           </div>
         )}
       </div>
+
+      {/* Attached images: only rows with validated media refs render this */}
+      {observation.media && observation.media.attachments.length > 0 && (
+        <ObservationMediaSection observationId={observation.id} media={observation.media} />
+      )}
 
       {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
       <div className="card-meta">

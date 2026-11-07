@@ -18,7 +18,16 @@ mock.module('../../src/utils/logger.js', () => ({
   },
 }));
 
-import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
+import {
+  extractFirstFile,
+  toRelativePath,
+  groupByDate,
+  formatDate,
+  formatTime,
+  formatDateTime,
+  formatHeaderDateTime,
+  formatSystemLocaleDateTime,
+} from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
   mock.restore();
@@ -26,6 +35,32 @@ afterEach(() => {
 
 afterAll(() => {
   mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
+});
+
+describe('toRelativePath', () => {
+  const home = '/Users/test';
+  const cwd = '/Users/test/Code/org/team/repo/packages/app';
+
+  it('keeps files inside the project relative to it', () => {
+    expect(toRelativePath(`${cwd}/src/index.ts`, cwd, home)).toBe('src/index.ts');
+  });
+
+  it('labels files outside the project but under home as ~/...', () => {
+    expect(toRelativePath('/Users/test/.ssh/config', cwd, home)).toBe('~/.ssh/config');
+    expect(toRelativePath('/Users/test/.gemini/settings.json', cwd, home)).toBe('~/.gemini/settings.json');
+  });
+
+  it('keeps an absolute path for files outside both the project and home', () => {
+    expect(toRelativePath('/etc/hosts', cwd, home)).toBe('/etc/hosts');
+  });
+
+  it('does not mistake a sibling directory with a shared prefix for home', () => {
+    expect(toRelativePath('/Users/tester/notes.md', cwd, home)).toBe('/Users/tester/notes.md');
+  });
+
+  it('leaves relative input untouched', () => {
+    expect(toRelativePath('src/app.ts', cwd, home)).toBe('src/app.ts');
+  });
 });
 
 describe('extractFirstFile', () => {
@@ -135,6 +170,22 @@ describe('groupByDate', () => {
     expect(dates[2]).toContain('Jan 6');
   });
 
+  it('should support descending date order', () => {
+    const items: TestItem[] = [
+      { id: 1, date: '2025-01-06T10:00:00Z' },
+      { id: 2, date: '2025-01-04T10:00:00Z' },
+      { id: 3, date: '2025-01-05T10:00:00Z' },
+    ];
+
+    const result = groupByDate(items, (item) => item.date, { order: 'desc' });
+
+    const dates = Array.from(result.keys());
+    expect(dates).toHaveLength(3);
+    expect(dates[0]).toContain('Jan 6');
+    expect(dates[1]).toContain('Jan 5');
+    expect(dates[2]).toContain('Jan 4');
+  });
+
   it('should group multiple items on same date together', () => {
     const items: TestItem[] = [
       { id: 1, date: '2025-01-04T08:00:00Z' },
@@ -201,5 +252,99 @@ describe('groupByDate', () => {
 
     const dayItems = Array.from(result.values())[0];
     expect(dayItems.map(i => i.id)).toEqual([3, 1, 2]);
+  });
+
+  it('should keep day-group encounter order with order first-seen', () => {
+    const items: TestItem[] = [
+      { id: 1, date: '2025-01-06T10:00:00Z' },
+      { id: 2, date: '2025-01-04T10:00:00Z' },
+      { id: 3, date: '2025-01-05T10:00:00Z' },
+    ];
+
+    const result = groupByDate(items, (item) => item.date, { order: 'first-seen' });
+
+    const dates = Array.from(result.keys());
+    expect(dates[0]).toContain('Jan 6');
+    expect(dates[1]).toContain('Jan 4');
+    expect(dates[2]).toContain('Jan 5');
+  });
+});
+
+describe('locale formatter fallbacks', () => {
+  // Reproduce the Bun/JavaScriptCore-on-Windows failure where the runtime cannot
+  // build a date formatter and every toLocale* call throws. Without the guard,
+  // this throw kills the whole session-start context injection.
+  const ts = '2025-01-04T21:34:56.000Z';
+  let original: {
+    string: typeof Date.prototype.toLocaleString;
+    date: typeof Date.prototype.toLocaleDateString;
+    time: typeof Date.prototype.toLocaleTimeString;
+  } | null = null;
+
+  function breakFormatters() {
+    original = {
+      string: Date.prototype.toLocaleString,
+      date: Date.prototype.toLocaleDateString,
+      time: Date.prototype.toLocaleTimeString,
+    };
+    const boom = () => { throw new TypeError('failed to initialize DateTimeFormat'); };
+    Date.prototype.toLocaleString = boom as typeof Date.prototype.toLocaleString;
+    Date.prototype.toLocaleDateString = boom as typeof Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleTimeString = boom as typeof Date.prototype.toLocaleTimeString;
+  }
+
+  afterEach(() => {
+    if (original) {
+      Date.prototype.toLocaleString = original.string;
+      Date.prototype.toLocaleDateString = original.date;
+      Date.prototype.toLocaleTimeString = original.time;
+      original = null;
+    }
+  });
+
+  it('formatDate falls back to an ISO date', () => {
+    breakFormatters();
+    expect(formatDate(ts)).toBe('2025-01-04');
+  });
+
+  it('formatTime falls back to an AM/PM time the timeline parser can read', () => {
+    breakFormatters();
+    expect(formatTime(ts)).toBe('9:34 PM');
+  });
+
+  it('formatTime fallback keeps midnight and noon as 12', () => {
+    breakFormatters();
+    expect(formatTime('2025-01-04T00:05:00.000Z')).toBe('12:05 AM');
+    expect(formatTime('2025-01-04T12:00:00.000Z')).toBe('12:00 PM');
+  });
+
+  it('formatTime fallback stays matchable by the folder-timeline parser', () => {
+    breakFormatters();
+    expect(formatTime(ts)).toMatch(/(\d+):(\d+)\s*(AM|PM)/i);
+  });
+
+  it('formatDateTime falls back to an ISO date with an AM/PM time', () => {
+    breakFormatters();
+    expect(formatDateTime(ts)).toBe('2025-01-04 9:34 PM');
+  });
+
+  it('formatHeaderDateTime falls back to a date-time with UTC', () => {
+    breakFormatters();
+    expect(formatHeaderDateTime(new Date(ts))).toBe('2025-01-04 9:34 PM UTC');
+  });
+
+  it('formatSystemLocaleDateTime prints what a bare toLocaleString prints while the formatter works', () => {
+    expect(formatSystemLocaleDateTime(ts)).toBe(new Date(ts).toLocaleString());
+  });
+
+  it('formatSystemLocaleDateTime falls back to an ISO date and a UTC clock, keeping the year', () => {
+    breakFormatters();
+    expect(formatSystemLocaleDateTime(ts)).toBe('2025-01-04 9:34 PM UTC');
+    expect(formatSystemLocaleDateTime(Date.parse(ts))).toBe('2025-01-04 9:34 PM UTC');
+  });
+
+  it('returns Invalid Date for unparseable input when the formatter throws', () => {
+    breakFormatters();
+    expect(formatDate('not a date')).toBe('Invalid Date');
   });
 });

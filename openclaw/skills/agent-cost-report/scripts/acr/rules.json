@@ -1,0 +1,26 @@
+{
+  "source": "/workspace/frustration-arc/trend.md — 'HARD rules landing dates vs. the pattern afterwards' (seeded 2026-09-26)",
+  "rules": [
+    {"rule_key": "cs_email_as_barb", "name": "CS email always as Barb on Alex's behalf, never as Alex", "landed_pt": "2026-09-04", "pattern": "wrong_tool_account_contact"},
+    {"rule_key": "never_act_while_cursing", "name": "Never act while Alex is cursing; wait, then confirm", "landed_pt": "2026-09-07", "pattern": "ignored_instructions"},
+    {"rule_key": "never_zapier", "name": "Never use/suggest Zapier", "landed_pt": "2026-09-08", "pattern": "wrong_tool_account_contact"},
+    {"rule_key": "delegate_before_grok", "name": "Delegate to subagents before doing work on Grok (budget overspent)", "landed_pt": "2026-09-08", "pattern": "wrong_model_or_spend"},
+    {"rule_key": "notion_link_not_path", "name": "Never give Alex a file path, only a Notion link", "landed_pt": "2026-09-08", "pattern": "jargon_verbose_unclear"},
+    {"rule_key": "cursing_protocol", "name": "Cursing protocol: STOP, THINK, write what he wants, ask yes/no/modify", "landed_pt": "2026-09-09", "pattern": "ignored_instructions"},
+    {"rule_key": "no_browser_money_digs", "name": "No computer/browser for money digs (Barb)", "landed_pt": "2026-09-09", "pattern": "wrong_tool_account_contact"},
+    {"rule_key": "no_invented_gates", "name": "No plan-theater / invented Blocked-on-Alex or initials gates", "landed_pt": "2026-09-10", "pattern": "invented_gates_asking"},
+    {"rule_key": "prioritizer_may_publish", "name": "Prioritizer may npm publish (no human handoff)", "landed_pt": "2026-09-10", "pattern": "invented_gates_asking"},
+    {"rule_key": "never_impersonate_alex", "name": "Never impersonate Alex to humans", "landed_pt": "2026-09-10", "pattern": "bad_outbound"},
+    {"rule_key": "investor_outbound_frozen", "name": "Investor outbound frozen after thin blast", "landed_pt": "2026-09-10", "pattern": "bad_outbound"},
+    {"rule_key": "real_aj_contact", "name": "Real AJ contact is aj@aicollective.com", "landed_pt": "2026-09-10", "pattern": "wrong_tool_account_contact"},
+    {"rule_key": "plain_english_reports", "name": "All reports in plain English", "landed_pt": "2026-09-10", "pattern": "jargon_verbose_unclear"},
+    {"rule_key": "bugfix_plan_codex", "name": "Bug-fix make-plan uses Codex gpt-6-astra; compare plans", "landed_pt": "2026-09-10", "pattern": "wrong_model_or_spend"},
+    {"rule_key": "automations_off", "name": "All house automations OFF (credit burn)", "landed_pt": "2026-09-12", "pattern": "wrong_model_or_spend"},
+    {"rule_key": "investor_prep_person_intel", "name": "Investor prep = person intel only, no lectures", "landed_pt": "2026-09-14", "pattern": "jargon_verbose_unclear"},
+    {"rule_key": "seats_escalate_prioritizer", "name": "Seats escalate to Prioritizer only, never ping Alex", "landed_pt": "2026-09-15", "pattern": "invented_gates_asking"},
+    {"rule_key": "warm_google_click", "name": "Warm Google: click Continue with Google yourself", "landed_pt": "2026-09-22", "pattern": "invented_gates_asking"},
+    {"rule_key": "human_gates_plain_english", "name": "Human gates + plain English + try-the-gate; deploys/version bumps are not Alex gates", "landed_pt": "2026-09-23", "pattern": "invented_gates_asking"},
+    {"rule_key": "global_ship_gate", "name": "Global ship gate: make-plan -> Alex greens -> do", "landed_pt": "2026-09-23", "pattern": "skipped_steps_false_done"},
+    {"rule_key": "cloudflare_account", "name": "Cloudflare account = info@copterlabs.com", "landed_pt": "2026-09-23", "pattern": "wrong_tool_account_contact"}
+  ]
+}

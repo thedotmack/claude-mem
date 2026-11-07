@@ -1,6 +1,6 @@
 
 import { describe, it, expect } from 'bun:test';
-import { isProjectExcluded } from '../../src/utils/project-filter.js';
+import { isProjectExcluded, matchesAnyGlob } from '../../src/utils/project-filter.js';
 import { homedir } from 'os';
 
 describe('Project Filter', () => {
@@ -37,6 +37,53 @@ describe('Project Filter', () => {
       });
     });
 
+    describe('with **/ matching zero or more directories', () => {
+      it('excludes direct children as well as nested matches', () => {
+        for (const project of ['/workspace/private', '/workspace/team/private', '/workspace/a/b/private']) {
+          expect(isProjectExcluded(project, '/workspace/**/private')).toBe(true);
+        }
+        expect(isProjectExcluded('/workspace/private-copy', '/workspace/**/private')).toBe(false);
+        expect(isProjectExcluded('/workspace/not-private', '/workspace/**/private')).toBe(false);
+      });
+
+      it('supports leading and consecutive globstar directory segments', () => {
+        expect(isProjectExcluded('private', '**/private')).toBe(true);
+        expect(isProjectExcluded('/workspace/private', '/workspace/**/**/private')).toBe(true);
+        expect(isProjectExcluded('/workspace/a/b/private', '/workspace/**/**/private')).toBe(true);
+      });
+
+      it('normalizes home and Windows paths before matching directory segments', () => {
+        expect(isProjectExcluded(`${homedir()}/private`, '~/**/private')).toBe(true);
+        expect(isProjectExcluded('C:\\work\\private', 'C:\\work\\**\\private')).toBe(true);
+        expect(isProjectExcluded('/workspace/private', '/workspace/*/private')).toBe(false);
+      });
+
+      it('uses the same zero-directory match for the shared deny-list matcher', () => {
+        expect(matchesAnyGlob('/workspace/private', ['/workspace/**/private/**'])).toBe(true);
+        expect(matchesAnyGlob('/workspace/private/cache', ['/workspace/**/private/**'])).toBe(true);
+        expect(matchesAnyGlob('/workspace/private-copy', ['/workspace/**/private/**'])).toBe(false);
+      });
+    });
+
+    describe('with a trailing /** (the directory itself)', () => {
+      it('excludes the directory itself as well as everything under it', () => {
+        expect(isProjectExcluded('/Users/test/kunden', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/client1', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded(`${homedir()}/customers`, '~/customers/**')).toBe(true);
+        expect(isProjectExcluded('C:\\Users\\test\\kunden', 'C:\\Users\\test\\kunden\\**')).toBe(true);
+      });
+
+      it('does not exclude siblings that merely share the prefix', () => {
+        expect(isProjectExcluded('/Users/test/kunden-archive', '/Users/*/kunden/**')).toBe(false);
+        expect(isProjectExcluded('/Users/test', '/Users/*/kunden/**')).toBe(false);
+      });
+
+      it('leaves single-star patterns unchanged', () => {
+        expect(isProjectExcluded('/tmp', '/tmp/*')).toBe(false);
+      });
+    });
+
     describe('with ? wildcard (single character)', () => {
       it('matches single character', () => {
         expect(isProjectExcluded('/tmp/a', '/tmp/?')).toBe(true);
@@ -49,6 +96,25 @@ describe('Project Filter', () => {
         const home = homedir();
         expect(isProjectExcluded(`${home}/secret`, '~/secret')).toBe(true);
         expect(isProjectExcluded(`${home}/projects/secret`, '~/projects/*')).toBe(true);
+      });
+
+      it('expands a Windows-form ~\\ pattern', () => {
+        const home = homedir();
+        // `expandHome` recognises `~` and `~/`, not `~\` on POSIX. Expanding before
+        // normalising separators left a Windows-written exclusion as a literal `~/...`,
+        // which matches no absolute path — so the entry silently stopped excluding.
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\secret')).toBe(true);
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\*')).toBe(true);
+        expect(isProjectExcluded(home, '~\\')).toBe(true);
+      });
+
+      it('does not glue the home directory onto a ~name pattern', () => {
+        const home = homedir();
+        // `~backup/*` used to expand by concatenation to `<home>backup/*`, a path with no
+        // separator between the home directory and the pattern. That excluded a sibling of
+        // the home directory nobody named, and left a real `~backup` directory unexcluded.
+        expect(isProjectExcluded(`${home}backup/thing`, '~backup/*')).toBe(false);
+        expect(isProjectExcluded('/opt/~backup/thing', '~backup/*')).toBe(false);
       });
     });
 

@@ -4,14 +4,14 @@
 // migration v36/v39). Write sites nudge `notify()` after each local write; a
 // trailing debounce coalesces bursts into one `flush()`, which drains
 // `WHERE synced_at IS NULL AND origin_device_id IS NULL` in batches, POSTs to
-// the per-user sync hub (workers/sync-hub), and stamps rows on ack. That
-// single mechanism handles post-launch live sync, offline catch-up, and retry
-// — no historical/pre-launch backfill, second process, or cursor files.
+// the per-user sync hub (services/sync-hub), and stamps rows on ack. That
+// single mechanism handles post-launch live sync, offline catch-up, retry,
+// and explicitly selected historical jobs; no second flusher or cursor files.
 // Mutation ops (custom title, prompt→session
 // repair, project remaps) ride the same flush from the `sync_outbox` table
-// (migration v42). Already-frozen content (especially tombstones) drains
-// first; mutations drain before newly materialized row snapshots so title
-// parking still precedes the related first row append.
+// (migration v42). Each kind gets one bounded page per sweep, including its
+// frozen retry backlog. Mutations retain FIFO order; their old affected
+// snapshots precede them and their new affected rows follow their ack.
 //
 // WIRE CONTRACT: POST {hubUrl}/v1/sync/ops with protocol_version 2 and
 // `{body, operation_sha256}` wrappers. `body` is exact canonical JSON: sorted
@@ -41,11 +41,10 @@
 // before acknowledgment state changes and enters the normal backoff path.
 
 import type { Database } from 'bun:sqlite';
-import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
@@ -57,15 +56,139 @@ import {
   parseCanonicalOperation,
   stableDocumentId,
   type CanonicalWireOp,
+  type CanonicalMutation,
   type ContentKind,
 } from './CanonicalContent.js';
+import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
+import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
+import { SyncHistoryScopeReader } from './SyncHistoryScopeReader.js';
+import { SyncQueueEvidenceReader, type SyncQueueEvidenceSnapshot, type SyncQueueFlags } from './SyncQueueEvidence.js';
+import { SyncRecovery, type RecoveryItem } from './SyncRecovery.js';
+import { reservedRepair } from './SyncRepairReservation.js';
+import { affectedByMutationSql, FROZEN_SCOPE, HEAD_MUTATION_SQL, mutationPrerequisiteSql, nativeScope, PENDING_MUTATIONS_SQL, type MutationBlockage } from './SyncScheduling.js';
+import {
+  classifySyncAuthFailure,
+  friendlySyncError,
+  writeSyncHealth,
+  type SyncAuthFailure,
+  type SyncHealthState,
+} from '../../shared/sync-health.js';
 
-// Page size for the drain SELECTs.
-const BATCH = 200;
+// Page size for drain SELECTs. 200-op content pushes timed out at 30s under
+// hub projection_busy (plan-24 #3618 / Alex Mac). 40 stays under one hub
+// projection page (PROJECTION_PAGE_MAX_OPS = 100).
+export const DEFAULT_CONTENT_BATCH_SIZE = 40;
+// Hub projection fetch aborts at 45s and holds a 90s lease
+// (services/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
+// The previous 30s client timeout was shorter than both, so the client
+// aborted mid-lease and retried into projection_busy. Default matches the lease.
+export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+/** Status checks have no projection work and must finish before upload deadlines. */
+export const DEFAULT_STATUS_TIMEOUT_MS = 20_000;
+export const CONTENT_BATCH_SIZE_MIN = 1;
+export const CONTENT_BATCH_SIZE_MAX = 500;
+export const REQUEST_TIMEOUT_MS_MIN = 5_000;
+export const REQUEST_TIMEOUT_MS_MAX = 180_000;
 // Request-body packing budget — well under the hub's 8,000,000-byte cap.
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+/** Cloudflare HTML 429 (error 1027) means the edge quota is exhausted. */
+const HTML_429_MIN_RETRY_MS = 10 * 60 * 1_000;
+const RETRY_AFTER_MAX_MS = 60 * 60 * 1_000;
+/**
+ * 401/403 from the sync server: the same credentials cannot succeed on retry.
+ * The flush loop pauses and re-checks once per interval (a renewed trial
+ * resumes on its own) instead of climbing the normal 30s..10m ladder forever.
+ */
+export const DEFAULT_AUTH_RETRY_MS = 60 * 60 * 1_000;
+/**
+ * #4086: an op the server rejects by name (`invalid_ops: ops[i] …`,
+ * `revision_hash_conflict:<id>:<rev>`, `stale_revision:<id>:<rev>…`) is
+ * dead-lettered after this many rejections so the rest of the queue drains.
+ */
+export const POISON_OP_REJECTION_THRESHOLD = 3;
+/** Above this many poison quarantines in one flush the failure is systemic: stop and back off. */
+const MAX_POISON_QUARANTINES_PER_FLUSH = 25;
+/** Failure-streak ledger writes are throttled to one per interval. */
+const HEALTH_WRITE_THROTTLE_MS = 60 * 1_000;
+/** While work_state waits to sync, the hub's content kinds are re-read this often (shouldProbeContentKinds). */
+const CONTENT_KINDS_REPROBE_MS = 60 * 60 * 1_000;
+
+/**
+ * Typed hub HTTP failure. Carries Retry-After so scheduleRetry can wait
+ * instead of immediately re-arming a 1.5s notify() debounce (#4231).
+ */
+export class HubHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs: number | null;
+  readonly retryable: boolean;
+  /** Non-null for 401/403: stop retrying and tell the user what to do. */
+  readonly authFailure: SyncAuthFailure | null;
+  /** Untruncated response body (for poison-op identification). */
+  readonly rawBody: string;
+
+  constructor(label: string, status: number, body: string, retryAfterMs: number | null, rawBody: string = body) {
+    super(`${label} ${status}: ${body}`);
+    this.name = 'HubHttpError';
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+    this.retryable = status === 429 || (status >= 500 && status <= 599);
+    this.authFailure = classifySyncAuthFailure(status, rawBody);
+    this.rawBody = rawBody;
+  }
+}
+
+/** Parse `Retry-After` as delta-seconds or an HTTP-date. */
+export function parseRetryAfterMs(header: string | null | undefined, nowMs = Date.now()): number | null {
+  if (header == null) return null;
+  const trimmed = header.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[0-9]+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return Math.min(seconds * 1_000, RETRY_AFTER_MAX_MS);
+  }
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.min(date - nowMs, RETRY_AFTER_MAX_MS));
+}
+
+export function hubRetryAfterMs(
+  status: number,
+  body: string,
+  retryAfterHeader: string | null | undefined,
+  nowMs = Date.now(),
+): number | null {
+  const parsed = parseRetryAfterMs(retryAfterHeader, nowMs);
+  if (status === 429 && /<!DOCTYPE html/i.test(body)) {
+    return Math.max(parsed ?? 0, HTML_429_MIN_RETRY_MS);
+  }
+  return parsed;
+}
+
+function applyBackoffJitter(baseMs: number): number {
+  if (!Number.isFinite(baseMs) || baseMs <= 0) return 0;
+  return Math.round(baseMs * (0.8 + Math.random() * 0.4));
+}
+
+function parseBoundedInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min || n > max) return fallback;
+  return n;
+}
+
+/** Settings / env knob for content flush page size. Out-of-range → default 40. */
+export function parseContentBatchSize(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_CONTENT_BATCH_SIZE, CONTENT_BATCH_SIZE_MIN, CONTENT_BATCH_SIZE_MAX);
+}
+
+/** Settings / env knob for content-push AbortSignal timeout. Out-of-range → 90s. */
+export function parseRequestTimeoutMs(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS_MIN, REQUEST_TIMEOUT_MS_MAX);
+}
+
 const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
   JSON.stringify({ protocol_version: 2, ops: [] }),
   'utf8',
@@ -89,6 +212,18 @@ interface MutationOutboxRow {
   body: string;
   canonical_body: string | null;
   operation_sha256: string | null;
+  created_at_epoch: number;
+}
+
+interface ContentOutboxRow {
+  id: string;
+  entity_id: string;
+  kind: string;
+  origin_local_id: string;
+  entity_rev: string;
+  body: string;
+  operation_sha256: string;
+  deleted: number;
 }
 
 interface AckedOp {
@@ -121,10 +256,47 @@ function operationTupleKey(tuple: {
   ]);
 }
 
+/** Hub 400 that names a frozen origin_device_id ≠ authenticated X-Device-Id. */
+function isStaleOriginDeviceIdReject(message: string): boolean {
+  return message.includes('sync hub push 400:')
+    && message.includes('invalid_ops')
+    && message.includes('origin_device_id does not match authenticated X-Device-Id');
+}
+
+/**
+ * Identify the single op a 400 `invalid_ops` rejection names, if any:
+ * `ops[<index>] …` (request-relative index) or `<class>:<entity id>:<rev>`
+ * for revision conflicts. Returns null for batch-level 400s (bad protocol
+ * version, missing device id) — those are not a poison op and must not
+ * dead-letter anything.
+ */
+export function identifyRejectedOp(
+  body: string,
+  ops: ReadonlyArray<{ body: string; operation_sha256: string }>,
+): number | null {
+  if (!body.includes('invalid_ops')) return null;
+  const indexMatch = /invalid_ops:\s*ops\[(\d+)\]/.exec(body);
+  if (indexMatch) {
+    const index = Number(indexMatch[1]);
+    return Number.isSafeInteger(index) && index < ops.length ? index : null;
+  }
+  const conflict = /(?:revision_hash_conflict|stale_revision):([^"\s<]+):(\d+)/.exec(body);
+  if (!conflict) return null;
+  const [, entityId, entityRev] = conflict;
+  for (let i = 0; i < ops.length; i++) {
+    try {
+      const parsed = JSON.parse(ops[i].body) as { id?: unknown; entity_rev?: unknown };
+      if (parsed.id === entityId && parsed.entity_rev === entityRev) return i;
+    } catch { /* unparseable op cannot match */ }
+  }
+  return null;
+}
+
 const TABLE_BY_KIND: Record<RowKind, string> = {
   observation: 'observations',
   summary: 'session_summaries',
   prompt: 'user_prompts',
+  work_state: 'work_state_entries',
 };
 
 interface KindSpec {
@@ -184,7 +356,7 @@ const KINDS: KindSpec[] = [
         metadata, merged_into_project, created_at, created_at_epoch
       FROM observations
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, text, type, title, subtitle,
@@ -227,7 +399,7 @@ const KINDS: KindSpec[] = [
         discovery_tokens, merged_into_project, created_at, created_at_epoch
       FROM session_summaries
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, request, investigated, learned,
@@ -263,6 +435,9 @@ const KINDS: KindSpec[] = [
     // `unknown` sentinel because canonical v2 requires it. session_db_id NEVER travels (a
     // device-local rowid, re-resolved on apply).
     //
+    // prompt_text is bounded at the SELECT, never after it: a pasted multi-MB
+    // prompt must not cross the FFI boundary in full (prompt-text-clamp.ts).
+    //
     // ACCEPTED LIMITATION (join-field drift): the body embeds JOINED session
     // fields, but the op's rev covers only the prompt row itself — a later
     // change to the owning session (e.g. a project remap) does not bump
@@ -272,19 +447,17 @@ const KINDS: KindSpec[] = [
     selectSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
-        up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        up.prompt_number AS prompt_number,${PROMPT_TEXT_COLUMNS_SQL},
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL
-      ORDER BY up.id LIMIT ${BATCH}`,
+      ORDER BY up.id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
-        up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        up.prompt_number AS prompt_number,${PROMPT_TEXT_COLUMNS_SQL},
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
@@ -293,7 +466,7 @@ const KINDS: KindSpec[] = [
     toBody: (r) => ({
       content_session_id: r.content_session_id ?? null,
       prompt_number: decimalPayload(r.prompt_number, 'prompt_number'),
-      prompt_text: r.prompt_text ?? null,
+      prompt_text: clampPromptTextForSync(r.prompt_text, r.prompt_text_head),
       created_at: r.created_at ?? null,
       created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
       memory_session_id: r.memory_session_id ?? null,
@@ -301,7 +474,46 @@ const KINDS: KindSpec[] = [
       platform_source: r.platform_source ?? null,
     }),
   },
+  {
+    kind: 'work_state',
+    localTable: 'work_state_entries',
+    // The agent's to-do lists and working state (sqlite/work-state.ts): an
+    // append-only log, so a row's first revision is normally its whole life.
+    // `fields` travels as the object it stores, like observation metadata.
+    // Pushed only to a hub whose status lists the kind (hubAcceptsKind).
+    selectSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE synced_at IS NULL AND origin_device_id IS NULL
+        AND (? = 1 OR COALESCE(list_name, '') NOT GLOB '__my_work_v[0-9]*:*')
+      ORDER BY id LIMIT ?`,
+    selectOneSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE id = ? AND origin_device_id IS NULL`,
+    toBody: (r) => ({
+      project: r.project ?? 'unknown',
+      list_name: r.list_name ?? null,
+      fields: jsonPayloadColumn(r.fields, 'fields', 'object'),
+      created_at: r.created_at ?? null,
+      created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
+    }),
+  },
 ];
+
+/** Shared recovery/repair reader uses precisely the normal upload canonical mapping. */
+export const CONTENT_KIND_SPECS = KINDS;
+export function getNativeContentOperation(db: Database, kind: ContentKind, id: string, deviceId: string, revision?: string) {
+  const spec = KINDS.find(item => item.kind === kind);
+  if (!spec) throw new Error('Unsupported content kind');
+  const row = db.prepare(spec.selectOneSql).get(assertCanonicalDecimal(id)) as LocalRow | undefined;
+  if (!row) return null;
+  const localRevision = assertCanonicalDecimal(row.sync_rev, { positive: true });
+  return { revision: localRevision, operation: buildContentOperation({ kind, originDeviceId: deviceId,
+    originLocalId: id, entityRev: revision ?? localRevision, payload: spec.toBody(row) }) };
+}
 
 export type CloudSyncSettingKeys = Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_TOKEN'
@@ -309,13 +521,19 @@ export type CloudSyncSettingKeys = Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME'
->;
+> & Partial<Pick<SettingsDefaults,
+  | 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE'
+  | 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS'
+  | 'CLAUDE_MEM_WORK_VIEW_SHARED_STATE'
+>>;
 
 export interface CloudSyncOptions {
   /** Injectable for tests; defaults to globalThis.fetch. */
   fetchImpl?: typeof fetch;
   /** settings.json path where a newly resolved device id is persisted. */
   settingsPath?: string;
+  /** Override content/mutation drain page size (default 40). */
+  contentBatchSize?: number;
   /** Trailing debounce for notify() bursts. */
   debounceMs?: number;
   /**
@@ -328,40 +546,99 @@ export interface CloudSyncOptions {
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
-  /** Per-request timeout — a hub POST can never hang the drain. */
+  /** Per-request timeout — a hub POST can never hang the drain. Default 90s. */
   requestTimeoutMs?: number;
+  /** Deadline for the complete read-only status probe. Default 20s. */
+  statusTimeoutMs?: number;
+  /** Re-check interval while paused on a 401/403. Default 1h. */
+  authRetryMs?: number;
+  /** Re-read interval for the hub's content kinds while work_state waits. Default 1h. */
+  contentKindsReprobeMs?: number;
+  /**
+   * sync-health ledger path read by the SessionStart banner. null/omitted =
+   * no ledger (tests, out-of-band callers); the worker passes the default.
+   */
+  healthFilePath?: string | null;
+  /** Phase 8 seam: select at most limit durable native identities, never send here.
+   * Called only after a complete live sweep makes no progress. One selected page
+   * re-enters this same immutable outbox and flush owner before another selection.
+   */
+  selectBackfillPage?: (limit: number) => ReadonlyArray<{ kind: ContentKind; originLocalId: string }>;
 }
 
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
-  pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
+  pending: { observations: number; summaries: number; prompts: number; workState: number; mutations: number; tombstones: number };
+  queue: SyncQueueEvidenceSnapshot & {
+    blockedMutation: MutationBlockage | null;
+    progress: Record<ContentKind | 'mutation' | 'tombstone', { acknowledged: number; lastAcknowledgedAt: number | null }>;
+    backfill: { configured: boolean; pageBudget: number; selected: number };
+  };
   quarantine: { count: number; latestReason: string | null };
+  /** Pulled hub ops this device set aside because they can never apply here. */
+  pullQuarantine: { count: number; latestReason: string | null };
   lastFlushAt: number | null;
   lastError: string | null;
+  /** Set while paused on a 401/403; cleared by a successful re-check. */
+  authError: { code: SyncAuthFailure['code']; status: number; message: string } | null;
+  /** Plain-language summary for UIs: ok / auth_paused / failing. */
+  health: { state: SyncHealthState['state']; message: string | null; consecutiveFailures: number; failingSinceAt: number | null };
   hub: {
     checkedAt: number | null;
     reachable: boolean | null;
     epoch: string | null;
     headSeq: string | null;
     projectedSeq: string | null;
+    /** Kinds the hub accepts (`content_kinds`); [] for a hub that predates the field; null until probed. */
+    contentKinds: string[] | null;
     error: string | null;
   };
 }
 
+/**
+ * Cloud sync is active iff token, user id and Hub URL are all non-empty. The
+ * one shared predicate (CloudSync, DatabaseManager and the media cloud plane).
+ */
+export function isCloudSyncConfigured(settings: Pick<SettingsDefaults, 'CLAUDE_MEM_CLOUD_SYNC_TOKEN' | 'CLAUDE_MEM_CLOUD_SYNC_USER_ID' | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'>): boolean {
+  return (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim() !== '';
+}
+
 export class CloudSync {
+  readonly recovery: SyncRecovery;
   private readonly db: Database;
   private readonly token: string;
   private readonly userId: string;
   private readonly hubUrl: string;
   private readonly deviceName: string;
+  private readonly sharedWorkWritesEnabled: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly settingsPath: string;
   private readonly debounceMs: number;
   private readonly fastDebounceMs: number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
+  private readonly contentBatchSize: number;
   private readonly requestTimeoutMs: number;
+  private readonly statusTimeoutMs: number;
+  private statusProbePromise: Promise<void> | null = null;
+  private statusProbeAuthFailure: SyncAuthFailure | null = null;
+  private statusProbeSyncMode: string | null = null;
+  private historyScopeCache: { at: number; count: number | null } | null = null;
+  private historyScopeReader: SyncHistoryScopeReader | null = null;
+  private historyScopePending: Promise<number | null> | null = null;
+  private queueEvidenceReader: SyncQueueEvidenceReader | null = null;
+  private blockedMutation: MutationBlockage | null = null;
+  private blockedMutationScope: { mutation: CanonicalMutation; rev: string } | null = null;
+  private readonly selectBackfillPage: CloudSyncOptions['selectBackfillPage'];
+  private backfillSelected = 0;
+  private readonly queueProgress = Object.fromEntries(['observation', 'summary', 'prompt', 'work_state', 'mutation', 'tombstone']
+    .map(kind => [kind, { acknowledged: 0, lastAcknowledgedAt: null }])) as CloudSyncStatus['queue']['progress'];
+  private readonly authRetryMs: number;
+  private readonly contentKindsReprobeMs: number;
+  private readonly healthFilePath: string | null;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
   private deviceId = '';
@@ -373,12 +650,20 @@ export class CloudSync {
   private stopped = false;
   private lastFlushAt: number | null = null;
   private lastError: string | null = null;
+  private authFailure: SyncAuthFailure | null = null;
+  private consecutiveFailures = 0;
+  private failingSinceAt: number | null = null;
+  private lastHealthWrite: { state: SyncHealthState['state']; code: string | null; at: number } | null = null;
+  /** #4086: rejections per operation_sha256 (in-memory; restart re-counts). */
+  private readonly poisonRejections = new Map<string, number>();
+  private poisonQuarantinesThisFlush = 0;
   private hubStatus: CloudSyncStatus['hub'] = {
     checkedAt: null,
     reachable: null,
     epoch: null,
     headSeq: null,
     projectedSeq: null,
+    contentKinds: null,
     error: null,
   };
   /** True while SyncClient's advisory socket is live (setFastDebounce). */
@@ -408,23 +693,44 @@ export class CloudSync {
     this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
     // Human-readable device label for the dashboard's Devices panel.
     this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || hostname() || '').slice(0, 80);
+    this.sharedWorkWritesEnabled = settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true';
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.debounceMs = options.debounceMs ?? 1_500;
     this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.contentBatchSize = options.contentBatchSize ?? parseContentBatchSize(
+      settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE,
+    );
+    this.requestTimeoutMs = options.requestTimeoutMs ?? parseRequestTimeoutMs(
+      settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS,
+    );
+    this.statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
+    this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
+    this.contentKindsReprobeMs = options.contentKindsReprobeMs ?? CONTENT_KINDS_REPROBE_MS;
+    this.healthFilePath = options.healthFilePath ?? null;
+    this.selectBackfillPage = options.selectBackfillPage;
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
       this.deviceId = this.resolveDeviceId(settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? '');
     }
+    this.recovery = new SyncRecovery(db, this.deviceId, {
+      snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, this.deviceId),
+      flags: () => ({ deviceId: this.deviceId, sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
+        workStateSupported: this.hubAcceptsKind('work_state') }),
+    });
   }
 
   /** Active ⇔ token AND user id AND hub URL are all non-empty. */
   isConfigured(): boolean {
     return this.token !== '' && this.userId !== '' && this.hubUrl !== '';
+  }
+
+  recoveryFlags(): SyncQueueFlags {
+    return { deviceId: this.deviceId, sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
+      workStateSupported: this.hubAcceptsKind('work_state') };
   }
 
   /** Configured AND holding a usable device id (resolution can fail closed). */
@@ -478,6 +784,7 @@ export class CloudSync {
       deviceName: this.deviceName,
       tokenLength: this.token.length, // never the token itself
     });
+    // flush() drops reminted-device stale outbox snapshots before drain.
     void this.flush();
   }
 
@@ -488,13 +795,14 @@ export class CloudSync {
   notify(): void {
     try {
       if (this.stopped || !this.isActive()) return;
-      if (this.debounceTimer) clearTimeout(this.debounceTimer);
-      const timer = setTimeout(() => {
-        this.debounceTimer = null;
-        void this.flush();
-      }, this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
-      (timer as { unref?: () => void }).unref?.();
-      this.debounceTimer = timer;
+      // #4231: write-site nudges must not bypass an in-flight 429/5xx backoff.
+      // The retry timer owns the next flush; mark a follow-up so a success
+      // path (or the timer itself) still drains rows written during the wait.
+      if (this.retryTimer) {
+        this.flushAgainRequested = true;
+        return;
+      }
+      this.armFlushTimer(this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
     } catch (error) {
       // notify() is called from write paths — swallow everything.
       try {
@@ -504,9 +812,9 @@ export class CloudSync {
   }
 
   /**
-   * Drain everything unsynced. Frozen content snapshots go first so a queued
-   * tombstone supersedes older work promptly; mutations then precede newly
-   * materialized row snapshots (set_title parking depends on that ordering).
+   * Drain eligible unsynced work in bounded per-kind turns. Deletes lead their
+   * kind; old affected snapshots precede a mutation and new affected rows wait
+   * for its ack. Unrelated work can advance while that prerequisite drains.
    * Single-flight: a flush arriving while one is running marks a re-run
    * instead of overlapping, so rows written mid-flush are still picked up.
    * Never rejects.
@@ -519,32 +827,81 @@ export class CloudSync {
     }
     this.flushing = true;
     try {
+      if (this.authFailure) {
+        // Paused on 401/403: one cheap authenticated status GET decides
+        // whether to resume (renewed plan) or keep waiting. No op pushes.
+        await this.probeHubStatus();
+        if (this.stopped) return;
+        if (this.authFailure) {
+          this.scheduleRetry(this.authRetryMs);
+          return;
+        }
+      }
+      this.poisonQuarantinesThisFlush = 0;
+      this.dropStaleOriginDeviceIdSnapshots();
+      let backfillPageSelected = false;
+      let backfillMadeProgress = false;
       do {
         this.flushAgainRequested = false;
-        await this.drainContentOutbox();
-        await this.drainMutations();
-        for (const kind of KINDS) {
-          await this.drainKind(kind);
+        // One status GET learns which kinds this hub accepts (hubAcceptsKind)
+        // before anything work_state is sent, saved snapshots included.
+        if (this.hasPendingWorkState() && this.shouldProbeContentKinds()) {
+          await this.probeHubStatus();
+          if (this.stopped) return;
         }
+        let progressed: boolean;
+        do {
+          progressed = await this.drainMutationPage();
+          for (const kind of KINDS) {
+            if (this.stopped) return;
+            if (this.hubAcceptsKind(kind.kind)) progressed = await this.drainContentPage(kind) || progressed;
+          }
+          // Only one historical page may enter the outbox, and only when live
+          // work has yielded. The next sweep always gives every live lane a turn.
+          if (!progressed && !this.blockedMutation && !backfillPageSelected) {
+            backfillPageSelected = true;
+            const page = this.snapshotBackfillPage();
+            progressed = page.selected > 0;
+            // A page of changed items sends nothing but frees the items behind
+            // it, so it still arms the continuation below.
+            backfillMadeProgress = progressed || page.settled > 0;
+          }
+        } while (progressed && !this.stopped);
       } while (this.flushAgainRequested && !this.stopped);
       if (this.stopped) return; // shutdown mid-flush — skip success bookkeeping
       this.lastFlushAt = Date.now();
       this.lastError = null;
+      this.recordFlushSuccess();
       this.resetBackoff();
+      // Keep selected jobs progressing on otherwise idle devices. This timer
+      // re-enters the same flush owner and live sweep; it never sends directly.
+      if (backfillMadeProgress && this.recovery.hasPendingSelection()) this.armFlushTimer(1000);
+      this.scheduleContentKindsRecheck();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.lastError = err.message;
+      this.lastError = friendlySyncError(err.message);
+      if (err instanceof HubHttpError && err.authFailure) {
+        this.lastError = err.authFailure.message;
+        this.enterAuthPause(err.authFailure, err);
+        this.scheduleRetry(this.authRetryMs);
+        return;
+      }
       // Rows stay NULL — retried by the backoff timer below and on next notify().
+      const retryAfterMs = err instanceof HubHttpError ? err.retryAfterMs : null;
+      this.recordFlushFailure(err);
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
-        retryInMs: this.nextBackoffMs,
+        retryInMs: Math.max(this.nextBackoffMs, retryAfterMs ?? 0),
+        status: err instanceof HubHttpError ? err.status : undefined,
+        consecutiveFailures: this.consecutiveFailures,
       }, err);
-      this.scheduleRetry();
+      this.scheduleRetry(retryAfterMs ?? 0);
     } finally {
       this.flushing = false;
     }
   }
 
   status(): CloudSyncStatus {
+    this.queueEvidenceReader ??= new SyncQueueEvidenceReader(this.db.filename);
     return {
       configured: this.isConfigured(),
       deviceId: this.deviceId,
@@ -552,14 +909,127 @@ export class CloudSync {
         observations: this.countPending('observations'),
         summaries: this.countPending('session_summaries'),
         prompts: this.countPending('user_prompts'),
+        workState: this.countPending('work_state_entries'),
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
       },
+      queue: {
+        ...this.queueEvidenceReader.getSnapshot({ sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
+          workStateSupported: this.hubAcceptsKind('work_state'), deviceId: this.deviceId }),
+        blockedMutation: this.blockedMutation ? { ...this.blockedMutation } : null,
+        progress: structuredClone(this.queueProgress),
+        backfill: { configured: this.recovery.available || !!this.selectBackfillPage, pageBudget: this.contentBatchSize, selected: this.backfillSelected },
+      },
       quarantine: this.quarantineStatus(),
+      pullQuarantine: this.pullQuarantineStatus(),
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
+      authError: this.authFailure
+        ? { code: this.authFailure.code, status: this.authFailure.status, message: this.authFailure.message }
+        : null,
+      health: {
+        state: this.healthStateName(),
+        message: this.authFailure?.message ?? (this.consecutiveFailures > 0 ? this.lastError : null),
+        consecutiveFailures: this.consecutiveFailures,
+        failingSinceAt: this.failingSinceAt,
+      },
       hub: { ...this.hubStatus },
     };
+  }
+
+  private healthStateName(): SyncHealthState['state'] {
+    if (this.authFailure) return 'auth_paused';
+    return this.consecutiveFailures > 0 ? 'failing' : 'ok';
+  }
+
+  /** 401/403: stop the retry ladder, keep one clear status, log once per cause. */
+  private enterAuthPause(failure: SyncAuthFailure, err?: Error): void {
+    const changed = this.authFailure?.code !== failure.code;
+    this.authFailure = failure;
+    // The ladder is irrelevant while paused; start fresh after recovery.
+    this.nextBackoffMs = this.backoffInitialMs;
+    // warn, not error: a rejected token or lapsed plan is an expected server
+    // answer, and logger.error would ship it to error tracking on every start.
+    if (changed) {
+      logger.warn('CLOUD_SYNC', 'Cloud sync paused: the sync server rejected this device\'s credentials', {
+        code: failure.code,
+        status: failure.status,
+        recheckInMs: this.authRetryMs,
+        action: failure.message,
+      }, err);
+    }
+    this.writeHealth(true);
+  }
+
+  private exitAuthPause(): void {
+    if (!this.authFailure) return;
+    logger.info('CLOUD_SYNC', 'Cloud sync credentials accepted again; resuming uploads', {
+      previousCode: this.authFailure.code,
+    });
+    this.authFailure = null;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.writeHealth(true);
+    // Drain whatever queued up while paused (outside the probe's call stack).
+    if (!this.flushing && !this.stopped) {
+      const timer = setTimeout(() => { void this.flush(); }, 0);
+      (timer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  private recordFlushSuccess(): void {
+    const wasUnhealthy = this.consecutiveFailures > 0 || this.authFailure !== null;
+    this.consecutiveFailures = 0;
+    this.failingSinceAt = null;
+    this.authFailure = null;
+    this.poisonRejections.clear();
+    if (wasUnhealthy || this.lastHealthWrite === null || this.lastHealthWrite.state !== 'ok') {
+      this.writeHealth(true);
+    }
+  }
+
+  private recordFlushFailure(err: Error): void {
+    const now = Date.now();
+    this.consecutiveFailures++;
+    this.failingSinceAt ??= now;
+    if (this.consecutiveFailures === 1 || this.consecutiveFailures % 20 === 0) {
+      // A failure streak is otherwise a stream of warn lines nobody reads;
+      // make the start (and every 20th) an error with the plain cause.
+      logger.error('CLOUD_SYNC', 'Cloud sync is failing; memories stay queued locally', {
+        consecutiveFailures: this.consecutiveFailures,
+        status: err instanceof HubHttpError ? err.status : undefined,
+        error: this.lastError,
+      });
+    }
+    this.writeHealth(false);
+  }
+
+  /** Persist the ledger on state/code transitions, throttled while a streak continues. */
+  private writeHealth(force: boolean): void {
+    if (!this.healthFilePath) return;
+    const now = Date.now();
+    const state = this.healthStateName();
+    const code = this.authFailure?.code ?? null;
+    const last = this.lastHealthWrite;
+    if (
+      !force && last && last.state === state && last.code === code
+      && now - last.at < HEALTH_WRITE_THROTTLE_MS
+    ) {
+      return;
+    }
+    this.lastHealthWrite = { state, code, at: now };
+    writeSyncHealth({
+      state,
+      code,
+      message: this.authFailure?.message ?? (state === 'failing' ? this.lastError : null),
+      consecutiveFailures: this.consecutiveFailures,
+      failingSinceAt: this.failingSinceAt,
+      lastErrorAt: state === 'ok' ? null : now,
+      lastSuccessAt: this.lastFlushAt,
+      updatedAt: now,
+    }, this.healthFilePath);
   }
 
   /**
@@ -570,14 +1040,109 @@ export class CloudSync {
    */
   async statusWithHubProbe(): Promise<CloudSyncStatus> {
     if (!this.stopped && this.isActive()) {
-      await this.probeHubStatus();
+      await this.probeHubStatus(false);
     }
     return this.status();
   }
 
-  private async probeHubStatus(): Promise<void> {
+  /**
+   * Content kinds the hub advertises in GET /v1/sync/status (`content_kinds`).
+   * A kind the hub has not listed is never pushed: its rows wait, unsynced, for
+   * a hub that accepts them. Without this an older hub would refuse the op by
+   * name and the poison-op threshold (#4086) would dead-letter the row for
+   * good. The three launch kinds predate the field and are always accepted.
+   */
+  private hubAcceptsKind(kind: ContentKind): boolean {
+    if (kind !== 'work_state') return true;
+    return this.hubStatus.contentKinds?.includes(kind) ?? false;
+  }
+
+  /**
+   * Ask the hub which kinds it accepts before pushing one it may not: when it
+   * has never been asked, and again once an hour whichever way it answered,
+   * since a hub can start or stop listing work_state at any time (a hub
+   * upgrade, a per-account server setting). Callers ask only while work_state
+   * is pending (hasPendingWorkState).
+   */
+  private shouldProbeContentKinds(): boolean {
+    if (this.hubStatus.contentKinds === null) return true;
+    return Date.now() - (this.hubStatus.checkedAt ?? 0) >= this.contentKindsReprobeMs;
+  }
+
+  /** Native, frozen, and explicitly selected historical work-state all need capability discovery. */
+  private hasPendingWorkState(): boolean {
+    return this.countPending('work_state_entries') > 0
+      || this.recovery.hasSelectedWorkState()
+      || this.db.prepare(`SELECT 1 FROM sync_content_outbox WHERE kind = 'work_state'
+        AND ${this.sharedWorkAllowedSql("json_extract(body, '$.payload.list_name')")} LIMIT 1`).get() !== null;
+  }
+
+  /** Consumer-first rollout: keep previously queued internal records durable but unsent while disabled. */
+  private sharedWorkAllowedSql(listExpression: string): string {
+    return this.sharedWorkWritesEnabled ? '1' : `COALESCE(${listExpression}, '') NOT GLOB '__my_work_v[0-9]*:*'`;
+  }
+
+  /**
+   * An idle device runs no flush, so work_state waiting on a hub that does not
+   * list the kind would never be re-checked. After a successful flush that
+   * leaves work_state pending, arm the flush timer for the next hourly
+   * re-check; a write's notify() replaces it with its short debounce, and that
+   * flush arms it again.
+   */
+  private scheduleContentKindsRecheck(): void {
+    if (this.stopped || this.debounceTimer || this.retryTimer || !this.hasPendingWorkState()) return;
+    const sinceCheckMs = Date.now() - (this.hubStatus.checkedAt ?? 0);
+    this.armFlushTimer(Math.max(this.contentKindsReprobeMs - sinceCheckMs, 0));
+  }
+
+  /** The one pending-flush timer: notify()'s debounce or the hourly content-kinds re-check. */
+  private armFlushTimer(delayMs: number): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    const timer = setTimeout(() => {
+      this.debounceTimer = null;
+      void this.flush();
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.debounceTimer = timer;
+  }
+
+  private async probeHubStatus(recover = true): Promise<void> {
+    if (!this.statusProbePromise) {
+      this.statusProbePromise = this.runHubStatusProbe().finally(() => {
+        this.statusProbePromise = null;
+      });
+    }
+    await this.statusProbePromise;
+    // The public status route is observational. Lifecycle callers own recovery.
+    if (recover) {
+      if (this.statusProbeSyncMode !== null || this.hubStatus.reachable) this.emitSyncMode(this.statusProbeSyncMode);
+      if (this.hubStatus.reachable) this.exitAuthPause();
+      else if (this.statusProbeAuthFailure) {
+        this.enterAuthPause(this.statusProbeAuthFailure);
+        if (!this.retryTimer) this.scheduleRetry(this.authRetryMs);
+      }
+    }
+  }
+
+  /** Historical eligibility only; no row is marked or queued by this cached inventory. */
+  historicalExcludedCount(now = Date.now()): Promise<number | null> {
+    if (this.stopped) return Promise.resolve(null);
+    if (this.historyScopeCache && now >= this.historyScopeCache.at && now - this.historyScopeCache.at < 300_000) return Promise.resolve(this.historyScopeCache.count);
+    if (this.historyScopePending) return this.historyScopePending;
+    this.historyScopeReader ??= new SyncHistoryScopeReader(this.db.filename);
+    this.historyScopePending = this.historyScopeReader.read().then(count => {
+      if (!this.stopped) this.historyScopeCache = { at: now, count };
+      return count;
+    }).finally(() => { this.historyScopePending = null; });
+    return this.historyScopePending;
+  }
+
+  private async runHubStatusProbe(): Promise<void> {
     let checkedAt = Date.now();
+    this.statusProbeAuthFailure = null;
+    this.statusProbeSyncMode = null;
     try {
+      const signal = AbortSignal.timeout(this.statusTimeoutMs);
       const response = await this.fetchImpl(`${this.hubUrl}/v1/sync/status`, {
         method: 'GET',
         headers: {
@@ -585,21 +1150,29 @@ export class CloudSync {
           'X-User-Id': this.userId,
           'X-Device-Id': this.deviceId,
           ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+          [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
         },
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        signal,
       });
       checkedAt = Date.now();
-      const syncMode = response.headers.get('X-Sync-Mode');
-      if (syncMode !== null || response.ok) this.emitSyncMode(syncMode);
+      this.statusProbeSyncMode = response.headers.get('X-Sync-Mode');
       if (!response.ok) {
-        const body = (await response.text().catch(() => '')).slice(0, 200);
-        throw new Error(`sync hub status ${response.status}: ${body}`);
+        const rawBody = await response.text().catch(() => '');
+        const body = rawBody.slice(0, 200);
+        throw new HubHttpError(
+          'sync hub status',
+          response.status,
+          body,
+          hubRetryAfterMs(response.status, body, response.headers.get('Retry-After')),
+          rawBody,
+        );
       }
 
       let parsed: unknown;
       try {
         parsed = await response.json();
       } catch {
+        if (signal.aborted) throw signal.reason;
         throw new Error('sync hub status: response is not JSON');
       }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -622,23 +1195,31 @@ export class CloudSync {
       if (compareCanonicalDecimals(projectedSeq, headSeq) > 0) {
         throw new Error('sync hub status: projected_seq exceeds head_seq');
       }
+      // A hub that predates `content_kinds` accepts only the launch kinds.
+      const contentKinds = Array.isArray(record.content_kinds)
+        ? record.content_kinds.filter((kind): kind is string => typeof kind === 'string')
+        : [];
       this.hubStatus = {
         checkedAt,
         reachable: true,
         epoch,
         headSeq,
         projectedSeq,
+        contentKinds,
         error: null,
       };
     } catch (error) {
-      const raw = error instanceof Error ? error.message : String(error);
+      if (error instanceof HubHttpError && error.authFailure) this.statusProbeAuthFailure = error.authFailure;
+      const raw = error instanceof Error ? friendlySyncError(error.message) : String(error);
       const safe = this.token === '' ? raw : raw.split(this.token).join('[REDACTED]');
       this.hubStatus = {
-        checkedAt,
+        checkedAt: Date.now(),
         reachable: false,
         epoch: null,
         headSeq: null,
         projectedSeq: null,
+        // What the hub accepted last time still holds; an outage changes nothing.
+        contentKinds: this.hubStatus.contentKinds,
         error: safe,
       };
     }
@@ -665,6 +1246,8 @@ export class CloudSync {
         'SELECT entity_rev FROM sync_entity_heads WHERE entity_id = ?'
       ).get(entityId) as { entity_rev: string } | undefined;
       if (head) revisions.push(head.entity_rev);
+      const repair = reservedRepair(this.db, entityId);
+      if (repair) revisions.push(repair.entity_rev);
       const pending = this.db.prepare(
         'SELECT entity_rev FROM sync_content_outbox WHERE entity_id = ?'
       ).all(entityId) as Array<{ entity_rev: string }>;
@@ -695,6 +1278,7 @@ export class CloudSync {
       this.db.prepare(
         `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
       ).run(originLocalId);
+      this.recovery.recordDeletion(entityId);
     });
     tx();
     this.notify();
@@ -708,6 +1292,8 @@ export class CloudSync {
    */
   stop(): void {
     this.stopped = true;
+    this.historyScopeReader?.close();
+    this.queueEvidenceReader?.close();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -722,33 +1308,55 @@ export class CloudSync {
   // Drain internals
   // -------------------------------------------------------------------------
 
-  /** Drain immutable live/delete/revive snapshots exactly as persisted. */
-  private async drainContentOutbox(): Promise<void> {
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(`
-        SELECT body, operation_sha256 FROM sync_content_outbox
-        ORDER BY deleted DESC, id LIMIT ${BATCH}
-      `).all() as Array<CanonicalWireOp>;
-      if (rows.length === 0) return;
-      let batch: WireOp[] = [];
-      let bytes = 0;
-      for (const row of rows) {
-        const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
-        if (batch.length > 0 && (
-          batch.length >= MAX_OPS_PER_PUSH
-          || pushRequestBytes(bytes + size, batch.length + 1) > MAX_BODY_BYTES
-        )) {
-          await this.sendOps(batch);
-          if (this.stopped) return;
-          batch = [];
-          bytes = 0;
-        }
-        batch.push(row);
-        bytes += size;
+  /**
+   * Drain immutable live/delete/revive snapshots exactly as persisted. A saved
+   * work_state snapshot (a push that failed after it was saved) waits like its
+   * row while the hub does not list the kind: sent anyway, a hub that refuses
+   * it by name would dead-letter it, and the append-only row with it.
+   */
+  private deviceSql(): string {
+    return `'${this.deviceId.replace(/'/g, "''")}'`;
+  }
+
+  private frozenPage(kind: RowKind): CanonicalWireOp[] {
+    const device = this.deviceSql();
+    // A later snapshot of a repaired entity waits for the mutation; only
+    // older frozen prerequisites may pass it. Other entities remain eligible.
+    const eligible = `(EXISTS (SELECT 1 FROM ${HEAD_MUTATION_SQL} m WHERE ${mutationPrerequisiteSql(FROZEN_SCOPE, device)})
+      OR NOT EXISTS (SELECT 1 FROM ${PENDING_MUTATIONS_SQL} m
+      WHERE ${affectedByMutationSql(FROZEN_SCOPE, device)}
+        AND NOT ${mutationPrerequisiteSql(FROZEN_SCOPE, device)}))`;
+    const prerequisite = this.blockedMutationScope
+      ? `CASE WHEN EXISTS (SELECT 1 FROM (SELECT ? AS mutation, ? AS rev) m
+          WHERE ${mutationPrerequisiteSql(FROZEN_SCOPE, device)}) THEN 0 ELSE 1 END,` : '';
+    return this.db.prepare(`
+      SELECT o.body, o.operation_sha256 FROM sync_content_outbox o
+      WHERE o.kind = ? AND ${eligible}
+        AND (o.kind != 'work_state' OR ${this.sharedWorkAllowedSql("CASE WHEN json_valid(o.body) THEN json_extract(o.body, '$.payload.list_name') END")})
+      ORDER BY o.deleted DESC, ${prerequisite} o.id LIMIT ?
+    `).all(kind, ...(this.blockedMutationScope
+      ? [JSON.stringify(this.blockedMutationScope.mutation), this.blockedMutationScope.rev] : []),
+    this.contentBatchSize) as CanonicalWireOp[];
+  }
+
+  private async sendContentPage(rows: CanonicalWireOp[]): Promise<void> {
+    let batch: WireOp[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
+      if (batch.length > 0 && (
+        batch.length >= MAX_OPS_PER_PUSH
+        || pushRequestBytes(bytes + size, batch.length + 1) > MAX_BODY_BYTES
+      )) {
+        await this.sendOps(batch);
+        if (this.stopped) return;
+        batch = [];
+        bytes = 0;
       }
-      if (batch.length > 0) await this.sendOps(batch);
+      batch.push(row);
+      bytes += size;
     }
+    if (batch.length > 0) await this.sendOps(batch);
   }
 
   /**
@@ -758,102 +1366,202 @@ export class CloudSync {
    * device"); the resolved id is substituted here, at push time, keeping
    * device identity single-sourced (SyncApply DEVICE IDENTITY note).
    */
-  private async drainMutations(): Promise<void> {
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
-                body, canonical_body, operation_sha256
-         FROM sync_outbox ORDER BY id LIMIT ${BATCH}`
-      ).all() as MutationOutboxRow[];
-      if (rows.length === 0) break;
+  private async drainMutationPage(): Promise<boolean> {
+    if (this.stopped) return false;
+    this.blockedMutation = null;
+    this.blockedMutationScope = null;
+    const rows = this.db.prepare(
+      `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+              body, canonical_body, operation_sha256, created_at_epoch
+       FROM sync_outbox ORDER BY id LIMIT ?`
+    ).all(this.contentBatchSize) as MutationOutboxRow[];
+    if (rows.length === 0) return false;
+    let progressed = false;
 
-      // Same size-bounded packing as drainKind: mutation bodies are usually
-      // tiny, but every page still stays within the request budget.
-      let buf: WireOp[] = [];
-      let bufBytes = 0;
-      const send = async (): Promise<void> => {
-        if (this.stopped || buf.length === 0) return;
-        await this.sendOps(buf);
-        buf = [];
-        bufBytes = 0;
-      };
-      for (const row of rows) {
-        try {
-          let op: WireOp;
-          if (row.canonical_body !== null || row.operation_sha256 !== null) {
-            if (row.canonical_body === null || row.operation_sha256 === null) {
-              throw new Error('partial canonical mutation snapshot');
-            }
-            op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
-            parseCanonicalOperation(op);
-          } else {
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(row.body);
-            } catch {
-              throw new Error('mutation body is not JSON');
-            }
-            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-              throw new Error('mutation body must be an object');
-            }
-            const body = parsed as OpBody;
-            if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
-              const target = body.target as Record<string, unknown>;
-              if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
-            }
-            op = buildMutationOperation({
-              originDeviceId: this.deviceId,
-              mutationId: row.op_uuid,
-              entityRev: row.rev,
-              mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
-            });
-            // First accepted serialization is frozen before its first send.
-            this.db.prepare(`
-              UPDATE sync_outbox
-              SET canonical_body = ?, operation_sha256 = ?
-              WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
-            `).run(op.body, op.operation_sha256, row.id);
+    // Same size-bounded packing as content pages: mutation bodies are usually
+    // tiny, but every page still stays within the request budget.
+    let buf: WireOp[] = [];
+    let bufBytes = 0;
+    const send = async (): Promise<void> => {
+      if (this.stopped || buf.length === 0) return;
+      await this.sendOps(buf);
+      buf = [];
+      bufBytes = 0;
+    };
+    for (const row of rows) {
+      let op: WireOp;
+      let isProjectRemap = false;
+      let mutation: CanonicalMutation;
+      try {
+        if (row.canonical_body !== null || row.operation_sha256 !== null) {
+          if (row.canonical_body === null || row.operation_sha256 === null) {
+            throw new Error('partial canonical mutation snapshot');
           }
-          const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
-          if (buf.length > 0 && (
-            pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
-            || buf.length >= MAX_OPS_PER_PUSH
-          )) {
-            await send();
-            if (this.stopped) return;
+          op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
+          mutation = parseCanonicalOperation(op).mutation!;
+          isProjectRemap = mutation.op === 'remap_project';
+        } else {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(row.body);
+          } catch {
+            throw new Error('mutation body is not JSON');
           }
-          buf.push(op);
-          bufBytes += size;
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.quarantineMutation(row, reason);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            throw new Error('mutation body must be an object');
+          }
+          const body = parsed as OpBody;
+          isProjectRemap = body.op === 'remap_project';
+          if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
+            const target = body.target as Record<string, unknown>;
+            if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
+          }
+          op = buildMutationOperation({
+            originDeviceId: this.deviceId,
+            mutationId: row.op_uuid,
+            entityRev: row.rev,
+            mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
+          });
+          mutation = parseCanonicalOperation(op).mutation!;
+          // First accepted serialization is frozen before its first send.
+          this.db.prepare(`
+            UPDATE sync_outbox
+            SET canonical_body = ?, operation_sha256 = ?
+            WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
+          `).run(op.body, op.operation_sha256, row.id);
         }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.quarantineMutation(row, reason);
+        progressed = true;
+        continue;
       }
-      await send();
-      if (this.stopped) return;
-      // Loop re-SELECTs: acked ops were DELETEd (and a page of nothing but
-      // dropped-unparseable rows made progress via those DELETEs).
+      const prerequisites = this.mutationPrerequisites(mutation, row.rev);
+      if (prerequisites) {
+        await send();
+        if (this.stopped) return progressed;
+        this.blockedMutationScope = { mutation, rev: row.rev };
+        this.blockedMutation = { id: row.id, op: mutation.op, pendingPrerequisites: prerequisites.count,
+          oldestPrerequisiteQueuedAt: prerequisites.oldest, queuedAt: row.created_at_epoch, observedAt: Date.now() };
+        return progressed;
+      }
+      const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
+      // One project remap can rewrite thousands of server rows. Preserve
+      // queue order, but give each remap its own transaction/timeout budget.
+      if (buf.length > 0 && (
+        isProjectRemap
+        || pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
+        || buf.length >= MAX_OPS_PER_PUSH
+      )) {
+        await send();
+        if (this.stopped) return progressed;
+      }
+      buf.push(op);
+      progressed = true;
+      bufBytes += size;
+      if (isProjectRemap) {
+        await send();
+        if (this.stopped) return progressed;
+      }
     }
+    await send();
+    return progressed;
   }
 
-  private async drainKind(kind: KindSpec): Promise<void> {
+  private mutationPrerequisites(mutation: CanonicalMutation, rev: string): { count: number; oldest: number | null } | null {
+    // Titles deliberately park before content arrives, so they have no frozen
+    // prerequisite. Never scan an unrelated history backlog for each title.
+    if (mutation.op === 'set_title') return null;
+    let scopeSql: string;
+    const params: string[] = [JSON.stringify(mutation), rev];
+    if (mutation.op === 'set_prompt_session') {
+      if (mutation.target!.origin_device_id !== this.deviceId) return null;
+      // entity_id is the leading column of the existing UNIQUE(entity_id,
+      // entity_rev) index: one prompt repair need not scan all other kinds.
+      scopeSql = 'o.entity_id = ?';
+      params.push(stableDocumentId('prompt', this.deviceId, String(mutation.target!.origin_local_id)));
+    } else {
+      // Prompt payloads matter only for the existing session-project side
+      // effect. Other remaps affect observations/summaries, never work_state.
+      scopeSql = mutation.fields.project !== undefined && mutation.where?.memory_session_id !== undefined
+        ? "o.kind IN ('observation', 'summary', 'prompt')" : "o.kind IN ('observation', 'summary')";
+    }
+    const result = this.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(o.created_at_epoch) AS oldest
+      FROM sync_content_outbox o, (SELECT ? AS mutation, ? AS rev) m
+      WHERE ${scopeSql} AND o.deleted = 0 AND ${mutationPrerequisiteSql(FROZEN_SCOPE, this.deviceSql())}
+    `).get(...params) as { count: number; oldest: number | null };
+    return result.count > 0 ? result : null;
+  }
+
+  private async drainContentPage(kind: KindSpec): Promise<boolean> {
     // Materialize each mutable SQLite row into an immutable canonical outbox
     // snapshot, then send only those stored bytes. Later local writes cannot
     // change a retry's body/hash; ack reconciliation queues a higher revision.
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(kind.selectSql).all() as LocalRow[];
-      if (rows.length === 0) break;
-      for (const r of rows) {
-        this.snapshotContentRow(kind, r);
-      }
-      await this.drainContentOutbox();
-      if (this.stopped) return;
+    if (this.stopped) return false;
+    let frozen = this.frozenPage(kind.kind);
+    if (frozen.length > 0) {
+      await this.sendContentPage(frozen);
+      return true;
     }
+    const scope = nativeScope(kind.kind);
+    const eligible = `NOT EXISTS (SELECT 1 FROM ${PENDING_MUTATIONS_SQL} m
+      WHERE ${affectedByMutationSql(scope, this.deviceSql())})`;
+    const sql = kind.selectSql.replace(/ORDER BY/, `AND ${eligible} ORDER BY`);
+    const rows = this.db.prepare(sql).all(...(kind.kind === 'work_state'
+      ? [Number(this.sharedWorkWritesEnabled), this.contentBatchSize] : [this.contentBatchSize])) as LocalRow[];
+    if (rows.length === 0) return false;
+    for (const r of rows) {
+      this.snapshotContentRow(kind, r);
+    }
+    frozen = this.frozenPage(kind.kind);
+    if (frozen.length > 0) await this.sendContentPage(frozen);
+    return true;
   }
 
-  private snapshotContentRow(kind: KindSpec, row: LocalRow): void {
+  private snapshotBackfillPage(): { selected: number; settled: number } {
+    const selections = this.selectBackfillPage?.(this.contentBatchSize) ?? this.recovery.selectPage(this.contentBatchSize);
+    if (selections.length > this.contentBatchSize) throw new Error('backfill page exceeds scheduler budget');
+    let selected = 0;
+    let settled = this.recovery.itemsSettledByLastPage;
+    for (const selection of selections) {
+      const kind = KINDS.find(item => item.kind === selection.kind);
+      if (!kind || !this.hubAcceptsKind(kind.kind)) continue;
+      this.db.transaction(() => {
+        const row = this.db.prepare(kind.selectOneSql).get(assertCanonicalDecimal(selection.originLocalId)) as LocalRow | undefined;
+        if (!row) {
+          if ('revision' in selection) { this.recovery.recordSelectionChanged(selection as RecoveryItem, true); settled++; }
+          return;
+        }
+        if (kind.kind === 'work_state' && !this.sharedWorkWritesEnabled
+          && /^__my_work_v[0-9].*:/.test(String(row.list_name ?? ''))) return;
+        if ('revision' in selection) {
+          const expected = selection as RecoveryItem;
+          try {
+            const current = buildContentOperation({ kind: kind.kind, originDeviceId: this.deviceId,
+              originLocalId: expected.originLocalId, entityRev: assertCanonicalDecimal(row.sync_rev, { positive: true }), payload: kind.toBody(row) });
+            if (row.sync_rev !== expected.revision || current.operation_sha256 !== expected.operationSha256) {
+              this.recovery.recordSelectionChanged(expected, false); settled++; return;
+            }
+          } catch { this.recovery.recordSelectionFailure(expected); settled++; return; }
+        }
+        // Enqueue and manifest receipt are one commit. A crash cannot leave
+        // admitted bytes without the selected revision's durable linkage.
+        const snapshot = this.snapshotContentRow(kind, row);
+        if (snapshot) {
+          if ('revision' in selection) this.recovery.recordSnapshot(selection as RecoveryItem, snapshot.revision, snapshot.hash);
+          selected++;
+        } else if ('revision' in selection) {
+          this.recovery.recordSelectionFailure(selection as RecoveryItem);
+          settled++;
+        }
+      }).immediate();
+    }
+    this.backfillSelected += selected;
+    return { selected, settled };
+  }
+
+  private snapshotContentRow(kind: KindSpec, row: LocalRow): { revision: string; hash: string } | null {
     let entityId = `${kind.kind}:invalid:${row.id}`;
     try {
       const originLocalId = assertCanonicalDecimal(row.id);
@@ -866,10 +1574,12 @@ export class CloudSync {
         SELECT entity_rev, operation_sha256
         FROM sync_content_outbox WHERE entity_id = ?
       `).all(entityId) as Array<{ entity_rev: string; operation_sha256: string }>;
+      const repair = reservedRepair(this.db, entityId);
       const maxRev = this.maxDecimal([
         localRev,
         ...(head ? [head.entity_rev] : []),
         ...pending.map(item => item.entity_rev),
+        ...(repair ? [repair.entity_rev] : []),
       ]);
 
       let entityRev = localRev;
@@ -886,6 +1596,7 @@ export class CloudSync {
         compareCanonicalDecimals(entityRev, maxRev) < 0
         || (pendingSameRev && pendingSameRev.operation_sha256 !== op.operation_sha256)
         || (headSameRev && headSameRev.operation_sha256 !== op.operation_sha256)
+        || (repair?.entity_rev === entityRev && repair.operation_sha256 !== op.operation_sha256)
       ) {
         entityRev = incrementCanonicalDecimal(maxRev);
         op = buildContentOperation({
@@ -896,7 +1607,7 @@ export class CloudSync {
           payload: kind.toBody(row),
         });
       } else if (pendingSameRev?.operation_sha256 === op.operation_sha256) {
-        return; // the exact immutable retry snapshot already exists
+        return { revision: entityRev, hash: op.operation_sha256 }; // exact immutable retry exists
       }
 
       const tx = this.db.transaction(() => {
@@ -918,21 +1629,303 @@ export class CloudSync {
         );
       });
       tx();
+      return { revision: entityRev, hash: op.operation_sha256 };
     } catch (error) {
       this.quarantineContent(kind, row, entityId, error);
+      return null;
     }
   }
 
   /** POST one batch to the hub and stamp/delete on ack. */
   private async sendOps(ops: WireOp[]): Promise<void> {
-    const response = await this.pushOps(ops);
-    // stop() while the POST was in flight: the DB may already be closing, so
-    // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
-    // rev), so re-pushing these ops on next start is harmless.
-    if (this.stopped) return;
-    this.validatePushResponse(response, ops);
-    this.stampAcked(response.acked, ops);
-    this.emitHeadSeq(response.head_seq);
+    let remaining = ops;
+    for (;;) {
+      try {
+        const acknowledgementEpoch = this.recovery.currentEpoch();
+        const response = await this.pushOps(remaining);
+        // stop() while the POST was in flight: the DB may already be closing, so
+        // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
+        // rev), so re-pushing these ops on next start is harmless.
+        if (this.stopped) return;
+        this.validatePushResponse(response, remaining);
+        this.stampAcked(response.acked, remaining, acknowledgementEpoch);
+        const acknowledgedAt = Date.now();
+        const deleted = new Set(remaining.filter(op => JSON.parse(op.body).deleted).map(op => JSON.parse(op.body).id));
+        for (const ack of response.acked) {
+          const progress = this.queueProgress[ack.kind as keyof typeof this.queueProgress];
+          if (progress) {
+            progress.acknowledged++;
+            progress.lastAcknowledgedAt = acknowledgedAt;
+          }
+          if (deleted.has(ack.id)) {
+            this.queueProgress.tombstone.acknowledged++;
+            this.queueProgress.tombstone.lastAcknowledgedAt = acknowledgedAt;
+          }
+        }
+        // A long catch-up drain can keep running for minutes after transport
+        // recovers. Its validated, committed page is current connection
+        // evidence even though lastFlushAt still waits for the whole drain.
+        // Keep poison accounting and the retry ladder unchanged, and never
+        // let an in-flight response clear an independent auth pause.
+        if (!this.authFailure && this.consecutiveFailures > 0) {
+          this.lastError = null;
+          this.consecutiveFailures = 0;
+          this.failingSinceAt = null;
+          this.writeHealth(true);
+        }
+        this.emitHeadSeq(response.head_seq);
+        return;
+      } catch (error) {
+        const next = this.dropStaleOriginDeviceIdOps(remaining, error)
+          ?? this.dropPoisonOp(remaining, error);
+        if (next === null) throw error;
+        if (next.length === 0 || this.stopped) return;
+        remaining = next;
+      }
+    }
+  }
+
+  /**
+   * #4086: one op the server keeps rejecting by name (e.g.
+   * `revision_hash_conflict`) used to abort every batch forever. Count
+   * rejections per op; below the threshold rethrow (normal backoff, the
+   * conflict may be transient), at the threshold dead-letter just that op and
+   * return the rest of the batch so the queue keeps draining. Returns null
+   * when the error names no single op in this batch.
+   */
+  private dropPoisonOp(ops: WireOp[], error: unknown): WireOp[] | null {
+    if (!(error instanceof HubHttpError) || error.status !== 400) return null;
+    const index = identifyRejectedOp(error.rawBody, ops);
+    if (index === null) return null;
+    const op = ops[index];
+    const count = (this.poisonRejections.get(op.operation_sha256) ?? 0) + 1;
+    this.poisonRejections.set(op.operation_sha256, count);
+    if (count < POISON_OP_REJECTION_THRESHOLD) return null;
+    if (this.poisonQuarantinesThisFlush >= MAX_POISON_QUARANTINES_PER_FLUSH) return null;
+    const reason = friendlySyncError(error.rawBody).slice(0, 500);
+    // Only drop the op from the batch once no outbox row can resend it;
+    // otherwise keep the count and let the normal backoff path rethrow.
+    if (!this.quarantineRejectedOp(op, `rejected by sync server ${count}x: ${reason}`)) return null;
+    this.poisonQuarantinesThisFlush++;
+    this.poisonRejections.delete(op.operation_sha256);
+    return ops.filter((_, i) => i !== index);
+  }
+
+  /**
+   * Dead-letter one rejected wire op from whichever outbox holds it. True when
+   * no outbox row can resend it any more (quarantined now, or already gone);
+   * false when the op could not be matched to its lane, so the caller must
+   * leave it in the batch.
+   */
+  private quarantineRejectedOp(op: WireOp, reason: string): boolean {
+    let body: { kind?: unknown; id?: unknown; entity_rev?: unknown };
+    try {
+      body = JSON.parse(op.body) as typeof body;
+    } catch {
+      return false;
+    }
+    if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
+      const row = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+               body, canonical_body, operation_sha256
+        FROM sync_outbox
+        WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
+      `).get(body.id.slice('mutation:'.length), op.operation_sha256) as MutationOutboxRow | undefined;
+      if (row) this.quarantineMutation(row, reason);
+      return true;
+    }
+    if (typeof body.id !== 'string' || typeof body.entity_rev !== 'string') return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
+    `).get(body.id, body.entity_rev, op.operation_sha256) as ContentOutboxRow | undefined;
+    if (!row) return true;
+    const table = TABLE_BY_KIND[row.kind as RowKind];
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(lane, queue_key, entity_rev, reason) DO NOTHING
+      `).run(row.entity_id, row.kind, row.origin_local_id, row.entity_rev, reason, row.body, Date.now());
+      this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      this.recovery.recordFailure(row.entity_id, row.entity_rev, row.operation_sha256);
+      if (row.deleted === 0 && table) {
+        // -1 = visible quarantine sentinel (same as writeContentQuarantine):
+        // drainKind must not resnapshot the identical rejected revision. A
+        // later local write re-nulls synced_at and ships a higher revision.
+        this.db.prepare(`
+          UPDATE ${table} SET synced_at = -1
+          WHERE id = ? AND origin_device_id IS NULL AND CAST(sync_rev AS TEXT) = ?
+            AND (synced_at IS NULL OR synced_at < 0)
+        `).run(row.origin_local_id, row.entity_rev);
+      }
+    });
+    tx();
+    logger.error('CLOUD_SYNC', 'Quarantined an op the sync server keeps rejecting; the rest of the queue continues', {
+      kind: row.kind,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      reason,
+    });    return true;
+  }
+
+  /**
+   * After a device-id mint, hash-locked sync_outbox / sync_content_outbox
+   * rows still carry the old origin_device_id. The hub 400s the whole batch
+   * and nothing else removes those poison heads, so healthy ops behind them
+   * never drain. Dead-letter the mismatched ops (content rows are dropped so
+   * drainKind can resnapshot under this.deviceId) and return the rest of the
+   * batch (or null when this is not that failure class / no matching rows
+   * were found).
+   */
+  private dropStaleOriginDeviceIdOps(ops: WireOp[], error: unknown): WireOp[] | null {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (!isStaleOriginDeviceIdReject(reason)) return null;
+    const kept: WireOp[] = [];
+    let quarantined = 0;
+    for (const op of ops) {
+      if (
+        this.quarantineStaleOriginDeviceIdMutation(op, reason)
+        || this.quarantineStaleOriginDeviceIdContent(op, reason)
+      ) {
+        quarantined++;
+        continue;
+      }
+      kept.push(op);
+    }
+    return quarantined === 0 ? null : kept;
+  }
+
+  /**
+   * Client-side outbox hygiene after a device-id remint. Frozen content
+   * snapshots (and mutation canonical bodies) whose origin_device_id is not
+   * this.deviceId can never pass hub auth; drop them before the first POST
+   * so drainContentOutbox cannot wedge the flush.
+   */
+  private dropStaleOriginDeviceIdSnapshots(): void {
+    if (!this.deviceId) return;
+    const contentRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE json_extract(body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as ContentOutboxRow[];
+    const reason = 'stale origin_device_id does not match authenticated X-Device-Id';
+    for (const row of contentRows) {
+      this.quarantineStaleContentOutbox(row, reason);
+    }
+
+    const mutationRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE canonical_body IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as MutationOutboxRow[];
+    for (const row of mutationRows) {
+      this.quarantineMutation(row, reason);
+    }
+  }
+
+  private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let mutationId: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
+        mutationId = body.id.slice('mutation:'.length);
+      }
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId || !mutationId) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
+    `).get(mutationId, op.operation_sha256) as MutationOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineMutation(row, reason);
+    return true;
+  }
+
+  private quarantineStaleOriginDeviceIdContent(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let entityId: string | undefined;
+    let entityRev: string | undefined;
+    let kind: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+        entity_rev?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (typeof body.id === 'string') entityId = body.id;
+      if (typeof body.entity_rev === 'string') entityRev = body.entity_rev;
+      if (typeof body.kind === 'string') kind = body.kind;
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId) return false;
+    if (!kind || !(kind in TABLE_BY_KIND) || !entityId || !entityRev) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
+    `).get(entityId, entityRev, op.operation_sha256) as ContentOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineStaleContentOutbox(row, reason);
+    return true;
+  }
+
+  /**
+   * Dead-letter a frozen content snapshot whose origin_device_id cannot pass
+   * hub auth, then delete it. Native local rows stay at synced_at NULL /
+   * origin_device_id NULL so drainKind resnapshots under this.deviceId.
+   * Tombstones have no local row left; dropping them is the only safe move
+   * (the old identity cannot be rewritten without forking attribution).
+   */
+  private quarantineStaleContentOutbox(row: ContentOutboxRow, reason: string): void {
+    const table = TABLE_BY_KIND[row.kind as RowKind];
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(lane, queue_key, entity_rev, reason) DO NOTHING
+      `).run(row.entity_id, row.kind, row.origin_local_id, row.entity_rev, reason, row.body, Date.now());
+      this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      if (row.deleted === 0 && table) {
+        // Re-queue native rows that were never successfully stamped. Do not
+        // unstamp a current-device ack (synced_at > 0) — that would loop
+        // drainKind against an already-projected head.
+        this.db.prepare(`
+          UPDATE ${table} SET synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL AND (synced_at IS NULL OR synced_at < 0)
+        `).run(row.origin_local_id);
+      }
+    });
+    tx();
+    logger.error('CLOUD_SYNC', 'Dropped stale content outbox snapshot; local row left unsynced for resnapshot', {
+      kind: row.kind,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      reason,
+    });
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {
@@ -948,6 +1941,7 @@ export class CloudSync {
         'X-User-Id': this.userId,
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
       },
       body: requestBody,
       signal: AbortSignal.timeout(this.requestTimeoutMs),
@@ -965,8 +1959,15 @@ export class CloudSync {
       this.emitSyncMode(syncMode);
     }
     if (!res.ok) {
-      const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`sync hub push ${res.status}: ${body}`);
+      const rawBody = await res.text().catch(() => '');
+      const body = rawBody.slice(0, 200);
+      throw new HubHttpError(
+        'sync hub push',
+        res.status,
+        body,
+        hubRetryAfterMs(res.status, body, res.headers.get('Retry-After')),
+        rawBody,
+      );
     }
     let parsed: unknown;
     try {
@@ -1066,9 +2067,10 @@ export class CloudSync {
       throw new Error('sync hub push: 200 response acknowledgment multiset mismatch');
     }
 
-    if (compareCanonicalDecimals(response.head_seq, response.projected_seq) > 0) {
-      throw new Error('sync hub push: checkpoint order requires head_seq <= projected_seq');
-    }
+    // Do not require head_seq <= projected_seq on the whole checkpoint
+    // (#4191 / #4198). A lagging projector, or an empty push while the
+    // durable head is ahead of the client, is not an inconsistency in this
+    // batch. Reject only when a sent ack is actually uncovered.
     for (const ack of response.acked) {
       if (compareCanonicalDecimals(ack.seq, response.head_seq) > 0) {
         throw new Error('sync hub push: acknowledgment seq exceeds head_seq');
@@ -1083,7 +2085,7 @@ export class CloudSync {
    * Stamp rows / delete outbox entries for a fully validated acknowledgment
    * multiset. The hub may return entries in any order.
    */
-  private stampAcked(acked: AckedOp[], pushed: WireOp[]): void {
+  private stampAcked(acked: AckedOp[], pushed: WireOp[], acknowledgementEpoch = this.recovery.currentEpoch()): void {
     const now = Date.now();
     const bodies = new Map(pushed.map(op => {
       const body = parseCanonicalOperation(op);
@@ -1117,6 +2119,7 @@ export class CloudSync {
           WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
         `).run(body.id, body.entity_rev, pushedOp.operationSha256);
         this.reconcileAckedContent(body, pushedOp.operationSha256, now);
+        this.recovery.recordAcknowledgement(body.id, body.entity_rev, pushedOp.operationSha256, acknowledgementEpoch);
       }
     });
     tx();
@@ -1193,10 +2196,13 @@ export class CloudSync {
       this.logContentQuarantine(spec, current, reason);
       return;
     }
+    const repair = reservedRepair(this.db, body.id);
     if (
       !body.deleted
       && currentRev === body.entity_rev
       && currentAtAckRev.operation_sha256 === operationSha256
+      && (!repair || compareCanonicalDecimals(repair.entity_rev, body.entity_rev) < 0
+        || (repair.entity_rev === body.entity_rev && repair.operation_sha256 === operationSha256))
     ) {
       this.db.prepare(`
         UPDATE ${spec.localTable} SET synced_at = ?
@@ -1212,9 +2218,11 @@ export class CloudSync {
       currentRev,
       body.entity_rev,
       ...pending.map(item => item.entity_rev),
+      ...(repair ? [repair.entity_rev] : []),
     ]);
     const currentAlreadyHigher = compareCanonicalDecimals(currentRev, body.entity_rev) > 0
-      && pending.every(item => compareCanonicalDecimals(currentRev, item.entity_rev) > 0);
+      && pending.every(item => compareCanonicalDecimals(currentRev, item.entity_rev) > 0)
+      && (!repair || compareCanonicalDecimals(currentRev, repair.entity_rev) > 0);
     const nextRev = currentAlreadyHigher ? currentRev : incrementCanonicalDecimal(maxRev);
     this.db.prepare(`
       UPDATE ${spec.localTable} SET sync_rev = ?, synced_at = NULL
@@ -1231,12 +2239,15 @@ export class CloudSync {
     const pending = this.db.prepare(
       'SELECT entity_rev, deleted FROM sync_content_outbox WHERE entity_id = ?'
     ).all(body.id) as Array<{ entity_rev: string; deleted: number }>;
-    if (pending.some(item => item.deleted === 1 && compareCanonicalDecimals(item.entity_rev, body.entity_rev) > 0)) {
+    const repair = reservedRepair(this.db, body.id);
+    const acceptedFloor = this.maxDecimal([body.entity_rev, ...(repair ? [repair.entity_rev] : [])]);
+    if (pending.some(item => item.deleted === 1 && compareCanonicalDecimals(item.entity_rev, acceptedFloor) > 0)) {
       return;
     }
     const entityRev = incrementCanonicalDecimal(this.maxDecimal([
       body.entity_rev,
       ...pending.map(item => item.entity_rev),
+      ...(repair ? [repair.entity_rev] : []),
     ]));
     const tombstone = buildContentOperation({
       kind: spec.kind,
@@ -1283,7 +2294,8 @@ export class CloudSync {
 
   private countPending(table: string): number {
     const row = this.db.prepare(
-      `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL`
+      `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ${table === 'work_state_entries' ? `AND ${this.sharedWorkAllowedSql('list_name')}` : ''}`
     ).get() as { n: number };
     return row.n;
   }
@@ -1318,6 +2330,20 @@ export class CloudSync {
       return { count, latestReason: latest?.reason ?? null };
     } catch {
       return { count: 0, latestReason: null };
+    }
+  }
+
+  private pullQuarantineStatus(): { count: number; latestReason: string | null } {
+    try {
+      const count = (this.db.prepare(
+        'SELECT COUNT(*) AS n FROM sync_pull_quarantine'
+      ).get() as { n: number }).n;
+      const latest = this.db.prepare(
+        'SELECT reason FROM sync_pull_quarantine ORDER BY id DESC LIMIT 1'
+      ).get() as { reason: string } | undefined;
+      return { count, latestReason: latest?.reason ?? null };
+    } catch {
+      return { count: 0, latestReason: null }; // DB opened without SessionStore migrations
     }
   }
 
@@ -1391,9 +2417,10 @@ export class CloudSync {
     });
   }
 
-  private scheduleRetry(): void {
+  private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = this.nextBackoffMs;
+    // Jitter the local ladder, never the minimum requested by the hub.
+    const delay = Math.max(applyBackoffJitter(this.nextBackoffMs), minDelayMs);
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;
@@ -1440,18 +2467,11 @@ export class CloudSync {
 
   // Same read-mutate-write pattern as SettingsRoutes.handleUpdateSettings.
   private persistDeviceId(deviceId: string): void {
-    let settings: Record<string, unknown>;
-    if (existsSync(this.settingsPath)) {
-      settings = parseJsonWithBom<Record<string, unknown>>(readFileSync(this.settingsPath, 'utf-8'));
-    } else {
-      settings = { ...SettingsDefaultsManager.getAllDefaults() };
-    }
-    // Settings files are flat post-migration, but tolerate the legacy nested
-    // {env:{...}} shape rather than writing a mixed schema.
-    const target = settings.env && typeof settings.env === 'object'
-      ? settings.env as Record<string, unknown>
-      : settings;
-    target.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = deviceId;
-    writeJsonFileAtomic(this.settingsPath, settings);
+    const result = updateSettingsDocument(
+      this.settingsPath,
+      { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: deviceId },
+      SettingsDefaultsManager.getAllDefaults(),
+    );
+    if (result.status === 'refused') throw result.error instanceof Error ? result.error : new Error(String(result.error));
   }
 }

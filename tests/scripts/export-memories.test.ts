@@ -55,7 +55,7 @@ describe('export-memories script', () => {
     let batchSignal: unknown;
     const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.startsWith('http://localhost:45678/api/search?')) {
+      if (url.startsWith('http://127.0.0.1:45678/api/search?')) {
         searchSignal = init?.signal;
         return new Response(JSON.stringify({
           observations: [
@@ -69,7 +69,7 @@ describe('export-memories script', () => {
         }), { status: 200 });
       }
 
-      if (url === 'http://localhost:45678/api/sdk-sessions/batch') {
+      if (url === 'http://127.0.0.1:45678/api/sdk-sessions/batch') {
         batchSignal = init?.signal;
         batchBody = JSON.parse(String(init?.body));
         return new Response(JSON.stringify([
@@ -97,6 +97,33 @@ describe('export-memories script', () => {
     expect(exported.query).toBe('needle');
     expect(exported.project).toBe('project-a');
     expect(exported.totalSessions).toBe(2);
+  });
+
+  it('brackets an IPv6 worker host in the request URL', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+      CLAUDE_MEM_WORKER_HOST: '::1',
+      CLAUDE_MEM_WORKER_PORT: '45678',
+    }));
+
+    consoleSpies.push(
+      spyOn(console, 'log').mockImplementation(() => {}),
+      spyOn(console, 'error').mockImplementation(() => {}),
+    );
+
+    const requested: string[] = [];
+    const fetchMock = mock(async (input: RequestInfo | URL) => {
+      requested.push(String(input));
+      return new Response('{}', { status: 500 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const { exportMemories } = await import('../../scripts/export-memories.ts');
+
+    await expect(exportMemories('needle', join(tempDir, 'export.json'))).rejects.toThrow();
+    expect(requested[0]).toStartWith('http://[::1]:45678/api/search?');
   });
 
   it('rejects an invalid worker port before fetching', async () => {
@@ -172,7 +199,7 @@ describe('export-memories script', () => {
 
     const fetchMock = mock(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('http://localhost:45678/api/search?')) {
+      if (url.startsWith('http://127.0.0.1:45678/api/search?')) {
         return new Response(JSON.stringify({
           observations: [{ memory_session_id: 'memory-a' }],
           sessions: [],
@@ -180,7 +207,7 @@ describe('export-memories script', () => {
         }), { status: 200 });
       }
 
-      if (url === 'http://localhost:45678/api/sdk-sessions/batch') {
+      if (url === 'http://127.0.0.1:45678/api/sdk-sessions/batch') {
         return new Response('worker unavailable', {
           status: 503,
           statusText: 'Service Unavailable',

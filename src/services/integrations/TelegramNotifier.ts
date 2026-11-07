@@ -3,6 +3,7 @@ import { ParsedObservation } from '../../sdk/parser.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { escapeMarkdownV2, postTelegramMessage } from './telegram-transport.js';
 
 export interface TelegramNotifyInput {
   observations: ParsedObservation[];
@@ -11,18 +12,12 @@ export interface TelegramNotifyInput {
   memorySessionId: string;
 }
 
-const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+\-=|{}.!\\]/g;
-
 const TYPE_EMOJI: Record<string, string> = {
   security_alert: '🚨',
   security_note: '🔐',
   sensitive: '🤫',
 };
 const DEFAULT_EMOJI = '🔔';
-
-function escapeMarkdownV2(value: string): string {
-  return value.replace(MARKDOWN_V2_RESERVED, '\\$&');
-}
 
 function splitCsv(value: string): string[] {
   return value
@@ -46,28 +41,13 @@ function formatMessage(
   return `${emoji} *${type}* — ${title}\n${subtitle}\nProject: \`${projectEscaped}\` · obs \\#${idEscaped}`;
 }
 
-async function postOne(botToken: string, chatId: string, text: string): Promise<void> {
-  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'MarkdownV2',
-    }),
-  });
-  if (!response.ok) {
-    const status = response.status;
-    const statusText = response.statusText;
-    throw new Error(`Telegram API responded ${status} ${statusText}`);
-  }
-}
-
 export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
   if (settings.CLAUDE_MEM_TELEGRAM_ENABLED !== 'true') {
+    return;
+  }
+  if (settings.CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED !== 'true') {
     return;
   }
 
@@ -95,7 +75,7 @@ export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> 
     const observationId = observationIds[i];
     try {
       const text = formatMessage(obs, project, memorySessionId, observationId);
-      await postOne(botToken, chatId, text);
+      await postTelegramMessage(botToken, chatId, text);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.warn('TELEGRAM', 'Failed to send Telegram notification', {

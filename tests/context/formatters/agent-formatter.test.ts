@@ -57,6 +57,7 @@ import {
 } from '../../../src/services/context/formatters/AgentFormatter.js';
 
 import type { Observation, TokenEconomics, ContextConfig, PriorMessages } from '../../../src/services/context/types.js';
+import { formatContextReferenceId } from '../../../src/services/context/formatters/id-display.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
@@ -102,6 +103,7 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: true,
+    mainAgentOnly: true,
     ...overrides,
   };
 }
@@ -143,6 +145,16 @@ describe('AgentFormatter', () => {
       const result = renderAgentLegend();
 
       expect(result[0]).toContain('session');
+    });
+
+    it('should keep get_observations hint when fetch-by-id is supported (default)', () => {
+      expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
+    });
+
+    it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
+      const joined = renderAgentLegend(false).join('\n');
+      expect(joined).toContain('short refs are display-only');
+      expect(joined).not.toContain('get_observations');
     });
   });
 
@@ -195,6 +207,17 @@ describe('AgentFormatter', () => {
       const joined = result.join('\n');
 
       expect(joined).toContain('85% savings');
+    });
+
+    it('should show both savings amount and percent when both are enabled', () => {
+      const economics = createTestEconomics({ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 });
+      const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });
+
+      const result = renderAgentContextEconomics(economics, config);
+      const joined = result.join('\n');
+
+      expect(joined).toContain('4,500t saved');
+      expect(joined).toContain('90% savings');
     });
 
     it('should not show savings when discovery tokens is 0', () => {
@@ -344,6 +367,15 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('Session started');
     });
+
+    it('should abbreviate a server summary UUID when fetch-by-id is unsupported', () => {
+      const summary = { id: '3c4b2513-5048-45fa-95e0-e3222ae99671', request: 'Ship it' };
+
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0])
+        .toBe('S3c4b2513 Ship it (10:00)');
+      expect(renderAgentSummaryItem(summary, '10:00')[0])
+        .toBe('S3c4b2513-5048-45fa-95e0-e3222ae99671 Ship it (10:00)');
+    });
   });
 
   describe('renderAgentSummaryField', () => {
@@ -424,6 +456,14 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('16k');
     });
+
+    it('should point at observation_search, not get_observations, when fetch-by-id is unsupported', () => {
+      const joined = renderAgentFooter(5000, 100, false).join('\n');
+
+      expect(joined).toContain('observation_search');
+      expect(joined).not.toContain('get_observations');
+      expect(joined).not.toContain('mem-search skill');
+    });
   });
 
   describe('renderAgentEmptyState', () => {
@@ -446,5 +486,25 @@ describe('AgentFormatter', () => {
 
       expect(result).toContain('# [] recent context,');
     });
+  });
+});
+
+describe('formatContextReferenceId', () => {
+  const UUID = '3c4b2513-5048-45fa-95e0-e3222ae99671';
+
+  it('abbreviates UUID ids to their 8-char prefix when fetch-by-id is unsupported', () => {
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: false })).toBe('3c4b2513');
+  });
+
+  it('keeps the full UUID when fetch-by-id is supported', () => {
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: true })).toBe(UUID);
+  });
+
+  it('defaults to the full id when fetchByIdSupported is omitted (backward compatible)', () => {
+    expect(formatContextReferenceId(UUID, {})).toBe(UUID);
+  });
+
+  it('leaves non-UUID (numeric) ids unchanged even when fetch-by-id is unsupported', () => {
+    expect(formatContextReferenceId(42, { fetchByIdSupported: false })).toBe('42');
   });
 });

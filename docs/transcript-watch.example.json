@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "schemas": {
+    "codex": {
+      "name": "codex",
+      "version": "0.4",
+      "description": "Schema for Codex session JSONL files under ~/.codex/sessions. Reads the conversation from response items (payload.type == message, discriminated by payload.role), which is how Codex 0.155 emits it; the older user_message/agent_message events belong to the approval sub-agent and are no longer used for prompts.",
+      "events": [
+        {
+          "name": "session-meta",
+          "match": { "path": "type", "equals": "session_meta" },
+          "action": "session_context",
+          "fields": {
+            "sessionId": "payload.id",
+            "cwd": "payload.cwd"
+          }
+        },
+        {
+          "name": "turn-context",
+          "match": { "path": "type", "equals": "turn_context" },
+          "action": "session_context",
+          "fields": {
+            "cwd": "payload.cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": {
+            "all": [
+              { "path": "payload.type", "equals": "message" },
+              { "path": "payload.role", "equals": "user" },
+              { "path": "payload.content[0].text", "exists": true },
+              { "path": "payload.content[0].text", "not_starts_with": "<recommended_plugins>" },
+              { "path": "payload.content[0].text", "not_starts_with": "<skills_instructions>" }
+            ]
+          },
+          "action": "session_init",
+          "fields": {
+            "prompt": "payload.content[0].text"
+          }
+        },
+        {
+          "name": "assistant-message",
+          "match": {
+            "all": [
+              { "path": "payload.type", "equals": "message" },
+              { "path": "payload.role", "equals": "assistant" }
+            ]
+          },
+          "action": "assistant_message",
+          "fields": {
+            "message": "payload.content[0].text"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": { "path": "payload.type", "in": ["function_call", "custom_tool_call", "web_search_call"] },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "payload.call_id",
+            "toolName": {
+              "coalesce": [
+                "payload.name",
+                "payload.type"
+              ]
+            },
+            "toolInput": {
+              "coalesce": [
+                "payload.arguments",
+                "payload.input",
+                "payload.command",
+                "payload.action"
+              ]
+            }
+          }
+        },
+        {
+          "name": "exec-command-end",
+          "match": { "path": "payload.type", "in": ["exec_command_end", "exec_command_output"] },
+          "action": "observation",
+          "fields": {
+            "toolUseId": "payload.call_id",
+            "toolName": { "value": "exec_command" },
+            "toolInput": {
+              "coalesce": [
+                "payload.command",
+                "payload.input"
+              ]
+            },
+            "toolResponse": {
+              "coalesce": [
+                "payload.aggregated_output",
+                "payload.output",
+                "payload.stdout",
+                "payload.stderr"
+              ]
+            }
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": { "path": "payload.type", "in": ["function_call_output", "custom_tool_call_output"] },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "payload.call_id",
+            "toolResponse": "payload.output"
+          }
+        },
+        {
+          "name": "session-end",
+          "match": { "path": "payload.type", "in": ["turn_aborted", "turn_completed", "task_complete"] },
+          "action": "session_end"
+        }
+      ]
+    },
+    "dsh": {
+      "name": "dsh",
+      "version": "0.1",
+      "description": "Schema for DeepSeek Harness (DSH) session logs under ~/.dsh/sessions.",
+      "events": [
+        {
+          "name": "session-meta",
+          "match": { "path": "type", "equals": "session" },
+          "action": "session_context",
+          "fields": {
+            "cwd": "cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": { "path": "type", "equals": "user/message" },
+          "action": "user_message",
+          "fields": {
+            "message": "data.content[0].text"
+          }
+        },
+        {
+          "name": "assistant-message",
+          "match": { "path": "type", "equals": "assistant/message" },
+          "action": "assistant_message",
+          "fields": {
+            "message": "data.message.content"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": { "path": "type", "equals": "tool/call" },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "data.callId",
+            "toolName": "data.name",
+            "toolInput": "data.arguments"
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": { "path": "type", "equals": "tool/result" },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "data.message.content[0].toolCallId",
+            "toolResponse": "data.message.content[0].content[0].text"
+          }
+        }
+      ]
+    }
+  },
+  "watches": [
+    {
+      "name": "codex",
+      "path": "~/.codex/sessions/**/*.jsonl",
+      "schema": "codex",
+      "startAtEnd": true
+    },
+    {
+      "name": "dsh",
+      "path": "~/.dsh/sessions",
+      "schema": "dsh",
+      "startAtEnd": true
+    }
+  ],
+  "stateFile": "~/.claude-mem/transcript-watch-state.json"
+}

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      { "command": "npx -y claude-mem hook cursor session-init" },
+      { "command": "npx -y claude-mem hook cursor context" }
+    ],
+    "afterMCPExecution": [
+      { "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "afterShellExecution": [
+      { "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "afterFileEdit": [
+      { "command": "npx -y claude-mem hook cursor file-edit" }
+    ],
+    "postToolUse": [
+      { "matcher": "Read|Grep|Task", "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "postToolUseFailure": [
+      { "matcher": "Read|Grep|Task|Write", "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "stop": [
+      { "command": "npx -y claude-mem hook cursor summarize" }
+    ]
+  }
+}

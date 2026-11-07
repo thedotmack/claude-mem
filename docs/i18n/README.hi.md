@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[कॉन्फ़िगरेशन](https://docs.claude-mem.ai/configuration)** - पर्यावरण चर और सेटिंग्स
 - **[विकास](https://docs.claude-mem.ai/development)** - बिल्डिंग, परीक्षण, योगदान
-- **[रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches)** - स्थिर, core-dev, और community-edge ब्रांच प्रवाह
 - **[समस्या निवारण](https://docs.claude-mem.ai/troubleshooting)** - सामान्य समस्याएं और समाधान
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 विस्तृत उदाहरणों के लिए [खोज उपकरण गाइड](https://docs.claude-mem.ai/usage/search-tools) देखें।
-
----
-
-## रिलीज़ ब्रांच
-
-स्थिर रिलीज़ `main` से शिप होती हैं और npm पर प्रकाशित होती हैं। `core-dev` और
-`community-edge` शुरुआती विश्वसनीयता सुधारों और सामुदायिक एकीकरण के लिए
-सोर्स-रन ब्रांच हैं। ब्रांच प्रवाह और गैर-स्थिर रन निर्देशों के लिए
-**[रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches)** देखें।
 
 ---
 
@@ -384,10 +374,6 @@ npm run bug-report
 4. दस्तावेज़ीकरण अपडेट करें
 5. एक Pull Request सबमिट करें
 
-Claude-Mem तीन ब्रांच से शिप होता है: `main` (स्थिर), `core-dev`, और
-`community-edge`। केवल `main` npm पर प्रकाशित होता है; अन्य सोर्स से
-रन किए जाते हैं। रणनीति और लोकल रन निर्देशों के लिए [रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches) देखें।
-
 योगदान वर्कफ़्लो के लिए [विकास गाइड](https://docs.claude-mem.ai/development) देखें।
 
 ---
@@ -404,7 +390,6 @@ MCP सर्वर, एंटरप्राइज़ सिस्टम, र�
 ओपन/कमर्शियल सीमा के लिए [docs/license.md](docs/license.md)
 और [docs/ip-boundary.md](docs/ip-boundary.md) देखें।
 
-**Ragtime पर नोट**: `ragtime/` डायरेक्टरी **Apache License 2.0** के तहत लाइसेंस प्राप्त है। विवरण के लिए [ragtime/LICENSE](ragtime/LICENSE) देखें।
 
 ---
 

@@ -142,10 +142,10 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     // and will ship in the next Bun release after 1.3.14. Until then, any
     // `bavail * bsize` math returns 0 and this gate would permanently skip
     // the cleanup with a misleading `free=0` error. Treat non-credible
-    // readings (bsize <= 0, NaN, or non-finite) as "skip the gate" rather
+    // readings (bsize <= 0, bavail < 0, NaN, or non-finite) as "skip the gate" rather
     // than "disk is full" -- a real out-of-space condition will still
     // surface from the subsequent VACUUM INTO / copyFileSync.
-    if (!Number.isFinite(bsize) || !Number.isFinite(bavail) || bsize <= 0) {
+    if (!Number.isFinite(bsize) || !Number.isFinite(bavail) || bsize <= 0 || bavail < 0) {
       logger.warn(
         'SYSTEM',
         'statfsSync returned non-credible values; proceeding without disk-space pre-flight',

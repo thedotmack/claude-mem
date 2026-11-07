@@ -2,7 +2,12 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
-import { buildStatusOutput, formatDependencyHealthHint, StatusOutput } from '../../src/services/worker-service.js';
+import {
+  buildCodexSessionStartOutput,
+  buildStatusOutput,
+  formatDependencyHealthHint,
+  StatusOutput,
+} from '../../src/services/worker-service.js';
 
 const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
 
@@ -84,13 +89,40 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
       });
+    });
 
-      it('can omit suppressOutput for Codex hook compatibility', () => {
-        const result = buildStatusOutput('ready', undefined, { includeSuppressOutput: false });
+    describe('Codex SessionStart compatibility', () => {
+      it('returns only supported fields when ready', () => {
+        const result = buildCodexSessionStartOutput('ready');
 
-        expect(result.continue).toBe(true);
-        expect(result.status).toBe('ready');
+        expect(result).toEqual({ continue: true });
+        expect(result).not.toHaveProperty('status');
+        expect(result).not.toHaveProperty('message');
         expect(result).not.toHaveProperty('suppressOutput');
+      });
+
+      it('maps warming state to a fixed systemMessage', () => {
+        const result = buildCodexSessionStartOutput('ready', 'raw warming diagnostic');
+
+        expect(result).toEqual({
+          continue: true,
+          systemMessage: 'claude-mem worker is still warming up.',
+        });
+        expect(result.systemMessage).not.toContain('raw warming diagnostic');
+      });
+
+      it('maps failures to a fixed systemMessage without custom fields', () => {
+        const result = buildCodexSessionStartOutput('error', 'raw boot failure diagnostic');
+
+        expect(result).toEqual({
+          continue: true,
+          systemMessage: 'claude-mem worker failed to start. Run npx claude-mem doctor.',
+        });
+        expect(result.systemMessage).not.toContain('raw boot failure diagnostic');
+        expect(buildCodexSessionStartOutput('error')).toEqual({
+          continue: true,
+          systemMessage: 'claude-mem worker failed to start. Run npx claude-mem doctor.',
+        });
       });
     });
 
