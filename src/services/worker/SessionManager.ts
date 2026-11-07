@@ -57,6 +57,16 @@ export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private onPendingMutate?: () => void;
+  /**
+   * Oldest pending buffer id, recorded per session at reaping. Disposal would
+   * otherwise release the transcript checkpoint past positions whose buffered
+   * work was discarded un-replayed (drainedThrough sees no session buffer and
+   * reports the drain). Until the operator deletes the session (or the worker
+   * restarts from a checkpoint the gate already held), the gate keeps holding
+   * that position, so a later replay can re-derive the fragments instead of
+   * skipping them forever.
+   */
+  private reapedOldestPendingIds = new Map<number, number>();
   private telegramWrapupFormatter: TelegramWrapupFormatter | null = null;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
   private generatorStarter: ((sessionDbId: number, source: string) => void | Promise<void>) | null = null;
@@ -607,6 +617,8 @@ export class SessionManager {
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session || this.deletingSessions.has(sessionDbId)) {
+      // A reaped session is already gone; its floor dies with operator intent.
+      if (!session) this.reapedOldestPendingIds.delete(sessionDbId);
       return;
     }
     const priorTransportPauses = this.transportResumes.get(sessionDbId)?.pauses;
@@ -686,6 +698,9 @@ export class SessionManager {
       this.clearTransportResume(sessionDbId);
       this.logParkedMessagesEndingWithSession(sessionDbId);
       this.disposeSessionBuffer(sessionDbId);
+      // Deletion is an operator decision: accept losing the discarded work
+      // and release the transcript checkpoint the reaper's floor held.
+      this.reapedOldestPendingIds.delete(sessionDbId);
       this.summarizeRescues.delete(sessionDbId);
       this.sessions.delete(sessionDbId);
       logger.info('SESSION', 'Session deleted', {
@@ -902,15 +917,20 @@ export class SessionManager {
   }
 
   /**
-   * Reap paused sessions whose oldest buffered fragment is older than
-   * `maxIdleMs`. A paused session's buffer drains only through a generator
-   * pass; when every resume attempt has given up and no captured event has
-   * arrived since, it would otherwise sit in the pending count forever
-   * (sessions of closed worktrees whose content session never sends again).
-   * The transcript is the durable source of truth, so disposal hands their
-   * work back to the next transcript replay, exactly like a worker restart.
+   * Reap paused sessions whose buffered work has gone cold: no run in flight,
+   * no armed resume path (stall/scheduled/transport timers, overflow pause),
+   * no generator start already queued for this sweep, and both the oldest and
+   * newest pending fragments older than `maxIdleMs` (so a stale head cannot
+   * age fresh work out, and ageing does not depend on a claim ever having
+   * happened). The transcript-watcher checkpoint keeps its position for the
+   * reaped session until the operator deletes it, so disposal hands the work
+   * back to a worker-restart replay (the checkpoint gate still refuses those
+   * positions) rather than skipping them forever.
    */
-  reapIdlePausedSessions(maxIdleMs: number = SESSION_REAP_IDLE_MS): number {
+  reapIdlePausedSessions(
+    maxIdleMs: number = SESSION_REAP_IDLE_MS,
+    isStartQueued?: (sessionDbId: number) => boolean,
+  ): number {
     const now = Date.now();
     const reaped: number[] = [];
     for (const [sessionDbId, session] of this.sessions) {
@@ -921,16 +941,22 @@ export class SessionManager {
       if (session.stallResumeTimer !== undefined || session.scheduledResumeTimer !== undefined) continue;
       // An overflow pause resumes on its own cooldown; the sweep owns it.
       if (session.overflowPausedUntilMs !== undefined) continue;
-      // The oldest unconfirmed fragment is the buffer's freshness: confirmed
-      // work drops out of it, new fragments keep it recent, and it clears when
-      // the buffer is confirmed empty.
-      if (session.earliestPendingTimestamp === null) continue;
-      if (now - session.earliestPendingTimestamp < maxIdleMs) continue;
+      // A transport retry whose timer is still armed is not spent: leave it.
+      if (this.transportResumes.get(sessionDbId)?.timer) continue;
+      // A start the same sweep (or a spool nudge) queued jumps the reaper:
+      // it runs before generatorPromise could be set.
+      if (isStartQueued?.(sessionDbId)) continue;
+      const bounds = this.buffer.getPendingAgeBounds(sessionDbId);
+      if (!bounds) continue;
+      if (now - bounds.oldest < maxIdleMs || now - bounds.newest < maxIdleMs) continue;
+      // Hold the checkpoint for the discarded positions (see the floor map).
+      const oldestPendingId = this.buffer.getOldestPendingId(sessionDbId);
+      if (oldestPendingId !== null) this.reapedOldestPendingIds.set(sessionDbId, oldestPendingId);
       this.removeSessionImmediate(sessionDbId);
       reaped.push(sessionDbId);
     }
     if (reaped.length > 0) {
-      logger.info('SESSION', 'Reaped idle paused sessions; their buffered work returns to transcript replay', {
+      logger.info('SESSION', 'Reaped idle paused sessions; the watcher checkpoint holds their positions for replay', {
         reaped,
         count: reaped.length,
       });
@@ -943,9 +969,9 @@ export class SessionManager {
     return this.buffer.getLastAssignedId();
   }
 
-  /** See SessionMessageBuffer.getOldestPendingId. */
+  /** See SessionMessageBuffer.getOldestPendingId. Reaped floors keep the gate held past discarded positions. */
   getOldestPendingMessageId(sessionDbId: number): number | null {
-    return this.buffer.getOldestPendingId(sessionDbId);
+    return this.buffer.getOldestPendingId(sessionDbId) ?? this.reapedOldestPendingIds.get(sessionDbId) ?? null;
   }
 
   async getTotalActiveWork(): Promise<number> {

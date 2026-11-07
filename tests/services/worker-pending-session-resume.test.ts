@@ -46,7 +46,7 @@ describe('WorkerService pending session resume timer', () => {
     tick();
     expect(routes.resumePendingSessions).toHaveBeenCalledWith('periodic-resume');
     // The same tick reaps cold paused-session buffers on the default threshold.
-    expect(sessionManager.reapIdlePausedSessions).toHaveBeenCalledWith(SESSION_REAP_IDLE_MS);
+    expect(sessionManager.reapIdlePausedSessions).toHaveBeenCalledWith(SESSION_REAP_IDLE_MS, expect.any(Function));
     worker.isShuttingDown = true;
     tick();
     expect(routes.resumePendingSessions).toHaveBeenCalledTimes(1);

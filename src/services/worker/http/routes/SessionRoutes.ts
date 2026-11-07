@@ -235,6 +235,11 @@ export class SessionRoutes extends BaseRouteHandler {
     return sessionIds.length;
   }
 
+  /** A generator start queued but not yet admitted; reaping under it would strand its session. */
+  hasQueuedGeneratorStart(sessionDbId: number): boolean {
+    return this.ensureGeneratorLocks.has(sessionDbId);
+  }
+
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
     // .catch(() => {}) on the PRIOR tail only: one call's rejection must

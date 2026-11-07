@@ -218,6 +218,23 @@ export class SessionMessageBuffer {
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).length;
   }
 
+  /**
+   * The oldest and newest enqueue times of a session's pending (non-parked)
+   * fragments, taken from the enqueue path itself. Ageing by enqueue time
+   * covers sessions whose generator never claimed anything, and reads the
+   * freshest work separately, so a stale head cannot age fresh tail work out.
+   */
+  getPendingAgeBounds(sessionDbId: number): { oldest: number; newest: number } | null {
+    let oldest: number | null = null;
+    let newest: number | null = null;
+    for (const m of this.buffers.get(sessionDbId) ?? []) {
+      if (m.parked) continue;
+      if (oldest === null || m.enqueuedAt < oldest) oldest = m.enqueuedAt;
+      if (newest === null || m.enqueuedAt > newest) newest = m.enqueuedAt;
+    }
+    return oldest !== null && newest !== null ? { oldest, newest } : null;
+  }
+
   /** The id the last enqueued message got; every later message gets a higher one. */
   getLastAssignedId(): number {
     return this.nextId - 1;
