@@ -75,11 +75,16 @@ export const MEDIA_LIMITS = Object.freeze({
   // maxSourceBytes plus 64 KiB for the manifest (8 KiB at most) and multipart
   // headers; still under Vercel's 4.5 MB request body maximum.
   maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
-  // Cost and abuse protection: past the Pro plan's 100 GB, Supabase Storage costs
-  // $0.0213 per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
-  // storage-size, read 2026-11-05), so a full owner (0.27 GB) costs about $0.006 a month.
-  // Not a cap the owner set; uploads past it answer 413 quota_exceeded.
-  ownerQuotaBytes: 256 * 1024 * 1024,
+  // Abuse protection, sized so a paying user's images are not refused (owner,
+  // 2026-11-05: "dont throw away images, on cloud they'll be PAYING me").
+  // Measured 2026-11-05: the median converted pair (canonical plus derivative)
+  // of 27 real screenshots is 321 KiB, so 100 screenshots a day is about
+  // 11.2 GiB a year. Past the Pro plan's 100 GB, Supabase Storage costs $0.0213
+  // per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
+  // storage-size, read 2026-11-05), so a full owner (26.8 GB) costs about $0.57
+  // a month. Pro enforces it: uploads past it answer 413 quota_exceeded and the
+  // image stays on the computer.
+  ownerQuotaBytes: 25 * 1024 * 1024 * 1024,
 } as const);
 
 export const MEDIA_RECIPES = ['screenshot-v1', 'photo-v1'] as const;
