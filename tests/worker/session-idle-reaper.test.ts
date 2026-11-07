@@ -135,7 +135,7 @@ describe('SessionManager idle paused-session reaper', () => {
     expect(manager.getMessageBuffer().getPendingCount(14)).toBe(1);
   });
 
-  it('does not reap under a run in flight, mid-delete, or a queued start; predicate decides queued', async () => {
+  it('does not reap under a run in flight, mid-delete, or a queued start; predicate is the only guard for sessions not yet started', async () => {
     const manager = makeManager();
     await enqueueOld(manager, 15, 'tool-a', cold);
     await enqueueOld(manager, 16, 'tool-a', cold);
@@ -143,17 +143,16 @@ describe('SessionManager idle paused-session reaper', () => {
     await enqueueOld(manager, 18, 'tool-a', cold);
     manager.getSession(15)!.generatorPromise = Promise.resolve();
     (manager as unknown as { deletingSessions: Set<number> }).deletingSessions.add(16);
-    manager.getSession(18)!.generatorPromise = Promise.resolve();
 
-    // A start is queued for 18 (its start runs before its generatorPromise set).
+    // 18 has no generatorPromise yet — its queued start (protected by the
+    // predicate alone) is the only thing standing between it and the reaper.
     const queued = new Set([18]);
     expect(manager.reapIdlePausedSessions(idle, id => queued.has(id))).toBe(1);
-    // 15 survived (run in flight), 16 survived (mid-delete), 17 reaped, 18 survived (queued).
+    // 15 survived (run in flight), 16 survived (mid-delete), 17 reaped, 18 survived (predicate alone).
     expect(manager.getSession(15)).toBeDefined();
     expect(manager.getSession(16)).toBeDefined();
     expect(manager.getSession(17)).toBeUndefined();
     expect(manager.getSession(18)).toBeDefined();
     await manager.getSession(15)!.generatorPromise;
-    await manager.getSession(18)!.generatorPromise;
   });
 });

@@ -544,13 +544,14 @@ export class WorkerService implements WorkerRef {
     this.pendingSessionResumeTimer = setInterval(() => {
       if (!this.initializationCompleteFlag || this.isShuttingDown) return;
       // Resume first: that queue-locks a start for every resumable session.
-      // The reaper then runs with the queue predicate, so a session the sweep
-      // just scheduled is never deleted under its queued start, while sessions
-      // whose resume attempts have all given up leave the pending count.
+      // The reaper then runs with the queued-start protection: a start this
+      // sweep scheduled is never deleted under itself while it can run; a
+      // start admission will refuse (active cooldown) protects nothing, so a
+      // provider that permanently refuses still lets cold buffers leave.
       const resumed = sessionRoutes.resumePendingSessions('periodic-resume');
       const reaped = this.sessionManager.reapIdlePausedSessions(
         SESSION_REAP_IDLE_MS,
-        id => sessionRoutes.hasQueuedGeneratorStart(id),
+        id => sessionRoutes.shouldProtectQueuedStart(id),
       );
       if (resumed > 0 || reaped > 0) {
         logger.debug('SYSTEM', 'Pending-session sweep', { resumed, reaped });

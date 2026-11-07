@@ -240,6 +240,19 @@ export class SessionRoutes extends BaseRouteHandler {
     return this.ensureGeneratorLocks.has(sessionDbId);
   }
 
+  /**
+   * Reap-protection for a queued start. A start that admission will refuse
+   * (an active provider cooldown) protects nothing: protecting it every sweep
+   * would keep a cold session out of the reaper forever, so those return
+   * false. A start that can genuinely run (admission will admit) is protected
+   * until generatorPromise exists.
+   */
+  shouldProtectQueuedStart(sessionDbId: number): boolean {
+    if (!this.ensureGeneratorLocks.has(sessionDbId)) return false;
+    const provider = getSelectedProvider(this.sessionManager.getSession(sessionDbId)?.platformSource);
+    return !isQuotaCooldownActive(provider);
+  }
+
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
     // .catch(() => {}) on the PRIOR tail only: one call's rejection must
