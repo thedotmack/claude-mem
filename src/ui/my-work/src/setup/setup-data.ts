@@ -6,6 +6,7 @@ import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usag
 import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 import { parseSseFrame } from '../live/parse-sse-frame'
+import type { SetupEvent } from '../../../../shared/setup-funnel.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent {
@@ -82,7 +83,7 @@ export interface SetupSource {
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
   checkout(): Promise<void>
   /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
-  complete(tools: string[]): Promise<void>
+  complete(tools: string[], telemetry?: SetupEvent[]): Promise<void>
   /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). */
   startHistoryImport(): Promise<void>
   search(query: string): Promise<MemoryResult[]>
@@ -282,7 +283,7 @@ export const localSetupSource: SetupSource = {
   async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
-  async complete(tools) { await postJson('/api/setup/complete', { tools }) },
+  async complete(tools, telemetry) { await postJson('/api/setup/complete', { tools, ...(telemetry?.length ? { telemetry } : {}) }) },
   async startHistoryImport() { await postJson('/api/setup/import', {}) },
   async search(query) { return toMemoryResults(await workerJson<WorkerSearchResult>(searchUrl(query))) },
   async keepNote(record, text) {

@@ -295,7 +295,8 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(storeObservations).not.toHaveBeenCalled();
     expect(sm.getMessageBuffer().getPendingCount(7)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
-    expect(session.earliestPendingTimestamp).not.toBeNull();
+    // A released claim is unsent again and may expire; the next claim recomputes it.
+    expect(session.earliestPendingTimestamp).toBeNull();
     expect(session.abortReason).toBe('auth:observer_text');
     expect(session.abortController.signal.aborted).toBe(true);
     expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
@@ -383,7 +384,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortReason).toBe('output_retry:prose');
   });
 
-  it('auth generator exit keeps the active session and in-memory buffer', async () => {
+  it('auth generator exit keeps the active session but discards its buffered work, keeping dedup', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(8, 'do the thing', 1);
     session.memorySessionId = 'mem-8';
@@ -413,10 +414,14 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     expect(sm.getSession(8)).toBe(session);
-    expect(sm.getMessageBuffer().getPendingCount(8)).toBe(1);
+    expect(sm.getMessageBuffer().getPendingCount(8)).toBe(0);
+    expect(session.pausedReason).toBe('auth');
+    // The discarded input stays deduplicated; fresh work is still accepted.
+    expect(sm.queueObservation(8, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-8' })).toBe(0);
+    expect(sm.queueObservation(8, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-8-fresh' })).toBeGreaterThan(0);
   });
 
-  it('quota generator exit keeps the active session and in-memory buffer', async () => {
+  it('quota generator exit keeps the active session but discards its buffered work', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(6, 'do the thing', 1);
     session.memorySessionId = 'mem-6';
@@ -446,7 +451,8 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     expect(sm.getSession(6)).toBe(session);
-    expect(sm.getMessageBuffer().getPendingCount(6)).toBe(1);
+    expect(sm.getMessageBuffer().getPendingCount(6)).toBe(0);
+    expect(session.pausedReason).toBe('quota');
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
   });

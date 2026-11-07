@@ -17,6 +17,7 @@ let server: Server;
 let port: number;
 let mode: 'normal' | 'legacy' | 'wrong-ack' | 'stalled-body' | 'slow-accept' | 'slow-reject';
 let requestPaths: string[];
+let livePayloads: unknown[];
 const markers: HookSpoolConsumedMarkers = {
   isConsumed: () => false, markConsumed() {}, clearConsumed() {}, pruneConsumedBefore() {},
 };
@@ -26,6 +27,7 @@ async function listen(): Promise<void> {
   app.use(express.json());
   app.use((req, res, next) => {
     requestPaths.push(req.path);
+    if (req.body?.entry?.kind === 'observation') livePayloads.push(req.body.entry.payload);
     if (mode === 'legacy') { res.status(202).json({ status: 'draining' }); return; }
     if (mode === 'wrong-ack') {
       res.status(202).json({ protocolVersion: 1, status: 'accepted', receipt: 'another-event' }); return;
@@ -67,6 +69,7 @@ beforeEach(async () => {
   spool = new HookSpool(join(directory, 'worker-spool'));
   mode = 'normal';
   requestPaths = [];
+  livePayloads = [];
   await listen();
 });
 afterEach(async () => {
@@ -74,7 +77,7 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-async function child(action: 'observation' | 'nudged_observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token', workerUrl = '', transport = 'http', hostAndPortFallback: string = String(port)) {
+async function child(action: 'metadata' | 'nudged_metadata' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token', workerUrl = '', transport = 'http', hostAndPortFallback: string = String(port)) {
   const source = `
     const { spyOn } = await import('bun:test');
     const childProcess = await import('child_process');
@@ -91,14 +94,14 @@ async function child(action: 'observation' | 'nudged_observation' | 'stop' | 'fl
     const common = { contentSessionId: 'remote-client', platformSource: 'codex', cwd: '/project' };
     const started = performance.now();
     if (${JSON.stringify(action)} === 'poison') {
-      new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: {}, toolResponse: 'rejected capture', toolUseId: 'x'.repeat(2049) });
+      new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'x'.repeat(2049), advice: 'rejected capture', occurredAtEpoch: Date.now() }] });
     }
-    if (${JSON.stringify(action)} === 'nudged_observation') {
-      new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: { cmd: 'read fixture' }, toolResponse: 'client routing rule', toolUseId: 'client-tool-1' });
+    if (${JSON.stringify(action)} === 'nudged_metadata') {
+      new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'client-tool-1', advice: 'client routing rule', occurredAtEpoch: Date.now() }] });
       await nudgeWorkerToDrainHookSpool();
       await settleHookSpoolNudges();
-    } else if (${JSON.stringify(action)} === 'observation' || ${JSON.stringify(action)} === 'poison') {
-      new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: { cmd: 'read fixture' }, toolResponse: 'client routing rule', toolUseId: 'client-tool-1' });
+    } else if (${JSON.stringify(action)} === 'metadata' || ${JSON.stringify(action)} === 'poison') {
+      new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'client-tool-1', advice: 'client routing rule', occurredAtEpoch: Date.now() }] });
     } else if (${JSON.stringify(action)} === 'stop') {
       new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'advisor-1', advice: 'keep the queued event', occurredAtEpoch: Date.now() }] });
       new HookSpool().enqueue('summarize', { ...common, lastAssistantMessage: 'done' });
@@ -139,8 +142,9 @@ describe('remote hook spool forwarding', () => {
   ] as const) {
     it(`delivers a Windsurf ${action} with omitted tool fields without quarantining it`, async () => {
       expect((await child(action)).entries).toEqual([]);
-      expect(spool.entries()).toHaveLength(1);
-      expect(spool.entries()[0].payload).toMatchObject({
+      expect(spool.entries()).toHaveLength(0);
+      expect(livePayloads).toHaveLength(1);
+      expect(livePayloads[0]).toMatchObject({
         contentSessionId: 'windsurf-remote-session', platformSource: 'windsurf', ...expected,
       });
       const corrupt = join(directory, 'client/state/hook-spool/corrupt');
@@ -152,15 +156,15 @@ describe('remote hook spool forwarding', () => {
   }
 
   it('hands the event to a different spool and removes the acknowledged client copy', async () => {
-    expect((await child('observation')).entries).toEqual([]);
+    expect((await child('metadata')).entries).toEqual([]);
     expect(spool.entries()).toHaveLength(1);
-    expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1', toolResponse: 'client routing rule' });
+    expect(spool.entries()[0].payload).toMatchObject({ calls: [{ toolUseId: 'client-tool-1', advice: 'client routing rule' }] });
     expect(requestPaths).toEqual(['/api/spool/ingest']);
   });
 
   it('schedules the uploader for a worker URL in auto mode and delivers to the URL, not host and port', async () => {
     // Port 1 is the host-and-port fallback: nothing listens there, so a client that ignores the URL fails to deliver.
-    const result = await child('nudged_observation', 'test-ingest-token', `http://127.0.0.1:${port}`, 'auto', '1');
+    const result = await child('nudged_metadata', 'test-ingest-token', `http://127.0.0.1:${port}`, 'auto', '1');
     expect(result.spawnedArguments).toHaveLength(1);
     expect(result.spawnedArguments[0].at(-1)).toBe('upload-spool');
     expect(result.entries).toEqual([]);
@@ -169,24 +173,24 @@ describe('remote hook spool forwarding', () => {
   });
 
   it('does not schedule the uploader in auto mode for a loopback worker with no URL', async () => {
-    const result = await child('nudged_observation', 'test-ingest-token', '', 'auto');
+    const result = await child('nudged_metadata', 'test-ingest-token', '', 'auto');
     expect(result.spawnedArguments).toEqual([]);
   });
 
   it('keeps the event queued for an insecure worker URL instead of falling back to host and port', async () => {
-    const result = await child('observation', 'test-ingest-token', 'http://worker.example:37777', 'auto');
+    const result = await child('metadata', 'test-ingest-token', 'http://worker.example:37777', 'auto');
     expect(result.entries).toHaveLength(1);
     expect(requestPaths).toEqual([]);
   });
 
-  it('coalesces Stop events without stranding the summary or session end', async () => {
+  it('delivers Stop metadata and retires legacy summary fragments', async () => {
     expect((await child('stop')).entries).toEqual([]);
-    expect(spool.entries().map(e => e.kind)).toEqual(['advisor_calls', 'summarize', 'session_end']);
+    expect(spool.entries().map(e => e.kind)).toEqual(['advisor_calls', 'session_end']);
   });
 
-  it('retains capture while offline and replays it on the next hook after recovery', async () => {
+  it('retains metadata while offline and replays it on the next hook after recovery', async () => {
     await close();
-    const offline = await child('observation');
+    const offline = await child('metadata');
     expect(offline.entries).toHaveLength(1);
     const original = offline.entries[0];
     await listen();
@@ -196,17 +200,17 @@ describe('remote hook spool forwarding', () => {
 
   it('never interprets a legacy bodyless nudge response as event acceptance', async () => {
     mode = 'legacy';
-    expect((await child('observation')).entries).toHaveLength(1);
+    expect((await child('metadata')).entries).toHaveLength(1);
     expect(spool.entries()).toEqual([]);
   });
 
   it('retains the event when the acknowledgement names a different event', async () => {
     mode = 'wrong-ack';
-    expect((await child('observation')).entries).toHaveLength(1);
+    expect((await child('metadata')).entries).toHaveLength(1);
   });
 
   it('retains an event with missing or rejected credentials', async () => {
-    expect((await child('observation', '')).entries).toHaveLength(1);
+    expect((await child('metadata', '')).entries).toHaveLength(1);
     expect(requestPaths).toEqual([]);
     expect((await child('flush', 'incorrect-token')).entries).toHaveLength(1);
     expect(spool.entries()).toEqual([]);
@@ -215,7 +219,7 @@ describe('remote hook spool forwarding', () => {
   it('preserves a permanently rejected event in quarantine and still delivers the next valid event', async () => {
     expect((await child('poison')).entries).toEqual([]);
     expect(spool.entries()).toHaveLength(1);
-    expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1' });
+    expect(spool.entries()[0].payload).toMatchObject({ calls: [{ toolUseId: 'client-tool-1' }] });
     const rejected = join(directory, 'client/state/hook-spool/corrupt');
     const { readdirSync, readFileSync } = await import('fs');
     expect(readdirSync(rejected)).toHaveLength(1);
@@ -224,7 +228,7 @@ describe('remote hook spool forwarding', () => {
 
   it('bounds an upload whose response body never completes', async () => {
     mode = 'stalled-body';
-    const result = await child('observation');
+    const result = await child('metadata');
     expect(result.entries).toHaveLength(1);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(REMOTE_SPOOL_REQUEST_TIMEOUT_MS - 100);
     expect(result.elapsedMs).toBeLessThan(REMOTE_SPOOL_REQUEST_TIMEOUT_MS + 700);
@@ -232,7 +236,7 @@ describe('remote hook spool forwarding', () => {
 
   it('accepts an event whose acknowledgement arrives after the scheduling budget', async () => {
     mode = 'slow-accept';
-    const result = await child('observation');
+    const result = await child('metadata');
     expect(result.elapsedMs).toBeGreaterThan(REMOTE_SPOOL_TIMEOUT_MS);
     expect(result.entries).toEqual([]);
     expect(spool.entries()).toHaveLength(1);
@@ -247,7 +251,7 @@ describe('remote hook spool forwarding', () => {
     mode = 'normal';
     expect((await child('flush')).entries).toEqual([]);
     expect(spool.entries()).toHaveLength(1);
-    expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1' });
+    expect(spool.entries()[0].payload).toMatchObject({ calls: [{ toolUseId: 'client-tool-1' }] });
     expect(requestPaths).toEqual(['/api/spool/ingest', '/api/spool/ingest']);
   });
 });

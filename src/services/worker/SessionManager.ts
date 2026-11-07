@@ -13,7 +13,6 @@ import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './se
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
-import { readObserverHealth } from '../../shared/observer-health.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -476,7 +475,7 @@ export class SessionManager {
    * so ingest can record the hook-spool hand-off before any await (and before
    * the generator kick) — see HookSpool.drain.
    */
-  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): void {
+  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -502,7 +501,7 @@ export class SessionManager {
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = redactForLog(logger.formatTool(data.tool_name, data.tool_input));
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -510,6 +509,7 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   /** Synchronous on purpose — see queueObservation. */
@@ -518,7 +518,7 @@ export class SessionManager {
     lastAssistantMessage?: string,
     promptNumber?: number,
     enqueuedAtEpochMs?: number,
-  ): void {
+  ): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -533,7 +533,7 @@ export class SessionManager {
     const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -541,6 +541,7 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
@@ -565,7 +566,10 @@ export class SessionManager {
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
+      // Released claims are unsent again and may expire before a new claim, so
+      // their timestamp must not outlive them; the next claim recomputes it.
       session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
     }
     return this.buffer.resetClaimed(sessionDbId);
   }
@@ -822,8 +826,9 @@ export class SessionManager {
 
   /**
    * Snapshot paused in-memory work without loading sessions or changing the buffer.
-   * The automatic sweep resumes only pauses that time heals, each paced or
-   * capped where it is armed. A rate-limit pause is retried like a quota pause:
+   * Quota/auth failures have no pending work. The automatic sweep resumes
+   * only short-lived transitions that time heals, each paced or
+   * capped where it is armed. A short rate-limit pause may be retried:
    * the breaker it armed paces it. The sweep leaves a session to a resume it
    * scheduled for itself, too: a rate limit must not be retried before its
    * Retry-After. With memory on the cmem gateway, a session whose unattended
@@ -838,15 +843,9 @@ export class SessionManager {
    *  - an observer that spent its overflow recycles (`overflowPausedUntilMs`):
    *    a message that fits no generation aborts again on every retry, which
    *    the sweep repeated every cooldown, forever.
-   *
-   * An auth pause is the one timer-less case that can still join the sweep:
-   * a store under the same captured credential scope after the session
-   * paused is proof the credential works again (#5377), so that session is
-   * retried within the same pacing as any other — its provider's breaker
-   * still gates it.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
+    const automaticallyRetryable = new Set([null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
@@ -854,22 +853,8 @@ export class SessionManager {
         && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
         && (includeOperatorOnly || !(unattendedGatewayResumesSpent(session) && canCmemGatewayServe(session.platformSource)))
-        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)
-          || this.authPauseProvenRecovered(session)))
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
-  }
-
-  /**
-   * An auth pause waits for proof the credential works again, not a timer
-   * (#5377): a successful store for the same provider, account and credential
-   * type after this session paused is that proof. With an unknown identity, an
-   * old unscoped ledger, or a success older than the pause, the session stays
-   * parked for its next captured event or an operator retry, exactly as before.
-   */
-  private authPauseProvenRecovered(session: ActiveSession): boolean {
-    if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
-    const health = readObserverHealth();
-    return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
   }
 
   /**

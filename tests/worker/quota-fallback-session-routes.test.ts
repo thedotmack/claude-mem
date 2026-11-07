@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
-import { clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { clearQuotaCooldown, isQuotaCooldownActive, recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { resetQuotaFallbackStateForTesting } from '../../src/services/worker/provider-dispatch.js';
 import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
@@ -14,9 +14,12 @@ const { SessionRoutes } = await import('../../src/services/worker/http/routes/Se
  * same harness shape as overflow-recycle-resume.test.ts. Settings are pinned
  * with env vars, which SettingsDefaultsManager applies last.
  *
- * Quota-paused work has no resume of its own: the worker's periodic sweep
- * (SessionRoutes.resumePendingSessions, once a minute) paces itself on the
- * provider dispatch returns, so it restarts the work wherever it can run.
+ * A quota or auth exit discards the session's buffered work
+ * (docs/architecture/observer-lifecycle.md): no sweep, fallback, or recovered
+ * provider sends it later. Fresh work still goes through dispatch and
+ * admission, so the quota fallback serves the next captured event. The
+ * worker's periodic sweep (SessionRoutes.resumePendingSessions) only resumes
+ * pauses that keep their work, paced on the provider dispatch returns.
  */
 const ENV_KEYS = [
   'CLAUDE_MEM_PROVIDER',
@@ -78,17 +81,27 @@ interface FakeAgents {
 
 function buildRoutes(session: ActiveSession, agents: FakeAgents) {
   let finalizeCalls = 0;
+  let discards = 0;
+  let pending = 1;
   let active: ActiveSession | undefined = session;
   const sessionManager = {
     getSession: () => active,
-    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    getMessageBuffer: () => ({ getPendingCount: () => pending, peekTypes: () => [] }),
+    discardBufferedWork: () => {
+      discards += 1;
+      const dropped = pending;
+      pending = 0;
+      return dropped;
+    },
     removeSessionImmediate: () => {
       active = undefined;
     },
-    // The sweep's view of SessionManager: a paused session with buffered work
-    // and no generator (the real filter also skips pending timers).
+    // The sweep's view of SessionManager: a session paused for a reason that
+    // keeps its buffered work, with work buffered and no generator (the real
+    // filter also skips pending timers). Quota and auth are not among them.
     getResumableSessionIds: () => (
-      active && !active.generatorPromise && ['quota', 'rate_limit'].includes(active.pausedReason ?? '')
+      active && !active.generatorPromise && pending > 0
+        && [null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall'].includes(active.pausedReason)
         ? [active.sessionDbId]
         : []
     ),
@@ -103,7 +116,12 @@ function buildRoutes(session: ActiveSession, agents: FakeAgents) {
     {} as any,
     { finalizeSession: async () => { finalizeCalls += 1; } } as any,
   );
-  return { routes, stats: () => ({ finalizeCalls, active }) };
+  return {
+    routes,
+    stats: () => ({ finalizeCalls, discards, pending, active }),
+    /** A new captured event buffers fresh work. */
+    captureFreshWork: () => { pending = 1; },
+  };
 }
 
 describe('quota fallback in SessionRoutes', () => {
@@ -201,7 +219,7 @@ describe('quota fallback in SessionRoutes', () => {
       CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
     });
     const session = makeSession();
-    session.pausedReason = 'quota';
+    session.pausedReason = 'rate_limit';
     let claudeStarts = 0;
     const { routes } = buildRoutes(session, {
       gemini: async () => {},
@@ -222,7 +240,7 @@ describe('quota fallback in SessionRoutes', () => {
       CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
     });
     const session = makeSession();
-    session.pausedReason = 'quota';
+    session.pausedReason = 'rate_limit';
     const { routes } = buildRoutes(session, {
       gemini: async () => {},
       claude: async () => { await hang(); },
@@ -232,91 +250,109 @@ describe('quota fallback in SessionRoutes', () => {
     await expectNoResume(routes);
   });
 
-  it('resumes work paused by a quota exit onto the fallback on the next sweep, with no further hook event', async () => {
+  /** Start the session on a captured event and let its run end. */
+  async function runOnce(routes: InstanceType<typeof SessionRoutes>, session: ActiveSession): Promise<void> {
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+  }
+
+  it('discards work buffered at a quota exit; the next captured event starts fresh on the fallback', async () => {
+    pin(GEMINI_WITH_CLAUDE_FALLBACK);
+    const session = makeSession();
+    let geminiStarts = 0;
+    let claudeStarts = 0;
+    const { routes, stats, captureFreshWork } = buildRoutes(session, {
+      gemini: async (s) => { geminiStarts += 1; s.abortReason = 'quota:quota_exhausted'; },
+      claude: async () => { claudeStarts += 1; await hang(); },
+    });
+
+    await runOnce(routes, session);
+    expect(geminiStarts).toBe(1);
+    expect(session.pausedReason).toBe('quota');
+    expect(isQuotaCooldownActive('gemini')).toBe(true);
+    expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0, active: session });
+
+    // No sweep sends the discarded work to the fallback.
+    await expectNoResume(routes);
+    expect(claudeStarts).toBe(0);
+
+    // Fresh activity goes through dispatch, which takes the fallback.
+    captureFreshWork();
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    expect(claudeStarts).toBe(1);
+    expect(geminiStarts).toBe(1);
+  });
+
+  it('discards work buffered at an auth exit, and no sweep sends it to the fallback', async () => {
     pin(GEMINI_WITH_CLAUDE_FALLBACK);
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;
     const { routes, stats } = buildRoutes(session, {
-      gemini: async (s) => { geminiStarts += 1; s.abortReason = 'quota:quota_exhausted'; },
+      gemini: async (s) => { geminiStarts += 1; s.abortReason = 'auth:auth_invalid'; },
       claude: async () => { claudeStarts += 1; await hang(); },
     });
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
+    await runOnce(routes, session);
+    expect(session.pausedReason).toBe('auth');
+    expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0, active: session });
+
+    await expectNoResume(routes);
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    expect(session.pausedReason).toBe('quota');
-
-    expect(await sweep(routes)).toBe(1);
-    expect(claudeStarts).toBe(1);
-    expect(infoLines).toContain('Generator auto-starting (periodic-resume) using Claude SDK');
-    expect(stats().finalizeCalls).toBe(0);
   });
 
-  it('does not resume when the fallback is itself in a quota cooldown', async () => {
+  it('refuses and discards fresh work when the fallback is itself in a quota cooldown', async () => {
     pin(GEMINI_WITH_CLAUDE_FALLBACK);
     recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
+    const { routes, stats, captureFreshWork } = buildRoutes(session, {
       gemini: async (s) => { geminiStarts += 1; s.abortReason = 'quota:quota_exhausted'; },
       claude: async () => { claudeStarts += 1; await hang(); },
     });
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
+    await runOnce(routes, session);
+    expect(geminiStarts).toBe(1);
+    expect(stats().discards).toBe(1);
+    await expectNoResume(routes);
 
+    // Both credentials are held: admission starts nothing and keeps no backlog.
+    captureFreshWork();
+    await runOnce(routes, session);
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    await expectNoResume(routes);
+    expect(warnLines).toContain('Skipping generator start while the provider cooldown is active');
+    expect(stats()).toMatchObject({ discards: 2, pending: 0, finalizeCalls: 0, active: session });
   });
 
-  it('does not resume an auth pause, even with a fallback configured', async () => {
-    pin(GEMINI_WITH_CLAUDE_FALLBACK);
-    const session = makeSession();
-    let geminiStarts = 0;
-    let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
-      gemini: async (s) => { geminiStarts += 1; s.abortReason = 'auth:auth_invalid'; },
-      claude: async () => { claudeStarts += 1; await hang(); },
-    });
-
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
-
-    expect(geminiStarts).toBe(1);
-    expect(claudeStarts).toBe(0);
-    await expectNoResume(routes);
-  });
-
-  it('with the fallback turned off, a quota pause waits out its cooldown', async () => {
+  it('with the fallback turned off, fresh work during the cooldown is refused and discarded', async () => {
     pin({ CLAUDE_MEM_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key', CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'off' });
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
+    const { routes, stats, captureFreshWork } = buildRoutes(session, {
       gemini: async (s) => { geminiStarts += 1; s.abortReason = 'quota:quota_exhausted'; },
       claude: async () => { claudeStarts += 1; await hang(); },
     });
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
+    await runOnce(routes, session);
+    expect(stats().discards).toBe(1);
+    await expectNoResume(routes);
 
+    captureFreshWork();
+    await runOnce(routes, session);
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    await expectNoResume(routes);
+    expect(stats()).toMatchObject({ discards: 2, pending: 0, finalizeCalls: 0 });
   });
 
-  it('does not resume when dispatch would not use the fallback (cmem-gateway branch)', async () => {
+  it('does not route fresh work to the quota fallback on the cmem-gateway branch', async () => {
     // The gateway trial-expiry branch sends work to Claude regardless of the
-    // quota fallback rule, so the sweep finds Claude's fresh breaker and starts
-    // nothing: the quota fallback never routes around the cmem branch.
+    // quota fallback rule, so with Claude's fresh breaker armed, fresh work is
+    // refused there: the quota fallback never routes around the cmem branch.
     pin({
       CLAUDE_MEM_PROVIDER: 'openrouter',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_test-key',  // the gateway only takes a cm_pro_ key (#4276)
@@ -328,49 +364,33 @@ describe('quota fallback in SessionRoutes', () => {
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
+    const { routes, stats, captureFreshWork } = buildRoutes(session, {
       gemini: async () => { geminiStarts += 1; await hang(); },
       claude: async (s) => { claudeStarts += 1; s.abortReason = 'quota:seven_day'; },
     });
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
+    await runOnce(routes, session);
+    expect(claudeStarts).toBe(1);
+    expect(stats().discards).toBe(1);
+    await expectNoResume(routes);
 
+    captureFreshWork();
+    await runOnce(routes, session);
     expect(claudeStarts).toBe(1);
     expect(geminiStarts).toBe(0);
-    await expectNoResume(routes);
+    expect(stats().discards).toBe(2);
   });
 
-  it("schedules at most one resume: the fallback's own quota exit does not start another", async () => {
-    pin(GEMINI_WITH_CLAUDE_FALLBACK);
-    recordQuotaExhausted('gemini', 'Daily limit reached');
-    const session = makeSession();
-    let geminiStarts = 0;
-    let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
-      gemini: async () => { geminiStarts += 1; await hang(); },
-      claude: async (s) => { claudeStarts += 1; s.abortReason = 'quota:seven_day'; },
-    });
-
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
-
-    expect(claudeStarts).toBe(1);
-    expect(geminiStarts).toBe(0);
-    await expectNoResume(routes);
-  });
-
-  it("resumes a fallback run's own quota exit on the primary once the primary has recovered", async () => {
+  it("a fallback run's own quota exit discards its work too: the recovered primary gets only fresh work", async () => {
     // A generator keeps running on the fallback after the primary recovers
-    // elsewhere; when it then hits its own quota, the primary can take the work.
+    // elsewhere. When it then hits its own quota, its buffered work is dropped,
+    // not resumed on the primary; the next captured event starts there.
     pin(GEMINI_WITH_CLAUDE_FALLBACK);
     recordQuotaExhausted('gemini', 'Daily limit reached');
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;
-    const { routes } = buildRoutes(session, {
+    const { routes, stats, captureFreshWork } = buildRoutes(session, {
       gemini: async () => { geminiStarts += 1; await hang(); },
       claude: async (s) => {
         claudeStarts += 1;
@@ -379,15 +399,18 @@ describe('quota fallback in SessionRoutes', () => {
       },
     });
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
+    await runOnce(routes, session);
     expect(claudeStarts).toBe(1);
+    expect(isQuotaCooldownActive('claude')).toBe(true);
+    expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0 });
+
+    await expectNoResume(routes);
     expect(geminiStarts).toBe(0);
 
-    expect(await sweep(routes)).toBe(1);
+    captureFreshWork();
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
     expect(geminiStarts).toBe(1);
-    expect(infoLines).toContain('Generator auto-starting (periodic-resume) using Gemini');
+    expect(claudeStarts).toBe(1);
   });
 
   it('runs the configured fallback model on a fallback run', async () => {

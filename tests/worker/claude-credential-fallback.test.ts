@@ -128,7 +128,6 @@ function makeSession(): ActiveSession {
     consecutiveInvalidOutputs: 0,
     consecutiveContextOverflows: 0,
     lastGeneratorActivity: Date.now(),
-    pausedReason: 'quota',
   };
 }
 
@@ -156,13 +155,22 @@ function makeSessionManager(): SessionManager {
 
 function buildRoutes(session: ActiveSession, claude: (s: ActiveSession) => Promise<void>) {
   let active: ActiveSession | undefined = session;
+  let pending = 1;
   const sessionManager = {
     getSession: () => active,
-    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    getMessageBuffer: () => ({ getPendingCount: () => pending, peekTypes: () => [] }),
+    discardBufferedWork: () => { const discarded = pending; pending = 0; return discarded; },
     removeSessionImmediate: () => { active = undefined; },
-    getResumableSessionIds: () => (active && !active.generatorPromise ? [active.sessionDbId] : []),
+    // The sweep's view: buffered work, no generator, and a pause time heals
+    // (quota and auth are not; their work was discarded).
+    getResumableSessionIds: () => (
+      active && !active.generatorPromise && pending > 0
+        && [null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall'].includes(active.pausedReason)
+        ? [active.sessionDbId]
+        : []
+    ),
   };
-  return new SessionRoutes(
+  const routes = new SessionRoutes(
     sessionManager as any,
     {} as any,
     { startSession: claude } as any,
@@ -172,6 +180,7 @@ function buildRoutes(session: ActiveSession, claude: (s: ActiveSession) => Promi
     {} as any,
     { finalizeSession: async () => {} } as any,
   );
+  return Object.assign(routes, { pendingCount: () => pending });
 }
 
 /** Routes whose Claude agent records the credential override each start ran with. */
@@ -234,15 +243,22 @@ describe('Claude credential fallback: admission', () => {
       signIn();
       writeFileSync(join(tempDir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_API_KEY=sk-gw\n');
     }, 'api-key'],
-  ] as const)('waits as before when %s', async (_label, arrange, auth) => {
+  ] as const)('starts nothing and skips the buffered work when %s', async (_label, arrange, auth) => {
     arrange();
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, auth);
+    const session = makeSession();
+    const { routes, starts } = recordingRoutes(session);
 
-    expect(await startOnce(makeSession())).toEqual([]);
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await nextTick();
+    expect(starts).toEqual([]);
     expect(warnLines).toContain('Skipping generator start while the provider cooldown is active');
+    // A spent allowance does not hold the work for the reset.
+    expect(routes.pendingCount()).toBe(0);
+    expect(session.pausedReason).toBe('quota');
   });
 
-  it('resumes the paused backlog while the primary is held', () => {
+  it('the sweep runs buffered work on the stand-in while the primary is held', () => {
     signIn();
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     const { routes } = recordingRoutes(makeSession());
@@ -260,7 +276,7 @@ describe('Claude credential fallback: order and booking', () => {
     ['subscription', 'auth:observer_org_policy'],
     ['subscription', 'auth:observer_verification_hold'],
     ['api-key', 'auth:auth_invalid'],
-  ] as const)('automatically retries the primary after a refused %s fallback (%s)', async (target, reason) => {
+  ] as const)('discards the work of a refused %s fallback (%s) and probes the primary with fresh work', async (target, reason) => {
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;
     if (target === 'subscription') signIn();
     else setFallbackKey();
@@ -290,12 +306,22 @@ describe('Claude credential fallback: order and booking', () => {
     expect(starts).toEqual([target]);
     expect(session.fallbackFrom).toBeNull();
     expect(getQuotaCooldown('claude')?.cause).toBe('auth');
-    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(1);
-    expect(session.pausedReason).toBe('provider_switch');
+    // The refused batch is discarded; nothing is left for a later resume.
+    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(0);
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
 
+    // A fresh event while the refusal holds starts nothing and is skipped too.
+    sm.queueObservation(304, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'while-held' });
+    await routes.ensureGeneratorRunning(304, 'observation');
+    expect(starts).toEqual([target]);
+    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(0);
+
+    // Once the window elapses the sweep still has nothing to revive; the next
+    // captured event takes the single probe on the primary.
     getQuotaCooldown('claude')!.armedAtMs -= QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    sm.queueObservation(304, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'after-window' });
+    await routes.ensureGeneratorRunning(304, 'observation');
     await nextTick();
     expect(starts).toEqual([target, null]);
     expect(getQuotaCooldown('claude')?.probeInFlightSinceMs).not.toBeNull();

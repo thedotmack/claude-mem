@@ -4,6 +4,7 @@ import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
 import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
+import { isLiveObserverEvent, isExpiredObserverEvent } from '../../shared/observer-work-policy.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
@@ -15,7 +16,11 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
  * `markHandedOff` goes to ingest, which calls it synchronously at the exact
  * point the entry is irrevocably accepted (see HookSpool.drain).
  */
-async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+export async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+  if (isLiveObserverEvent(entry.kind) && isExpiredObserverEvent(entry.enqueuedAtEpochMs)) {
+    logger.debug('HOOK', 'Skipped expired live observer handoff', { kind: entry.kind });
+    return true;
+  }
   switch (entry.kind) {
     case 'work_state_telemetry': {
       const { payload } = entry;
@@ -90,7 +95,15 @@ export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumed
 }
 
 export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
-  const result = await spool.drain(ingestHookSpoolEntry, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
+  const result = await spool.drain((entry, markHandedOff) => {
+    // Compatibility cleanup only. Before this change hooks persisted these
+    // inputs; replaying them now would restart a paid observer backlog.
+    if (isLiveObserverEvent(entry.kind)) {
+      logger.debug('HOOK', 'Discarded legacy observer spool entry without inference', { kind: entry.kind });
+      return true;
+    }
+    return ingestHookSpoolEntry(entry, markHandedOff);
+  }, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
   if (result.drained > 0 || result.quarantined > 0 || result.expired > 0) {
     logger.info('HOOK', 'Drained hook spool', { ...result });
   }
