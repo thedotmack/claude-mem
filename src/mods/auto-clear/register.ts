@@ -29,12 +29,13 @@ export function register(on: On): void {
   on('session.start', async ($, e, next) => {
     if (!controller) {
       let cached: { settings: AutoClearSettings; readAt: number } | null = null;
+      // A missing file is no document (the defaults apply). A file that is there
+      // but cannot be read or parsed throws, so a user's opt-out is never lost to it.
       const readSettingsFile = async (path: string) => {
-        try {
-          return parseSettingsJson(await $.fs.read(path));
-        } catch {
-          return null;
-        }
+        if (!(await $.fs.exists(path))) return null;
+        const document = parseSettingsJson(await $.fs.read(path));
+        if (!document) throw new Error(`${path} is not a JSON object`);
+        return document;
       };
       const readSettings = async (): Promise<AutoClearSettings> => {
         const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || undefined;
@@ -59,8 +60,9 @@ export function register(on: On): void {
           try {
             settings = await readSettings();
           } catch {
-            // Another mod refused an env or file read: run on the defaults.
-            settings = { enabled: true, percent: AUTO_CLEAR_DEFAULT_PERCENT };
+            // Unreadable settings, or another mod refused a read: keep what was
+            // last read, and with nothing read yet stay off rather than guess.
+            settings = cached?.settings ?? { enabled: false, percent: AUTO_CLEAR_DEFAULT_PERCENT };
           }
           cached = { settings, readAt: now };
           return settings;
@@ -115,6 +117,11 @@ export function register(on: On): void {
     }
     return result;
   }).catch(async ($, e, next) => next(e));
+
+  on('turn.start', async ($, e, next) => {
+    controller?.onTurnStart();
+    return next(e);
+  });
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);

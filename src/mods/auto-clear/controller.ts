@@ -14,8 +14,11 @@
  *     work_state_write, /clear runs and "continue" is sent as the user.
  *     Otherwise Claude is asked once more in a turn of its own; if that turn
  *     saves nothing either, nothing is cleared and auto-clear waits for the
- *     next /clear.
- *  3. A fresh conversation that already starts at or past the threshold (a
+ *     next /clear. A stopped turn (Esc) never starts or finishes the flow.
+ *  3. Every deferred step belongs to the conversation that started it: the
+ *     person's own /clear or resume cancels it, and a prompt they typed that
+ *     runs before the clear puts the flow back to asking for a fresh save.
+ *  4. A fresh conversation that already starts at or past the threshold (a
  *     large system prompt and context against a small window) would clear in
  *     a loop, so auto-clear turns itself off until Claude Code restarts.
  *
@@ -94,6 +97,12 @@ export class AutoClearController {
   /** Off until Claude Code restarts. */
   private stopped = false;
   private threshold = 0;
+  /** Bumped when a conversation ends; a deferred action of an older conversation does nothing. */
+  private conversation = 0;
+  /** Set from just before our own /clear runs until its conversation end is seen. */
+  private ownClearPending = false;
+  /** Bumped when a main-loop turn starts. */
+  private turnsStarted = 0;
 
   constructor(private readonly host: AutoClearHost) {}
 
@@ -117,10 +126,26 @@ export class AutoClearController {
     return inTurnSaveRequest(percent, this.threshold);
   }
 
+  /**
+   * A main-loop turn started (subagent runs raise no turn start). A turn that
+   * starts while the clear is still to come is the person's prompt typed
+   * before the turn ended: its work is not in the save, so the clear waits
+   * and the save is asked for again once that turn is past the threshold.
+   */
+  onTurnStart(): void {
+    this.turnsStarted += 1;
+    if (this.phase === 'clearing' && !this.ownClearPending) {
+      this.phase = 'idle';
+      this.saved = false;
+    }
+  }
+
   async onTurnEnd(turn: TurnEnd): Promise<void> {
     if (turn.agentId) return;
     switch (this.phase) {
       case 'idle': {
+        // A stopped or failed turn starts nothing: Esc means the person wants the floor.
+        if (turn.isAborted || turn.reason !== 'answer') return;
         const percent = await this.thresholdCrossed();
         if (percent === null || this.phase !== 'idle') return;
         this.saved = false;
@@ -147,8 +172,13 @@ export class AutoClearController {
 
   /** The conversation ended: /clear (ours or the person's), a resume, or exit. */
   onConversationEnd(): void {
+    this.conversation += 1;
     this.pausedForConversation = false;
-    if (this.phase === 'clearing') return;
+    if (this.ownClearPending) {
+      // Our own /clear: the continue step still has to run.
+      this.ownClearPending = false;
+      return;
+    }
     // The person cleared or switched conversations: anything in flight belonged to the old one.
     this.phase = 'idle';
     this.saved = false;
@@ -181,31 +211,46 @@ export class AutoClearController {
 
   private queueSavePrompt(percent: number): void {
     this.phase = 'save-prompt-queued';
+    const conversation = this.conversation;
+    const stillOurs = () => this.conversation === conversation && this.phase === 'save-prompt-queued';
     this.host.defer(async () => {
+      if (!stillOurs()) return;
       try {
         await this.host.submitPrompt(savePrompt(percent, this.threshold));
       } catch {
-        if (this.phase === 'save-prompt-queued') this.giveUp('The save prompt could not be sent, so the conversation was not cleared.');
+        if (stillOurs()) this.giveUp('The save prompt could not be sent, so the conversation was not cleared.');
         return;
       }
-      if (this.phase === 'save-prompt-queued') this.phase = 'saving-in-prompt';
+      if (stillOurs()) this.phase = 'saving-in-prompt';
     });
   }
 
   private clearAndContinue(): void {
     this.phase = 'clearing';
     this.saved = false;
+    const conversation = this.conversation;
     this.host.note('Work state saved. Clearing the conversation and continuing.');
     this.host.defer(async () => {
+      // The person cleared, switched conversations, or a prompt they typed started first.
+      if (this.conversation !== conversation || this.phase !== 'clearing') return;
+      const turnsBeforeClear = this.turnsStarted;
+      this.ownClearPending = true;
       try {
         await this.host.clear();
       } catch {
-        if (this.phase === 'clearing') this.giveUp('/clear could not run, so the conversation was not cleared.');
+        this.ownClearPending = false;
+        if (this.conversation === conversation && this.phase === 'clearing') this.giveUp('/clear could not run, so the conversation was not cleared.');
         return;
       }
+      this.ownClearPending = false;
       if (this.phase !== 'clearing') return;
       this.phase = 'idle';
       this.checkFreshStart = true;
+      if (this.turnsStarted !== turnsBeforeClear) {
+        // /clear waits for the session to be idle: a prompt the person typed ran first, after the save.
+        this.host.note('The conversation was cleared after your last message ran, so that turn is not in the saved work state. Tell Claude where to pick up.');
+        return;
+      }
       try {
         await this.host.submitAsUser(CONTINUE_PROMPT);
       } catch {

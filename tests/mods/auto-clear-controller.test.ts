@@ -201,14 +201,20 @@ describe('auto-clear controller', () => {
 
   it('keeps going cycle after cycle while each fresh conversation starts below the threshold', async () => {
     const { host, calls, state, flush } = fakeHost({ percent: 40 });
-    const controller = new AutoClearController(host);
+    let controller!: AutoClearController;
+    const clearing = host.clear;
+    host.clear = async () => {
+      await clearing();
+      controller.onConversationEnd(); // our own /clear ends the old conversation
+    };
+    controller = new AutoClearController(host);
     for (let cycle = 0; cycle < 3; cycle += 1) {
       state.percent = 40;
       await controller.onToolCallEnd(tool('Bash'));
       await controller.onToolCallEnd(tool(WRITE, SAVED));
       await controller.onTurnEnd(answered);
-      controller.onConversationEnd(); // our own /clear ends the old conversation
       await flush();
+      controller.onTurnStart(); // the "continue" turn
       // The fresh conversation's first reading is low.
       state.percent = 6;
       expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
@@ -244,6 +250,97 @@ describe('auto-clear controller', () => {
     await flush();
     // The new conversation is measured afresh, and nothing from the old one is cleared again.
     expect(calls.filter(call => call === 'clear')).toHaveLength(0);
+  });
+
+  it('does not start the flow when a turn that crossed the threshold was stopped (Esc)', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd({ isAborted: true, reason: 'aborted' });
+    await controller.onTurnEnd({ isAborted: false, reason: 'error' });
+    await flush();
+    expect(calls).toEqual([]);
+    // The next turn that ends normally still starts it.
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toStartWith('prompt:');
+  });
+
+  it('drops a queued save prompt when the person clears before it is sent', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 50 });
+    const controller = new AutoClearController(host);
+    await controller.onTurnEnd(answered); // queues the save prompt
+    controller.onConversationEnd(); // the person's /clear lands first
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('drops a pending clear when the person clears or resumes first, so the new conversation is left alone', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered); // decides to clear; the clear is deferred
+    controller.onConversationEnd(); // the person's /clear or /resume runs first
+    await flush();
+    expect(calls).toEqual([]);
+  });
+
+  it('waits when a prompt the person typed starts before the clear, and asks for a fresh save after it', async () => {
+    const { host, calls, flush } = fakeHost({ percent: 40 });
+    const controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered); // decides to clear
+    controller.onTurnStart(); // the queued prompt the person typed runs first
+    await flush();
+    expect(calls).toEqual([]);
+
+    // That turn works on; past the threshold it is asked to save again, and only then cleared.
+    const note = await controller.onToolCallEnd(tool('Edit'));
+    expect(note).toContain('work_state_write');
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+  });
+
+  it('does not send "continue" when a prompt the person typed ran while /clear waited for the session', async () => {
+    const { host, calls, notes, flush } = fakeHost({ percent: 40 });
+    let controller!: AutoClearController;
+    const clearing = host.clear;
+    host.clear = async () => {
+      // /clear queues behind a turn that starts in the meantime, then runs as our own clear.
+      controller.onTurnStart();
+      await clearing();
+      controller.onConversationEnd();
+    };
+    controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear']);
+    expect(notes.at(-1)).toContain('Tell Claude where to pick up');
+  });
+
+  it('treats the conversation end its own /clear causes as its own', async () => {
+    const { host, calls, flush, state } = fakeHost({ percent: 40 });
+    let controller!: AutoClearController;
+    const clearing = host.clear;
+    host.clear = async () => {
+      await clearing();
+      controller.onConversationEnd(); // session.end raised by our own /clear
+    };
+    controller = new AutoClearController(host);
+    await controller.onToolCallEnd(tool('Bash'));
+    await controller.onToolCallEnd(tool(WRITE, SAVED));
+    await controller.onTurnEnd(answered);
+    await flush();
+    expect(calls).toEqual(['clear', 'user:continue']);
+    // The fresh conversation is measured: below the threshold, nothing more happens.
+    state.percent = 5;
+    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
   });
 
   it('reports a /clear that could not run and pauses', async () => {

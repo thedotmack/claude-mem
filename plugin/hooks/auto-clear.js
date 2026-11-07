@@ -20,6 +20,12 @@ var AutoClearController = class {
   /** Off until Claude Code restarts. */
   stopped = false;
   threshold = 0;
+  /** Bumped when a conversation ends; a deferred action of an older conversation does nothing. */
+  conversation = 0;
+  /** Set from just before our own /clear runs until its conversation end is seen. */
+  ownClearPending = false;
+  /** Bumped when a main-loop turn starts. */
+  turnsStarted = 0;
   /** A main-loop or subagent tool call finished; returns the note to attach to its result, if any. */
   async onToolCallEnd(call) {
     if (call.agentId || call.denied) return null;
@@ -38,10 +44,24 @@ var AutoClearController = class {
     this.host.note(`Context is at ${percent}% (auto-clear at ${this.threshold}%): Claude is saving the work state, then claude-mem clears and continues.`);
     return inTurnSaveRequest(percent, this.threshold);
   }
+  /**
+   * A main-loop turn started (subagent runs raise no turn start). A turn that
+   * starts while the clear is still to come is the person's prompt typed
+   * before the turn ended: its work is not in the save, so the clear waits
+   * and the save is asked for again once that turn is past the threshold.
+   */
+  onTurnStart() {
+    this.turnsStarted += 1;
+    if (this.phase === "clearing" && !this.ownClearPending) {
+      this.phase = "idle";
+      this.saved = false;
+    }
+  }
   async onTurnEnd(turn) {
     if (turn.agentId) return;
     switch (this.phase) {
       case "idle": {
+        if (turn.isAborted || turn.reason !== "answer") return;
         const percent = await this.thresholdCrossed();
         if (percent === null || this.phase !== "idle") return;
         this.saved = false;
@@ -66,8 +86,12 @@ var AutoClearController = class {
   }
   /** The conversation ended: /clear (ours or the person's), a resume, or exit. */
   onConversationEnd() {
+    this.conversation += 1;
     this.pausedForConversation = false;
-    if (this.phase === "clearing") return;
+    if (this.ownClearPending) {
+      this.ownClearPending = false;
+      return;
+    }
     this.phase = "idle";
     this.saved = false;
     this.checkFreshStart = false;
@@ -96,30 +120,43 @@ var AutoClearController = class {
   }
   queueSavePrompt(percent) {
     this.phase = "save-prompt-queued";
+    const conversation = this.conversation;
+    const stillOurs = () => this.conversation === conversation && this.phase === "save-prompt-queued";
     this.host.defer(async () => {
+      if (!stillOurs()) return;
       try {
         await this.host.submitPrompt(savePrompt(percent, this.threshold));
       } catch {
-        if (this.phase === "save-prompt-queued") this.giveUp("The save prompt could not be sent, so the conversation was not cleared.");
+        if (stillOurs()) this.giveUp("The save prompt could not be sent, so the conversation was not cleared.");
         return;
       }
-      if (this.phase === "save-prompt-queued") this.phase = "saving-in-prompt";
+      if (stillOurs()) this.phase = "saving-in-prompt";
     });
   }
   clearAndContinue() {
     this.phase = "clearing";
     this.saved = false;
+    const conversation = this.conversation;
     this.host.note("Work state saved. Clearing the conversation and continuing.");
     this.host.defer(async () => {
+      if (this.conversation !== conversation || this.phase !== "clearing") return;
+      const turnsBeforeClear = this.turnsStarted;
+      this.ownClearPending = true;
       try {
         await this.host.clear();
       } catch {
-        if (this.phase === "clearing") this.giveUp("/clear could not run, so the conversation was not cleared.");
+        this.ownClearPending = false;
+        if (this.conversation === conversation && this.phase === "clearing") this.giveUp("/clear could not run, so the conversation was not cleared.");
         return;
       }
+      this.ownClearPending = false;
       if (this.phase !== "clearing") return;
       this.phase = "idle";
       this.checkFreshStart = true;
+      if (this.turnsStarted !== turnsBeforeClear) {
+        this.host.note("The conversation was cleared after your last message ran, so that turn is not in the saved work state. Tell Claude where to pick up.");
+        return;
+      }
       try {
         await this.host.submitAsUser(CONTINUE_PROMPT);
       } catch {
@@ -238,11 +275,10 @@ function register(on) {
     if (!controller) {
       let cached = null;
       const readSettingsFile = async (path) => {
-        try {
-          return parseSettingsJson(await $.fs.read(path));
-        } catch {
-          return null;
-        }
+        if (!await $.fs.exists(path)) return null;
+        const document = parseSettingsJson(await $.fs.read(path));
+        if (!document) throw new Error(`${path} is not a JSON object`);
+        return document;
       };
       const readSettings = async () => {
         const home = await $.env.get("HOME") || await $.env.get("USERPROFILE") || void 0;
@@ -266,7 +302,7 @@ function register(on) {
           try {
             settings = await readSettings();
           } catch {
-            settings = { enabled: true, percent: AUTO_CLEAR_DEFAULT_PERCENT };
+            settings = cached?.settings ?? { enabled: false, percent: AUTO_CLEAR_DEFAULT_PERCENT };
           }
           cached = { settings, readAt: now };
           return settings;
@@ -319,6 +355,10 @@ function register(on) {
     }
     return result;
   }).catch(async ($, e, next) => next(e));
+  on("turn.start", async ($, e, next) => {
+    controller?.onTurnStart();
+    return next(e);
+  });
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
     if (!controller) return result;

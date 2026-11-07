@@ -6,14 +6,16 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write'
 
-function stubs(on: any, options: { percent: number; settings?: string; surfaces?: string[] }) {
+function stubs(on: any, options: { percent: number; settings?: string | null; surfaces?: string[] }) {
   const clock = mock.clock(on)
   mock.env(on, { HOME: '/home/ada' })
   const record = { commands: [] as string[], prompts: [] as Array<{ text: string; asUser?: boolean }>, notes: [] as string[], reads: [] as string[] }
   const state = { percent: options.percent }
+  const isSettings = (path: string) => options.settings !== undefined && path.endsWith('/.claude-mem/settings.json')
+  on('fs.exists', ($: any, e: any) => ({ value: isSettings(e.path) }))
   on('fs.read', ($: any, e: any) => {
     record.reads.push(e.path)
-    if (options.settings !== undefined && e.path.endsWith('/.claude-mem/settings.json')) return { value: options.settings }
+    if (isSettings(e.path)) return options.settings === null ? { deny: 'EACCES' } : { value: options.settings }
     return { deny: 'missing' }
   })
   on('session.usage', () => ({ value: { context: { tokens: state.percent * 2000, window: 200000, percent: state.percent }, rateLimits: [] } }))
@@ -21,6 +23,7 @@ function stubs(on: any, options: { percent: number; settings?: string; surfaces?
   on('ui.log', ($: any, e: any) => { record.notes.push(e.text); return { value: undefined } })
   on('session.start', () => ({ cwd: '/work' }))
   on('session.end', ($: any, e: any) => ({ sessionId: 's1' }))
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('command.run', ($: any, e: any) => { record.commands.push(e.command); return { text: '' } })
   on('prompt.submit', ($: any, e: any) => { record.prompts.push({ text: e.text, asUser: e.origin?.asUser }); return { text: e.text } })
@@ -118,4 +121,34 @@ test('a refused save never clears: claude-mem asks once in its own turn, then gi
   await clock.settle()
   expect(record.commands).toEqual([])
   expect(record.notes.at(-1) ?? '').toContain('was not cleared')
+})
+
+test('a settings.json that is there but cannot be read keeps auto-clear off instead of guessing', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 80, settings: null })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
+  expect(bash.context).toBeUndefined()
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  expect(record.prompts).toEqual([])
+})
+
+test('a stopped turn past the threshold sends nothing', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 50 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.turn.complete({ ...turnDone, isAborted: true, reason: 'aborted' })
+  await clock.settle()
+  expect(record.prompts).toEqual([])
+})
+
+test('a prompt the person typed that starts before the clear holds the clear back', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 40 })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await $.tool.call({ tool: WRITE, list: 'work', fields: { next: 'x' } })
+  await $.turn.complete(turnDone)
+  await $.turn.start({ text: 'one more thing', turnId: 't2' })
+  await clock.settle()
+  await clock.settle()
+  expect(record.commands).toEqual([])
 })

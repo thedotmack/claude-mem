@@ -6,7 +6,10 @@
 
 export interface ModApi {
   env: { get(name: string): Promise<string | undefined> };
-  fs: { read(path: string): Promise<string> };
+  fs: {
+    read(path: string): Promise<string>;
+    exists(path: string): Promise<boolean>;
+  };
   session: {
     usage(): Promise<{ context: { tokens?: number; window: number; percent?: number } }>;
     surfaces(): Promise<readonly string[]>;
@@ -59,5 +62,6 @@ export interface On {
   (event: 'session.start', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'session.end', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'tool.call', hook: Hook<ToolCallEvent, ToolCallResult>): Registration<ToolCallEvent, ToolCallResult>;
+  (event: 'turn.start', hook: Hook<unknown, unknown>): Registration<unknown, unknown>;
   (event: 'turn.complete', hook: Hook<TurnCompleteEvent, unknown>): Registration<TurnCompleteEvent, unknown>;
 }
