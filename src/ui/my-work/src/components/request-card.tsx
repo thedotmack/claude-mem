@@ -113,13 +113,14 @@ const CARD_DELIVERABLES = 3
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
   const products = request.workProduct.filter(isCardDeliverable)
-  if (products.length === 0) return null
+  const count = request.detailLoaded === false ? request.detailCounts?.workProduct ?? products.length : products.length
+  if (count === 0) return null
   const shown = products.slice(0, CARD_DELIVERABLES)
-  const hidden = products.length - shown.length
+  const hidden = Math.max(0, count - shown.length)
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {products.length}</p>
+        <p className="section-label">Deliverables · {count}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
@@ -146,6 +147,8 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
 export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
+  // The spinner means an agent is on it: an idle card still waiting on its title (or one whose title writer
+  // is unavailable) shows no spinner, only its badge.
   const fresh = phase === 'fresh'
   const reduceMotion = useReducedMotion()
   // Its recorded content changed in the update just applied (decision 5's "Just updated" dot).
@@ -166,7 +169,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           </div>
           <div className="flex items-center gap-1.5">
             <StateBadge state={request.state} />
-            {(phase !== 'human' || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
+            {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
           </div>
         </CardHeader>
 

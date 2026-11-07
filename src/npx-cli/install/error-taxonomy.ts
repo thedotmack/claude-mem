@@ -3,7 +3,7 @@
  * failure the universal installer (`npx claude-mem install`) can hit, and the
  * remediation we surface for each.
  *
- * Design constraints (see plans/04-installer-transparency.md):
+ * Design constraints:
  *  - Fail loud over silent. Unknown errors default to ABORT until classified.
  *  - Remediation strings interpolate the resolved data dir (multi-account safe),
  *    never a hard-coded ~/.claude-mem path.

@@ -250,7 +250,8 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // The worker is up before any login or provider question, and the page is open.
     expect(workerStarts).toBe(1);
     expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null }]);
-    expect(workerStartSessions).toEqual([{ pid: process.pid }]);
+    expect(workerStartSessions).toMatchObject([{ pid: process.pid, already_pro: false }]);
+    expect((workerStartSessions[0] as { setup_flow_id: string }).setup_flow_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(pairingStarts).toEqual([]);
 
@@ -430,7 +431,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(workerStartStates[0]).toMatchObject({ status: 'pending' });
-    expect(workerStartSessions[0]).toEqual({ pid: process.pid });
+    expect(workerStartSessions[0]).toMatchObject({ pid: process.pid, already_pro: false });
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
     expect(existsSync(sessionPath)).toBe(false);
     expect(opened).toEqual([]);
@@ -439,7 +440,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
 
   it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {
     fetchSpy.mockImplementationOnce(async () => {
-      expect(JSON.parse(readFileSync(sessionPath, 'utf8'))).toEqual({ pid: process.pid });
+      expect(JSON.parse(readFileSync(sessionPath, 'utf8'))).toMatchObject({ pid: process.pid, already_pro: false });
       return Response.json({ error: 'This setup session was refused by the worker.' }, { status: 403 });
     });
     await expect(runInstallCommand({})).rejects.toThrow('This setup session was refused by the worker.');

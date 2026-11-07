@@ -7,8 +7,9 @@ const calls: Array<{ tool: string; args: any }> = [];
 let createCollectionImpl: () => Promise<unknown> = async () => ({});
 // Stateful stand-in for a Chroma collection so the reconcile path exercises
 // real Chroma semantics: add rejects the whole batch on any existing ID,
-// update ignores absent IDs, get reports which of the requested IDs exist.
-const stored = new Set<string>();
+// update ignores absent IDs, get reports which of the requested IDs exist
+// and the text stored for each.
+const stored = new Map<string, string>();
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -24,14 +25,19 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
             if (ids.some(id => stored.has(id))) {
               throw new Error(`IDs already exist in collection: ${ids.filter(id => stored.has(id)).join(', ')}`);
             }
-            ids.forEach(id => stored.add(id));
+            ids.forEach((id, index) => stored.set(id, args.documents[index]));
             return {};
           }
-          case 'chroma_get_documents':
+          case 'chroma_get_documents': {
             // Report only the requested IDs that actually exist.
-            return { ids: ids.filter(id => stored.has(id)) };
+            const found = ids.filter(id => stored.has(id));
+            return { ids: found, documents: found.map(id => stored.get(id)) };
+          }
           case 'chroma_update_documents':
             // Chroma silently ignores IDs that are not already present.
+            ids.forEach((id, index) => {
+              if (stored.has(id) && args.documents) stored.set(id, args.documents[index]);
+            });
             return {};
           default:
             return {};
@@ -92,14 +98,15 @@ describe('ChromaSync duplicate-ID reconcile', () => {
     expect(calls.filter(call => call.tool === 'chroma_create_collection')).toHaveLength(1);
   });
 
-  it('reconciles a fully-duplicate batch with an in-place update, never delete+add', async () => {
+  it('reconciles a changed duplicate with an in-place update, never delete+add', async () => {
     const sync = newSync();
-    const docs = [{ id: 'obs_1_narrative', document: 'hello world', metadata: { sqlite_id: 1 } }];
 
     // First write inserts, second collides and must reconcile in place.
-    await sync.addDocuments(docs);
+    await sync.addDocuments([{ id: 'obs_1_narrative', document: 'hello world', metadata: { sqlite_id: 1 } }]);
     calls.length = 0;
-    const written = await sync.addDocuments(docs);
+    const written = await sync.addDocuments([
+      { id: 'obs_1_narrative', document: 'hello again', metadata: { sqlite_id: 1 } },
+    ]);
 
     expect(written).toBe(1);
     const tools = calls.map(c => c.tool);
@@ -109,7 +116,26 @@ describe('ChromaSync duplicate-ID reconcile', () => {
 
     const update = calls.find(c => c.tool === 'chroma_update_documents');
     expect(update?.args.ids).toEqual(['obs_1_narrative']);
-    expect(update?.args.documents).toEqual(['hello world']);
+    expect(update?.args.documents).toEqual(['hello again']);
+    expect(stored.get('obs_1_narrative')).toBe('hello again');
+  });
+
+  it('does not re-send unchanged text, so Chroma does not embed it again', async () => {
+    const sync = newSync();
+    const docs = [{ id: 'obs_1_narrative', document: 'hello world', metadata: { sqlite_id: 1, title: 'old' } }];
+
+    // A rebuild that restarts replays rows that are already indexed.
+    await sync.addDocuments(docs);
+    calls.length = 0;
+    const written = await sync.addDocuments([{ ...docs[0], metadata: { sqlite_id: 1, title: 'new' } }]);
+
+    expect(written).toBe(1);
+    const updates = calls.filter(c => c.tool === 'chroma_update_documents');
+    expect(updates).toHaveLength(1);
+    expect(updates[0].args.ids).toEqual(['obs_1_narrative']);
+    expect(updates[0].args.documents).toBeUndefined();
+    expect(updates[0].args.metadatas).toEqual([{ sqlite_id: 1, title: 'new' }]);
+    expect(calls.map(c => c.tool)).not.toContain('chroma_delete_documents');
   });
 
   it('splits a mixed batch: updates the existing ID and INSERTS the new one', async () => {

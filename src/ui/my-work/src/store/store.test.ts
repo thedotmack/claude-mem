@@ -35,6 +35,7 @@ function fakeSource(overrides: Partial<WorkDataSource> = {}) {
     saveFocusChange: () => Promise.reject(new Error('not used')),
     markAgentFinished: () => Promise.reject(new Error('not used')),
     loadRulesInClaudeCode: () => Promise.reject(new Error('not used')),
+    refreshWork: () => Promise.resolve({ state: 'idle' }),
     ...overrides,
   }
   return { source, feed, reads }
@@ -65,6 +66,48 @@ function testStore(options: { href?: string; storage?: ReturnType<typeof memoryS
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 describe('reading work', () => {
+  it('forwards clicked review and suggestion versions with their durable receipts', async () => {
+    const { store } = testStore()
+    const calls: unknown[][] = []
+    const receipt = { scope: 'shared' as const, state: 'queued' as const }
+    const { source } = fakeSource({
+      setRequestChecked: async (...args) => { calls.push(args); return { outcome: 'saved', model: LOCAL_MODEL, save: receipt } },
+      answerRequestSuggestion: async (...args) => { calls.push(args); return { model: LOCAL_MODEL, save: receipt } },
+    })
+    const stop = store.getState().startWorkSource(source)
+    const result = await store.getState().setRequestChecked('request-a', true, 'evidence', null)
+    assert.deepEqual(calls[0], ['request-a', 'evidence', true, null])
+    assert.deepEqual(result.outcome === 'saved' && result.save, receipt)
+    const suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related', evidence: 'Same work', expectedSuggestionHash: 'read-hash' }
+    assert.deepEqual((await store.getState().answerRequestSuggestion(suggestion, 'not-this')).save, receipt)
+    assert.deepEqual(calls[1], [suggestion, 'not-this'])
+    stop()
+  })
+
+  it('loads only compact request detail and keeps the full-source compatibility path', async () => {
+    const { store } = testStore()
+    const full = LOCAL_MODEL.requests[0]
+    const compact = { ...full, detailLoaded: false, detailRevision: 'recorded-version' }
+    const controller = new AbortController()
+    const calls: unknown[][] = []
+    const { source } = fakeSource({ loadRequestDetail: async (...args) => { calls.push(args); return full } })
+    const stop = store.getState().startWorkSource(source)
+    assert.equal(await store.getState().loadRequestDetail(full), full)
+    assert.equal(calls.length, 0)
+    assert.equal(await store.getState().loadRequestDetail(compact, { signal: controller.signal }), full)
+    assert.deepEqual(calls, [[full.id, 'recorded-version', { signal: controller.signal }]])
+    stop()
+  })
+
+  it('starts a manual refresh through the active source', async () => {
+    const { store } = testStore()
+    let refreshes = 0
+    const { source } = fakeSource({ refreshWork: async () => { refreshes++; return { state: 'running' } } })
+    store.getState().startWorkSource(source)
+    assert.deepEqual(await store.getState().refreshWork(), { state: 'running' })
+    assert.equal(refreshes, 1)
+  })
+
   it('shows the first read, and a live model that arrived during the read wins over it', async () => {
     const { store } = testStore()
     const { source, feed, reads } = fakeSource()
@@ -114,6 +157,19 @@ describe('reading work', () => {
     feed.onConnection({ ...LOCAL_MODEL.connection, label: 'Reconnecting' })
     assert.equal(store.getState().work.connection?.label, 'Reconnecting')
     assert.equal(store.getState().work.load, before.work.load)
+  })
+  it('updates sync-only evidence without replacing the loaded work', () => {
+    const { store } = testStore()
+    const { source, feed } = fakeSource()
+    const stop = store.getState().startWorkSource(source)
+    feed.onModel(LOCAL_MODEL)
+    const loaded = store.getState().work.load
+    feed.onConnection({ ...LOCAL_MODEL.connection, sync: {
+      state: 'offline', label: 'Cloud sync unavailable', detail: 'Download failed.', tone: 'warning', isCurrent: false,
+    } })
+    assert.equal(store.getState().work.connection?.sync?.state, 'offline')
+    assert.equal(store.getState().work.load, loaded)
+    stop()
   })
 })
 
@@ -177,6 +233,24 @@ describe('saving work', () => {
     await assert.rejects(store.getState().saveFocusChange({ action: 'keep', focusAreaId: 'a' }), /Area changed/)
     const load = store.getState().work.load
     assert.equal(load.state === 'loaded' && load.model.requests.length, 2)
+  })
+})
+
+describe('usage counts', () => {
+  it('counts the page opening once, then a switch, and not another open', () => {
+    const { store, usage } = testStore()
+    store.getState().reportOpen()
+    store.getState().reportOpen()
+    store.getState().setListView('list')
+    store.getState().reportOpen()
+    assert.deepEqual(usage, [{ event: 'opened', view: 'work' }])
+    store.getState().goToPage('rules')
+    assert.deepEqual(usage, [
+      { event: 'opened', view: 'work' },
+      { event: 'switched', view: 'rules', previousView: 'work' },
+    ])
+    store.getState().showUrl()
+    assert.equal(usage.length, 2)
   })
 })
 

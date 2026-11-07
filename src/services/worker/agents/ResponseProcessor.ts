@@ -4,10 +4,12 @@ import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -22,6 +24,7 @@ import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -37,7 +40,7 @@ import { observationMediaFromMetadata } from '../../media/feed.js';
 import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
-type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
 export interface ObservationFileEvidence {
   files_read: string[];
@@ -64,6 +67,13 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
       continue;
     }
 
+    // A denied, failed or timed-out call changed nothing, so the paths in its
+    // input are not evidence of a read or an edit. Cursor's postToolUseFailure
+    // reports failures this way (#5371).
+    if (toolResponseIndicatesError(message.tool_response)) {
+      continue;
+    }
+
     if (READ_TOOL_NAMES.has(toolName)) {
       for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
         pushUnique(seenRead, filesRead, filePath);
@@ -87,6 +97,16 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
     files_read: filesRead,
     files_modified: filesModified,
   };
+}
+
+/**
+ * True when a tool response is marked as an error rather than a result.
+ * Pending messages store tool_response as text (ingest JSON.stringify()s it),
+ * so a JSON-string response is parsed the same way tool_input is.
+ */
+function toolResponseIndicatesError(toolResponse: unknown): boolean {
+  const record = maybeParseObject(toolResponse);
+  return record !== null && (record.is_error === true || record.isError === true);
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
@@ -549,6 +569,8 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isRateLimitedObserverOutput(text) ||
+      isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
 
@@ -595,6 +617,47 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    // A 429 the CLI wrote as the reply (#5428). The provider never ran the
+    // batch, so confirming it would lose the work; it is a throttle, not a
+    // spent allowance, so it pauses under its own 'rate_limit' category and
+    // the runner books the short rate-limit window a thrown 429 gets.
+    if (isRateLimitedObserverOutput(text)) {
+      logger.warn('PARSER', `${agentName} returned a rate-limit reply — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON;
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    if (isAnthropicVerificationHoldObserverOutput(text)) {
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_verification_hold';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      // Do not log the response preview: its verification URL contains an account identifier.
+      logger.error('PARSER', `${agentName} refused: Claude account verification is required; queued batch preserved`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: 'anthropic_verification_portal',
+      });
       return null;
     }
 
@@ -941,7 +1004,7 @@ export async function processAgentResponse(
   // at the observation that now summarizes them. It has to happen here and not
   // at ingest — the observation did not exist yet, and neither did
   // memorySessionId. The batch's FIRST observation id owns the link (see
-  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
   // per-call join stays (content_session_id, tool_use_id).
   //
@@ -1365,7 +1428,8 @@ async function syncAndBroadcastSummary(
     summaryForStore,
     context.promptNumber,
     result.createdAtEpoch,
-    session.platformSource
+    session.platformSource,
+    result.summaryUpdated === true
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

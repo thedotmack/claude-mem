@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -348,6 +349,34 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(self.fake.requests[0]["body"]["cwd"], other)
 
 
+class TagScanTest(unittest.TestCase):
+    """The tag scanner visits each character once: the old `<name[^>]*>` tail
+    rescanned the rest of the text for every unfinished `<name` candidate."""
+
+    def test_a_long_attribute_list_still_hides_its_content(self):
+        # Bounding the attribute tail (`{0,512}`, as PR #5152 did) would stop
+        # this opener from matching and let the private text reach the worker.
+        attributes = " " + "k=v " * 500
+        text = "keep <private" + attributes + ">secret</private> done"
+        self.assertEqual(client_module._strip_text(text), "keep  done")
+
+    def test_a_tag_ends_at_the_first_greater_than(self):
+        self.assertEqual(client_module._strip_text("a<private b>c</private>d"), "ad")
+        self.assertEqual(client_module._strip_text("a<private b<c>d</private>e"), "ae")
+
+    def test_matching_stays_case_insensitive(self):
+        self.assertEqual(client_module._strip_text("a<PRIVATE>s</Private>b"), "ab")
+
+    def test_an_unclosed_section_still_runs_to_the_end(self):
+        self.assertEqual(client_module._strip_text("keep <private>secret"), "keep ")
+
+    def test_an_unfinished_opener_is_not_rescanned_per_candidate(self):
+        payload = "<private" * 45000  # ~351 KB with no '>' anywhere
+        started = time.monotonic()
+        self.assertEqual(client_module.strip_tags(payload), payload)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+
 class FailSoftTest(unittest.TestCase):
     def test_a_stopped_worker_never_raises_and_never_stalls(self):
         config = client_module.Config("http://127.0.0.1:%d" % unused_port())
@@ -477,10 +506,21 @@ class SettingsTest(unittest.TestCase):
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory, "CLAUDE_MEM_WORKER_PORT": "39999"})
         self.assertEqual(config.worker_base, "http://[::1]:39999")
 
-    def test_default_port_follows_the_uid(self):
+    def test_default_port_matches_the_shared_fallback(self):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
-        self.assertEqual(config.worker_base, "http://127.0.0.1:" + str(37700 + (os.getuid() if hasattr(os, "getuid") else 77) % 100))
+        self.assertEqual(config.worker_base, "http://127.0.0.1:" + client_module.default_worker_port(directory))
+
+    def test_default_port_matches_shared_windows_path_hashes_without_uid(self):
+        cases = [
+            (r"C:\Profiles\Claude", "37746"),
+            (r"D:\AgentData\CMEM", "37791"),
+        ]
+
+        with mock.patch.object(client_module.os, "getuid", None, create=True):
+            for directory, expected_port in cases:
+                with self.subTest(directory=directory):
+                    self.assertEqual(client_module.default_worker_port(directory), expected_port)
 
     def test_server_needs_all_three_settings(self):
         partial = self.write_settings({"CLAUDE_MEM_RUNTIME": "server", "CLAUDE_MEM_SERVER_URL": "https://m.example",
@@ -518,6 +558,47 @@ class CheckoutProjectTest(unittest.TestCase):
         plain = os.path.join(root, "notes")
         os.makedirs(plain)
         self.assertEqual(client_module.checkout_project(plain), "notes")
+
+    def test_the_cache_serves_the_key_it_already_derived_within_the_ttl(self):
+        client_module._PROJECT_KEYS.clear()
+        root = tempfile.mkdtemp(prefix="hermes-ttl-")
+        repo = os.path.join(root, "nested")
+        os.makedirs(os.path.join(repo, "sub"))
+        self.git("init", "-q", repo)
+        self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                 "--allow-empty", "-m", "init")
+        cwd = os.path.join(repo, "sub")
+        # The git root is `nested`, so the key is the root folder name.
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+        # A nested repository under the same path changes the git root, but the
+        # entry is still inside its TTL, so the key it already derived is served.
+        self.git("init", "-q", cwd)
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+
+    def test_a_cache_entry_expires_at_its_original_deadline(self):
+        client_module._PROJECT_KEYS.clear()
+        ttl = client_module._PROJECT_KEY_TTL_S
+        start = 1000.0
+        clock = [start]
+        original_time = client_module.time
+        client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
+        try:
+            root = tempfile.mkdtemp(prefix="hermes-ttl-")
+            repo = os.path.join(root, "nested")
+            os.makedirs(os.path.join(repo, "sub"))
+            self.git("init", "-q", repo)
+            self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                     "--allow-empty", "-m", "init")
+            cwd = os.path.join(repo, "sub")
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            self.git("init", "-q", cwd)
+            # A hit near the end of the window must not extend the deadline.
+            clock[0] = start + ttl - 1
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            clock[0] = start + ttl + 1
+            self.assertEqual(client_module.checkout_project(cwd), "sub")
+        finally:
+            client_module.time = original_time
 
 
 class RecallPrivacyTest(unittest.TestCase):

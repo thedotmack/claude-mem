@@ -34,13 +34,19 @@ function runCli(args: string[]) {
     ...process.env,
     HOME: home,
     USERPROFILE: home,
+    // Devin keeps its config under %APPDATA% on Windows.
+    APPDATA: join(home, 'AppData', 'Roaming'),
     CLAUDE_CONFIG_DIR: join(home, '.claude'),
     CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem'),
+    // Nothing listens on port 1, so `backup run` cannot reach a running worker.
+    CLAUDE_MEM_WORKER_PORT: '1',
     // Bun's transpiler cache lands in ~/Library/Caches/bun on macOS; it is not CLI output.
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
   };
   delete env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
   delete env.CLAUDE_PLUGIN_ROOT;
+  delete env.KIMI_CODE_HOME;
+  delete env.PI_CODING_AGENT_DIR;
   try {
     const result = spawnSync(process.execPath, [cliEntry, ...args], {
       encoding: 'utf-8',
@@ -57,7 +63,7 @@ function runCli(args: string[]) {
 }
 
 describe('npx CLI subcommand --help', () => {
-  for (const sub of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart']) {
+  for (const sub of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart', 'adopt', 'cleanup']) {
     for (const flag of ['--help', '-h']) {
       it(`${sub} ${flag} prints help and does not run the command`, () => {
         const r = runCli([sub, flag]);
@@ -66,6 +72,31 @@ describe('npx CLI subcommand --help', () => {
         expect(r.stdout).not.toContain('Stopped running worker');
         expect(r.stdout).not.toContain('Uninstall');
         expect(r.stdout).not.toContain('Cache root:');
+        expect(r.homeEntries).toEqual([]);
+      });
+    }
+  }
+
+  // The flag can also follow a verb, e.g. `kimi uninstall --help`.
+  for (const command of [
+    ['memory', 'ingest'],
+    ['telemetry', 'disable'],
+    ['kimi', 'uninstall'],
+    ['devin', 'uninstall'],
+    ['antigravity-cli', 'uninstall'],
+    ['pi', 'uninstall'],
+    ['project', 'merge', 'a', 'b'],
+    ['backup', 'run'],
+    ['restore', 'snap.db'],
+    ['server', 'start'],
+    ['worker', 'start'],
+    ['transcript', 'watch'],
+  ]) {
+    for (const flag of ['--help', '-h']) {
+      it(`${command.join(' ')} ${flag} prints help and does not run the command`, () => {
+        const r = runCli([...command, flag]);
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain('Install Commands');
         expect(r.homeEntries).toEqual([]);
       });
     }

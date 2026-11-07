@@ -390,7 +390,6 @@ MCP سرورز، انٹرپرائز نظاموں، روبوٹکس اسٹیکس،
 اوپن/کمرشل باؤنڈری کے لیے [docs/license.md](docs/license.md)
 اور [docs/ip-boundary.md](docs/ip-boundary.md) دیکھیں۔
 
-**Ragtime پر نوٹ**: `ragtime/` ڈائریکٹری کو **Apache License 2.0** کے تحت لائسنس دیا گیا ہے۔ تفصیلات کے لیے [ragtime/LICENSE](ragtime/LICENSE) دیکھیں۔
 
 ---
 

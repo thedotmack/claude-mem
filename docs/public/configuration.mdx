@@ -15,6 +15,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `haiku`                         | Claude model used to compress observations (when using the Claude provider). `haiku` follows the newest Haiku; a full ID pins one version |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
+| `CLAUDE_MEM_PROVIDER_BY_SOURCE` | empty                         | Picks the observer provider per harness: a JSON object that maps a session's source to a provider, for example `"{\"codex\":\"codex\",\"claude\":\"claude\"}"`. Codex sessions then run on the Codex provider and Claude Code sessions on Claude, whatever `CLAUDE_MEM_PROVIDER` says. Sources without an entry use `CLAUDE_MEM_PROVIDER`, and so does an entry whose provider is not configured (for example Gemini without a key). Empty uses `CLAUDE_MEM_PROVIDER` for every session. Editing `settings.json` by hand, you can write a plain JSON object instead of a string. A malformed value is rejected by the settings API; found in the file, it is ignored with one warning in the log. The Claude CLI is checked at worker boot when any source maps to `claude`. The worker's health status still reports the global provider. See [Quota Fallback](/usage/quota-fallback#per-source-providers) |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE` | `1` | Queued observations the Claude provider may send in one observer prompt (1–32). Only events with the same prompt number, agent and working directory are combined, in queue order, and queued events are added only while the prompt stays within two capped fields. Raise it when one session queues events faster than its observer answers. Trade-offs, as with Codex batching: every observation from a batched reply lists the files of all events in the batch, and a reply that fails twice drops the whole batch. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after the idle window (`CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS`) with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
@@ -35,10 +36,11 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_FILE_READ_GATE_ENABLED` | `true`                    | Block whole-file Reads of code files of 32 KB and up that have observation history and send Claude to `smart_outline` / `smart_unfold` / `get_observations` instead (Claude Code only). Targeted Reads with `offset`/`limit` still work. `false` lets every Read through and still adds the file's timeline as context. See [File Read Gate](/file-read-gate). |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_WORKER_URL`       | _(empty)_                       | Explicit client base URL for the worker API; overrides host and port. Use HTTPS for remote workers. Plain HTTP is accepted only on loopback (including a local port forward). A non-empty URL selects HTTP hook-spool delivery in `auto`; invalid URLs fail instead of falling back to host and port. A non-empty URL also turns autostart off on that client, so `CLAUDE_MEM_WORKER_AUTOSTART` does not need setting, and `restart` refuses to run. |
 | `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | Set `false` when you run the worker yourself (a process manager, a container, `worker-service.cjs --daemon`). Hooks, the MCP server and `start` then use a worker that is already running but never launch, kill or recycle one: no lazy spawn, no version-mismatch recycle, no wedged-worker recycle or reclaim. While your worker is down, hooks skip their work quietly instead of counting it as a failure. |
 | `CLAUDE_MEM_WORKER_INGEST_TOKEN` | empty | Shared token for remote hook-spool delivery. Configure the same value in the worker and each client through settings or the environment. The remote spool endpoint is disabled until the worker has this token. It is masked in settings replies. |
 | `CLAUDE_MEM_WORKER_INGEST_MAX_BYTES` | `5242880` (5 MiB) | Maximum decoded JSON body size for authenticated `POST /api/spool/ingest` requests, including the envelope. Configure this on the worker and restart it; clients need no change. For 20 MiB, use `20971520`. Invalid or non-positive integer values fall back to 5 MiB. Other JSON endpoints retain their 5 MiB limit. Larger limits increase memory and disk use; requests above the limit receive HTTP 413 and clients quarantine the original event. |
-| `CLAUDE_MEM_HOOK_SPOOL_TRANSPORT` | `auto` | `auto` uses HTTP for a non-loopback worker host and the filesystem for a local worker. Set `http` for a loopback port forward to a remote worker, or `filesystem` only when hooks and worker share the same spool directory. |
+| `CLAUDE_MEM_HOOK_SPOOL_TRANSPORT` | `auto` | `auto` uses HTTP when `CLAUDE_MEM_WORKER_URL` is set or the worker host is non-loopback, and the filesystem for a local worker. Set `http` for a loopback port forward configured through host and port, or `filesystem` only when hooks and worker share the same spool directory. |
 | `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. Other `http://localhost:*` pages can read the API but not delete: deletes sync to every device, so a `DELETE` is accepted only from the viewer's own page, an origin listed here, or a client that sends no `Origin` header (hooks, the CLI, curl). To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
 | `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
@@ -162,6 +164,16 @@ My Work can generate readable card wording using the configured OpenRouter or Op
 | `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
 | `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
 
+### My Work Refresh Models
+
+The My Work refresh (goals, grouping, review, focus and story steps) runs on whichever agent CLI is available: Claude Code, Codex or Gemini. By default the light steps (grouping, focus) use a small model and the others a stronger one: `haiku`/`sonnet` on Claude Code, `flash-lite`/`flash` on Gemini, and Codex's CLI default for the careful steps. On Claude Code the refresh runs on your Claude subscription, so set a model here to cap it, for example `haiku`. Each setting puts every step of that agent on one model and is read at the start of every refresh.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL` | empty | Model for every refresh step on Claude Code. Use an alias such as `haiku` or `sonnet`. Empty keeps the per-step defaults. |
+| `CLAUDE_MEM_WORK_VIEW_CODEX_MODEL` | empty | Model id for every refresh step on Codex. Each step keeps its reasoning effort. Empty keeps the per-step defaults. |
+| `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
+
 ### Quota Fallback Settings
 
 | Setting | Default | Description |
@@ -192,6 +204,7 @@ These apply to every observer provider. The observer's conversation runs in gene
 
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_OBSERVER_ENABLED`                | `true`                      | `false` stops new observation and session-summary model calls. Existing memories, search and SessionStart context remain available. In the server runtime, hooks on this machine stop sending events; the server does not read this setting, so jobs it already queued still finish and other clients are unaffected |
 | `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` | `400000`                    | Characters one observer generation may hold before it is retired |
 | `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = resolve it: Claude models `200000` (`1000000` for a `[1m]` model id), Gemini models from a built-in map, OpenRouter models from the OpenRouter models catalogue. Any other OpenAI-compatible endpoint (a local server, a custom gateway) falls back to `131072`, so set this for a model with a smaller window, e.g. `16384`. Values below `8192` are clamped up to `8192` |
 | `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`      | `4096`                      | Output-token cap on every OpenRouter, custom-endpoint and Gemini observer request (`max_tokens`, or `max_completion_tokens` for endpoints that require it; Gemini `maxOutputTokens`). Raise it for a reasoning model that spends the cap before it answers. `256`–`1000000` |
@@ -200,6 +213,27 @@ These apply to every observer provider. The observer's conversation runs in gene
 If the provider still rejects a request as too long for the model's window, the observer retires the generation and retries the same work in a fresh one, the same way it handles Claude's "Prompt is too long".
 
 For these HTTP providers, the observer's instructions and output format are sent as the system message, and the user's request as the first user message. A reply cut off at the output-token cap is logged as a warning that names the cap.
+
+### Long-Lived Claude Token
+
+With subscription auth, the observer normally reads your Claude Code login from the credential store at every spawn. That login's access token lasts about 8 hours, and the stored login itself has an end date (`claude auth status --json` shows it as `loginExpiresAt`). When it lapses, memory capture stops until you run `claude auth login` again.
+
+To run the observer without that dependency, create a long-lived token and give it to claude-mem:
+
+1. Run `claude setup-token` and finish the sign-in. It prints a token tied to your Claude subscription.
+2. Add it to `~/.claude-mem/.env`:
+
+   ```bash
+   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_CODE_OAUTH_TOKEN` | none | Long-lived token from `claude setup-token`. Every Claude spawn uses it ahead of the credential store, so no child ever has to refresh a stored login. Not sent to an `ANTHROPIC_BASE_URL` gateway, and an `ANTHROPIC_API_KEY` in the same file still takes precedence. A token inherited from the shell is never used; only this file counts |
+
+Replace the token when it expires (`claude setup-token` again). If the token is a JWT whose expiry has passed, the observer logs a warning and falls back to the credential store.
+
+The token applies to every Claude profile. If you set `CLAUDE_MEM_CLAUDE_CONFIG_DIR`, the observer bills the token's account rather than that profile's stored login, but it still tracks quota pauses per profile. Changing the setting therefore starts a fresh quota view even though the account stays the same.
 
 ### Claude Gateway Settings
 

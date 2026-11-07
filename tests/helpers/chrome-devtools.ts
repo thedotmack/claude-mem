@@ -145,7 +145,7 @@ export async function connectToPage(chrome: OwnedChrome, pageUrl: string): Promi
   });
   const evaluate = async (expression: string) => {
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   };
   return {

@@ -43,6 +43,18 @@ let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
 let whichOutput: string | null;
 
+/**
+ * Paths built the way the code builds them: with the host path module. The
+ * fakes run a POSIX home ('/home/tester') on a mocked darwin platform, but
+ * join() is the host's — on a Windows host the built candidates come out
+ * backslashed, so fake-fs keys and assertions for those paths must be built,
+ * not written (the POSIX literals elsewhere compare against each other, so
+ * they pass on every host).
+ */
+function homeJoin(...parts: string[]): string {
+  return join('/home/tester', ...parts);
+}
+
 function installFakes(options: {
   settingsPath?: string;
   platform?: NodeJS.Platform;
@@ -187,9 +199,9 @@ describe('findClaudeExecutable candidate selection', () => {
   it('falls back to known install locations when PATH has no claude', () => {
     installFakes();
     whichOutput = null;
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
   });
 
   it('dedupes PATH repeats and symlink aliases to a single probe', () => {
@@ -376,13 +388,14 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
 
   it('expands a leading ~ so a tilde path resolves instead of dying with ENOENT', () => {
     // The reported failure: `~/.local/bin/claude` hits existsSync/posix_spawn
-    // verbatim and fails ENOENT. Home is /home/tester in the fakes.
+    // verbatim and fails ENOENT. Home is /home/tester in the fakes. The
+    // expansion is host-join built, so the expected path is built too.
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
     // Every spawn must see the expanded path, never the literal tilde.
-    expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+    expect(probeCalls.every((call) => call.path === homeJoin('.local', 'bin', 'claude'))).toBe(true);
   });
 
   it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', () => {
@@ -397,9 +410,13 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
 
   it('labels a tilde path as expanded in the error so the two forms are visible', () => {
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/tilde-expanded to "\/home\/tester\/\.local\/bin\/claude"/);
+    // The expanded path in the message is host-join built, so the regex is
+    // built from the same join instead of a POSIX literal.
+    const expanded = homeJoin('.local', 'bin', 'claude');
+    const escaped = expanded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expect(() => findClaudeExecutable('SDK')).toThrow(new RegExp(`tilde-expanded to "${escaped}"`));
   });
 });
 
@@ -491,6 +508,84 @@ describe('findClaudeExecutable on Windows', () => {
 
     expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
     expect(probeCalls.some((call) => call.path === plantedClaude)).toBe(false);
+  });
+
+  it('skips the extensionless npm sh shim even when it probes as capable (#5163)', () => {
+    // `npm install -g` writes an extensionless `claude` POSIX sh shim next to
+    // claude.cmd/claude.ps1, and `where claude` lists it first. The SDK spawns
+    // the resolved path directly and cannot launch a shebang script on
+    // Windows, so a shim that answers the probe (an installed sh resolves it)
+    // must still never win: it would be handed to the SDK and every spawn
+    // would fail with it.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n',
+        'claude.cmd': 'C:\\npm\\claude.cmd\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set('C:\\npm\\claude.cmd', { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\npm\\claude.cmd');
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
+
+  it('fails loud instead of returning a bare extensionless where hit (#5163)', () => {
+    // An npm layout where the shim is the only PATH hit: with no spawnable
+    // candidate left, resolution must report not-found (with the
+    // CLAUDE_CODE_PATH instructions) rather than hand back a file the SDK
+    // cannot spawn.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
+});
+
+describe('findClaudeExecutable with a global npm install on Windows (#5163)', () => {
+  // `npm install -g @anthropic-ai/claude-code` puts an extension-less sh
+  // script, claude.cmd and claude.ps1 on PATH; the real claude.exe lives in
+  // the package. The sh script must never be picked, and the package's
+  // claude.exe should win over the .cmd shim.
+  const NPM = 'C:\\Users\\u\\AppData\\Roaming\\npm';
+  const SH_SHIM = `${NPM}\\claude`;
+  const CMD_SHIM = `${NPM}\\claude.cmd`;
+  const NPM_EXE = `${NPM}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+
+  it('uses the package claude.exe, not the extension-less sh shim', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+        'claude.cmd': `${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(NPM_EXE, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe(NPM_EXE);
+    expect(probeCalls.some((call) => call.path === SH_SHIM)).toBe(false);
+  });
+
+  it('falls back to the .cmd shim when the package has no claude.exe', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe(CMD_SHIM);
   });
 });
 

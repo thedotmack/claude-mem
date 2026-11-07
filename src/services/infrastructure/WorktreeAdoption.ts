@@ -224,7 +224,7 @@ function isPathInside(candidate: string, directory: string): boolean {
     try { return realpathSync(p); } catch { return path.resolve(p); }
   };
   const relative = path.relative(real(directory), real(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /**
@@ -275,16 +275,24 @@ function rekeyBareWorktreeSessions(
   return counts;
 }
 
-async function listWorktrees(mainRepo: string): Promise<WorktreeEntry[]> {
-  const raw = await gitCapture(mainRepo, ['worktree', 'list', '--porcelain']);
-  if (!raw) return [];
+/** Null means the inventory failed, which says nothing about which checkouts are live. */
+async function listWorktrees(mainRepo: string): Promise<WorktreeEntry[] | null> {
+  // NUL fields preserve newlines, tabs, and edge whitespace in checkout paths.
+  const nulSeparated = await gitCapture(mainRepo, ['worktree', 'list', '--porcelain', '-z']);
+  if (nulSeparated !== null) return parseWorktreeFields(nulSeparated.split('\0'));
 
+  // `worktree list -z` needs Git 2.36. On older Git a newline in a path still truncates it.
+  const lineSeparated = await gitCapture(mainRepo, ['worktree', 'list', '--porcelain']);
+  return lineSeparated === null ? null : parseWorktreeFields(lineSeparated.split('\n'));
+}
+
+function parseWorktreeFields(fields: string[]): WorktreeEntry[] {
   const entries: WorktreeEntry[] = [];
   let current: Partial<WorktreeEntry> = {};
-  for (const line of raw.split('\n')) {
+  for (const line of fields) {
     if (line.startsWith('worktree ')) {
       if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
-      current = { path: line.slice('worktree '.length).trim(), branch: null, head: null };
+      current = { path: line.slice('worktree '.length), branch: null, head: null };
     } else if (line.startsWith('HEAD ')) {
       current.head = line.slice('HEAD '.length).trim() || null;
     } else if (line.startsWith('branch ')) {
@@ -451,22 +459,32 @@ function wasWrittenUnderRepository(
  * Submodule checkouts, which share the composite key with worktrees but are not
  * reported by `git worktree list` — without them a live submodule looks exactly
  * like a deleted worktree to the orphan sweep. Existence-filtered, so a deleted
- * submodule is still adopted (#2842).
+ * submodule is still adopted (#2842). Null means a listing failed, nested ones
+ * included, which says nothing about which checkouts are live.
  */
-async function listSubmodulePaths(mainRepo: string): Promise<string[]> {
-  const raw = await gitCapture(mainRepo, ['submodule', 'status', '--recursive']);
-  if (!raw) return [];
+async function listSubmodulePaths(mainRepo: string): Promise<string[] | null> {
+  // Gitlinks identify submodules without parsing the human-readable path and
+  // optional describe suffix from `git submodule status`.
+  const raw = await gitCapture(mainRepo, ['ls-files', '--stage', '-z']);
+  if (raw === null) return null;
 
-  const paths: string[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    // ` <sha> <path> (<describe>)`; paths may contain spaces.
-    const match = line.match(/^[\s+\-U]*[0-9a-f]{7,40}\s+(.+?)(?:\s+\([^)]*\))?$/);
-    if (!match) continue;
-    const absolute = path.resolve(mainRepo, match[1]);
-    if (existsSync(absolute)) paths.push(absolute);
+  const paths = new Set<string>();
+  for (const record of raw.split('\0')) {
+    if (!record.startsWith('160000 ')) continue;
+    const separator = record.indexOf('\t');
+    if (separator === -1) continue;
+    const absolute = path.resolve(mainRepo, record.slice(separator + 1));
+    if (!existsSync(absolute) || paths.has(absolute)) continue;
+    paths.add(absolute);
+    // Only initialized submodules have their own Git directory marker. An
+    // empty uninitialized checkout would otherwise rediscover the superproject.
+    if (existsSync(path.join(absolute, '.git'))) {
+      const nestedPaths = await listSubmodulePaths(absolute);
+      if (nestedPaths === null) return null;
+      for (const nested of nestedPaths) paths.add(nested);
+    }
   }
-  return paths;
+  return [...paths];
 }
 
 async function resolveCandidateOids(mainRepo: string): Promise<Set<string>> {
@@ -543,7 +561,7 @@ export async function adoptMergedWorktrees(opts: {
   }
 
   const allWorktrees = await listWorktrees(mainRepo);
-  const childWorktrees = allWorktrees.filter(w => w.path !== mainRepo);
+  const childWorktrees = (allWorktrees ?? []).filter(w => w.path !== mainRepo);
   result.scannedWorktrees = childWorktrees.length;
 
   let targets: WorktreeEntry[];
@@ -651,25 +669,36 @@ export async function adoptMergedWorktrees(opts: {
       result.adoptedSummaries += sumChanges;
     };
 
-    // Every key a live checkout writes, folder-based and current (a slug can
-    // sit under the folder key's prefix: `acme/acme`), plus the repository's
-    // own current key: the sweep never adopts what a live checkout still writes.
-    const liveCheckouts = [...childWorktrees.map(w => w.path), ...(await listSubmodulePaths(mainRepo))];
-    const liveWorktreeProjects = new Set([
-      currentProject,
-      ...liveCheckouts.flatMap(checkout => [
-        getPathModeProjectContext(checkout).primary,
-        getProjectContext(checkout).primary,
-      ]),
-    ]);
-
     // `--branch` is a targeted squash-merge escape hatch; no orphan sweep.
-    const orphanProjects = opts.onlyBranch
-      ? []
-      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true, writerEvidence);
-    result.orphanedWorktrees = opts.onlyBranch
-      ? []
-      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
+    let orphanProjects: string[] = [];
+    if (!opts.onlyBranch) {
+      // A bare repository has no index to list submodules from.
+      const submoduleCheckouts = mainRepoIsBare ? [] : await listSubmodulePaths(mainRepo);
+      if (allWorktrees === null || submoduleCheckouts === null) {
+        // An unknown inventory must not read as "nothing is live": the sweep
+        // would adopt every live checkout and queue that remap for other devices.
+        const error = `orphan sweep skipped: could not list ${allWorktrees === null ? 'worktrees' : 'submodules'}`;
+        logger.warn('SYSTEM', 'Worktree adoption orphan sweep skipped', { repoPath: mainRepo, error });
+        result.errors.push({ worktree: mainRepo, error });
+      } else {
+        // Every key a live checkout writes, folder-based and current (a slug can
+        // sit under the folder key's prefix: `acme/acme`), plus the repository's
+        // own current key: the sweep never adopts what a live checkout still writes.
+        // Submodules also keep every key they still read: a collapsed legacy
+        // composite is shared between live checkouts, not orphaned. Worktrees
+        // don't: a doubled `<repo>/<repo>` key is meant to fold into the repo (#3641).
+        const liveWorktreeProjects = new Set([
+          currentProject,
+          ...[...childWorktrees.map(w => w.path), ...submoduleCheckouts].flatMap(checkout => [
+            getPathModeProjectContext(checkout).primary,
+            getProjectContext(checkout).primary,
+          ]),
+          ...submoduleCheckouts.flatMap(checkout => getPathModeProjectContext(checkout).allProjects),
+        ]);
+        orphanProjects = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true, writerEvidence);
+        result.orphanedWorktrees = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
+      }
+    }
 
     const adoptionTargets: Array<{ project: string; label: string }> = [
       ...targets.map(wt => ({ project: getPathModeProjectContext(wt.path).primary, label: wt.path })),
