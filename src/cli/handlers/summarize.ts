@@ -7,7 +7,7 @@ import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
 import { detectObservedBilling } from '../../shared/observed-billing.js';
-import { stripMemoryTags } from '../../utils/tag-stripping.js';
+import { stripMemoryTags, stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES, isSummarizeDisabledByEnv } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -189,7 +189,7 @@ export const summarizeHandler: EventHandler = {
     // mid-tool-call. An empty or whitespace-only value is no message at all,
     // so fall back to the transcript instead of skipping the summary.
     if (input.lastAssistantMessage?.trim()) {
-      lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
+      lastAssistantMessage = stripMemoryTags(stripSystemReminderBlocks(input.lastAssistantMessage));
       // The model is telemetry only — a transcript that cannot be read must
       // never cost the summary Claude Code already handed us.
       try {

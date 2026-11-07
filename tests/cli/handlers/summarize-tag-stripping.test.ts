@@ -133,6 +133,43 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(body.platformSource).toBe('codex');
   });
 
+  it('uses Claude Code last_assistant_message directly without reading a transcript', async () => {
+    const { claudeCodeAdapter } = await import('../../../src/cli/adapters/claude-code.js');
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const input = {
+      ...claudeCodeAdapter.normalizeInput({
+        session_id: 'sess-claude-direct',
+        cwd: '/tmp',
+        transcript_path: '/tmp/fake.jsonl',
+        last_assistant_message: 'Claude direct reply <private>SECRET</private>',
+      }),
+      platform: 'claude-code' as const,
+    };
+
+    const result = await summarizeHandler.execute(input);
+
+    expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(0);
+    const body = spooledSummarize();
+    expect(body.lastAssistantMessage).toBe('Claude direct reply');
+    expect(body.platformSource).toBe('claude');
+  });
+
+  it('strips <system-reminder> blocks from direct lastAssistantMessage', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      sessionId: 'sess-system-reminder',
+      cwd: '/tmp',
+      platform: 'claude-code',
+      lastAssistantMessage: 'Answer for user <system-reminder>Internal instructions</system-reminder>',
+    });
+
+    expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(0);
+    const body = spooledSummarize();
+    expect(body.lastAssistantMessage).toBe('Answer for user');
+  });
+
   it('summarizes a Claude Code turn that continued after another plugin blocked the stop', async () => {
     // Claude Code sends stop_hook_active: true once ANY Stop hook blocked the
     // stop. claude-mem's never does, so the turn Claude kept working on still
