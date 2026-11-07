@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
-import { SessionMessageBuffer } from '../../src/services/worker/SessionMessageBuffer.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
 import { getSupervisor } from '../../src/supervisor/index.js';
 import * as processRegistry from '../../src/supervisor/process-registry.js';
@@ -112,20 +111,45 @@ describe('GeneratorExitHandler releases orphaned claims on a preserved pause', (
     await iterator.return(undefined);
   });
 
-  it('released work expires by its original buffered age; a claim would never expire', () => {
-    const buffer = new SessionMessageBuffer();
-    buffer.enqueue(50, { type: 'observation', prompt_number: 1 });
-    const list = (buffer as unknown as {
+  it('released work expires by its original buffered age, and cannot be re-enqueued for a replay', async () => {
+    // The release must leave dedup intact: an expired, released fragment must
+    // not re-enter the buffer under its old toolUseId and cause later
+    // inference spend.
+    const manager = makeManager();
+    await manager.queueObservation(60, {
+      tool_name: 'Read',
+      tool_input: { content: 'synthetic private input' },
+      tool_response: { content: 'synthetic private response' },
+      prompt_number: 1,
+      toolUseId: 'tool-expire',
+    });
+    const list = (manager.getMessageBuffer() as unknown as {
       buffers: Map<number, Array<{ claimed: boolean; bufferedAt: number }>>;
-    }).buffers.get(50)!;
+    }).buffers.get(60)!;
     // While claimed, the item is exempt from expiry (a live send owns it).
     list[0].claimed = true;
     list[0].bufferedAt = Date.now() - 6 * 60 * 1000; // past the 5-minute window
-    expect(buffer.getPendingCount(50)).toBe(1);
-    // Once released, the original buffered age drives the expiry.
-    list[0].claimed = false;
-    expect(buffer.getPendingCount(50)).toBe(0);
-    // The dedup map never recorded this item: discard did not fork it into replay.
-    expect((buffer as unknown as { seenToolUseIds: Map<number, Set<string>> }).seenToolUseIds.size).toBe(0);
+    expect(manager.getMessageBuffer().getPendingCount(60)).toBe(1);
+
+    // Release through the real pause path (the contract's claim-release site).
+    const session = manager.getSession(60)!;
+    await handleGeneratorExit(session, 'transport:transient', {
+      sessionManager: manager,
+      finalizeSession: async () => {},
+    } as never);
+    // The release does not reset the age: the stored fragment expires now.
+    expect(manager.getMessageBuffer().getPendingCount(60)).toBe(0);
+    // The dedup set survives the release, so the same input cannot enqueue
+    // again for a replay: the buffer rejects it outright.
+    const reenqueued = manager.getMessageBuffer().enqueue(60, {
+      type: 'observation' as const,
+      tool_name: 'Read',
+      tool_input: { content: 'synthetic private input' },
+      tool_response: { content: 'synthetic private response' },
+      prompt_number: 1,
+      toolUseId: 'tool-expire',
+    });
+    expect(reenqueued).toBe(0);
+    expect(manager.getMessageBuffer().getPendingCount(60)).toBe(0);
   });
 });
