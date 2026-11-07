@@ -80,6 +80,19 @@ describe('ChromaSearchStrategy', () => {
   });
 
   describe('search', () => {
+    it('retains an explicit corpus budget larger than the interactive widening cap', async () => {
+      const rows = Array.from({ length: 1700 }, (_, index) => ({ ...mockObservation, id: index + 1 }));
+      mockChromaSync.queryChroma = mock((_query: string, limit: number) => Promise.resolve({
+        ids: rows.slice(0, limit).map(row => row.id),
+        distances: rows.slice(0, limit).map(() => 0.1),
+        metadatas: rows.slice(0, limit).map(row => ({ doc_type: 'observation', created_at_epoch: row.created_at_epoch })),
+      }));
+      mockSessionStore.getObservationsByIds = mock((ids: number[]) => ids.map(id => rows[id - 1]));
+      const result = await strategy.search({ query: 'semantic corpus', searchType: 'observations', limit: 1700 });
+      expect(result.results.observations).toHaveLength(1700);
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledTimes(1);
+    });
+
     it('should call Chroma with query text', async () => {
       const options: StrategySearchOptions = {
         query: 'test query',
@@ -91,7 +104,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100, // CHROMA_BATCH_SIZE
-        undefined 
+        undefined,
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -191,7 +206,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { doc_type: 'observation' }
+        { doc_type: 'observation' },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -206,7 +223,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { doc_type: 'session_summary' }
+        { doc_type: 'session_summary' },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -221,7 +240,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { doc_type: 'user_prompt' }
+        { doc_type: 'user_prompt' },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -236,7 +257,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
+        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -254,7 +277,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] }
+        { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] },
+        expect.any(Object),
+        expect.any(Function)
       );
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({ projects: readKeys }));
     });
@@ -271,7 +296,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -286,7 +313,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { platform_source: 'cursor' }
+        { platform_source: 'cursor' },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -303,7 +332,32 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] },
+        expect.any(Object),
+        expect.any(Function)
+      );
+    });
+
+    it('lists the scope rows for a filtered fallback once per search, across widened windows (#5091)', async () => {
+      mockSessionStore.getSearchScopeRowIds = mock(() => [1, 4]);
+      const listed: Array<number[] | null> = [];
+      mockChromaSync.queryChroma = mock((_query: string, _limit: number, _where: unknown, progress: { exhausted?: boolean },
+        rowIds: (maxIds: number) => number[] | null) => {
+        // Every window falls back, so every window asks for the rows.
+        listed.push(rowIds(5000));
+        progress.exhausted = false;
+        return Promise.resolve({ ids: [], distances: [], metadatas: [] });
+      });
+
+      await strategy.search({ query: 'test query', searchType: 'observations', project: 'my-project', platformSource: 'cursor' });
+
+      expect(mockChromaSync.queryChroma.mock.calls.length).toBeGreaterThan(1);
+      expect(listed.every(ids => ids?.join() === '1,4')).toBe(true);
+      expect(mockSessionStore.getSearchScopeRowIds).toHaveBeenCalledTimes(1);
+      expect(mockSessionStore.getSearchScopeRowIds).toHaveBeenCalledWith(
+        { observations: true, sessions: false, prompts: false },
+        expect.objectContaining({ project: 'my-project', projects: ['my-project'], platformSource: 'cursor' }),
+        5000
       );
     });
 
@@ -318,7 +372,9 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { doc_type: 'observation' }
+        { doc_type: 'observation' },
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 

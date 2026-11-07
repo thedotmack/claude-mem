@@ -130,7 +130,7 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("reads the worker port from persisted settings without importing worker-utils", () => {
+  it("keeps worker-utils out of every OpenCode plugin module", () => {
     // The worker URL resolution lives in core.ts, the dependency-free module
     // both the V1 and the V2 adapter share. Neither adapter may reach for
     // worker-utils, which drags worker-only imports into the plugin bundle.
@@ -140,10 +140,6 @@ describe("OpenCode plugin event contract", () => {
         'from "../../shared/worker-utils.js"',
       );
     }
-
-    const source = readFileSync("src/integrations/opencode-plugin/core.ts", "utf8");
-    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath)');
-    expect(source).toContain('settings.CLAUDE_MEM_WORKER_PORT');
   });
 
   it("uses the persisted worker port in OpenCode worker requests", async () => {
@@ -187,6 +183,33 @@ describe("OpenCode plugin event contract", () => {
       if (originalPort === undefined) delete process.env.CLAUDE_MEM_WORKER_PORT;
       else process.env.CLAUDE_MEM_WORKER_PORT = originalPort;
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips a private block that straddles the 1,000-char tool_response cap", async () => {
+    // Capping first would sever `</private>`, and the worker's balanced
+    // stripper keeps an unclosed block verbatim, so the private prefix shipped.
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_private_cap",
+        args: { path: "/a" },
+        output: `${"a".repeat(990)}<private>${"TOKEN".repeat(10)}</private>tail`,
+      });
+
+      const observation = bodies.find((body) => "tool_response" in body);
+      expect(observation?.tool_response).toBe(`${"a".repeat(990)}tail`);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 

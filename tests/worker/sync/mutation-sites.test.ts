@@ -44,6 +44,13 @@ function gitOutput(cwd: string, ...args: string[]): string {
   return r.stdout.trim();
 }
 
+// Adopted summaries are Chroma targets, so with Chroma enabled adoption starts a
+// real chroma-mcp subprocess (uvx) that can outlast the test timeout under load.
+// Vector search is not under test here; the SQL remap and outbox op are.
+function disableChromaFor(dataDir: string): void {
+  writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
+}
+
 interface OutboxRow {
   op_uuid: string;
   rev: string;
@@ -367,6 +374,7 @@ describe('mutation sites', () => {
 
     const dataDir = join(tempDir, 'data');
     mkdirSync(dataDir);
+    disableChromaFor(dataDir);
     const dbPath = join(dataDir, 'claude-mem.db');
     const store = new SessionStore(dbPath);
     store.db.prepare(`
@@ -402,8 +410,6 @@ describe('mutation sites', () => {
     } finally {
       db.close();
     }
-    // Real git + real SQLite plus the unmocked Chroma path sit near bun test's
-    // 5 s default; it timed out under load before the async git change (#4741).
   }, 30000);
 
     it('adopts branched and detached worktrees proven by a remote commit while preserving negative space', async () => {
@@ -446,6 +452,7 @@ describe('mutation sites', () => {
     try {
       const dataDir = join(tempDir, 'data');
       mkdirSync(dataDir);
+      disableChromaFor(dataDir);
       const dbPath = join(dataDir, 'claude-mem.db');
       const store = new SessionStore(dbPath);
       for (const [memorySessionId, project] of [

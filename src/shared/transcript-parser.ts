@@ -174,6 +174,31 @@ function* parseJsonlLinesBackward(content: string): Generator<any> {
   }
 }
 
+/**
+ * Walk a JSONL transcript backwards in chunks and return the newest entry
+ * `pick` maps to a value, reading only as far back as that entry. Returns
+ * `undefined` when the file is missing, empty, or has no such entry. A file
+ * that exists but cannot be opened or read throws, so the caller decides what
+ * an unreadable transcript means.
+ */
+export function findLastJsonlEntryBackward<T>(
+  transcriptPath: string,
+  pick: (entry: any) => T | undefined,
+  options: TranscriptTailOptions = {}
+): T | undefined {
+  return scanTranscriptBackward(
+    transcriptPath,
+    (chunkText) => {
+      for (const entry of parseJsonlLinesBackward(chunkText)) {
+        const picked = pick(entry);
+        if (picked !== undefined) return picked;
+      }
+      return undefined;
+    },
+    options
+  );
+}
+
 export function extractLastMessage(
   transcriptPath: string,
   role: 'user' | 'assistant',

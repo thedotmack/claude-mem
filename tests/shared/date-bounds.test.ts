@@ -8,6 +8,23 @@ describe('resolveDateBound', () => {
     expect(resolveDateBound(1735689600000, 'end')).toBe(1735689600000);
   });
 
+  it('reads an all-digit string as epoch ms, the way HTTP and MCP deliver it', () => {
+    expect(resolveDateBound('1735689600000', 'start')).toBe(1735689600000);
+    expect(resolveDateBound(' 1735689600000 ', 'end')).toBe(1735689600000);
+  });
+
+  it('rejects an epoch a Date cannot hold instead of returning Infinity', () => {
+    for (const value of ['9'.repeat(309), '99999999999999999', Number.POSITIVE_INFINITY, 8.64e15 + 1]) {
+      expect(() => resolveDateBound(value, 'start')).toThrow('Invalid date');
+      expect(() => resolveDateBound(value, 'end')).toThrow('Invalid date');
+    }
+    expect(resolveDateBound(String(8.64e15), 'end')).toBe(8.64e15);
+  });
+
+  it('still reads a four-digit string as a year', () => {
+    expect(resolveDateBound('2025', 'start')).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
+  });
+
   it('resolves a date-only start bound to the start of the day', () => {
     expect(resolveDateBound('2025-01-01', 'start')).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
   });
@@ -22,6 +39,14 @@ describe('resolveDateBound', () => {
     const midday = Date.parse('2025-01-01T12:00:00.000Z');
     expect(start).toBeLessThanOrEqual(midday);
     expect(end).toBeGreaterThanOrEqual(midday);
+  });
+
+  it('rejects a date that is not on the calendar instead of rolling it over', () => {
+    for (const value of ['2025-02-29', '2025-02-30', '2025-04-31', '2025-02-30T08:00:00Z']) {
+      expect(() => resolveDateBound(value, 'start')).toThrow('Invalid date');
+      expect(() => resolveDateBound(value, 'end')).toThrow('Invalid date');
+    }
+    expect(resolveDateBound('2024-02-29', 'end')).toBe(Date.parse('2024-02-29T23:59:59.999Z'));
   });
 
   it('leaves an end bound with an explicit time untouched', () => {

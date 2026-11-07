@@ -5,18 +5,26 @@
  * friendly.
  */
 
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { InvalidWorkerUrlError } from '../../shared/worker-url.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js';
+import { getCredential } from '../../shared/EnvManager.js';
+import { buildKeyPool } from '../../shared/api-key-pool.js';
+import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SNAPSHOT_FILE_PATTERN } from '../../services/backup/snapshot-files.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import {
   claudeCodeVersionTooOldWarning,
@@ -76,12 +84,11 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
   }
 }
 
-async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{
+async function probeWorkerHealth(workerUrl: string): Promise<{
   status: CheckStatus;
   detail: string;
   workerUrl: string;
 }> {
-  const workerUrl = `http://${formatHostForUrl(workerHost)}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
@@ -170,6 +177,121 @@ function chromaDiagnosticChecks(chroma: ChromaCrashState): CheckResult[] {
       detail: `${drop.collection} had a corrupt HNSW segment and was dropped at ${drop.droppedAt} (${drop.documentCount ?? 'unknown'} documents); it is being rebuilt from SQLite, so semantic search results are incomplete until that finishes`,
       required: false,
     });
+  }
+  return checks;
+}
+
+export interface WorkerDependencyStatusPayload {
+  dependency: string;
+  kind: string;
+  message: string;
+  remediation?: string;
+  recordedAtMs?: number;
+}
+
+export interface WorkerDependencyHealthPayload {
+  degraded?: boolean;
+  statuses?: WorkerDependencyStatusPayload[];
+}
+
+/**
+ * Warn rows from the worker's /api/admin/doctor `health.dependencies` block (#5359).
+ * Reports degraded observation generator dependencies (such as missing Claude CLI
+ * when CLAUDE_MEM_PROVIDER is claude, or missing Codex CLI) and offers installed
+ * alternatives.
+ */
+export async function probeWorkerDependencies(
+  workerUrl: string,
+  codexDetected: boolean = false,
+  codexOnPath: boolean = false,
+  codexPath?: string | null,
+): Promise<CheckResult[]> {
+  try {
+    const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const diagnostics = await response.json() as {
+      health?: { dependencies?: WorkerDependencyHealthPayload };
+    };
+    const deps = diagnostics?.health?.dependencies;
+    if (!deps?.degraded || !Array.isArray(deps.statuses)) {
+      return [];
+    }
+
+    return workerDependencyChecks(deps.statuses, codexDetected, codexOnPath, codexPath);
+  } catch {
+    return [];
+  }
+}
+
+export function workerDependencyChecks(
+  statuses: WorkerDependencyStatusPayload[],
+  codexDetected: boolean = false,
+  codexOnPath: boolean = false,
+  codexPath?: string | null,
+): CheckResult[] {
+  const checks: CheckResult[] = [];
+  for (const status of statuses) {
+    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
+      let codexHint = '';
+      if (codexDetected) {
+        codexHint = codexOnPath || !codexPath
+          ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
+          : ` (Codex CLI is installed at ${codexPath}; you can switch by setting CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${codexPath}" in ~/.claude-mem/settings.json)`;
+      }
+      const detail = status.remediation
+        ? `${status.message}${codexHint} — ${status.remediation}`
+        : `${status.message}${codexHint}`;
+      checks.push({
+        name: 'Claude CLI setup',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Codex CLI setup',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'uvx (vector search)',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Chroma vector search',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'observer_dir' && status.kind === 'setup_required') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Observer data directory',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    }
   }
   return checks;
 }
@@ -427,6 +549,219 @@ export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undef
   };
 }
 
+function isLocalEndpointUrl(rawUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (bare === 'localhost' || bare.endsWith('.localhost') || bare.endsWith('.local')) return true;
+  if (bare === '::1' || bare === '0.0.0.0' || bare === '::') return true;
+  if (/^127\./.test(bare)) return true;
+  if (/^10\./.test(bare)) return true;
+  if (/^192\.168\./.test(bare)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(bare)) return true;
+  return false;
+}
+
+export interface OpenAICompatCheckStatus {
+  hasEndpoint: boolean;
+  hasModel: boolean;
+  hasKey: boolean;
+  requiresKey: boolean;
+  endpointUrl?: string;
+  model?: string;
+}
+
+export interface ObserverProviderCheckOptions {
+  provider?: string;
+  claudeDetected: boolean;
+  detectedClaudeVersion?: string;
+  configuredClaudePath?: string;
+  codexDetected: boolean;
+  codexOnPath?: boolean;
+  codexPath?: string | null;
+  configuredCodexPath?: string;
+  hasOpenRouterKey?: boolean;
+  hasGeminiKey?: boolean;
+  openaiCompat?: OpenAICompatCheckStatus;
+}
+
+/**
+ * Validates that the configured observer provider has its required CLI executable
+ * or API credentials available (#5359). When the default or configured provider
+ * is `claude` but Claude CLI is missing while Codex CLI is installed, informs the
+ * user that switching to `codex` is available so memory generation works.
+ */
+export function observerProviderCheck(options: ObserverProviderCheckOptions): CheckResult {
+  const name = 'Observer provider';
+  const provider = (options.provider?.trim() || 'claude').toLowerCase();
+
+  if (provider === 'claude') {
+    if (options.claudeDetected) {
+      const versionInfo = options.detectedClaudeVersion ? ` (Claude Code v${options.detectedClaudeVersion})` : '';
+      return {
+        name,
+        status: 'ok',
+        detail: `claude${versionInfo}`,
+        required: false,
+      };
+    }
+
+    if (options.codexDetected) {
+      const switchHint = options.codexOnPath || !options.codexPath
+        ? 'set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json'
+        : `set CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${options.codexPath}" in ~/.claude-mem/settings.json`;
+      return {
+        name,
+        status: 'warn',
+        detail: `claude configured, but Claude CLI not found on PATH or at CLAUDE_CODE_PATH. Codex CLI is available — ${switchHint} to enable observation generation`,
+        required: false,
+      };
+    }
+
+    return {
+      name,
+      status: 'warn',
+      detail: `claude configured, but Claude CLI not found on PATH or at CLAUDE_CODE_PATH; observation generation will be paused until installed`,
+      required: false,
+    };
+  }
+
+  if (provider === 'codex') {
+    const isCustomPath = Boolean(options.configuredCodexPath && options.configuredCodexPath !== 'codex');
+    if (isCustomPath) {
+      if (options.codexDetected) {
+        return {
+          name,
+          status: 'ok',
+          detail: `codex (${options.codexPath || options.configuredCodexPath})`,
+          required: false,
+        };
+      }
+      return {
+        name,
+        status: 'warn',
+        detail: options.configuredCodexPath!.startsWith('~')
+          ? `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" starts with ~, which the worker does not expand; use an absolute path`
+          : `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" is missing or not executable; observation generation will be paused until installed`,
+        required: false,
+      };
+    }
+
+    if (options.codexOnPath) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'codex (Codex CLI available)',
+        required: false,
+      };
+    }
+
+    if (options.codexDetected && options.codexPath) {
+      return {
+        name,
+        status: 'warn',
+        detail: `codex configured, but codex is not on PATH. Found at ${options.codexPath} — set CLAUDE_MEM_CODEX_PATH to "${options.codexPath}" in ~/.claude-mem/settings.json`,
+        required: false,
+      };
+    }
+
+    return {
+      name,
+      status: 'warn',
+      detail: `codex configured, but Codex CLI not found on PATH or at CLAUDE_MEM_CODEX_PATH; observation generation will be paused until installed`,
+      required: false,
+    };
+  }
+
+  if (provider === 'openrouter') {
+    if (options.hasOpenRouterKey) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'openrouter (API key configured)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: 'openrouter configured, but no API key configured (set CLAUDE_MEM_OPENROUTER_API_KEY in settings.json or OPENROUTER_API_KEY in .env)',
+      required: false,
+    };
+  }
+
+  if (provider === 'gemini') {
+    if (options.hasGeminiKey) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'gemini (API key configured)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: 'gemini configured, but no API key configured (set CLAUDE_MEM_GEMINI_API_KEY in settings.json or GEMINI_API_KEY in .env)',
+      required: false,
+    };
+  }
+
+  if (provider === 'openai-compatible') {
+    const compat = options.openaiCompat;
+    if (!compat || !compat.hasEndpoint) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but no endpoint URL or preset is set (set CLAUDE_MEM_OPENAI_COMPAT_BASE_URL or CLAUDE_MEM_OPENAI_COMPAT_PRESET in settings.json)',
+        required: false,
+      };
+    }
+    if (!compat.hasModel) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but no model is configured (set CLAUDE_MEM_OPENAI_COMPAT_MODEL in settings.json)',
+        required: false,
+      };
+    }
+    if (compat.requiresKey && !compat.hasKey) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but required API key is missing (set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings.json or OPENAI_COMPAT_API_KEY in .env)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'ok',
+      detail: `openai-compatible (${compat.model} via ${compat.endpointUrl || 'configured endpoint'})`,
+      required: false,
+    };
+  }
+
+  if (provider === 'host') {
+    return {
+      name,
+      status: 'ok',
+      detail: 'host',
+      required: false,
+    };
+  }
+
+  return {
+    name,
+    status: 'warn',
+    detail: `Unknown provider "${provider}". Supported providers: claude, codex, openrouter, gemini, openai-compatible, host`,
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -503,19 +838,31 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
-  // The address the worker binds: settings.json, with env vars overriding it.
-  const workerHost = getWorkerHost({ readOnly: true });
-  const workerPort = String(getWorkerPort({ readOnly: true }));
+  // Where this client reaches the worker: settings.json, with env vars overriding it.
+  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  const configuredClaudePath = doctorSettings.CLAUDE_CODE_PATH?.trim() || process.env.CLAUDE_CODE_PATH?.trim() || undefined;
+  const detectedClaudeCode = detectClaudeCodeVersion(configuredClaudePath);
+
+  const configuredCodexPath = doctorSettings.CLAUDE_MEM_CODEX_PATH?.trim() || process.env.CLAUDE_MEM_CODEX_PATH?.trim() || undefined;
+  const codexPath = findCodexExecutablePath(configuredCodexPath);
+  const codexAvailable = codexPath !== null;
+  const codexOnPath = isCodexOnPath();
+
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response at http://${formatHostForUrl(workerHost)}:${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = '';
   let chromaChecks: CheckResult[] = [];
+  let dependencyChecks: CheckResult[] = [];
   try {
-    const worker = await probeWorkerHealth(workerHost, workerPort);
+    const workerUrl = getWorkerBaseUrl({ readOnly: true });
+    workerDetail = `no response at ${workerUrl} — start with \`npx claude-mem start\``;
+    const worker = await probeWorkerHealth(workerUrl);
     workerStatus = worker.status;
     workerDetail = worker.detail;
     chromaChecks = await probeChromaDiagnostics(worker.workerUrl);
-  } catch {
-    // leave as fail
+    dependencyChecks = await probeWorkerDependencies(worker.workerUrl, codexAvailable, codexOnPath, codexPath);
+  } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) workerDetail = error.message;
+    // otherwise leave as fail
   }
   checks.push({
     name: 'Worker daemon',
@@ -524,9 +871,54 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
   checks.push(...chromaChecks);
+  checks.push(...dependencyChecks);
 
-  // 5b. Claude Code version: the exec-form hooks need `args` support.
-  checks.push(claudeCodeVersionCheck(detectClaudeCodeVersion()));
+  // 5b. Observer provider and CLI reachability (#5359).
+  const openRouterKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
+  );
+  const geminiKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
+  );
+
+  const compatPreset = resolveOpenAICompatPreset(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+  const compatConfiguredBaseUrl = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim();
+  const compatBaseUrl = compatConfiguredBaseUrl || compatPreset.baseUrl;
+  const compatConfiguredModel = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
+  const compatModel = compatConfiguredModel || compatPreset.defaultModel;
+  const compatRequiresApiKey = compatConfiguredBaseUrl
+    ? !isLocalEndpointUrl(compatConfiguredBaseUrl)
+    : compatPreset.requiresApiKey;
+  const compatKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS || getCredential('OPENAI_COMPAT_API_KEYS') || '',
+  );
+
+  checks.push(observerProviderCheck({
+    provider: doctorSettings.CLAUDE_MEM_PROVIDER,
+    claudeDetected: Boolean(detectedClaudeCode),
+    detectedClaudeVersion: detectedClaudeCode,
+    configuredClaudePath,
+    codexDetected: codexAvailable,
+    codexOnPath,
+    codexPath,
+    configuredCodexPath,
+    hasOpenRouterKey: openRouterKeys.length > 0,
+    hasGeminiKey: geminiKeys.length > 0,
+    openaiCompat: {
+      hasEndpoint: Boolean(compatBaseUrl),
+      hasModel: Boolean(compatModel),
+      hasKey: compatKeys.length > 0,
+      requiresKey: compatRequiresApiKey,
+      endpointUrl: compatBaseUrl,
+      model: compatModel,
+    },
+  }));
+
+  // 5c. Claude Code version: the exec-form hooks need `args` support.
+  checks.push(claudeCodeVersionCheck(detectedClaudeCode));
 
   // 6. Windows Git Bash reachability. Runtime hooks run the launcher with no
   // shell; only the Setup hook (`claude --init` / `--maintenance`) still uses
@@ -558,6 +950,51 @@ export async function runDoctorCommand(): Promise<void> {
       name: 'Last install error',
       status: 'warn',
       detail,
+      required: false,
+    });
+  }
+
+  // Backups (informational). Backup settings live in settings.json, which the
+  // env-only SettingsDefaultsManager.get cannot see; readOnly keeps doctor from
+  // seeding or migrating the file.
+  const backupSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  if (backupSettings.CLAUDE_MEM_BACKUP_ENABLED !== 'true') {
+    checks.push({
+      name: 'Backups',
+      status: 'ok',
+      detail: 'disabled',
+      required: false,
+    });
+  } else {
+    const backupsDir = paths.backups();
+    let newestMtime: number | null = null;
+    if (existsSync(backupsDir)) {
+      for (const name of readdirSync(backupsDir)) {
+        if (!SNAPSHOT_FILE_PATTERN.test(name)) continue;
+        // Retention can delete a snapshot between the listing and the stat;
+        // skip it rather than abort the whole report.
+        let mtime: number;
+        try {
+          mtime = statSync(join(backupsDir, name)).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (newestMtime === null || mtime > newestMtime) newestMtime = mtime;
+      }
+    }
+    const intervalHours = Number.parseFloat(backupSettings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+    // Two missed intervals before warning: one late cycle (a worker that was
+    // idle-exited when the timer would have fired) is normal, two is not.
+    const staleThresholdMs = 2 * (Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 24) * 3_600_000;
+    const fresh = newestMtime !== null && Date.now() - newestMtime <= staleThresholdMs;
+    checks.push({
+      name: 'Backups',
+      status: fresh ? 'ok' : 'warn',
+      detail: newestMtime === null
+        ? 'enabled but no snapshots yet (the first one is taken a few minutes after the worker starts)'
+        : fresh
+          ? `last snapshot ${new Date(newestMtime).toLocaleString()}`
+          : `last snapshot stale (${new Date(newestMtime).toLocaleString()}); is the worker running?`,
       required: false,
     });
   }

@@ -38,7 +38,17 @@ const fixture = String.raw`
     for (const anchor of [obs.id, String(obs.id), '  ' + obs.id + '  ', 'S00' + summary.id, '#S0' + summary.id, new Date(epoch).toISOString()]) {
       valid.push(await manager.timeline({ anchor, depth_before: '0', depth_after: 0 }));
     }
-    console.log(JSON.stringify({ errors, valid }));
+    // A safe integer is still unbounded: depth is the one dimension with no
+    // ceiling, and each unit is a row fetched and rendered.
+    const oversized = [];
+    for (const depth of [51, 100000, '9007199254740991']) {
+      for (const key of ['depth_before', 'depth_after']) {
+        try { oversized.push({ input: String(depth), result: await manager.timeline({ anchor: obs.id, depth_before: 0, depth_after: 0, [key]: depth }) }); }
+        catch (e) { oversized.push({ input: String(depth), thrown: String(e) }); }
+      }
+    }
+    const atCeiling = await manager.timeline({ anchor: obs.id, depth_before: 50, depth_after: 50 });
+    console.log(JSON.stringify({ errors, valid, oversized, atCeiling }));
   } finally { store.close(); }
 `;
 
@@ -60,6 +70,14 @@ describe('timeline input validation at the SQL boundary', () => {
         expect(entry.isError).not.toBe(true);
         expect(entry.content[0].text).toContain('Native timeline anchor');
       }
+      // Depth magnitude is bounded too: a valid safe integer is not a licence
+      // to walk the whole project history in one request.
+      for (const entry of result.oversized) {
+        expect(entry.thrown, 'oversized depth: ' + entry.input).toBeUndefined();
+        expect(entry.result.isError, 'oversized depth: ' + entry.input).toBe(true);
+        expect(entry.result.content[0].text, 'oversized depth: ' + entry.input).toContain('at most 50');
+      }
+      expect(result.atCeiling.isError).not.toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

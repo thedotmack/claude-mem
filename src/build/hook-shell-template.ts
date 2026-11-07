@@ -349,6 +349,17 @@ export function buildCodexWindowsCommand(
 }
 
 /**
+ * An extraEnv value is a shell word: anything with a space, quote, or
+ * metacharacter would split the assignment or run as a separate command.
+ * Values that are already safe stay bare so the generated commands for the
+ * shipped hosts do not churn; everything else is single-quoted.
+ */
+function shellEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]*$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Build the full single-line shell command string for a Rule A site.
  * The output is byte-compatible with the hand-authored command strings in
  * the host-managed config files.
@@ -384,7 +395,7 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
 
   const envPrefix = options.extraEnv
     ? Object.entries(options.extraEnv)
-        .map(([key, value]) => `${key}=${value} `)
+        .map(([key, value]) => `${key}=${shellEnvValue(value)} `)
         .join('')
     : '';
 
@@ -399,7 +410,14 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
   parts.push(command);
 
-  return parts.join(' ');
+  // Inside single quotes Fish treats only `\\` and `\'` as escapes, so a
+  // backslash is moved outside the quotes only when the next character is a
+  // backslash or a quote (or it ends the body). Every other backslash, like
+  // the `\n` in the cache scan's printf formats, stays inside the quotes as
+  // is: Git Bash's runtime collapses `\\` to `\` when it re-parses its Windows
+  // command line, so a hook body must not contain backslash pairs it can avoid.
+  const quotedCommand = parts.join(' ').replace(/'|\\(?=[\\']|$)/g, char => `'\\${char}'`);
+  return `/bin/sh -c '${quotedCommand}'`;
 }
 
 /**

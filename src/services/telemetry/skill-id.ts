@@ -12,6 +12,7 @@
 export const FIRST_PARTY_SKILL_IDS = [
   'agent-cost-report',
   'babysit',
+  'backup-setup',
   'build',
   'build-and-release',
   'ccs-align',
@@ -27,8 +28,10 @@ export const FIRST_PARTY_SKILL_IDS = [
   'mem-search',
   'mode-creator',
   'oh-my-issues',
+  'owner-goals',
   'pathfinder',
   'release',
+  'request-progress',
   'screenpipe',
   'smart-explore',
   'standup',

@@ -1,3 +1,11 @@
+/**
+ * The `claude-mem` command.
+ *
+ * Install-side commands (install, repair, update, uninstall, prune) run here
+ * under Node and need no Bun. Runtime commands (start, stop, status, search,
+ * mcp…) are handed to the installed plugin, which runs under Bun. A bare
+ * `npx claude-mem`, or one that starts with a flag, means install.
+ */
 import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
@@ -18,14 +26,16 @@ function printHelp(): void {
   const version = readPluginVersion();
 
   console.log(`
-${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI coding assistants
+${styleText('bold', 'claude-mem')} v${version} — your coding agent remembers between sessions
 
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
+  Installing for a user? Run npx claude-mem install --runtime worker in a PTY on their computer.
+  Open the printed setup URL in their browser if needed. Keep the installer running while they finish setup.
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
+  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude). codex, gemini and openrouter need a cmem.ai sign-in in a browser, on either runtime; claude and host need no claude-mem account
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
@@ -56,9 +66,13 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
+  ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
+  ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
 
@@ -74,9 +88,9 @@ ${styleText('bold', 'Claude Code Hooks')}:
   Hook error 'Executable not found in $PATH: "claude-mem"'? Run ${styleText('cyan', 'npx claude-mem install')},
   restart your terminal or IDE, then check ${styleText('cyan', 'npx claude-mem doctor')}.
 
-${styleText('bold', 'IDE Identifiers')}:
+${styleText('bold', 'Agent IDs')} (for --ide):
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,
-  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -136,9 +150,13 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
-// Commands that change the install or the worker and would otherwise ignore -h/--help
+// Commands that change the install, a host's config, telemetry, the worker, the server or stored memory
+// and would otherwise ignore -h/--help, including after a verb (`kimi uninstall --help`)
 const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
+  'adopt', 'cleanup',
+  'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
+  'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {
@@ -282,6 +300,10 @@ async function main(): Promise<void> {
       }
       break;
     }
+    case 'devin': {
+      const { handleDevinCommand } = await import('../services/integrations/DevinHooksInstaller.js');
+      process.exit(await handleDevinCommand(args[1]?.toLowerCase(), args.slice(2)));
+    }
 
     case 'worker': {
       const { runWorkerAliasCommand } = await import('./commands/server.js');
@@ -322,6 +344,18 @@ async function main(): Promise<void> {
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
+      break;
+    }
+
+    case 'backup': {
+      const { runBackupCommand } = await import('./commands/backup.js');
+      await runBackupCommand(args.slice(1));
+      break;
+    }
+
+    case 'restore': {
+      const { runRestoreCommand } = await import('./commands/restore.js');
+      await runRestoreCommand(args.slice(1));
       break;
     }
 

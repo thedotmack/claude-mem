@@ -27,10 +27,11 @@ import { pageMatchingRows } from './stream-rows.js';
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
  * Myanmar, Khmer, Hiragana/Katakana, Bopomofo and Hangul compatibility jamo, the CJK
- * ideograph blocks, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
+ * ideographs (including supplementary planes), Katakana extensions and halfwidth
+ * Katakana, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
  */
 const UNSEGMENTED_SCRIPT_RANGES =
-  '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
 /**
  * The sync triggers each external-content index depends on. SQLite drops a
@@ -103,7 +104,14 @@ interface DocFrequency {
 export class SessionSearch {
   private db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  /**
+   * `readOnly`: the caller opened `db` read-only and owns its pragmas (the
+   * context read worker). Skip the connection pragmas, which include a
+   * journal-mode switch, and the FTS table/trigger repair: both write, and the
+   * writer connection owns them. Temp-schema tables (the FTS5 probe and the
+   * fts5vocab term-frequency tables) still work on a read-only open.
+   */
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { readOnly?: boolean } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -115,11 +123,11 @@ export class SessionSearch {
     // binary's chain (#3609 step 2); a refused open touches nothing.
     assertSchemaWriterCompatible(this.db, LATEST_SCHEMA_VERSION);
 
-    applySqliteConnectionPragmas(this.db);
+    if (!options.readOnly) applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 
-    this.ensureFTSTables();
+    if (!options.readOnly) this.ensureFTSTables();
   }
 
   private _fts5Available: boolean;
@@ -405,7 +413,7 @@ export class SessionSearch {
    * Thai, Lao, Myanmar and Khmer write words without spaces too, so a run of them folds
    * into one token the same way (`ภาษาไทย` inside a longer Thai run -> 0 rows).
    */
-  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`);
+  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, 'u');
 
   /**
    * Split the query into the runs the index cannot segment and the runs it can, so a
@@ -414,7 +422,7 @@ export class SessionSearch {
    * adjacent, which is why mixed queries returned almost nothing (#3801 / #3982).
    */
   private static readonly UNSEGMENTED_RUN =
-    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
+    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'gu');
 
   /**
    * The most distinct terms the substring predicate requires. It adds one LIKE group per
@@ -489,6 +497,10 @@ export class SessionSearch {
    *   200..600     | the same, at most 60
    *   >= 600       | the first 40 distinct words of >= 3 characters that are in at least one row and in < 2% of rows
    *
+   * If the short/medium selection has no positive-frequency token, admit the least frequent excluded tokens within a
+   * fixed candidate-document budget. Relative frequency alone can otherwise exclude every matching word in a
+   * small or topic-focused store, leaving only absent question words.
+   *
    * Without the vocabulary (no FTS5 vocab module, or a connection that cannot create temp tables) the tokens are
    * deduplicated and capped at 40.
    */
@@ -526,6 +538,8 @@ export class SessionSearch {
   private static readonly ANY_TERM_LONG_PROMPT_CAP = 40;
   /** Short and medium prompts drop a token whose rarest word is in this share of rows or more. */
   private static readonly ANY_TERM_COMMON_SHARE = 0.30;
+  /** Candidate-document upper bound for new terms admitted when the short/medium selection has no positive frequency. */
+  private static readonly ANY_TERM_MATCHING_DOCUMENT_BUDGET = 1024;
   /** Long prompts keep only words in less than this share of rows. */
   private static readonly ANY_TERM_LONG_PROMPT_MAX_SHARE = 0.02;
   private static readonly ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS = 3;
@@ -606,15 +620,35 @@ export class SessionSearch {
 
   private static pickRareTokens(tokens: string[], docFrequency: DocFrequency, cap: number): string[] {
     const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_COMMON_SHARE);
-    const kept = SessionSearch.dedupeTokens(tokens).filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
-    if (kept.length <= cap) {
-      return kept;
-    }
-    return kept
+    const distinct = SessionSearch.dedupeTokens(tokens);
+    const kept = distinct.filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
+    const picked = kept.length <= cap ? kept : kept
       .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
       .sort((a, b) => a.rows - b.rows)
       .slice(0, cap)
       .map(entry => entry.token);
+    if (picked.some(token => SessionSearch.tokenRows(token, docFrequency) > 0)) {
+      return picked;
+    }
+
+    // Zero estimated frequency does not prove a Unicode token cannot match. Preserve the original selection;
+    // only its remaining term slots and the new-candidate budget are available for excluded terms.
+    const matching = [...picked];
+    let documents = 0;
+    const excluded = distinct
+      .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
+      .filter(entry => entry.rows >= limit)
+      .sort((a, b) => a.rows - b.rows);
+    for (const { token, rows } of excluded) {
+      if (matching.length === cap) break;
+      // The frequency reader's Unicode folding is approximate: unicode61 preserves some non-Latin accents.
+      // Charge non-ASCII tokens for the whole store so a different indexed spelling cannot exceed the budget.
+      const candidates = /[^\x00-\x7F]/.test(token) ? docFrequency.total : rows;
+      if (documents + candidates > SessionSearch.ANY_TERM_MATCHING_DOCUMENT_BUDGET) continue;
+      matching.push(token);
+      documents += candidates;
+    }
+    return matching;
   }
 
   private static pickRareWords(query: string, docFrequency: DocFrequency): string[] {
@@ -947,10 +981,13 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    // A dot names the relative root, not a character required in its filenames.
+    // Let the direct-child predicate select root files (including Makefile and
+    // LICENSE) before pagination, just as it does for other folder candidates.
+    if (isFolder && normalizePath(filePath) === '.') return ['%'];
+
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const variants = isFolder
-      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
-      : [filePath];
+    const variants = [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')];
     const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
@@ -960,9 +997,7 @@ export class SessionSearch {
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
       patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      if (filePath.includes('\\')) {
-        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
-      }
+      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
     }
     return patterns;
   }

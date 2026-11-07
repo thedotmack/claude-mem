@@ -1,27 +1,16 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
 import { UI } from '../../../src/ui/viewer/constants/ui';
+import {
+  chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome, htmlResponse, launchChrome, readViewerTemplateHtml,
+  scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium for feed visit regressions.');
+failOnCiWithoutChrome('CI requires Chrome or Chromium for feed visit regressions.');
 
 for (const scope of ['project', 'session']) {
   for (const staleOutcome of ['success', 'failure']) {
-    (chrome ? it : it.skip)(`ignores an earlier ${scope} visit ${staleOutcome} after A to B to A`, async () => {
-      const esbuildBinary = createRequire(import.meta.url).resolve(
-        `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`,
-      );
-      // No shared esbuild service remains alive while the browser runs.
-      const bundle = execFileSync(esbuildBinary, [
-        '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-        '--define:process.env.NODE_ENV="production"', '--log-level=error',
-      ], { cwd: resolve(import.meta.dir, '../../..'), encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, input: `
+    (chromeExecutablePath ? it : it.skip)(`ignores an earlier ${scope} visit ${staleOutcome} after A to B to A`, async () => {
+      const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { App } from './src/ui/viewer/App';
@@ -87,9 +76,9 @@ for (const scope of ['project', 'session']) {
             await originalFetch('/result', { method: 'POST', body: JSON.stringify(report) });
           } catch (error) { await originalFetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
         })();
-      ` });
-      const html = readFileSync(resolve(import.meta.dir, '../../../src/ui/viewer-template.html'), 'utf8')
-        .replace('src="viewer-bundle.js"', 'src="/fixture.js"');
+      `);
+      // The real viewer page, which loads the fixture as its own bundle.
+      const html = readViewerTemplateHtml();
       let releaseOld!: () => void;
       const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
       let oldStarted!: () => void;
@@ -103,8 +92,8 @@ for (const scope of ['project', 'session']) {
       let oldRequests = 0;
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
         const url = new URL(request.url);
-        if (url.pathname === '/') return new Response(html, { headers: { 'Content-Type': 'text/html' } });
-        if (url.pathname === '/fixture.js') return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
+        if (url.pathname === '/') return htmlResponse(html);
+        if (url.pathname === '/viewer-bundle.js') return scriptResponse(bundle);
         if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
         if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
           controller.enqueue(new TextEncoder().encode('data: {"type":"initial_load","projects":["A","B"]}\n\n'));
@@ -149,20 +138,14 @@ for (const scope of ['project', 'session']) {
         if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
         return Response.json({});
       } });
-      const profile = mkdtempSync(join(tmpdir(), 'claude-mem-feed-visit-'));
-      const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--window-size=800,600', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      async function deadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
-        try { return await Promise.race([promise, new Promise<T>((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned browser deadline exceeded')), milliseconds); })]); }
-        finally { clearTimeout(timeout); }
-      }
+      let chrome: OwnedChrome | undefined;
       try {
-        await deadline(ready, 30000);
-        expect(await deadline(result, 18000)).toEqual({ staleRows: false, staleAlert: false, currentRows: true, continued: true });
+        chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-feed-visit-', extraFlags: ['--window-size=800,600'] });
+        await withTimeout(ready, 30000, 'Owned browser deadline exceeded');
+        expect(await withTimeout(result, 18000, 'Owned browser deadline exceeded')).toEqual({ staleRows: false, staleAlert: false, currentRows: true, continued: true });
         expect(aOffsets).toEqual([0, UI.PAGINATION_PAGE_SIZE]);
       } finally {
-        clearTimeout(timeout); releaseOld(); child.kill(); await child.exited; server.stop(true);
-        rmSync(profile, { recursive: true, force: true });
+        releaseOld(); await chrome?.close(); server.stop(true);
       }
     }, 75000);
   }

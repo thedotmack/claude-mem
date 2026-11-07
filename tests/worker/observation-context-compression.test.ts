@@ -10,7 +10,7 @@ for (const provider of ['gemini', 'gemini-control', 'claude']) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       child = Bun.spawn([process.execPath, join(import.meta.dir, '../fixtures/worker/observation-context-compression.ts'), provider],
-        { env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe' });
+        { env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe' });
       const [exitCode, stdout, stderr] = await Promise.race([
         Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Owned provider fixture timed out')), 8000); }),

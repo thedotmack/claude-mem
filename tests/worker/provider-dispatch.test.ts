@@ -7,8 +7,10 @@ import {
   CMEM_FALLBACK_RETRY_MS,
   getSelectedProvider,
   quotaFallbackTarget,
+  quotaServingProvider,
   recordCmemFallbackIfEligible,
   releaseCmemGatewayProbe,
+  resetProviderBySourceWarningForTesting,
   resetQuotaFallbackStateForTesting,
   selectProviderForGenerator,
   shouldUseCmemFallback,
@@ -49,6 +51,7 @@ const PERSONAL_KEY = 'sk-or-test-key';
  */
 const ENV_KEYS = [
   'CLAUDE_MEM_PROVIDER',
+  'CLAUDE_MEM_PROVIDER_BY_SOURCE',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
   'CLAUDE_MEM_PRO_FALLBACK_AT',
@@ -232,6 +235,173 @@ describe('provider-dispatch', () => {
       expect(Array.from({ length: 3 }, select)).toEqual(
         Array.from({ length: 3 }, () => ({ provider: 'openrouter', gatewayProbeClaimId: null })),
       );
+    });
+  });
+
+  describe('selectProviderForGenerator: per-source provider', () => {
+    const BY_SOURCE = '{"codex":"codex","claude":"claude"}';
+    let warnSpy: ReturnType<typeof spyOn>;
+
+    beforeEach(() => {
+      resetQuotaCooldownsForTesting();
+      resetQuotaFallbackStateForTesting();
+      resetProviderBySourceWarningForTesting();
+      warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+      resetQuotaCooldownsForTesting();
+      resetQuotaFallbackStateForTesting();
+    });
+
+    it('is unchanged when the setting is unset', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      expect(selectProviderForGenerator('codex')).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
+    });
+
+    it('uses the mapped provider for a mapped source, whatever the global one is', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = BY_SOURCE;
+      expect(selectProviderForGenerator('codex').provider).toBe('codex');
+      expect(selectProviderForGenerator('Codex CLI').provider).toBe('codex');
+
+      process.env.CLAUDE_MEM_PROVIDER = 'codex';
+      expect(selectProviderForGenerator('claude').provider).toBe('claude');
+    });
+
+    it('uses the global chain for an unmapped source or no source', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+      expect(selectProviderForGenerator('cursor').provider).toBe('claude');
+      expect(selectProviderForGenerator().provider).toBe('claude');
+    });
+
+    it('falls through to the global chain when the mapped provider is not configured', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"gemini"}';
+      expect(selectProviderForGenerator('codex').provider).toBe('claude');
+
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-test-key';
+      expect(selectProviderForGenerator('codex').provider).toBe('gemini');
+    });
+
+    it('runs a mapped openrouter through the cmem-gateway fallback', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PROVIDER: 'claude' });
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"openrouter"}';
+      expect(selectProviderForGenerator('codex').provider).toBe('openrouter');
+
+      process.env.CLAUDE_MEM_PRO_FALLBACK_AT = new Date().toISOString();
+      expect(selectProviderForGenerator('codex')).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
+      expect(getSelectedProvider('codex')).toBe('claude');
+    });
+
+    it('routes a held mapped provider to the quota fallback, naming it', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = BY_SOURCE;
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
+      const previous = setClaudeFallbackReadinessForTesting(() => true);
+      try {
+        recordQuotaExhausted('codex', 'Allowance spent');
+        expect(selectProviderForGenerator('codex')).toEqual({ provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'codex' });
+        expect(getSelectedProvider('codex')).toBe('claude');
+      } finally {
+        setClaudeFallbackReadinessForTesting(previous);
+      }
+    });
+
+    it('names the serving provider from the held provider own routing', () => {
+      const previous = setClaudeFallbackReadinessForTesting(() => true);
+      try {
+        process.env.CLAUDE_MEM_PROVIDER = 'codex';
+        process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"claude":"claude"}';
+        process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
+        // Claude is a mapped primary and its fallback is itself: nothing else serves.
+        recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
+        expect(quotaServingProvider('claude')).toBeNull();
+
+        // The held provider is the global primary: unchanged, the fallback serves.
+        resetQuotaCooldownsForTesting();
+        recordQuotaExhausted('codex', 'Allowance spent');
+        expect(quotaServingProvider('codex')).toBe('claude');
+      } finally {
+        setClaudeFallbackReadinessForTesting(previous);
+      }
+    });
+
+    it('does not say capture continues while a mapped route that counted on the held fallback waits', () => {
+      const previous = setClaudeFallbackReadinessForTesting(() => true);
+      try {
+        process.env.CLAUDE_MEM_PROVIDER = 'gemini';
+        process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-test-key';
+        process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+        process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
+
+        // Only the fallback is held: every route still has its own provider.
+        recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
+        expect(quotaServingProvider('claude')).toBe('gemini');
+
+        // Codex is held too, so Codex sessions have nothing serving them.
+        recordQuotaExhausted('codex', 'Allowance spent');
+        expect(selectProviderForGenerator('codex').provider).toBe('codex');
+        expect(quotaServingProvider('claude')).toBeNull();
+      } finally {
+        setClaudeFallbackReadinessForTesting(previous);
+      }
+    });
+
+    it('accepts the map as a plain JSON object in settings.json', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      const settingsPath = paths.settings();
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER_BY_SOURCE: { codex: 'codex' } }));
+      try {
+        expect(selectProviderForGenerator('codex').provider).toBe('codex');
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        rmSync(settingsPath, { force: true });
+      }
+    });
+
+    it('ignores empty and colliding source names', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      for (const bad of ['{"":"codex"}', '{"codex":"codex","Codex CLI":"claude"}']) {
+        process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = bad;
+        expect(selectProviderForGenerator('claude').provider).toBe('claude');
+        expect(selectProviderForGenerator('codex').provider).toBe('claude');
+      }
+    });
+
+    it('logs quota-fallback transitions per primary without flapping', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = BY_SOURCE;
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
+      const previous = setClaudeFallbackReadinessForTesting(() => true);
+      const infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
+      try {
+        recordQuotaExhausted('codex', 'Allowance spent');
+        selectProviderForGenerator('codex');
+        warnSpy.mockClear();
+        selectProviderForGenerator('claude');
+        selectProviderForGenerator('codex');
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        infoSpy.mockRestore();
+        setClaudeFallbackReadinessForTesting(previous);
+      }
+    });
+
+    it('ignores a malformed value without throwing, and warns once', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      for (const bad of ['{not json', '["codex"]', '{"codex":"nope"}']) {
+        process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = bad;
+        resetProviderBySourceWarningForTesting();
+        warnSpy.mockClear();
+        expect(selectProviderForGenerator('codex').provider).toBe('claude');
+        expect(selectProviderForGenerator('codex').provider).toBe('claude');
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+      }
     });
   });
 

@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, docCommentSummary, type FoldedFile } from "./parser.js";
 import { detectLanguage } from "./language-map.js";
 import { logger } from "../../utils/logger.js";
 
@@ -351,11 +351,9 @@ export function formatSearchResults(result: SearchResult, query: string): string
   for (const match of result.matchingSymbols) {
     parts.push(`  ${match.kind} ${match.symbolName} (${match.filePath}:${match.lineStart + 1})`);
     parts.push(`    ${match.signature}`);
-    if (match.jsdoc) {
-      const firstLine = match.jsdoc.split("\n").find(l => l.replace(/^[\s*/]+/, "").trim().length > 0);
-      if (firstLine) {
-        parts.push(`    💬 ${firstLine.replace(/^[\s*/]+/, "").trim()}`);
-      }
+    const summary = match.jsdoc && docCommentSummary(match.jsdoc);
+    if (summary) {
+      parts.push(`    💬 ${summary}`);
     }
     parts.push("");
   }

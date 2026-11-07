@@ -11,7 +11,7 @@ for (const kind of ['next-prompt', 'older-observation', 'spooled-stop', 'legacy-
     try {
       // Module mocks and SDK process ownership stay in this owned child.
       child = Bun.spawn([process.execPath, 'tests/fixtures/worker/queued-summary-origin.ts', kind], {
-        cwd: process.cwd(), env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
+        cwd: process.cwd(), env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
       });
       const exitCode = await Promise.race([child.exited, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Owned SDK fixture exceeded 8 seconds')), 8000);

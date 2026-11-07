@@ -82,9 +82,10 @@ export interface ExtractAdvisorCallsOptions {
 
 /**
  * The last `maxBytes` of a file, starting at a line boundary, and the byte
- * offset where that text starts in the file.
+ * offset where that text starts in the file. Shared with the deliverables
+ * scan (deliverables-transcript.ts), which reads the same tail.
  */
-function readTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
+export function readTranscriptTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
   const fd = openSync(transcriptPath, 'r');
   try {
     const size = fstatSync(fd).size;
@@ -120,7 +121,7 @@ export function extractAdvisorCalls(
   if (!transcriptPath || !existsSync(transcriptPath)) {
     return [];
   }
-  const { text, startOffset } = readTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
+  const { text, startOffset } = readTranscriptTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
   if (!text.trim()) {
     return [];
   }

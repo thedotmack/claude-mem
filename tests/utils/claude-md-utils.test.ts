@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, symlinkSync } from 'fs';
 import path, { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -298,10 +298,26 @@ describe('writeClaudeMdToFolder', () => {
     writeClaudeMdToFolder(folderPath, content);
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    const tempFilePath = `${claudeMdPath}.tmp`;
 
     expect(existsSync(claudeMdPath)).toBe(true);
-    expect(existsSync(tempFilePath)).toBe(false);
+    // The temp name is random, so check the whole folder, not one fixed name.
+    expect(readdirSync(folderPath).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not write through a planted CLAUDE.md.tmp symlink', () => {
+    // A checkout can ship `CLAUDE.md.tmp` as a symlink to a file outside it;
+    // the old fixed temp name was written through that link, clobbering the
+    // target. (Symlinks need extra privilege on Windows.)
+    const folderPath = join(tempDir, 'planted-tmp-symlink');
+    mkdirSync(folderPath, { recursive: true });
+    const outsideFile = join(tempDir, 'outside-target.txt');
+    writeFileSync(outsideFile, 'precious contents');
+    symlinkSync(outsideFile, join(folderPath, 'CLAUDE.md.tmp'));
+
+    writeClaudeMdToFolder(folderPath, 'Generated content');
+
+    expect(readFileSync(outsideFile, 'utf-8')).toBe('precious contents');
+    expect(readFileSync(join(folderPath, 'CLAUDE.md'), 'utf-8')).toContain('Generated content');
   });
 });
 
@@ -814,6 +830,30 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('only checks duplicate segments from the project folder down', async () => {
+    // A project checked out at a path like ~/code/app/app must still get folder CLAUDE.md files.
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+    const projectRoot = join(tempDir, 'app', 'app');
+    mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      projectRoot
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+  });
 });
 
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
@@ -1123,10 +1163,9 @@ describe('CLAUDE.local.md support', () => {
     writeClaudeMdToFolder(folderPath, 'Atomic write test', 'CLAUDE.local.md');
 
     const localMdPath = join(folderPath, 'CLAUDE.local.md');
-    const tempFilePath = `${localMdPath}.tmp`;
 
     expect(existsSync(localMdPath)).toBe(true);
-    expect(existsSync(tempFilePath)).toBe(false);
+    expect(readdirSync(folderPath).filter(name => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('should skip folder when CLAUDE.local.md was read in observation', async () => {

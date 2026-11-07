@@ -162,7 +162,7 @@ interface ExampleSchema {
 
 describe('shipped codex schema in transcript-watch.example.json', () => {
   const example = JSON.parse(
-    readFileSync(join(import.meta.dir, '..', '..', 'transcript-watch.example.json'), 'utf8'),
+    readFileSync(join(import.meta.dir, '..', '..', 'docs', 'transcript-watch.example.json'), 'utf8'),
   ) as { schemas: Record<string, ExampleSchema> };
 
   const codex = example.schemas.codex;

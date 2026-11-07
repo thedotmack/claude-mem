@@ -105,7 +105,7 @@ const baseInput = {
 
 function spooledSummarize(): any {
   expect(awaitedWorkerCallLog).toHaveLength(0);
-  expect(nudgeLog).toEqual(['/api/spool/nudge']);
+  expect(nudgeLog).toEqual([]);
   const entries = spooledEntries('summarize');
   expect(entries).toHaveLength(1);
   return entries[0].payload;
@@ -257,24 +257,4 @@ describe('summarizeHandler — privacy tag stripping', () => {
       expect(body.lastAssistantMessage).toContain('after');
     });
   }
-});
-
-// Migrated from the now-deleted Gemini CLI host-integration compat test file
-// (Phase A removal) — these two checks are unrelated to that integration, they
-// just happened to live in the same file. Preserved here so the platformSource
-// plumbing in summarize.ts keeps regression coverage.
-describe('Summarize handler - platformSource in request body', () => {
-  it('should include platformSource import in summarize.ts', async () => {
-    const { readFileSync } = await import('fs');
-    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
-    expect(src).toContain('normalizePlatformSource');
-    expect(src).toContain('platform-source');
-  });
-
-  it('should pass platformSource in the spooled summarize payload', async () => {
-    const { readFileSync } = await import('fs');
-    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
-    expect(src).toContain('platformSource');
-    expect(src).toContain("spoolHookEvent('summarize'");
-  });
 });

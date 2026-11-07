@@ -11,13 +11,17 @@ import * as realSpool from '../../../src/cli/spool-hook-event.js';
 import * as realKimiGate from '../../../src/shared/kimi-context-gate.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realRuntimeSelector from '../../../src/services/hooks/runtime-selector.js';
+import * as realDeliverablesCapture from '../../../src/cli/deliverables-capture.js';
 const realSpoolSnapshot = { ...realSpool };
 const realKimiGateSnapshot = { ...realKimiGate };
 const realHookSettingsSnapshot = { ...realHookSettings };
 const realRuntimeSelectorSnapshot = { ...realRuntimeSelector };
+const realDeliverablesCaptureSnapshot = { ...realDeliverablesCapture };
 
 const spooledEvents: string[] = [];
 const clearedSessions: string[] = [];
+let observerEnabled = 'true';
+const capturedDeliverableSessions: string[] = [];
 
 mock.module('../../../src/cli/spool-hook-event.js', () => ({
   ...realSpoolSnapshot,
@@ -35,7 +39,11 @@ mock.module('../../../src/shared/kimi-context-gate.js', () => ({
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   ...realHookSettingsSnapshot,
-  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '', CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: 'false' }),
+  loadFromFileOnce: () => ({
+    CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+    CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: 'false',
+    CLAUDE_MEM_OBSERVER_ENABLED: observerEnabled,
+  }),
 }));
 
 mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
@@ -43,11 +51,19 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
   resolveRuntimeContext: () => ({ runtime: 'worker' }),
 }));
 
+mock.module('../../../src/cli/deliverables-capture.js', () => ({
+  ...realDeliverablesCaptureSnapshot,
+  captureDeliverables: (input: { sessionId?: string }) => {
+    if (input.sessionId) capturedDeliverableSessions.push(input.sessionId);
+  },
+}));
+
 afterAll(() => {
   mock.module('../../../src/cli/spool-hook-event.js', () => realSpoolSnapshot);
   mock.module('../../../src/shared/kimi-context-gate.js', () => realKimiGateSnapshot);
   mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
   mock.module('../../../src/services/hooks/runtime-selector.js', () => realRuntimeSelectorSnapshot);
+  mock.module('../../../src/cli/deliverables-capture.js', () => realDeliverablesCaptureSnapshot);
 });
 
 const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
@@ -58,6 +74,8 @@ describe('summarizeHandler with CLAUDE_MEM_DISABLE_SUMMARY (#4734)', () => {
   beforeEach(() => {
     spooledEvents.length = 0;
     clearedSessions.length = 0;
+    observerEnabled = 'true';
+    capturedDeliverableSessions.length = 0;
   });
 
   afterEach(() => {
@@ -78,6 +96,7 @@ describe('summarizeHandler with CLAUDE_MEM_DISABLE_SUMMARY (#4734)', () => {
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(spooledEvents).toEqual([]);
+    expect(capturedDeliverableSessions).toEqual([]);
   });
 
   it('still clears the Kimi injection marker on PreCompact when the flag is set', async () => {
@@ -94,6 +113,21 @@ describe('summarizeHandler with CLAUDE_MEM_DISABLE_SUMMARY (#4734)', () => {
     expect(result.exitCode).toBe(0);
     expect(clearedSessions).toEqual(['kimi-precompact']);
     expect(spooledEvents).toEqual([]);
+  });
+
+  it('skips the summary when memory capture is disabled in settings', async () => {
+    observerEnabled = 'false';
+
+    const result = await summarizeHandler.execute({
+      sessionId: 'settings-disabled',
+      cwd: process.cwd(),
+      platform: 'claude-code',
+      lastAssistantMessage: 'Done with the review.',
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(spooledEvents).toEqual([]);
+    expect(capturedDeliverableSessions).toEqual(['settings-disabled']);
   });
 
   it('spools the summary as before when the flag is unset', async () => {
