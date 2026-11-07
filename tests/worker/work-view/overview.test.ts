@@ -26,7 +26,28 @@ function largeSnapshot() {
   return snapshot;
 }
 
+const imageRef = (n: number) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, label: `screenshot-${n}`, inspection: 'uninspected' as const });
+
 describe('compact work view transport', () => {
+  it('keeps the request image summary on the card and leaves per-record refs to the detail read', () => {
+    const snapshot = fixture(); const raw = snapshot.humanRequests[0] as any;
+    raw.activity = [{ ...raw.activity[0], id: 'observation:9', kind: 'observation', media: { version: 1, attachments: [imageRef(1), imageRef(2)] } }, ...raw.activity.slice(1)];
+    raw.media = { count: 2, preview: [imageRef(1), imageRef(2)] };
+    const before = workViewOverview(snapshot).model.requests.find(request => request.id === raw.id)!.detailRevision;
+    const overview = workViewOverview(snapshot);
+    const card = overview.model.requests.find(request => request.id === raw.id)!;
+    expect(card.media).toEqual({ count: 2, preview: [imageRef(1), imageRef(2)] });
+    expect(card.granular).toBeUndefined();
+    expect(expandWorkViewOverview(overview).requests.find(request => request.id === raw.id)!.media).toEqual(card.media);
+    const detail = workViewRequestDetail(snapshot, raw.id)!;
+    expect(detail.request.media).toEqual(card.media);
+    expect(detail.request.granular[0].media).toEqual({ version: 1, attachments: [imageRef(1), imageRef(2)] });
+    expect(detail.request.detailRevision).toBe(card.detailRevision);
+    // New images on a record change what the drawer shows, so its revision moves.
+    raw.activity[0].media.attachments.push(imageRef(3));
+    expect(workViewOverview(snapshot).model.requests.find(request => request.id === raw.id)!.detailRevision).not.toBe(before);
+  });
+
   it('leaves default owner and focus fields off the wire and restores them for the UI', () => {
     const snapshot = fixture(); const id = snapshot.humanRequests[0].id;
     (snapshot.humanRequests[0] as any).requestedBy = null; (snapshot.humanRequests[0] as any).anchorConversationKey = null;
@@ -87,6 +108,18 @@ describe('compact work view transport', () => {
     expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
     expect(overview.model.requests.every(request => request.workProduct.length <= 3)).toBe(true);
     expect(overview.model.requests[0].detailCounts?.workProduct).toBe(40);
+  });
+
+  it('stays under 300 KiB when every one of the 140 cards carries a full four-image preview', () => {
+    const snapshot = largeSnapshot();
+    // The longest label the contract allows (64 characters), on every ref.
+    const longRef = (n: number) => ({ ...imageRef(n), label: `s${String(n).padStart(63, '0')}` });
+    snapshot.humanRequests.forEach((request: any, index) => {
+      request.media = { count: 32, preview: [0, 1, 2, 3].map(slot => longRef(index * 4 + slot)) };
+    });
+    const overview = workViewOverview(snapshot);
+    expect(overview.model.requests.every(request => request.media?.preview.length === 4)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
   });
 
   it('keeps real shared review enrichment and suggestion action versions within the 140-request budget', () => {

@@ -127,11 +127,18 @@ export function ensureMediaSchema(db: Database): void {
     // origin separates native captures from lazily resolved replicas (which
     // are never uploaded), and the upload retry state is independent of the
     // native text sync outbox.
-    addMediaAttachmentColumn(db, 'origin', `TEXT NOT NULL DEFAULT 'native'`);
-    addMediaAttachmentColumn(db, 'upload_attempts', 'INTEGER NOT NULL DEFAULT 0');
-    addMediaAttachmentColumn(db, 'upload_retry_at', 'INTEGER NOT NULL DEFAULT 0');
-    addMediaAttachmentColumn(db, 'upload_error', 'TEXT');
+    addMediaColumn(db, 'media_attachments', 'origin', `TEXT NOT NULL DEFAULT 'native'`);
+    addMediaColumn(db, 'media_attachments', 'upload_attempts', 'INTEGER NOT NULL DEFAULT 0');
+    addMediaColumn(db, 'media_attachments', 'upload_retry_at', 'INTEGER NOT NULL DEFAULT 0');
+    addMediaColumn(db, 'media_attachments', 'upload_error', 'TEXT');
     db.exec(`CREATE INDEX IF NOT EXISTS idx_media_attachments_upload ON media_attachments(upload_state, upload_retry_at)`);
+    // v72 (docs/media-contract-v1.md, "Capture-only linkage"): a turn that
+    // stored no observation, with no earlier observation in its prompt, leaves
+    // its events waiting for the next storing turn of that session and prompt.
+    // NULL means the event is not waiting.
+    addMediaColumn(db, 'media_events', 'carry_prompt_number', 'INTEGER');
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_media_events_carry ON media_events(session_db_id, carry_prompt_number)
+      WHERE carry_prompt_number IS NOT NULL`);
     // Triggers come after the v71 columns they reference.
     db.exec(`
       -- Recreated every startup so an older trigger definition never lingers.
@@ -153,13 +160,14 @@ export function ensureMediaSchema(db: Database): void {
     db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(69, appliedAt);
     db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(70, appliedAt);
     db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(71, appliedAt);
+    db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(72, appliedAt);
   })();
 }
 
-function addMediaAttachmentColumn(db: Database, columnName: string, columnDefinition: string): void {
-  const columns = db.prepare('PRAGMA table_info(media_attachments)').all() as Array<{ name: string }>;
+function addMediaColumn(db: Database, tableName: 'media_attachments' | 'media_events', columnName: string, columnDefinition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
   if (columns.some(column => column.name === columnName)) return;
-  db.exec(`ALTER TABLE media_attachments ADD COLUMN ${columnName} ${columnDefinition}`);
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
 }
 
 /** Run inside the caller's transaction, before the event's refs are deleted. */

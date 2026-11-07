@@ -122,6 +122,7 @@ import type { WorkerRef, StorageResult } from '../../../src/services/worker/agen
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
+import { sessionDbWithoutMedia } from '../../fixtures/worker/session-db-without-media.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 let mockFolderClaudeMdEnabled = false;
@@ -179,7 +180,7 @@ describe('ResponseProcessor', () => {
     mockDbManager = {
       getSessionStore: () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),  // FK fix (Issue #846)
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),  // FK fix (Issue #846)
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),  // FK fix (Issue #846)
       }),
       getChromaSync: () => ({
@@ -1315,7 +1316,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 
@@ -1412,7 +1413,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 
@@ -1447,7 +1448,7 @@ describe('ResponseProcessor', () => {
       } as StorageResult));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 
@@ -1629,7 +1630,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 
@@ -1667,7 +1668,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 
@@ -1709,7 +1710,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
       });
 

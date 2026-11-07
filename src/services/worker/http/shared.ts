@@ -305,8 +305,8 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
 
   // Media capture runs only after every tracking/privacy/subagent gate above
   // and before serialization, so neither the tool_uses backup nor the RAM
-  // observer text ever holds a recognized image body. Capture is off by
-  // default; disabled capture still replaces bodies with bounded descriptors.
+  // observer text ever holds a recognized image body. Capture is on by
+  // default ("Keep images"); disabled capture still replaces bodies with bounded descriptors.
   // Media inference is a separate flag and is not consulted here.
   const mediaCaptureEnabled = settings.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED === 'true';
   const media = await captureObservationMedia({
@@ -320,7 +320,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     toolInput: payload.toolInput,
     toolResponse: payload.toolResponse,
     cwd,
-  }, mediaCaptureEnabled ? dbManager.getMediaStore() : undefined);
+  }, mediaCaptureEnabled ? () => dbManager.getMediaStore() : undefined);
   // Explicit DELETE may commit while media conversion yields. Do not restore
   // its raw tool-use side index or put the stale observation into RAM.
   if (store.isSessionDeleted(platformSource, payload.contentSessionId)) {

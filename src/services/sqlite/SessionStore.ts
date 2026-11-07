@@ -2163,7 +2163,7 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
   }
 
-  // v72: terminal capture and explicit deletion must both survive transcript replay.
+  // v73: terminal capture and explicit deletion must both survive transcript replay.
   private ensureCommittedToolUsesTable(): void {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS committed_observation_tool_uses (
@@ -2241,7 +2241,7 @@ export class SessionStore {
       )
       BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
     `);
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(72, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(73, new Date().toISOString());
   }
 
   hasCommittedToolUse(platformSource: string, contentSessionId: string, toolUseId: string): boolean {

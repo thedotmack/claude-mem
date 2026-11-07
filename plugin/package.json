@@ -33,6 +33,7 @@
     "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
+    "tree-sitter-delphi": "0.1.0",
     "shell-quote": "1.9.0"
   },
   "optionalDependencies": {
@@ -72,6 +73,7 @@
     "@tree-sitter-grammars/tree-sitter-yaml": true,
     "@tree-sitter-grammars/tree-sitter-markdown": true,
     "@derekstride/tree-sitter-sql": true,
+    "tree-sitter-delphi": true,
     "esbuild": true,
     "@biomejs/biome": true,
     "better-sqlite3": true

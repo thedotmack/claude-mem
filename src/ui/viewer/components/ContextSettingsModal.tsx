@@ -417,6 +417,22 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
 
+            {/* Images: open by default so the capture switch is in plain view */}
+            <CollapsibleSection
+              title="Images"
+              description="Screenshots and images from your agent's tools"
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="media-capture-enabled"
+                  label="Keep images"
+                  description="Keep the screenshots and images your agent reads or makes, so they show on your requests in My Work. Images stay on this computer until their event is deleted. With Cloud Sync on, they are also uploaded privately to your cmem.ai account. This switch never sends images to an AI model. Turning it off stops keeping new images; images already kept stay."
+                  checked={formState.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED === 'true'}
+                  onChange={(checked) => updateSetting('CLAUDE_MEM_MEDIA_CAPTURE_ENABLED', checked ? 'true' : 'false')}
+                />
+              </div>
+            </CollapsibleSection>
+
             {/* Section 3: Backups */}
             <CollapsibleSection
               title="Backups"

@@ -20,6 +20,7 @@
         "tree-sitter-cli": "0.26.9",
         "tree-sitter-cpp": "^0.23.4",
         "tree-sitter-css": "^0.25.0",
+        "tree-sitter-delphi": "0.1.0",
         "tree-sitter-go": "^0.25.0",
         "tree-sitter-haskell": "^0.23.1",
         "tree-sitter-java": "^0.23.5",
@@ -239,6 +240,8 @@
 
     "tree-sitter-css": ["tree-sitter-css@0.25.0", "", { "dependencies": { "node-addon-api": "^8.5.0", "node-gyp-build": "^4.8.4" }, "peerDependencies": { "tree-sitter": "^0.25.0" }, "optionalPeers": ["tree-sitter"] }, "sha512-FRc9R8ePrwJiUhZsuZ/wcFQ3K8Z+9yCgDrrUjuYswGWlN89UvcB9vslTUGZElQWGwhS8sUw3/r2n4lpb2sxT4Q=="],
 
+    "tree-sitter-delphi": ["tree-sitter-delphi@0.1.0", "", { "dependencies": { "node-addon-api": "^8.5.0", "node-gyp-build": "^4.8.4" }, "peerDependencies": { "tree-sitter": "^0.25.0" }, "optionalPeers": ["tree-sitter"] }, "sha512-/qdpCyhbcNOhqaEjH4xIVZ47fdlq4pY7NEE30YQHSZ0xqpy70qgg6h9kZABQczIRs1zji/rjGqf4MRc4slQ5Ww=="],
+
     "tree-sitter-go": ["tree-sitter-go@0.25.0", "", { "dependencies": { "node-addon-api": "^8.3.1", "node-gyp-build": "^4.8.4" }, "peerDependencies": { "tree-sitter": "^0.25.0" }, "optionalPeers": ["tree-sitter"] }, "sha512-APBc/Dq3xz/e35Xpkhb1blu5UgW+2E3RyGWawZSCNcbGwa7jhSQPS8KsUupuzBla8PCo8+lz9W/JDJjmfRa2tw=="],
 
     "tree-sitter-haskell": ["tree-sitter-haskell@0.23.1", "", { "dependencies": { "node-addon-api": "^8.2.2", "node-gyp-build": "^4.8.2" }, "peerDependencies": { "tree-sitter": "^0.21.1" }, "optionalPeers": ["tree-sitter"] }, "sha512-qG4CYhejveu9DLMLEGBz/n9/TTeGSFLC6wniwOgG6m8/v7Dng8qR0ob0EVG7+XH+9WiOxohpGA23EhceWuxY4w=="],
@@ -300,6 +303,8 @@
     "tree-sitter-cpp/tree-sitter-c": ["tree-sitter-c@0.23.6", "", { "dependencies": { "node-addon-api": "^8.3.0", "node-gyp-build": "^4.8.4" }, "peerDependencies": { "tree-sitter": "^0.22.1" }, "optionalPeers": ["tree-sitter"] }, "sha512-0dxXKznVyUA0s6PjNolJNs2yF87O5aL538A/eR6njA5oqX3C3vH4vnx3QdOKwuUdpKEcFdHuiDpRKLLCA/tjvQ=="],
 
     "tree-sitter-css/node-addon-api": ["node-addon-api@8.8.0", "", {}, "sha512-c5Ko1fZJIJmzhFIkhRN76WTq+fC6tWnGy9CXA0fA+XygsWZmEwG8vmbkNqxMyoaa0Tin4djul49NzdVcJJcjeA=="],
+
+    "tree-sitter-delphi/node-addon-api": ["node-addon-api@8.8.0", "", {}, "sha512-c5Ko1fZJIJmzhFIkhRN76WTq+fC6tWnGy9CXA0fA+XygsWZmEwG8vmbkNqxMyoaa0Tin4djul49NzdVcJJcjeA=="],
 
     "tree-sitter-go/node-addon-api": ["node-addon-api@8.8.0", "", {}, "sha512-c5Ko1fZJIJmzhFIkhRN76WTq+fC6tWnGy9CXA0fA+XygsWZmEwG8vmbkNqxMyoaa0Tin4djul49NzdVcJJcjeA=="],
 

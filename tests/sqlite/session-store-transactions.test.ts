@@ -130,14 +130,14 @@ describe('SessionStore.storeObservations', () => {
   it('recreates the terminal ledger when opening a prior schema', () => {
     const db = store.db;
     db.run('DROP TABLE committed_observation_tool_uses');
-    db.run('DELETE FROM schema_versions WHERE version = 72');
-    db.run('PRAGMA user_version = 71');
+    db.run('DELETE FROM schema_versions WHERE version = 73');
+    db.run('PRAGMA user_version = 72');
     store = new SessionStore(db);
     store.markCommittedToolUses({
       platformSource: 'claude', contentSessionId: 'prior-session', toolUseIds: ['toolu_prior'],
     });
     expect(store.hasCommittedToolUse('claude', 'prior-session', 'toolu_prior')).toBe(true);
-    expect((db.prepare('SELECT MAX(version) AS version FROM schema_versions').get() as { version: number }).version).toBe(72);
+    expect((db.prepare('SELECT MAX(version) AS version FROM schema_versions').get() as { version: number }).version).toBe(73);
   });
 
   it('applies promptNumber to every observation in the batch', () => {
