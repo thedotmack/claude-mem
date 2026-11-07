@@ -149,3 +149,20 @@ it('recognizes a replay after project and discovery_tokens change on the stored 
     s.close();
   }
 });
+it('keeps merged_into_project on imported observations and summaries', () => {
+  // An export of memory merged into another project (project merge, worktree
+  // adoption) carries merged_into_project; the import must keep that link.
+  const s = seed();
+  try {
+    const merged = { ...summary, project: 'app-wt', merged_into_project: 'app' };
+    const summaryId = s.importSessionSummary(merged).id;
+    const observationId = s.importObservation({
+      ...merged, text: null, type: 'discovery', title: 'merged row', subtitle: null, facts: null,
+      narrative: null, concepts: null, files_modified: null,
+    }).id;
+    expect(s.db.query('SELECT merged_into_project FROM session_summaries WHERE id = ?').get(summaryId)).toEqual({ merged_into_project: 'app' });
+    expect(s.db.query('SELECT merged_into_project FROM observations WHERE id = ?').get(observationId)).toEqual({ merged_into_project: 'app' });
+  } finally {
+    s.close();
+  }
+});
