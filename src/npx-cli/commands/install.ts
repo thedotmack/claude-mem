@@ -3425,11 +3425,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : browserOutcome?.stage === 'go-kept-existing-pro'
       ? 'Kept existing CMEM Pro account'
       : null;
+  // The provider this run ended up with: an interactive run with no
+  // --provider picks it at the prompt, so options.provider is unset there.
   const accountStatus = oauthPairing
     ? 'OAuth login complete'
-    : options.provider === 'host'
+    : selectedProvider === 'host'
       ? 'Not required (host observer)'
-      : !providerNeedsAccount(options.provider)
+      : !providerNeedsAccount(selectedProvider)
         ? 'Not required (local provider)'
         : options.providerSource === 'persisted'
           ? 'Kept existing account (no login this run)'

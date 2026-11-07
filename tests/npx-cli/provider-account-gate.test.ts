@@ -53,7 +53,7 @@ describe('install flow wiring', () => {
     // account reports "not required" before the persisted branch can call a
     // local claude/host config a kept account.
     const pairingIdx = summary.indexOf('oauthPairing');
-    const noAccountIdx = summary.indexOf('!providerNeedsAccount(options.provider)');
+    const noAccountIdx = summary.indexOf('!providerNeedsAccount(selectedProvider)');
     const persistedIdx = summary.indexOf("options.providerSource === 'persisted'");
     expect(pairingIdx).toBeGreaterThan(-1);
     expect(noAccountIdx).toBeGreaterThan(pairingIdx);
