@@ -2,7 +2,7 @@
  * Forward mode (Phase 12 step 5): `sync.cmem.ai` keeps answering every
  * shipped client, but each /v1/sync/* request is proxied verbatim to the
  * Supabase `cmem-sync` Edge Function. No Postgres, no auth here — the
- * upstream authenticates. Same idea as workers/sync-hub FORWARD_ORIGIN.
+ * upstream authenticates. Same idea as services/sync-hub FORWARD_ORIGIN.
  *
  * - /health stays local (Fly check).
  * - /v1/sync/ws answers 410: the legacy socket is retired. Old clients treat
@@ -20,6 +20,7 @@ const FORWARDED_REQUEST_HEADERS = [
 	"X-User-Id",
 	"X-Device-Id",
 	"X-Device-Name",
+	"X-Sync-Capabilities",
 	"Content-Type",
 	"Content-Encoding",
 	"Accept",

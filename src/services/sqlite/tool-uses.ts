@@ -11,7 +11,7 @@
 // Receipt freeze 2026-09-06: this table carries tool IDENTITY only. Dollars
 // live on OpenRouter call-time stamps / the Receipt spend log. `or_generation_id`
 // and `or_session_id` are nullable JOIN keys back to those lines — never a
-// `cost_usd` / micros column here. See reports/tool-sqlite-offload/RECEIPT-JOIN.md.
+// `cost_usd` / micros column here. See docs/receipt-join.md.
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
@@ -305,11 +305,25 @@ function mapPlatformFilter(platformSource: string | undefined): { clause: string
 }
 
 /**
+ * Default row ceiling for `getToolUsesByIds` when the caller omits `limit`.
+ *
+ * The route caps the id array, but `tool_use_id` is only unique per
+ * `(content_session_id, tool_use_id)` — `upsertToolUse` stores the same id under
+ * a new session as a distinct row — so the id cap alone does not bound the row
+ * count. An omitted `limit` must not mean "every matching row", or a single
+ * accepted id can still page hundreds of raw payloads.
+ */
+export const TOOL_USES_BATCH_DEFAULT_ROWS = 100;
+
+/**
  * Layer-4 fetch: full tool bodies for an explicitly filtered set of ids.
  *
  * Accepts BOTH numeric `tool_uses.id` (what `queryToolUses` / the search index
  * hand back) and string `tool_use_id` (what a transcript or an observation ref
  * carries), because callers legitimately hold either one.
+ *
+ * The result is always bounded: an explicit `limit` wins, and an omitted `limit`
+ * falls back to `TOOL_USES_BATCH_DEFAULT_ROWS` rather than returning every row.
  */
 export function getToolUsesByIds(
   db: Database,
@@ -361,13 +375,13 @@ export function getToolUsesByIds(
     params.push(platform.param);
   }
 
-  const limitClause = options.limit && options.limit > 0 ? `LIMIT ${Math.floor(options.limit)}` : '';
+  const rowLimit = options.limit && options.limit > 0 ? Math.floor(options.limit) : TOOL_USES_BATCH_DEFAULT_ROWS;
 
   return db.prepare(`
     SELECT * FROM tool_uses
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at_epoch DESC
-    ${limitClause}
+    LIMIT ${rowLimit}
   `).all(...params) as ToolUseRow[];
 }
 
@@ -488,25 +502,6 @@ export function toolUsesTableExists(db: Database): boolean {
     return false;
   }
   return true;
-}
-
-/**
- * `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` as a whole number of days. 0 means keep
- * forever, and so does anything that is not a plain non-negative integer: a
- * typo in a hand-edited settings.json must never turn into a purge, and must
- * never stop the worker from starting. settings.json is hand-editable JSON, so
- * the value may arrive as an unquoted number (`30`) as well as a string (`"30"`);
- * both mean 30 days. Any other type is ignored.
- */
-export function resolveToolUsesRetentionDays(raw: unknown): number {
-  if (typeof raw === 'number') {
-    return Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
-  }
-  if (typeof raw !== 'string') return 0;
-  const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) return 0;
-  const days = Number(trimmed);
-  return Number.isSafeInteger(days) ? days : 0;
 }
 
 /**

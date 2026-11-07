@@ -17,6 +17,8 @@ import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector
 import { isServerClientError } from '../../services/hooks/server-client.js';
 import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { captureDeliverables } from '../deliverables-capture.js';
 
 // The ingest route accepts at most this many calls per request; one spool
 // entry carries at most the same.
@@ -148,7 +150,6 @@ export const summarizeHandler: EventHandler = {
       logger.debug('HOOK', 'Skipping summary: CLAUDE_MEM_DISABLE_SUMMARY=1', { sessionId });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
-
     // Advisor capture runs before summarize's own early returns (an empty
     // assistant message must not drop the turn's advisor calls) and is
     // failure-isolated from it.
@@ -159,6 +160,24 @@ export const summarizeHandler: EventHandler = {
         sessionId,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Deliverables capture copies what this turn made for a person into the
+    // project bucket (deliverables-capture.ts). It runs before summarize's own
+    // early returns, like advisor capture: a turn with an empty assistant
+    // message can still have written a deck. Failure-isolated from the summary.
+    try {
+      captureDeliverables(input);
+    } catch (err) {
+      logger.warn('HOOK', 'Deliverables capture failed; continuing with summary', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (!isObserverCaptureEnabled(loadFromFileOnce())) {
+      logger.debug('HOOK', 'Skipping summary model call: observer capture is disabled', { sessionId });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     let lastAssistantMessage = '';

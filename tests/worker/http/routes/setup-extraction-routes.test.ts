@@ -107,6 +107,10 @@ describe('setup extraction', () => {
     };
     const scan = await start(refresh, null, hosted);
     expect((await postScan()).status).toBe(202);
+    await scan.finished();
+    expect(scan.state()).toMatchObject({ phase: 'awaiting-consent', done: false });
+    expect(calls).toBe(0);
+    void scan.confirmUpload(true);
     for (let wait = 0; !complete && wait < 100; wait++) await Bun.sleep(10);
     expect(scan.state()).toMatchObject({ phase: 'uploading', done: false });
     expect((await snapshot()).setup.extraction).toMatchObject({ state: 'running' });
@@ -114,7 +118,7 @@ describe('setup extraction', () => {
     await postScan();
     expect(calls).toBe(1);
     complete();
-    await scan.finished();
+    for (let wait = 0; scan.state().phase !== 'done' && wait < 100; wait++) await Bun.sleep(10);
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
     expect((await snapshot()).setup.extraction).toMatchObject({ state: 'ok' });
     expect(refresh.runs).toEqual([]);
@@ -125,6 +129,7 @@ describe('setup extraction', () => {
     const scan = await start(fakeRefresh(), null, { state: () => ({ state: 'failed', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: message }), async run() { throw new Error(message); } });
     await postScan();
     await scan.finished();
+    await scan.confirmUpload(true);
     expect(scan.state()).toMatchObject({ phase: 'failed', done: true, error: message });
     expect((await snapshot()).setup.scan.error).toBe(message);
   });
@@ -135,8 +140,10 @@ describe('setup extraction', () => {
     expect(scan.state().improveProduct).toBe(true);
     const changed = await fetch(`${origin}/api/setup/scan/preferences`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ improveProduct: false }) });
     expect(changed.status).toBe(200);
+    expect(scan.state().improveProduct).toBe(false);
     await postScan();
     await scan.finished();
+    await scan.confirmUpload(true);
     expect(improveProduct).toBe(false);
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
   });
@@ -156,6 +163,7 @@ describe('setup extraction', () => {
           requests.push(String(url));
           if (String(url).endsWith('/api/installer/intent')) return Response.json(install);
           expect(init!.headers).toMatchObject({ 'X-Intent-Install-Id': install.install_id, 'X-Intent-Token': install.intent_token });
+          if (init!.method === 'GET') return Response.json({ available: true });
           const input = JSON.parse(gunzipSync(init!.body as Uint8Array).toString());
           const ids = [...new Set(input.ownerPrompts.map((prompt: { sessionId: string }) => prompt.sessionId))];
           return Response.json({
@@ -172,11 +180,13 @@ describe('setup extraction', () => {
       const scan = await start(fakeRefresh(), { databasePath, dir: ledgerDir }, hosted);
       await postScan();
       await scan.finished();
-      expect(requests).toEqual(['https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent']);
+      expect(requests).toEqual([]);
+      await scan.confirmUpload(true);
+      expect(requests).toEqual(['https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent', 'https://cloud.example/api/pro/intent']);
       const view = await snapshot();
       expect(view.setup.scan).toMatchObject({ phase: 'done', done: true });
       expect(view.setup.extraction.state).toBe('ok');
-      expect(view.goals.priorities[0].title).toBe('Ship the plan');
+      expect(view.goals.areas[0].title).toBe('Ship the plan');
       expect(view.rules[0].then).toBe('Test the change.');
       expect(view.setup.work.length).toBeGreaterThan(0);
       expect(view.setup.work[0].title).toStartWith('Request ');

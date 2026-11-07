@@ -18,7 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
-import { replaceObservationFileIndex } from './observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -31,6 +31,13 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import {
+  createDeliverablesSchema,
+  recordDeliverable as recordDeliverableRow,
+  getDeliverable as getDeliverableRow,
+  type DeliverableRow,
+  type RecordDeliverableInput,
+} from './deliverables.js';
 import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
@@ -52,7 +59,9 @@ import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-st
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
+import { ensureSyncRecoverySchema } from '../sync/SyncRecovery.js';
 import {
   assertCanonicalDecimal,
   incrementCanonicalDecimal,
@@ -310,11 +319,13 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureDeliverablesTable();
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
     this.ensureObservationFileIndex();
+    ensureMediaSchema(this.db);
   }
 
   /**
@@ -987,6 +998,7 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
+    ensureSyncRecoverySchema(this.db);
     this.db.run(SYNC_ENTITY_HEADS_DDL);
     this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
     this.db.run(SYNC_CONTENT_OUTBOX_DDL);
@@ -1001,6 +1013,8 @@ export class SessionStore {
       `);
     }
     this.widenSyncKindCheck('sync_content_outbox', SYNC_CONTENT_OUTBOX_DDL);
+    // Per-kind fair pages must not sort/scan the other kinds' frozen backlog.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sync_content_outbox_kind_pending ON sync_content_outbox(kind, deleted DESC, id)');
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_dead_letter (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2088,6 +2102,19 @@ export class SessionStore {
 
   // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
   // DDL like v51, so fresh and migrating databases converge.
+  /** The deliverables bucket's records (deliverables.ts): CREATE IF NOT EXISTS, no version row, so an older worker sharing the database is unaffected. */
+  private ensureDeliverablesTable(): void {
+    createDeliverablesSchema(this.db);
+  }
+
+  recordDeliverable(input: RecordDeliverableInput): { id: number; inserted: boolean } {
+    return recordDeliverableRow(this.db, input);
+  }
+
+  getDeliverable(id: number): DeliverableRow | null {
+    return getDeliverableRow(this.db, id);
+  }
+
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
@@ -3176,7 +3203,7 @@ export class SessionStore {
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
     const entryId = appendWorkStateEntryRow(this.db, entry);
-    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry', 'additive', { kinds: ['work_state'], workStateLists: [entry.listName] });
     return entryId;
   }
 
@@ -3694,6 +3721,16 @@ export class SessionStore {
     return mutation;
   }
 
+  /** Notify only at an owned commit boundary. A caller already inside a
+   * transaction must announce its whole committed operation after it returns;
+   * publishing here could otherwise expose a prompt that later rolls back. */
+  private promptCommitted(reason: string, sessionDbId: number | null): void {
+    if (this.db.inTransaction) return;
+    const session = sessionDbId === null ? null : this.db.prepare('SELECT project FROM sdk_sessions WHERE id = ?')
+      .get(sessionDbId) as { project: string } | null;
+    emitContextInvalidation(session ? { projects: [session.project] } : 'all', reason, 'additive', { kinds: ['prompt'] });
+  }
+
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
     const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
@@ -3707,6 +3744,7 @@ export class SessionStore {
     `);
 
     const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch, nativePromptId ?? null, nativePromptHash ?? null);
+    this.promptCommitted('saveUserPrompt', resolvedSessionDbId);
     return result.lastInsertRowid as number;
   }
 
@@ -3725,7 +3763,7 @@ export class SessionStore {
     // Compare the entire cleaned ask, before storage/HTTP truncation. Equal
     // 4,000-character previews must not hide different bodies on a stale retry.
     const promptHash = createHash('sha256').update(stripMemoryTags(identityPromptText).trim()).digest('hex');
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const existing = this.db.prepare(`SELECT id, prompt_number, native_prompt_hash FROM user_prompts
         WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId) as
         { id: number; prompt_number: number; native_prompt_hash: string | null } | null;
@@ -3738,6 +3776,8 @@ export class SessionStore {
       const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+    if (!result.duplicate) this.promptCommitted('saveNativeUserPrompt', sessionDbId);
+    return result;
   }
 
   /**
@@ -4065,6 +4105,7 @@ export class SessionStore {
     insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
+    summaryUpdated?: boolean;
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -4188,37 +4229,112 @@ export class SessionStore {
       }
 
       let summaryId: number | null = null;
+      let summaryUpdated = false;
       if (summary) {
         const rolledUp = rollupObservationFileLists(observations);
         const filesRead = summary.files_read ?? rolledUp.files_read;
         const filesEdited = summary.files_edited ?? rolledUp.files_edited;
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          JSON.stringify(filesRead),
-          JSON.stringify(filesEdited),
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+        const existingSummary = promptNumber
+          ? (this.db.prepare(
+              `SELECT id, request, investigated, learned, completed, next_steps,
+                      files_read, files_edited, notes, discovery_tokens, sync_rev
+               FROM session_summaries
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL
+               ORDER BY id DESC LIMIT 1`
+            ).get(memorySessionId, promptNumber) as {
+              id: number;
+              request: string | null;
+              investigated: string | null;
+              learned: string | null;
+              completed: string | null;
+              next_steps: string | null;
+              files_read: string | null;
+              files_edited: string | null;
+              notes: string | null;
+              discovery_tokens: number | null;
+              sync_rev: string | null;
+            } | undefined)
+          : undefined;
+
+        if (existingSummary) {
+          const mergedRequest = (summary.request && summary.request.trim()) ? summary.request : (existingSummary.request ?? '');
+          const mergedInvestigated = (summary.investigated && summary.investigated.trim()) ? summary.investigated : (existingSummary.investigated ?? '');
+          const mergedLearned = (summary.learned && summary.learned.trim()) ? summary.learned : (existingSummary.learned ?? '');
+          const mergedCompleted = (summary.completed && summary.completed.trim()) ? summary.completed : (existingSummary.completed ?? '');
+          // next_steps describes what is left as of this stop, so the latest value wins even when empty.
+          const mergedNextSteps = summary.next_steps ?? '';
+          const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
+
+          const mergedFilesRead = [...new Set([...parseFileList(existingSummary.files_read), ...filesRead])];
+          const mergedFilesEdited = [...new Set([...parseFileList(existingSummary.files_edited), ...filesEdited])];
+
+          const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
+          const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
+
+          this.db.prepare(`
+            UPDATE session_summaries SET
+              request = ?, investigated = ?, learned = ?, completed = ?, next_steps = ?,
+              files_read = ?, files_edited = ?, notes = ?, discovery_tokens = ?,
+              created_at = ?, created_at_epoch = ?,
+              sync_rev = ?, synced_at = NULL
+            WHERE id = ?
+          `).run(
+            mergedRequest,
+            mergedInvestigated,
+            mergedLearned,
+            mergedCompleted,
+            mergedNextSteps,
+            JSON.stringify(mergedFilesRead),
+            JSON.stringify(mergedFilesEdited),
+            mergedNotes,
+            mergedTokens,
+            timestampIso,
+            timestampEpoch,
+            nextRev,
+            existingSummary.id
+          );
+
+          summary.request = mergedRequest;
+          summary.investigated = mergedInvestigated;
+          summary.learned = mergedLearned;
+          summary.completed = mergedCompleted;
+          summary.next_steps = mergedNextSteps;
+          summary.notes = mergedNotes;
+          summary.files_read = mergedFilesRead;
+          summary.files_edited = mergedFilesEdited;
+
+          summaryId = existingSummary.id;
+          summaryUpdated = true;
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            JSON.stringify(filesRead),
+            JSON.stringify(filesEdited),
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
-      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
     const stored = storeTx();
@@ -4239,7 +4355,7 @@ export class SessionStore {
       const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
       for (const id of observationIds) observationStmt.run(discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
       }
     })();
   }
@@ -4346,6 +4462,57 @@ export class SessionStore {
     const rowMap = new Map(rows.map(r => [r.id, r]));
     const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
     return limit ? ordered.slice(0, limit) : ordered;
+  }
+
+  /**
+   * The ids of every row a semantic search with this scope can return, for
+   * ChromaSync's narrowed filtered fallback (#5091). Each category uses the
+   * joins, project scope and platform clause of its get*ByIds hydration, so no
+   * row the hydration would keep is missing. Chroma's `sqlite_id` repeats
+   * across doc types, so the categories share one list. Null when more than
+   * `maxIds` rows match.
+   */
+  getSearchScopeRowIds(
+    categories: { observations: boolean; sessions: boolean; prompts: boolean },
+    options: { project?: string; projects?: string[]; platformSource?: string },
+    maxIds: number
+  ): number[] | null {
+    const projects = scopedProjects(options);
+    const platformSource = options.platformSource ? normalizePlatformSource(options.platformSource) : undefined;
+    const sources = [
+      categories.observations && { alias: 'o', includeMerged: true,
+        from: 'SELECT o.id FROM observations o LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id' },
+      categories.sessions && { alias: 'ss', includeMerged: true,
+        from: 'SELECT ss.id FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id' },
+      categories.prompts && { alias: 's', includeMerged: false,
+        from: 'SELECT up.id FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id' },
+    ].filter((source): source is { alias: string; includeMerged: boolean; from: string } => !!source);
+
+    const ids = new Set<number>();
+    for (const source of sources) {
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (projects.length > 0) {
+        const scope = projectScopeSql(source.alias, projects, { includeMerged: source.includeMerged });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
+      }
+      if (platformSource) {
+        conditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+        params.push(platformSource);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const statement = this.db.prepare(`${source.from} ${where} LIMIT ?`);
+      let rows: Array<{ id: number }>;
+      try {
+        rows = statement.all(...params, maxIds + 1) as Array<{ id: number }>;
+      } finally {
+        statement.finalize();
+      }
+      for (const row of rows) ids.add(row.id);
+      if (ids.size > maxIds) return null;
+    }
+    return [...ids];
   }
 
   getTimelineAroundTimestamp(
@@ -4900,6 +5067,7 @@ export class SessionStore {
       prompt.native_prompt_hash ?? null
     );
 
+    this.promptCommitted('importUserPrompt', sessionDbId);
     return { imported: true, id: result.lastInsertRowid as number };
   }
 }

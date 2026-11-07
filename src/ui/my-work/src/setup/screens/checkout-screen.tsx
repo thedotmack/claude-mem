@@ -1,4 +1,5 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon } from 'lucide-react'
+import { GlareCard } from '@/components/aceternity/glare-card'
 import { PLAN, type SetupCheckoutView } from '../setup-data'
 import { money } from '../format'
 import { PageHeading } from './shared'
@@ -55,7 +56,8 @@ export function CheckoutScreen({ checkout, installerStopped, onBack, onContinue 
           </details>
         </div>
         <div className="panel checkout-handoff">
-          <SecureCardArt />
+          {/* setup.css sizes the glare card to the art and drops its dark foil frame for the light funnel. */}
+          <div className="checkout-glare"><GlareCard className="checkout-glare-face"><SecureCardArt /></GlareCard></div>
           <h2>Secure checkout with Stripe</h2>
           <p>Add your card, then return to finish setup.</p>
           {open && <p className="checkout-status" role="status">Checkout is open in your browser.</p>}

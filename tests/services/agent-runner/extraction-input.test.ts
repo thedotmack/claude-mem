@@ -63,7 +63,7 @@ describe('owner prompts from the prompt importer', () => {
       const heading = /## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · claude · [^\n]+\nsession `[^`]{1,8}`\n\nmake the scan screen show each agent/.exec(markdown);
       expect(heading).not.toBeNull();
 
-      const goals = (quote: string) => JSON.stringify({ priorities: [{ rank: 1, title: 'Scan screen', evidence: [{ at: heading![1], quote }] }], open_asks: [] });
+      const goals = (quote: string) => JSON.stringify({ asks: [{ rank: 1, title: 'Scan screen', focus_area: null, evidence: [{ at: heading![1], quote }] }] });
       const check = (quote: string) => {
         writeFileSync(join(folder, 'owner-goals.json'), goals(quote));
         return spawnSync('python3', [SAVE_GOALS, '--goals', join(folder, 'owner-goals.json'), '--prompts', written.path, '--dry-run'], { encoding: 'utf8' });
@@ -79,8 +79,8 @@ describe('owner prompts from the prompt importer', () => {
     const database = new Database(':memory:');
     database.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
     const folders: Array<[string, string | null]> = [];
-    const task = buildRefreshTask({
-      needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'setup-scan', dataDir: '/data', ledgerDir: '/data/work-view',
+    const task = buildRefreshTask({ localDeviceId: () => '',
+      needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'setup-scan', dataDir: '/data', ledgerDir: '/data/work-view',
       pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), now: () => FIXTURE_NOW,
       writeOwnerPrompts: async (folder, sinceMinute) => { folders.push([folder, sinceMinute]); return { path: join(folder, 'owner-prompts.md'), ownerPrompts: 0, excludedAgentWritten: 0, newPrompts: 0 }; },
     });
@@ -90,7 +90,7 @@ describe('owner prompts from the prompt importer', () => {
     expect(folders).toEqual([[goalsFolder, null]]);
     expect(JSON.stringify(task)).not.toContain('export_owner_prompts');
 
-    const fresh = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
+    const fresh = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
     expect(fresh.prepare).toBeUndefined();
   });
 });

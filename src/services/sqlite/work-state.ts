@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
+import { isSharedWorkList } from '../work-view/shared-records.mjs';
 
 /**
  * work_state_entries (v61): the agent's canonical to-do lists and working
@@ -115,7 +116,7 @@ export function getWorkStateEntries(
   `);
   try {
     const rows = statement.all(...projects, ...(listName === undefined ? [] : [listName]), localDeviceId) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
-    return rows.map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
+    return rows.filter(row => !isSharedWorkList(row.list_name)).map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
   } finally {
     statement.finalize();
   }

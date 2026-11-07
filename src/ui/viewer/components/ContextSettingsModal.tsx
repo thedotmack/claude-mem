@@ -478,6 +478,16 @@ export function ContextSettingsModal({
               description="AI provider and model selection"
               defaultOpen={false}
             >
+              <div className="toggle-group" style={{ marginBottom: '16px' }}>
+                <ToggleSwitch
+                  id="observer-enabled"
+                  label="Memory capture"
+                  description="Generate new observations and session summaries with the selected AI provider. Turn this off to stop those capture calls; existing memories, search, and SessionStart context remain available."
+                  checked={formState.CLAUDE_MEM_OBSERVER_ENABLED !== 'false'}
+                  onChange={(checked) => updateSetting('CLAUDE_MEM_OBSERVER_ENABLED', checked ? 'true' : 'false')}
+                />
+              </div>
+
               <FormField
                 label="AI Provider"
                 tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), Codex (your ChatGPT subscription), or any OpenAI-compatible endpoint"
@@ -722,6 +732,33 @@ export function ContextSettingsModal({
                   </span>
                 </>
               )}
+
+              <FormField
+                label="My Work summary provider"
+                tooltip="Generated card wording uses this endpoint. Empty uses OpenRouter only when it is the primary observer provider; any other endpoint, or a fallback key, is not used unless you select its provider here. Explicit provider selection may incur that provider's usual charges."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', e.target.value)}
+                >
+                  <option value="">OpenRouter when it is the primary provider</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint</option>
+                  <option value="off">Off (recorded wording only)</option>
+                </select>
+              </FormField>
+              <FormField
+                label="My Work summary model override"
+                tooltip="Optional model id for generated card wording. Empty uses the selected provider's configured model."
+              >
+                <input
+                  type="text"
+                  maxLength={200}
+                  value={formState.CLAUDE_MEM_WORK_VIEW_COPY_MODEL || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_WORK_VIEW_COPY_MODEL', e.target.value)}
+                  placeholder="Use the provider's configured model"
+                />
+              </FormField>
 
               <FormField
                 label="Quota Fallback"

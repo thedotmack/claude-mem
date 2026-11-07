@@ -8,6 +8,7 @@ import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { isToolSkipped } from '../../../shared/is-tool-skipped.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
@@ -19,6 +20,13 @@ import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
 import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
+import { committedMediaEventResult } from '../../media/linkage.js';
+import { captureObservationMedia } from '../../media/capture.js';
+import type { MediaEventIdentity } from '../../../shared/media-contract.js';
+import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
+import { isInsideDeliverablesDir, resolveDeliverablesDir } from '../../../shared/deliverables.js';
+import { statSync } from 'fs';
+import { isExpiredObserverEvent } from '../../../shared/observer-work-policy.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -151,6 +159,7 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  mediaEventIdentity?: MediaEventIdentity;
   /**
    * Receipt join keys (frozen 2026-09-06). Both nullable and both pass-through:
    * Claude-Mem never derives them, it only echoes what a stamper supplied, so
@@ -171,6 +180,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   if (isRecursiveMemoryTool(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'memory_retrieval' };
   }
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (!isObserverCaptureEnabled(settings)) {
+    return { ok: true, status: 'skipped', reason: 'observer_disabled' };
+  }
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
@@ -179,8 +192,6 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   // Same fallback as session init: an empty project makes cloud sync quarantine
   // every content line the session produces (#4772).
   const project = projectContext?.primary || 'unknown';
-
-  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
   if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
@@ -289,11 +300,29 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     recordWorkStateTool(store.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
-  const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+  // Media capture runs only after every tracking/privacy/subagent gate above
+  // and before serialization, so neither the tool_uses backup nor the RAM
+  // observer text ever holds a recognized image body. Capture is off by
+  // default; disabled capture still replaces bodies with bounded descriptors.
+  // Media inference is a separate flag and is not consulted here.
+  const mediaCaptureEnabled = settings.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED === 'true';
+  const media = await captureObservationMedia({
+    enabled: mediaCaptureEnabled,
+    sessionDbId,
+    contentSessionId: payload.contentSessionId,
+    platformSource,
+    toolUseId: payload.toolUseId,
+    eventIdentity: payload.mediaEventIdentity,
+    toolName: payload.toolName,
+    toolInput: payload.toolInput,
+    toolResponse: payload.toolResponse,
+    cwd,
+  }, mediaCaptureEnabled ? dbManager.getMediaStore() : undefined);
+  const cleanedToolInput = media.toolInput !== undefined
+    ? stripMemoryTags(JSON.stringify(media.toolInput))
     : '{}';
-  const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+  const cleanedToolResponse = media.toolResponse !== undefined
+    ? stripMemoryTags(JSON.stringify(media.toolResponse))
     : '{}';
 
   // Dual-write: the durable `tool_uses` side index (v51) alongside — never
@@ -338,7 +367,25 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     return { ok: true, status: 'skipped', reason: 'explicit_memory_write' };
   }
 
-  sessionManager.queueObservation(sessionDbId, {
+  // Replay recovery: a source event whose text outcome, observation rows and
+  // image links already committed (media_events.result_state) is never sent
+  // to the observer again; the links landed with that commit.
+  if (media.eventKey) {
+    const committed = committedMediaEventResult(store.db, media.eventKey);
+    if (committed) {
+      logger.debug('INGEST', 'Replayed media event already has a committed result; not re-queued', {
+        sessionId: sessionDbId,
+        resultState: committed.resultState,
+        observations: committed.observationIds.length,
+      });
+      return { ok: true, status: 'skipped', reason: 'already_processed' };
+    }
+  }
+
+  if (payload.enqueuedAtEpochMs !== undefined && isExpiredObserverEvent(payload.enqueuedAtEpochMs)) {
+    return { ok: true, status: 'skipped', reason: 'expired_live_capture' };
+  }
+  const queuedMessageId = sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
     tool_response: cleanedToolResponse,
@@ -360,7 +407,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    ...(media.refs.length ? { mediaRefs: media.refs, mediaEventKey: media.eventKey } : {}),
+    ...(media.failures.length ? { mediaFailures: media.failures } : {}),
   }, payload.enqueuedAtEpochMs);
+  if (queuedMessageId === 0) return { ok: true, status: 'skipped', reason: 'duplicate_or_live_buffer_limit' };
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 
@@ -403,6 +453,11 @@ export async function ingestSummarize(
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = deps;
   const { contentSessionId, platformSource, observedModel, observedBilling } = payload;
 
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (!isObserverCaptureEnabled(settings)) {
+    return { status: 'skipped', reason: 'observer_disabled' };
+  }
+
   if (payload.agentId) {
     return { status: 'skipped', reason: 'subagent_context' };
   }
@@ -424,7 +479,6 @@ export async function ingestSummarize(
   const requestCwd = typeof payload.cwd === 'string' ? payload.cwd.trim() : '';
   const checkoutCwd = requestCwd || store.getSessionCwd(sessionDbId);
   if (checkoutCwd) {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
       return { status: 'skipped', reason: 'project_excluded' };
     }
@@ -455,7 +509,11 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs);
+  if (payload.enqueuedAtEpochMs !== undefined && isExpiredObserverEvent(payload.enqueuedAtEpochMs)) {
+    return { status: 'skipped', reason: 'expired_live_capture' };
+  }
+  const queuedMessageId = sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs);
+  if (queuedMessageId === 0) return { status: 'skipped', reason: 'live_buffer_limit' };
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 
@@ -470,6 +528,94 @@ export interface SessionEndPayload {
   contentSessionId: string;
   /** Already normalized (normalizePlatformSource). */
   platformSource: string;
+}
+
+export interface DeliverablesIngestResult {
+  status: 'accepted' | 'skipped';
+  reason?: 'project_excluded' | 'private';
+  stored: number;
+  duplicates: number;
+  /** Copies this worker cannot open (not a file on its disk inside the deliverables directory): logged, not recorded. */
+  unavailable: number;
+}
+
+function isRegularFile(path: string): boolean {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
+
+/**
+ * Records the bucket copies a Stop (or SubagentStop) hook made
+ * (src/cli/deliverables-capture.ts). The files are already in the bucket; this
+ * only writes the rows My Work links, and only for copies on this worker's own
+ * disk: a hook on another host names paths this worker cannot open, and a row
+ * for one would be a link that never works. A turn whose prompt was entirely
+ * <private> records nothing, the rule observations and summaries follow; the
+ * hook checks that before copying, this guards every other caller. A copy the
+ * hook could not make is logged here too, so a missing deliverable is explained
+ * in the worker log.
+ */
+export function ingestDeliverables(
+  payload: SpooledDeliverablesPayload & { enqueuedAtEpochMs?: number },
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+  handoff: IngestHandoff = {},
+): DeliverablesIngestResult {
+  const { contentSessionId, cwd, project, agentId, files, errors } = payload;
+  const platformSource = normalizePlatformSource(payload.platformSource);
+  const nothing = { stored: 0, duplicates: 0, unavailable: 0 };
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded', ...nothing };
+  }
+  for (const failure of errors ?? []) {
+    logger.warn('HOOK', 'A deliverable was not copied into the project bucket', { project, sourcePath: failure.sourcePath, error: failure.error });
+  }
+
+  const store = dbManager.getSessionStore();
+  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+  if (sessionDbId !== null) {
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(store, contentSessionId, promptNumber, 'deliverables', sessionDbId);
+    if (!privacy.allow) {
+      return { status: 'skipped', reason: 'private', ...nothing };
+    }
+  }
+
+  const deliverablesDir = resolveDeliverablesDir();
+  let stored = 0;
+  let duplicates = 0;
+  let unavailable = 0;
+  for (const file of files) {
+    if (!isInsideDeliverablesDir(file.bucketPath, deliverablesDir) || !isRegularFile(file.bucketPath)) {
+      unavailable++;
+      logger.warn('HOOK', 'A deliverable names a bucket copy this worker cannot open; not recorded', { project, bucketPath: file.bucketPath, sourcePath: file.sourcePath, deliverablesDir });
+      continue;
+    }
+    const result = store.recordDeliverable({
+      project,
+      contentSessionId,
+      platformSource,
+      agentId: agentId ?? null,
+      title: file.title,
+      kind: file.kind,
+      sourcePath: file.sourcePath,
+      bucketPath: file.bucketPath,
+      bytes: file.bytes,
+      sha256: file.sha256,
+      declared: file.declared,
+      listName: file.list ?? null,
+      field: file.field ?? null,
+      toolUseId: file.toolUseId ?? null,
+      occurredAtEpoch: file.occurredAtEpoch,
+      createdAtEpoch: payload.enqueuedAtEpochMs,
+    });
+    if (result.inserted) stored++;
+    else duplicates++;
+  }
+  // Every row is written: the hand-off point.
+  handoff.markHandedOff?.();
+  logger.info('HOOK', 'Deliverables recorded', { project, stored, duplicates, unavailable });
+  return { status: 'accepted', stored, duplicates, unavailable };
 }
 
 export async function ingestSessionEnd(

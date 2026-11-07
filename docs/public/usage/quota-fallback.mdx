@@ -52,6 +52,12 @@ The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatibl
 - **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
 - **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
 
+## Per-source providers
+
+With `CLAUDE_MEM_PROVIDER_BY_SOURCE`, each harness can have its own provider (see [Configuration](/configuration)). The fallback settings stay global and apply to every route: a held mapped provider moves its sessions to `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`, and only those sessions. A provider that is its own fallback has nowhere to go, so with `{"claude":"claude"}` and the Claude fallback, a held Claude waits. The session-start notice says capture continues only when every route still has a provider serving.
+
+A source mapped to `openrouter` with the cmem.ai gateway as its base URL is treated like the gateway as your selected provider: it falls back to your Anthropic plan when the gateway turns your account away, the next session start tells you, and its unattended retries are capped. A session mapped away from the gateway isn't capped, unless the gateway is its quota fallback.
+
 ## Claude credential fallback
 
 A Claude observer bills one of two credentials: the `ANTHROPIC_API_KEY` in `~/.claude-mem/.env` when one is set, otherwise your Claude Code login. When that credential is held for quota, `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` names the other one to run on meanwhile:

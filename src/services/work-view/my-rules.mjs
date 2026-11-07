@@ -54,10 +54,10 @@ function suggestionsFromStory(story) {
     return {
       ruleId: ruleIdForPreference(preference.preference),
       scopeTier: 'everywhere', scopeName: 'Everywhere',
-      // Preferences are single sentences: the whole preference is the "then".
-      // Splitting a when out of it would need a model call, which this view never makes.
-      when: '', then: story.source === 'hosted-intent' ? String(preference.preference) : text(preference.preference),
-      setBy: 'learned', status: 'suggested', kind: preference.kind ?? 'directive', source: 'request-progress',
+      // Preferences are single sentences: the whole preference is the "then". Splitting a when out of it
+      // would need a model call, which this view never makes; owner-goals' rules already carry their own.
+      when: text(preference.when), then: story.source === 'hosted-intent' ? String(preference.preference) : text(preference.preference),
+      setBy: 'learned', status: 'suggested', kind: preference.kind ?? 'directive', source: preference.source === 'owner-goals' ? 'owner-goals' : 'request-progress',
       timesSeen: Number.isInteger(preference.supportCount) && preference.supportCount > 0 ? preference.supportCount : 1,
       latestAt: latest.length ? new Date(Math.max(...latest)).toISOString() : story.writtenAt ?? null,
       quotes, replacedBy: null, replacedAt: null, savedAt: null,

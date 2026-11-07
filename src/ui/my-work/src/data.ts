@@ -1,11 +1,5 @@
-// Request types, the sample fixtures (SAMPLE_*), and the one request store every page reads.
-// The store holds the active data source's WorkModel: fixtures in sample mode, real records otherwise (spec §12).
-import { useSyncExternalStore } from 'react'
-import type { ConnectionStatus } from './live/connection-status.ts'
-import { freshlyUpdatedRequestIds } from './live/update-queue.ts'
-import type { ReviewResult } from './live/review-response.ts'
-import type { RuleChange } from './data-rules.ts'
-import type { WorkDataSource, WorkModel } from './live/work-data-source.ts'
+// Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
+import type { WorkModel } from './live/work-data-source.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -31,10 +25,20 @@ export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Do
 
 export interface Request {
   id: string
+  /** False only for a compact overview; the drawer loads authoritative detail before showing its evidence. */
+  detailLoaded?: boolean
+  /** The content version used to request/cache detail, independent of unrelated snapshot changes. */
+  detailRevision?: string
+  /** Exact card counts when the overview carries only a bounded preview. */
+  detailCounts?: { workProduct: number }
   title: string | null
+  /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
+  titleRepeatsPrompt?: boolean
   summary: string | null
-  /** The goal this serves. `null` = serves no goal; `undefined` = not linked yet (never shown as "No goal"). */
-  goalId?: string | null
+  /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
+  focusAreaId?: string
+  /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
+  canMoveFocus?: boolean
   askedBy: string
   agentId: string
   startedAt: string
@@ -65,7 +69,8 @@ export interface Request {
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
-  workProduct: { kind: WorkProductKind; label: string; href?: string }[]
+  /** `deliverable` marks a copy claude-mem keeps in the project's deliverables bucket: a file the agent made, kept after its source is gone. */
+  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean; availability?: 'origin-only' }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
@@ -75,6 +80,9 @@ export interface Request {
   resolvesTo?: { title: string; summary: string }
   /** Set when a person marks this version checked (§6). Checking never marks a request shipped. */
   checkedAt?: string
+  /** Whether this acknowledgement is local-only or a shared, versioned decision. */
+  review?: { mode: 'local' | 'shared'; hash: string | null; version?: number; available: boolean; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string }
+  suggestion?: { conversationKey: string; requestId: string; requestTitle: string; evidence: string; expectedSuggestionHash?: string | null; sharedConflict?: boolean }
   /** Live records only: the version a check certifies. */
   contentFingerprint?: string
   /** Free-text stage from the title writer. Hover text only; the stage chip comes from the recorded status. */
@@ -83,33 +91,60 @@ export interface Request {
   closed?: boolean
 }
 
-export interface Goal {
+/** The permanent bucket for requests that fit no area. Never an area id (my-focus.mjs OTHER_FOCUS_AREA_ID). */
+export const OTHER_FOCUS_AREA_ID = 'other'
+
+/** One finishable ask the owner-goals run found, under the focus area it belongs to. Asks are not linked to requests. */
+export interface FocusAsk { id: string; title: string; timesAsked: number; latestAt: string; quotes: Quote[] }
+
+/** One focus area (the my-focus list): the top level of My Work. Every request sits in one area, or in Other. */
+export interface FocusArea {
   id: string
-  kind: 'Priority' | 'Open ask'
-  rank: number
-  title: string
-  product: string
-  latestAt: string
-  timesAsked: number
+  name: string
+  /** One sentence saying what the area is for; null until one is written. */
+  goal: string | null
+  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  /** The owner's order. When set it wins over priorityRank. */
+  ownerRank: number | null
+  priorityRank: number | null
+  source: 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner'
+  /** Set when merged: its requests show under this area. */
+  mergedInto: string | null
+  /** Why the system suggested it, when it has no quotes of the owner's own. */
+  evidence: string | null
+  /** From the owner-goals item for this area; null and [] when the area has none. */
+  timesAsked: number | null
+  latestAt: string | null
   quotes: Quote[]
+  /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
+  asks: FocusAsk[]
 }
 
-/** A goal plus how the owner-goals run linked it to work. Priorities link through request.goalId (decision 1). */
-export interface GoalItem extends Goal {
-  /** Open asks only: requests the run matched to this ask, since a request has one goal but can answer an ask. */
-  servedBy?: string[]
+/** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
+export interface FocusChange {
+  action: 'keep' | 'rename' | 'edit-goal' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
+  focusAreaId?: string
+  /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
+  canMoveFocus?: boolean
+  name?: string
+  goal?: string
+  intoFocusAreaId?: string
+  /** reorder: every live area (not dismissed, not merged), first = highest priority. */
+  focusAreaIds?: string[]
+  requestId?: string
 }
 
 /** The current owner-goals run. */
 export interface CurrentPeriod { label: string; windowDays: number; promptCount: number }
 
-/** One saved past month (owner-goals/<start>). Its asks are archived with the month. */
+/** One saved past month (owner-goals/<start>), shown in Past focus. Its asks are archived with the month. */
 export interface PastPeriod {
   id: string
   label: string
   promptCount: number
   headline: string
-  priorities: { title: string; product: string; timesAsked: number; quote: Quote | null }[]
+  /** That month's focus areas; `label` is the area (or, before 2026-10-27, the product) the run named. */
+  areas: { title: string; label: string; timesAsked: number; quote: Quote | null }[]
 }
 
 /** When and where a skill last ran. Real timestamps only; no cost (owner, Oct 20, 2026). */
@@ -143,7 +178,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r1', title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
-    goalId: 'g1', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
+    focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
     next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
     workstreams: [
@@ -171,7 +206,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   },
   {
     ...emptyRequest,
-    id: 'r2', title: null, summary: null, goalId: 'g2', askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
+    id: 'r2', title: null, summary: null, askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
     progress: { percent: 0, readings: 0, reviewedAt: '—', history: [] }, estimate: null, next: { who: 'bot', text: 'Read the current usage rollup' }, activityWord: 'Searching',
     resolvesTo: { title: 'Show real usage on the price forecast page', summary: 'Lead with what you spend today, then what it costs as usage grows.' },
     terminal: ['$ work_state_write list=usage-forecast', '  task: "read current usage rollup" status=doing', '$ rg "forecast" src/app/admin', '  12 matches in 4 files'],
@@ -179,7 +214,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
-    goalId: 'g2', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
+    focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Check the remap queue drained' },
     workstreams: [
@@ -192,16 +227,16 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r4', title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
-    goalId: 'g1', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
+    focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
-    workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#' }],
+    workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
     followUps: [{ tag: 'Docs', text: 'Write the release notes', done: false }, { tag: 'Promo', text: 'Launch post with walkthrough', done: false }, { tag: 'Other', text: 'Telemetry dashboard', done: true }],
   },
   {
     ...emptyRequest,
     id: 'r5', title: 'Fix the admin model price page', summary: 'Show current usage first, with scaling estimates below.',
-    goalId: null, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
+    focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Pick which forecast to keep' },
     workstreams: [
@@ -230,148 +265,13 @@ export function assertConsistentRequest(request: Request): Request {
 }
 SAMPLE_REQUESTS.forEach(assertConsistentRequest)
 
-export type WorkModelLoad =
-  | { state: 'loading' }
-  | { state: 'loaded'; model: WorkModel }
-  | { state: 'failed'; error: string }
+/** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
+export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
 
-let workModelLoad: WorkModelLoad = { state: 'loading' }
-const listeners = new Set<() => void>()
-const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
-export function setWorkModelLoad(next: WorkModelLoad) {
-  workModelLoad = next
-  listeners.forEach((listener) => listener())
-}
-
-/** The page's first read. A live model that already arrived wins over it, and a late failure never replaces shown work. */
-export function settleInitialWorkModelLoad(result: { model: WorkModel } | { error: string }) {
-  if (workModelLoad.state === 'loaded') return
-  setWorkModelLoad('model' in result ? { state: 'loaded', model: result.model } : { state: 'failed', error: result.error })
-}
-
-/** Requests whose recorded content changed in the last applied model; their cards show the "Just updated" dot. */
-let freshlyUpdatedIds: ReadonlySet<string> = new Set()
-const FRESHLY_UPDATED_FOR_MS = 4000
-
-function applyWorkModel(model: WorkModel) {
-  const shown = workModelLoad.state === 'loaded' ? workModelLoad.model.requests : []
-  const changedIds = new Set(freshlyUpdatedRequestIds(shown, model.requests))
-  if (changedIds.size > 0) {
-    freshlyUpdatedIds = changedIds
-    setTimeout(() => {
-      if (freshlyUpdatedIds !== changedIds) return
-      freshlyUpdatedIds = new Set()
-      listeners.forEach((listener) => listener())
-    }, FRESHLY_UPDATED_FOR_MS)
-  }
-  setWorkModelLoad({ state: 'loaded', model })
-}
-
-/** A model from the live feed, shown as soon as it arrives. */
-export function receiveLiveWorkModel(model: WorkModel) {
-  if (workModelLoad.state !== 'loaded') { setWorkModelLoad({ state: 'loaded', model }); return }
-  applyWorkModel(model)
-}
-
-const sameConnection = (a: ConnectionStatus, b: ConnectionStatus) => a.state === b.state && a.label === b.label && a.detail === b.detail && a.tooltip === b.tooltip
-
-/** The feed's health, shown on the current model. */
-export function receiveConnectionStatus(connection: ConnectionStatus) {
-  if (workModelLoad.state !== 'loaded' || sameConnection(workModelLoad.model.connection, connection)) return
-  setWorkModelLoad({ state: 'loaded', model: { ...workModelLoad.model, connection } })
-}
-
-/** True for a few seconds after this request's recorded content changed. */
-export const useFreshlyUpdated = (requestId: string) => useSyncExternalStore(subscribe, () => freshlyUpdatedIds.has(requestId))
-
-/** Loading, loaded or failed. Only App reads this; everything under it uses useWorkModel(). */
-export const useWorkModelLoad = () => useSyncExternalStore(subscribe, () => workModelLoad)
-
-function currentWorkModel(): WorkModel {
-  if (workModelLoad.state !== 'loaded') throw new Error(`Work model read before it loaded (${workModelLoad.state})`)
-  return workModelLoad.model
-}
-
-/** The active source's model, re-rendering when it changes. Only valid once App has a loaded model. */
-export function useWorkModel(): WorkModel {
-  const load = useWorkModelLoad()
-  if (load.state !== 'loaded') throw new Error(`useWorkModel() before the work model loaded (${load.state})`)
-  return load.model
-}
-
-/** Today's requests, re-rendering when any changes. */
-export const useRequests = () => useWorkModel().requests
-export const requestById = (id: string) => currentWorkModel().requests.find((request) => request.id === id) ?? null
-
-/**
- * Replace one sample request everywhere. The change must leave it consistent.
- * Sample mode only: live requests change only through their data source, never in the browser.
- */
-export function updateRequest(id: string, change: (request: Request) => Request) {
-  const model = currentWorkModel()
-  if (model.sourceKind !== 'sample') throw new Error(`updateRequest edits sample data only; ${model.sourceKind} requests change through their data source`)
-  const index = SAMPLE_REQUESTS.findIndex((request) => request.id === id)
-  if (index < 0) throw new Error(`No request ${id}`)
-  // Mutated in place so My Goals, which reads the same fixture objects, sees the change too.
-  SAMPLE_REQUESTS[index] = assertConsistentRequest(change(SAMPLE_REQUESTS[index]))
-  setWorkModelLoad({ state: 'loaded', model: { ...model, requests: [...SAMPLE_REQUESTS] } })
-}
-
-/**
- * Wireframe demo, sample mode only: the wireframe agent finishes while you watch, so the status flip can be seen.
- * Every field moves together: last task done, 100% reviewed, Reviewing, and the next move is yours.
- */
-export function playDemoUpdates() {
-  const timer = setTimeout(() => updateRequest('r1', (request) => ({
-    ...request,
-    state: 'needs-check', stage: 'Reviewing',
-    progress: { ...request.progress, percent: 100, readings: 4, reviewedAt: '2:04 pm', history: [30, 55, 70, 100] },
-    estimate: null,
-    next: { who: 'human', text: 'Check the wireframe against the spec' },
-    workstreams: request.workstreams.map((stream) => ({ ...stream, tasks: stream.tasks.map((task) => ({ ...task, done: true })) })),
-    granular: [{ kind: 'work', text: 'Wireframe: My Rules screens done', at: '2:03 pm' }, ...request.granular],
-    story: request.story.map((step) => ({ ...step, status: 'complete' })),
-    activityWord: '',
-  })), 7000)
-  return () => clearTimeout(timer)
-}
-
-/** The source App reads from. Checks go to it, so they are saved where the work came from. */
-let activeWorkDataSource: WorkDataSource | null = null
-export function setActiveWorkDataSource(source: WorkDataSource) { activeWorkDataSource = source }
-
-/**
- * Check (or undo the check of) the version of a request on screen, through the active source. Checking hands it
- * back to you to ship; it never marks it shipped. Whatever model the source answers with is shown at once.
- */
-export async function setRequestChecked(requestId: string, checked: boolean): Promise<ReviewResult> {
-  if (!activeWorkDataSource) throw new Error('No data source to save the check to')
-  const request = requestById(requestId)
-  if (!request) throw new Error(`No request ${requestId}`)
-  // Sample fixtures carry no fingerprint and the sample source ignores it; the local source refuses an empty one.
-  const result = await activeWorkDataSource.setRequestChecked(requestId, request.contentFingerprint ?? '', checked)
-  if ('model' in result) applyWorkModel(result.model)
-  return result
-}
-
-/** Saves one change to My Rules through the active source and shows the model it answers with. Rejects with the reason. */
-export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
-  if (!activeWorkDataSource) throw new Error('No data source to save the rule change to')
-  const model = await activeWorkDataSource.saveRuleChange(change)
-  applyWorkModel(model)
-  return model
-}
-
-/** Records that a subagent finished, for one no recorded stop covers. Rejects with the reason. */
-export async function markAgentFinished(agentId: string): Promise<void> {
-  if (!activeWorkDataSource) throw new Error('No data source to save the agent to')
-  applyWorkModel(await activeWorkDataSource.markAgentFinished(agentId))
-}
-
-/** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md through the active source. */
-export async function loadRulesInClaudeCode(): Promise<void> {
-  if (!activeWorkDataSource) throw new Error('No data source to load the rules from')
-  applyWorkModel(await activeWorkDataSource.loadRulesInClaudeCode())
+/** A save the worker refused, with the snapshot it answered: the screen shows that state, then the reason. */
+export class SaveRefusedError extends Error {
+  readonly model: WorkModel
+  constructor(message: string, model: WorkModel) { super(message); this.name = 'SaveRefusedError'; this.model = model }
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */
@@ -392,16 +292,4 @@ export const SAMPLE_RUNS: Record<'goals' | 'rules' | 'progress', Run> = {
   goals: { label: 'owner-goals', lastRunAt: 'Today, 11:02 am', deviceId: 'mbp', state: 'idle' },
   rules: { label: 'rules from preferences', lastRunAt: 'Today, 11:05 am', deviceId: 'mbp', state: 'idle' },
   progress: { label: 'request-progress', lastRunAt: 'Today, 1:50 pm', deviceId: 'studio', state: 'idle' },
-}
-
-/** Looks up an agent in the active model. Fails fast: every request's agent is in its model. */
-export function agentById(id: string): Agent {
-  const agent = currentWorkModel().agents.find((entry) => entry.id === id)
-  if (!agent) throw new Error(`No agent ${id}`)
-  return agent
-}
-export function deviceById(id: string): Device {
-  const device = currentWorkModel().devices.find((entry) => entry.id === id)
-  if (!device) throw new Error(`No device ${id}`)
-  return device
 }

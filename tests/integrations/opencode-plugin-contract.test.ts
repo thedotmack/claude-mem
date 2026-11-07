@@ -186,6 +186,33 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("strips a private block that straddles the 1,000-char tool_response cap", async () => {
+    // Capping first would sever `</private>`, and the worker's balanced
+    // stripper keeps an unclosed block verbatim, so the private prefix shipped.
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_private_cap",
+        args: { path: "/a" },
+        output: `${"a".repeat(990)}<private>${"TOKEN".repeat(10)}</private>tail`,
+      });
+
+      const observation = bodies.find((body) => "tool_response" in body);
+      expect(observation?.tool_response).toBe(`${"a".repeat(990)}tail`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("scopes injected context to OpenCode's own memory by default", async () => {
     // The worker filters observations by the platform that recorded them, so
     // the source parameter decides what a session can see. OpenCode must ask

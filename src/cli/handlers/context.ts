@@ -19,8 +19,10 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
+import { clipUtf16 } from '../../shared/relayed-text.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
@@ -34,6 +36,7 @@ import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import {
   fetchTeamBrief,
@@ -64,6 +67,62 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 }
 
 /**
+ * The lines under the SessionStart terminal preview. The preview leaves
+ * TERMINAL_BANNER_RESERVE_CHARS for them, and composeSessionStartSystemMessage
+ * keeps the whole `systemMessage` within Claude Code's 10,000-character field
+ * cap (#5079).
+ */
+export function sessionStartBannerFooter(
+  viewerUrl: string,
+  trialDaysLine: string | null,
+  teamBrainDiscoveryLine: string | null,
+): string {
+  return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+}
+
+/**
+ * The user-visible SessionStart `systemMessage`: the once-per-session
+ * worker-outage notice, the terminal preview, then the footer. Claude Code
+ * replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
+ * (#5079), and neither the notice nor a server-runtime viewer URL is bounded
+ * by TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it
+ * is over, the preview is cut at a line boundary until it fits. The notice and
+ * the footer are never cut. With no preview (banner off) the notice is the
+ * whole message.
+ */
+export function composeSessionStartSystemMessage(
+  preview: string | null,
+  footer: string,
+  workerOutageNotice: string | null,
+  limit: number = CONTEXT_OUTPUT_LIMIT,
+): string | undefined {
+  if (preview === null) return workerOutageNotice ?? undefined;
+  const noticePrefix = workerOutageNotice ? `${workerOutageNotice}\n\n` : '';
+  const previewRoom = limit - noticePrefix.length - footer.length;
+  let fittedPreview = preview;
+  if (preview.length > previewRoom) {
+    const previewCutToRoom = previewRoom > 0 ? preview.slice(0, previewRoom) : '';
+    const lastLineBreak = previewCutToRoom.lastIndexOf('\n');
+    fittedPreview = lastLineBreak > 0 ? previewCutToRoom.slice(0, lastLineBreak) : '';
+    logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary to keep systemMessage within the field cap', {
+      previewChars: preview.length,
+      keptPreviewChars: fittedPreview.length,
+      noticeChars: noticePrefix.length,
+      footerChars: footer.length,
+      limit,
+    });
+  }
+  const systemMessage = `${noticePrefix}${fittedPreview}${footer}`;
+  if (systemMessage.length > limit) {
+    logger.warn('HOOK', 'SessionStart systemMessage is over the field cap even with no preview', {
+      systemMessageChars: systemMessage.length,
+      limit,
+    });
+  }
+  return systemMessage;
+}
+
+/**
  * Keep the whole block inside the host's delivery limit (ContextBudget.ts):
  * one character over and the host replaces all of it with a stub. The body is
  * fitted with room left for the brief (teamBriefReserveChars), so this only
@@ -88,6 +147,35 @@ export function fitTeamBriefSection(section: string, otherChars: number, limit: 
   if (notice) return notice;
   logger.warn('HOOK', 'TeamBrain brief left out: the SessionStart block has no room left even for a notice', { room, limit });
   return '';
+}
+
+/**
+ * Cached bodies can predate the current instruction reserve, and the OAuth
+ * and gateway notices are added only in this process. Measure the final model
+ * field here as well. Never truncate opaque rendered entries: an old worker
+ * or irreducible body falls back to an explicit omission notice. TeamBrain
+ * retains its existing fit/omission policy.
+ */
+export function composeSessionStartContext(
+  body: string,
+  notices: string,
+  instructions: string,
+  teamSection: string,
+  limit: number = CONTEXT_OUTPUT_LIMIT,
+): string {
+  const join = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
+  const fixed = join(notices, instructions);
+  const room = Math.max(0, limit - fixed.length - (fixed ? 2 : 0));
+  if (body.length > room) {
+    // Older workers may ignore reserveChars; irreducible renderer output may
+    // also exceed its limit. Never cut a rendered entry, code fence, or newest
+    // record. Keep the actionable notices and explicitly report the omission.
+    const omitted = '[claude-mem] Recent context omitted because it exceeds the session output limit. Use memory search to retrieve it.';
+    body = omitted.length <= room ? omitted : '';
+    logger.warn('HOOK', 'SessionStart body omitted because it exceeds the available field budget', { room });
+  }
+  const fittedTeam = fitTeamBriefSection(teamSection, join(notices, body, instructions).length, limit);
+  return join(notices, body, fittedTeam, instructions);
 }
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
@@ -161,9 +249,12 @@ export async function resolveSessionStartProjects(
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    // Devin runs this on PostCompaction too, and drops a reply whose
+    // hookEventName is not the event that fired.
+    const hookEventName = input.hookEventName === 'PostCompaction' ? 'PostCompaction' : 'SessionStart';
     const emptyResult: HookResult = {
       workStateTelemetry: 'measure',
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      hookSpecificOutput: { hookEventName, additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
@@ -200,6 +291,65 @@ export const contextHandler: EventHandler = {
     const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : memoryInstructionsForRuntime(selectRuntime());
     emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
 
+    const notices: string[] = [];
+
+    // Issue #2215: surface stale OAuth token marker as a session-start hint.
+    // Marker is written by EnvManager.buildIsolatedEnvWithFreshOAuth() when
+    // a previous worker spawn detected an expired keychain entry.
+    // Other observer providers do not use Claude credentials. Keep the hint
+    // for a configured Claude route, including the gateway's active fallback.
+    // Any source can be mapped to its own provider, so a mapped route counts
+    // like the global one: a mapped gateway is memory's provider for its
+    // sessions, and its expiry notice below must still reach the user.
+    const mappedProviders = providersMappedBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+    const gatewayRole = cmemGatewayRole(
+      mappedProviders.includes('openrouter') ? { ...settings, CLAUDE_MEM_PROVIDER: 'openrouter' } : settings,
+    );
+    // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
+    const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+    const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
+      || mappedProviders.includes('claude')
+      || fallbackSetting === 'claude' || fallbackSetting === ''
+      || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
+    const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
+    if (staleReason) {
+      // The observer authenticates with the Claude Code CLI credentials
+      // (keychain service "Claude Code-credentials", see oauth-token.ts), not
+      // Claude Desktop. Point the remedy at the CLI so the user runs the right
+      // login (#4150).
+      // The marker is a file, so bound its reason before reserving the hint.
+      const hint = `[claude-mem] Claude Code OAuth token is stale: ${clipUtf16(staleReason, 1_000)}\nRun /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`;
+      notices.push(hint);
+    }
+
+    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
+    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
+    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
+    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
+    // marker resets whenever the fallback is cleared.
+    //
+    // The gateway's own words, stored with the marker, say what happened and
+    // what to do. They enter model context, so proFallbackNotice relays them
+    // as plain bounded lines and keeps only an https cmem.ai link.
+    //
+    // The gateway as the opt-in quota fallback gets the same notice with its
+    // own consequence: dispatch skips it while it turns the account away, and
+    // without this the user would never learn why the fallback stopped.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== '' && gatewayRole !== null;
+    const showFallbackNotice = fallbackActive && !hasShownProFallbackNotice();
+    if (showFallbackNotice) {
+      const fallbackNotice = proFallbackNotice({
+        message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
+        action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
+        url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
+      }, gatewayRole);
+      notices.unshift(fallbackNotice);
+
+    }
+
+    const noticeText = notices.join('\n\n');
+    const noticeReserveChars = noticeText ? noticeText.length + 2 : 0;
+
     // TeamBrain brief: a per-session notice, never part of the cacheable
     // context body. Asked now so its budget overlaps the local context read;
     // the request never rejects, and it is not asked at all without a team.
@@ -220,7 +370,7 @@ export const contextHandler: EventHandler = {
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
     const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
-    const projectsParam = scopeProjects.join(',');
+    const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -233,7 +383,8 @@ export const contextHandler: EventHandler = {
     // one, so the worker gets the session id and SessionStart is answered live.
     const showLastMessage = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true';
     const sessionParam = showLastMessage && input.sessionId ? `&sessionId=${encodeURIComponent(input.sessionId)}` : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
+    const noticeBudgetParam = noticeReserveChars ? `&reserveChars=${noticeReserveChars}` : '';
+    const apiPath = `/api/context/inject?${projectsQuery}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}${noticeBudgetParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const serverRender = serverRuntime
@@ -244,7 +395,7 @@ export const contextHandler: EventHandler = {
             cwd,
             projects: scopeProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
-            reserveChars: teamBriefReserveChars(settings),
+            reserveChars: teamBriefReserveChars(settings) + noticeReserveChars,
           },
           showTerminalOutput && input.platform === 'claude-code',
           settings.CLAUDE_MEM_MODE,
@@ -267,7 +418,11 @@ export const contextHandler: EventHandler = {
         colors,
         renderedAgoMs: cacheNowEpochMs - cached.renderedAtEpochMs,
       });
-      return fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
+      const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
+      // A notice or settings change can outgrow the reserve of an older cache.
+      // Re-render whole entries instead of cutting an opaque cached string.
+      if (!colors && [noticeText, filled, memoryInstructions].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
+      return filled;
     };
     const cachedModelContext = showLastMessage ? null : readCachedRender(false);
 
@@ -306,55 +461,6 @@ export const contextHandler: EventHandler = {
       return emptyResult;
     }
 
-    // Issue #2215: surface stale OAuth token marker as a session-start hint.
-    // Marker is written by EnvManager.buildIsolatedEnvWithFreshOAuth() when
-    // a previous worker spawn detected an expired keychain entry.
-    // Other observer providers do not use Claude credentials. Keep the hint
-    // for a configured Claude route, including the gateway's active fallback.
-    const gatewayRole = cmemGatewayRole(settings);
-    // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
-    const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
-    const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
-      || fallbackSetting === 'claude' || fallbackSetting === ''
-      || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
-    const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
-    if (staleReason) {
-      // The observer authenticates with the Claude Code CLI credentials
-      // (keychain service "Claude Code-credentials", see oauth-token.ts), not
-      // Claude Desktop. Point the remedy at the CLI so the user runs the right
-      // login (#4150).
-      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nRun /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`;
-      additionalContext = additionalContext
-        ? `${hint}\n\n${additionalContext}`
-        : hint;
-    }
-
-    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
-    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
-    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
-    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
-    // marker resets whenever the fallback is cleared.
-    //
-    // The gateway's own words, stored with the marker, say what happened and
-    // what to do. They enter model context, so proFallbackNotice relays them
-    // as plain bounded lines and keeps only an https cmem.ai link.
-    //
-    // The gateway as the opt-in quota fallback gets the same notice with its
-    // own consequence: dispatch skips it while it turns the account away, and
-    // without this the user would never learn why the fallback stopped.
-    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== '' && gatewayRole !== null;
-    if (fallbackActive && !hasShownProFallbackNotice()) {
-      const fallbackNotice = proFallbackNotice({
-        message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
-        action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
-        url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
-      }, gatewayRole);
-      additionalContext = additionalContext
-        ? `${fallbackNotice}\n\n${additionalContext}`
-        : fallbackNotice;
-      markProFallbackNoticeShown();
-    }
-
     let coloredTimeline = '';
     if (showTerminalOutput) {
       const colors = input.platform === 'claude-code';
@@ -370,13 +476,14 @@ export const contextHandler: EventHandler = {
     }
 
     const platform = input.platform;
-    const teamSection = teamBriefRequest
-      ? fitTeamBriefSection(
-          teamBriefSection(await teamBriefRequest),
-          [additionalContext, memoryInstructions].filter(Boolean).join('\n\n').length,
-        )
-      : '';
-    additionalContext = [additionalContext, teamSection, memoryInstructions].filter(Boolean).join('\n\n');
+    const teamSection = teamBriefRequest ? teamBriefSection(await teamBriefRequest) : '';
+    // Only the process that atomically claims the marker may deliver the
+    // fallback notice. Waiting until all reads finish keeps failed attempts
+    // retryable. A lost claim merely leaves a little unused render budget.
+    if (showFallbackNotice && !markProFallbackNoticeShown()) notices.shift();
+    additionalContext = composeSessionStartContext(
+      additionalContext, notices.join('\n\n'), memoryInstructions, teamSection,
+    );
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
@@ -404,19 +511,19 @@ export const contextHandler: EventHandler = {
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const systemMessage = showsBanner
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
-      : undefined;
+    const systemMessage = composeSessionStartSystemMessage(
+      showsBanner ? displayContent : null,
+      sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      workerOutageNotice,
+    );
 
     return {
       workStateTelemetry: 'measure',
       hookSpecificOutput: {
-        hookEventName: 'SessionStart',
+        hookEventName,
         additionalContext
       },
-      systemMessage: workerOutageNotice
-        ? [workerOutageNotice, systemMessage].filter(Boolean).join('\n\n')
-        : systemMessage
+      systemMessage
     };
   }
 };

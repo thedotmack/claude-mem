@@ -250,6 +250,7 @@ const sessionInit = {
         if (semanticInject && prompt.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS && prompt !== '[media prompt]') {
           const additionalContext = await fetchServerSemanticContext(
             runtime,
+            sessionId,
             prompt,
             settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT,
             platformSource,
@@ -429,6 +430,7 @@ async function startServerSession(
  */
 async function fetchServerSemanticContext(
   runtime: ServerRuntimeContext,
+  sessionId: string,
   prompt: string,
   limit: string | number,
   platformSource: string,
@@ -448,6 +450,7 @@ async function fetchServerSemanticContext(
       limit: parseSemanticInjectLimit(limit),
       platformSource,
       folderProjects,
+      contentSessionId: sessionId,
     }, { timeoutMs });
     return result.context ?? '';
   } catch (error: unknown) {

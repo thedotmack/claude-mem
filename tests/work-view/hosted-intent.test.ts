@@ -32,7 +32,8 @@ function answer(): HostedIntentResult {
 const cleanup: Array<() => void> = [];
 const installCredentials = { install_id: 'a'.repeat(32), intent_token: 'b'.repeat(64) };
 afterEach(() => { for (const clean of cleanup.splice(0).reverse()) clean(); });
-function fixture(response: typeof fetch = (async () => Response.json(answer())) as typeof fetch, credentials = { token: 'setup-token', userId: 'owner' }) {
+function fixture(response: typeof fetch = (async () => Response.json(answer())) as typeof fetch, credentials = { token: 'setup-token', userId: 'owner' },
+  preflight: typeof fetch = (async () => Response.json({ available: true })) as typeof fetch) {
   const scratch = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
   mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, 'hosted-intent-'));
@@ -45,7 +46,8 @@ function fixture(response: typeof fetch = (async () => Response.json(answer())) 
     origin: () => 'https://cloud.example/', credentials: () => credentials, intentConfigPath: configPath, ledgerDir: join(dir, 'work-view'),
     openDatabase: () => new Database(databasePath, { readonly: true }),
     appendWorkStateEntry: entry => { store.appendWorkStateEntry(entry); }, homeProject: () => 'home',
-    fetch: response, now: () => at, timezoneOffsetMinutes: () => 420,
+    fetch: ((url, init) => init?.method === 'GET' ? preflight(url, init) : response(url, init)) as typeof fetch,
+    now: () => at, timezoneOffsetMinutes: () => 420,
   });
   return { run: createRun(), createRun, configPath, dir, store, databasePath };
 }
@@ -73,8 +75,43 @@ describe('hosted setup extraction', () => {
     const source = new WorkStateSource({ databasePath, ledgerDir });
     cleanup.push(() => source.close());
     const view = source.read().agentView;
-    expect(view.goals.priorities[0].title).toBe('Build everything');
+    expect(view.goals.areas[0]).toMatchObject({ kind: 'focus-area', title: 'Build everything' });
     expect(view.rules[0].then).toBe('Keep every quote.');
+    // Cloud's priority is also a My Focus suggestion, and the owner-goals item names its id.
+    expect(view.focusAreas).toEqual([expect.objectContaining({ name: 'Build everything', status: 'suggested', source: 'owner-goals', decidedBy: 'system', priorityRank: 1 })]);
+    expect(view.goals.areas[0].focusAreaId).toBe(view.focusAreas[0].focusAreaId);
+  });
+
+  it('suggests no focus areas when My Focus already has areas it cannot match without a model, and says so', async () => {
+    const { run, store, databasePath, dir } = fixture();
+    store.appendWorkStateEntry({ project: 'home', listName: 'my-focus', fields: { task: 'Focus area: fa_synced000001', focus_area_id: 'fa_synced000001', name: 'Viewer', goal: null, status: 'kept',
+      priority_rank: 1, owner_rank: null, source: 'seed', merged_into: null, evidence: null, decided_by: 'owner' } });
+    await run.run(prompts, true);
+    const source = new WorkStateSource({ databasePath, ledgerDir: join(dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas.map((area: { focusAreaId: string }) => area.focusAreaId)).toEqual(['fa_synced000001']);
+    expect(view.goals.areas[0]).toMatchObject({ title: 'Build everything', focusAreaId: null });
+  });
+
+  it('saves a priority whose title reuses a nav word, defers only its focus area, and records why on the item', async () => {
+    const result = answer();
+    const [first] = result.goals.goals.priorities;
+    result.goals.goals.priorities = [{ ...first, rank: 1, title: 'Ship the My Work viewer' }, { ...first, rank: 2 }];
+    const { run, databasePath, dir } = fixture((async () => Response.json(result)) as typeof fetch);
+    await run.run(prompts, true);
+    expect(run.state()).toMatchObject({ state: 'ok', error: null });
+    const source = new WorkStateSource({ databasePath, ledgerDir: join(dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas.map((area: { name: string }) => area.name)).toEqual(['Build everything']);
+    expect(view.goals.areas.map((item: { title: string; focusAreaId: string | null }) => [item.title, item.focusAreaId]))
+      .toEqual([['Ship the My Work viewer', null], ['Build everything', view.focusAreas[0].focusAreaId]]);
+    const db = new Database(databasePath, { readonly: true });
+    const fieldsOf = (task: string) => JSON.parse((db.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? AND fields LIKE ? ORDER BY id DESC').get('owner-goals', `%"task":"${task}"%`) as { fields: string }).fields);
+    expect(fieldsOf('Focus area: Ship the My Work viewer').focus_area_deferred).toBe('Not suggested in My Focus: "Ship the My Work viewer" reuses the nav word "my work". The next local refresh names this area.');
+    expect(fieldsOf('Focus area: Build everything').focus_area_deferred).toBeNull();
+    db.close();
   });
 
   it('unchecked still uploads and saves the full result', async () => {
@@ -107,9 +144,8 @@ describe('hosted setup extraction', () => {
     cleanup.push(() => source.close());
     const view = source.read().agentView;
     expect(view.goals.summary).toBe(result.goals.goals.human_summary);
-    expect(view.goals.priorities[0].title).toBe(result.goals.goals.priorities[0].title);
-    expect(view.goals.priorities[0].product).toBe(result.goals.goals.priorities[0].product);
-    expect(view.goals.priorities[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
+    expect(view.goals.areas[0].title).toBe(result.goals.goals.priorities[0].title);
+    expect(view.goals.areas[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
     expect(view.rules[0].quotes[0].quote).toBe(result.rules[0].quotes[0].quote);
     const database = new Database(databasePath, { readonly: true });
     expect(readGoals(database).goals[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
@@ -129,6 +165,146 @@ describe('hosted setup extraction', () => {
     await expect(network.run.run(prompts, true)).rejects.toThrow('Network unavailable');
     const malformed = fixture((async () => Response.json({ goals: {} })) as typeof fetch);
     await expect(malformed.run.run(prompts, true)).rejects.toThrow('invalid response');
+  });
+
+  it('after a 503 budget refusal, stops uploading until the next UTC day', async () => {
+    let calls = 0;
+    let now = at;
+    const { createRun } = fixture((async () => { calls++; return Response.json({ message: 'The daily budget has been reached.' }, { status: 503 }); }) as typeof fetch);
+    const run = createRun();
+    (run as any).options.now = () => now;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', message: expect.stringContaining('HTTP 503') });
+    expect(calls).toBe(1);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', message: expect.stringContaining('No prompts were uploaded') });
+    expect(calls).toBe(1);
+    now = Math.floor(at / 86_400_000) * 86_400_000 + 86_400_000;
+    await expect(run.run(prompts, false)).rejects.toThrow('HTTP 503');
+    expect(calls).toBe(2);
+  });
+
+  it('honors an HTTP-date Retry-After and marks cooldown-blocked calls as not sent', async () => {
+    let calls = 0;
+    const until = at + 2 * 3_600_000;
+    const { run } = fixture((async () => { calls++; return Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': new Date(until).toUTCString() } }); }) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: true, retryAfter: until });
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false });
+    expect(calls).toBe(1);
+  });
+
+  it('preflights without a body and remembers a refusal across worker restarts', async () => {
+    let uploads = 0;
+    let checks = 0;
+    const { run, createRun, dir } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch,
+      { token: 'setup-token', userId: 'owner' }, (async (_url, init) => {
+        checks++;
+        expect(init?.method).toBe('GET');
+        expect(init?.body).toBeUndefined();
+        expect(JSON.stringify(init)).not.toContain(prompts[0].text);
+        return Response.json({ message: 'Automatic organization is temporarily at capacity.' }, { status: 503, headers: { 'Retry-After': '600' } });
+      }) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: false, retryAfter: at + 600_000 });
+    await expect(createRun().run(prompts, false)).rejects.toMatchObject({ sent: false });
+    expect(checks).toBe(1);
+    expect(uploads).toBe(0);
+    const saved = readFileSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'), 'utf8');
+    expect(saved).not.toContain('setup-token');
+    expect(saved).not.toContain(prompts[0].text);
+  });
+
+  it('measures a Retry-After delay from the refusal, not the start of a slow upload', async () => {
+    let now = at;
+    const { run } = fixture((async () => {
+      now += 20_000;
+      return Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': '10' } });
+    }) as typeof fetch);
+    (run as any).options.now = () => now;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ retryAfter: at + 30_000, sent: true });
+  });
+
+  it('rejects an invalid preflight response before any upload', async () => {
+    let uploads = 0;
+    const { run } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch,
+      { token: 'setup-token', userId: 'owner' }, (async () => Response.json({})) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toThrow('No transcripts were uploaded');
+    expect(uploads).toBe(0);
+  });
+
+  it.each(['0', 'PAST_DATE'])('an already-elapsed Retry-After (%s) sets no cooldown', async header => {
+    let calls = 0;
+    const retryAfter = header === 'PAST_DATE' ? new Date(at - 3_600_000).toUTCString() : header;
+    const { run, dir } = fixture((async () => { calls++; return Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': retryAfter } }); }) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: true, retryAfter: at });
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: true });
+    expect(calls).toBe(2);
+  });
+
+  it.each(['soon', '-5'])('an invalid Retry-After (%s) falls back to the next UTC day', async header => {
+    const { run } = fixture((async () => Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': header } })) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ retryAfter: Math.floor(at / 86_400_000) * 86_400_000 + 86_400_000 });
+  });
+
+  it.each([
+    ['401', async () => Response.json({ message: 'bad token' }, { status: 401 })],
+    ['500', async () => new Response('oops', { status: 500 })],
+    ['a malformed body', async () => new Response('not json')],
+    ['a failed request', async () => { throw new Error('getaddrinfo ENOTFOUND'); }],
+  ] as Array<[string, typeof fetch]>)('reports nothing sent when the preflight gets %s', async (_name, preflight) => {
+    let uploads = 0;
+    const { run } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch, { token: 'setup-token', userId: 'owner' }, preflight);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: false });
+    expect(uploads).toBe(0);
+  });
+
+  it('reports nothing sent when incomplete credentials stop the run before any request', async () => {
+    const { run } = fixture(undefined, { token: 'setup-token', userId: '' });
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: false });
+  });
+
+  it('reports a failure after the upload started as sent', async () => {
+    const { run } = fixture((async () => new Response('oops', { status: 500 })) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: true });
+  });
+
+  it.each([
+    ['never answers', () => new Promise<Response>(() => {})],
+    ['stalls while sending its body', async () => new Response(new ReadableStream({ start() {} }))],
+  ] as Array<[string, () => Promise<Response>]>)('stops waiting for a preflight that %s and uploads nothing', async (_name, stalled) => {
+    let uploads = 0;
+    let signal: AbortSignal | null | undefined;
+    const { run, dir } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch, { token: 'setup-token', userId: 'owner' },
+      ((_url, init) => { signal = init?.signal; return stalled(); }) as typeof fetch);
+    (run as any).options.preflightTimeoutMs = 20;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false, message: expect.stringContaining('No transcripts were uploaded') });
+    expect(signal?.aborted).toBe(true);
+    expect(uploads).toBe(0);
+    // A stall says nothing about Cloud's budget, so the next attempt is free to try again.
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
+  });
+
+  it('measures a Retry-After delay from the response headers, not the end of a slow body', async () => {
+    let now = at;
+    const refusal = Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': '10' } });
+    const readBody = refusal.json.bind(refusal);
+    refusal.json = async () => { now += 30_000; return readBody(); };
+    const { run } = fixture((async () => refusal) as typeof fetch);
+    (run as any).options.now = () => now;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ retryAfter: at + 10_000 });
+  });
+
+  it('ignores a preflight refusal that arrives after the deadline', async () => {
+    let lateAnswerRead: () => void;
+    const lateAnswer = new Promise<void>(resolve => { lateAnswerRead = resolve; });
+    const refusal = Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': '600' } });
+    const readBody = refusal.json.bind(refusal);
+    refusal.json = async () => { const body = await readBody(); lateAnswerRead(); return body; };
+    const { run, dir } = fixture(undefined, { token: 'setup-token', userId: 'owner' },
+      (async () => { await new Promise(resolve => setTimeout(resolve, 40)); return refusal; }) as typeof fetch);
+    (run as any).options.preflightTimeoutMs = 20;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false, message: expect.stringContaining('did not answer in time') });
+    await lateAnswer;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
   });
 
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
@@ -264,6 +440,22 @@ describe('hosted setup extraction', () => {
     expect(readGoals(database).goals[0].title).toBe('Build everything');
     database.close();
     expect(Object.keys(readLedger(ledgerDir).groups.conversations)).toHaveLength(3);
+  });
+
+  it('a replayed save rewrites the same focus areas instead of adding copies', async () => {
+    const test = fixture();
+    const append = test.store.appendWorkStateEntry.bind(test.store);
+    let writes = 0;
+    // The my-focus area lands, then the worker stops before the goals rows.
+    test.store.appendWorkStateEntry = entry => { if (++writes > 1) throw new Error('Worker stopped mid-save'); return append(entry); };
+    await expect(test.run.run(prompts, true)).rejects.toThrow('Worker stopped mid-save');
+    test.store.appendWorkStateEntry = append;
+    await test.createRun().run(prompts, true);
+    const source = new WorkStateSource({ databasePath: test.databasePath, ledgerDir: join(test.dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas).toHaveLength(1);
+    expect(view.goals.areas[0].focusAreaId).toBe(view.focusAreas[0].focusAreaId);
   });
 
   it('fails loudly when the saved result is unreadable instead of uploading again', async () => {

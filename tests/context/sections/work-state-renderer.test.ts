@@ -121,6 +121,13 @@ describe('buildWorkStateContextSection', () => {
     expect(section).toContain('- release: version=13.25.3');
   });
 
+  it('leaves My Focus areas and placements to My Work', () => {
+    const entries = [...releaseEntries(), entry('my-focus', { task: 'Focus area: fa_viewer', name: 'Viewer', status: 'suggested' }, MINUTE_MS)];
+    const section = buildWorkStateContextSection(entries, NOW_EPOCH);
+    expect(section).not.toContain('my-focus');
+    expect(section).toContain('- release: version=13.25.3');
+  });
+
   it('says nothing is open when nothing has been written', () => {
     expect(buildWorkStateContextSection([], NOW_EPOCH)).toEndWith('\n\nNothing open yet.');
   });

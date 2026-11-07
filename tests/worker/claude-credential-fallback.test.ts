@@ -6,13 +6,15 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
 import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
   clearQuotaCooldown,
   getQuotaCooldown,
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
-import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
+import { claudeQuotaStandIn, hasClaudeSubscriptionLogin, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
@@ -126,7 +128,6 @@ function makeSession(): ActiveSession {
     consecutiveInvalidOutputs: 0,
     consecutiveContextOverflows: 0,
     lastGeneratorActivity: Date.now(),
-    pausedReason: 'quota',
   };
 }
 
@@ -154,13 +155,22 @@ function makeSessionManager(): SessionManager {
 
 function buildRoutes(session: ActiveSession, claude: (s: ActiveSession) => Promise<void>) {
   let active: ActiveSession | undefined = session;
+  let pending = 1;
   const sessionManager = {
     getSession: () => active,
-    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    getMessageBuffer: () => ({ getPendingCount: () => pending, peekTypes: () => [] }),
+    discardBufferedWork: () => { const discarded = pending; pending = 0; return discarded; },
     removeSessionImmediate: () => { active = undefined; },
-    getResumableSessionIds: () => (active && !active.generatorPromise ? [active.sessionDbId] : []),
+    // The sweep's view: buffered work, no generator, and a pause time heals
+    // (quota and auth are not; their work was discarded).
+    getResumableSessionIds: () => (
+      active && !active.generatorPromise && pending > 0
+        && [null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall'].includes(active.pausedReason)
+        ? [active.sessionDbId]
+        : []
+    ),
   };
-  return new SessionRoutes(
+  const routes = new SessionRoutes(
     sessionManager as any,
     {} as any,
     { startSession: claude } as any,
@@ -170,6 +180,7 @@ function buildRoutes(session: ActiveSession, claude: (s: ActiveSession) => Promi
     {} as any,
     { finalizeSession: async () => {} } as any,
   );
+  return Object.assign(routes, { pendingCount: () => pending });
 }
 
 /** Routes whose Claude agent records the credential override each start ran with. */
@@ -232,15 +243,22 @@ describe('Claude credential fallback: admission', () => {
       signIn();
       writeFileSync(join(tempDir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_API_KEY=sk-gw\n');
     }, 'api-key'],
-  ] as const)('waits as before when %s', async (_label, arrange, auth) => {
+  ] as const)('starts nothing and skips the buffered work when %s', async (_label, arrange, auth) => {
     arrange();
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, auth);
+    const session = makeSession();
+    const { routes, starts } = recordingRoutes(session);
 
-    expect(await startOnce(makeSession())).toEqual([]);
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await nextTick();
+    expect(starts).toEqual([]);
     expect(warnLines).toContain('Skipping generator start while the provider cooldown is active');
+    // A spent allowance does not hold the work for the reset.
+    expect(routes.pendingCount()).toBe(0);
+    expect(session.pausedReason).toBe('quota');
   });
 
-  it('resumes the paused backlog while the primary is held', () => {
+  it('the sweep runs buffered work on the stand-in while the primary is held', () => {
     signIn();
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     const { routes } = recordingRoutes(makeSession());
@@ -256,8 +274,9 @@ describe('Claude credential fallback: order and booking', () => {
   it.each([
     ['subscription', 'auth:observer_text'],
     ['subscription', 'auth:observer_org_policy'],
+    ['subscription', 'auth:observer_verification_hold'],
     ['api-key', 'auth:auth_invalid'],
-  ] as const)('automatically retries the primary after a refused %s fallback (%s)', async (target, reason) => {
+  ] as const)('discards the work of a refused %s fallback (%s) and probes the primary with fresh work', async (target, reason) => {
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;
     if (target === 'subscription') signIn();
     else setFallbackKey();
@@ -287,12 +306,22 @@ describe('Claude credential fallback: order and booking', () => {
     expect(starts).toEqual([target]);
     expect(session.fallbackFrom).toBeNull();
     expect(getQuotaCooldown('claude')?.cause).toBe('auth');
-    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(1);
-    expect(session.pausedReason).toBe('provider_switch');
+    // The refused batch is discarded; nothing is left for a later resume.
+    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(0);
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
 
+    // A fresh event while the refusal holds starts nothing and is skipped too.
+    sm.queueObservation(304, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'while-held' });
+    await routes.ensureGeneratorRunning(304, 'observation');
+    expect(starts).toEqual([target]);
+    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(0);
+
+    // Once the window elapses the sweep still has nothing to revive; the next
+    // captured event takes the single probe on the primary.
     getQuotaCooldown('claude')!.armedAtMs -= QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    sm.queueObservation(304, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'after-window' });
+    await routes.ensureGeneratorRunning(304, 'observation');
     await nextTick();
     expect(starts).toEqual([target, null]);
     expect(getQuotaCooldown('claude')?.probeInFlightSinceMs).not.toBeNull();
@@ -334,6 +363,34 @@ describe('Claude credential fallback: order and booking', () => {
   });
 
   it.each([
+    ['no fallback configured', false],
+    ['a provider fallback that can serve', true],
+  ] as const)('books a 429 reply as the short rate-limit window, not the quota cooldown, with %s (#5428)', async (_label, withFallback) => {
+    if (withFallback) {
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'gemini';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-key';
+    }
+    const session = makeSession();
+    // What ResponseProcessor leaves for a 429 written as the reply: the batch
+    // back in the queue and the run aborted without throwing.
+    const routes = buildRoutes(session, async (s) => {
+      s.abortReason = 'rate_limit:observer_text';
+      s.abortController.abort();
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+    clearTimeout(session.scheduledResumeTimer);
+
+    expect(getQuotaCooldown('claude')?.window).toBe('rate_limit');
+    expect(resolveQuotaCooldownMs(getQuotaCooldown('claude')?.window)).toBe(RATE_LIMIT_RECHECK_COOLDOWN_MS);
+    // With a fallback that can serve, the work moves there at once (the pause clears).
+    if (!withFallback) expect(session.pausedReason).toBe('rate_limit');
+    expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
+  });
+
+  it.each([
     ['subscription', 'api-key', () => signIn(), 'memory is running on your Claude Code subscription login'],
     ['api-key', 'subscription', () => setFallbackKey(), 'memory is running on your fallback API key (ANTHROPIC_FALLBACK_API_KEY)'],
   ] as const)('tells the session start which credential memory runs on (%s), until both are spent', (target, held, arrange, notice) => {
@@ -359,6 +416,19 @@ describe('Claude credential fallback: readiness', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-from-env';
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     expect(claudeQuotaStandIn()).toBe('subscription');
+  });
+
+  it('counts a long-lived CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env (no login files) as a subscription login', () => {
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
+    writeFileSync(join(tempDir, '.env'), 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-long-lived\n', { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(true);
+  });
+
+  it('does not count a CLAUDE_CODE_OAUTH_TOKEN JWT in ~/.claude-mem/.env that is past its exp claim', () => {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const expiredJwt = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
+    writeFileSync(join(tempDir, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${expiredJwt}\n`, { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
   });
 });
 

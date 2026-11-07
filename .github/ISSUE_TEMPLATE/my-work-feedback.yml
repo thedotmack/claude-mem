@@ -1,0 +1,48 @@
+name: My Work feedback
+description: Tell us how the My Work viewer (localhost:37777) works for you. Anything from one line to a long story helps.
+title: "My Work feedback: "
+labels: ["my-work-feedback", "component:viewer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        My Work is new and changes with almost every release. What you tell us here goes straight into the next fix-and-release round.
+        A short answer is fine. Please leave out anything private from your requests or code.
+  - type: textarea
+    id: trying
+    attributes:
+      label: What were you trying to do?
+      description: For example, check what your agents finished overnight, find the next thing that needs you, or pick up a request you started earlier.
+    validations:
+      required: true
+  - type: dropdown
+    id: helped
+    attributes:
+      label: When you came back to My Work, could you see what you asked, what came of it, and what needs you next?
+      options:
+        - "Yes"
+        - Partly
+        - "No"
+        - I didn't get that far
+    validations:
+      required: true
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked
+      description: Anything you'd want us to keep.
+  - type: textarea
+    id: in-the-way
+    attributes:
+      label: What got in the way
+      description: Confusing words, wrong or missing requests, slow pages, a request in the wrong focus area, anything that made you stop.
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot (optional)
+      description: Drag an image here. Blur anything private first.
+  - type: input
+    id: version
+    attributes:
+      label: claude-mem version (optional)
+      description: Run `npx claude-mem --version`.

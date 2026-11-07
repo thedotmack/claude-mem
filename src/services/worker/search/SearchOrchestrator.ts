@@ -107,9 +107,13 @@ export class SearchOrchestrator {
   private async executeWithFallback(
     options: NormalizedParams
   ): Promise<StrategySearchResult> {
+    // Resolve the same one-hop project scope as semantic search. Keep the
+    // original options for Chroma, which performs its own single expansion.
+    const readKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+    const sqliteOptions = { ...options, projects: readKeys.length > 0 ? readKeys : undefined };
     if (!options.query) {
       logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
-      return await this.sqliteStrategy.search(options);
+      return await this.sqliteStrategy.search(sqliteOptions);
     }
 
     if (this.chromaStrategy) {
@@ -129,7 +133,7 @@ export class SearchOrchestrator {
           errorObj
         );
       }
-      const supplemented = await this.supplementEmptyCategories(candidateOptions, chromaResult);
+      const supplemented = await this.supplementEmptyCategories({ ...sqliteOptions, offset: 0, limit: offset + limit }, chromaResult);
       return {
         ...supplemented,
         results: {
@@ -145,7 +149,7 @@ export class SearchOrchestrator {
     // instead of an empty result that reads as "no matches" (#4284). Knowledge
     // corpus builds with a query filter reach this path.
     logger.debug('SEARCH', 'Orchestrator: Chroma not configured, falling back to SQLite', {});
-    return await this.sqliteStrategy.search(options);
+    return await this.sqliteStrategy.search(sqliteOptions);
   }
 
   /**

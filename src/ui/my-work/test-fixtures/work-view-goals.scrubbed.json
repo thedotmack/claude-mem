@@ -12,30 +12,30 @@
     "windowDays": 31,
     "sourcePromptCount": 120,
     "mapPath": "/sample/owner-map.md",
-    "priorities": [
-      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Priority: Ship the garden planner\"]", "task": "Priority: Ship the garden planner", "kind": "priority", "rank": 1, "title": "Ship the garden planner", "product": "Planner", "latestAt": "2026-10-18 22:11", "timesAsked": 4, "status": "todo",
+    "areas": [
+      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Priority: Ship the garden planner\"]", "task": "Priority: Ship the garden planner", "kind": "focus-area", "rank": 1, "title": "Ship the garden planner", "goal": null, "focusArea": null, "focusAreaId": null, "product": "Planner", "latestAt": "2026-10-18 22:11", "timesAsked": 4, "status": "todo",
         "evidence": [{ "at": "2026-10-18 22:11", "quote": "please ship the garden planner this week" }, { "at": "2026-10-16", "quote": "the seed list should sort by month" }] },
-      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Priority: Fix the watering reminders\"]", "task": "Priority: Fix the watering reminders", "kind": "priority", "rank": 2, "title": "Fix the watering reminders", "product": null, "latestAt": "2026-10-15 08:02", "timesAsked": 2, "status": "todo",
+      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Priority: Fix the watering reminders\"]", "task": "Priority: Fix the watering reminders", "kind": "focus-area", "rank": 2, "title": "Fix the watering reminders", "goal": null, "focusArea": null, "focusAreaId": null, "product": null, "latestAt": "2026-10-15 08:02", "timesAsked": 2, "status": "todo",
         "evidence": [{ "at": null, "quote": "reminders fire twice on rainy days" }] }
     ],
-    "openAsks": [
-      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Open ask: Dark mode for the planner\"]", "task": "Open ask: Dark mode for the planner", "kind": "open-ask", "rank": 1, "title": "Dark mode for the planner", "product": "Planner", "latestAt": "2026-10-17 06:40", "timesAsked": 3, "status": "todo",
+    "asks": [
+      { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals\\\"]\",\"Open ask: Dark mode for the planner\"]", "task": "Open ask: Dark mode for the planner", "kind": "ask", "rank": 1, "title": "Dark mode for the planner", "goal": null, "focusArea": null, "focusAreaId": null, "product": "Planner", "latestAt": "2026-10-17 06:40", "timesAsked": 3, "status": "todo",
         "evidence": [{ "at": "2026-10-17 06:40", "quote": "can we get a dark mode yet?" }] }
     ]
   },
   "goalHistory": [
     { "listId": "[\"sample-project\",\"owner-goals/2026-08-18\"]", "listName": "owner-goals/2026-08-18", "history": true, "project": "sample-project", "updatedAt": "2026-10-19T07:58:57.638Z",
       "periodStart": "2026-08-18", "periodEnd": "2026-09-18", "summary": "The sample owner set up the seed catalog.", "generatedAt": "2026-10-19T00:42:57-07:00", "windowDays": 31, "sourcePromptCount": 54, "mapPath": null,
-      "priorities": [
-        { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals/2026-08-18\\\"]\",\"Priority: Seed catalog\"]", "task": "Priority: Seed catalog", "kind": "priority", "rank": 1, "title": "Seed catalog", "product": "Catalog", "latestAt": "2026-09-15 10:04", "timesAsked": 3, "status": "done",
+      "areas": [
+        { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals/2026-08-18\\\"]\",\"Priority: Seed catalog\"]", "task": "Priority: Seed catalog", "kind": "focus-area", "rank": 1, "title": "Seed catalog", "goal": null, "focusArea": null, "focusAreaId": null, "product": "Catalog", "latestAt": "2026-09-15 10:04", "timesAsked": 3, "status": "done",
           "evidence": [{ "at": "2026-09-15 10:04", "quote": "add every tomato variety to the catalog" }] }
       ],
-      "openAsks": [] },
+      "asks": [] },
     { "listId": "[\"sample-project\",\"owner-goals/2025-12-18\"]", "listName": "owner-goals/2025-12-18", "history": true, "project": "sample-project", "updatedAt": "2026-10-19T07:58:57.638Z",
       "periodStart": "2025-12-18", "periodEnd": "2026-01-18", "summary": null, "generatedAt": "2026-10-19T00:42:04-07:00", "windowDays": 31, "sourcePromptCount": 7, "mapPath": null,
-      "priorities": [
-        { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals/2025-12-18\\\"]\",\"Priority: Winter plan\"]", "task": "Priority: Winter plan", "kind": "priority", "rank": 1, "title": "Winter plan", "product": "Planner", "latestAt": "2026-01-02 09:00", "timesAsked": 1, "status": "done", "evidence": [] }
+      "areas": [
+        { "id": "[\"[\\\"sample-project\\\",\\\"owner-goals/2025-12-18\\\"]\",\"Priority: Winter plan\"]", "task": "Priority: Winter plan", "kind": "focus-area", "rank": 1, "title": "Winter plan", "goal": null, "focusArea": null, "focusAreaId": null, "product": "Planner", "latestAt": "2026-01-02 09:00", "timesAsked": 1, "status": "done", "evidence": [] }
       ],
-      "openAsks": [] }
+      "asks": [] }
   ]
 }

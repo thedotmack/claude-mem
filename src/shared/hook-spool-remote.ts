@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { HookSpoolEntry } from './hook-spool.js';
+import { DELIVERABLE_ERRORS_PER_EVENT, type HookSpoolEntry } from './hook-spool.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { formatHostForUrl } from './worker-url.js';
 
@@ -53,6 +53,26 @@ const entrySchema = z.discriminatedUnion('kind', [
       transcriptByteOffset: z.number().int().nonnegative().nullable().optional(),
     }).passthrough()).min(1).max(128),
   }), enqueuedAtEpochMs: timestamp }),
+  z.object({ kind: z.literal('deliverables'), payload: commonPayload.extend({
+    cwd: z.string().min(1).max(32768),
+    project: z.string().min(1).max(512),
+    agentId: z.string().max(128).optional(),
+    // One Stop copies at most DELIVERABLES_PER_STOP files (src/cli/deliverables-capture.ts); 128 leaves room for that bound to grow.
+    files: z.array(z.object({
+      sourcePath: z.string().min(1).max(32768),
+      bucketPath: z.string().min(1).max(32768),
+      title: z.string().max(512),
+      kind: z.string().min(1).max(64),
+      bytes: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      declared: z.boolean(),
+      list: z.string().max(512).nullable().optional(),
+      field: z.string().max(512).nullable().optional(),
+      toolUseId: z.string().max(2048).nullable().optional(),
+      occurredAtEpoch: timestamp,
+    }).passthrough()).min(1).max(128),
+    errors: z.array(z.object({ sourcePath: z.string().max(32768), error: z.string().max(2048) }).passthrough()).max(DELIVERABLE_ERRORS_PER_EVENT).optional(),
+  }), enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('work_state_telemetry'), payload: z.discriminatedUnion('kind', [
     workStateTelemetryPayload.extend({
       kind: z.literal('instruction'),
@@ -82,10 +102,11 @@ export function remoteHookSpoolToken(value: unknown): string {
   return token.length <= 1024 && /^[\x20-\x7e]+$/.test(token) ? token : '';
 }
 
-export function usesRemoteHookSpool(host: string | undefined, transport: string = 'auto'): boolean {
+export function usesRemoteHookSpool(host: string | undefined, transport: string = 'auto', workerUrl = ''): boolean {
   transport = transport.trim().toLowerCase();
   if (transport === 'http') return true;
   if (transport === 'filesystem') return false;
+  if (workerUrl.trim()) return true;
   if (!host) return false;
   let normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
   try { normalized = new URL(`http://${formatHostForUrl(host)}`).hostname.replace(/^\[|\]$/g, ''); } catch {}

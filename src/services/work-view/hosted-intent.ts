@@ -1,5 +1,6 @@
 /** Setup's subsidized extraction. The wire contract is claude-mem-pro's /api/pro/intent. */
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -7,10 +8,17 @@ import type { OwnerPrompt } from '../prompt-import/index.js';
 import { getOrCreateIntentCredentials, intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { groupIdFor, readConversationProjects, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
 import { projectRoot } from './session-project.mjs';
+import { readFocusAreas } from './data-source.mjs';
+import { MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows } from './my-focus.mjs';
+import { logger } from '../../utils/logger.js';
 
 /** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
  * Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token budget. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+
+/** claude-mem-pro's /api/pro/intent route sets Vercel's `maxDuration = 300` for GET and POST, so no preflight answer can
+ * arrive after this. It is that provider limit, not a measured latency: the GET has no production traffic to measure yet. */
+export const INTENT_PREFLIGHT_TIMEOUT_MS = 300_000;
 
 const text = z.string().min(1).refine(value => value.trim().length > 0, 'Must contain text.');
 const minute = text.regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
@@ -31,11 +39,30 @@ const resultSchema = z.object({
   groups: z.object({ groups: z.array(group), ignored: z.array(z.object({ conversation: text, reason: text })) }),
   cost_usd: z.number().finite().nonnegative(), model: text, dropped_quotes: z.number().int().nonnegative(),
 });
+/** Cloud turned the run down for budget or rate reasons (HTTP 429/503). Setup continues locally; retrying cannot help until `retryAfter`. */
+export class HostedUnavailableError extends Error {
+  readonly code = 'hosted-unavailable';
+  /** `sent` is true once this call began its upload; false when a preflight or cooldown stopped it first. */
+  constructor(message: string, readonly retryAfter: number, readonly sent = true) { super(message); }
+}
+/** Retry-After is either delay-seconds or an HTTP date (every form starts with the day name). Returns an epoch ms deadline,
+ * `now` when the wait has already elapsed, or null when absent or unreadable. */
+function retryDeadline(header: string | null | undefined, now: number): number | null {
+  const value = header?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return now + Number(value) * 1000;
+  if (!/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/.test(value)) return null;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(date, now) : null;
+}
+const nextUtcMidnight = (now: number) => Math.floor(now / 86_400_000) * 86_400_000 + 86_400_000;
 export type HostedIntentResult = z.infer<typeof resultSchema>;
 /** Cloud's answer plus what saving it needs, kept until the save finishes. */
 interface PendingSave { result: HostedIntentResult; keys: Array<[string, string]>; offset: number; projects: Array<[string, string | undefined]> }
 const COMPLETE_FILE = 'hosted-intent.json';
 const PENDING_FILE = 'hosted-intent-pending.json';
+const COOLDOWN_FILE = 'hosted-intent-cooldown.json';
+interface HostedCooldown { scope: string; until: number; message: string }
 export interface HostedIntentState {
   state: 'idle' | 'running' | 'ok' | 'failed';
   reason: 'setup-scan'; step: 'goals' | null; agent: null;
@@ -50,7 +77,10 @@ export interface HostedIntentOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   appendWorkStateEntry: (entry: { project: string; listName: string; fields: Record<string, string | number | boolean | null> }) => void;
   homeProject: () => string;
+  /** This worker's sync device id, so my-focus rows replay in the same order the worker's snapshot uses. */
+  localDeviceId?: () => string;
   fetch?: typeof fetch;
+  preflightTimeoutMs?: number;
   now?: () => number;
   timezoneOffsetMinutes?: () => number;
 }
@@ -124,11 +154,14 @@ function quoteIso(at: string, offset: number): string {
 
 export class HostedIntent {
   private current: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null };
+  private cooldown: HostedCooldown | null = null;
   constructor(private options: HostedIntentOptions) {}
   state(): HostedIntentState { return { ...this.current }; }
   private iso(): string { return new Date((this.options.now ?? Date.now)()).toISOString(); }
 
   async run(ownerPrompts: OwnerPrompt[], improveProduct: boolean): Promise<void> {
+    // True only between the saved-result checks (their prompts already left in an earlier run) and the upload.
+    let stoppedBeforeUpload = false;
     this.current = { state: 'running', reason: 'setup-scan', step: 'goals', agent: null, startedAt: this.iso(), finishedAt: null, error: null };
     try {
       // An empty scan has nothing to extract: finish without spending a hosted run or replacing saved work.
@@ -148,6 +181,7 @@ export class HostedIntent {
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
+      stoppedBeforeUpload = true;
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       const keys = conversationKeys(ownerPrompts);
@@ -161,17 +195,22 @@ export class HostedIntent {
       // Existing signed-in installations without an install credential retain their account-only path.
       const install = token ? readIntentCredentials(this.options.intentConfigPath)
         : await getOrCreateIntentCredentials({ origin, fetch: this.options.fetch, configPath: this.options.intentConfigPath });
+      // A sign-in or a different Cloud origin has its own admission rules.
+      // Persist only a scope hash and retry metadata, never credentials or prompts.
+      const scope = createHash('sha256').update(JSON.stringify([origin, userId || install?.install_id])).digest('hex');
+      this.checkCooldown(scope);
+      const headers = { ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) };
+      const availability = await this.checkAvailability(origin, headers, scope);
+      if (!availability || typeof availability !== 'object' || (availability as { available?: unknown }).available !== true) {
+        throw new Error('Automatic organization could not check availability. No transcripts were uploaded.');
+      }
+      stoppedBeforeUpload = false;
       // No client retry: a lost response may already have spent this install/account's subsidized run.
       const response = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip',
-          ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) }, body,
+          ...headers }, body,
       });
-      const answer = await response.json().catch(() => null);
-      if (!response.ok) {
-        const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
-        const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
-        throw new Error(`Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`);
-      }
+      const answer = await this.readResponse(response, true, scope);
       const parsed = resultSchema.safeParse(answer);
       if (!parsed.success) throw new Error(`Hosted setup returned an invalid response: ${parsed.error.message}`);
       // Keep Cloud's answer before writing anything from it, so a save that is cut off can be replayed.
@@ -184,8 +223,68 @@ export class HostedIntent {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.current = { ...this.current, state: 'failed', step: null, finishedAt: this.iso(), error: reason };
-      throw new Error(reason);
+      if (error instanceof HostedUnavailableError) throw error;
+      throw Object.assign(new Error(reason), { sent: !stoppedBeforeUpload });
     }
+  }
+
+  /** The deadline covers the response headers and body. A stall says nothing about Cloud's budget, so it sets no cooldown. */
+  private async checkAvailability(origin: string, headers: Record<string, string>, scope: string): Promise<unknown> {
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        // Reject first: aborting makes a body read in progress settle as an unreadable answer.
+        reject(new HostedUnavailableError('Automatic organization did not answer in time. No transcripts were uploaded.', (this.options.now ?? Date.now)(), false));
+        abort.abort();
+      }, this.options.preflightTimeoutMs ?? INTENT_PREFLIGHT_TIMEOUT_MS);
+    });
+    const check = async () => {
+      const preflight = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, { method: 'GET', headers, cache: 'no-store', signal: abort.signal });
+      return this.readResponse(preflight, false, scope, abort.signal);
+    };
+    try { return await Promise.race([check(), deadline]); } finally { clearTimeout(timer); }
+  }
+
+  private checkCooldown(scope: string): void {
+    const path = join(this.options.ledgerDir, COOLDOWN_FILE);
+    if (!this.cooldown && existsSync(path)) {
+      const saved = JSON.parse(readFileSync(path, 'utf8')) as HostedCooldown;
+      if (typeof saved.scope !== 'string' || !Number.isFinite(saved.until) || typeof saved.message !== 'string') {
+        throw new Error('The saved automatic-organization retry state is invalid. No transcripts were uploaded.');
+      }
+      this.cooldown = saved;
+    }
+    const now = (this.options.now ?? Date.now)();
+    if (this.cooldown?.scope === scope && now < this.cooldown.until) {
+      throw new HostedUnavailableError(`${this.cooldown.message} No prompts were uploaded.`, this.cooldown.until, false);
+    }
+    if (this.cooldown && now >= this.cooldown.until) {
+      this.cooldown = null;
+      rmSync(path, { force: true });
+    }
+  }
+
+  private async readResponse(response: Response, sent: boolean, scope: string, abandoned?: AbortSignal): Promise<unknown> {
+    // Retry-After delay starts when the response arrives, after any slow upload and before any slow body.
+    const refusedAt = (this.options.now ?? Date.now)();
+    const answer: unknown = await response.json().catch(() => null);
+    // An answer that lost the preflight deadline must not leave a cooldown behind.
+    abandoned?.throwIfAborted();
+    if (response.ok) return answer;
+    const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
+    const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
+    const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
+    if (response.status === 429 || response.status === 503) {
+      const until = retryDeadline(response.headers.get('retry-after'), refusedAt) ?? nextUtcMidnight(refusedAt);
+      if (until > refusedAt) {
+        this.cooldown = { scope, until, message };
+        mkdirSync(this.options.ledgerDir, { recursive: true });
+        writeJsonAtomic(join(this.options.ledgerDir, COOLDOWN_FILE), this.cooldown);
+      }
+      throw new HostedUnavailableError(message, until, sent);
+    }
+    throw new Error(message);
   }
 
   /** The earlier run's result once every write finished (hosted-intent.json is written last). Invalid files fail loudly. */
@@ -229,10 +328,46 @@ export class HostedIntent {
       source_prompt_count: goals.source_prompt_count, map_path: mapPath, status: 'open',
       source: 'hosted-intent', hosted_generated_at: goals.generated_at,
     }];
-    for (const [kind, items] of [['priority', goals.priorities], ['open-ask', goals.open_asks]] as const) {
-      for (const item of items) rows.push({
-        task: `${kind === 'priority' ? 'Priority' : 'Open ask'}: ${item.title}`, status: 'todo', goal_kind: kind,
-        rank: item.rank, title: item.title, product: item.product, latest_at: item.latest_at, times_asked: item.times_asked,
+    // Cloud's contract still answers priorities and open asks, without the three tests or area matching. Its
+    // priorities are saved as focus areas and its open asks as asks under no area, the same rows save_goals.py writes;
+    // the next local refresh sorts them again with the three tests (refresh-task re-sorts legacy and unmatched items).
+    const database = this.options.openDatabase();
+    let savedAreas: ReturnType<typeof readFocusAreas>, previousGoals: ReturnType<typeof readGoals>['goals'];
+    try { savedAreas = readFocusAreas(database, { localDeviceId: this.options.localDeviceId?.() ?? '' }); previousGoals = readGoals(database).goals; } finally { database.close(); }
+    // An area id is not derived from its name (a rename keeps it): it hashes this Cloud run and the item's place in it,
+    // so a save replayed after a cut-off rewrites the same areas instead of adding copies. 12 hex characters: the
+    // length of a random area id (newFocusAreaId, 6 bytes) and of groupIdFor's hash.
+    const areaIds = goals.priorities.map((_item, index) => `fa_${createHash('sha256').update(JSON.stringify(['hosted-intent', goals.generated_at, index])).digest('hex').slice(0, 12)}`);
+    const thisRun = new Set(areaIds);
+    // Without a model to judge which saved area a Cloud priority already is (names are never compared), areas
+    // saved before this run (synced from another computer) mean no new ones are suggested here. The items stay
+    // in owner-goals without an area id, and the next local refresh matches them.
+    const otherAreas = savedAreas.filter(area => !thisRun.has(area.focusAreaId));
+    // Cloud's contract allows a priority title that reuses a nav label ("Ship the My Work viewer"), which no focus area
+    // may be named (refuseNavWordName). Its item is still saved, with no area id and the reason in focus_area_deferred,
+    // and the next local refresh sorts it again (refresh-task re-sorts a focus area without one) under a name of its own.
+    const deferred = new Map(goals.priorities.flatMap((item, index) => {
+      const navWord = navWordIn(item.title);
+      return navWord ? [[index, `Not suggested in My Focus: "${item.title}" reuses the nav word "${navWord}". The next local refresh names this area.`] as const] : [];
+    }));
+    const minedIndexes = goals.priorities.flatMap((_item, index) => deferred.has(index) ? [] : [index]);
+    const focusRows = otherAreas.length ? [] : ownerGoalsAreaRows(minedIndexes.map(index => {
+      const item = goals.priorities[index];
+      return { name: item.title, goal: '', rank: item.rank, matches: savedAreas.some(area => area.focusAreaId === areaIds[index]) ? areaIds[index] : null,
+        evidence: `From your prompts: asked ${item.times_asked} times, latest ${item.latest_at}.` };
+    }), savedAreas, at => areaIds[minedIndexes[at]]).rows;
+    if (otherAreas.length) {
+      logger.warn('WORKER', 'Hosted setup saved its focus areas without suggesting them: My Focus already has areas to match against', { savedAreas: otherAreas.length, minedAreas: goals.priorities.length });
+    } else if (deferred.size) {
+      logger.warn('WORKER', 'Hosted setup saved priorities without suggesting them as focus areas: their titles reuse a nav word (see focus_area_deferred on each owner-goals item)', { titles: [...deferred.keys()].map(index => goals.priorities[index].title) });
+    }
+    for (const [kind, items] of [['focus-area', goals.priorities], ['ask', goals.open_asks]] as const) {
+      for (const [index, item] of items.entries()) rows.push({
+        task: `${kind === 'focus-area' ? 'Focus area' : 'Ask'}: ${item.title}`, status: 'todo', goal_kind: kind,
+        rank: item.rank, title: item.title, ...(kind === 'ask' ? { focus_area: null } : {}),
+        focus_area_id: kind === 'focus-area' && !otherAreas.length && !deferred.has(index) ? areaIds[index] : null,
+        ...(kind === 'focus-area' ? { focus_area_deferred: otherAreas.length ? null : deferred.get(index) ?? null } : {}),
+        latest_at: item.latest_at, times_asked: item.times_asked,
         snapshot: goals.generated_at, source: 'hosted-intent', hosted_snapshot: goals.generated_at,
         // JSON preserves quotes containing newlines; the line format remains for older readers.
         evidence_json: JSON.stringify(item.evidence), evidence: item.evidence.map(quote => `${quote.at} | ${quote.quote}`).join('\n'),
@@ -240,14 +375,12 @@ export class HostedIntent {
     }
     const tasks = new Set(rows.slice(1).map(row => row.task));
     if (tasks.size !== rows.length - 1) throw new Error('Hosted extraction returned duplicate goal titles.');
-    const database = this.options.openDatabase();
-    try {
-      for (const previous of readGoals(database).goals) if (!tasks.has(previous.goal)) rows.push({ task: previous.goal, status: 'dropped' });
-    } finally { database.close(); }
+    for (const previous of previousGoals) if (!tasks.has(previous.taskKey)) rows.push({ task: previous.taskKey, status: 'dropped' });
     // Internal work-state writes preserve the entire Cloud response. The public route's 2,000-character
     // request bound is not applied here: trimming summaries or evidence would silently change the result.
     mkdirSync(join(ledgerDir, 'owner-goals'), { recursive: true });
     writeFileSync(mapPath, result.goals.map, { mode: 0o600 });
+    for (const fields of focusRows) this.options.appendWorkStateEntry({ project: this.options.homeProject(), listName: MY_FOCUS_LIST, fields });
     for (const fields of rows) this.options.appendWorkStateEntry({ project: this.options.homeProject(), listName: 'owner-goals', fields });
     writeJsonAtomic(join(ledgerDir, 'request-groups.json'), groups);
     writeJsonAtomic(join(ledgerDir, 'story.json'), {

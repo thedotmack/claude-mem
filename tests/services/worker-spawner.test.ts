@@ -404,13 +404,13 @@ describe('ensureWorkerStarted startup readiness', () => {
   it('reports why the daemon launch failed and sends it as launch_failed', async () => {
     resetMocks();
     processManager.spawnDaemon.mockReturnValue(undefined);
-    processManager.getLastWorkerDaemonLaunchError.mockReturnValue('powershell.exe could not launch the worker: powershell Start-Process exited 1');
+    processManager.getLastWorkerDaemonLaunchError.mockReturnValue('C:\\bun\\bun.exe could not launch the worker: spawn ENOENT');
 
     expect(await ensureWorkerStarted(39008, import.meta.filename)).toBe('dead');
-    expect(getLastWorkerBootFailure()).toBe('powershell.exe could not launch the worker: powershell Start-Process exited 1');
+    expect(getLastWorkerBootFailure()).toBe('C:\\bun\\bun.exe could not launch the worker: spawn ENOENT');
     const marker = readFileSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), 'utf-8');
     expect(marker).toContain('could not be launched');
-    expect(marker).toContain('Start-Process exited 1');
+    expect(marker).toContain('spawn ENOENT');
     expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
       'worker_start_failed',
       expect.objectContaining({ outcome: 'dead', error_category: 'launch_failed' }),
