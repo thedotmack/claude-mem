@@ -1,7 +1,13 @@
 import { existsSync, renameSync } from 'fs';
 import { readJsonFileWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import {
+  classifySettingsDocument,
+  isSettingsRecord as isRecord,
+  settingsTarget,
+  type SettingsDocument,
+} from './settings-document-shape.js';
 
-export type SettingsDocument = Record<string, unknown>;
+export { classifySettingsDocument, settingsTarget, type SettingsDocument };
 
 export type SettingsDocumentResult = {
   status: 'created' | 'updated' | 'unchanged' | 'refused';
@@ -11,35 +17,11 @@ export type SettingsDocumentResult = {
   quarantinedTo?: string;
 };
 
-const isRecord = (value: unknown): value is SettingsDocument =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-
 /**
  * settings.json carries secrets (API keys, the CMEM Pro setup token, sync
  * tokens), so every write creates it owner-only from the first byte.
  */
 const SETTINGS_FILE_MODE = 0o600;
-
-/**
- * Where claude-mem's keys live — the ONE rule every settings reader and writer
- * uses, including SettingsDefaultsManager.loadFromFile, so a write always lands
- * where the next read looks:
- *  - nested when the `env` block holds `CLAUDE_MEM_*` keys: a Claude-Code-style
- *    wrapped document. `CLAUDE_MEM_*` keys at its root are stale copies — the
- *    old viewer wrote the root of wrapped documents, secrets as `****` masks —
- *    so they are never read, and the next write drops them;
- *  - flat otherwise: claude-mem's keys at the root, and an `env` block beside
- *    them (with no `CLAUDE_MEM_*` keys) is Claude Code's own.
- * A wrapped document keeps its wrapper and root peers.
- */
-export function classifySettingsDocument(document: SettingsDocument): 'flat' | 'nested' {
-  const env = document.env;
-  return isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_MEM_')) ? 'nested' : 'flat';
-}
-
-export function settingsTarget(document: SettingsDocument): SettingsDocument {
-  return classifySettingsDocument(document) === 'nested' ? document.env as SettingsDocument : document;
-}
 
 /**
  * The document as it is written back: in a nested document, the stale root
