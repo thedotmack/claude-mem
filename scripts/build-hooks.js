@@ -160,8 +160,8 @@ const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
 const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
 
 // PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
-// timeline, plus the tools whose calls the memory-search handler inspects.
-const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+// timeline (read_file is Grok Build's read tool), plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^read_file$|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
 
 export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
