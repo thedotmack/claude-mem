@@ -10,8 +10,11 @@ export const MEDIA_METADATA_NAMESPACE = 'cmem_media_v1' as const;
 /**
  * Frozen v1 bounds (docs/media-contract-v1.md). Each one's reason is next to it.
  * "Abuse protection" means the bound keeps one request or one owner from using
- * unbounded memory, CPU, storage or bandwidth. Hitting any bound rejects the
- * image with its MediaError code; nothing is truncated.
+ * unbounded memory, CPU, storage or bandwidth. Pro's upload route rejects an
+ * image that hits any bound with its MediaError code. The local worker instead
+ * fits a canonical or derivative over its pixel, dimension or byte bound
+ * (docs/media-contract-v1.md, "Where the size bounds apply"). Nothing is
+ * truncated.
  */
 export const MEDIA_LIMITS = Object.freeze({
   // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
@@ -24,6 +27,14 @@ export const MEDIA_LIMITS = Object.freeze({
   // source must still fit, and a stored copy is served back in one Vercel
   // response, also limited to 4.5 MB.
   maxCanonicalBytes: 3 * 1024 * 1024,
+  // Owner's rule, 2026-11-05/06: no stored copy is multiple megabytes, and every
+  // copy is lossy WebP. Both converters fit each canonical they encode into this.
+  // maxCanonicalBytes stays the bound for an accepted upload and for reading a
+  // copy stored before this rule (lossless, up to 3 MiB). Measured 2026-11-06 at
+  // quality 80: the largest of 29 real screenshots is 406 KiB, and a 2800x23880
+  // full-page screenshot fitted to 8192 px is 528 KiB, so all keep full
+  // resolution with about 2 times headroom.
+  maxEncodedCanonicalBytes: 1024 * 1024,
   // Abuse protection (decompression bombs): a decode holds about 4 bytes per
   // pixel, so at most about 96 MB. A 6016x3384 display (20.4 million px) fits.
   maxPixels: 24_000_000,
