@@ -389,11 +389,13 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
         return { ok: true, status: 'skipped', reason: 'already_processed' };
       }
     } catch (error) {
-      // A failed lookup is not proof of completion. Requeue to preserve work.
-      logger.warn('INGEST', 'Committed tool-use lookup failed (observation still queued)', {
+      // A failed lookup cannot tell a replay from new work. Fail toward no
+      // spend: a DB fault must never turn a replay into unrequested paid work.
+      logger.error('INGEST', 'Committed tool-use lookup failed; observation skipped, not queued', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
       }, error instanceof Error ? error : new Error(String(error)));
+      return { ok: true, status: 'skipped', reason: 'committed_lookup_failed' };
     }
   }
 
