@@ -132,6 +132,8 @@ export interface ProjectionLease {
 	head_seq: string;
 	projected_seq: string;
 	target_seq: string;
+	/** Busy answers only: ms until the incumbent lease expires. */
+	retry_after_ms?: number;
 }
 
 export interface ProjectionPage {
@@ -707,6 +709,7 @@ export class SyncHub extends DurableObject<Env> {
 				head_seq: head,
 				projected_seq: projected,
 				target_seq: target,
+				retry_after_ms: Number(BigInt(existingExpiry) - BigInt(nowValue)),
 			};
 		}
 		const token = crypto.randomUUID();

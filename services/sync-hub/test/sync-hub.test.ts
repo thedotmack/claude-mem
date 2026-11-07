@@ -849,6 +849,112 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 	});
 });
 
+describe("projection lease after a drain stops", () => {
+	/** The real stub, with hooks around page reads and checkpoints. */
+	function hookedEnv(
+		realStub: ReturnType<typeof hub>,
+		hooks: { afterCheckpoint?: () => void; pageError?: Error } = {},
+	): Env {
+		const proxyStub = {
+			getProjectionState: () => realStub.getProjectionState(),
+			acquireProjectionLease: (targetSeq: string, now?: number) => now === undefined
+				? realStub.acquireProjectionLease(targetSeq)
+				: realStub.acquireProjectionLease(targetSeq, now),
+			getProjectionPage: (
+				leaseToken: string,
+				targetSeq: string,
+				projectionUserId: string,
+				maxOps: number,
+				maxBytes: number,
+			) => {
+				if (hooks.pageError) throw hooks.pageError;
+				return realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes);
+			},
+			advanceProjectionCheckpoint: async (
+				leaseToken: string,
+				epoch: string,
+				fromSeqExclusive: string,
+				throughSeq: string,
+			) => {
+				const state = await realStub.advanceProjectionCheckpoint(leaseToken, epoch, fromSeqExclusive, throughSeq);
+				hooks.afterCheckpoint?.();
+				return state;
+			},
+			releaseProjectionLease: (leaseToken: string) => realStub.releaseProjectionLease(leaseToken),
+		};
+		return { ...projectionEnv("success"), SYNC_HUB: { getByName: () => proxyStub } } as unknown as Env;
+	}
+
+	async function leaseIsFree(stub: ReturnType<typeof hub>, targetSeq: string): Promise<boolean> {
+		const lease = await stub.acquireProjectionLease(targetSeq);
+		if (lease.acquired) await stub.releaseProjectionLease(lease.lease_token!);
+		return lease.acquired;
+	}
+
+	it("hands the lease to the next push when the client leaves between pages", async () => {
+		const userId = "projection-client-left-between-pages";
+		const stub = hub(userId);
+		const ops = await Promise.all(Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))));
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+		const client = new AbortController();
+
+		const result = await drainProjection(hookedEnv(stub, { afterCheckpoint: () => client.abort() }), userId, pushed.head_seq, {
+			fetchTimeoutMs: 100,
+			clientSignal: client.signal,
+		});
+
+		expect(result).toMatchObject({ ok: false, error: "projection_client_disconnected", projectedSeq: "100" });
+		expect((await stub.getProjectionState()).projected_seq).toBe("100");
+		expect(await leaseIsFree(stub, pushed.head_seq)).toBe(true);
+	});
+
+	it("takes no lease for a client that already left", async () => {
+		const userId = "projection-client-left-before-lease";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+
+		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			fetchTimeoutMs: 100,
+			clientSignal: AbortSignal.abort(),
+		});
+
+		expect(result).toMatchObject({ ok: false, error: "projection_client_disconnected", projectedSeq: "0" });
+		expect(await leaseIsFree(stub, pushed.head_seq)).toBe(true);
+	});
+
+	it("releases the lease when the first page fails before anything is sent", async () => {
+		const userId = "projection-first-page-throws";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+
+		const result = await drainProjection(
+			hookedEnv(stub, { pageError: new Error("simulated page read failure") }),
+			userId,
+			pushed.head_seq,
+			{ fetchTimeoutMs: 100 },
+		);
+
+		expect(result).toMatchObject({ ok: false, error: "simulated page read failure", retryable: true });
+		expect(await leaseIsFree(stub, pushed.head_seq)).toBe(true);
+	});
+
+	it("tells a busy push how long the incumbent lease has left", async () => {
+		const userId = "projection-busy-retry-after";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const held = await stub.acquireProjectionLease(pushed.head_seq, 1_000);
+		expect(held.acquired).toBe(true);
+
+		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => 31_000,
+			fetchTimeoutMs: 100,
+		});
+
+		expect(result).toMatchObject({ ok: false, error: "projection_busy", retryAfterSeconds: 60 });
+		await stub.releaseProjectionLease(held.lease_token!);
+	});
+});
+
 describe("large cursor pagination", () => {
 	it("reads 10,001 canonical operations without overlap or gaps", async () => {
 		const stub = hub("pagination-10001");
