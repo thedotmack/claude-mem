@@ -199,7 +199,19 @@ function labelsInsideMemoryTags(scanned: { toolInput: unknown; toolResponse: unk
   return hidden;
 }
 
-export async function captureObservationMedia(input: CaptureInput, store?: MediaStore): Promise<CaptureResult> {
+export async function captureObservationMedia(
+  input: CaptureInput,
+  /**
+   * The store, or a getter called only once an event holds an image. With
+   * capture on by default, the getter keeps text-only events from touching
+   * media storage at all; a getter that throws fails that image as
+   * `storage_unavailable`, never the event.
+   */
+  store?: MediaStore | (() => MediaStore),
+): Promise<CaptureResult> {
+  let resolvedStore: MediaStore | undefined;
+  const storeForCandidate = (): MediaStore | undefined =>
+    resolvedStore ??= typeof store === 'function' ? store() : store;
   const scanned = scanMediaFields(input.toolInput, input.toolResponse, input.enabled ? 'capture' : 'disabled');
   const refs: MediaAttachmentRef[] = [];
   const failures: MediaFailureDescriptor[] = [...scanned.failures];
@@ -213,8 +225,9 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
     if (privateLabels.has(candidate.label)) continue;
     try {
       if (!platform || !identity || !store) throw new MediaError('unsupported_source');
+      const mediaStore = storeForCandidate()!;
       const candidateEventKey = mediaEventKey(platform, identity);
-      const prior = store.findEventSource(candidateEventKey, candidate.pointer);
+      const prior = mediaStore.findEventSource(candidateEventKey, candidate.pointer);
       if (prior) {
         // Known event: keep its key even if replay validation below throws,
         // so ingest still finds its committed result and never re-queues it
@@ -248,7 +261,7 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
           ? { source_locator: { kind: 'local_file' as const, path: resolve(realpathSync(input.cwd), candidate.filePath) } }
           : {}),
       };
-      const ref = await store.capture({
+      const ref = await mediaStore.capture({
         sessionDbId: input.sessionDbId,
         provenance,
         label: candidate.label,
