@@ -533,6 +533,28 @@ describe("Observation I/O event handlers", () => {
     assert.equal(initRequest!.body.project, "my-project");
   });
 
+  it("stamps platformSource openclaw on session init, observation and summarize posts", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "source-test" });
+    await fireEvent("after_tool_call", {
+      toolName: "Read",
+      params: { file_path: "/src/index.ts" },
+      result: { content: [{ type: "text", text: "contents" }] },
+    }, { sessionKey: "source-test" });
+    await fireEvent("agent_end", {
+      messages: [{ role: "assistant", content: "done" }],
+    }, { sessionKey: "source-test" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    for (const url of ["/api/sessions/init", "/api/sessions/observations", "/api/sessions/summarize"]) {
+      const request = receivedRequests.find((r) => r.url === url);
+      assert.ok(request, `should send ${url}`);
+      assert.equal(request!.body.platformSource, "openclaw", url);
+    }
+  });
+
   it("claude_mem_status command reports worker health", async () => {
     const { api, getCommand } = createMockApi({ workerPort });
     claudeMemPlugin(api);
