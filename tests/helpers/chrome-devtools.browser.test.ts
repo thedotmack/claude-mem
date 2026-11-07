@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import { join } from 'node:path';
-import { REPOSITORY_ROOT, chromeExecutablePath, failOnCiWithoutChrome } from './chrome-devtools';
+import { createServer } from 'node:http';
+import { REPOSITORY_ROOT, chromeExecutablePath, connectToPage, failOnCiWithoutChrome, launchChrome, withTimeout } from './chrome-devtools';
 
 failOnCiWithoutChrome('CI requires Chrome for the Chrome teardown test');
 
@@ -31,4 +32,42 @@ const MAX_EXIT_DELAY_AFTER_CLOSE_MS = 2000;
   const exitCode = await child.exited;
   expect(exitCode).toBe(0);
   expect(Date.now() - closedAt).toBeLessThan(MAX_EXIT_DELAY_AFTER_CLOSE_MS);
+}, 20000);
+
+(chromeExecutablePath ? it : it.skip)('the matrix content predicate waits safely for a streamed document body', async () => {
+  let releaseBody = () => {};
+  const server = createServer((request, response) => {
+    if (request.url !== '/viewer') { response.writeHead(204).end(); return; }
+    response.writeHead(200, { 'Content-Type': 'text/html' });
+    response.flushHeaders();
+    response.write('<!doctype html><html><head><script>window.documentHeadReady = true</script>');
+    releaseBody = () => { if (!response.writableEnded) response.end('</head><body>MATRIX_FEED_INITIAL</body></html>'); };
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const browser = launchChrome('about:blank', { remoteDebugging: true });
+  let page: Awaited<ReturnType<typeof connectToPage>> | undefined;
+  let navigation: Promise<unknown> | undefined;
+  try {
+    page = await connectToPage(browser, 'about:blank');
+    navigation = page.send('Page.navigate', { url: `http://127.0.0.1:${port}/viewer` });
+    void navigation.catch(() => {});
+    await withTimeout((async () => { while (!(await page!.evaluate('window.documentHeadReady === true'))) await Bun.sleep(10); })(), 5_000, 'Streamed head did not load');
+    expect(await page.evaluate("location.pathname === '/viewer' && document.body === null")).toBe(true);
+    // This is the exact pre-readiness predicate that failed the sync matrix.
+    const oldFailure = await page.evaluate("(() => { try { document.body.textContent.includes('MATRIX_FEED_INITIAL'); } catch (error) { return {name:error.name,message:error.message}; } })()");
+    expect(oldFailure.name).toBe('TypeError');
+    expect(oldFailure.message).toContain('Cannot read properties of null');
+    const predicate = "location.pathname === '/viewer' && document.body?.textContent?.includes('MATRIX_FEED_INITIAL') === true";
+    expect(await page.evaluate(predicate)).toBe(false);
+    releaseBody();
+    await navigation;
+    await withTimeout((async () => { while (!(await page.evaluate(predicate))) await Bun.sleep(10); })(), 5_000, 'Streamed body did not arrive');
+    expect(await page.evaluate(predicate)).toBe(true);
+    const error = await page.evaluate("(() => { throw new Error('matrix diagnostic detail'); })()").then(() => null, error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('matrix diagnostic detail');
+  } finally {
+    releaseBody(); page?.close(); await browser.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 }, 20000);

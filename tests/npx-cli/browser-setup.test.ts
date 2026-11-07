@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import { runBrowserSetup, settingsChangesNeedingRestart, setupPageUrl, shouldUseBrowserSetup, waitForBackgroundWorkToFinish } from '../../src/npx-cli/install/browser-setup.js';
+import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, setupPageUrl, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish } from '../../src/npx-cli/install/browser-setup.js';
 import type { SetupStateView } from '../../src/shared/setup-state.js';
 
 const GUI = { interactive: true, runtime: 'worker' as const, setupComplete: false };
@@ -22,6 +22,41 @@ describe('shouldUseBrowserSetup', () => {
   });
   it('shows the funnel once per machine', () => {
     expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true })).toBe(false);
+  });
+});
+
+const FRESH_AGENT_INSTALL = {
+  ci: false,
+  alreadyInstalled: false,
+  setupComplete: false,
+  failedIdeCount: 0,
+  providerSource: 'default',
+  runtime: 'worker' as const,
+};
+
+describe('shouldPrintAgentBrowserSetupHint', () => {
+  it('tells the agent how to reach browser setup after a fresh unattended worker install', () => {
+    expect(shouldPrintAgentBrowserSetupHint(FRESH_AGENT_INSTALL)).toBe(true);
+    expect(AGENT_BROWSER_SETUP_HINT).toStartWith('AGENT: ');
+    expect(AGENT_BROWSER_SETUP_HINT).toContain('npx claude-mem install --runtime worker');
+    expect(AGENT_BROWSER_SETUP_HINT).toContain('(PTY)');
+  });
+  it('stays quiet under CI', () => {
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, ci: true })).toBe(false);
+  });
+  it('stays quiet when a provider was chosen by flag or reused from settings', () => {
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, providerSource: 'flag' })).toBe(false);
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, providerSource: 'persisted' })).toBe(false);
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, providerSource: undefined })).toBe(false);
+  });
+  it('stays quiet on a reinstall, after setup finished, or after an IDE setup failure', () => {
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, alreadyInstalled: true })).toBe(false);
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, setupComplete: true })).toBe(false);
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, failedIdeCount: 1 })).toBe(false);
+  });
+  it('stays quiet for the server runtime and --no-auto-start, which never use browser setup', () => {
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, runtime: 'server' })).toBe(false);
+    expect(shouldPrintAgentBrowserSetupHint({ ...FRESH_AGENT_INSTALL, noAutoStart: true })).toBe(false);
   });
 });
 

@@ -1,10 +1,13 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
+import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
+import { getGooseConfigPath } from '../../services/integrations/McpIntegrations.js';
+import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export interface IDEInfo {
   id: string;
@@ -21,10 +24,9 @@ export function initialIDESelection(ides: IDEInfo[]): string[] {
 function isCommandInPath(command: string): boolean {
   try {
     if (IS_WINDOWS) {
-      execFileSync('where.exe', [command], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      // System32 where.exe with current-directory hits dropped: a planted
+      // <command>.exe in the project dir must not count as an install.
+      return lookupWindowsCommandCandidates(command).length > 0;
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
@@ -96,6 +98,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks + MCP integration',
     },
     {
+      id: 'devin',
+      label: 'Devin CLI / Desktop',
+      detected: existsSync(devinConfigPath()) || isCommandInPath('devin'),
+      hint: 'hooks integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
@@ -147,7 +155,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'goose',
       label: 'Goose',
       detected:
-        existsSync(join(home, '.config', 'goose')) || isCommandInPath('goose'),
+        existsSync(dirname(getGooseConfigPath())) || isCommandInPath('goose'),
       hint: 'MCP-based integration',
     },
     {

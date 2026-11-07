@@ -64,10 +64,11 @@ export class CorpusBuilder {
 
     logger.debug('WORKER', `Search returned ${observationIds.length} observation IDs`);
 
-    const hydrateOptions: { orderBy?: 'date_asc' | 'date_desc'; limit?: number; project?: string; type?: string | string[] } = {
+    const hydrateOptions: { orderBy?: 'date_asc' | 'date_desc'; limit?: number; projects?: string[]; type?: string | string[] } = {
       orderBy: 'date_asc',
     };
-    if (filter.project) hydrateOptions.project = filter.project;
+    // Hydration must retain the same adopted-project scope as selection.
+    if (filter.project) hydrateOptions.projects = this.sessionStore.getProjectReadKeys([filter.project]);
     if (filter.types && filter.types.length > 0) hydrateOptions.type = filter.types;
     if (filter.limit) hydrateOptions.limit = filter.limit;
 

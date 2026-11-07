@@ -68,18 +68,19 @@ export function teamBrainConnection(settings: Partial<TeamBrainSettings>): TeamB
 }
 
 /**
- * Room the context body leaves, once this install is in a team, for what the
- * SessionStart hook appends after it: the brief, then the memory instructions
- * (unless turned off). The body is fitted to the host's delivery limit minus
- * this (ContextInput.reserveChars, the work-state pattern), so the brief is not
- * routinely cut to fit. Without a team nothing is reserved.
+ * Room the context body leaves for what the SessionStart hook appends after
+ * it: the brief (once this install is in a team), then the memory instructions
+ * (unless turned off, with or without a team). The body is fitted to the
+ * host's delivery limit minus this (ContextInput.reserveChars, the work-state
+ * pattern), so the whole block stays inside the limit and the brief is not
+ * routinely cut to fit.
  */
 export function teamBriefReserveChars(
   settings: Partial<TeamBrainSettings> & { CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED?: string },
 ): number {
-  if (!teamBrainConnection(settings)) return 0;
+  const brief = teamBrainConnection(settings) ? TEAM_BRIEF_RESERVE_CHARS : 0;
   const instructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? 0 : MEMORY_PLUGIN_INSTRUCTIONS.length + 2;
-  return TEAM_BRIEF_RESERVE_CHARS + instructions;
+  return brief + instructions;
 }
 
 /** A URL, or null when the text is not one. Never throws. */

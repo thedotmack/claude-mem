@@ -12,6 +12,24 @@ a cloud account, a new model call, or an internet connection to show your work.
 The original memory timeline, sessions, settings and console remain under
 **Memory & settings**, at `/viewer` on the same worker.
 
+Opening the panel and switching between its pages are the only things it
+reports: two anonymous [telemetry](/telemetry) counts (`work_view_opened`,
+`work_view_switched`) that carry the page name and nothing else. They never
+include your requests, prompts, observations or file paths, and
+`npx claude-mem telemetry disable` turns the counts off.
+
+## Browser setup and your prompts
+
+The browser setup reads your local agent histories (last 30 days) on this
+computer only. Nothing is uploaded until the scan finishes and you choose
+**Discover My Work, Rules & Focus**. That upload sends the full text of the prompts
+you typed, with session IDs, project names, folder paths and timestamps, to
+cmem.ai, which processes them with a third-party AI model provider. You can
+untick any tool before uploading, or choose **Skip this step** to send nothing.
+The separate **Share anonymous usage statistics to help improve your Claude-mem
+experience** box is checked by default. You can uncheck it before continuing;
+it does not start transcript analysis.
+
 ## Working, ready and checked
 
 - **In progress** means the latest saved work state says work is underway. It is

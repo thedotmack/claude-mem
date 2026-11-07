@@ -457,6 +457,19 @@ export class CodexAppServerClient {
     return this.closePromise;
   }
 
+  /**
+   * Kill the running app-server child without retiring this client, so the
+   * next `ensureStarted()` spawns a fresh process that reads the current
+   * credentials from disk. Used by the pool when a recovery probe follows
+   * an auth cooldown: the stale child still holds the old OAuth token in
+   * memory, and a `codex login` in another terminal wrote new tokens that
+   * only a fresh spawn will pick up.
+   */
+  async recycle(): Promise<void> {
+    if (this.closed || !this.child) return;
+    await this.invalidate(new Error('Codex app-server recycled for credential refresh'));
+  }
+
   private async withExclusive<T>(signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
     if (this.closed) throw new Error('Codex app-server client closed');
 
@@ -754,7 +767,9 @@ export class CodexAppServerClient {
       });
       child.on('error', error => this.onChildExit(child, error));
       child.on('close', (code, childSignal) => {
-        this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
+        const error = new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`);
+        Object.assign(error, { exitCode: code, exitSignal: childSignal });
+        this.onChildExit(child, error);
       });
 
       if (child.pid) {

@@ -25,6 +25,8 @@ export interface T3CodeProvider {
   environment: NodeJS.ProcessEnv;
   launchArgs: string;
   setupError?: string;
+  /** T3 never saved this built-in provider; we only inferred it from its home. */
+  unsavedDefault?: boolean;
 }
 
 export interface T3CodeOptions {
@@ -93,6 +95,17 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
   }
   // A newly initialized settings document may not yet persist provider defaults.
   if (entries.length === 0 && Object.keys(legacy).length === 0) entries.push(['codex', { driver: 'codex' }]);
+  // T3 saves only what differs from its defaults, so a built-in provider with
+  // no saved entry is still on (#5262). Use it when its home exists (the CLI
+  // has been set up here). Removal leaves those homes alone: they are the CLI's own.
+  const unsaved = new Set<string>();
+  if (!forRemoval) {
+    for (const driver of ['codex', 'claudeAgent'] as const) {
+      if (entries.some(([id]) => id === driver)) continue;
+      entries.push([driver, { driver }]);
+      unsaved.add(driver);
+    }
+  }
 
   const providers: T3CodeProvider[] = [];
   for (const [id, instance] of entries) {
@@ -121,6 +134,7 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
     // Codex shadow homes share config.toml and plugins with this source home.
     // Install into the source, never create a shadow config that blocks T3's links.
     const homePath = resolve(expandPath(homeValue));
+    if (unsaved.has(id) && !existsSync(homePath)) continue;
     environment[homeVariable] = homePath;
     let command = expandPath(stringSetting(config, 'binaryPath').trim() || (driver === 'codex' ? 'codex' : 'claude'));
     let setupError: string | undefined;
@@ -129,7 +143,7 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
       catch (error) { setupError = error instanceof Error ? error.message : String(error); }
     }
     if (process.platform === 'win32' && !/[\/\\]/.test(command)) command = lookupWindowsCommand(command) ?? (/\.(?:cmd|bat|exe|com)$/i.test(command) ? command : `${command}.cmd`);
-    providers.push({ id, driver, command, homePath, environment, launchArgs: stringSetting(config, 'launchArgs'), setupError });
+    providers.push({ id, driver, command, homePath, environment, launchArgs: stringSetting(config, 'launchArgs'), setupError, unsavedDefault: unsaved.has(id) });
   }
   return providers;
 }
@@ -170,6 +184,17 @@ function runProvider(provider: T3CodeProvider, args: string[], spawn: NonNullabl
     throw new Error(`${provider.command} ${args.slice(0, 3).join(' ')} failed: ${(result.stderr || result.stdout || `exit ${result.status}`).trim().slice(0, 2000)}`);
   }
   return result.stdout || '';
+}
+
+/**
+ * A home folder can outlive its CLI, so an unsaved default may have nothing to
+ * run. The user never asked for that provider, so it shouldn't fail the install.
+ */
+function providerCliMissing(provider: T3CodeProvider, spawn: NonNullable<T3CodeOptions['spawn']>): boolean {
+  // Discovery rewrites an unresolved bare name to `<name>.cmd`, which runs through
+  // cmd.exe and fails with an exit code rather than ENOENT, so look it up instead.
+  if (process.platform === 'win32' && !/[\/\\]/.test(provider.command) && lookupWindowsCommand(provider.command) === null) return true;
+  return (spawn(provider, ['--version']).error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
 function pluginEnabled(provider: T3CodeProvider, requireHooks = true): boolean {
@@ -244,6 +269,10 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
       if (installed.has(key)) continue;
       try {
         if (provider.setupError) throw new Error(provider.setupError);
+        if (provider.unsavedDefault && providerCliMissing(provider, spawn)) {
+          console.log(`T3 Code ${provider.id}: skipped, ${provider.command} not found`);
+          continue;
+        }
         if (provider.driver === 'codex') {
           installCodexPluginForHome({ marketplaceRoot: root, homePath: provider.homePath, spawn: args => spawn(provider, args) });
         } else {
@@ -273,6 +302,10 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
         console.error(`T3 Code ${provider.id}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    if (installed.size === 0 && !failed) {
+      console.error('T3 Code setup failed: only default Codex or Claude Code providers apply here, and none of their CLIs were found. Install one, or finish its setup in T3 Code, then rerun the installer.');
+      return 1;
+    }
     console.log('Restart T3 Code and start a new thread. Trust Claude-Mem hooks if your provider prompts for approval.');
     return failed ? 1 : 0;
   } catch (error) {
@@ -287,7 +320,8 @@ export function uninstallT3Code(options: T3CodeOptions = {}): number {
   const file = t3CodeSettingsPath(options);
   if (!existsSync(file)) return 0;
   try {
-    for (const provider of discoverT3CodeProviders(file, options.environment, true)) {
+    const removalProviders = discoverT3CodeProviders(file, options.environment, true);
+    for (const provider of removalProviders) {
       if (!pluginEnabled(provider, false)) continue;
       if (provider.driver === 'codex') disableCodexPluginForHome(provider.homePath);
       else {
@@ -298,6 +332,13 @@ export function uninstallT3Code(options: T3CodeOptions = {}): number {
       }
     }
     console.log('Claude-Mem disabled in T3 Code provider homes. Restart T3 Code.');
+    // Unsaved defaults are the CLI's own homes, so they stay on, but T3 keeps
+    // capturing through them: say so instead of implying everything is off.
+    const removedIds = new Set(removalProviders.map(provider => provider.id));
+    for (const provider of discoverT3CodeProviders(file, options.environment)) {
+      if (removedIds.has(provider.id) || !pluginEnabled(provider, false)) continue;
+      console.log(`Claude-Mem stays enabled in ${provider.homePath}: T3 uses it as an unsaved default and it is shared with the CLI. Run npx claude-mem uninstall to turn it off.`);
+    }
     return 0;
   } catch (error) {
     console.error(`T3 Code removal failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -308,12 +349,19 @@ export function uninstallT3Code(options: T3CodeOptions = {}): number {
 export function t3CodeStatus(options: T3CodeOptions = {}): number {
   try {
     const providers = discoverT3CodeProviders(t3CodeSettingsPath(options), options.environment);
-    let complete = providers.length > 0;
+    let complete = true;
+    let checkedProviderCount = 0;
+    const spawn = options.spawn ?? spawnProvider;
     for (const provider of providers) {
       try {
         if (provider.setupError) throw new Error(provider.setupError);
+        if (provider.unsavedDefault && providerCliMissing(provider, spawn)) {
+          console.log(`T3 Code ${provider.id}: skipped, ${provider.command} not found`);
+          continue;
+        }
+        checkedProviderCount++;
         assertT3CodePluginLoading(provider);
-        const enabled = pluginEnabled(provider) && pluginAssetsPresent(provider, options.spawn ?? spawnProvider);
+        const enabled = pluginEnabled(provider) && pluginAssetsPresent(provider, spawn);
         complete &&= enabled;
         console.log(`T3 Code ${provider.id}: ${enabled ? 'plugin enabled' : 'not installed or missing assets'} (${provider.homePath})`);
       } catch (error) {
@@ -322,7 +370,7 @@ export function t3CodeStatus(options: T3CodeOptions = {}): number {
       }
     }
     console.log('Hook approval is managed by the native provider; start a new thread to verify capture.');
-    return complete ? 0 : 1;
+    return complete && checkedProviderCount > 0 ? 0 : 1;
   } catch (error) {
     console.error(`T3 Code status failed: ${error instanceof Error ? error.message : String(error)}`);
     return 1;

@@ -5,16 +5,15 @@
  */
 
 import { styleText } from 'node:util';
-import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
 }
 
-// Host and port come from settings.json as well as env (readOnly: the CLI
-// never seeds the file), and an IPv6 host is bracketed.
+// readOnly: the CLI never seeds settings.json.
 function workerBaseUrl(): string {
-  return `http://${formatHostForUrl(getWorkerHost({ readOnly: true }))}:${getWorkerPort({ readOnly: true })}`;
+  return getWorkerBaseUrl({ readOnly: true });
 }
 
 /**

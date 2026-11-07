@@ -1,0 +1,28 @@
+{
+  "description": "Gateway-bound observer request carrying two derivative images from one source event. Only the final user message is a content array; history stays string content.",
+  "request_labels": [
+    { "request_label": "event1_image1", "event_ordinal": 1, "event_label": "event1_image1", "attachment_id": "11111111-1111-4111-8111-111111111111", "decoded_bytes": 38 },
+    { "request_label": "event1_image2", "event_ordinal": 1, "event_label": "event1_image2", "attachment_id": "22222222-2222-4222-8222-222222222222", "decoded_bytes": 38 }
+  ],
+  "body": {
+    "model": "cmem-observer",
+    "messages": [
+      { "role": "system", "content": "You are the claude-mem observer. Output format instructions are omitted from this fixture." },
+      { "role": "user", "content": "Start observing the primary session." },
+      { "role": "assistant", "content": "<skip_summary reason=\"noise\" />" },
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "<observed_from_primary_session>\n  <what_happened>Read</what_happened>\n  <occurred_at>2026-10-02T12:00:00.000Z</occurred_at>\n  <parameters>{\"file_path\":\"[image]\"}</parameters>\n  <outcome>{\"media_status\":[{\"label\":\"event1_image1\"},{\"label\":\"event1_image2\"}]}</outcome>\n</observed_from_primary_session>" },
+          { "type": "text", "text": "Images attached to this turn: event1_image1, event1_image2. Each image follows a line [image LABEL]. In each <observation> informed by an image, list the label inside <attachments><attachment>LABEL</attachment></attachments>. Use only these labels." },
+          { "type": "text", "text": "[image event1_image1]" },
+          { "type": "image_url", "image_url": { "url": "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA8AAAAdQlHIXpf+BiOh/AAA=" } },
+          { "type": "text", "text": "[image event1_image2]" },
+          { "type": "image_url", "image_url": { "url": "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA8AAAAdQraKUu/+BiOh/AAA=" } }
+        ]
+      }
+    ],
+    "temperature": 0.3,
+    "max_tokens": 4096
+  }
+}

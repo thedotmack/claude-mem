@@ -44,6 +44,18 @@ export class LocalReviewStore {
       checked_at_epoch INTEGER NOT NULL,
       actor TEXT NOT NULL CHECK (actor = 'local-user')
       )`);
+      // Explicit unchecked overrides must be distinguishable from an absent
+      // device-local decision when a shared review exists.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS work_view_review_overrides (
+        request_id TEXT PRIMARY KEY,
+        content_fingerprint TEXT NOT NULL,
+        checked INTEGER NOT NULL CHECK (checked IN (0, 1)),
+        changed_at_epoch INTEGER NOT NULL,
+        shared_review_hash TEXT
+      )`);
+      if (!this.db.prepare('PRAGMA table_info(work_view_review_overrides)').all().some((row: any) => row.name === 'shared_review_hash')) {
+        this.db.exec('ALTER TABLE work_view_review_overrides ADD COLUMN shared_review_hash TEXT');
+      }
     } catch {
       try { this.db?.close(); } catch { /* failed optional database */ }
       this.db = null;
@@ -72,6 +84,25 @@ export class LocalReviewStore {
     } else {
       this.db.prepare('DELETE FROM work_view_reviews WHERE request_id = ? AND content_fingerprint = ?').run(requestId, fingerprint);
     }
+  }
+
+  readOverride(requestId: string, fingerprint: string, sharedHash?: string | null): LocalReview | null {
+    if (!this.db) return null;
+    try {
+      const row = this.db.prepare('SELECT checked, changed_at_epoch, shared_review_hash FROM work_view_review_overrides WHERE request_id = ? AND content_fingerprint = ?')
+        .get(requestId, fingerprint) as { checked: number; changed_at_epoch: number; shared_review_hash: string | null } | null;
+      if (row && sharedHash !== undefined && row.shared_review_hash !== sharedHash) return null;
+      return row ? { checked: row.checked === 1, checkedAtEpoch: row.checked === 1 ? row.changed_at_epoch : null,
+        actor: row.checked === 1 ? 'local-user' : null, available: true } : null;
+    } catch { return null; }
+  }
+
+  setOverride(requestId: string, fingerprint: string, checked: boolean, sharedHash: string | null = null): void {
+    if (!this.db) throw new Error('Local review storage is unavailable. Your source work is unchanged.');
+    this.db.prepare(`INSERT INTO work_view_review_overrides (request_id, content_fingerprint, checked, changed_at_epoch, shared_review_hash)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
+      content_fingerprint = excluded.content_fingerprint, checked = excluded.checked, changed_at_epoch = excluded.changed_at_epoch, shared_review_hash = excluded.shared_review_hash`)
+      .run(requestId, fingerprint, checked ? 1 : 0, Date.now(), sharedHash);
   }
 
   close(): void { this.db?.close(); }

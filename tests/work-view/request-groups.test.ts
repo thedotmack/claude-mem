@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, validateProgress } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -83,6 +83,67 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
 
+  it('a review over a cap is refused with a target well under it, so the retry does not miss again (Oct 31)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  expect(() => validateProgress({ ...base, summary: 'x'.repeat(292) }, groups))
+    .toThrow('summary is 292 characters; it must be 1–280. Bring it to about 210 characters (cut at least 82).');
+  expect(() => validateProgress({ ...base, narrative: 'x'.repeat(1347) }, groups)).toThrow(/about 900 characters \(cut at least 447\)/);
+  const milestones = Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` }));
+  expect(() => validateProgress({ ...base, milestones }, groups))
+    .toThrow('milestones has 13 items; it must have at most 12. Keep the 12 that matter most.');
+  expect(() => validateProgress({ ...base, milestones: 'none' }, groups)).toThrow('milestones must be an array of at most 12.');
+  // A verbatim quote is shortened by quoting less, so its refusal never asks for a rewrite.
+  const preferences = [{ kind: 'directive', preference: 'Short replies.', quote: 'x'.repeat(301), at: null }];
+  expect(() => validateProgress({ ...base, preferences }, groups)).toThrow('Quote a shorter part of it word for word, about 220 characters; never reword a quote.');
+});
+
+  it('an over-cap list on the retry keeps its newest entries and reports the cut (#5274)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const coerce = (fields: Record<string, unknown>) => {
+    const coercedFields = new Set<string>();
+    return { review: validateProgress({ ...base, ...fields }, groups, { coerce: true, coercedFields }) as any, coercedFields: [...coercedFields] };
+  };
+  // Dates decide, whatever order the model answered in: the newest entry comes first here and the oldest is at index 1.
+  const dayOf = (index: number) => `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00Z`;
+  const datesNewestFirst = (length: number) => Array.from({ length }, (_, index) => dayOf(index === 0 ? length : index - 1));
+
+  const milestones = datesNewestFirst(13).map(at => ({ at, text: `Done ${at}` }));
+  const keptMilestones = coerce({ milestones });
+  expect(keptMilestones.review.milestones.map((milestone: any) => milestone.at)).toEqual(milestones.filter((_, index) => index !== 1).map(milestone => milestone.at));
+  expect(keptMilestones.review.milestones[0].at).toBe(dayOf(13));
+  expect(keptMilestones.coercedFields).toEqual(['milestones']);
+
+  const preferences = datesNewestFirst(11).map(at => ({ kind: 'directive', preference: `Said ${at}`, quote: 'Short replies.', at }));
+  const keptPreferences = coerce({ preferences });
+  expect(keptPreferences.review.preferences[0].at).toBe(dayOf(11));
+  expect(keptPreferences.review.preferences).toHaveLength(10);
+  expect(keptPreferences.review.preferences.map((preference: any) => preference.at)).not.toContain(dayOf(0));
+  expect(keptPreferences.coercedFields).toEqual(['preferences']);
+
+  const regressions = datesNewestFirst(11).map(at => ({ text: `Broke ${at}`, at, fixedBy: null, evidence: [] }));
+  const changes = datesNewestFirst(13).map(at => ({ what: `Changed ${at}`, why: 'The owner asked.', at, evidence: [] }));
+  const keptOutcome = coerce({ outcome: { regressions, changes } });
+  expect(keptOutcome.review.outcome.regressions[0].at).toBe(dayOf(11));
+  expect(keptOutcome.review.outcome.changes[0].at).toBe(dayOf(13));
+  expect(keptOutcome.review.outcome.regressions.map((regression: any) => regression.at)).not.toContain(dayOf(0));
+  expect(keptOutcome.review.outcome.changes.map((change: any) => change.at)).not.toContain(dayOf(0));
+  expect(keptOutcome.coercedFields).toEqual(['outcome.regressions', 'outcome.changes']);
+
+  // Without a date on every entry, the last ones are the newest the model wrote.
+  const undated = Array.from({ length: 13 }, (_, index) => ({ at: index === 0 ? dayOf(0) : null, text: `Step ${index}` }));
+  expect(coerce({ milestones: undated }).review.milestones.map((milestone: any) => milestone.text)).toEqual(undated.slice(1).map(milestone => milestone.text));
+  });
+
+  it('every length the skill asks for is the target a refusal names', () => {
+  const skill = readFileSync(join(import.meta.dir, '../../plugin/skills/request-progress/SKILL.md'), 'utf8');
+  // The story keeps its own target (STORY_NARRATIVE_TARGET), which its refusal names.
+  const pairs = [...skill.matchAll(/about (\d+) chars and never over (\d+)/g)].map(([, about, cap]) => [Number(about), Number(cap)]).filter(([, cap]) => cap !== 12000);
+  expect(pairs.length).toBeGreaterThan(10);
+  for (const [about, cap] of pairs) expect([about, cap]).toEqual([textTarget(cap), cap]);
+});
+
   it('a review records how released work landed, with evidence and the why of each change', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
   const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
@@ -100,6 +161,17 @@ describe('overall requests and progress reviews', () => {
   expect(validateProgress(base, groups).outcome).toBeNull();
   expect(() => validateProgress({ ...base, outcome: { usage: { level: 'popular', text: 'x' } } }, groups)).toThrow(/usage.level/);
   expect(() => validateProgress({ ...base, outcome: { changes: [{ what: 'x' }] } }, groups)).toThrow(/why/);
+});
+
+  it('a review citing one piece of evidence as a plain string is kept, not thrown (Oct 25)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 40, summary: 'Cards under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const recorded = validateProgress({ ...base, evidence: 'obs 101', milestones: [{ at: null, text: 'First card', evidence: 'PR #4845' }], outcome: { usage: { level: 'in-use', text: 'Opened daily.', evidence: 'obs 120' } } }, groups);
+  expect(recorded.evidence).toEqual(['obs 101']);
+  expect(recorded.milestones[0].evidence).toEqual(['PR #4845']);
+  expect(recorded.outcome.usage.evidence).toEqual(['obs 120']);
+  expect(validateProgress({ ...base, evidence: '  ' }, groups).evidence).toEqual([]);
+  expect(validateProgress(base, groups).evidence).toEqual([]);
 });
 
   it('CLI round trip: apply groups, see them due, record a review, then nothing is due', () => {
@@ -528,9 +600,105 @@ describe('overall requests and progress reviews', () => {
     run(['record-story', write('s3.json', { narrative: 'Two requests under way.', preferences: [{ preference: 'Keep the design.' }] })], NOW + 4000);
     expect(readLedger(dir).story.preferences.map((preference: { preference: string; source?: string }) => [preference.preference, preference.source ?? null]))
       .toEqual([['Keep the design.', null], ['Ship daily.', 'owner-goals']]);
-    // The agent gets its budget up front, and an over-long story is refused with its length.
-    expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
-    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
+    // The agent gets its budget up front, counted to the target, and an over-long story is refused with its length,
+    // the target and the parts furthest over budget. A story without chapters keeps the whole target.
+    expect(input).toMatchObject({ narrativeTarget: 8000, narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 8000 - 'Two requests under way.'.length, condenseChars: 0,
+      previousParts: [{ part: 'recap', chars: 'Two requests under way.'.length, budgetChars: 8000, overBudgetChars: 0 }] });
+    const overCap = `${'word '.repeat(200)}\n\n## Oct 26: shipped\n${'word '.repeat(996)}\n\n## Oct 27: in progress\n${'word '.repeat(1200)}`;
+    expect(() => run(['record-story', write('s.json', { narrative: overCap })])).toThrow(`narrative is 12026 characters; it must be 1–12000. Bring it to about 8000 characters: rewrite the parts furthest over their budgets: "Oct 27: in progress" 6023 → 3600 characters (about 720 words); "Oct 26: shipped" 5001 → 3600 characters (about 719 words); the recap 1002 → 800 characters (about 159 words).`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('storyParts budgets the recap and splits the rest of the target across the chapters', () => {
+  const story = `${'word '.repeat(230)}\n## Oct 26: agy\n${'word '.repeat(280)}\n## Oct 27: search\n${'word '.repeat(440)}\n## Oct 27: Chrome\n${'word '.repeat(60)}`;
+  // Budgets also go in words, at each part's own characters per word, which a writer keeps to; character
+  // budgets alone were missed.
+  expect(storyParts(story)).toEqual([
+    { part: 'recap', chars: 1151, words: 230, budgetChars: 800, budgetWords: 159, overBudgetChars: 351 },
+    { part: 'Oct 26: agy', chars: 1416, words: 284, budgetChars: 2400, budgetWords: 481, overBudgetChars: 0 },
+    { part: 'Oct 27: search', chars: 2219, words: 444, budgetChars: 2400, budgetWords: 480, overBudgetChars: 0 },
+    { part: 'Oct 27: Chrome', chars: 318, words: 64, budgetChars: 2400, budgetWords: 483, overBudgetChars: 0 },
+  ]);
+  // Lengths add up to the story, so the parts account for every character the writer has to fit.
+  expect(storyParts(story).reduce((sum, part) => sum + part.chars, 0)).toBe(story.length);
+  // A story that opens with a chapter has an empty recap, not a chapter counted as the recap.
+  expect(storyParts('## Only chapter\nText.')).toEqual([
+    { part: 'recap', chars: 0, words: 0, budgetChars: 800, budgetWords: 133, overBudgetChars: 0 },
+    { part: 'Only chapter', chars: 21, words: 4, budgetChars: 7200, budgetWords: 1371, overBudgetChars: 0 },
+  ]);
+});
+
+  it('storyParts keeps code-fenced headings, chapterless stories and many chapters workable', () => {
+  // A `## ` line inside a code fence belongs to its chapter.
+  expect(storyParts('Recap.\n## Real\nText\n```\n## not a chapter\n```\nMore.\n').map((part) => part.part)).toEqual(['recap', 'Real']);
+  // Without chapters the recap is the whole story, so it gets the whole target, not the recap's share.
+  expect(storyParts('word '.repeat(1800))).toEqual([{ part: 'recap', chars: 9000, words: 1800, budgetChars: 8000, budgetWords: 1600, overBudgetChars: 1000 }]);
+  // Many chapters never push a chapter's budget below the floor.
+  const many = Array.from({ length: 30 }, (_, index) => `## Day ${index}\nShipped.\n`).join('');
+  expect(new Set(storyParts(many).slice(1).map((part) => part.budgetChars))).toEqual(new Set([300]));
+});
+
+  it('storyParts closes a code fence only on a matching fence, as CommonMark does', () => {
+  // A ```` fence holding a ``` example: the inner ``` lines neither close it nor reopen it, so its `## ` line stays inside.
+  const story = 'Recap.\n## Real\n````md\n```\n## not a chapter\n```\n````\n## Next\nText.\n';
+  expect(storyParts(story).map((part) => part.part)).toEqual(['recap', 'Real', 'Next']);
+  // An indented fence (up to 3 spaces) and a tilde fence count too, and a ``` line does not close a ~~~ fence.
+  expect(storyParts('Recap.\n## Real\n   ```\n## inside\n   ```\n~~~\n```\n## still inside\n~~~\n## Next\n').map((part) => part.part)).toEqual(['recap', 'Real', 'Next']);
+  // Four spaces is code, not a fence, so the heading after it is a chapter.
+  expect(storyParts('Recap.\n    ```\n## Chapter\n').map((part) => part.part)).toEqual(['recap', 'Chapter']);
+  expect(storyParts(story).reduce((sum, part) => sum + part.chars, 0)).toBe(story.length);
+});
+
+  it('a story with more chapters than the budgets fit is told to merge its oldest chapters', () => {
+  // 41 chapters at the 300-character floor add up to more than the target, so an over-cap story with every chapter
+  // within its budget has nothing over budget to rewrite. The refusal and story-input name the oldest chapters to merge.
+  const chapter = (index: number) => `## Day ${index}\n${'w'.repeat(290 - String(index).length)}\n`;
+  const story = `Recap.\n\n${Array.from({ length: 41 }, (_, index) => chapter(index)).join('')}`;
+  expect(story.length).toBeGreaterThan(12000);
+  expect(storyParts(story).filter((part) => part.overBudgetChars > 0)).toEqual([]);
+  expect(storyChaptersToMerge(story)).toBe(18);
+  let message = '';
+  try { validateStory({ narrative: story }); } catch (error) { message = (error as Error).message; }
+  expect(message).toBe(`narrative is ${story.length} characters; it must be 1–12000. Bring it to about 8000 characters: merge the 18 oldest chapters ("Day 0" through "Day 17") into one chapter of at most 300 characters.`);
+  // Merging them leaves 24 chapters, whose budgets fit the target again.
+  expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 24 }, (_, index) => chapter(index)).join('')}`)).toBe(0);
+  expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 25 }, (_, index) => chapter(index)).join('')}`)).toBe(2);
+});
+
+  it('an over-cap story is refused with only the parts furthest over budget named', () => {
+  const story = `Recap.\n\n${Array.from({ length: 10 }, (_, index) => `## Day ${index}\n${'word '.repeat(260)}\n`).join('')}`;
+  expect(story.length).toBeGreaterThan(12000);
+  let message = '';
+  try { validateStory({ narrative: story }); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain('Bring it to about 8000 characters: rewrite the parts furthest over their budgets: "Day');
+  expect(message).toContain('; 4 more parts are over their budgets too.');
+  expect(message.match(/"Day \d"/g)).toHaveLength(6);
+  expect(message.length).toBeLessThan(1000);
+});
+
+  it('story-input aims an update at the target and asks to condense a previous story past it', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    const review = (percent: number, now: number) => run(['record-progress', write('r.json', { groupId: groupIdFor(key('a')), state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key('a'))], now).reviewBasis })], now);
+    review(40, NOW);
+    expect(run(['story-input'])).toMatchObject({ update: false, narrativeTarget: 8000, roomChars: 8000, condenseChars: 0 });
+    // The target is an aim, not a cap: a story between it and the cap is recorded.
+    const story = `${'r'.repeat(1199)}\n\n## Oct 26: shipped\n${'a'.repeat(3980)}\n\n## Oct 27: in progress\n${'b'.repeat(4800)}`;
+    run(['record-story', write('s.json', { narrative: story })], NOW + 1000);
+    review(60, NOW + 2000);
+    // Past the target, there is no room to add, and every part over its budget is named, the recap and the
+    // chapter still in progress included.
+    expect(run(['story-input'])).toMatchObject({ update: true, previousNarrativeChars: story.length, roomChars: 0, condenseChars: story.length - 8000, mergeOldestChapters: 0,
+      previousParts: [
+        { part: 'recap', chars: 1201, budgetChars: 800, overBudgetChars: 401 },
+        { part: 'Oct 26: shipped', chars: 4001, budgetChars: 3600, overBudgetChars: 401 },
+        { part: 'Oct 27: in progress', chars: 4823, budgetChars: 3600, overBudgetChars: 1223 },
+      ] });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

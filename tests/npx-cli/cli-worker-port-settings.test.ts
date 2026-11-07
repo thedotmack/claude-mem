@@ -122,9 +122,11 @@ describe('test isolation', () => {
 describe('npx claude-mem doctor probes the worker port from settings.json', () => {
   const originalFetch = globalThis.fetch;
   let requested: string[] = [];
+  let doctorOutput = '';
 
   beforeEach(() => {
     requested = [];
+    doctorOutput = '';
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       requested.push(String(input));
       return new Response('{}', { status: 503 });
@@ -149,11 +151,30 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
         if (!(error instanceof Error) || error.message !== 'doctor exited') throw error;
       });
     } finally {
+      doctorOutput = log.mock.calls.flat().join('\n');
       version.mockRestore();
       exit.mockRestore();
       log.mockRestore();
     }
   }
+
+  it('uses CLAUDE_MEM_WORKER_URL over host and port', async () => {
+    writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT, CLAUDE_MEM_WORKER_URL: 'https://worker.example/mem/' });
+
+    await runDoctor();
+
+    expect(requested).toContain('https://worker.example/mem/api/health');
+    expect(requested).not.toContain(`http://127.0.0.1:${FILE_PORT}/api/health`);
+  }, 30_000);
+
+  it('reports an invalid CLAUDE_MEM_WORKER_URL instead of probing host and port', async () => {
+    writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT, CLAUDE_MEM_WORKER_URL: 'http://worker.example' });
+
+    await runDoctor();
+
+    expect(requested.filter(url => url.endsWith('/api/health'))).toEqual([]);
+    expect(doctorOutput).toContain('CLAUDE_MEM_WORKER_URL must use https');
+  }, 30_000);
 
   it('uses the port written in settings.json', async () => {
     writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT });
@@ -195,6 +216,28 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
     expect(readdirSync(join(sandbox, 'data')).sort()).toEqual(filesBefore);
     expect(requested).toContain(`http://127.0.0.1:${FILE_PORT}/api/health`);
   }, 30_000);
+});
+
+describe('npx claude-mem backup reaches the worker at CLAUDE_MEM_WORKER_URL', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('uses the URL over host and port', async () => {
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requested.push(String(input));
+      return new Response('{}');
+    }) as typeof fetch;
+    writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT, CLAUDE_MEM_WORKER_URL: 'https://worker.example' });
+
+    const { fetchWorkerBackupApi } = await import('../../src/npx-cli/commands/backup.js');
+    await fetchWorkerBackupApi('/api/backup/status');
+
+    expect(requested).toEqual(['https://worker.example/api/backup/status']);
+  });
 });
 
 describe('npx claude-mem uninstall stops the worker on the port from settings.json', () => {

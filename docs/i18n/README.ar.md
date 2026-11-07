@@ -390,7 +390,6 @@ Claude-Mem مرخّص بموجب رخصة Apache 2.0.
 راجع ملف [LICENSE](LICENSE) للتفاصيل الكاملة. راجع [docs/license.md](docs/license.md)
 و[docs/ip-boundary.md](docs/ip-boundary.md) لمعرفة نطاق الترخيص والحدود بين المفتوح والتجاري.
 
-**ملاحظة حول Ragtime**: دليل `ragtime/` مرخّص بموجب **رخصة Apache 2.0**. راجع [ragtime/LICENSE](ragtime/LICENSE) للتفاصيل.
 
 ---
 

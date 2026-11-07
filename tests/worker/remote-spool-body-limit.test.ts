@@ -30,7 +30,7 @@ async function start(limit?: string | number) {
   });
   const bound = server.address();
   if (!bound || typeof bound === 'string') throw new Error('server did not bind');
-  return { spool, url: `http://127.0.0.1:${bound.port}` };
+  return { spool, markers, url: `http://127.0.0.1:${bound.port}` };
 }
 
 afterEach(async () => {
@@ -39,7 +39,19 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
+// Advisor records are durable metadata, so a size-boundary entry still lands in the spool.
 function body(bytes: number) {
+  const call = { toolUseId: 'toolu_limit', advice: '', occurredAtEpoch: 1700000000000 };
+  const envelope = { protocolVersion: 1, entry: {
+    kind: 'advisor_calls', enqueuedAtEpochMs: 1700000000000,
+    payload: { contentSessionId: 's', platformSource: 'codex', calls: [call] },
+  } };
+  call.advice = 'x'.repeat(bytes - Buffer.byteLength(JSON.stringify(envelope)));
+  return JSON.stringify(envelope);
+}
+
+// Observer inputs are ingested live; the route keeps only their receipt.
+function observationBody(bytes: number) {
   const envelope = { protocolVersion: 1, entry: {
     kind: 'observation', enqueuedAtEpochMs: 1700000000000,
     payload: { contentSessionId: 's', platformSource: 'codex', toolName: 'exec', toolResponse: '' },
@@ -73,6 +85,18 @@ describe('remote spool body limit', () => {
     expect(Buffer.byteLength(payload)).toBe(20 * mib);
     expect((await send(`${url}/api/spool/ingest`, payload)).status).toBe(202);
     expect(spool.entries()).toEqual([JSON.parse(payload).entry]);
+  });
+
+  it('accepts a complete observation envelope at the configured boundary and keeps only its receipt', async () => {
+    const { url, spool, markers } = await start(String(20 * mib));
+    const payload = observationBody(20 * mib);
+    expect(Buffer.byteLength(payload)).toBe(20 * mib);
+    const response = await send(`${url}/api/spool/ingest`, payload);
+    expect(response.status).toBe(202);
+    const { receipt } = await response.json() as { receipt: string };
+    expect([...markers]).toEqual([receipt]);
+    expect(spool.entries()).toEqual([]);
+    expect((await send(`${url}/api/spool/ingest`, observationBody(20 * mib + 1))).status).toBe(413);
   });
 
   it('rejects one byte over the configured limit without persisting', async () => {

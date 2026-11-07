@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -91,6 +91,46 @@ const ownerRows = () => (source.prepare("SELECT project, fields FROM work_state_
   .map(row => ({ project: row.project, fields: JSON.parse(row.fields) }));
 
 describe('My Focus routes', () => {
+  it('a read already running before an edit never answers that edit', async () => {
+    const reader = (routes as any).sourceReader;
+    const realRead = reader.read.bind(reader);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let posted = false;
+    reader.read = (...args: [number, string]) => {
+      reader.read = realRead;
+      posted = true;
+      return realRead(...args).then(async (view: unknown) => { await gate; return view; });
+    };
+    const before = snapshot();
+    while (!posted) await Bun.sleep(1);
+    const saved = await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' });
+    expect(saved.status).toBe(200);
+    expect(areaById(await saved.json(), 'fa_viewer').name).toBe('The viewer');
+    release();
+    expect(areaById(await before, 'fa_viewer').name).toBe('Viewer');
+  });
+
+  it('two merges of the same pair cannot both save', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'merge', focusAreaId: 'fa_viewer', intoFocusAreaId: 'fa_endless' }),
+      saveFocus({ action: 'merge', focusAreaId: 'fa_endless', intoFocusAreaId: 'fa_viewer' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 409]);
+    const view = await snapshot();
+    expect(areaById(view, 'fa_viewer').mergedInto).toBe('fa_endless');
+    expect(areaById(view, 'fa_endless').mergedInto).toBeFalsy();
+  });
+
+  it('a rename and a goal edit sent together both survive', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' }),
+      saveFocus({ action: 'edit-goal', focusAreaId: 'fa_viewer', goal: 'Show the work plainly.' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 200]);
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ name: 'The viewer', goal: 'Show the work plainly.' });
+  });
+
   it('shows the areas in priority order and the request as not sorted yet', async () => {
     const view = await snapshot();
     expect(view.focusAreas.map((area: any) => area.name)).toEqual(['Viewer', 'Endless Mode', 'Community']);
@@ -334,14 +374,14 @@ describe('My Focus routes', () => {
       expect(tooLong.status).toBe(400);
       expect(JSON.stringify(await tooLong.json())).toContain('too long to save');
       expect(focusRows()).toBe(before);
-      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
+      await expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'x' }], proposals: [] })).rejects.toThrow(TypeError);
       // The writer fails on the second row, as a TypeError: the error that reaches the refresh is a plain Error.
       const append = (routes as any).appendWorkStateEntry;
       let calls = 0;
       (routes as any).appendWorkStateEntry = (entry: unknown) => { if (++calls === 2) throw new TypeError('database is locked'); append(entry); };
       const body = { placements: [], proposals: [proposal()] };
       let thrown: unknown;
-      try { routes.recordRouterFocus(body as any); } catch (error) { thrown = error; }
+      try { await routes.recordRouterFocus(body as any); } catch (error) { thrown = error; }
       expect(thrown).toBeInstanceOf(Error);
       expect(thrown).not.toBeInstanceOf(TypeError);
       expect((thrown as Error).message).toBe('Saving the focus step stopped after 1 of 2 rows: database is locked');
@@ -351,9 +391,86 @@ describe('My Focus routes', () => {
       expect(JSON.stringify(await response.json())).toContain('stopped after 1 of 2 rows');
     });
 
-    it('the refresh writes in-process through the same check', () => {
-      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
-      expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+    it('the refresh writes in-process through the same check', async () => {
+      await expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).rejects.toThrow(TypeError);
+      expect(await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+    });
+  });
+
+  describe('rebuilds behind live activity (#5124)', () => {
+    const BASIS = '0123456789abcdef';
+    /** How many times the source has rebuilt the agent view. */
+    const rebuilds = () => (routes as any).source.agentRevision as number;
+    /** An activity-only commit, the kind a live session makes every few seconds: no work-state row changes. */
+    const liveActivity = () => source.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (1, 2, ?, ?)')
+      .run('Also show when each request was last touched', Date.now());
+    const rule = { scopeTier: 'everywhere', scopeName: '', when: 'Writing UI copy', then: 'Use sentence case.' };
+    const saveRule = (body: unknown) => fetch(`${origin}/api/work-view/rules`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body),
+    });
+
+    it('a focus change rebuilds once, for the view it answers with, not again for its check', async () => {
+      await snapshot();
+      liveActivity();
+      const before = rebuilds();
+      const response = await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+      expect(response.status).toBe(200);
+      expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({ status: 'kept', decidedBy: 'owner' });
+      expect(rebuilds()).toBe(before + 1);
+    });
+
+    it('a rule change rebuilds once, and the answer and MY-RULES.md carry the new rule', async () => {
+      await snapshot();
+      liveActivity();
+      const before = rebuilds();
+      const response = await saveRule({ action: 'add', rule });
+      expect(response.status).toBe(200);
+      const view = await response.json();
+      expect(view.rules.map((entry: any) => entry.then)).toContain('Use sentence case.');
+      expect(readFileSync(join(directory, 'MY-RULES.md'), 'utf8')).toContain('When Writing UI copy: use sentence case.');
+      expect(rebuilds()).toBe(before + 1);
+      // The rule just written is in the next check, inside the window: work-state rows always read fresh.
+      const ruleId = view.rules.find((entry: any) => entry.then === 'Use sentence case.').ruleId;
+      liveActivity();
+      expect((await saveRule({ action: 'turn-off', ruleId })).status).toBe(200);
+    });
+
+    it('moving a request still checks against a fresh view, so a request newer than the window can be moved', async () => {
+      await snapshot();
+      const now = Date.now();
+      source.prepare('INSERT INTO sdk_sessions VALUES (2,?,?,?,?,?,?,?,?,?)').run('example-project', 'codex', 'conversation-2', 'memory-2', 'Add a dark theme to the viewer', null, 'active', now, null);
+      source.prepare('INSERT INTO user_prompts (id, session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (99, 2, 1, ?, ?)').run('Add a dark theme to the viewer', now);
+      const newRequest = JSON.stringify(['conversation', 'codex', 'conversation-2']);
+      const response = await saveFocus({ action: 'move-request', requestId: newRequest, focusAreaId: 'fa_viewer' });
+      expect(response.status).toBe(200);
+      expect((await response.json()).humanRequests.find((item: any) => item.id === newRequest).focusAreaId).toBe('fa_viewer');
+    });
+
+    it('a write with no My Work page open does not rebuild just to publish', async () => {
+      await snapshot();
+      const before = rebuilds();
+      expect(await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+      expect(rebuilds()).toBe(before);
+      // The next reader still sees the write.
+      expect(request(await snapshot()).focusAreaId).toBe('other');
+    });
+
+    it('an open My Work page still gets the write pushed', async () => {
+      const controller = new AbortController();
+      const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+      const reader = response.body!.getReader();
+      await reader.read();
+      try {
+        await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS });
+        const decoder = new TextDecoder();
+        let text = '';
+        while (!text.includes('"focusAreaId":"other"')) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value);
+        }
+        expect(text).toContain('"focusAreaId":"other"');
+      } finally { controller.abort(); }
     });
   });
 

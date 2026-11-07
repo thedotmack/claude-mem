@@ -17,12 +17,17 @@ const realSessionInitSnapshot = { ...realSessionInit };
 
 /** Prompts the worker recorded, in order. */
 const recorded: string[] = [];
-/** Prompts whose next init call fails once, as an unreachable worker would. */
-const failOnce = new Set<string>();
+/**
+ * Prompts whose init calls fail, as an unreachable worker would, until the
+ * test deletes them. Failing until released, not once: macOS can deliver a
+ * late fs.watch event for the file's initial write after tailing starts,
+ * which retries the failed turn before the test's own poke or restart.
+ */
+const failing = new Set<string>();
 
 const fakeSessionInit = async (input: NormalizedHookInput) => {
   const prompt = input.prompt ?? '';
-  if (failOnce.delete(prompt)) {
+  if (failing.has(prompt)) {
     throw new Error('session-init did not record the prompt (worker_unreachable)');
   }
   recorded.push(prompt);
@@ -82,7 +87,7 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
 
   beforeEach(() => {
     recorded.length = 0;
-    failOnce.clear();
+    failing.clear();
     tmpRoot = join(tmpdir(), `claude-mem-anchor-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     mkdirSync(tmpRoot, { recursive: true });
     statePath = join(tmpRoot, 'state.json');
@@ -114,7 +119,7 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('JSONL: retries the failed line in-process without resending earlier lines', async () => {
     const filePath = join(tmpRoot, 'rollout.jsonl');
     writeFileSync(filePath, ['L1', 'L2', 'L3', 'L4'].map(text => `${turnLine(text)}\n`).join(''));
-    failOnce.add('L3');
+    failing.add('L3');
 
     const { poke } = tail(filePath);
     await waitFor(() => recorded.length >= 2);
@@ -123,6 +128,7 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     // Checkpointed AT the failed line: the bytes of L1 and L2 only.
     expect(savedOffset(filePath)).toBe(Buffer.byteLength(`${turnLine('L1')}\n${turnLine('L2')}\n`));
 
+    failing.delete('L3');
     appendFileSync(filePath, `${turnLine('L5')}\n`);
     poke();
     await waitFor(() => recorded.length >= 5);
@@ -134,12 +140,13 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('JSONL: a restart after a failed turn resumes at that turn', async () => {
     const filePath = join(tmpRoot, 'rollout.jsonl');
     writeFileSync(filePath, ['L1', 'L2', 'L3', 'L4'].map(text => `${turnLine(text)}\n`).join(''));
-    failOnce.add('L3');
+    failing.add('L3');
 
     const first = tail(filePath);
     await waitFor(() => recorded.length >= 2);
     await settle();
     first.watcher.stop();
+    failing.delete('L3');
 
     tail(filePath);
     await waitFor(() => recorded.length >= 4);
@@ -150,13 +157,14 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('zstd: never resends earlier frames (the Z1,Z2,Z1,Z2,Z3,Z4 probe)', async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
     writeFileSync(filePath, Buffer.concat([zstdFrame(['Z1']), zstdFrame(['Z2']), zstdFrame(['Z3']), zstdFrame(['Z4'])]));
-    failOnce.add('Z3');
+    failing.add('Z3');
 
     const { poke } = tail(filePath);
     await waitFor(() => recorded.length >= 2);
     await settle();
     expect(recorded).toEqual(['Z1', 'Z2']);
 
+    failing.delete('Z3');
     poke();
     await waitFor(() => recorded.length >= 4);
     await settle();
@@ -166,11 +174,12 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('zstd: resumes inside a frame at the failed line, not at the frame start', async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
     writeFileSync(filePath, Buffer.concat([zstdFrame(['A1', 'A2']), zstdFrame(['B1', 'B2'])]));
-    failOnce.add('B2');
+    failing.add('B2');
 
     const { poke } = tail(filePath);
     await waitFor(() => recorded.length >= 3);
     await settle();
+    failing.delete('B2');
     poke();
     await waitFor(() => recorded.length >= 4);
     await settle();
@@ -180,13 +189,14 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('zstd: a restart after a turn failed inside a frame resumes at that line', async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
     writeFileSync(filePath, Buffer.concat([zstdFrame(['A1', 'A2', 'A3']), zstdFrame(['B1'])]));
-    failOnce.add('A2');
+    failing.add('A2');
 
     const first = tail(filePath);
     await waitFor(() => recorded.length >= 1);
     await settle();
     first.watcher.stop();
     expect(recorded).toEqual(['A1']);
+    failing.delete('A2');
 
     tail(filePath);
     await waitFor(() => recorded.length >= 4);
@@ -197,12 +207,13 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
   it('zstd: a restart after a failed turn resumes at that frame', async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
     writeFileSync(filePath, Buffer.concat([zstdFrame(['Z1']), zstdFrame(['Z2']), zstdFrame(['Z3'])]));
-    failOnce.add('Z2');
+    failing.add('Z2');
 
     const first = tail(filePath);
     await waitFor(() => recorded.length >= 1);
     await settle();
     first.watcher.stop();
+    failing.delete('Z2');
 
     tail(filePath);
     await waitFor(() => recorded.length >= 3);
@@ -247,7 +258,7 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
 
   beforeEach(() => {
     recorded.length = 0;
-    failOnce.clear();
+    failing.clear();
     tmpRoot = join(tmpdir(), `claude-mem-start-at-end-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     mkdirSync(tmpRoot, { recursive: true });
     statePath = join(tmpRoot, 'state.json');

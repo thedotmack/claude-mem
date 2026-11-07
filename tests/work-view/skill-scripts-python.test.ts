@@ -85,6 +85,22 @@ describe('save_goals.py', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('accepts a quote under 3 characters when it is a whole word of the prompt (Oct 26: "hi" failed every refresh)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-short-'));
+    try {
+      const save = (prompt: string, quote: string) => {
+        writeFileSync(join(dir, 'owner-prompts.md'), `# Owner prompts\n\n## 2026-10-25 16:13 · codex · yiddish-ai-kit\nsession \`01a174b2\`\n\n${prompt}\n`);
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify({ focus_areas: [{ rank: 1, title: 'Greeting only', goal: 'Say hello.', matches: null, evidence: [{ at: '2026-10-25 16:13', quote }] }] }));
+        return spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run']);
+      };
+      expect(save('hi', 'hi').exitCode).toBe(0);
+      expect(save('ok, go', 'ok').exitCode).toBe(0);
+      // Still a whole word, never part of one, and still refused when it was not typed.
+      expect(save('this works', 'hi').exitCode).not.toBe(0);
+      expect(save('hi', 'ok').exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('clears the goals when every saved quote has aged out, instead of refusing to save forever', () => {
     const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
     try {
@@ -268,6 +284,51 @@ describe('export_owner_prompts.py', () => {
       expect(exported).toContain('ship the cards  today · İstanbul 🚀');
       expect(exported).toContain('explain how <private> works');
       expect(JSON.parse(result.stdout.toString().trim().split('\n').pop()!).owner_prompts).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps distinct Codex turns that share a timestamp and opening', () => {
+    const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
+    try {
+      const sessionDir = join(home, '.codex', 'sessions', '2026', '10', '01');
+      mkdirSync(sessionDir, { recursive: true });
+      const timestamp = new Date().toISOString();
+      const sharedOpening = 'a shared prompt opening '.repeat(10);
+      const turn = (id: string, text: string) => JSON.stringify({ type: 'response_item', timestamp, payload: { type: 'message', role: 'user', id, content: [{ type: 'input_text', text }] } });
+      writeFileSync(join(sessionDir, 'rollout-a.jsonl'), [
+        JSON.stringify({ type: 'session_meta', payload: { id: 'session-a', source: 'cli', cwd: '/repo' } }),
+        turn('first', `${sharedOpening}first ending`),
+        turn('second', `${sharedOpening}second ending`),
+      ].join('\n') + '\n');
+      const result = spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'export_owner_prompts.py'), '--out', join(home, 'out'), '--days', '1'], { env: { ...process.env, HOME: home, USERPROFILE: home } });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout.toString().trim().split('\n').pop()!).owner_prompts).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reads Claude Code and Codex records with whitespace in their JSON', () => {
+    const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
+    try {
+      const timestamp = new Date().toISOString();
+      const projectDir = join(home, '.claude', 'projects', '-repo');
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'session-1.jsonl'), JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 'session-1', timestamp, entrypoint: 'cli', origin: { kind: 'human' }, message: { content: 'claude spaced prompt' } }).replace('"type":"user"', '"type" :\t"user"') + '\n');
+      const sessionDir = join(home, '.codex', 'sessions', '2026', '10', '01');
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(join(sessionDir, 'rollout-a.jsonl'), [
+        JSON.stringify({ type: 'session_meta', payload: { id: 'session-a', source: 'cli', cwd: '/repo' } }),
+        JSON.stringify({ type: 'response_item', timestamp, payload: { type: 'message', role: 'user', id: 'first', content: [{ type: 'input_text', text: 'codex tabbed prompt' }] } }).replace('"role":"user"', '"role" :\t"user"'),
+      ].join('\n') + '\n');
+      const out = join(home, 'out');
+      const result = spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'export_owner_prompts.py'), '--out', out, '--days', '1'], { env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: '' } });
+      expect(result.exitCode).toBe(0);
+      const exported = readFileSync(join(out, 'owner-prompts.md'), 'utf8');
+      expect(exported).toContain('claude spaced prompt');
+      expect(exported).toContain('codex tabbed prompt');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

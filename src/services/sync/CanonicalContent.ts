@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { redactSyncDiagnostic } from './diagnostic-redaction.js';
+import { MEDIA_METADATA_NAMESPACE, MediaError, validateMediaManifest } from '../../shared/media-contract.js';
 
 export const CONTENT_BODY_SCHEMA_VERSION = 1 as const;
 export const CONTENT_PAYLOAD_SCHEMA_VERSION = 2 as const;
@@ -66,8 +68,9 @@ const ENVELOPE_KEYS = [
 ] as const;
 
 function jsonError(message: string): never {
-  logger.debug('CLOUD_SYNC', 'Rejected invalid canonical content', { reason: message });
-  throw new Error(`canonical content: ${message}`);
+  const reason = redactSyncDiagnostic(message);
+  logger.debug('CLOUD_SYNC', 'Rejected invalid canonical content', { reason });
+  throw new Error(`canonical content: ${reason}`);
 }
 
 /** RFC-8259 JSON with recursively sorted object keys and preserved array order. */
@@ -373,6 +376,7 @@ function validatePayload(kind: ContentKind, value: unknown): void {
     }
     if (key === 'metadata') {
       if (typeof item !== 'object' || Array.isArray(item)) jsonError(`${kind}.metadata must be an object or null`);
+      validateMediaMetadataNamespace(kind, item as Record<string, unknown>);
       continue;
     }
     if (typeof item !== 'string') jsonError(`${kind}.${key} must be a string or null`);
@@ -401,6 +405,23 @@ function validateWorkStateFields(value: unknown, kind: ContentKind): void {
     if (item !== null && typeof item !== 'string' && typeof item !== 'boolean' && typeof item !== 'number') {
       jsonError(`${kind}.fields.${key} must be a string, number, boolean or null`);
     }
+  }
+}
+
+/**
+ * Bounded `metadata.cmem_media_v1` check (docs/media-contract-v1.md). Only the
+ * media namespace is validated: every other metadata namespace passes through
+ * unchanged, while unknown top-level payload fields stay rejected above. The
+ * strict manifest validator admits IDs, labels and inspection state only, so
+ * paths, object keys, data URLs and byte bodies cannot ride canonical content.
+ */
+function validateMediaMetadataNamespace(kind: ContentKind, metadata: Record<string, unknown>): void {
+  if (!Object.prototype.hasOwnProperty.call(metadata, MEDIA_METADATA_NAMESPACE)) return;
+  try {
+    validateMediaManifest(metadata[MEDIA_METADATA_NAMESPACE]);
+  } catch (error) {
+    if (error instanceof MediaError) jsonError(`${kind}.metadata.${MEDIA_METADATA_NAMESPACE} is invalid (${error.code})`);
+    throw error;
   }
 }
 
