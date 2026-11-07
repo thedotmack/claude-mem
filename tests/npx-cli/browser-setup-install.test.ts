@@ -299,7 +299,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(offeredTasks.filter(title => title.startsWith('Codex CLI'))).toHaveLength(1);
     expect(offeredTasks.filter(title => title === 'Claude Code: registering plugin')).toHaveLength(1);
     expect(JSON.parse(readFileSync(statePath, 'utf8')).tools).toEqual(['claude-code', 'codex', 'chatgpt']);
-    expect(lines.join('\n')).toMatch(/IDEs: .*claude-code, codex-cli/);
+    expect(lines.join('\n')).toMatch(/Agents: .*claude-code, codex-cli/);
   });
 
   it('On The Go: the pairing starts only after the choice, checkout runs when the page asks, and setup finishes once paid', async () => {

@@ -1,7 +1,7 @@
 {
   "name": "claude-mem",
   "version": "15.11.0",
-  "description": "Persistent memory and context compression for Qoder sessions.",
+  "description": "Persistent memory for Qoder: the next session starts where the last one left off.",
   "author": {
     "name": "Alex Newman",
     "url": "https://github.com/thedotmack"
