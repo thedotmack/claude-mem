@@ -294,11 +294,24 @@ describe('ResponseProcessor', () => {
     const cutOffErrors = () => (loggerSpies[3] as ReturnType<typeof spyOn>).mock.calls
       .filter(call => String(call[1]).includes('reply was cut off'));
 
-    it('keeps a truncated claimed tool use eligible for source replay', async () => {
+    // A restart never authorizes re-spending on answered work, so a cut-off
+    // reply's claimed tool uses are terminal like any other stored reply.
+    it('marks a reply cut off at the cap terminal for its claimed tool uses', async () => {
       claimedMessages = [{ type: 'observation', tool_name: 'Bash', toolUseId: 'toolu_cut_1' }];
       await processAgentResponse(cut, createMockSession({ lastFinishReason: 'length' }),
         mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
-      expect(mockStoreObservations.mock.calls[0][8]).toMatchObject({ committedToolUses: undefined });
+      expect(mockStoreObservations.mock.calls[0][8]).toMatchObject({
+        committedToolUses: { contentSessionId: 'content-session-123', toolUseIds: ['toolu_cut_1'] },
+      });
+    });
+
+    it('marks a reply with an unfinished block and no finish reason terminal too', async () => {
+      claimedMessages = [{ type: 'observation', tool_name: 'Bash', toolUseId: 'toolu_cut_2' }];
+      await processAgentResponse(cut, createMockSession(),
+        mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(mockStoreObservations.mock.calls[0][8]).toMatchObject({
+        committedToolUses: { contentSessionId: 'content-session-123', toolUseIds: ['toolu_cut_2'] },
+      });
     });
 
     it('stores the complete blocks and reports the lost tail when finish_reason is length', async () => {
@@ -1923,6 +1936,26 @@ describe('ResponseProcessor', () => {
           createMockSession({ sessionDbId, memorySessionId: null }),
           mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
         expect(store.hasCommittedToolUse('claude', 'content-session-123', 'toolu_skip_1')).toBe(true);
+        expect(confirmClaimedMessages).toHaveBeenCalledWith(sessionDbId);
+      } finally {
+        store.close();
+      }
+    });
+
+    it('commits a skip marker for a cut-off skip reply without a memory session id', async () => {
+      const store = new SessionStore(':memory:');
+      const sessionDbId = store.createSDKSession('content-session-123', 'test-project', 'prompt', undefined, 'claude');
+      const { confirmClaimedMessages } = sessionManagerWithSpies();
+      mockSessionManager = {
+        ...mockSessionManager,
+        getClaimedMessages: mock(() => [{ type: 'observation', toolUseId: 'toolu_skip_cut_1' }]),
+      } as unknown as SessionManager;
+      mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+      try {
+        await processAgentResponse('<skip_summary reason="noise" />\n<observation><type>change</type><title>Unfinished',
+          createMockSession({ sessionDbId, memorySessionId: null, lastFinishReason: 'length' } as Partial<ActiveSession>),
+          mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+        expect(store.hasCommittedToolUse('claude', 'content-session-123', 'toolu_skip_cut_1')).toBe(true);
         expect(confirmClaimedMessages).toHaveBeenCalledWith(sessionDbId);
       } finally {
         store.close();

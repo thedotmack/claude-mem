@@ -858,7 +858,9 @@ export async function processAgentResponse(
           .map(message => message.toolUseId)
           .filter((id): id is string => typeof id === 'string' && id.length > 0)
       ));
-      if (skippedToolUseIds.length > 0 && !isOutputCapFinishReason(finishReason) && !hasUnfinishedBlock) {
+      // Terminal even when the reply was cut off (logged above): a restart
+      // never authorizes re-spending on work the observer already answered.
+      if (skippedToolUseIds.length > 0) {
         const store = dbManager.getSessionStore();
         store.db.transaction(() => store.markCommittedToolUses({
           platformSource: session.platformSource,
@@ -956,7 +958,9 @@ export async function processAgentResponse(
       originalTimestamp ?? undefined,
       modelId,
       {
-        committedToolUses: !isOutputCapFinishReason(finishReason) && !hasUnfinishedBlock && claimedToolUseIds.length > 0
+        // A cut-off reply is terminal too: the lost tail is logged above, and
+        // replaying its tool uses after a restart would be unrequested spend.
+        committedToolUses: claimedToolUseIds.length > 0
           ? { platformSource: session.platformSource, contentSessionId: session.contentSessionId, toolUseIds: claimedToolUseIds }
           : undefined,
       }
