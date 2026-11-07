@@ -121,7 +121,7 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     // is high volume. Ids are vendor-prefixed and passed verbatim.
     defaultModel: 'deepseek/deepseek-v4-flash',
     requiresApiKey: true,
-    hint: 'sk-obs1_ key from obscurify.ai/account; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. Prompts and responses are not stored.',
+    hint: 'sk-obs1_ key from obscurify.ai/account; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. Obscurify says prompts and responses are not stored.',
   },
   {
     id: 'deepseek',
