@@ -101,14 +101,40 @@ describe('ingestObservation dual-write to tool_uses', () => {
     expect(row.or_session_id).toBe('job:content-session-1');
   });
 
-  it('does not back up claude-mem\'s own disclosure tools (no recursion)', async () => {
+  it('does not back up or re-observe claude-mem\'s own disclosure tools (no recursion)', async () => {
     await ingestObservation(payload({
       toolName: 'mcp__claude-mem__get_tool_uses',
       toolUseId: 'toolu_recursive',
     }));
 
-    expect(queued).toHaveLength(1);          // observation path is unchanged
+    expect(queued).toHaveLength(0);
     expect(store!.queryToolUses({})).toHaveLength(0);
+  });
+
+  it('does not back up or re-observe new progressive tools under normalized MCP names', async () => {
+    for (const toolName of ['mem_search', 'mcp__mcp_search__mem_search', 'mcp__mcp-search__mem_search', 'mcp__claude_mem_remote__get_summaries']) {
+      const result = await ingestObservation(payload({ toolName }));
+      expect(result).toEqual({ ok: true, status: 'skipped', reason: 'memory_retrieval' });
+    }
+    expect(queued).toHaveLength(0);
+    expect(store!.queryToolUses({})).toHaveLength(0);
+  });
+
+  it('retains save_memory write receipts while suppressing duplicate notes and paid observers', async () => {
+    const generator = mock(async () => {});
+    setIngestContext({
+      sessionManager: { queueObservation: mock(() => { throw new Error('must not re-observe saved notes'); }) } as any,
+      dbManager: { getSessionStore: () => store } as any,
+      eventBroadcaster: { broadcastObservationQueued: mock(() => {}) } as any,
+      ensureGeneratorRunning: generator,
+    });
+    for (const toolName of ['save_memory', 'mcp__mcp_search__save_memory']) {
+      const result = await ingestObservation(payload({ toolName, toolUseId: `write-${toolName}` }));
+      expect(result).toEqual({ ok: true, status: 'skipped', reason: 'explicit_memory_write' });
+    }
+    expect(generator).not.toHaveBeenCalled();
+    expect(store!.queryToolUses({})).toHaveLength(2);
+    expect(store!.db.prepare('SELECT count(*) AS n FROM observations').get()).toEqual({ n: 0 });
   });
 
   it('still backs up another MCP server\'s generic search tool', async () => {
@@ -142,5 +168,30 @@ describe('ingestObservation dual-write to tool_uses', () => {
 
     expect(result.ok).toBe(true);
     expect(queued).toHaveLength(1);
+  });
+
+  it('skips a late raw write when DELETE commits after a stale post-capture check', async () => {
+    const originalCheck = store!.isSessionDeleted.bind(store);
+    let checks = 0;
+    store!.isSessionDeleted = (platform, contentSessionId) => {
+      checks++;
+      const deleted = originalCheck(platform, contentSessionId);
+      if (checks === 2) {
+        const row = store!.db.prepare('SELECT id, memory_session_id FROM sdk_sessions WHERE content_session_id = ?')
+          .get(contentSessionId) as { id: number; memory_session_id: string };
+        store!.db.transaction(() => {
+          store!.markSessionDeleted(platform, contentSessionId, row.memory_session_id);
+          store!.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(row.id);
+        }).immediate();
+        return false; // Simulate the preflight result observed before DELETE.
+      }
+      return deleted;
+    };
+
+    const result = await ingestObservation(payload({ toolUseId: 'toolu_late_01' }));
+    expect(checks).toBeGreaterThanOrEqual(2);
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'session_deleted' });
+    expect(store!.queryToolUses({ contentSessionId: 'content-session-1' })).toHaveLength(0);
+    expect(queued).toHaveLength(0);
   });
 });

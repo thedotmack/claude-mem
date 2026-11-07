@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import codeMode from '../plugin/modes/code.json';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -7,6 +8,7 @@ import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+import { sessionDbWithoutMedia } from './fixtures/worker/session-db-without-media.js';
 
 let rateLimitingEnabled = 'false';
 let queuedMessages: Array<Record<string, unknown>> = [];
@@ -21,11 +23,7 @@ const toolObservationMessage = {
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt'
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }, { id: 'bugfix' }],
   observation_concepts: []
 };
@@ -42,6 +40,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     cumulativeInputTokens: 0,
     cumulativeOutputTokens: 0,
     abortController: new AbortController(),
+    claimedMessageIds: [],
     generatorPromise: null,
     currentProvider: null,
     startTime: Date.now(),
@@ -103,6 +102,9 @@ describe('GeminiProvider', () => {
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+      // These tests drive the request shape and its failures through the
+      // generator's separate init request.
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
@@ -134,7 +136,7 @@ describe('GeminiProvider', () => {
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted,
       getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
-      ensureMemorySessionIdRegistered: mock(() => {}) 
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}) 
     };
 
     const mockChromaSync = {
@@ -187,6 +189,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -319,6 +322,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -487,6 +491,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -509,6 +514,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -541,6 +547,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -585,6 +592,7 @@ describe('GeminiProvider', () => {
         cumulativeInputTokens: 0,
         cumulativeOutputTokens: 0,
         abortController: new AbortController(),
+        claimedMessageIds: [],
         generatorPromise: null,
         currentProvider: null,
         startTime: Date.now(),
@@ -633,6 +641,7 @@ describe('GeminiProvider', () => {
         cumulativeInputTokens: 0,
         cumulativeOutputTokens: 0,
         abortController: new AbortController(),
+        claimedMessageIds: [],
         generatorPromise: null,
         currentProvider: null,
         startTime: Date.now(),

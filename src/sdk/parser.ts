@@ -21,6 +21,15 @@ export interface ParsedObservation {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  /**
+   * Raw text of each `<attachment>` in the observation's first lowercase
+   * `<attachments>` block, trimmed, in document order (bounded). Absent when
+   * the observation has no such block or the block holds no elements. These
+   * are request labels the linkage rules still have to validate
+   * (src/services/media/inference.ts linkAttachmentRefs); they are never
+   * stored as text.
+   */
+  attachments?: string[];
 }
 
 export interface ParsedSummary {
@@ -56,8 +65,31 @@ export type ParseResult =
 /** Every tag the observation schema defines, wrappers and elements alike. */
 const OBSERVATION_SCHEMA_TAGS = new Set([
   'type', 'title', 'subtitle', 'narrative', 'facts', 'fact', 'concepts', 'concept',
-  'files_read', 'files_modified', 'file',
+  'files_read', 'files_modified', 'file', 'attachments', 'attachment',
 ]);
+
+/**
+ * docs/media-contract-v1.md "Observation XML attachment refs": lowercase tags,
+ * matched case-sensitively (unlike every other field here), first block only.
+ * Elements past MAX_PARSED_ATTACHMENTS are not kept; the linkage rules reject
+ * everything after the fourth anyway. Element text is clipped so a runaway
+ * label cannot grow the parse.
+ */
+const ATTACHMENTS_BLOCK = /<attachments>([\s\S]*?)<\/attachments>/;
+const ATTACHMENT_ELEMENT = /<attachment>([\s\S]*?)<\/attachment>/g;
+const MAX_PARSED_ATTACHMENTS = 16;
+const MAX_PARSED_ATTACHMENT_CHARS = 128;
+
+function extractAttachmentLabels(content: string): string[] | undefined {
+  const block = ATTACHMENTS_BLOCK.exec(content);
+  if (!block) return undefined;
+  const labels: string[] = [];
+  for (const element of block[1].matchAll(ATTACHMENT_ELEMENT)) {
+    if (labels.length >= MAX_PARSED_ATTACHMENTS) break;
+    labels.push(element[1].trim().slice(0, MAX_PARSED_ATTACHMENT_CHARS));
+  }
+  return labels.length > 0 ? labels : undefined;
+}
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -79,7 +111,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
         next_steps: null,
         notes: null,
         skipped: true,
-        skip_reason: skipMatch[1] ?? null,
+        skip_reason: skipMatch[1] === undefined ? null : decodeXmlReferences(skipMatch[1]),
       },
     };
   }
@@ -124,7 +156,7 @@ function parseObservationBlocks(
   while ((match = observationRegex.exec(text)) !== null) {
     const obsContent = match[1];
 
-    const type = extractField(obsContent, 'type');
+    const type = extractTypeField(obsContent);
     const title = unwrapLabelWrappedTitle(extractField(obsContent, 'title'));
     const subtitle = extractField(obsContent, 'subtitle');
     const narrative = extractField(obsContent, 'narrative');
@@ -132,6 +164,7 @@ function parseObservationBlocks(
     const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+    const attachments = extractAttachmentLabels(obsContent);
 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
@@ -199,7 +232,8 @@ function parseObservationBlocks(
       narrative: finalNarrative,
       concepts: cleanedConcepts,
       files_read,
-      files_modified
+      files_modified,
+      ...(attachments ? { attachments } : {}),
     });
   }
 
@@ -220,7 +254,7 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
   const next_steps = extractField(summaryContent, 'next_steps');
   const notes = extractField(summaryContent, 'notes'); 
 
-  if (!request && !investigated && !learned && !completed && !next_steps) {
+  if (!request && !investigated && !learned && !completed && !next_steps && !notes) {
     logger.warn('PARSER', 'Summary block has no sub-tags — rejecting false positive', { correlationId });
     return null;
   }
@@ -249,13 +283,54 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
   return inner === '' ? title : inner;
 }
 
+// Decode only after extracting markup: an escaped tag is character data, not
+// another element. A single replacement pass keeps &amp;lt; as literal &lt;.
+const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+function decodeXmlReferences(value: string): string {
+  return value.replace(/<!\[CDATA\[[\s\S]*?\]\]>|&(?:amp|lt|gt|quot|apos|#(?:x[0-9a-fA-F]+|[0-9]+));/g, reference => {
+    if (reference.startsWith('<![CDATA[')) return reference;
+    const name = reference.slice(1, -1);
+    if (!name.startsWith('#')) return XML_ENTITIES[name];
+    const codePoint = name.startsWith('#x') ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+    // Only XML 1.0 legal characters are references; retain existing literal
+    // behavior for malformed/undeclared references in this text-XML bridge.
+    if (codePoint === 9 || codePoint === 10 || codePoint === 13 ||
+        (codePoint >= 0x20 && codePoint <= 0xD7FF) ||
+        (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
+        (codePoint >= 0x10000 && codePoint <= 0x10FFFF)) {
+      return String.fromCodePoint(codePoint);
+    }
+    return reference;
+  });
+}
+
 function extractField(content: string, fieldName: string): string | null {
   const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
   const match = regex.exec(content);
   if (!match) return null;
 
-  const trimmed = match[1].trim();
-  return trimmed === '' ? null : trimmed;
+  const trimmed = decodeXmlReferences(match[1].trim());
+  return trimmed.trim() === '' ? null : trimmed;
+}
+
+/**
+ * The type is a single id, so no markup belongs in it. Models sometimes close
+ * it with a stray tag and re-open it (`<type>bugfix</parameter> <type>discovery</type>`),
+ * or restart the whole observation mid-type. The last `<type>` opened before
+ * the first `</type>` is the value the model settled on; any tag left inside
+ * it is dropped.
+ */
+function extractTypeField(content: string): string | null {
+  const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(content);
+  if (!match) {
+    // No </type> at all: the model closed it with a stray tag
+    // (`<type>gotcha</reasoning_effort>`). Accept one bare id, never prose.
+    const stray = /<type>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*\s*>/i.exec(content);
+    return stray ? stray[1] : null;
+  }
+
+  const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
+  return value === '' ? null : value;
 }
 
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
@@ -273,8 +348,8 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    const trimmed = elementMatch[1].trim();
-    if (trimmed) {
+    const trimmed = decodeXmlReferences(elementMatch[1].trim());
+    if (trimmed.trim()) {
       elements.push(trimmed);
     }
   }
@@ -289,7 +364,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified|attachments)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')

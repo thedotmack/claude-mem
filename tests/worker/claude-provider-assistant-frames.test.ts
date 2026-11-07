@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // bun's mock.module is process-global and sticky: it is never auto-unregistered
 // and leaks into every file that runs afterwards. Snapshot each real module
@@ -49,7 +51,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
         observation_concepts: [],
       }),
@@ -145,7 +147,14 @@ function createHarness(session: ActiveSession) {
     session.earliestPendingTimestamp = null;
     return confirmed;
   });
-  const resetProcessingToPending = mock(async () => 0);
+  // Mirrors SessionManager.resetProcessingToPending: the claim is released on
+  // the session as well as in the buffer. Without this, the stream-end release
+  // below sees a still-claimed batch and the fake counts a second reset that
+  // the real manager never makes.
+  const resetProcessingToPending = mock(async () => {
+    session.claimedMessageIds = [];
+    return 0;
+  });
   const storeObservations = mock(() => ({
     observationIds: [7],
     summaryId: null,
@@ -162,7 +171,7 @@ function createHarness(session: ActiveSession) {
   const dbManager = {
     getSessionStore: () => ({
       updateMemorySessionId: () => {},
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       getSessionById: () => ({ memory_session_id: MEMORY_SESSION_ID }),
       storeObservations,
     }),
@@ -380,6 +389,113 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
     expect(harness.remainingClaimed()).toHaveLength(1);
+    // The scripted stream ends after the failed turn, with nothing answering
+    // the re-sent batch: that exit is named so GeneratorExitHandler keeps the
+    // session instead of finalizing the batch away.
+    expect(session.abortReason).toBe('transport:sdk_eof');
+  });
+});
+
+describe('ClaudeProvider invalid API key detection (#4253)', () => {
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  it('stores an observation that quotes "Invalid API key" mid-content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const quotingXml = OBSERVATION_XML.replace(
+      'The queued batch reached the parser.',
+      'The login test asserted the CLI prints "Invalid API key" for a revoked key.',
+    );
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: quotingXml }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw on a reply that puts ordinary narrative after an "Invalid API key ·" prefix', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: 'Invalid API key · the login test covers the revoked-key path.' }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
+  });
+
+  it('still throws when the CLI answers with its invalid API key status line', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      { ...assistantFrame([{ type: 'text', text: 'Invalid API key · Fix external API key' }]), error: 'authentication_failed' },
+      resultFrame({ is_error: true }),
+    ];
+
+    await expect(harness.provider.startSession(session)).rejects.toThrow('Invalid API key');
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+  });
+});
+
+describe('ClaudeProvider model refusal detection (#5315)', () => {
+  const REFUSAL = "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.";
+
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  it.each([
+    ['the structured error', { error: 'model_not_found' }],
+    ['the whole status line, from a CLI without the field', {}],
+  ])('stops on %s without parsing the reply as prose', async (_name, extra) => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      { ...assistantFrame([{ type: 'text', text: REFUSAL }]), ...extra },
+      resultFrame({ is_error: true }),
+    ];
+
+    const failure = await harness.provider.startSession(session).then(() => null, error => error);
+    expect(failure).toMatchObject({ kind: 'unrecoverable', code: 'model_unavailable', message: REFUSAL });
+    expect(failure.action).toContain('CLAUDE_MEM_MODEL');
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+  });
+
+  it('stores an observation that quotes the refusal', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML.replace('The queued batch reached the parser.', REFUSAL) }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not stop on narrative that opens with the same words', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: "There's an issue with the selected model (auto) in the settings test, which now passes." }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
   });
 });
 
@@ -434,5 +550,67 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     const lines = memoryIdLines();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith(`MEMORY_ID_CAPTURED | sessionDbId=3492 | memorySessionId=${MEMORY_SESSION_ID} |`);
+  });
+});
+
+describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
+  let infoSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    scriptedMessages = [];
+    infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  it('logs finalized result-frame counts once without including prompt content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const promptText = 'private observation prompt content';
+    session.userPrompt = promptText;
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame({
+        usage: {
+          input_tokens: 101,
+          cache_creation_input_tokens: 202,
+          cache_read_input_tokens: 303,
+          output_tokens: 40,
+        },
+      }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    const usageCalls = infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage');
+    expect(usageCalls).toHaveLength(1);
+    expect(usageCalls[0]?.[2]).toEqual({
+      sessionId: 3492,
+      promptNumber: 2,
+      inputTokens: 101,
+      cacheCreationInputTokens: 202,
+      cacheReadInputTokens: 303,
+      fullContextTokens: 606,
+      outputTokens: 40,
+    });
+    expect(JSON.stringify(usageCalls[0])).not.toContain(promptText);
+  });
+
+  it('does not log usage for the synthetic init result', async () => {
+    const session = createSession();
+    session.lastGeneratorSource = 'init';
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage')).toHaveLength(0);
   });
 });

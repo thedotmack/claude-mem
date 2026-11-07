@@ -1,3 +1,9 @@
+/**
+ * Builds the context a new session starts with: a compact index of the
+ * observations and summaries that matter for this project, fitted to the
+ * delivery limit. The same rows render two ways: terse for the agent, and a
+ * readable preview for the person (forHuman).
+ */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -7,13 +13,13 @@ import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { SQLITE_BUSY_TIMEOUT_MS, openReaderDatabase } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
-import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -38,6 +44,8 @@ import {
   readObserverHealth,
   isObserverUnhealthy,
   isObserverQuotaCooldownActive,
+  isQuotaFailure,
+  isQuotaGuardPause,
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
@@ -45,6 +53,14 @@ import { cooldownAppliesToCurrentAccount } from '../../shared/quota-cooldown.js'
 import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../hooks/runtime-selector.js';
 import { fetchServerContextRows, type ServerContextRows } from './ServerContextRows.js';
+import { ModeManager } from '../domain/ModeManager.js';
+import { getContextReadWorker } from './ContextReadWorkerClient.js';
+import type { ContextReadOptions, ContextReadResult } from './ContextReadProtocol.js';
+import { formatHeaderDateTime } from '../../shared/timeline-formatting.js';
+import {
+  CONTEXT_HEADER_TIME_PLACEHOLDER,
+  HEADER_TIME_EXPANSION_RESERVE_CHARS,
+} from '../../shared/context-cache.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -59,7 +75,7 @@ const VERSION_MARKER_PATH = path.join(
 function initializeDatabase(): Database | null {
   try {
     if (!existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH, { readonly: true, create: false });
+    const db = openReaderDatabase(DB_PATH);
     try {
       db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       return db;
@@ -85,8 +101,8 @@ function initializeDatabase(): Database | null {
   }
 }
 
-function renderEmptyState(project: string, forHuman: boolean): string {
-  return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
+function renderEmptyState(project: string, forHuman: boolean, headerTime: string): string {
+  return forHuman ? renderHumanEmptyState(project, headerTime) : renderAgentEmptyState(project, headerTime);
 }
 
 interface RenderedContext {
@@ -105,13 +121,14 @@ function buildContextOutput(
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  forHuman: boolean
+  forHuman: boolean,
+  headerTime: string
 ): RenderedContext {
   const output: string[] = [];
 
   const economics = calculateTokenEconomics(observations);
 
-  output.push(...renderHeader(project, economics, config, forHuman));
+  output.push(...renderHeader(project, economics, config, forHuman, headerTime));
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -239,19 +256,26 @@ export function withObserverHealthWarning(text: string, forHuman: boolean = fals
  */
 export function observerHealthWarning(forHuman: boolean = false): string {
   const health = readObserverHealth();
-  // Failure banner wins when both are set: the quota-exhausted copy already
-  // says capture is paused, and a cooldown is not a second outage. Cooldown
-  // alone (consecutiveFailures still below the unhealthy threshold) is the
-  // gap this notice exists to close — the breaker withholds the generator
-  // without ever incrementing the failure streak. A Claude breaker pauses only
-  // the account it was armed under; after a switch to another account it
-  // withholds nothing, so announcing it would be false.
-  const cooldown = health?.quotaCooldown;
+  // The structured quota notice knows whether the main provider or its backup
+  // is saving, so it supersedes the failure that armed that hold, including
+  // when the notice is silent. Unrelated failures still get their own banner.
+  // A Claude hold only applies to the account it was armed under.
+  //
+  // The notice was mirrored under whichever account was selected then, so a
+  // Claude hold is dropped here unless it pauses the account selected now. A
+  // hold mirrored before holds carried their own account uses the ledger's.
+  const mirrored = health?.quotaCooldown;
+  const cooldown = mirrored?.notice
+    ? { ...mirrored, notice: { ...mirrored.notice, holds: mirrored.notice.holds.filter(hold =>
+      cooldownAppliesToCurrentAccount({ provider: hold.provider, profile: hold.profile ?? mirrored.profile })) } }
+    : mirrored;
   let notice: string | null = null;
-  if (isObserverUnhealthy(health)) {
+  if (health && isObserverQuotaCooldownActive(health) && cooldown
+    && (cooldown.notice ? cooldown.notice.holds.length > 0 : cooldownAppliesToCurrentAccount(cooldown))
+    && (!isObserverUnhealthy(health) || (cooldown.notice && (isQuotaFailure(health) || isQuotaGuardPause(health))))) {
+    notice = renderObserverQuotaCooldownNotice({ ...health, quotaCooldown: cooldown });
+  } else if (isObserverUnhealthy(health)) {
     notice = renderObserverHealthWarning(health);
-  } else if (isObserverQuotaCooldownActive(health) && cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
-    notice = renderObserverQuotaCooldownNotice(health);
   }
   // Cloud sync health rides the same slot: a paused (401/403) or long-failing
   // sync is the other outage users otherwise discover only by missing memories.
@@ -264,7 +288,7 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   }
   // Colors only on the human render: the agent copy is fetched separately
   // (colors=false) and ANSI escapes there are noise in the model's context.
-  return forHuman ? paintRed(notice) : notice;
+  return forHuman && notice.includes('⚠') ? paintRed(notice) : notice;
 }
 
 /**
@@ -394,7 +418,7 @@ export function fitContextForDelivery(
     const warningLength = warning ? warning.length + 2 : 0;
     text = appendObserverHealthWarning(warning, truncateTerminalPreview(
       renderPreview(selected, budget.config),
-      limit - warningLength
+      limit - warningLength - TERMINAL_BANNER_RESERVE_CHARS
     ));
   }
 
@@ -418,13 +442,14 @@ interface ContextScope {
   platformSource: string | undefined;
 }
 
-function resolveContextScope(input: ContextInput | undefined): ContextScope {
-  const config = loadContextConfig();
+function resolveContextScope(input: ContextInput | undefined, configSnapshot?: ContextConfig): ContextScope {
+  const config = configSnapshot ? { ...configSnapshot } : loadContextConfig();
+  if (input?.includePriorMessage === false) config.showLastMessage = false;
   const cwd = input?.cwd ?? process.cwd();
-  const context = getProjectContext(cwd);
-
-  const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  // Callers that name the projects (the worker route, the server-runtime hook)
+  // need no lookup, and resolving a real cwd runs git on every render.
+  const projects = input?.projects?.length ? input.projects : getProjectContext(cwd).allProjects;
+  const project = projects[projects.length - 1];
 
   if (input?.full) {
     config.totalObservationCount = 999999;
@@ -450,9 +475,13 @@ export function renderContextFromRows(
 ): { text: string; stats: ContextInjectStats | null } {
   const { observations, summaries } = rows;
   const { config, cwd, project } = scope;
+  // One header time for every render pass of this build. A cacheable build
+  // carries a placeholder instead, and the fitter keeps room for it to grow.
+  const headerTime = input?.timePlaceholders ? CONTEXT_HEADER_TIME_PLACEHOLDER : formatHeaderDateTime();
+  const headerTimeReserveChars = input?.timePlaceholders ? HEADER_TIME_EXPANSION_RESERVE_CHARS : 0;
 
   if (observations.length === 0 && summaries.length === 0) {
-    return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
+    return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman, headerTime)), stats: null };
   }
 
   // `--full` is an explicit human request for everything; only the block that
@@ -465,11 +494,13 @@ export function renderContextFromRows(
     // terminal preview paints this same warning red after truncating (#4252).
     healthWarningForContext(input),
     (items, cfg) =>
-      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false).text,
-    input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
+      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false, headerTime).text,
+    input?.full
+      ? Number.POSITIVE_INFINITY
+      : CONTEXT_OUTPUT_LIMIT - (input?.reserveChars ?? 0) - headerTimeReserveChars,
     Boolean(input?.full),
     forHuman ? (items, cfg) =>
-      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true) : undefined
+      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true, headerTime) : undefined
   );
 }
 
@@ -550,14 +581,24 @@ export async function generateServerSessionStartContext(
 
 export async function generateContextWithStats(
   input?: ContextInput,
-  forHuman: boolean = false
-): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  forHuman: boolean = false,
+  options: ContextReadOptions = {},
+): Promise<ContextReadResult> {
   const runtime = resolveRuntimeContext();
   if (runtime.runtime === 'server') {
     return generateServerContextWithStats(runtime, input, forHuman);
   }
 
-  const scope = resolveContextScope(input);
+  if (options.execution === 'worker') {
+    return (options.reader ?? getContextReadWorker()).render({
+      context: input,
+      forHuman,
+      mode: ModeManager.getInstance().getActiveMode(),
+      config: options.config ?? loadContextConfig(),
+    });
+  }
+
+  const scope = resolveContextScope(input, options.config);
   const rawDb = initializeDatabase();
   if (!rawDb) {
     return { text: healthWarningForContext(input, forHuman), stats: null };
@@ -570,7 +611,7 @@ export async function generateContextWithStats(
     const queryProjects = projectReadKeys(rawDb, scope.projects.length > 1 ? scope.projects : [scope.project]);
     const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
     const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
-    return renderContextFromRows({ observations, summaries }, input, forHuman, scope);
+    return { ...renderContextFromRows({ observations, summaries }, input, forHuman, scope), readKeys: queryProjects };
   } finally {
     rawDb.close();
   }
@@ -578,7 +619,8 @@ export async function generateContextWithStats(
 
 export async function generateContext(
   input?: ContextInput,
-  forHuman: boolean = false
+  forHuman: boolean = false,
+  options: ContextReadOptions = {},
 ): Promise<string> {
-  return (await generateContextWithStats(input, forHuman)).text;
+  return (await generateContextWithStats(input, forHuman, options)).text;
 }

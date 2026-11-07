@@ -14,6 +14,7 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
 // v1beta is required: current Gemini 3.x models and the `-latest` aliases are
 // only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
@@ -124,6 +125,14 @@ export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput)
 
   if (status === 400 && !isQuotaBody(bodyText)) {
     const category = categorizeGeminiBadRequest(bodyText);
+    // Google also answers a refused key with HTTP 400. That is a refused
+    // credential, as on 401/403 and in the worker's classifyGeminiError.
+    if (category === 'api_key') {
+      return new ServerClassifiedProviderError('Gemini auth invalid (status 400)', {
+        kind: 'auth_invalid',
+        cause: new Error('Gemini HTTP error (status 400)'),
+      });
+    }
     return new ServerClassifiedProviderError(`Gemini bad request: ${category}`, {
       kind: 'unrecoverable',
       cause: new Error('Gemini HTTP error (status 400)'),
@@ -281,7 +290,7 @@ export { parseRetryAfterMs };
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (readError) {
     const err = readError instanceof Error ? readError : new Error(String(readError));
     logger.warn('SDK', 'Failed to read Gemini error response body', { provider: 'gemini', status: response.status }, err);

@@ -98,6 +98,13 @@ describe('worker-utils API timeout resolution', () => {
     const requests: string[] = [];
     global.fetch = mock((url: string | URL | Request) => {
       requests.push(String(url));
+      // Phase 4: readiness is one GET /api/ready SSE read, not /api/readiness.
+      if (String(url).endsWith('/api/ready')) {
+        return Promise.resolve(new Response(
+          'event: phase\ndata: {"phase":"ready","version":"test","pid":1}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ));
+      }
       return Promise.resolve(new Response(JSON.stringify({ ok: true })));
     }) as unknown as typeof fetch;
 
@@ -112,7 +119,7 @@ describe('worker-utils API timeout resolution', () => {
 
     expect(result).toEqual({ ok: true });
     expect(requests).toEqual([
-      expect.stringContaining('/api/readiness'),
+      expect.stringMatching(/\/api\/ready$/),
       expect.stringContaining('/api/test'),
     ]);
   });
@@ -197,5 +204,19 @@ describe('worker-utils API timeout resolution', () => {
         max: HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX,
       })
     );
+  });
+
+  it('throws a typed WorkerRequestTimeoutError when the request deadline passes', async () => {
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const { WorkerRequestTimeoutError } = await import('../../src/shared/worker-request-timeout-error.js');
+    global.fetch = mock(() => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))) as unknown as typeof fetch;
+
+    const failure = await workerUtils.fetchWithTimeout('http://127.0.0.1:37777/api/dumb-search', { method: 'POST' }, 30000)
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(WorkerRequestTimeoutError);
+    expect((failure as InstanceType<typeof WorkerRequestTimeoutError>).timeoutMs).toBe(30000);
+    // Existing callers still match the historical message.
+    expect((failure as Error).message).toBe('Request timed out after 30000ms');
   });
 });

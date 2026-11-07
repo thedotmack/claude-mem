@@ -26,8 +26,8 @@ function createMockReqRes(name: string, body: any) {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
-    req: { body, params: { name }, path: `/api/corpus/${name}/rebuild`, query: {} } as unknown as Request,
-    res: { json: jsonSpy, status: statusSpy, headersSent: false } as unknown as Response,
+    req: { body, params: { name }, path: `/api/corpus/${name}/rebuild`, query: {}, headers: {}, socket: { on: mock(() => {}), off: mock(() => {}) } } as unknown as Request,
+    res: { json: jsonSpy, status: statusSpy, headersSent: false, on: mock(() => {}), off: mock(() => {}), end: mock(() => {}) } as unknown as Response,
     jsonSpy,
     statusSpy,
   };

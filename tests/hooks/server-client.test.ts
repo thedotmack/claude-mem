@@ -8,9 +8,11 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun
 // otherwise leak into other test files in the same `bun test` run.
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+let capturedTimeouts: number[] = [];
 
 mock.module('../../src/shared/worker-utils.js', () => ({
-  fetchWithTimeout: async (url: string, init: RequestInit, _timeoutMs: number) => {
+  fetchWithTimeout: async (url: string, init: RequestInit, timeoutMs: number) => {
+    capturedTimeouts.push(timeoutMs);
     return globalThis.fetch(url, init);
   },
 }));
@@ -58,6 +60,7 @@ function installFetch(handler: (req: CapturedRequest) => Response | Promise<Resp
 describe('ServerClient', () => {
   beforeEach(() => {
     captured = [];
+    capturedTimeouts = [];
   });
 
   afterEach(() => {
@@ -122,6 +125,26 @@ describe('ServerClient', () => {
     expect((captured[0]?.body as Record<string, unknown>).occurredAtEpoch).toBe(1234);
     expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('codex');
     expect(result.event.id).toBe('e1');
+  });
+
+  it('recordEvent forwards a per-request timeout override', async () => {
+    installFetch(async () => new Response(JSON.stringify({
+      event: { id: 'e-timeout', projectId: 'p1', serverSessionId: null },
+    }), { status: 201 }));
+    const client = new ServerClient({
+      serverBaseUrl: 'http://localhost:9999',
+      apiKey: 'cmem_test',
+      timeoutMs: 30_000,
+    });
+
+    await client.recordEvent({
+      projectId: 'p1',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+    }, { timeoutMs: 2_000 });
+
+    expect(capturedTimeouts).toEqual([2_000]);
   });
 
   it('endSession sends POST /v1/sessions/:id/end', async () => {
@@ -353,5 +376,36 @@ describe('ServerClient', () => {
       externalSessionId: 'ext',
       platformSource: 'cursor',
     });
+  });
+
+  it('strips <private> sections from every server-bound event payload and session metadata', () => {
+    const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
+    const eventBody = client.buildEventPayload({
+      projectId: 'p',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+      payload: {
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi <private>secret-token-123</private>' },
+        tool_response: { stdout: ['line', '<private>secret-output</private>'] },
+        last_assistant_message: 'done <private>secret-reply</private>',
+        untouched: '  keeps whitespace  ',
+      },
+    });
+    const serialized = JSON.stringify(eventBody);
+    expect(serialized).not.toContain('secret-token-123');
+    expect(serialized).not.toContain('secret-output');
+    expect(serialized).not.toContain('secret-reply');
+    expect((eventBody.payload as Record<string, unknown>).untouched).toBe('  keeps whitespace  ');
+    expect((eventBody.payload as Record<string, any>).tool_input.command).toBe('echo hi');
+
+    const sessionBody = client.buildStartSessionPayload({
+      projectId: 'p',
+      externalSessionId: 'ext',
+      metadata: { project: 'demo', prompt: 'fix the bug <private>my password is hunter2</private>' },
+    });
+    expect(JSON.stringify(sessionBody)).not.toContain('hunter2');
+    expect(sessionBody.metadata).toEqual({ project: 'demo', prompt: 'fix the bug' });
   });
 });

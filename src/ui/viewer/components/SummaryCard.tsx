@@ -1,4 +1,5 @@
 import React from "react";
+import { useI18n, interpolate } from "../../i18n";
 import { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
 import { DeleteButton } from "./DeleteButton";
@@ -10,6 +11,7 @@ interface SummaryCardProps {
 }
 
 export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
+  const { t } = useI18n();
   const date = formatDate(summary.created_at_epoch);
 
   const sections = [
@@ -17,13 +19,14 @@ export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
     { key: "learned", label: "Learned", content: summary.learned, icon: "/icon-thick-learned.svg" },
     { key: "completed", label: "Completed", content: summary.completed, icon: "/icon-thick-completed.svg" },
     { key: "next_steps", label: "Next Steps", content: summary.next_steps, icon: "/icon-thick-next-steps.svg" },
+    { key: "notes", label: "Notes", content: summary.notes, icon: "/icon-thick-notes.svg" },
   ].filter((section) => section.content);
 
   return (
     <article className="card summary-card">
       <header className="summary-card-header">
         <div className="summary-badge-row">
-          <span className="card-type summary-badge">Session Summary</span>
+          <span className="card-type summary-badge">{t('Session Summary')}</span>
           <span className={`card-source source-${summary.platform_source || 'claude'}`}>
             {summary.platform_source || 'claude'}
           </span>
@@ -45,10 +48,10 @@ export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
             <div className="summary-section-header">
               <img
                 src={section.icon}
-                alt={section.label}
+                alt={t(section.label)}
                 className={`summary-section-icon summary-section-icon--${section.key}`}
               />
-              <h3 className="summary-section-label">{section.label}</h3>
+              <h3 className="summary-section-label">{t(section.label)}</h3>
             </div>
             <div className="summary-section-content">
               {section.content}
@@ -58,7 +61,7 @@ export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
       </div>
 
       <footer className="summary-card-footer">
-        <span className="summary-meta-id">Session #{summary.id}</span>
+        <span className="summary-meta-id">{interpolate(t('Session #{id}'), { id: summary.id })}</span>
         <span className="summary-meta-divider">•</span>
         <time className="summary-meta-date" dateTime={new Date(summary.created_at_epoch).toISOString()}>
           {date}

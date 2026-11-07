@@ -20,11 +20,19 @@ import { loadFromFileOnce } from './hook-settings.js';
 import { viewerBaseUrl } from './viewer-url.js';
 import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
+import { emitContextInvalidation } from './context-invalidation.js';
+import { sleepSync } from './atomic-json.js';
 
 export interface ObserverHealthState {
   /** Failures since the last successful store. */
   consecutiveFailures: number;
-  /** Epoch ms of the first failure in the current streak. */
+  /**
+   * Epoch ms of the first failure since the kind last changed — the outage the
+   * warning names. It is not "the first failure in the streak": a quota pause that
+   * later becomes a refused credential is two outages, and dating the refusal
+   * from the pause told one reader the credentials had been refused for three
+   * days when the log showed an auth failure 21 hours old (#5378).
+   */
   failingSinceAt: number | null;
   /** Epoch ms of the most recent failure. */
   lastErrorAt: number | null;
@@ -92,6 +100,44 @@ export interface ObserverQuotaCooldown {
    * else can serve; the notice then says capture is paused.
    */
   servingProvider?: string;
+  /** 'claude' only: the credential that is held ('api-key' | 'subscription'), when one is. */
+  auth?: string;
+  /** Facts recorded when the hold was booked, independent of its log message. */
+  reason?: ObserverQuotaReason;
+  /** Worker-resolved roles and names; absent in ledgers written by older builds. */
+  notice?: ObserverQuotaNoticeContext;
+}
+
+export type ObserverQuotaReason =
+  | { kind: 'limit_guard'; window: string; usagePercent: number; thresholdPercent: number; resetsAt?: number }
+  | { kind: 'reset_buffer_guard'; window: string; usagePercent: number; resetsAt: number }
+  | { kind: 'used_up'; window?: string; resetsAt?: number }
+  | { kind: 'api_key_limit' }
+  | { kind: 'out_of_quota' | 'unavailable' | 'busy' | 'unknown' };
+
+export interface ObserverQuotaNoticeHold {
+  provider: string;
+  /** 'claude' only: the account the hold pauses (cooldownAppliesToCurrentAccount). */
+  profile?: string;
+  displayName: string;
+  retryName: string;
+  role: 'main' | 'backup';
+  until: number;
+  auth?: string;
+  reason?: ObserverQuotaReason;
+}
+
+export interface ObserverQuotaNoticeContext {
+  mainProvider: string;
+  mainDisplayName: string;
+  mainRetryName: string;
+  backupProvider?: string;
+  backupDisplayName?: string;
+  defaultClaudeBackup: boolean;
+  servingProvider?: string;
+  servingDisplayName?: string;
+  servingAuth?: string;
+  holds: ObserverQuotaNoticeHold[];
 }
 
 /**
@@ -174,11 +220,23 @@ export function readObserverHealth(filePath: string = defaultHealthFilePath()): 
   }
 }
 
-function writeObserverHealth(state: ObserverHealthState, filePath: string): void {
+/**
+ * True when a ledger write can change whether the SessionStart banner shows.
+ * Every stored observation records a success, so invalidating on each write
+ * would re-render every cached block continuously during active work.
+ */
+function bannerMayChange(prior: ObserverHealthState, next: ObserverHealthState): boolean {
+  return isObserverUnhealthy(prior) !== isObserverUnhealthy(next)
+    || JSON.stringify(prior.quotaCooldown) !== JSON.stringify(next.quotaCooldown);
+}
+
+function writeObserverHealth(state: ObserverHealthState, filePath: string, prior: ObserverHealthState): void {
   try {
     const dir = join(filePath, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(filePath, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    // The outage banner rides inside the SessionStart block.
+    if (bannerMayChange(prior, state)) emitContextInvalidation('all', 'observer-health');
   } catch (error) {
     logger.warn('SESSION', 'Failed to write observer-health file', { filePath },
       error instanceof Error ? error : new Error(String(error)));
@@ -190,10 +248,6 @@ const LEDGER_LOCK_STALE_MS = 5_000;
 /** Give up waiting and update unlocked rather than lose the failure entirely. */
 const LEDGER_LOCK_MAX_WAIT_MS = 2_000;
 const LEDGER_LOCK_RETRY_MS = 10;
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * Serialize the ledger's read-modify-write across processes. Every worker and
@@ -265,24 +319,32 @@ export function recordObserverFailure(
   filePath: string = defaultHealthFilePath(),
 ): void {
   const detail: ObserverFailureDetail = typeof error === 'string' ? { message: error } : error;
+  const nextKind = detail.kind ?? null;
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      // The streak's start belongs to the current failure kind (#5378): a quota pause
+      // followed by auth refusals must not describe the auth warning with the quota
+      // era's timestamp. A kind change (classified → unclassified included) restarts
+      // the clock; only the streak itself waits for a success.
+      failingSinceAt:
+        prior.consecutiveFailures > 0 && (prior.lastErrorKind ?? null) === nextKind
+          ? prior.failingSinceAt
+          : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
-      lastErrorKind: detail.kind ?? null,
+      lastErrorKind: nextKind,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
-    }, filePath);
+    }, filePath, prior);
   });
 }
 
@@ -294,7 +356,7 @@ export function recordObserverSuccess(filePath: string = defaultHealthFilePath()
       consecutiveFailures: 0,
       failingSinceAt: null,
       lastSuccessAt: Date.now(),
-    }, filePath);
+    }, filePath, prior);
   });
 }
 
@@ -319,8 +381,11 @@ export function recordObserverQuotaCooldown(
         ...(cooldown.window ? { window: cooldown.window } : {}),
         ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
         ...(cooldown.servingProvider ? { servingProvider: cooldown.servingProvider } : {}),
+        ...(cooldown.auth ? { auth: cooldown.auth } : {}),
+        ...(cooldown.reason ? { reason: cooldown.reason } : {}),
+        ...(cooldown.notice ? { notice: cooldown.notice } : {}),
       },
-    }, filePath);
+    }, filePath, prior);
   });
 }
 
@@ -331,7 +396,7 @@ export function clearObserverQuotaCooldown(
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath);
     if (!prior || prior.quotaCooldown === null) return;
-    writeObserverHealth({ ...prior, quotaCooldown: null }, filePath);
+    writeObserverHealth({ ...prior, quotaCooldown: null }, filePath, prior);
   });
 }
 
@@ -392,6 +457,29 @@ export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
 }
 
+/**
+ * True when the current record is claude-mem's own precautionary stop
+ * (RateLimitStore's `quota_guard`): usage crossed a reserve threshold or the
+ * reset buffer while the provider was still accepting requests. Nothing is
+ * exhausted that we know of, so the banner says "paused", not "used up".
+ */
+export function isQuotaGuardPause(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'quota_guard';
+}
+
+/**
+ * The one message every quota abort used to be booked under, guard and
+ * refusal alike. Legacy ledger records, and quota aborts that carry no kind,
+ * still use it. Such a record cannot say whether anything was exhausted, so
+ * the banner must not claim it was.
+ */
+export const AMBIGUOUS_QUOTA_MESSAGE = 'Provider reported the inference allowance exhausted';
+
+/** True when the record is a quota failure booked without the guard's decision. */
+export function isAmbiguousQuotaRecord(state: ObserverHealthState): boolean {
+  return isQuotaFailure(state) && state.lastErrorMessage === AMBIGUOUS_QUOTA_MESSAGE;
+}
+
 /** True when the current outage is the provider refusing the observer's credential. */
 export function isAuthFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'auth_invalid';
@@ -441,15 +529,16 @@ function hasOutlivedRecheckWindow(state: ObserverHealthState, nowMs: number): bo
  * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
  * the worker stored observations four minutes later in the same session).
  *
- * Only failures that clear on their own age out: this one and a deadline
- * expiry (isDeadlineFailureStale). A bad key or a missing base URL stays true
- * until someone fixes it, so its banner should keep saying so.
+ * Only failures that clear on their own age out: this one, the guard's
+ * precautionary pause (isQuotaGuardPause, released by the same recheck window)
+ * and a deadline expiry (isDeadlineFailureStale). A bad key or a missing base
+ * URL stays true until someone fixes it, so its banner should keep saying so.
  */
 export function isQuotaFailureStale(
   state: ObserverHealthState,
   nowMs: number = Date.now(),
 ): boolean {
-  return isQuotaFailure(state) && hasOutlivedRecheckWindow(state, nowMs);
+  return (isQuotaFailure(state) || isQuotaGuardPause(state)) && hasOutlivedRecheckWindow(state, nowMs);
 }
 
 /**
@@ -487,50 +576,165 @@ export function isObserverQuotaCooldownActive(
     && cooldown.until > nowMs;
 }
 
+const QUOTA_PAUSE_MODEL_LINE = "(Assistant: at the start of your first reply, tell the user in one sentence that claude-mem has paused saving memories and why. Don't restart the worker or suggest it.)";
+
+const CLAUDE_LIMIT_NAMES: Record<string, string> = {
+  five_hour: '5-hour Claude limit',
+  seven_day: 'weekly Claude limit',
+  seven_day_opus: 'weekly Opus limit',
+  seven_day_sonnet: 'weekly Sonnet limit',
+  seven_day_overage_included: 'weekly Fable limit',
+  overage: 'Claude extra usage',
+};
+
 /**
- * Session-start notice for an intentional quota pause. Distinct from the
- * failure warning: nothing is broken, the generator is withheld on purpose,
- * and queued work drains when the window clears.
+ * The zone notice times are shown in: TZ as it reads right now, else the
+ * system zone. Passing it to Intl explicitly means a TZ set after startup is
+ * honored even where the runtime cached the zone it started with (CI runners
+ * are UTC). An unknown TZ falls back to the system zone, as Date itself does.
  */
+function noticeTimeZone(): string | undefined {
+  const zone = process.env.TZ?.trim();
+  if (!zone) return undefined;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return zone;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Round upward so the displayed minute never promises a retry before admission. */
+function quotaRetryTime(timestamp: number, nowMs: number): string {
+  const timeZone = noticeTimeZone();
+  const retry = new Date(Math.ceil(timestamp / 60_000) * 60_000);
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = day.format(retry) === day.format(new Date(nowMs));
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    ...(today ? {} : { weekday: 'short' as const }),
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(retry).replace(',', '');
+}
+
+function quotaHoldReason(
+  hold: ObserverQuotaNoticeHold,
+  nowMs: number,
+  paused: boolean = false,
+  backupDetail: boolean = false,
+): string {
+  const reason = hold.reason;
+  const name = relayedProviderText(hold.displayName);
+  if (!reason) return `${name} is on hold`;
+  switch (reason.kind) {
+    case 'unknown':
+      return `${name} is on hold`;
+    case 'limit_guard': {
+      const limit = CLAUDE_LIMIT_NAMES[reason.window] ?? 'Claude allowance';
+      const usage = `you've used ${reason.usagePercent}% of your ${limit}`;
+      return backupDetail ? usage
+        : `${usage} (${paused ? 'it' : 'claude-mem'} stops at ${reason.thresholdPercent}% to leave the rest for you)`;
+    }
+    case 'reset_buffer_guard':
+      return `you've used ${reason.usagePercent}% of your 5-hour Claude limit and it resets at ${quotaRetryTime(reason.resetsAt, nowMs)} (claude-mem pauses in the last 15 minutes to leave the rest for you)`;
+    case 'used_up':
+      return `your ${CLAUDE_LIMIT_NAMES[reason.window ?? ''] ?? 'Claude allowance'} is used up`;
+    case 'api_key_limit':
+      return 'your Anthropic API key has hit its credit or usage limit';
+    case 'out_of_quota':
+      return `${name} says you're out of quota`;
+    case 'unavailable':
+      return `${name} isn't available`;
+    case 'busy':
+      return `${name} is busy (rate limited or over capacity)`;
+  }
+}
+
+/** Old ledgers identify clients, but cannot establish roles or which Claude key was billed. */
+function legacyQuotaProviderName(provider: string, auth?: string): string {
+  switch (provider) {
+    case 'claude': return auth === 'api-key' ? 'your Anthropic API key' : auth === 'subscription' ? 'your Claude plan' : 'Claude';
+    case 'openrouter': return 'OpenRouter';
+    case 'gemini': return 'Gemini';
+    case 'codex': return 'Codex';
+    case 'openai-compatible': return 'your OpenAI-compatible endpoint';
+    case 'cmem-gateway': return 'cmem.ai';
+    default: return 'your memory provider';
+  }
+}
+
+/** SessionStart reports only a change to saving, using facts mirrored by dispatch. */
 export function renderObserverQuotaCooldownNotice(
   state: ObserverHealthState,
   nowMs: number = Date.now(),
 ): string {
-  const cooldown = state.quotaCooldown;
-  const provider = cooldown?.provider ?? 'unknown provider';
-  const until = cooldown?.until;
-  const untilText = until
-    ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
-    : 'the next probe window';
-  const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
-
-  // Another provider is serving: nothing is paused, so none of the pause copy
-  // below applies — least of all "do not restart", advice about a problem
-  // that is not happening. No primary/fallback wording: the held provider can
-  // be either one.
-  if (cooldown?.servingProvider) {
-    return `ℹ️ claude-mem's ${provider} provider is in a quota cooldown${windowText}; memory capture continues on ${cooldown.servingProvider} until it clears at ${untilText}.`;
+  if (!isObserverQuotaCooldownActive(state, nowMs)) return '';
+  const cooldown = state.quotaCooldown!;
+  const context = cooldown.notice;
+  if (!context) {
+    const held = legacyQuotaProviderName(cooldown.provider, cooldown.auth);
+    const retry = cooldown.provider === 'claude' && cooldown.auth === 'subscription' ? 'Claude' : held;
+    const time = quotaRetryTime(cooldown.until, nowMs);
+    if (cooldown.servingProvider) {
+      const serving = legacyQuotaProviderName(cooldown.servingProvider);
+      return `ℹ️ claude-mem is using ${serving} to save memories while ${held} is on hold; it tries ${retry} again at ${time}.`;
+    }
+    return `⚠️ claude-mem has paused saving memories while ${held} is on hold. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retry} again. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
   }
 
-  const message = relayedProviderText(cooldown?.message) || null;
+  const backup = context.holds.find(hold => hold.role === 'backup' && hold.until > nowMs);
+  const main = context.holds.find(hold => hold.role === 'main' && hold.until > nowMs);
+  if (!main) {
+    // A held backup says nothing is wrong only while another provider is
+    // actually saving. When the backup was the one serving (cmem.ai switched
+    // to Claude via CLAUDE_MEM_PRO_FALLBACK_AT, then Claude was held), saving
+    // has stopped and the user must hear it.
+    const serving = context.servingProvider;
+    // A held Claude credential stops nothing while the other one is serving
+    // (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD).
+    const servingIsHeld = context.holds.some(hold => hold.provider === serving && hold.until > nowMs
+      && (!hold.auth || !context.servingAuth || hold.auth === context.servingAuth));
+    if (!backup || (serving && !servingIsHeld)) return '';
+    const backupTime = quotaRetryTime(backup.until, nowMs);
+    return `⚠️ claude-mem has paused saving memories because ${quotaHoldReason(backup, nowMs, true)}. Activity during the pause isn't saved; saving starts again with new activity after ${backupTime}, when it tries ${relayedProviderText(backup.retryName)} again. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
+  }
+  const time = quotaRetryTime(main.until, nowMs);
+  const retryName = relayedProviderText(main.retryName);
 
-  return [
-    '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
-    '',
-    `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
-    '',
-    ...(message ? [`Latest signal: ${message}`, ''] : []),
-    'This is not a failure. Incoming observations stay queued and will be written',
-    'when the cooldown clears — the worker is intentionally not starting the',
-    'generator so it does not keep spending a spent allowance.',
-    '',
-    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-    'claude-mem from hammering the provider — so please leave the worker alone.',
-    '',
-    '(Assistant: tell the user that memory capture is paused for a quota cooldown',
-    'at the very start of your first reply. Do NOT restart the worker and do NOT',
-    'suggest restarting it.)',
-  ].join('\n');
+  if (context.servingProvider) {
+    const reason = quotaHoldReason(main, nowMs);
+    if (main.provider === 'claude' && context.servingProvider === 'claude') {
+      if (main.auth === 'api-key' && context.servingAuth === 'subscription') {
+        return `ℹ️ claude-mem is using your Claude Code login to save memories because ${reason}. It switches back to the key on its own and tries it again at ${time}. Nothing to do.`;
+      }
+      if (main.auth === 'subscription' && context.servingAuth === 'api-key') {
+        return `ℹ️ claude-mem is using your backup API key (ANTHROPIC_FALLBACK_API_KEY) to save memories because ${reason}. That key is billed per request. It switches back to your login on its own and tries it again at ${time}.`;
+      }
+    }
+    const servingName = relayedProviderText(context.servingDisplayName ?? legacyQuotaProviderName(context.servingProvider));
+    const optOut = context.defaultClaudeBackup && context.servingProvider === 'claude'
+      ? ` (To stop using ${servingName} as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)`
+      : '';
+    return `ℹ️ claude-mem is using ${servingName} to save memories because ${reason}. It switches back on its own and tries ${retryName} again at ${time}. Nothing to do.${optOut}`;
+  }
+
+  const reason = quotaHoldReason(main, nowMs, true);
+  let notice: string;
+  if (backup) {
+    const backupReason = quotaHoldReason(backup, nowMs, true, true);
+    const earliestTime = quotaRetryTime(Math.min(main.until, backup.until), nowMs);
+    notice = `⚠️ claude-mem has paused saving memories because ${reason} and its backup, ${relayedProviderText(backup.displayName)}, is paused (${backupReason}). Activity during the pause isn't saved; saving starts again with new activity after ${earliestTime}, when it tries again. You don't need to do anything, and restarting won't change it.`;
+  } else if (main.reason?.kind === 'busy') {
+    notice = `⚠️ claude-mem has paused saving memories because ${reason}. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retryName} again.`;
+  } else {
+    const chooseBackup = !context.backupProvider || context.backupProvider === context.mainProvider
+      ? ' (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)'
+      : '';
+    notice = `⚠️ claude-mem has paused saving memories because ${reason}. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retryName} again. You don't need to do anything, and restarting won't change it.${chooseBackup}`;
+  }
+  return `${notice}\n${QUOTA_PAUSE_MODEL_LINE}`;
 }
 
 /**
@@ -599,11 +803,20 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
-    return renderLastKnownFailureNote(state, nowMs, action, {
-      failedWith: 'a spent allowance',
-      remedyLabel: 'If it is still spent',
-      recovery: 'Allowances reset on their own',
-    });
+    // A guard pause, or a record that cannot tell the guard from a refusal,
+    // is not evidence that anything was spent.
+    const precautionary = isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state);
+    return renderLastKnownFailureNote(state, nowMs, action, precautionary
+      ? {
+        failedWith: 'a usage-related pause',
+        remedyLabel: 'If it is still paused',
+        recovery: 'Usage pauses release on their own',
+      }
+      : {
+        failedWith: 'a spent allowance',
+        remedyLabel: 'If it is still spent',
+        recovery: 'Allowances reset on their own',
+      });
   }
   if (isDeadlineFailureStale(state, nowMs)) {
     return renderLastKnownFailureNote(state, nowMs, action, {
@@ -613,12 +826,43 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     });
   }
 
-  // A spent allowance is the one outage a restart cannot clear. Worse, the
-  // restart link is the code path that clears the quota breaker (the process
-  // serving /api/admin/restart is the process holding the cooldown), so
-  // offering it here talks the user into re-opening the per-observation
-  // request storm the breaker exists to stop. Nothing is wedged; the account
-  // is out of allowance. Say that, and relay the provider's own remedy.
+  // claude-mem's own reserve guard stopped capture while the provider was
+  // still accepting requests, or the record was booked without the guard's
+  // decision and cannot tell the two apart. Either way nothing is known to be
+  // exhausted: say "paused", relay the guard's own reason, point at the
+  // provider's usage page, and offer no restart (a restart replenishes
+  // nothing and the breaker it would release is the pause itself).
+  if (isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state)) {
+    const guard = isQuotaGuardPause(state);
+    return [
+      '⚠️ Heads up: claude-mem memory capture is paused.',
+      '',
+      guard
+        ? `Memory capture is paused to preserve your Claude allowance (${sinceText}).`
+        : `The memory observer has a usage-related pause on ${provider} (${sinceText}).`,
+      '',
+      guard
+        ? `Reason: ${relayedProviderText(state.lastErrorMessage) || 'Precautionary usage guard'}`
+        : 'This record cannot tell a precautionary pause from a provider rejection.',
+      '',
+      'Existing memories remain available; new memory generation is paused.',
+      `After the ${OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS / 60_000}-minute cooldown, the next activity can trigger one retry.`,
+      'Capture resumes when usage is below the guard thresholds and the provider accepts requests.',
+      provider === 'claude'
+        ? 'Check Claude Settings → Usage for the current usage and reset time.'
+        : `Check ${provider} usage settings for the current allowance and reset time.`,
+      '',
+      'Restarting does not replenish allowance or clear the persisted cooldown.',
+      '',
+      '(Assistant: tell the user about this pause at the start of your first reply.',
+      'Relay the reason accurately; do not call a precautionary pause provider exhaustion.',
+      'Do NOT restart the worker or change providers to bypass the pause.)',
+    ].join('\n');
+  }
+
+  // A spent allowance is the one outage a restart cannot clear. Nothing is
+  // wedged; the account is out of allowance. Say that, and relay the
+  // provider's own remedy.
   if (isQuotaFailure(state)) {
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
@@ -630,10 +874,11 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
       '',
-      // Deliberately no restart link: nothing is broken to restart, and doing
-      // it disarms the breaker that is currently protecting the account.
-      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-      'claude-mem from hammering the provider — so please leave the worker alone.',
+      // Deliberately no restart link: nothing is broken to restart, and the
+      // quota breaker is persisted, so a restart revives it rather than
+      // clearing it.
+      'Restarting will NOT help here: it does not replenish the allowance or clear the',
+      'persisted cooldown — so please leave the worker alone.',
       ...(action ? [] : [
         'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
         'memory capture before the allowance resets.',
@@ -669,17 +914,27 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   // rejected the key (or the account), and nothing is wedged. Relay the
   // provider's remedy instead of offering a restart that changes nothing.
   if (isAuthFailure(state)) {
+    // provider-errors' CODEX_AUTH_FROM_EXIT_TEXT_CODE: our reading of an exited
+    // process's stderr, which can be wrong, not a refusal the provider sent.
+    const readFromExitText = state.lastErrorCode === 'codex_auth_from_exit_text';
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
       '',
-      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      readFromExitText
+        ? `The memory observer has been paused ${sinceText}: the ${provider} process exited with output that looks like a refused login.`
+        : `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
       '',
       ...renderFailureDetailLines(state, action),
       '',
       "Until that's fixed, nothing from this session — or any other — will be remembered.",
       '',
-      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
-      ...(action ? [] : [
+      ...(readFromExitText ? [
+        'This comes from the exited process\'s output, not a reply from the provider, so it may be wrong.',
+        'Run `codex login status` to check. If the login is fine, the next captured event or an operator retry can trigger another attempt after the cooldown ends.',
+      ] : [
+        'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ]),
+      ...(action || readFromExitText ? [] : [
         "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
         'observer to another provider there.',
       ]),

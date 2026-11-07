@@ -1,11 +1,18 @@
 /**
  * sync-api — protocol-v2 hub on a long-running HTTP + WebSocket process.
- * Routes and shapes match workers/sync-hub. Storage is Postgres.
+ * Routes and shapes match services/sync-hub. Storage is Postgres.
  */
 import postgres from "postgres";
-import { authenticateRequest, errorResponse, json } from "./auth";
+import {
+	authenticateRequest,
+	defaultAuthDependencies,
+	errorResponse,
+	json,
+	type AuthDependencies,
+} from "./auth";
 import type { SyncApiEnv } from "./env";
-import { loadEnv } from "./env";
+import { formatHostForUrl, loadEnv } from "./env";
+import { startForwardProxy } from "./forward";
 import {
 	decimalAtLeast,
 	drainProjection,
@@ -13,20 +20,55 @@ import {
 	REPAIR_DRAIN_MAX_PAGES,
 } from "./projection";
 import { applyMigrations } from "./schema";
-import { SocketRegistry, type RegisteredSocket } from "./sockets";
+import { AUTH_EXPIRED_CLOSE_CODE, SocketRegistry, type RegisteredSocket } from "./sockets";
 import {
+	DEFAULT_USER_TURN_MAX_WAIT_MS,
 	DEVICE_LIMIT_ERROR,
 	HubStore,
 	INVALID_OPS_PREFIX,
 	PROJECTION_ERROR_PREFIX,
 	type PushOp,
+	type RepairRequest,
 } from "./store";
+import { CLIENT_CLOSED_REQUEST_ERROR, SYNC_HUB_BUSY_ERROR } from "./user-queue";
 
 const MAX_OPS_PER_PUSH = 500;
 const MAX_PUSH_BODY_BYTES = 8_000_000;
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const STORE_RETRY_AFTER_SECONDS = "5";
 const encoder = new TextEncoder();
+
+/**
+ * Backstops on every pooled Postgres session, so no request can hold a
+ * user's advisory lock or a shared connection indefinitely. Healthy
+ * statements take milliseconds; these only cut off pathological ones.
+ */
+export interface SyncApiTimeouts {
+	statementTimeoutMs: number;
+	lockTimeoutMs: number;
+	idleInTransactionSessionTimeoutMs: number;
+	/** In-process wait for earlier same-user work before a retryable 503. */
+	userTurnMaxWaitMs: number;
+}
+
+export const DEFAULT_SYNC_API_TIMEOUTS: SyncApiTimeouts = {
+	statementTimeoutMs: 20_000,
+	lockTimeoutMs: 15_000,
+	idleInTransactionSessionTimeoutMs: 15_000,
+	userTurnMaxWaitMs: DEFAULT_USER_TURN_MAX_WAIT_MS,
+};
+
+/** Postgres / postgres.js failures that mean "busy or briefly unreachable", not "broken". */
+const TRANSIENT_STORE_ERROR_CODES = new Set([
+	"55P03", // lock_not_available: lock_timeout
+	"57014", // query_canceled: statement_timeout
+	"57P01", // admin_shutdown
+	"53300", // too_many_connections
+	"CONNECTION_CLOSED", // includes idle_in_transaction_session_timeout terminations
+	"CONNECTION_ENDED",
+	"CONNECTION_DESTROYED",
+	"CONNECT_TIMEOUT",
+]);
 
 export { fetchProjectionWithTimeout, drainProjection };
 
@@ -37,7 +79,25 @@ function retryableStoreUnavailable(label: string, error: unknown): Response {
 	return response;
 }
 
+function isTransientStoreError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error.message === SYNC_HUB_BUSY_ERROR) return true;
+	const code = (error as { code?: unknown }).code;
+	return typeof code === "string" && TRANSIENT_STORE_ERROR_CODES.has(code);
+}
+
+/** The client already disconnected; nobody reads this, it only ends the handler. */
+function clientClosedRequest(): Response {
+	return new Response(null, { status: 499 });
+}
+
 function mapHubError(e: unknown): Response {
+	if (e instanceof Error && e.message === CLIENT_CLOSED_REQUEST_ERROR) {
+		return clientClosedRequest();
+	}
+	if (isTransientStoreError(e)) {
+		return retryableStoreUnavailable("request", e);
+	}
 	if (e instanceof Error && e.message.includes(DEVICE_LIMIT_ERROR)) {
 		return errorResponse(409, DEVICE_LIMIT_ERROR);
 	}
@@ -92,7 +152,10 @@ export interface SyncApiApp {
 interface SocketData {
 	userId: string;
 	deviceId: string;
+	/** Expiry of the verdict that authorized the upgrade (epoch ms). */
+	authExpiresAtMs: number;
 	registered: RegisteredSocket | null;
+	timer: ReturnType<typeof setTimeout> | null;
 }
 
 async function handlePushOps(
@@ -130,11 +193,11 @@ async function handlePushOps(
 	}
 
 	try {
-		const result = await app.store.pushOps(userId, deviceId, ops as PushOp[], deviceName);
+		const result = await app.store.pushOps(userId, deviceId, ops as PushOp[], deviceName, request.signal);
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		const projection = await drainProjection(app.env, app.store, userId, result.head_seq);
+		const projection = await drainProjection(app.env, app.store, userId, result.head_seq, { clientSignal: request.signal });
 		if (projection.ok && decimalAtLeast(projection.projectedSeq, result.head_seq)) {
 			return json(200, { ...result, projected_seq: projection.projectedSeq });
 		}
@@ -147,20 +210,50 @@ async function handlePushOps(
 				projected_seq: projection.projectedSeq,
 			});
 		}
-		return json(projection.httpStatus, {
+		const failure = json(projection.httpStatus, {
 			error: projection.error,
 			durable: true,
 			retryable: projection.retryable,
 			head_seq: result.head_seq,
 			projected_seq: projection.projectedSeq,
 		});
+		if (projection.retryAfterSeconds !== undefined) {
+			failure.headers.set("Retry-After", String(projection.retryAfterSeconds));
+		}
+		return failure;
 	} catch (e) {
 		return mapHubError(e);
 	}
 }
 
+/** Narrow origin repair protocol. Preview reads never touch cursors/devices. */
+async function handleOriginRepair(request: Request, app: { env: SyncApiEnv; store: HubStore },
+	userId: string, deviceId: string, deviceName: string | null, preview: boolean): Promise<Response> {
+	const raw = await request.text();
+	if (encoder.encode(raw).length > 520_000) return errorResponse(413, "repair request too large");
+	let body: Record<string, unknown>;
+	try { body = JSON.parse(raw); } catch { return errorResponse(400, "invalid repair JSON"); }
+	if (!body || typeof body !== "object" || Array.isArray(body)) return errorResponse(400, "invalid repair request");
+	try {
+		if (preview) {
+			if (!exactKeys(body, ["entity_id"]) || typeof body.entity_id !== "string") return errorResponse(400, "expected entity_id");
+			return json(200, await app.store.getRepairHead(userId, deviceId, body.entity_id));
+		}
+		if (!exactKeys(body, ["expected_epoch", "expected_head", "op", "repair_id"])) return errorResponse(400, "invalid repair fields");
+		const result = await app.store.repairContent(userId, deviceId, body as unknown as RepairRequest, deviceName, request.signal);
+		if ("refused" in result) return errorResponse(result.error.includes("repair_origin_required") ? 403 : 409, result.error);
+		const projection = await drainProjection(app.env, app.store, userId, result.head_seq);
+		if (projection.ok) {
+			const state = await app.store.getRepairHead(userId, deviceId, JSON.parse((body.op as { body: string }).body).id);
+			return json(200, { protocol_version: 1, capability: "origin-repair-v1", epoch: state.epoch, ...result, projected_seq: projection.projectedSeq });
+		}
+		return json(projection.httpStatus, { error: projection.error, durable: true, retryable: projection.retryable });
+	} catch (error) { return mapHubError(error); }
+}
+
 async function handleGetChanges(
 	url: URL,
+	signal: AbortSignal,
 	app: { store: HubStore },
 	userId: string,
 	deviceId: string,
@@ -180,7 +273,7 @@ async function handleGetChanges(
 		limit = parsedLimit;
 	}
 	try {
-		const result = await app.store.getChanges(userId, deviceId, sinceRaw, limit, deviceName);
+		const result = await app.store.getChanges(userId, deviceId, sinceRaw, limit, deviceName, signal);
 		if ("refused" in result) return errorResponse(409, result.error);
 		return json(200, result);
 	} catch (e) {
@@ -189,15 +282,14 @@ async function handleGetChanges(
 }
 
 async function handleGetStatus(
+	signal: AbortSignal,
 	app: { store: HubStore },
 	userId: string,
 	deviceId: string | null,
 	deviceName: string | null,
 ): Promise<Response> {
 	try {
-		const result = await app.store.getStatus(userId, deviceId, deviceName);
-		if ("refused" in result) return errorResponse(409, result.error);
-		return json(200, result);
+		return json(200, await app.store.getStatus(userId, deviceId, deviceName, signal));
 	} catch (e) {
 		return mapHubError(e);
 	}
@@ -325,38 +417,58 @@ async function handleRepairDrain(request: Request, app: { env: SyncApiEnv; store
 	});
 }
 
-async function handleHealth(sql: postgres.Sql): Promise<Response> {
-	try {
-		await sql`SELECT 1 AS ok`;
-		return json(200, { ok: true });
-	} catch (error) {
-		console.error("sync-api health db ping failed:", error);
-		return json(503, { ok: false, error: "database unavailable" });
+export async function startSyncApi(
+	env: SyncApiEnv = loadEnv(),
+	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+	// Tests inject verdicts with a near expiry so a socket's deadline timer can
+	// be observed without waiting a real cache TTL.
+	authDependencies: AuthDependencies = defaultAuthDependencies(env),
+): Promise<SyncApiApp> {
+	if (env.FORWARD_ORIGIN) {
+		throw new Error("FORWARD_ORIGIN is set: start the forward proxy (startForwardProxy), not the hub");
 	}
-}
-
-export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApiApp> {
 	const sql = postgres(env.DATABASE_URL, {
 		max: 10,
 		idle_timeout: 20,
 		connect_timeout: 10,
+		// Neon's proxy silently drops these GUCs when they are sent as discrete
+		// startup keys (prod read back 0 / 0 / 5min) but honors them as `-c`
+		// flags in the `options` startup parameter. A `?options=` in
+		// DATABASE_URL would replace this string: postgres.js lets URL
+		// parameters win.
+		connection: {
+			application_name: "cmem-sync-api",
+			options: [
+				`-c statement_timeout=${timeouts.statementTimeoutMs}`,
+				`-c lock_timeout=${timeouts.lockTimeoutMs}`,
+				`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionSessionTimeoutMs}`,
+			].join(" "),
+		},
 	});
 	await applyMigrations(sql);
 	const sockets = new SocketRegistry();
-	const store = new HubStore(sql, sockets);
+	const store = new HubStore(sql, sockets, timeouts.userTurnMaxWaitMs);
 
 	const ctx = { env, store, sockets, sql };
 
 	const server = Bun.serve<SocketData>({
 		hostname: env.HOST,
 		port: env.PORT,
+		// Bun's 10s default resets in-flight requests that wait longer on the
+		// per-user lock or Postgres (Bun 1.4 enforces it on bodiless GETs).
+		// Clients wait up to 180s, so use Bun's 255s maximum.
+		idleTimeout: 255,
 		async fetch(request, server) {
 			const url = new URL(request.url);
 			const { pathname } = url;
 
+			// Liveness only, never Postgres. Fly pulls a failing machine from the
+			// proxy and this app runs one machine, so a DB-coupled check turned
+			// pool saturation into "no healthy instances" for every user. DB
+			// trouble is reported per request (503 + Retry-After) instead.
 			if (pathname === "/health") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
-				return handleHealth(sql);
+				return json(200, { ok: true });
 			}
 
 			if (pathname === "/internal/v1/projection/drain") {
@@ -380,13 +492,20 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 				pathname !== "/v1/sync/ops" &&
 				pathname !== "/v1/sync/changes" &&
 				pathname !== "/v1/sync/status" &&
+				pathname !== "/v1/sync/repair/head" &&
+				pathname !== "/v1/sync/repair" &&
 				pathname !== "/v1/sync/ws"
 			) {
 				return errorResponse(404, "not found");
 			}
 
-			const auth = await authenticateRequest(request, env);
+			const auth = await authenticateRequest(request, env, authDependencies);
 			if (!auth.ok) return auth.response;
+			if (pathname === "/v1/sync/repair/head" || pathname === "/v1/sync/repair") {
+				if (request.method !== "POST") return errorResponse(405, "use POST");
+				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				return handleOriginRepair(request, ctx, auth.userId, auth.deviceId, auth.deviceName, pathname.endsWith("/head"));
+			}
 
 			if (pathname === "/v1/sync/ws") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
@@ -396,15 +515,22 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 					return errorResponse(426, "expected Upgrade: websocket");
 				}
 				try {
-					const accepted = await store.acceptWebSocket(auth.userId, auth.deviceId, auth.deviceName);
+					const accepted = await store.acceptWebSocket(auth.userId, auth.deviceId, auth.deviceName, request.signal);
 					if ("refused" in accepted) {
 						return json(409, { error: accepted.error });
 					}
 				} catch (error) {
+					if (error instanceof Error && error.message === CLIENT_CLOSED_REQUEST_ERROR) return clientClosedRequest();
 					return retryableStoreUnavailable("websocket upgrade", error);
 				}
 				const upgraded = server.upgrade(request, {
-					data: { userId: auth.userId, deviceId: auth.deviceId, registered: null },
+					data: {
+						userId: auth.userId,
+						deviceId: auth.deviceId,
+						authExpiresAtMs: auth.authExpiresAtMs,
+						registered: null,
+						timer: null,
+					},
 				});
 				if (!upgraded) return errorResponse(426, "expected Upgrade: websocket");
 				return undefined as unknown as Response;
@@ -418,21 +544,28 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 			if (pathname === "/v1/sync/changes") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-				return handleGetChanges(url, ctx, auth.userId, auth.deviceId, auth.deviceName);
+				return handleGetChanges(url, request.signal, ctx, auth.userId, auth.deviceId, auth.deviceName);
 			}
 			if (request.method !== "GET") return errorResponse(405, "use GET");
-			return handleGetStatus(ctx, auth.userId, auth.deviceId, auth.deviceName);
+			return handleGetStatus(request.signal, ctx, auth.userId, auth.deviceId, auth.deviceName);
 		},
 		websocket: {
 			open(ws) {
 				const registered: RegisteredSocket = {
 					userId: ws.data.userId,
 					deviceId: ws.data.deviceId,
+					authExpiresAtMs: ws.data.authExpiresAtMs,
 					send: (data) => { ws.send(data); },
 					close: (code, reason) => { ws.close(code, reason); },
 				};
 				ws.data.registered = registered;
 				sockets.add(registered);
+				// A quiet socket would otherwise never notice that the verdict
+				// behind it lapsed. Liveness gates every send, and this timer closes
+				// the socket (4401) at the deadline so a revoked token stops reading.
+				ws.data.timer = setTimeout(() => {
+					try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch { /* closed */ }
+				}, Math.max(0, ws.data.authExpiresAtMs - Date.now()));
 			},
 			message(ws, message) {
 				const text = typeof message === "string" ? message : new TextDecoder().decode(message);
@@ -441,13 +574,17 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 				}
 			},
 			close(ws) {
+				if (ws.data.timer !== null) {
+					clearTimeout(ws.data.timer);
+					ws.data.timer = null;
+				}
 				if (ws.data.registered) sockets.remove(ws.data.registered);
 			},
 		},
 	});
 
 	const host = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
-	const url = `http://${host}:${server.port}`;
+	const url = `http://${formatHostForUrl(host)}:${server.port}`;
 
 	const stop = async (): Promise<void> => {
 		server.stop(true);
@@ -462,8 +599,14 @@ const isMain = typeof Bun !== "undefined"
 	&& import.meta.path === Bun.main;
 
 if (isMain) {
-	const app = await startSyncApi();
-	console.log(JSON.stringify({ event: "ready", url: app.url }));
+	const env = loadEnv();
+	const app = env.FORWARD_ORIGIN !== null ? startForwardProxy(env) : await startSyncApi(env);
+	console.log(JSON.stringify({
+		event: "ready",
+		url: app.url,
+		mode: env.FORWARD_ORIGIN !== null ? "forward" : "hub",
+		...(env.FORWARD_ORIGIN !== null ? { forward_origin: env.FORWARD_ORIGIN } : {}),
+	}));
 	const shutdown = async (): Promise<void> => {
 		await app.stop();
 		console.log(JSON.stringify({ event: "stopped" }));

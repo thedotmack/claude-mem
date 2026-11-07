@@ -12,3 +12,8 @@ export function loadFromFileOnce(): SettingsDefaults {
   cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
   return cachedSettings;
 }
+
+/** Test seam: each production hook process loads once and then exits. */
+export function resetHookSettingsCacheForTesting(): void {
+  cachedSettings = null;
+}

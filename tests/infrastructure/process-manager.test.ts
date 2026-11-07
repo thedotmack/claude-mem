@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
@@ -26,9 +27,11 @@ const {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  spawnDetachedWorkerDaemon,
+  getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
   shouldRetryWorkerBootProbe,
-  buildWindowsDaemonStartCommand,
+  buildDetachedWorkerDaemonSpawn,
   daemonWorkingDirectory,
   pinDaemonWorkingDirectory,
   resolveWorkerRuntimePath,
@@ -647,6 +650,52 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanStalePidFile', () => {
+    it.if(process.platform === 'linux')('treats a tokenless PID reused by an unrelated process as stale', () => {
+      const commandLine = readFileSync(`/proc/${process.pid}/cmdline`, 'utf-8');
+      expect(commandLine).not.toContain('worker-service.cjs');
+      writeFileSync(PID_FILE, JSON.stringify({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+      }));
+
+      expect(cleanStalePidFile({ removeStale: false })).toBe('stale');
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it.if(process.platform === 'linux')('accepts a tokenless worker identified by its command line', async () => {
+      const workerDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-legacy-worker-'));
+      const workerScript = path.join(workerDir, 'worker-service.cjs');
+      writeFileSync(workerScript, 'setInterval(() => {}, 1000);\n');
+      const worker = spawn(process.execPath, [workerScript], { stdio: 'ignore' });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          worker.once('spawn', resolve);
+          worker.once('error', reject);
+        });
+        if (!worker.pid) throw new Error('Worker test process did not receive a PID');
+        writeFileSync(PID_FILE, JSON.stringify({
+          pid: worker.pid,
+          port: 37777,
+          startedAt: new Date().toISOString()
+        }));
+
+        expect(cleanStalePidFile({ removeStale: false })).toBe('alive');
+      } finally {
+        // An exit that already happened never fires 'exit' again, so only wait
+        // for a child still running, and never longer than five seconds.
+        if (worker.exitCode === null && worker.signalCode === null) {
+          const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+          worker.kill('SIGTERM');
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 5_000); })]);
+          clearTimeout(cleanupTimer);
+        }
+        rmSync(workerDir, { recursive: true, force: true });
+      }
+    });
+
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
         pid: 2147483647,
@@ -755,61 +804,6 @@ describe('ProcessManager', () => {
         try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
       }
     });
-
-    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
-      const windowsSuccessSentinel: number | undefined = 0;
-      const failureSentinel: number | undefined = undefined;
-
-      expect(windowsSuccessSentinel === undefined).toBe(false);
-      expect(failureSentinel === undefined).toBe(true);
-
-      expect(!windowsSuccessSentinel).toBe(true); 
-      expect(!failureSentinel).toBe(true);
-
-      const isFailure = (pid: number | undefined) => pid === undefined;
-      expect(isFailure(windowsSuccessSentinel)).toBe(false);
-      expect(isFailure(failureSentinel)).toBe(true);
-    });
-  });
-
-  describe('buildWindowsDaemonStartCommand (#3195)', () => {
-    // Windows PowerShell 5.1 (powershell.exe, which spawnDaemon invokes via
-    // -EncodedCommand) builds the native command line for Start-Process by
-    // joining -ArgumentList elements with spaces WITHOUT quoting them. The
-    // single quotes in the PS source only delimit the PS string literal; they
-    // never reach the child. So the script path must carry its own embedded
-    // double quotes or a spaced %USERPROFILE% splits it into multiple argv
-    // entries and bun dies with "Module not found".
-    it('embeds double quotes around a script path containing spaces', () => {
-      const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
-      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
-
-      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
-
-      expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WorkingDirectory 'C:\\daemon-home' -WindowStyle Hidden`
-      );
-    });
-
-    it('keeps --daemon as its own ArgumentList element', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain(`,'--daemon')`);
-    });
-
-    it('still doubles single quotes for PowerShell string escaping', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\Users\O'Brien\.bun\bin\bun.exe`,
-        String.raw`C:\Users\O'Brien\plugin\scripts\worker-service.cjs`
-      );
-
-      expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}' -WindowStyle Hidden`
-      );
-    });
   });
 
   describe('probeWorkerBootFailure', () => {
@@ -904,24 +898,16 @@ describe('ProcessManager', () => {
   // outlives the session that spawned it -- so a hook-spawned daemon inheriting the
   // project folder left it permanently locked (#3706).
   describe('daemon working directory (#3706)', () => {
-    it('pins the daemon to a directory the user is not working in', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain('-WorkingDirectory');
-      expect(command).toContain(`-WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}'`);
-    });
-
-    it('escapes a single quote in the working directory', () => {
-      const command = buildWindowsDaemonStartCommand(
+    it('hands the daemon the data directory, never the caller cwd', () => {
+      const plan = buildDetachedWorkerDaemonSpawn(
         String.raw`C:\bun\bun.exe`,
         String.raw`C:\plugin\worker-service.cjs`,
-        String.raw`C:\Users\O'Brien\.claude-mem`
+        {},
+        'win32',
       );
 
-      expect(command).toContain(String.raw`-WorkingDirectory 'C:\Users\O''Brien\.claude-mem'`);
+      expect(plan.options.cwd).toBe(DATA_DIR);
+      expect(plan.options.cwd).not.toBe(process.cwd());
     });
 
     it('defaults to the claude-mem data directory, never the caller cwd', () => {
@@ -930,9 +916,9 @@ describe('ProcessManager', () => {
     });
 
     // Passing a cwd that does not exist is worse than passing none: spawn fails with
-    // ENOENT and Start-Process refuses outright, so this fix would turn a first run on
-    // a fresh install into a launch failure. paths.ts resolves DATA_DIR but never
-    // creates it — today some earlier caller happens to, which is not a guarantee.
+    // ENOENT, so this fix would turn a first run on a fresh install into a launch
+    // failure. paths.ts resolves DATA_DIR but never creates it — today some earlier
+    // caller happens to, which is not a guarantee.
     it('creates the directory it hands out, so a fresh install can spawn', () => {
       rmSync(DATA_DIR, { recursive: true, force: true });
       expect(existsSync(DATA_DIR)).toBe(false);
@@ -990,5 +976,13 @@ describe('ProcessManager', () => {
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
     });
+  });
+});
+
+describe('spawnDetachedWorkerDaemon launch error', () => {
+  it('records why the daemon launch failed', () => {
+    const missingRuntime = path.join(TEST_DATA_DIR, 'no-such-runtime', 'bun.exe');
+    expect(spawnDetachedWorkerDaemon(missingRuntime, 'worker-service.cjs', {}, 'win32')).toBeUndefined();
+    expect(getLastWorkerDaemonLaunchError()).toContain(missingRuntime);
   });
 });

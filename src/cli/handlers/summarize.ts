@@ -3,12 +3,12 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
 import { detectObservedBilling } from '../../shared/observed-billing.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isSummarizeDisabledByEnv } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { clearInjected } from '../../shared/kimi-context-gate.js';
@@ -17,8 +17,11 @@ import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector
 import { isServerClientError } from '../../services/hooks/server-client.js';
 import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { captureDeliverables } from '../deliverables-capture.js';
 
-// The ingest route accepts at most this many calls per request.
+// The ingest route accepts at most this many calls per request; one spool
+// entry carries at most the same.
 const ADVISOR_CALLS_PER_REQUEST = 50;
 
 /**
@@ -31,12 +34,12 @@ const ADVISOR_CALLS_PER_REQUEST = 50;
  * server runtime this must not start a local worker (plan-24 step 4), and the
  * server-side store is a follow-up.
  */
-async function recordAdvisorCalls(
+function recordAdvisorCalls(
   sessionId: string,
   transcriptPath: string | undefined,
   cwd: string | undefined,
   platformSource: string,
-): Promise<void> {
+): void {
   if (!transcriptPath) return;
   if (loadFromFileOnce().CLAUDE_MEM_CAPTURE_ADVISOR_CALLS !== 'true') return;
   if (resolveRuntimeContext().runtime === 'server') return;
@@ -44,9 +47,9 @@ async function recordAdvisorCalls(
   const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
   if (calls.length === 0) return;
 
-  logger.debug('HOOK', 'Stop: recording advisor calls', { count: calls.length });
+  logger.debug('HOOK', 'Stop: spooling advisor calls', { count: calls.length });
   for (let start = 0; start < calls.length; start += ADVISOR_CALLS_PER_REQUEST) {
-    await executeWithWorkerFallback<{ status?: string }>('/api/advisor-calls', 'POST', {
+    spoolHookEvent('advisor_calls', {
       contentSessionId: sessionId,
       platformSource,
       cwd,
@@ -139,16 +142,42 @@ export const summarizeHandler: EventHandler = {
       clearInjected(sessionId);
     }
 
+    // #4734: CLAUDE_MEM_DISABLE_SUMMARY skips the summary (and advisor capture)
+    // for headless read-only runs. Checked here, after the Kimi PreCompact
+    // marker clear above, so a disabled summary never stops Kimi re-injecting
+    // fresh context after a compaction.
+    if (isSummarizeDisabledByEnv('summarize')) {
+      logger.debug('HOOK', 'Skipping summary: CLAUDE_MEM_DISABLE_SUMMARY=1', { sessionId });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
     // Advisor capture runs before summarize's own early returns (an empty
     // assistant message must not drop the turn's advisor calls) and is
     // failure-isolated from it.
     try {
-      await recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
+      recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
     } catch (err) {
       logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
         sessionId,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Deliverables capture copies what this turn made for a person into the
+    // project bucket (deliverables-capture.ts). It runs before summarize's own
+    // early returns, like advisor capture: a turn with an empty assistant
+    // message can still have written a deck. Failure-isolated from the summary.
+    try {
+      captureDeliverables(input);
+    } catch (err) {
+      logger.warn('HOOK', 'Deliverables capture failed; continuing with summary', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (!isObserverCaptureEnabled(loadFromFileOnce())) {
+      logger.debug('HOOK', 'Skipping summary model call: observer capture is disabled', { sessionId });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     let lastAssistantMessage = '';
@@ -161,7 +190,13 @@ export const summarizeHandler: EventHandler = {
     // so fall back to the transcript instead of skipping the summary.
     if (input.lastAssistantMessage?.trim()) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
-      observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
+      // The model is telemetry only — a transcript that cannot be read must
+      // never cost the summary Claude Code already handed us.
+      try {
+        observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
+      } catch (err) {
+        logger.warn('HOOK', `Stop hook: could not read observed model from transcript for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
+      }
     } else {
       if (!transcriptPath) {
         logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
@@ -211,7 +246,7 @@ export const summarizeHandler: EventHandler = {
             message: error.message,
             route: '/v1/sessions/end',
           });
-          // fall through to worker fallback
+          // fall through to the worker spool
         } else {
           logger.error('HOOK', 'Server summarize failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
@@ -221,22 +256,15 @@ export const summarizeHandler: EventHandler = {
       }
     }
 
-    const queueResult = await executeWithWorkerFallback<{ status?: string }>(
-      '/api/sessions/summarize',
-      'POST',
-      {
-        contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage,
-        platformSource,
-        observedModel,
-        observedBilling,
-      },
-    );
-    if (isWorkerFallback(queueResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
+    spoolHookEvent('summarize', {
+      contentSessionId: sessionId,
+      platformSource,
+      lastAssistantMessage,
+      observedModel,
+      observedBilling,
+    });
 
-    logger.debug('HOOK', 'Summary request queued, exiting hook');
+    logger.debug('HOOK', 'Summary request spooled, exiting hook');
     return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
   },
 };

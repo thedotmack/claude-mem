@@ -4,12 +4,15 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
   type Stats,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executableFingerprint } from '../../shared/executable-fingerprint.js';
@@ -20,6 +23,12 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
 
 const APP_SERVER_WORKDIR_PREFIX = 'claude-mem-codex-app-server-';
+// Each private runtime records the worker that owns it, so a later worker can
+// tell a leftover from a root another live worker is still using.
+const APP_SERVER_OWNER_FILE = 'owner.json';
+// Roots written before owner.json existed have no owner to ask; once they are
+// this old they are treated as left behind.
+const LEGACY_APP_SERVER_WORKDIR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_PROTOCOL_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_TAIL_BYTES = 64 * 1024;
 const INTERRUPT_TIMEOUT_MS = 5_000;
@@ -223,11 +232,18 @@ function codexSetupError(message: string): Error {
 }
 
 /**
- * `code` on a turn that completed without any agent message: an anomaly worth
- * one retry, never a refusal, so it is classified by code rather than by its
- * diagnostic text.
+ * `code` on a turn that completed without any agent message. The turn ran and
+ * was billed, so it is an output failure, never resent ("never pay twice"); it
+ * is classified by code rather than by its diagnostic text.
  */
 export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
+
+/**
+ * `code` on a completed turn whose structured output was malformed (not JSON,
+ * or no string `content`). Like a missing agent message, the turn was billed:
+ * an output failure, never resent.
+ */
+export const CODEX_MALFORMED_OUTPUT_CODE = 'codex_malformed_structured_output';
 
 /**
  * `code` on a turn refused because Codex could not attest the observer's
@@ -241,9 +257,90 @@ function codexIsolationError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_ISOLATION_UNATTESTED_CODE });
 }
 
+let sweptStaleWorkdirs = false;
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to another user.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function readAppServerOwnerPid(root: string): number | null {
+  try {
+    const owner = JSON.parse(readFileSync(join(root, APP_SERVER_OWNER_FILE), 'utf8')) as { pid?: unknown };
+    return typeof owner.pid === 'number' && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SweepStaleAppServerWorkdirsOptions {
+  baseDir?: string;
+  now?: number;
+  legacyMaxAgeMs?: number;
+  isPidAlive?: (pid: number) => boolean;
+}
+
+/**
+ * Remove private runtimes that a crashed or killed worker left in the temp
+ * directory (#4788). invalidate() removes a root on a normal exit, but nothing
+ * runs when the worker itself dies, and each leftover holds a Codex home.
+ * A root is removed only when its owner process is dead, or, for roots that
+ * predate owner.json, when it is older than legacyMaxAgeMs. The directory scan
+ * is synchronous and cheap; the deletions run asynchronously, and the promise
+ * resolves with the removed paths once they settle. Never rejects: a directory
+ * still held open (Windows) is retried on the next sweep.
+ */
+export async function sweepStaleAppServerWorkdirs(options: SweepStaleAppServerWorkdirsOptions = {}): Promise<string[]> {
+  const {
+    baseDir = tmpdir(),
+    now = Date.now(),
+    legacyMaxAgeMs = LEGACY_APP_SERVER_WORKDIR_MAX_AGE_MS,
+    isPidAlive = isProcessAlive,
+  } = options;
+  let names: string[];
+  try {
+    names = readdirSync(baseDir);
+  } catch {
+    return [];
+  }
+  const staleRoots: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith(APP_SERVER_WORKDIR_PREFIX)) continue;
+    const root = join(baseDir, name);
+    try {
+      const stat = statSync(root);
+      if (!stat.isDirectory()) continue;
+      const ownerPid = readAppServerOwnerPid(root);
+      if (ownerPid !== null ? isPidAlive(ownerPid) : now - stat.mtimeMs < legacyMaxAgeMs) continue;
+      staleRoots.push(root);
+    } catch { /* best effort */ }
+  }
+  const results = await Promise.allSettled(
+    staleRoots.map(root => rm(root, { recursive: true, force: true }).then(() => root)),
+  );
+  return results.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
+}
+
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
+  if (!sweptStaleWorkdirs) {
+    sweptStaleWorkdirs = true;
+    // Not awaited: removing many leftover Codex homes must not delay this turn.
+    void sweepStaleAppServerWorkdirs().then(removed => {
+      if (removed.length > 0) logger.debug('SDK', 'Removed stale Codex app-server workdirs', { count: removed.length });
+    });
+  }
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
   try {
+    writeFileSync(
+      join(root, APP_SERVER_OWNER_FILE),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
     const workspace = join(root, 'workspace');
     const codexHome = join(root, 'codex-home');
     mkdirSync(workspace, { mode: 0o700 });
@@ -331,6 +428,7 @@ export class CodexAppServerClient {
   private queueTail: Promise<void> = Promise.resolve();
   private closed = false;
   private closePromise: Promise<void> | null = null;
+  private cleanupPromise: Promise<void> = Promise.resolve();
 
   constructor(options: CodexAppServerClientOptions = {}) {
     this.nativeCodexHome = resolveNativeCodexHome(options.nativeCodexHome);
@@ -357,6 +455,19 @@ export class CodexAppServerClient {
       await queueDrained;
     })();
     return this.closePromise;
+  }
+
+  /**
+   * Kill the running app-server child without retiring this client, so the
+   * next `ensureStarted()` spawns a fresh process that reads the current
+   * credentials from disk. Used by the pool when a recovery probe follows
+   * an auth cooldown: the stale child still holds the old OAuth token in
+   * memory, and a `codex login` in another terminal wrote new tokens that
+   * only a fresh spawn will pick up.
+   */
+  async recycle(): Promise<void> {
+    if (this.closed || !this.child) return;
+    await this.invalidate(new Error('Codex app-server recycled for credential refresh'));
   }
 
   private async withExclusive<T>(signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
@@ -492,10 +603,16 @@ export class CodexAppServerClient {
       try {
         structured = JSON.parse(active.finalText);
       } catch (error) {
-        throw new Error(`Codex app-server returned malformed structured output: ${error instanceof Error ? error.message : String(error)}`);
+        throw Object.assign(
+          new Error(`Codex app-server returned malformed structured output: ${error instanceof Error ? error.message : String(error)}`),
+          { code: CODEX_MALFORMED_OUTPUT_CODE },
+        );
       }
       if (!isObject(structured) || typeof structured.content !== 'string') {
-        throw new Error('Codex app-server structured output omitted string content');
+        throw Object.assign(
+          new Error('Codex app-server structured output omitted string content'),
+          { code: CODEX_MALFORMED_OUTPUT_CODE },
+        );
       }
       const content = structured.content.trim();
       if (!content) {
@@ -650,7 +767,9 @@ export class CodexAppServerClient {
       });
       child.on('error', error => this.onChildExit(child, error));
       child.on('close', (code, childSignal) => {
-        this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
+        const error = new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`);
+        Object.assign(error, { exitCode: code, exitSignal: childSignal });
+        this.onChildExit(child, error);
       });
 
       if (child.pid) {
@@ -857,7 +976,7 @@ export class CodexAppServerClient {
   }
 
   private invalidate(error: Error, expectedChild?: ChildProcessWithoutNullStreams): Promise<void> {
-    if (expectedChild && this.child !== expectedChild) return Promise.resolve();
+    if (expectedChild && this.child !== expectedChild) return this.cleanupPromise;
     const child = this.child;
     if (child) logger.debug('SDK', 'Stopping persistent Codex app-server', { pid: child.pid }, error);
     this.child = null;
@@ -883,12 +1002,19 @@ export class CodexAppServerClient {
       this.activeTurn.protocolError = error;
       this.activeTurn.complete();
     }
-    if (this.privateRoot) {
-      try { rmSync(this.privateRoot, { recursive: true, force: true }); } catch { /* best effort */ }
-      this.privateRoot = null;
-      this.workspace = null;
-    }
-    return termination;
+    const privateRoot = this.privateRoot;
+    this.privateRoot = null;
+    this.workspace = null;
+    // Codex can still write state, or hold files open on Windows, until its
+    // process tree exits. Capture this generation's root before a new start.
+    const cleanup = termination.then(() => {
+      if (privateRoot) {
+        try { rmSync(privateRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    });
+    // A timeout or protocol error may have already started teardown before close.
+    this.cleanupPromise = Promise.all([this.cleanupPromise, cleanup]).then(() => {});
+    return this.cleanupPromise;
   }
 }
 

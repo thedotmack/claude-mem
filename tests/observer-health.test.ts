@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, mock, setSystemTime, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -15,6 +15,9 @@ import {
   renderObserverQuotaCooldownNotice,
   isQuotaFailureStale,
   isDeadlineFailureStale,
+  isQuotaGuardPause,
+  isAmbiguousQuotaRecord,
+  AMBIGUOUS_QUOTA_MESSAGE,
   OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS,
   describeDuration,
   scrubErrorMessage,
@@ -23,6 +26,7 @@ import {
 } from '../src/shared/observer-health.ts';
 import { QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS } from '../src/shared/quota-cooldown.ts';
 import { credentialProfileKey } from '../src/shared/EnvManager.ts';
+import { QUOTA_NOTICE_CASES, QUOTA_NOTICE_MODEL_LINE, QUOTA_NOTICE_NOW, QUOTA_NOTICE_TIME_ZONE } from './fixtures/quota-notice-states.ts';
 
 const repoRoot = process.cwd();
 
@@ -38,6 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.restore();
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -84,6 +89,112 @@ describe('observer-health ledger', () => {
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
     expect(second.lastErrorMessage).toBe('boom two');
+  });
+
+  it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    // The reported scenario: a quota pause records a failure, the worker goes down,
+    // and auth refusals follow a day later. The auth warning must not carry the
+    // quota era's start time.
+    recordObserverFailure('claude', {
+      message: 'quota pause recorded',
+      kind: 'quota_guard',
+    }, healthPath);
+    const quota = readObserverHealth(healthPath)!;
+    const quotaSince = quota.failingSinceAt;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const auth = readObserverHealth(healthPath)!;
+    expect(auth.consecutiveFailures).toBe(2);          // streak continues across the kind change
+    expect(auth.lastErrorKind).toBe('auth_invalid');
+    expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
+    expect(auth.failingSinceAt).not.toBe(quotaSince);
+    expect(auth.failingSinceAt).toBe(2000);
+  });
+
+  it('keeps failingSinceAt across consecutive failures of the same kind', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const first = readObserverHealth(healthPath)!;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate again',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const second = readObserverHealth(healthPath)!;
+    expect(second.consecutiveFailures).toBe(2);
+    expect(second.failingSinceAt).toBe(first.failingSinceAt);
+    expect(second.failingSinceAt).toBe(1000);
+    expect(second.lastErrorAt).toBe(2000);
+  });
+
+  it('preserves an unclassified outage from a ledger without lastErrorKind', () => {
+    spyOn(Date, 'now').mockReturnValue(2000);
+    writeFileSync(healthPath, JSON.stringify(unhealthyState({
+      failingSinceAt: 1000,
+      lastErrorAt: 1500,
+      lastErrorKind: undefined,
+    })));
+
+    recordObserverFailure('openrouter', 'unclassified failure again', healthPath);
+
+    const state = readObserverHealth(healthPath)!;
+    expect(state.failingSinceAt).toBe(1000);
+    expect(state.lastErrorAt).toBe(2000);
+    expect(state.lastErrorKind).toBeNull();
+    expect(state.consecutiveFailures).toBe(OBSERVER_UNHEALTHY_FAILURE_THRESHOLD + 1);
+  });
+
+  // #5378: a quota pause that later became a refused credential was announced
+  // as an auth outage three days old. The banner paired the newest kind with
+  // the oldest start; the log's first refusal was 22 hours old at the time.
+  it('dates the warning from the failure it names, not from a pause of another kind', () => {
+    const refusalAt = Date.now();
+    const secondRefusalAt = refusalAt + 5 * 60_000;
+    const pauseAt = refusalAt - 44 * 60 * 60_000;
+    try {
+      setSystemTime(new Date(pauseAt));
+      recordObserverFailure('claude', {
+        kind: 'quota_guard',
+        message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      }, healthPath);
+
+      setSystemTime(new Date(refusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+      }, healthPath);
+      const refused = readObserverHealth(healthPath)!;
+      // The streak still counts the pause: nothing succeeded in between.
+      expect(refused.consecutiveFailures).toBe(2);
+      expect(refused.failingSinceAt).toBe(refusalAt);
+
+      // Same kind again, later: the streak grows but the outage still started
+      // at the first refusal, so a rule that re-dated every failure fails here.
+      setSystemTime(new Date(secondRefusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401',
+      }, healthPath);
+      const stillRefused = readObserverHealth(healthPath)!;
+      expect(stillRefused.consecutiveFailures).toBe(3);
+      expect(stillRefused.failingSinceAt).toBe(refusalAt);
+
+      const warning = renderObserverHealthWarning(stillRefused, secondRefusalAt + 22 * 60 * 60_000);
+      expect(warning).toContain('credentials have been refused by claude for about 22 hours');
+      expect(warning).toContain(new Date(refusalAt).toISOString());
+      expect(warning).not.toContain('about 3 days');
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('success resets the streak but keeps last error details for diagnostics', () => {
@@ -258,7 +369,7 @@ describe('observer-health ledger', () => {
 
   it('serializes concurrent failure writes so the warning threshold is never lost', async () => {
     const gatePath = join(dataDir, 'writers.gate');
-    const writers = Array.from({ length: 3 }, () => Bun.spawn(['bun', '-e', `
+    const writers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, '-e', `
       import { existsSync } from 'fs';
       import { recordObserverFailure } from ${JSON.stringify(join(repoRoot, 'src/shared/observer-health.ts'))};
       while (!existsSync(${JSON.stringify(gatePath)})) Bun.sleepSync(1);
@@ -354,7 +465,11 @@ describe('a quota banner that has gone stale (#4083)', () => {
     return unhealthyState({
       lastErrorKind: 'quota_exhausted',
       lastErrorProvider: 'claude',
-      lastErrorMessage: 'Provider reported the inference allowance exhausted',
+      // A confirmed refusal. The generic "Provider reported the inference
+      // allowance exhausted" record is ambiguous (it is what a guard pause
+      // used to be booked as) and renders as a pause, not an outage; see the
+      // precautionary-pause block below.
+      lastErrorMessage: 'Weekly usage allowance exhausted: the provider rejected the request',
       lastErrorAt: ERROR_AT,
       ...overrides,
     });
@@ -433,6 +548,90 @@ describe('a quota banner that has gone stale (#4083)', () => {
     // observer-health, so the other direction would be a cycle). This is what
     // stops the copy drifting.
     expect(OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+});
+
+// A pause is not an outage. RateLimitStore's guard stops capture
+// at a reserve threshold while the provider still accepts requests and books
+// it as `quota_guard`; the generic record older workers and the
+// assistant-prose path write cannot tell that pause from a refusal. Neither
+// may be rendered as a spent allowance, and neither gets a restart link: a
+// restart replenishes nothing and the breaker it would release is the pause.
+describe('a precautionary pause and the ambiguous quota record', () => {
+  const ERROR_AT = 1_754_700_100_000;
+  const FRESH = ERROR_AT + 60_000;
+
+  it('renders a persisted reserve-threshold pause without claiming the provider allowance is exhausted', () => {
+    recordObserverFailure('claude', {
+      kind: 'quota_guard',
+      message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+    }, healthPath);
+    const warning = renderObserverHealthWarning(readObserverHealth(healthPath)!);
+    expect(warning).toContain('Memory capture is paused to preserve your Claude allowance');
+    expect(warning).toContain('weekly Claude usage is 95.0%');
+    expect(warning).toContain('95% pause threshold');
+    expect(warning).toContain('30-minute cooldown');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('nothing from this session');
+    expect(warning).not.toContain('npx claude-mem restart');
+    expect(warning).not.toContain('clears the backoff');
+  });
+
+  it('does not present an ambiguous legacy quota record as a confirmed provider rejection', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('usage-related pause');
+    expect(warning).toContain('Claude Settings');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('keeps confirmed provider exhaustion distinct from the reserve guard', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: 'Monthly allowance exhausted (status 402)',
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('allowance on openrouter is used up');
+    expect(warning).not.toContain('clears the backoff');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('directs legacy quota pauses on other providers to their own usage settings', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'openrouter',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('openrouter usage settings');
+    expect(warning).not.toContain('Claude Settings');
+  });
+
+  it('the generic record survives the scrubber, so a stored ledger still reads as ambiguous', () => {
+    recordObserverFailure('claude', { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(isAmbiguousQuotaRecord(state)).toBe(true);
+    expect(isQuotaGuardPause(state)).toBe(false);
+  });
+
+  it('a guard pause ages out on the recheck window like a refusal, and the stale note still calls it a pause', () => {
+    const state = unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_guard',
+      lastErrorMessage: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      lastErrorAt: ERROR_AT,
+    });
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS - 1)).toBe(false);
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS)).toBe(true);
+    const note = renderObserverHealthWarning(state, ERROR_AT + 63 * 60 * 60_000);
+    expect(note).toContain('last failed with a usage-related pause');
+    expect(note).not.toContain('spent allowance');
+    expect(note).not.toContain('at the very start of your first reply');
   });
 });
 
@@ -675,33 +874,191 @@ function expectRelayedSafely(text: string): void {
 }
 
 describe('renderObserverQuotaCooldownNotice', () => {
-  it('says capture continues on the serving provider, and nothing about pausing or restarting', () => {
-    const armedAt = 1_754_700_000_000;
-    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
-      consecutiveFailures: 0,
-      quotaCooldown: activeCooldown({ provider: 'gemini', window: undefined, servingProvider: 'claude' }),
-    }), armedAt + 5 * 60_000);
-    expect(notice).toContain("claude-mem's gemini provider is in a quota cooldown");
-    expect(notice).toContain('memory capture continues on claude');
-    expect(notice).not.toMatch(/paused|restart/i);
+  let savedTimeZone: string | undefined;
+  beforeEach(() => {
+    savedTimeZone = process.env.TZ;
+    process.env.TZ = QUOTA_NOTICE_TIME_ZONE;
+  });
+  afterEach(() => {
+    if (savedTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTimeZone;
   });
 
-  it('names the pause, the provider, the until timestamp, and tells the user it is not a failure', () => {
-    const armedAt = 1_754_700_000_000;
-    const nowMs = armedAt + 5 * 60_000;
-    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
-      consecutiveFailures: 0,
-      quotaCooldown: activeCooldown({ armedAt, until: armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS }),
-    }), nowMs);
-    expect(notice).toContain('paused while a provider quota cooldown is active');
-    expect(notice).toContain('claude');
-    expect(notice).toContain('five_hour');
-    expect(notice).toContain(new Date(armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS).toISOString());
-    expect(notice).toContain('This is not a failure');
-    expect(notice).toContain('stay queued');
-    expect(notice).toContain('Restarting will NOT help');
-    expect(notice).toContain('Do NOT restart the worker');
-    expect(notice).not.toContain(workerRestartUrl());
+  for (const fixture of QUOTA_NOTICE_CASES) {
+    it(fixture.name, () => {
+      const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+      expect(notice).toBe(fixture.expected);
+      expect(notice).not.toMatch(/quota cooldown|seven_day|five_hour|\bobserver\b|\bcapture\b|\bbreaker\b|\bprobe\b|clears at|\d{4}-\d{2}-\d{2}T|minutes? from now/i);
+      expect(notice).not.toContain('\x1b[');
+      if (notice.startsWith('⚠️')) expect(notice.split('\n').at(-1)).toBe(QUOTA_NOTICE_MODEL_LINE);
+      else expect(notice).not.toContain('(Assistant:');
+    });
+  }
+
+  it('round-trips both holds and their structured reasons through the ledger', () => {
+    const fixture = QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!;
+    recordObserverQuotaCooldown(fixture.state.quotaCooldown!, healthPath);
+    const persisted = readObserverHealth(healthPath)!;
+    expect(persisted.quotaCooldown).toEqual(fixture.state.quotaCooldown);
+    expect(renderObserverQuotaCooldownNotice(persisted, QUOTA_NOTICE_NOW)).toBe(fixture.expected);
+  });
+
+  it('says a non-Claude backup is saving while the main provider is busy', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name === '1. Non-Claude backup; main unavailable')!);
+    fixture.state.quotaCooldown!.notice!.holds[0].reason = { kind: 'busy' };
+    const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+    expect(notice).toContain('using Gemini to save memories because cmem.ai is busy (rate limited or over capacity)');
+    expect(notice).not.toContain('rate_limit');
+  });
+
+  it.each([
+    ['five_hour', '5-hour Claude limit'],
+    ['seven_day', 'weekly Claude limit'],
+    ['seven_day_opus', 'weekly Opus limit'],
+    ['seven_day_sonnet', 'weekly Sonnet limit'],
+    ['seven_day_overage_included', 'weekly Fable limit'],
+    ['overage', 'Claude extra usage'],
+  ])('names a refused %s allowance as %s', (window, label) => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[2]);
+    fixture.state.quotaCooldown!.notice!.holds[0].reason = { kind: 'used_up', window };
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain(`because your ${label} is used up.`);
+  });
+
+  it('does not claim a refusal when the structured reason is unknown', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[2]);
+    fixture.state.quotaCooldown!.notice!.holds[0].reason = { kind: 'unknown' };
+    const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+    expect(notice).toContain('because your Claude plan is on hold.');
+    expect(notice).not.toContain('used up');
+  });
+
+  it('adds a weekday for a later date and rounds seconds upward', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[0]);
+    const until = Date.parse('2026-10-29T08:59:01-07:00');
+    fixture.state.quotaCooldown!.until = until;
+    fixture.state.quotaCooldown!.notice!.holds[0].until = until;
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('tries cmem.ai again at Thu 9:00 AM.');
+  });
+
+  it('uses the weekday after rounding across midnight', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[0]);
+    const until = Date.parse('2026-10-27T23:59:01-07:00');
+    fixture.state.quotaCooldown!.until = until;
+    fixture.state.quotaCooldown!.notice!.holds[0].until = until;
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('tries cmem.ai again at Wed 12:00 AM.');
+  });
+
+  it('leaves an already whole minute unchanged', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[0]);
+    const until = Date.parse('2026-10-27T20:16:00-07:00');
+    fixture.state.quotaCooldown!.until = until;
+    fixture.state.quotaCooldown!.notice!.holds[0].until = until;
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('tries cmem.ai again at 8:16 PM.');
+  });
+
+  it('uses the machine time zone instead of UTC', () => {
+    const result = Bun.spawnSync([process.execPath, '-e', `
+      import { renderObserverQuotaCooldownNotice } from './src/shared/observer-health.ts';
+      import { QUOTA_NOTICE_CASES, QUOTA_NOTICE_NOW } from './tests/fixtures/quota-notice-states.ts';
+      console.log(renderObserverQuotaCooldownNotice(QUOTA_NOTICE_CASES[0].state, QUOTA_NOTICE_NOW));
+    `], {
+      cwd: repoRoot,
+      env: { ...process.env, TZ: 'America/New_York', CLAUDE_MEM_DATA_DIR: dataDir },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(result.stdout)).toContain('tries cmem.ai again at 11:17 PM.');
+  });
+
+  it('stays silent when a held backup Claude credential is covered by the other credential', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
+    const notice = fixture.state.quotaCooldown!.notice!;
+    notice.holds = notice.holds.filter(hold => hold.role === 'backup').map(hold => ({ ...hold, provider: 'claude', auth: 'subscription' }));
+    notice.servingProvider = 'claude';
+    notice.servingAuth = 'api-key';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toBe('');
+    notice.servingAuth = 'subscription';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('has paused saving memories');
+  });
+
+  it('never promises to queue, resume or catch up on work the pause discarded', () => {
+    // Live-only observer (AGENTS.md): quota and auth discard pending inputs.
+    for (const fixture of QUOTA_NOTICE_CASES) {
+      const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+      expect(notice).not.toMatch(/queued|resum|saved when|catch up/i);
+    }
+  });
+
+  it('shows retry times in TZ as it reads at render time', () => {
+    const fixture = QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('4. Claude'))!;
+    process.env.TZ = 'Asia/Tokyo';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('after 12:47 PM,');
+    process.env.TZ = 'UTC';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('after 3:47 AM,');
+  });
+
+  it('ignores an expired main hold while a longer backup hold remains', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
+    fixture.state.quotaCooldown!.notice!.holds[0].until = QUOTA_NOTICE_NOW;
+    fixture.state.quotaCooldown!.notice!.servingProvider = 'openrouter';
+    fixture.state.quotaCooldown!.notice!.servingDisplayName = 'cmem.ai';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toBe('');
+  });
+
+  it('renders only the main hold after the backup hold expires', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
+    fixture.state.quotaCooldown!.notice!.holds[1].until = QUOTA_NOTICE_NOW;
+    const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+    expect(notice).toContain('after 8:49 PM, when it tries cmem.ai again.');
+    expect(notice).not.toContain('and its backup');
+  });
+
+  it('never repeats an old ledger message or invents its main provider', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.at(-1)!);
+    fixture.state.quotaCooldown!.message = 'seven_day api_key=SUPERSECRETCOOLDOWN';
+    const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+    expect(notice).toBe(fixture.expected);
+    expect(notice).not.toMatch(/main|backup|SUPERSECRETCOOLDOWN|seven_day/);
+  });
+
+  it('describes an old paused ledger without claiming its allowance was spent', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.at(-1)!);
+    delete fixture.state.quotaCooldown!.servingProvider;
+    const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+    expect(notice).toContain('has paused saving memories while your Claude plan is on hold.');
+    expect(notice).toContain('after 8:47 PM, when it tries Claude again.');
+    expect(notice).toContain(QUOTA_NOTICE_MODEL_LINE);
+    expect(notice).not.toMatch(/used up|quota cooldown|seven_day/);
+  });
+
+  it('stays silent at and after the final hold expiry', () => {
+    const fixture = QUOTA_NOTICE_CASES[0];
+    expect(renderObserverQuotaCooldownNotice(fixture.state, fixture.state.quotaCooldown!.until)).toBe('');
+    expect(renderObserverQuotaCooldownNotice(unhealthyState(), QUOTA_NOTICE_NOW)).toBe('');
+  });
+});
+
+describe('auth warning for a verdict read from an exit', () => {
+  const authState = (lastErrorCode: string | null) => unhealthyState({
+    lastErrorProvider: 'codex',
+    lastErrorKind: 'auth_invalid',
+    lastErrorCode,
+  });
+
+  it('does not claim the provider refused the credentials', () => {
+    const warning = renderObserverHealthWarning(authState('codex_auth_from_exit_text'));
+    expect(warning).toContain('looks like a refused login');
+    expect(warning).toContain('may be wrong');
+    expect(warning).toContain('codex login status');
+    expect(warning).toContain('the next captured event or an operator retry can trigger another attempt after the cooldown ends');
+    expect(warning).not.toContain('retries by itself');
+    expect(warning).not.toContain('credentials have been refused');
+    expect(warning).not.toContain('the provider refused the credentials');
+  });
+
+  it('keeps the plain refusal when the provider said so', () => {
+    const warning = renderObserverHealthWarning(authState(null));
+    expect(warning).toContain('credentials have been refused by codex');
+    expect(warning).toContain('Restarting will NOT help here: the provider refused the credentials');
   });
 });
 
@@ -721,10 +1078,12 @@ describe('ContextBuilder observer-health injection', () => {
     humanText: string;
   }
 
-  function runContextChild(childDataDir: string): ChildRender {
-    const result = Bun.spawnSync(['bun', '-e', `
+  function runContextChild(childDataDir: string, nowMs?: number): ChildRender {
+    const result = Bun.spawnSync([process.execPath, '-e', `
       import { generateContext, withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
       import { ModeManager } from './src/services/domain/ModeManager.ts';
+      const fixedNow = ${nowMs ?? 'null'};
+      if (fixedNow !== null) Date.now = () => fixedNow;
       ModeManager.getInstance().loadMode('code');
       const emptyDbText = await generateContext({ projects: ['observer-health-test'] });
       const agentText = withObserverHealthWarning('TIMELINE_BODY', false);
@@ -735,6 +1094,7 @@ describe('ContextBuilder observer-health injection', () => {
       env: {
         ...process.env,
         CLAUDE_MEM_DATA_DIR: childDataDir,
+        TZ: QUOTA_NOTICE_TIME_ZONE,
         CLAUDE_CONFIG_DIR: childDataDir,
         CLAUDE_MEM_MODES_DIR: join(repoRoot, 'plugin', 'modes'),
       },
@@ -811,12 +1171,73 @@ describe('ContextBuilder observer-health injection', () => {
       }))
     );
     const { emptyDbText, humanText } = runContextChild(dataDir);
-    expect(emptyDbText).toContain('paused while a provider quota cooldown is active');
-    expect(emptyDbText).toContain('This is not a failure');
+    expect(emptyDbText).toContain('has paused saving memories while Claude is on hold');
+    expect(emptyDbText).toContain("Activity during the pause isn't saved");
     expect(emptyDbText).not.toContain("can't save memories");
-    expect(humanText).toContain('paused while a provider quota cooldown is active');
+    expect(humanText).toContain('has paused saving memories while Claude is on hold');
     expect(humanText).toContain('TIMELINE_BODY');
-    expect(humanText.indexOf('TIMELINE_BODY')).toBeLessThan(humanText.indexOf('quota cooldown'));
+    expect(humanText.indexOf('TIMELINE_BODY')).toBeLessThan(humanText.indexOf('has paused saving memories'));
+  });
+
+  it('leaves a saving-on-backup notice uncolored and without a model instruction', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[0]);
+    writeFileSync(healthPath, JSON.stringify(fixture.state));
+    const { agentText, humanText } = runContextChild(dataDir, QUOTA_NOTICE_NOW);
+    expect(agentText).toContain(fixture.expected);
+    expect(humanText).toContain(fixture.expected);
+    expect(humanText).not.toContain(RED);
+    expect(agentText).not.toContain('(Assistant:');
+  });
+
+  it('shows the structured saving notice despite an unhealthy quota record', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES[0]);
+    Object.assign(fixture.state, {
+      consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
+      lastErrorKind: 'quota_exhausted', lastErrorAt: QUOTA_NOTICE_NOW - 1_000,
+      lastSuccessAt: QUOTA_NOTICE_NOW - 2_000,
+    });
+    writeFileSync(healthPath, JSON.stringify(fixture.state));
+    const { agentText, humanText } = runContextChild(dataDir, QUOTA_NOTICE_NOW);
+    expect(agentText).toContain(fixture.expected);
+    expect(agentText).not.toContain("can't save memories");
+    expect(humanText).not.toContain(RED);
+  });
+
+  it('keeps the recovered main provider silent despite a backup quota failure', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('6.'))!);
+    fixture.state.quotaCooldown!.profile = childProfile();
+    Object.assign(fixture.state, {
+      consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
+      lastErrorKind: 'quota_guard', lastErrorAt: QUOTA_NOTICE_NOW - 1_000,
+      lastSuccessAt: QUOTA_NOTICE_NOW - 2_000,
+    });
+    writeFileSync(healthPath, JSON.stringify(fixture.state));
+    const { agentText, humanText } = runContextChild(dataDir, QUOTA_NOTICE_NOW);
+    expect(agentText).toBe('TIMELINE_BODY');
+    expect(humanText).toBe('TIMELINE_BODY');
+  });
+
+  it('paints a paused notice red and keeps the model line plain in the agent copy', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('4. Claude'))!);
+    fixture.state.quotaCooldown!.profile = childProfile();
+    writeFileSync(healthPath, JSON.stringify(fixture.state));
+    const { agentText, humanText } = runContextChild(dataDir, QUOTA_NOTICE_NOW);
+    expect(agentText).toContain(fixture.expected);
+    expect(agentText).not.toContain(RED);
+    expect(humanText).toContain(RED);
+    expect(humanText).toContain(QUOTA_NOTICE_MODEL_LINE);
+  });
+
+  it('paints a composed saving notice and sync warning red', () => {
+    writeFileSync(healthPath, JSON.stringify(QUOTA_NOTICE_CASES[0].state));
+    writeFileSync(join(dataDir, 'sync-health.json'), JSON.stringify({
+      state: 'auth_paused', code: 'subscription_inactive',
+    }));
+    const { agentText, humanText } = runContextChild(dataDir, QUOTA_NOTICE_NOW);
+    expect(agentText).toContain('is using your Claude plan to save memories');
+    expect(agentText).toContain('⚠ Cloud sync is paused');
+    expect(agentText).not.toContain(RED);
+    expect(humanText).toContain(RED);
   });
 
   it('stays silent about a cooldown that pauses another Claude account', () => {

@@ -41,13 +41,21 @@ interface BeforePromptBuildResult {
   appendSystemContext?: string;
 }
 
-interface ToolResultPersistEvent {
-  toolName?: string;
+// OpenClaw's PluginHookAfterToolCallEvent. A failed call reports its message in
+// `error`. `params` is required upstream, but a host build that omits it must
+// not throw here.
+interface AfterToolCallEvent {
+  toolName: string;
   params?: Record<string, unknown>;
-  message?: {
-    content?: Array<{ type: string; text?: string }>;
-  };
+  result?: unknown;
+  error?: string;
 }
+
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"],
+  ["write", "Write"],
+  ["edit", "Edit"],
+]);
 
 interface AgentEndEvent {
   messages?: Array<{
@@ -118,7 +126,7 @@ interface OpenClawPluginApi {
   }) => void;
   on: ((event: "before_prompt_build", callback: PromptBuildCallback) => void) &
       ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
-      ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+      ((event: "after_tool_call", callback: EventCallback<AfterToolCallEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
@@ -237,7 +245,9 @@ function buildGetSourceLabel(
 let _workerHost = DEFAULT_WORKER_HOST;
 
 function workerBaseUrl(port: number): string {
-  return `http://${_workerHost}:${port}`;
+  const host = _workerHost.includes(":") && !_workerHost.startsWith("[")
+    ? `[${_workerHost}]` : _workerHost;
+  return `http://${host}:${port}`;
 }
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
@@ -794,8 +804,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
   });
 
-  api.on("tool_result_persist", (event, ctx) => {
-    api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
+  api.on("after_tool_call", (event, ctx) => {
+    api.logger.info(`[claude-mem] after_tool_call fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName) return;
 
@@ -803,13 +813,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
-    let toolResponseText = "";
-    const content = event.message?.content;
+    let toolResponseText = typeof event.result === "string" ? event.result : "";
+    const content = event.result && typeof event.result === "object"
+      ? (event.result as { content?: Array<{ type: string; text?: string }> }).content
+      : undefined;
     if (Array.isArray(content)) {
       toolResponseText = content
         .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
         .map((block) => String(block.text))
         .join("\n");
+    }
+
+    // Ahead of any partial result, so the cap never cuts off why the call failed.
+    if (typeof event.error === "string" && event.error.length > 0) {
+      toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
     }
 
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
@@ -821,13 +838,18 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     // missing ctx field never silently drops a captured observation.
     const workspaceDir = ctx.workspaceDir || process.cwd();
     if (!ctx.workspaceDir) {
-      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
+      api.logger.info(`[claude-mem] after_tool_call missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
+    const params = event.params ?? {};
+    const toolInput = toolName === "read" && typeof params.path === "string"
+      && !(typeof params.file_path === "string" && params.file_path.length > 0)
+      ? { ...params, file_path: params.path }
+      : params;
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
       contentSessionId,
-      tool_name: toolName,
-      tool_input: event.params || {},
+      tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
+      tool_input: toolInput,
       tool_response: toolResponseText,
       cwd: workspaceDir,
     }, api.logger);
@@ -930,20 +952,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  function summarizeSearchResults(items: unknown[], limit = 5): string {
-    if (!Array.isArray(items) || items.length === 0) {
-      return "No results found.";
-    }
-
-    return items
-      .slice(0, limit)
-      .map((item, index) => {
-        const row = item as Record<string, unknown>;
-        const title = String(row.title || row.subtitle || row.text || "Untitled");
-        const project = row.project ? ` [${String(row.project)}]` : "";
-        return `${index + 1}. ${title}${project}`;
-      })
-      .join("\n");
+  // The worker's search, recent-context and timeline routes answer in the MCP
+  // tool shape ({ content: [{ type: "text", text }] }) with the rendered result.
+  function workerResultText(data: Record<string, unknown>): string {
+    const content = Array.isArray(data.content) ? data.content : [];
+    const text = content
+      .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+      .map((block: any) => block.text)
+      .join("\n")
+      .trim();
+    return text || "No results found.";
   }
 
   function parseLimit(arg: string | undefined, fallback = 10): number {
@@ -1011,10 +1029,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem search failed (worker unavailable or invalid response).";
       }
 
-      const items = Array.isArray(data.items) ? data.items : [];
       return [
         `Claude-Mem Search: \"${query}\"`,
-        summarizeSearchResults(items, limit),
+        workerResultText(data),
       ].join("\n");
     },
   });
@@ -1045,15 +1062,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem recent context failed (worker unavailable or invalid response).";
       }
 
-      const summaries = Array.isArray(data.session_summaries) ? data.session_summaries : [];
-      const observations = Array.isArray(data.recent_observations) ? data.recent_observations : [];
-
       return [
         "Claude-Mem Recent Context",
         `Project: ${project || "(auto)"}`,
-        `Session summaries: ${summaries.length}`,
-        `Recent observations: ${observations.length}`,
-        summarizeSearchResults(observations, Math.min(5, observations.length || 5)),
+        workerResultText(data),
       ].join("\n");
     },
   });
@@ -1082,7 +1094,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const query = parts.join(" ");
       const params = new URLSearchParams({
         query,
-        mode: "auto",
         depth_before: String(depthBefore),
         depth_after: String(depthAfter),
       });
@@ -1097,13 +1108,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Claude-Mem timeline lookup failed (worker unavailable or invalid response).";
       }
 
-      const timeline = Array.isArray(data.timeline) ? data.timeline : [];
-      const anchor = data.anchor ? String(data.anchor) : "(none)";
-
       return [
         `Claude-Mem Timeline: \"${query}\"`,
-        `Anchor: ${anchor}`,
-        summarizeSearchResults(timeline, 8),
+        workerResultText(data),
       ].join("\n");
     },
   });

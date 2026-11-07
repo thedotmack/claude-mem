@@ -1,5 +1,5 @@
-import { mock } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { beforeEach, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -18,6 +18,23 @@ import { join } from 'path';
  */
 if (!process.env.CLAUDE_MEM_DATA_DIR) {
   process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-test-run-'));
+}
+
+// The suite asserts each capture at the call. Production leaves this unset and
+// holds the high-volume events for the daily file (src/services/telemetry/daily-volume.ts).
+process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
+
+// The cmem cap probe (src/shared/cmem-cap-probe.ts) is a file in the data dir.
+// One test's allowance_exhausted must not withhold gateway sends in the next.
+// Subprocesses spawned by tests load this preload outside the test runner,
+// where beforeEach throws; only the runner needs the hook.
+try {
+  beforeEach(() => {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
+  });
+} catch {
+  // not under `bun test`
 }
 
 /**
@@ -98,3 +115,15 @@ mock.module('posthog-node', () => ({
     }
   },
 }));
+
+/**
+ * The provider fallback defaults to the Anthropic plan and is used only when a
+ * Claude login or key exists (src/shared/claude-fallback-readiness.ts). That
+ * check reads the developer's real ~/.claude.json and Claude credentials, so
+ * pin it to "no Claude login" for every test: a suite must not pass or fail
+ * depending on whether the machine running it is signed in to Claude. Tests
+ * that exercise the Claude fallback opt in with setClaudeFallbackReadinessForTesting
+ * (imported from the import-free override module so nothing else loads early).
+ */
+const { setClaudeFallbackReadinessForTesting } = await import('../src/shared/claude-fallback-readiness-override.js');
+setClaudeFallbackReadinessForTesting(() => false);

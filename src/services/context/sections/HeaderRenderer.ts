@@ -20,16 +20,18 @@ export function renderHeader(
   project: string,
   economics: TokenEconomics,
   config: ContextConfig,
-  forHuman: boolean
+  forHuman: boolean,
+  /** The header's date and time; a placeholder when the block is cached (context-cache.ts). */
+  headerTime?: string
 ): string[] {
   const output: string[] = [];
   const fetchByIdSupported = config.fetchByIdSupported !== false;
   const projectDisplay = projectHeaderLabel(project);
 
   if (forHuman) {
-    output.push(...Human.renderHumanHeader(projectDisplay));
+    output.push(...Human.renderHumanHeader(projectDisplay, headerTime));
   } else {
-    output.push(...Agent.renderAgentHeader(projectDisplay));
+    output.push(...Agent.renderAgentHeader(projectDisplay, headerTime));
   }
 
   if (forHuman) {

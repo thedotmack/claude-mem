@@ -23,6 +23,7 @@ const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvide
 const { GeminiProvider } = await import('../../src/services/worker/GeminiProvider.js');
 const { OpenRouterProvider } = await import('../../src/services/worker/OpenRouterProvider.js');
 const { CodexProvider } = await import('../../src/services/worker/CodexProvider.js');
+const { anonymousSessionId } = await import('../../src/services/worker/OpenAICompatibleProvider.js');
 
 const input: TelegramWrapupFormatterInput = {
   sessionDbId: 42,
@@ -92,6 +93,17 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(sdkQuery).not.toHaveBeenCalled();
   });
 
+  it('does not start field compression after observer capture is disabled', async () => {
+    settings.CLAUDE_MEM_OBSERVER_ENABLED = 'false';
+    const provider = new ClaudeProvider({} as never, {} as never);
+
+    await expect((provider as any).compressField(
+      'large field', 100, { ...input, abortController: new AbortController() },
+      'model', '/mock/claude', new AbortController().signal,
+    )).resolves.toBeNull();
+    expect(sdkQuery).not.toHaveBeenCalled();
+  });
+
   for (const Provider of [GeminiProvider, OpenRouterProvider, CodexProvider]) {
     it(`${Provider.name} uses its normal query/config and summary-tier model even for a live session`, async () => {
       const provider = new Provider({} as never, {} as never);
@@ -105,6 +117,10 @@ describe('Telegram wrap-up provider reuse', () => {
       expect(query).toHaveBeenCalledWith(
         [{ role: 'user', content: `${prompt}\n\n${input.summaryText}` }],
         { ...config, model: 'configured-summary-model', plainText: true },
+        undefined,
+        undefined,
+        undefined,
+        { kind: 'telegram_wrapup', sessionId: anonymousSessionId(input.contentSessionId) },
       );
       expect(config.model).toBe('default-model');
     });
@@ -116,7 +132,9 @@ describe('Telegram wrap-up provider reuse', () => {
       spyOn(provider as any, 'getConfig').mockReturnValue(config);
       const query = spyOn(provider as any, 'query').mockResolvedValue({ content: '• Finished' });
       await provider.formatTelegramWrapup(input, 'active-model');
-      expect(query).toHaveBeenCalledWith(expect.any(Array), { ...config, model: 'active-model', plainText: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.any(Array), { ...config, model: 'active-model', plainText: true }, undefined, undefined, undefined, expect.anything(),
+      );
     });
 
     it(`${Provider.name} does not query without its existing credentials`, async () => {
@@ -210,7 +228,7 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(result).toMatchObject({ content: '', tokensUsed: 20, inputTokens: 12, outputTokens: 8 });
     const body = JSON.parse(String(network.mock.calls[0][1]?.body));
     expect(body.response_format).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.max_tokens).toBe(4096);
   });
 });

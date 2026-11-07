@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
+import { LIVE_OBSERVER_MAX_SESSION_MESSAGES } from '../../src/shared/observer-work-policy.js';
+
+/** The largest backlog the live buffer accepts for one session. */
+const FULL_BUFFER = LIVE_OBSERVER_MAX_SESSION_MESSAGES;
 
 // #4066: the Claude feed claimed and yielded a whole backlog before the model
 // answered anything, so the generation budget tripped on unanswered prompts and
@@ -147,7 +153,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }],
         observation_concepts: [],
       }),
@@ -174,6 +180,7 @@ const { SessionManager } = await import('../../src/services/worker/SessionManage
 const {
   ObserverResponsePacer,
   MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_MS,
   planResponseStallResume,
 } = await import('../../src/services/worker/session/response-pacer.js');
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
@@ -213,13 +220,14 @@ function createHarness(backlog: number, payloadChars = 200) {
   const dbManager = {
     getSessionById: () => ({ project: 'observer-project', memory_session_id: null }),
     getSessionStore: () => ({
-      ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
       updateMemorySessionId: () => {},
       storeObservations: (_memoryId: string, _project: string, observations: unknown[]) => {
         storedObservations.push(observations);
         return { observationIds: [storedObservations.length], summaryId: null, createdAtEpoch: Date.now() };
       },
       linkToolUsesToObservation: () => 0,
+      markCommittedToolUses: () => {},
     }),
     getChromaSync: () => null,
     getCloudSync: () => null,
@@ -230,7 +238,7 @@ function createHarness(backlog: number, payloadChars = 200) {
 
   const buffer = sessionManager.getMessageBuffer();
   for (let i = 0; i < backlog; i++) {
-    buffer.enqueue(SESSION_ID, {
+    const id = buffer.enqueue(SESSION_ID, {
       type: 'observation',
       tool_name: 'Bash',
       tool_input: { command: `step ${i}` },
@@ -238,6 +246,8 @@ function createHarness(backlog: number, payloadChars = 200) {
       prompt_number: 2,
       toolUseId: `toolu_${i}`,
     });
+    // The live buffer is capped; a harness larger than the cap would silently shrink.
+    if (id === 0) throw new Error(`backlog ${backlog} exceeds the live buffer cap at message ${i}`);
   }
 
   const provider = new ClaudeProvider(dbManager as never, sessionManager as never);
@@ -278,20 +288,59 @@ function withTimeout<T>(promise: Promise<T>, label: string, ms = 2_000): Promise
 }
 
 let liveSessions: ActiveSession[] = [];
+let previousObserveBarePrompts: string | undefined;
 
 beforeEach(() => {
   currentSdk = null;
   liveSessions = [];
+  // These tests pace the generator's separate init turn; the default, where
+  // the init prompt rides on the first observation, has its own describe below.
+  previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
 });
 
 afterEach(() => {
   // Release any generator still parked on the pacer so nothing outlives the test.
   for (const session of liveSessions) session.abortController.abort();
+  if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
+});
+
+describe('Claude observer feed pacing without a separate init turn (the default)', () => {
+  it('sends the init prompt with the first observation and still holds every claim until it is answered', async () => {
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'false';
+    const h = createHarness(FULL_BUFFER);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'first prompt');
+    await settle();
+    // One prompt out: the user's request and the first observation together.
+    expect(sdk().prompts.length).toBe(1);
+    expect(sdk().prompts[0]).toContain('<user_request>work through the backlog</user_request>');
+    expect(sdk().prompts[0]).toContain('step 0');
+    expect(h.session.claimedMessageIds.length).toBe(1);
+
+    for (let turn = 1; turn <= 3; turn++) {
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= turn + 1, `prompt ${turn + 1}`);
+      await settle();
+      expect(sdk().prompts.length).toBe(turn + 1);
+      expect(sdk().prompts[turn]).not.toContain('<user_request>');
+      expect(sdk().prompts[turn]).toContain(`step ${turn}`);
+      expect(h.session.claimedMessageIds.length).toBe(1);
+      expect(h.pending()).toBe(FULL_BUFFER - turn);
+    }
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
 });
 
 describe('Claude observer feed pacing (#4066)', () => {
   it('holds every claim until the previous prompt has been answered', async () => {
-    const h = createHarness(200);
+    const h = createHarness(FULL_BUFFER);
     liveSessions.push(h.session);
     const run = h.provider.startSession(h.session);
     await sdkStarted();
@@ -301,7 +350,7 @@ describe('Claude observer feed pacing (#4066)', () => {
     // Only the init prompt is out; the backlog is untouched.
     expect(sdk().prompts.length).toBe(1);
     expect(h.session.claimedMessageIds.length).toBe(0);
-    expect(h.pending()).toBe(200);
+    expect(h.pending()).toBe(FULL_BUFFER);
 
     for (let turn = 1; turn <= 5; turn++) {
       sdk().answer(SKIP_REPLY);
@@ -311,7 +360,7 @@ describe('Claude observer feed pacing (#4066)', () => {
       expect(sdk().prompts.length).toBe(turn + 1);
       expect(h.session.claimedMessageIds.length).toBe(1);
       // Each answered observation turn confirmed exactly its own message.
-      expect(h.pending()).toBe(200 - (turn - 1));
+      expect(h.pending()).toBe(FULL_BUFFER - (turn - 1));
     }
 
     h.session.abortController.abort();
@@ -343,8 +392,8 @@ describe('Claude observer feed pacing (#4066)', () => {
   });
 
   it('a backlog far over the budget makes progress instead of recycling on an unanswered burst', async () => {
-    // 200 x ~4k chars is ~800k chars of prompts — twice the 400k default budget.
-    const h = createHarness(200, 4_000);
+    // A full buffer (128) x ~8k chars is ~1M chars of prompts — over twice the 400k default budget.
+    const h = createHarness(FULL_BUFFER, 8_000);
     liveSessions.push(h.session);
     const recycleLog: Array<{ answeredTurns: number; claimed: number; history: number }> = [];
 
@@ -387,7 +436,7 @@ describe('Claude observer feed pacing (#4066)', () => {
     expect(h.session.forceInit).toBe(true);
     expect(recycleLog[0].answeredTurns).toBeGreaterThan(20);
     // Everything answered was confirmed; only unanswered work stays pending.
-    expect(pendingAfterFirst).toBeLessThan(200 - 20);
+    expect(pendingAfterFirst).toBeLessThan(FULL_BUFFER - 20);
     expect(h.session.overflowPausedUntilMs).toBeUndefined();
 
     // A fresh generation continues from where the last stopped rather than
@@ -514,6 +563,7 @@ describe('Claude observer feed pacing (#4066)', () => {
     liveSessions.push(h.session);
     h.session.consecutiveContextOverflows = 1;
     h.session.consecutiveResponseStalls = 2;
+    h.session.consecutiveSdkStreamExits = 2;
     h.session.consecutiveRateLimitResumes = 3;
 
     const run = h.provider.startSession(h.session);
@@ -523,12 +573,14 @@ describe('Claude observer feed pacing (#4066)', () => {
     await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
     expect(h.session.consecutiveContextOverflows).toBe(1);
     expect(h.session.consecutiveResponseStalls).toBe(2);
+    expect(h.session.consecutiveSdkStreamExits).toBe(2);
     expect(h.session.consecutiveRateLimitResumes).toBe(3);
 
     sdk().answer(SKIP_REPLY);
     await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
     expect(h.session.consecutiveContextOverflows).toBe(0);
     expect(h.session.consecutiveResponseStalls).toBe(0);
+    expect(h.session.consecutiveSdkStreamExits).toBe(0);
     expect(h.session.consecutiveRateLimitResumes).toBe(0);
 
     h.session.abortController.abort();
@@ -675,6 +727,14 @@ describe('ObserverResponsePacer', () => {
     expect(outcome).toBeNull();
     pacer.answer();
     expect(await withTimeout(waiting, 'answer after retry')).toBe('answered');
+  });
+});
+
+describe('response-stall deadline', () => {
+  it('is its own 3 minute constant, not the drain idle timeout', () => {
+    // Tuning IDLE_TIMEOUT_MS (a drain concern) must not move this deadline.
+    expect(RESPONSE_STALL_MS).toBe(180_000);
+    expect((createHarness(0).provider as any).responseStallMs()).toBe(RESPONSE_STALL_MS);
   });
 });
 

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 import type { ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 
@@ -31,7 +32,7 @@ const { logger } = await import('../../src/utils/logger.js');
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -183,18 +184,25 @@ describe('an HTTP provider feeds prompt_tokens into the budget', () => {
   it('recycles before the next send once a reply reports a context past the budget', async () => {
     const session = makeSession();
     const queue = makeQueue(session, [observation(0), observation(1), observation(2)]);
-    // init, then a first observation whose request read 150k tokens.
-    const provider = new MeasuringProvider(queue, [100, 150_000]);
+    // A first observation (the init prompt rides on it) whose request read 150k tokens.
+    const provider = new MeasuringProvider(queue, [150_000]);
 
     await provider.startSession(session);
 
     // The second observation was never sent: the generation retired first.
-    expect(provider.requests).toBe(2);
+    expect(provider.requests).toBe(1);
     expect(session.abortReason).toBe('overflow:recycle');
     expect(queue.pending).toHaveLength(2);
   });
 
   it('ignores the init reading, so an oversized init cannot recycle every fresh generation', async () => {
+    // Only a separate init request has a reading of its own.
+    spies[1].mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+      CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '200000',
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
+    }));
     const session = makeSession();
     const queue = makeQueue(session, [observation(0), observation(1)]);
     const provider = new MeasuringProvider(queue, [150_000, 100, 100]);

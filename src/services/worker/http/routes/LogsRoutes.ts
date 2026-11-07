@@ -3,8 +3,9 @@ import express, { Request, Response } from 'express';
 import { openSync, fstatSync, readSync, closeSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../../../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { paths } from '../../../../shared/paths.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 export function readLastLines(filePath: string, lineCount: number): { lines: string; totalEstimate: number } {
   const fd = openSync(filePath, 'r');
@@ -35,7 +36,10 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
         if (content[i] === '\n') newlineCount++;
       }
 
-      if (newlineCount >= lineCount || startPosition === 0) {
+      // A trailing newline terminates the last line; it is not the boundary
+      // before the first requested line when the chunk starts mid-line.
+      const requiredNewlines = lineCount + (content.endsWith('\n') ? 1 : 0);
+      if (newlineCount >= requiredNewlines || startPosition === 0 || readSize === MAX_READ_SIZE) {
         break;
       }
 
@@ -68,16 +72,10 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
 }
 
 export class LogsRoutes extends BaseRouteHandler {
+  // Same directory the logger writes to (src/utils/logger.ts).
   private getLogFilePath(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    const logsDir = join(dataDir, 'logs');
     const date = new Date().toISOString().split('T')[0];
-    return join(logsDir, `claude-mem-${date}.log`);
-  }
-
-  private getLogsDir(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    return join(dataDir, 'logs');
+    return join(paths.logsDir(), `claude-mem-${date}.log`);
   }
 
   setupRoutes(app: express.Application): void {
@@ -86,6 +84,14 @@ export class LogsRoutes extends BaseRouteHandler {
   }
 
   private handleGetLogs = this.wrapHandler((req: Request, res: Response): void => {
+    const rawLines = req.query.lines;
+    const requestedLines = rawLines === undefined ? 1000
+      : typeof rawLines === 'string' && /^\d+$/.test(rawLines) ? Number(rawLines) : NaN;
+    if (!Number.isSafeInteger(requestedLines) || requestedLines < 0) {
+      this.badRequest(res, 'lines must be a nonnegative safe integer');
+      return;
+    }
+
     const logFilePath = this.getLogFilePath();
 
     if (!existsSync(logFilePath)) {
@@ -97,7 +103,6 @@ export class LogsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const requestedLines = parseInt(req.query.lines as string || '1000', 10);
     const maxLines = Math.min(requestedLines, 10000); 
 
     const { lines: recentLines, totalEstimate } = readLastLines(logFilePath, maxLines);
@@ -113,6 +118,13 @@ export class LogsRoutes extends BaseRouteHandler {
   });
 
   private handleClearLogs = this.wrapHandler((req: Request, res: Response): void => {
+    // Clearing logs is a destructive local action, so other localhost pages
+    // may not trigger it (same rule as memory/save and the DELETE guard).
+    // Origin-less clients (CLI, curl, the viewer's own origin) keep working.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Log clears from a different localhost origin are not allowed' });
+      return;
+    }
     const logFilePath = this.getLogFilePath();
 
     if (!existsSync(logFilePath)) {

@@ -361,16 +361,21 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('transient');
   });
 
-  it('classifies a 200 body-level litellm parse error as transient (retryable)', () => {
+  // Never pay twice (Phase 1): litellm's "Unable to get json response" means
+  // the model ran and was billed and only its output was lost. These used to be
+  // transient (retried); a resend pays for the same work again, so they are now
+  // output failures that are never retried.
+  it('classifies a 200 body-level litellm parse error as an output failure (never retried)', () => {
     const err = classifyOpenRouterError({
       status: 200,
       bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
       cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
     });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
   });
 
-  it('classifies the litellm error envelope the query path forwards (numeric code, 200) as transient', () => {
+  it('classifies the litellm error envelope the query path forwards (numeric code, 200) as an output failure', () => {
     const message = 'Unable to get json response - Expecting value: line 45 column 1 (char 44)';
     const err = classifyOpenRouterError({
       status: 200,
@@ -378,18 +383,19 @@ describe('classifyOpenRouterError', () => {
       cause: new Error(`OpenRouter API error: 200 - ${message}`),
       requestId: 'or-req-litellm',
     });
-    expect(err.kind).toBe('transient');
-    expect(err.message).toBe(`OpenRouter transient upstream parse failure (status 200): ${message}`);
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
+    expect(err.message).toBe(`OpenRouter upstream output failure (status 200): ${message}`);
     expect(err.requestId).toBe('or-req-litellm');
   });
 
-  it('classifies litellm "expecting value" markers as transient regardless of a non-standard status', () => {
+  it('classifies litellm "expecting value" markers as an output failure regardless of a non-standard status', () => {
     const err = classifyOpenRouterError({
       status: 418,
       bodyText: 'Expecting value: line 1 column 1 (char 0)',
       cause: new Error('418'),
     });
-    expect(err.kind).toBe('transient');
+    expect(err.paidSendOutcome).toBe('output_failure');
   });
 
   it('still classifies a plain 400 bad request as unrecoverable', () => {
@@ -869,6 +875,33 @@ describe('classifyClaudeError', () => {
     const sdkErr = Object.assign(new Error('service unavailable'), { status: 503 });
     const err = classifyClaudeError(sdkErr);
     expect(err.kind).toBe('transient');
+  });
+
+  it('classifies unrecognized_model message as unrecoverable', () => {
+    const err = classifyClaudeError(
+      new Error('[claude-code:unrecognized_model] {"model":"auto","query_source":"sdk"}')
+    );
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  it('classifies "There\'s an issue with the selected model" message as unrecoverable', () => {
+    const err = classifyClaudeError(
+      new Error(
+        "There's an issue with the selected model (auto). It may not exist or you may not have access to it."
+      )
+    );
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+  });
+
+  it('classifies the SDK error that follows a model refusal as model_unavailable', () => {
+    // Text thrown by SDK 0.3.318 for the refusal in #5315.
+    const err = classifyClaudeError(
+      new Error("Claude Code returned an error result: There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.")
+    );
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+    expect(err.action).toContain('CLAUDE_MEM_MODEL');
   });
 
   it('classifies unknown error as transient (preserve old default)', () => {

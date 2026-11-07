@@ -14,16 +14,19 @@ OMP-side plugin or modification is required.
 
 | OMP event | claude-mem endpoint | Purpose |
 |---|---|---|
-| `session_start` | — | Mint a process-stable `contentSessionId` |
+| `session_start` | — | Mint the session's `contentSessionId` |
 | `before_agent_start` | `POST /api/sessions/init` | Record every user prompt, in order (creates the claude-mem session on the first) |
 | `tool_result` | `POST /api/sessions/observations` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
 | `context` | `GET /api/context/inject` | Inject memory from past sessions into the prompt (60s cache) |
+| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | Finalize the previous session after its prompts and observations, then mint a new id |
 | `session_shutdown` | `POST /api/sessions/summarize` | Finalize the session summary |
 
 Behavioral notes (matching the OpenClaw adapter's conventions):
 
-- `contentSessionId` is stable for the lifetime of an OMP process and rotates on
-  compaction — never per user prompt, so observations stay grouped.
+- `contentSessionId` follows the OMP session file: it rotates when OMP moves to
+  another file (`/new`, `/resume`, fork, branch, `/btw`) and on compaction —
+  never per user prompt, so observations stay grouped. A reload of the file
+  that is already open keeps it.
 - All POSTs are fire-and-forget detached chains; the hook never blocks tool
   dispatch (the extension runner's 30s handler cap is never approached).
 - `memory_*` tool results are skipped to avoid recursion.
@@ -45,8 +48,19 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   worker did not record that prompt; one that arrives before any prompt is sent
   at once.
 - A session is finalized only after the worker recorded one of its prompts.
-- The `context` handler always preserves the original conversation — it
-  re-spreads `event.messages` and appends exactly one system message.
+- The `context` handler preserves the original conversation and appends one
+  transient `custom` message (`claude-mem:context`), without writing it to session
+  history. OMP drops unsupported `system` conversation messages. It converts
+  `custom` messages to developer content; framing the retrieved history as
+  reference data is not a prompt-injection sandbox.
+- Context requests always retain the current `cwd`. They filter to source `omp`
+  by default; when `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` is `"true"`
+  (or boolean `true` in settings), they omit that source filter so the worker
+  can apply the central cross-host policy. A defined environment value, even
+  empty, takes precedence over `settings.json`. The context cache includes this
+  effective policy, so source-policy changes take effect on the next context
+  callback without waiting for its 60s TTL. This does not broaden the worker's
+  project scope or change capture's `platformSource`.
 
 ## Install
 

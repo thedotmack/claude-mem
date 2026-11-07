@@ -16,10 +16,32 @@ export type ServerProviderErrorClass =
   | 'parse_error'
   | (string & {});
 
+/**
+ * What one paid generate call ended as — the worker's "never pay twice" model
+ * (src/services/worker/provider-errors.ts PaidSendOutcome), duplicated here
+ * because src/server may not import from the worker:
+ *  - `refused_before_work`: a 429; nothing was billed.
+ *  - `ambiguous`: no answer (network error, our own timeout) or a 5xx. The
+ *    work may have run and been billed.
+ *  - `output_failure`: a response arrived and its body could not be used
+ *    (litellm's 200 "Unable to get json response"). Billed; never resent.
+ *  - `rejected`: a definite refusal (auth, quota, bad request).
+ */
+export type ServerPaidSendOutcome = 'refused_before_work' | 'ambiguous' | 'output_failure' | 'rejected';
+
+/**
+ * Paid generate calls one outbox job may make before an ambiguous failure is
+ * no longer retried: the first call plus one resend (the worker's
+ * DEFAULT_MAX_PAID_SENDS_PER_BATCH). A rate limit is not a paid call and keeps
+ * the job's full max_attempts.
+ */
+export const SERVER_MAX_PAID_SENDS_PER_JOB = 2;
+
 export class ServerClassifiedProviderError extends Error {
   readonly kind: ServerProviderErrorClass;
   readonly retryAfterMs?: number;
   readonly cause: unknown;
+  readonly paidSendOutcome?: ServerPaidSendOutcome;
 
   constructor(
     message: string,
@@ -27,6 +49,8 @@ export class ServerClassifiedProviderError extends Error {
       kind: ServerProviderErrorClass;
       cause: unknown;
       retryAfterMs?: number;
+      /** Overrides the outcome derived from `kind` (serverPaidSendOutcomeOf). */
+      paidSendOutcome?: ServerPaidSendOutcome;
     },
   ) {
     super(message);
@@ -36,7 +60,18 @@ export class ServerClassifiedProviderError extends Error {
     if (opts.retryAfterMs !== undefined) {
       this.retryAfterMs = opts.retryAfterMs;
     }
+    if (opts.paidSendOutcome !== undefined) {
+      this.paidSendOutcome = opts.paidSendOutcome;
+    }
   }
+}
+
+/** An explicit outcome wins; else rate_limit was refused before work, transient is ambiguous, the rest rejected. */
+export function serverPaidSendOutcomeOf(error: ServerClassifiedProviderError): ServerPaidSendOutcome {
+  if (error.paidSendOutcome) return error.paidSendOutcome;
+  if (error.kind === 'rate_limit') return 'refused_before_work';
+  if (error.kind === 'transient') return 'ambiguous';
+  return 'rejected';
 }
 
 /**
@@ -47,8 +82,9 @@ export class ServerClassifiedProviderError extends Error {
 export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
+  const milliseconds = seconds * 1000;
+  if (Number.isFinite(milliseconds) && seconds >= 0) {
+    return Math.floor(milliseconds);
   }
   const dateMs = Date.parse(value);
   if (!Number.isNaN(dateMs)) {
@@ -147,18 +183,15 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   // litellm (behind OpenRouter) can fail to parse the downstream model's
   // response and surface it as a body-level error inside a 200 envelope, e.g.
   // `{ error: { code: 200, message: "Unable to get json response - Expecting
-  // value: line 45 column 1" } }`. Because the body-error path forwards the
-  // success status verbatim, none of the HTTP-status branches above match and
-  // it would otherwise fall through to `unrecoverable` and never retry. These
-  // are transient upstream hiccups that usually succeed on a retry, so detect
-  // the tell-tale litellm markers and route them to the retry loop.
-  // Kept marker-scoped on purpose: this classifier is shared with Gemini,
-  // which delivers genuine unrecoverable errors (FAILED_PRECONDITION, etc.)
-  // inside 200 envelopes that must stay non-transient.
+  // value: line 45 column 1" } }`. The model ran and the call was billed; only
+  // its output was lost, so a retry pays for the same work again. An output
+  // failure, never retried ("never pay twice"). Kept marker-scoped so it keeps
+  // its own words: this classifier is shared with Gemini, whose other 200
+  // envelopes (FAILED_PRECONDITION, etc.) fall through to unrecoverable below.
   if (lower.includes('unable to get json') || lower.includes('expecting value')) {
     return new ServerClassifiedProviderError(
-      `${providerLabel} transient upstream parse failure (status ${status})`,
-      { kind: 'transient', cause },
+      `${providerLabel} upstream output failure (status ${status})`,
+      { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause },
     );
   }
 

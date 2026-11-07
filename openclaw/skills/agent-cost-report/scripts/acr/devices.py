@@ -44,12 +44,12 @@ def export(label, usage_doc, outdir, window_block, live_db=None):
                behavior_export=None)   # per-session pattern counts / episode windows may be added later (plan 5.2, numbers only)
     assert not any(k in r for r in rows for k in FORBIDDEN)
     path = os.path.join(outdir, f"device-usage-{label}.json")
-    with open(path, "w") as fh: json.dump(doc, fh)
+    with open(path, "w", encoding="utf-8") as fh: json.dump(doc, fh)
     return path, doc
 
 
 def load(path):
-    with open(path) as fh: d = json.load(fh)
+    with open(path, encoding="utf-8") as fh: d = json.load(fh)
     for k in ("device", "window", "rows", "sessions"):
         if k not in d: raise ValueError(f"{path}: not a device-usage export (missing {k})")
     bad = [k for r in d["rows"] for k in FORBIDDEN if k in r]

@@ -3,8 +3,10 @@ import {
   resolveTelemetryConsent,
   loadTelemetryConfig,
   getOrCreateInstallId,
+  getOrCreateAnonymousDistinctId,
   isErrorTelemetryEnabled,
 } from './consent.js';
+import { observeTelemetryVolume, telemetryVolumeIsImmediate, __resetTelemetryVolumeForTests, type PendingTelemetryEvent } from './daily-volume.js';
 import { scrubProperties } from './scrub.js';
 import {
   scrubError,
@@ -15,6 +17,7 @@ import {
 } from './error-scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 import { telemetryBuffer } from './buffer.js';
+import { parseSetupEvent, type SetupEvent } from '../../shared/setup-funnel.js';
 // logger.warn ONLY in this module — logger.error routes through the error sink
 // back into captureException (logger.ts setErrorSink), which would recurse.
 import { logger } from '../../utils/logger.js';
@@ -38,6 +41,24 @@ function hasConsent(): boolean {
   const value = resolveTelemetryConsent(process.env, loadTelemetryConfig());
   consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS };
   return value;
+}
+
+/** Worker-side collectors share the transport's bounded consent cache. */
+export function hasTelemetryConsent(): boolean { return hasConsent(); }
+
+/** Structural setup events must retain their episode identity and order, never enter daily rollups. */
+export function captureSetupEvent(value: SetupEvent): void {
+  try {
+    const safe = parseSetupEvent(value);
+    if (!safe || isShutdown || !resolveTelemetryConsent(process.env, loadTelemetryConfig())) return;
+    const { event, occurred_at, ...fields } = safe;
+    const properties = { ...scrubProperties(buildBaseProperties()), ...fields, $process_person_profile: false };
+    if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
+      process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');
+      return;
+    }
+    getClient().capture({ distinctId: `setup:${safe.setup_flow_id}`, event, timestamp: new Date(occurred_at), properties });
+  } catch { /* An unavailable analytics service cannot interrupt setup. */ }
 }
 
 /**
@@ -392,6 +413,17 @@ function errorBeforeSend(event: EventMessage | null): EventMessage | null {
     // fingerprintError already applies messageTemplate internally — pass the
     // raw (redacted) message, do not pre-template it (S1).
     const fingerprint = fingerprintError(type, message, stack);
+    // Production: one $exception per error type per day, counted on disk.
+    // Immediate mode keeps the 60s in-memory limiter the existing tests assert.
+    if (!telemetryVolumeIsImmediate()) {
+      const held = observeTelemetryVolume('$exception', {
+        error_type: type,
+        error_message: message,
+        error_stack: stack,
+      });
+      emitClosedTelemetry(held.closed);
+      return null;
+    }
     const decision = applyErrorRateLimit(fingerprint, Date.now());
     if (!decision.send) return null; // dropped before ingest — not billed
     try {
@@ -462,6 +494,15 @@ function captureExceptionInner(
 
   const scrubbed = scrubError(err);
   const fingerprint = fingerprintError(scrubbed.type, scrubbed.message, scrubbed.stack);
+  if (!telemetryVolumeIsImmediate()) {
+    const held = observeTelemetryVolume('$exception', {
+      error_type: scrubbed.type,
+      error_message: scrubbed.message,
+      error_stack: scrubbed.stack,
+    });
+    emitClosedTelemetry(held.closed);
+    return;
+  }
   const decision = applyErrorRateLimit(fingerprint, Date.now());
   if (!decision.send) {
     return;
@@ -508,7 +549,7 @@ function captureExceptionInner(
   safeError.name = scrubbed.type;
   safeError.stack = scrubbed.stack || `${scrubbed.type}: ${scrubbed.message}`;
 
-  getClient().captureException(safeError, getOrCreateInstallId(), additionalProperties);
+  getClient().captureException(safeError, getOrCreateAnonymousDistinctId(), additionalProperties);
 }
 
 /**
@@ -523,17 +564,22 @@ function captureExceptionInner(
  *   4. posthog.capture() — SDK queues in memory and batches in background.
  *
  * Two event classes (opts.person):
- *   - Lifecycle events (worker_started, install_*) pass person: true. They are
- *     low-volume and build an anonymous person profile keyed to the random
- *     install UUID, which is what makes PostHog's retention / stickiness /
- *     lifecycle / cohort insights work. Person properties are restricted to
- *     PERSON_PROPERTY_KEYS — the same whitelisted enums as event properties.
- *   - Everything else (high-volume operational events) stays profile-less.
+ *   - Install / auth / trial / checkout / subscription events pass person: true.
+ *     They are low-volume and build an anonymous person profile keyed to the
+ *     install UUID. Person properties are restricted to PERSON_PROPERTY_KEYS.
+ *   - Every worker and plugin event stays profile-less: no `$set`, and a
+ *     distinct id that has never been identified. `$process_person_profile:
+ *     false` alone does not do this — PostHog bills any event whose distinct
+ *     id already has a person as identified, which is why a `$set` on
+ *     worker_started made the rest of the stream identified.
+ *
+ * `bypassVolume` is internal: the daily rollup's flush sends an already-summed
+ * event and must not fold it back into today's bucket.
  */
 export function captureEvent(
   event: string,
   props?: Record<string, unknown>,
-  opts?: { person?: boolean }
+  opts?: { person?: boolean; bypassVolume?: boolean }
 ): void {
   try {
     captureEventInner(event, props, opts);
@@ -551,7 +597,7 @@ export function captureEvent(
 function captureEventInner(
   event: string,
   props?: Record<string, unknown>,
-  opts?: { person?: boolean }
+  opts?: { person?: boolean; bypassVolume?: boolean }
 ): void {
   // Once shutdown has flushed the client, late events (e.g. a request that
   // raced graceful stop) are dropped rather than queued in a new client
@@ -564,8 +610,16 @@ function captureEventInner(
     ...buildBaseProperties(),
     ...(props ?? {}),
   });
+
+  if (!opts?.bypassVolume) {
+    const decision = observeTelemetryVolume(event, properties);
+    emitClosedTelemetry(decision.closed);
+    if (!decision.forward) return;
+  }
+
   // $-prefixed PostHog directives are not user data and bypass the whitelist;
-  // they are added AFTER scrubbing.
+  // they are added AFTER scrubbing. Profile-less events never carry `$set`:
+  // that property is what creates the person later events get billed against.
   if (opts?.person) {
     properties.$set = buildPersonSet(properties);
   } else {
@@ -581,9 +635,38 @@ function captureEventInner(
   }
 
   getClient().capture({
-    distinctId: getOrCreateInstallId(),
+    distinctId: opts?.person ? getOrCreateInstallId() : getOrCreateAnonymousDistinctId(),
     event,
     properties,
+  });
+}
+
+/** Send a closed day's summed events. Bypass the volume gate so they are not folded again. */
+function emitClosedTelemetry(closed: PendingTelemetryEvent[]): void {
+  for (const item of closed) {
+    if (item.event === '$exception') emitStoredException(item.properties);
+    else captureEventInner(item.event, item.properties, { bypassVolume: true });
+  }
+}
+
+function emitStoredException(props: Record<string, unknown>): void {
+  const message = typeof props.error_message === 'string' ? props.error_message : 'Error';
+  const type = typeof props.error_type === 'string' ? props.error_type : 'Error';
+  const stack = typeof props.error_stack === 'string' ? props.error_stack : '';
+  const safeError = new Error(message);
+  safeError.name = type;
+  safeError.stack = stack || `${type}: ${message}`;
+  const count = typeof props.count === 'number' ? props.count : 1;
+  getClient().captureException(safeError, getOrCreateAnonymousDistinctId(), {
+    $process_person_profile: false,
+    error_type: type,
+    error_message: message,
+    error_stack: safeError.stack,
+    $exception_type: type,
+    $exception_message: message,
+    occurrence_count: count,
+    count,
+    [RATE_LIMITED_SENTINEL]: true,
   });
 }
 
@@ -599,6 +682,7 @@ export function __resetTelemetryForTests(): void {
   isShutdown = false;
   autocaptureEnabled = false;
   errorRateMap.clear();
+  __resetTelemetryVolumeForTests();
 }
 
 /**

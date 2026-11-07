@@ -97,7 +97,9 @@ export function scanZstdFramesInFile(
       if (!descriptorByte) return { frames, tornStart: frameStart };
       const descriptor = descriptorByte.readUInt8(0);
       offset += 1;
-      if ((descriptor & 24) !== 0) {
+      // Bit 4 is unused and must be ignored by decoders (RFC 8878).
+      // Bit 3 is reserved and must still be rejected.
+      if ((descriptor & 8) !== 0) {
         throw new Error(`reserved Zstandard frame-header bit at byte ${offset - 1}`);
       }
 
@@ -142,14 +144,14 @@ export function scanZstdFramesInFile(
 }
 
 /**
- * Decompress one complete Zstandard frame back to UTF-8 text.
+ * Decompress one complete Zstandard frame without decoding an incomplete UTF-8 suffix.
  */
-export function decompressZstdFrame(buffer: Buffer, frame: ZstdFrameRange): string {
+export function decompressZstdFrameBytes(buffer: Buffer, frame: ZstdFrameRange): Buffer {
   try {
     const decompress = zstdDecompressor();
     if (!decompress) throw new Error('this runtime cannot decode Zstandard (zlib.zstdDecompressSync is missing)');
     const decoded = decompress(buffer.subarray(frame.start, frame.end));
-    return decoded.toString('utf8');
+    return decoded;
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to decompress Zstandard frame', {
       start: frame.start,
@@ -158,4 +160,9 @@ export function decompressZstdFrame(buffer: Buffer, frame: ZstdFrameRange): stri
     });
     throw error;
   }
+}
+
+/** Decode a standalone frame as text; streaming JSONL readers retain bytes until newline. */
+export function decompressZstdFrame(buffer: Buffer, frame: ZstdFrameRange): string {
+  return decompressZstdFrameBytes(buffer, frame).toString('utf8');
 }

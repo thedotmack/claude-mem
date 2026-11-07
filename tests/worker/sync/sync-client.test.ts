@@ -83,7 +83,7 @@ describe('SyncClient', () => {
       fetchImpl,
       // This suite covers the HTTP lanes exactly as they behave with the
       // advisory socket absent (prime directive #2: deleting the socket path
-      // leaves Phase 3 intact). Socket coverage: sync-client-ws.test.ts.
+      // leaves Phase 3 intact). Realtime coverage: sync-client-realtime.test.ts.
       wsEnabled: false,
       // Poll fast in tests unless a test overrides a tier.
       activePollMs: 20,
@@ -135,6 +135,7 @@ describe('SyncClient', () => {
     expect(state.requests[0].headers['X-User-Id']).toBe('user-42');
     expect(state.requests[0].headers['X-Device-Id']).toBe(SELF);
     expect(state.requests[0].headers['X-Device-Name']).toBe('test laptop');
+    expect(state.requests[0].headers['X-Sync-Capabilities']).toBe('quarantine-unknown-kinds');
   });
 
   it('loops while more=true, presenting the advanced cursor each page', async () => {
@@ -268,9 +269,21 @@ describe('SyncClient', () => {
     expect(apply.getCursor()).toBe('0');
     expect(count('observations')).toBe(0);
 
+    await sleep(20); // past the 10ms failure backoff
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('1');
     expect(count('observations')).toBe(1);
+  });
+
+  it('does not re-fetch a failing page on every hook while the failure backoff runs', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    state.failNext = 1;
+    const client = makeClient(impl, { backoffInitialMs: 60_000, backoffMaxMs: 60_000 });
+
+    await client.pullOnce({ timeoutMs: 1_500 }); // fails: 60s backoff starts
+    for (let i = 0; i < 5; i++) await client.pullOnce({ timeoutMs: 1_500 }); // context-inject hooks
+    expect(state.requests.length).toBe(1);
+    expect(apply.getCursor()).toBe('0');
   });
 
   it('pauses the poll loop on a 401/403 instead of retrying on the normal ladder', async () => {
@@ -307,19 +320,41 @@ describe('SyncClient', () => {
     expect(state.requests.length).toBeGreaterThan(0);
   });
 
-  it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {
+  it('sets aside an undecodable change and keeps pulling past it', async () => {
     const bad = hubOp(1, '11');
     bad.body = 'not json{';
-    const { state, impl } = makeHub({ epoch: '1', ops: [bad] });
+    const { impl } = makeHub({ epoch: '1', ops: [bad, hubOp(2, '12')] });
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe('0'); // applyOps threw, batch rolled back
+    expect(apply.getCursor()).toBe('2');
+    expect(count('observations')).toBe(1);
+    expect(db.prepare('SELECT seq, raw_body FROM sync_pull_quarantine').all()).toEqual([
+      { seq: '1', raw_body: JSON.stringify(bad) },
+    ]);
+  });
 
-    state.ops = [hubOp(1, '11')];
+  it('pulls past a forked device\'s same-revision collision after a hub rebuild (the cursor-0 wedge)', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11749')] });
+    const client = makeClient(impl);
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('1');
-    expect(count('observations')).toBe(1);
+
+    // Rebuilt hub: the device reused local id 11749 for a different
+    // observation, so the same entity/rev now carries another body.
+    state.epoch = '2';
+    state.ops = [
+      observationChange(1, '11749', REMOTE, { title: 'a different observation', content_hash: 'hash-other' }),
+      hubOp(2, '11750'),
+    ];
+    await client.pullOnce({ timeoutMs: 5_000 });
+
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('2');
+    expect(db.prepare("SELECT title FROM observations WHERE origin_local_id = '11749'").get())
+      .toEqual({ title: 'obs 11749' });
+    expect(count('observations')).toBe(2);
+    expect(count('sync_pull_quarantine')).toBe(1);
   });
 
   it('rejects HTTP pages that do not start at cursor+1 or contain an internal sequence gap', async () => {
@@ -330,11 +365,13 @@ describe('SyncClient', () => {
     expect(count('observations')).toBe(0);
 
     state.ops = [hubOp(1, '11'), hubOp(3, '13')];
+    await sleep(60); // past the failure backoff
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('0');
     expect(count('observations')).toBe(0); // seq 1 insert rolled back with the gap
 
     state.ops = [hubOp(1, '11'), hubOp(2, '12'), hubOp(3, '13')];
+    await sleep(60);
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('3');
     expect(count('observations')).toBe(3);
@@ -420,6 +457,26 @@ describe('SyncClient', () => {
       expect(state.requests.length).toBeGreaterThan(suspendedAt);
       await sleep(100); // resumed 10ms cadence is ticking again
       expect(state.requests.length).toBeGreaterThan(suspendedAt + 1);
+    });
+
+    it('never suspends when suspendAfterMs is infinite (CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING)', async () => {
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
+      let now = 1_000_000;
+      const client = makeClient(impl, {
+        activePollMs: 10,
+        idlePollMs: 10,
+        suspendAfterMs: Number.POSITIVE_INFINITY,
+        isSessionActive: () => false,
+        now: () => now,
+      });
+      client.start();
+      await sleep(50);
+      now += 10 * 86_400_000; // days with no sessions
+      await sleep(50);
+      const later = state.requests.length;
+      await sleep(100);
+      expect(state.requests.length).toBeGreaterThan(later); // still polling
+      client.stop();
     });
 
     it('onHeadSeq also resumes a suspended loop', async () => {

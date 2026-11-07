@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 import type { ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 
@@ -34,7 +35,7 @@ type FailurePoint = 'init' | 'observation';
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -64,7 +65,7 @@ function makeSession(): ActiveSession {
   };
 }
 
-/** Answers the init prompt, then fails the way a paused provider does. */
+/** Answers a separate init request, if any, then fails the way a paused provider does. */
 class FailingProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
   protected readonly providerName = 'TestProvider';
   protected readonly syntheticIdPrefix = 'test';
@@ -112,20 +113,25 @@ function makeSessionManager() {
     getMessageBuffer: () => ({ getPendingCount: () => 1 }),
     resetProcessingToPending: async () => 0,
     removeSessionImmediate: mock(() => {}),
+    clearPendingForSession: mock(async () => 1),
+    discardBufferedWork: mock(() => 1),
   };
 }
 
 const EXPECTED_ROLES: Record<FailurePoint, string[]> = {
   // The unanswered init prompt of the last attempt, and nothing before it.
   init: ['user'],
-  // The last attempt's init turn plus its unanswered observation prompt.
-  observation: ['user', 'assistant', 'user'],
+  // The last attempt's init prompt plus its unanswered observation prompt,
+  // which carried it in one request.
+  observation: ['user', 'user'],
 };
 
 describe('every HTTP generator start opens a new generation (#3479)', () => {
   let spies: ReturnType<typeof spyOn>[] = [];
+  let previousObserveBarePrompts: string | undefined;
 
   beforeEach(() => {
+    previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
     spies = [
       spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
         getActiveMode: () => mockMode,
@@ -140,6 +146,8 @@ describe('every HTTP generator start opens a new generation (#3479)', () => {
   });
 
   afterEach(() => {
+    if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
     for (const spy of spies) spy.mockRestore();
     mock.restore();
   });
@@ -155,6 +163,8 @@ describe('every HTTP generator start opens a new generation (#3479)', () => {
 
   for (const [failureKind, failurePoint, exitCategory] of cases) {
     it(`${RESTARTS} ${exitCategory} restarts failing at ${failurePoint} leave exactly one generation`, async () => {
+      // Only a separate init request (CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true) can fail on its own.
+      process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = failurePoint === 'init' ? 'true' : 'false';
       const sessionManager = makeSessionManager();
       const finalizeSession = mock(() => Promise.resolve());
       const provider = new FailingProvider({} as never, sessionManager as never, failureKind, failurePoint);
@@ -171,10 +181,13 @@ describe('every HTTP generator start opens a new generation (#3479)', () => {
         });
       }
 
-      // The session and its queue survived every pause...
+      // The session identity survives; quota/auth inputs are discarded.
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
-      // ...and the history holds the last attempt only: one init prompt, not 1,000.
+      if (exitCategory === 'quota' || exitCategory === 'auth') {
+        expect(sessionManager.discardBufferedWork).toHaveBeenCalledTimes(RESTARTS);
+      }
+      // The history holds the last attempt only: one init prompt, not 1,000.
       expect(session.conversationHistory.map(message => message.role)).toEqual(EXPECTED_ROLES[failurePoint]);
       expect(session.conversationHistory.filter(message => message.content.includes('<user_request>'))).toHaveLength(1);
     }, 30_000);

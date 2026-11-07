@@ -15,6 +15,8 @@ export interface NormalizedHookInput {
    */
   toolUseId?: string;
   transcriptPath?: string;
+  /** Claude Code SubagentStop only: the finished subagent's own transcript (agent_transcript_path). */
+  agentTranscriptPath?: string;
   lastAssistantMessage?: string;
   reason?: string;
   turnId?: string;
@@ -22,7 +24,7 @@ export interface NormalizedHookInput {
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
-  sessionSource?: 'startup' | 'resume' | 'clear';
+  sessionSource?: 'startup' | 'resume' | 'clear' | 'compact';
   /** Raw hook event name from the payload (e.g. Kimi binds both Stop and PreCompact to the same internal event — handlers use this to tell them apart). */
   hookEventName?: string;
   filePath?: string;
@@ -46,6 +48,8 @@ export interface NormalizedHookInput {
 }
 
 export interface HookResult {
+  /** Internal measurement hint; stripped before platform formatting/output. */
+  workStateTelemetry?: 'measure' | 'excluded' | 'unknown';
   continue?: boolean;
   suppressOutput?: boolean;
   hookSpecificOutput?: {

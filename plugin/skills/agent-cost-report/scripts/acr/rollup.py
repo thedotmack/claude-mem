@@ -287,16 +287,16 @@ def write_outputs(outdir, report, evid=None, review=None):
     os.makedirs(outdir, exist_ok=True)
     raw = report.pop("_behavior_raw", None)
     if raw is not None:
-        with open(os.path.join(outdir, "behavior.json"), "w") as fh: json.dump(dict(window=report["window"], scope=report["scope"], **raw), fh, indent=1, default=str)
-    with open(os.path.join(outdir, "report.json"), "w") as fh: json.dump(report, fh, indent=1, default=str)
-    with open(os.path.join(outdir, "line-items.csv"), "w", newline="") as fh:
+        with open(os.path.join(outdir, "behavior.json"), "w", encoding="utf-8") as fh: json.dump(dict(window=report["window"], scope=report["scope"], **raw), fh, indent=1, default=str)
+    with open(os.path.join(outdir, "report.json"), "w", encoding="utf-8") as fh: json.dump(report, fh, indent=1, default=str)
+    with open(os.path.join(outdir, "line-items.csv"), "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="ignore"); w.writeheader()
         for li in report["line_items"]:
             w.writerow({k: (";".join(map(str, v)) if isinstance(v, list) else json.dumps(v) if isinstance(v, dict) else v) for k, v in li.items()})
     if evid is not None:
-        with open(os.path.join(outdir, "evidence.json"), "w") as fh: json.dump(evid, fh, indent=1)
+        with open(os.path.join(outdir, "evidence.json"), "w", encoding="utf-8") as fh: json.dump(evid, fh, indent=1)
     if review is not None:
-        with open(os.path.join(outdir, "labels.review.json"), "w") as fh: json.dump(review, fh, indent=1)
+        with open(os.path.join(outdir, "labels.review.json"), "w", encoding="utf-8") as fh: json.dump(review, fh, indent=1)
 
 
 def resolve_scope(args, usage):
@@ -320,7 +320,7 @@ def input_path(outdir, name):
 def run_rollup(args):
     usage_path = input_path(args.out, "usage.json")
     if not os.path.exists(usage_path): raise SystemExit(f"acr.py rollup: {usage_path} not found; run `acr.py collect` first")
-    with open(usage_path) as fh: usage = json.load(fh)
+    with open(usage_path, encoding="utf-8") as fh: usage = json.load(fh)
     prices = prices_mod.load(args.prices or input_path(args.out, "prices.json"))
     scope, window_block = resolve_scope(args, usage)
     if scope.kind == "session" and usage["window"].get("session") not in (None, args.session):
@@ -333,7 +333,7 @@ def run_rollup(args):
     try:
         precision = None
         if getattr(args, "precision", None):
-            with open(args.precision) as fh: precision = json.load(fh)
+            with open(args.precision, encoding="utf-8-sig") as fh: precision = json.load(fh)
         cl = dict(enabled=True, cap_usd=getattr(args, "classify_budget", None) or mistakes.classify_mod.CAP_USD, model=getattr(args, "classify_model", None)) if getattr(args, "classify", False) else None
         report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False),
                                      behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports, precision=precision, wins_repos=tuple(getattr(args, "wins_repo", None) or wins.WINS_REPOS))
@@ -342,7 +342,7 @@ def run_rollup(args):
     mp = getattr(args, "measured", None) or os.path.join(args.out, "measured.json")
     measured = None
     if os.path.exists(mp):
-        with open(mp) as fh: measured = json.load(fh)
+        with open(mp, encoding="utf-8") as fh: measured = json.load(fh)
     measure.apply(report, measured)                        # Phase 4: MEASURED only when the UTC bucket covers the PT window
     report["inputs"] = dict(usage=usage_path, prices=prices.get("loaded_from"), snapshot=snap, measured=mp if measured else None)
     write_outputs(args.out, report, evid, review)
@@ -357,8 +357,8 @@ def run_rollup(args):
 
 def run_review(args):
     rp = os.path.join(args.out, "report.json")
-    with open(rp) as fh: report = json.load(fh)
-    with open(args.apply) as fh: reviewed = json.load(fh)
+    with open(rp, encoding="utf-8") as fh: report = json.load(fh)
+    with open(args.apply, encoding="utf-8-sig") as fh: reviewed = json.load(fh)      # reviewer-edited; tolerate an editor BOM
     n = labels.apply_review(report["line_items"], reviewed, period.now_pt().strftime("%Y-%m-%d %H:%M PT"))
     aggregate(report); write_outputs(args.out, report)
     print(f"review: applied {n} labels; {report['labels']['reviewed']} of {report['labels']['total']} reviewed -> {rp}")

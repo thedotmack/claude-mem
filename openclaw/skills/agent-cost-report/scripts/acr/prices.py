@@ -41,7 +41,7 @@ def fetch(url=SOURCE_URL, timeout=60):
 def load(path):
     """A saved prices.json (from `acr.py prices`), for offline runs and the Phase 8 comparison."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8-sig") as fh:      # a saved or hand-edited table; tolerate an editor BOM
             p = json.load(fh)
     except OSError as ex:
         raise PriceError(f"could not read --prices file {path}: {ex}") from ex
@@ -58,7 +58,7 @@ def load(path):
 def write(prices, outdir):
     os.makedirs(outdir, exist_ok=True)
     path = os.path.join(outdir, PRICES_FILE)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(prices, fh, indent=1)
     return path
 

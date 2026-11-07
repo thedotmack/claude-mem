@@ -19,6 +19,7 @@ import http from 'http';
 import fs from 'fs';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import { getSupervisor } from '../../../src/supervisor/index.js';
+import { captureProcessStartToken } from '../../../src/supervisor/process-registry.js';
 import { getWorkerPort, getWorkerHost } from '../../../src/shared/worker-utils.js';
 import { paths } from '../../../src/shared/paths.js';
 
@@ -74,12 +75,18 @@ async function main(): Promise<void> {
 
   // 3. Claim ownership of the port the way a real worker does, so
   //    readOwnedWorkerPidInfo() returns THIS pid and the recycle targets us.
-  //    No startToken: verifyPidFileOwnership() treats it as optional and
-  //    falls back to a liveness check.
+  //    With a start token, as every worker since v12.3.8 writes it: a
+  //    token-less record must also name worker-service.cjs in its command
+  //    line on Linux (#4270), and this fixture runs as stale-worker-host.ts.
   fs.mkdirSync(paths.dataDir(), { recursive: true });
   fs.writeFileSync(
     paths.workerPid(),
-    JSON.stringify({ pid: process.pid, port, startedAt: new Date().toISOString() }),
+    JSON.stringify({
+      pid: process.pid,
+      port,
+      startedAt: new Date().toISOString(),
+      startToken: captureProcessStartToken(process.pid) ?? undefined,
+    }),
     'utf-8'
   );
 

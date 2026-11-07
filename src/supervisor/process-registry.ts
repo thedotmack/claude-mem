@@ -9,8 +9,8 @@ import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
-export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -96,15 +96,79 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   const currentToken = captureProcessStartToken(info.pid);
   if (currentToken === null) return true;
 
-  const match = currentToken === info.startToken;
+  const match = isSameProcessStartToken(currentToken, info.startToken);
   if (!match) {
     logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
       pid: info.pid,
       stored: info.startToken,
       current: currentToken
     });
+  } else if (currentToken !== info.startToken) {
+    // The record carries a pre-UTC-pin local-time token (#5311) that differs
+    // from the pinned read by a possible UTC offset, so both name one start
+    // instant. One-time migration only — this record is rewritten with a
+    // pinned token on the next worker start.
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: pre-UTC-pin start token accepted (differs by a UTC offset)', {
+      pid: info.pid,
+      stored: info.startToken,
+      current: currentToken
+    });
   }
   return match;
+}
+
+/**
+ * How a token-less worker PID record is checked against the live process.
+ * Injectable so the Linux branch can be tested on every platform.
+ */
+export interface WorkerCommandLineProbe {
+  platform: NodeJS.Platform;
+  readCommandLine(pid: number): string;
+}
+
+const LIVE_WORKER_COMMAND_LINE_PROBE: WorkerCommandLineProbe = {
+  platform: process.platform,
+  readCommandLine: pid => readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+};
+
+/**
+ * verifyPidFileOwnership, plus an identity check for a worker PID record that
+ * carries no start token. Every worker since v12.3.8 writes a token, so a
+ * reused PID in a tokened record already fails the token comparison. A record
+ * written without one (an older worker, or a token capture that failed) used
+ * to pass for whatever live process inherited the PID, which refused every
+ * later worker start (#4270). On Linux such a record must now also name
+ * `worker-service.cjs` in /proc/<pid>/cmdline.
+ *
+ * A command line that cannot be read keeps the old trust, the same rule
+ * verifyPidFileOwnership applies to a start token it cannot capture: only a
+ * command line that was read and names another program proves the PID was
+ * reused. Answering "not the worker" on a failed read would delete a live
+ * worker's PID file and lose the PID that shutdown needs.
+ */
+export function verifyWorkerPidFileOwnership(
+  info: PidInfo | null,
+  probe: WorkerCommandLineProbe = LIVE_WORKER_COMMAND_LINE_PROBE
+): info is PidInfo {
+  if (!verifyPidFileOwnership(info)) return false;
+  if (info.startToken || probe.platform !== 'linux') return true;
+
+  let commandLine: string;
+  try {
+    commandLine = probe.readCommandLine(info.pid);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read the command line of a token-less worker PID; trusting the live PID', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return true;
+  }
+
+  const namesWorker = commandLine.split('\0').some(argument => path.basename(argument) === 'worker-service.cjs');
+  if (!namesWorker) {
+    logger.debug('SYSTEM', 'Token-less worker PID now belongs to another program (PID reused)', { pid: info.pid });
+  }
+  return namesWorker;
 }
 
 /**
@@ -123,7 +187,7 @@ export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()):
   } catch {
     return null;
   }
-  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+  return pidInfo !== null && verifyWorkerPidFileOwnership(pidInfo) ? pidInfo : null;
 }
 
 export class ProcessRegistry {
@@ -681,11 +745,15 @@ export async function waitForSlot(
   signal?: AbortSignal,
   sessionId?: number | string
 ): Promise<SlotReservation> {
-  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  const getConfiguredMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  // #5376: a limit at or above the hard cap behaves like a limit AT the cap.
+  // A full pool parks the session; only a registry already OVER the cap
+  // (processes that never went through this gate) is refused.
+  const getMax = () => Math.min(getConfiguredMax(), TOTAL_PROCESS_HARD_CAP);
 
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
-  if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
+  if (activeCount > TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
@@ -717,7 +785,7 @@ export async function waitForSlot(
       // reaches an already-parked waiter the next time it's poked — either
       // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
-      if (count >= TOTAL_PROCESS_HARD_CAP) {
+      if (count > TOTAL_PROCESS_HARD_CAP) {
         cleanup();
         reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
         return;

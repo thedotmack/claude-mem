@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // #3664: a gateway that synthesizes streaming for the Claude path reports
 // input_tokens: 0 on every assistant frame, so discovery_tokens collapsed to
@@ -45,7 +47,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }],
         observation_concepts: [],
       }),
@@ -148,7 +150,7 @@ function createHarness(session: ActiveSession) {
   const dbManager = {
     getSessionStore: () => ({
       updateMemorySessionId: () => {},
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       getSessionById: () => ({ memory_session_id: MEMORY_SESSION_ID }),
       storeObservations,
       updateDiscoveryTokens,
@@ -186,6 +188,30 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     expect(harness.updateDiscoveryTokens).toHaveBeenCalledWith([41], null, 900 + 100 + 40);
     expect(session.cumulativeInputTokens).toBe(1000);
     expect(session.cumulativeCacheReadTokens).toBe(50);
+  });
+
+  // A repeated Stop updates the turn's summary in place (#5225). The result's
+  // usage must still reach that row; updateDiscoveryTokens keeps the larger count.
+  it('corrects a summary a repeated stop reused when the gateway reports input only in the result (#5225)', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    harness.storeObservations.mockImplementation((() => ({
+      observationIds: [41],
+      mergedIntoExisting: [false],
+      insertedObservationIds: [41],
+      summaryId: 7,
+      summaryUpdated: true,
+      createdAtEpoch: 1700000000000,
+    })) as never);
+
+    scriptedMessages = [
+      assistantFrame({ input_tokens: 0, output_tokens: 1 }),
+      resultFrame({ input_tokens: 900, output_tokens: 40 }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.updateDiscoveryTokens).toHaveBeenCalledWith([41], 7, 900 + 40);
   });
 
   // A turn the gateway streams back as several assistant frames, each with

@@ -1,18 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt',
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -83,13 +81,17 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
   }
 }
 
+// The init prompt is a request of its own only with CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true.
 describe('OpenAICompatibleProvider init response', () => {
   let modeManagerSpy: ReturnType<typeof spyOn>;
   let storeObservations: ReturnType<typeof mock>;
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
+  let previousObserveBarePrompts: string | undefined;
 
   beforeEach(() => {
+    previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
@@ -100,7 +102,7 @@ describe('OpenAICompatibleProvider init response', () => {
     dbManager = {
       getSessionStore: () => ({
         storeObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         updateMemorySessionId: mock(() => {}),
       }),
       getChromaSync: () => ({
@@ -122,6 +124,8 @@ describe('OpenAICompatibleProvider init response', () => {
   });
 
   afterEach(() => {
+    if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
     modeManagerSpy.mockRestore();
     mock.restore();
   });
@@ -145,7 +149,7 @@ describe('OpenAICompatibleProvider init response', () => {
     provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
     let call = 0;
     const turns = mock(async () => ({ content: call++ === 0 ? '' : observationXml }));
-    provider.appServer.runTurn = turns;
+    for (const client of provider.appServer.clients) client.runTurn = turns;
     const session = makeSession({ currentProvider: 'codex' });
 
     await provider.startSession(session);
@@ -171,7 +175,7 @@ describe('OpenAICompatibleProvider init response', () => {
     provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
     let call = 0;
     const turns = mock(async () => ({ content: call++ === 0 ? 'ready' : '' }));
-    provider.appServer.runTurn = turns;
+    for (const client of provider.appServer.clients) client.runTurn = turns;
 
     await provider.startSession(session);
 

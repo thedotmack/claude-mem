@@ -158,6 +158,16 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
     //   "You're out of usage credits. Run /usage-credits to keep using…"
     /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
+    // The Anthropic API billing notice, returned as the whole assistant
+    // response when an API key's credit balance is exhausted (#4632):
+    //   "Credit balance is too low"
+    //   "Your credit balance is too low to access the Anthropic API. …"
+    // Anchored at the start because the notice IS the response; prose that
+    // merely narrates a low balance mid-sentence stays unmatched. The CLI can
+    // also wrap it in its 400 envelope:
+    //   'API Error: 400 {"error":{…,"message":"Your credit balance is too low…"}}'
+    /^(?:your )?credit balance is too low\b/.test(text) ||
+    /^api error: 400\b.*\bcredit balance is too low\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
@@ -167,6 +177,43 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\b(reached|exceeded|exhausted)\b.*\bweekly\b.*\b(limit|quota)\b/.test(text) ||
     /\bsubscription\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text)
+  );
+}
+
+/**
+ * Detect a provider rate limit (HTTP 429) that Claude Code returned as the
+ * assistant reply instead of throwing (#5428):
+ *   "API Error: Request rejected (429) · The request was rate limited. Its
+ *    source could not be identified. Retry after the indicated delay."
+ *   "API Error: 429 Too Many Requests"
+ *   'API Error: 429 {"type":"error","error":{"type":"rate_limit_error",…}}'
+ *
+ * A throttle is not a spent allowance, so it is kept apart from
+ * isQuotaLimitedObserverOutput: callers pause on the short rate-limit window
+ * instead of the quota one, exactly as a thrown 429 already does.
+ *
+ * Anchored at the start, like the other CLI envelopes: the 429 must be the
+ * status the "API Error" envelope reports. Without the envelope, only the
+ * gateway's complete refusal counts, anchored at both ends, so a reply that
+ * merely uses its words ("The request was rate limited. Logged nothing new.")
+ * is not one. "You have 429 files to review" and "The request was rate limited
+ * during testing; nothing new to record" are ordinary prose and stay unmatched, because a false match pauses the
+ * generator and requeues a batch the observer has already answered.
+ */
+export function isRateLimitedObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /^api error:?\s*(?:request rejected\s*)?\(?429\)?(?=$|[\s·:{.,])/.test(text) ||
+    /^the request was rate limited\. its source could not be identified\. retry after the indicated delay\.?$/.test(text)
   );
 }
 
@@ -208,6 +255,46 @@ export function isContextOverflowObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect the org-policy refusal Claude Code returns as the whole response when
+ * the account's organization has disabled subscription access (#4677):
+ *   "Your organization has disabled Claude subscription access for Claude
+ *    Code · Use an Anthropic API key instead, or ask your admin to enable
+ *    access"
+ *
+ * Anchored at BOTH ends, like the signed-out wording: the notice alone, or the
+ * notice plus the CLI's own remediation, and nothing else. An observation that
+ * opens with the same words and runs on ("…, so we updated the setup guide")
+ * stays unmatched, because a false match here pauses the generator for an auth
+ * repair nobody needs.
+ *
+ * It is an auth failure (the credential is refused), but /login cannot fix it,
+ * so callers book it with its own remedy.
+ */
+export function isOrgDisabledSubscriptionObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return /^your organization has disabled claude (?:[a-z]+ )?subscription access for claude code\s*(?:[.!]|[·|:\-–—]\s*use an anthropic api key instead,? or ask your admin to enable access\s*[.!]?)?\s*$/.test(text);
+}
+
+/**
+ * Detect Claude Code's Anthropic verification-hold response. It is an account
+ * refusal rather than observer prose: requeue the claimed work and tell the
+ * owner to complete verification. Keep the complete CLI envelope anchored so
+ * an observation that discusses the portal is not mistaken for a refusal.
+ */
+export function isAnthropicVerificationHoldObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') return false;
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) return false;
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  return /^api error:\s*your account can(?:not|'t|’t) receive replies from claude right now[.!]?\s+you can find the next step in the anthropic verification portal:\s*https:\/\/portal\.anthropic\.com\/verify\?org=[^\s]+[.!]?$/.test(text);
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
@@ -239,6 +326,8 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     // plus its own /login remediation.
     /^not logged in\b\s*[.!]?\s*$/.test(text) ||
     /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The org-policy refusal (#4677); see isOrgDisabledSubscriptionObserverOutput.
+    isOrgDisabledSubscriptionObserverOutput(raw) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing

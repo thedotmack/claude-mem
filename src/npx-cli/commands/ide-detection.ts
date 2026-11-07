@@ -1,8 +1,13 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
+import { hermesHome } from '../../services/integrations/HermesInstaller.js';
+import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
+import { getGooseConfigPath } from '../../services/integrations/McpIntegrations.js';
+import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export interface IDEInfo {
   id: string;
@@ -11,13 +16,17 @@ export interface IDEInfo {
   hint?: string;
 }
 
+export function initialIDESelection(ides: IDEInfo[]): string[] {
+  const detected = ides.filter(ide => ide.detected).map(ide => ide.id);
+  return detected.length ? detected : ['claude-code'];
+}
+
 function isCommandInPath(command: string): boolean {
   try {
     if (IS_WINDOWS) {
-      execFileSync('where.exe', [command], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      // System32 where.exe with current-directory hits dropped: a planted
+      // <command>.exe in the project dir must not count as an install.
+      return lookupWindowsCommandCandidates(command).length > 0;
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
@@ -77,10 +86,22 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 't3code',
+      label: 'T3 Code',
+      detected: existsSync(t3CodeSettingsPath()),
+      hint: 'Codex + Claude native hooks and MCP',
+    },
+    {
       id: 'kimi',
       label: 'Kimi Code',
       detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'devin',
+      label: 'Devin CLI / Desktop',
+      detected: existsSync(devinConfigPath()) || isCommandInPath('devin'),
+      hint: 'hooks integration',
     },
     {
       id: 'cursor',
@@ -113,10 +134,28 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 'hermes',
+      label: 'Hermes Agent',
+      detected: isCommandInPath('hermes') || existsSync(hermesHome()),
+      hint: 'memory provider plugin + MCP search',
+    },
+    {
+      id: 'pi',
+      label: 'Pi',
+      detected: isCommandInPath('pi') || existsSync(process.env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
+      hint: 'manual recall; check automatic capture compatibility',
+    },
+    {
+      id: 'dsh',
+      label: 'DeepSeek Harness',
+      detected: isCommandInPath('dsh') || existsSync(process.env.DSH_HOME || join(home, '.dsh')),
+      hint: 'native plugin + transcript capture',
+    },
+    {
       id: 'goose',
       label: 'Goose',
       detected:
-        existsSync(join(home, '.config', 'goose')) || isCommandInPath('goose'),
+        existsSync(dirname(getGooseConfigPath())) || isCommandInPath('goose'),
       hint: 'MCP-based integration',
     },
     {

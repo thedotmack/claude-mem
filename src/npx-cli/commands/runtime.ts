@@ -3,10 +3,10 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { getBunPath } from '../install/setup-runtime.js';
+import { ensureServerEmbedder, getBunPath, hasServerEmbedder } from '../install/setup-runtime.js';
 import { npmPackageRootDirectory } from '../utils/paths.js';
-import { resolvePluginRoot } from '../../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 /**
@@ -106,8 +106,42 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
   spawnPlugin(bunPath, [serverScript, command, ...extraArgs], pluginRoot);
 }
 
+/**
+ * Whether the server may search by meaning: CLAUDE_MEM_SERVER_VECTOR_SEARCH is
+ * anything but 'false', read as the server reads it (vectorSearchMode).
+ */
+export function serverVectorSearchAllowed(): boolean {
+  return SettingsDefaultsManager.get('CLAUDE_MEM_SERVER_VECTOR_SEARCH').toLowerCase() !== 'false';
+}
+
+/**
+ * Start a server process, first installing the embedder the plugin install
+ * leaves out (installPluginDependencies). Without it the server still runs,
+ * searching by keyword only.
+ */
+async function spawnBunServerWithEmbedder(command: string, extraArgs: string[] = []): Promise<void> {
+  const pluginRoot = pluginRootOrExit();
+  const bunPath = resolveBunOrExit();
+  // With search by meaning off, the server never loads the embedder, so the
+  // install is skipped; the spawned server reads the same environment.
+  if (!serverVectorSearchAllowed()) {
+    spawnBunServerCommand(command, extraArgs);
+    return;
+  }
+  try {
+    if (!hasServerEmbedder(pluginRoot)) {
+      console.error('Installing the embedder for search by meaning (about 300 MB, once)...');
+    }
+    await ensureServerEmbedder(pluginRoot, bunPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(styleText('yellow', `Could not install the embedder; the server will search by keyword only.\n${message}`));
+  }
+  spawnBunServerCommand(command, extraArgs);
+}
+
 export function runServerStartCommand(): void {
-  spawnBunServerCommand('start');
+  void spawnBunServerWithEmbedder('start');
 }
 
 export function runServerStopCommand(): void {
@@ -115,7 +149,7 @@ export function runServerStopCommand(): void {
 }
 
 export function runServerRestartCommand(): void {
-  spawnBunServerCommand('restart');
+  void spawnBunServerWithEmbedder('restart');
 }
 
 export function runServerStatusCommand(): void {
@@ -126,7 +160,7 @@ export function runServerStatusCommand(): void {
 // Compose to scale generation horizontally while a single (or multiple)
 // HTTP-only server replicas serve writes/reads.
 export function runServerWorkerStartCommand(): void {
-  spawnBunServerCommand('worker', ['start']);
+  void spawnBunServerWithEmbedder('worker', ['start']);
 }
 
 export function runStartCommand(): void {
@@ -228,9 +262,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
-  const searchUrl = `http://${workerHost}:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
+  const searchUrl = buildWorkerUrl(`/api/search?query=${encodeURIComponent(query)}`);
 
   let response: Response;
   try {
@@ -265,7 +297,17 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  if (typeof data === 'object' && data !== null) {
+  // /api/search answers in the MCP tool shape: print its rendered text.
+  const content = (data as { content?: unknown } | null)?.content;
+  if (Array.isArray(content)) {
+    console.log(content
+      .filter((block): block is { type: 'text'; text: string } => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('\n\n'));
+    if ((data as { isError?: unknown }).isError === true) {
+      process.exit(1);
+    }
+  } else if (typeof data === 'object' && data !== null) {
     console.log(JSON.stringify(data, null, 2));
   } else {
     console.log(data);

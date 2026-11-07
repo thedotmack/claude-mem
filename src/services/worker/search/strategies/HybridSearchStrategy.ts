@@ -27,13 +27,13 @@ export class HybridSearchStrategy {
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, offset, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
     // The keys SearchManager scopes by, resolved once: the SQLite lookup that
     // decides which rows match the file, the Chroma ranking and the hydration
     // all read the same projects.
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const projectScope = readKeys.length > 0 ? { projects: readKeys } : {};
-    const filterOptions = { limit, ...projectScope, platformSource, dateRange, orderBy, isFolder };
+    const filterOptions = { limit, offset, ...projectScope, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
@@ -72,13 +72,16 @@ export class HybridSearchStrategy {
         }
       }
 
+      const dateOrder = options.orderBy === 'date_asc' || options.orderBy === 'date_desc' ? options.orderBy : undefined;
       const observations = this.sessionStore.getObservationsByIds(rankedIds, {
-        orderBy: 'relevance',
+        orderBy: dateOrder ?? 'relevance',
         limit: options.limit,
         ...(options.readKeys.length > 0 ? { projects: options.readKeys } : {}),
         platformSource: options.platformSource
       });
-      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+      if (!dateOrder) {
+        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+      }
 
       return { observations, sessions, usedChroma: true };
     }

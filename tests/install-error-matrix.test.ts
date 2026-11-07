@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -11,6 +11,7 @@ import {
 import {
   createInstallSummary,
   installerError,
+  clearLastInstallError,
   flushSummary,
   InstallAbortError,
 } from '../src/npx-cli/install/error-reporter';
@@ -106,6 +107,23 @@ describe('error taxonomy', () => {
     expect(remediation).toContain('CLAUDE_MEM_INSTALL_TIMEOUT_MS');
   });
 
+  // #4858: on musl the download works but the glibc executable cannot run, so
+  // the remediation must not blame the network.
+  it('classifies a downloaded tree-sitter CLI that cannot run with the PATH workaround', () => {
+    const cat = classifyError(
+      new Error('tree-sitter-cli provisioning failed in /x: The downloaded tree-sitter 0.26.9 executable matches the pinned SHA-256 but cannot run on this system: spawn ENOENT'),
+      { component: 'tree-sitter-cli-cache', phase: 'dependency-install' },
+    );
+    expect(cat.id).toBe('tree-sitter-cli-cannot-run');
+    const remediation = cat.remediation({ platform: 'linux', dataDir: '/tmp/claude-mem' });
+    expect(remediation).toContain('musl');
+    expect(remediation).toContain('0.26 or newer');
+    expect(remediation).toContain('PATH');
+    expect(remediation).toContain('npx claude-mem doctor');
+    expect(remediation).not.toContain('network');
+    expect(remediation).not.toContain('last-install-error.json');
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
@@ -162,6 +180,46 @@ describe('installerError decision logic', () => {
     expect(record.categoryId).toBe('tree-sitter-eresolve');
     expect(record.severity).toBe('ABORT');
     expect(record.details).toContain('While resolving');
+  });
+
+  // The record describes an aborted run. Nothing removed it, so doctor kept
+  // showing an old error and its advice after later runs succeeded (#4858).
+  it('a finished run clears the record of an earlier abort', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    expect(() => installerError(ErrorSeverity.ABORT, {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+      cause: new Error('npm error code ERESOLVE'),
+    }, createInstallSummary())).toThrow(InstallAbortError);
+    expect(existsSync(recordPath)).toBe(true);
+
+    clearLastInstallError();
+    expect(existsSync(recordPath)).toBe(false);
+    // Nothing to clear is not an error.
+    expect(() => clearLastInstallError()).not.toThrow();
+  });
+
+  // Clearing runs after the install already finished, so a record that cannot
+  // be removed must not turn that success into a failed command; it warns.
+  it('a record that cannot be removed warns instead of failing the finished run', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    // A directory at the record's path makes the non-recursive remove throw on every platform.
+    mkdirSync(join(recordPath, 'blocker'), { recursive: true });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      expect(() => clearLastInstallError()).not.toThrow();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.join('\n')).toContain('last-install-error.json');
+  });
+
+  it('install and repair clear the record only after their run finishes', () => {
+    const source = readFileSync(join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
+    expect(source).toMatch(/await runInstallCommandInner\(options, summary\);\r?\n\s*clearLastInstallError\(\);/);
+    expect(source).toMatch(/await runRepairCommandInner\(summary\);\r?\n\s*clearLastInstallError\(\);/);
   });
 
   it('WARN_CONTINUE appends to summary and does not throw', () => {

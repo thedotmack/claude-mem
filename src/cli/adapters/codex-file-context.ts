@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
-import { parse, type ParsedToken } from 'shell-quote';
+import { parse, quote, type ParsedToken } from 'shell-quote';
 
 const MAX_FILE_PATHS = 10;
 const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'bat', 'view', 'nl', 'tac']);
@@ -37,7 +38,7 @@ function normalizeCommand(command: unknown): string | null {
   if (typeof command === 'string') return command;
   if (Array.isArray(command)) {
     const parts = command.filter((part): part is string => typeof part === 'string');
-    return parts.length > 0 ? parts.join(' ') : null;
+    return parts.length > 0 ? quote(parts) : null;
   }
   return null;
 }
@@ -55,6 +56,15 @@ function dropFlagValue(flag: string, command: string): boolean {
   if (valueFlags.has(flag)) return true;
   const eqIndex = flag.indexOf('=');
   return eqIndex > 0 && valueFlags.has(flag.slice(0, eqIndex));
+}
+
+// A shell expands `~/` before `cat` sees it, so a command that reads
+// `~/notes/x.md` reads a file under the home directory. Resolving the literal
+// token against cwd would point at `<cwd>/~/notes/x.md`, which never exists.
+export function expandHomeDirectory(candidate: string, homeDirectory: string = homedir()): string {
+  if (candidate === '~') return homeDirectory;
+  if (candidate.startsWith('~/')) return path.join(homeDirectory, candidate.slice(2));
+  return candidate;
 }
 
 function isExistingFile(candidate: string, cwd: string): boolean {
@@ -84,7 +94,7 @@ function dedupeAndCap(paths: string[]): string[] {
   return deduped;
 }
 
-function extractFromBash(toolInput: unknown, cwd: string): string[] {
+function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string): string[] {
   const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
   if (!command) return [];
 
@@ -111,17 +121,23 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
     if (!READ_COMMANDS.has(argv0)) continue;
 
     let skipNext = false;
+    let optionsEnded = false;
     for (const token of segment.slice(argv0Index + 1)) {
       if (skipNext) {
         skipNext = false;
         continue;
       }
-      if (isFlagLike(token)) {
+      if (!optionsEnded && token === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && isFlagLike(token)) {
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
-      if (isExistingFile(token, cwd)) {
-        paths.push(token);
+      const candidate = expandHomeDirectory(token, homeDirectory);
+      if (isExistingFile(candidate, cwd)) {
+        paths.push(candidate);
       }
     }
   }
@@ -129,7 +145,7 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   return dedupeAndCap(paths);
 }
 
-function extractFromMcp(toolName: string, toolInput: unknown, cwd: string): string[] {
+function extractFromMcp(toolName: string, toolInput: unknown, cwd: string, homeDirectory: string): string[] {
   if (!/^mcp__.+__(read|view|cat)(?:_file|_files)?$/.test(toolName)) return [];
 
   const input = (toolInput ?? {}) as { path?: unknown; paths?: unknown };
@@ -142,11 +158,11 @@ function extractFromMcp(toolName: string, toolInput: unknown, cwd: string): stri
     }
   }
 
-  return dedupeAndCap(candidates.filter(candidate => isExistingFile(candidate, cwd)));
+  return dedupeAndCap(candidates.map(candidate => expandHomeDirectory(candidate, homeDirectory)).filter(candidate => isExistingFile(candidate, cwd)));
 }
 
-export function extractFilePaths(toolName: string, toolInput: unknown, cwd: string): string[] {
-  if (toolName === 'Bash') return extractFromBash(toolInput, cwd);
-  if (toolName.startsWith('mcp__')) return extractFromMcp(toolName, toolInput, cwd);
+export function extractFilePaths(toolName: string, toolInput: unknown, cwd: string, homeDirectory: string = homedir()): string[] {
+  if (toolName === 'Bash') return extractFromBash(toolInput, cwd, homeDirectory);
+  if (toolName.startsWith('mcp__')) return extractFromMcp(toolName, toolInput, cwd, homeDirectory);
   return [];
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useI18n } from '../../i18n';
 import type { ProjectCatalog, Settings } from '../types';
 
 interface UseContextPreviewResult {
@@ -13,7 +14,8 @@ interface UseContextPreviewResult {
   setSelectedProject: (project: string) => void;
 }
 
-function getPreferredSource(sources: string[]): string | null {
+function getPreferredSource(catalog: ProjectCatalog): string | null {
+  const sources = catalog.sources.filter(source => (catalog.projectsBySource[source]?.length ?? 0) > 0);
   if (sources.includes('claude')) return 'claude';
   if (sources.includes('codex')) return 'codex';
   return sources[0] || null;
@@ -25,6 +27,7 @@ function withDefaultSources(sources: string[]): string[] {
 }
 
 export function useContextPreview(settings: Settings): UseContextPreviewResult {
+  const { t } = useI18n();
   const [preview, setPreview] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +57,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
 
       const preferredSource = settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
         ? null
-        : getPreferredSource(nextCatalog.sources);
+        : getPreferredSource(nextCatalog);
       setSelectedSource(preferredSource);
 
       if (preferredSource) {
@@ -73,8 +76,8 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   useEffect(() => {
     setSelectedSource(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
       ? null
-      : getPreferredSource(catalog.sources));
-  }, [settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES, catalog.sources]);
+      : getPreferredSource(catalog));
+  }, [settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES, catalog]);
 
   useEffect(() => {
     if (!selectedSource) {
@@ -88,9 +91,11 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setSelectedProject(prev => (prev && sourceProjects.includes(prev) ? prev : sourceProjects[0] || null));
   }, [catalog, selectedSource]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (isCurrent: () => boolean) => {
     if (!selectedProject) {
       setPreview('No project selected');
+      setIsLoading(false);
+      setError(null);
       return;
     }
 
@@ -108,6 +113,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     try {
       const response = await fetch(`/api/context/preview?${params}`);
       const text = await response.text();
+      if (!isCurrent()) return;
 
       if (response.ok) {
         setPreview(text);
@@ -116,23 +122,27 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       }
     } catch (error: unknown) {
       console.error('Failed to load context preview:', error instanceof Error ? error.message : String(error));
-      setError('Failed to load preview');
+      if (isCurrent()) setError('Failed to load preview');
     }
 
-    setIsLoading(false);
+    if (isCurrent()) setIsLoading(false);
   }, [selectedProject, selectedSource]);
 
   useEffect(() => {
+    let current = true;
     const timeout = setTimeout(() => {
-      refresh();
+      refresh(() => current);
     }, 300);
-    return () => clearTimeout(timeout);
+    return () => {
+      current = false;
+      clearTimeout(timeout);
+    };
   }, [settings, refresh]);
 
   return {
-    preview,
+    preview: preview === 'No project selected' ? t(preview) : preview,
     isLoading,
-    error,
+    error: error ? t(error) : null,
     projects,
     sources: catalog.sources,
     selectedSource,

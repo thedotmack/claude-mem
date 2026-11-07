@@ -112,6 +112,8 @@ const sessionCompressedBuckets: Map<number, SessionCompressedBucket> = new Map()
 // Time-window bucket for context_injected (hook-level, no sessionDbId). See
 // the file header for why this path stays a wall-clock rollup.
 let contextInjectedBucket: ContextInjectedBucket | null = null;
+// Closed dimensions only; at most platform × role × instruction-state buckets.
+const workStateBuckets = new Map<string, Record<string, unknown>>();
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let safetyHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -373,12 +375,26 @@ export const telemetryBuffer = {
    * @param props  the (already-scrubbed) property bag for this occurrence.
    */
   record(
-    event: 'session_compressed' | 'context_injected',
+    event: 'session_compressed' | 'context_injected' | 'work_state_usage',
     sessionDbId: number | null,
     props: Record<string, unknown>
   ): void {
     const now = Date.now();
-    if (event === 'session_compressed') {
+    if (event === 'work_state_usage') {
+      const dimensions = {
+        platform: props.platform,
+        agent_role: props.agent_role,
+        instruction_state: props.instruction_state,
+      };
+      const key = JSON.stringify(dimensions);
+      const bucket = workStateBuckets.get(key) ?? { ...dimensions, window_start_ts: now };
+      for (const [name, value] of Object.entries(props)) {
+        if (name.endsWith('_count') && typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+          bucket[name] = Number(bucket[name] ?? 0) + value;
+        }
+      }
+      workStateBuckets.set(key, bucket);
+    } else if (event === 'session_compressed') {
       if (typeof sessionDbId !== 'number') {
         // No session key ⇒ we can't accumulate per-session. Drop rather than
         // crash or misroute. Telemetry is fire-and-forget.
@@ -466,6 +482,8 @@ export const telemetryBuffer = {
    * flush at session end (see flushSession / drainAllSessions).
    */
   flush(): void {
+    for (const bucket of workStateBuckets.values()) captureEvent('work_state_usage_rollup', bucket);
+    workStateBuckets.clear();
     if (contextInjectedBucket && contextInjectedBucket.records.length > 0) {
       const rollup = computeContextInjectedRollup(contextInjectedBucket);
       contextInjectedBucket = null;
@@ -530,6 +548,7 @@ export const telemetryBuffer = {
     }
     sessionCompressedBuckets.clear();
     contextInjectedBucket = null;
+    workStateBuckets.clear();
   },
 
   /** Test-only. Number of active per-session buckets (memory-bound assertion). */

@@ -4,6 +4,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
+import { withObservationMedia } from '../media/feed.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -73,7 +74,8 @@ export class PaginationHelper {
         o.files_modified,
         o.prompt_number,
         o.created_at,
-        o.created_at_epoch
+        o.created_at_epoch,
+        o.metadata
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;
@@ -99,10 +101,12 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY o.created_at_epoch DESC, o.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const results = db.prepare(query).all(...params) as Observation[];
+    // metadata is read only to project media refs; the raw column stays out of the feed.
+    const results = (db.prepare(query).all(...params) as Array<Observation & { metadata?: unknown }>)
+      .map(row => withObservationMedia(row, false) as Observation);
     const result: PaginatedResult<Observation> = {
       items: results.slice(0, limit),
       hasMore: results.length > limit,
@@ -129,7 +133,9 @@ export class PaginationHelper {
         ss.learned,
         ss.completed,
         ss.next_steps,
+        ss.notes,
         ss.project,
+        ss.merged_into_project,
         ss.created_at,
         ss.created_at_epoch
       FROM session_summaries ss
@@ -161,7 +167,7 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY ss.created_at_epoch DESC, ss.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);
@@ -217,7 +223,9 @@ export class PaginationHelper {
       NOT EXISTS (
         SELECT 1
         FROM user_prompts duplicate
-        WHERE duplicate.session_db_id = up.session_db_id
+        WHERE up.native_prompt_id IS NULL
+          AND duplicate.native_prompt_id IS NULL
+          AND duplicate.session_db_id = up.session_db_id
           AND duplicate.prompt_text = up.prompt_text
           AND (
             duplicate.created_at_epoch > up.created_at_epoch
@@ -235,7 +243,7 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY up.created_at_epoch DESC, up.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);

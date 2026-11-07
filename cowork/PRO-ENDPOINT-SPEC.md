@@ -7,7 +7,7 @@ server-side; this is deliberately the same shape as the local pipeline so the
 existing worker code path can be reused.
 
 Client reference implementation: `scripts/cmem-hook.mjs` in the
-`claude-mem-cowork` plugin (this package).
+`cmem-pro` plugin (this package).
 
 ---
 
@@ -109,6 +109,24 @@ Until this endpoint deploys, the plugin falls back to JSON-RPC
 `initialize` handshake honoring `Mcp-Session-Id`). Nothing to build — just be
 aware injected context = raw memory_search text until `/api/hooks/context`
 ships, so shipping it is what makes injection quality match local.
+
+### 3) `save_memory` tool on the hosted MCP connector
+
+Some hosts (Claude Duet cloud sessions) block the container's own network from
+cmem.ai, so the hooks above can't send anything. The hosted MCP connector still
+works there, because the host calls it through its own connector path.
+
+The hosted connector has `save_memory`:
+
+- **Input:** `text` (required, up to 8000 characters), `title`, `project`,
+  `metadata` (object, free-form provenance such as
+  `{ "host": "duet", "channel": "chan_…" }`).
+- **Behavior:** `<private>` text is dropped and secrets are redacted server-side.
+
+When the plugin can't reach cmem.ai, the injected notice points at the connector
+for recall and says to save durable decisions through `save_memory` if the
+connector offers it. The notice stays conditional because a connection may not
+offer the tool.
 
 ---
 
