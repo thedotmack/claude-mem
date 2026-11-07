@@ -21,6 +21,13 @@ describe('requestChanges', () => {
   const live = (id: string, state: Request['state'], percent: number | null, extra: Partial<Request> = {}) =>
     ({ id, title: `Request ${id}`, state, progress: { percent, readings: percent === null ? 0 : 1, reviewedAt: '' }, ...extra }) as Request
 
+  it('does not report a request that went idle on the clock alone, with the same fingerprint', () => {
+    const shown = [live('a', 'working', 30, { contentFingerprint: 'f1' }), live('b', 'working', 30, { contentFingerprint: 'g1' })]
+    const next = [live('a', 'idle', 30, { contentFingerprint: 'f1' }), live('b', 'idle', 30, { contentFingerprint: 'g2' })]
+    assert.deepEqual(requestChanges(shown, next, 5), [{ kind: 'state', requestId: 'b', title: 'Request b', from: 'working', to: 'idle', at: 5 }])
+    assert.deepEqual(freshlyUpdatedRequestIds(shown, next), ['b'])
+  })
+
   it('reports new requests, state moves and progress that went up, and nothing else', () => {
     const shown = [live('a', 'working', 30), live('b', 'working', 50), live('c', 'idle', 10)]
     const next = [live('a', 'shipped', 100), live('b', 'working', 70), live('c', 'idle', 10), live('d', 'working', null)]

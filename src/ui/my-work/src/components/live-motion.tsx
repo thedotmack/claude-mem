@@ -67,22 +67,25 @@ export function ChangeTicker({ onOpen }: { onOpen: (requestId: string) => void }
   const newest = shown[0]
   const [newestSeen, setNewestSeen] = useState(newest)
   if (newest !== newestSeen) { setNewestSeen(newest); setStep(0) }
+  // Keyed on the newest change too, so a change that arrives restarts the timer and gets its full step on screen.
   useEffect(() => {
     if (shown.length < 2) return
     const timer = setInterval(() => setStep((current) => (current + 1) % shown.length), TICKER_STEP_MS)
     return () => clearInterval(timer)
-  }, [shown.length])
+  }, [shown.length, newest])
   if (!live && shown.length === 0) return null
   const change = shown[step % Math.max(1, shown.length)]
   return (
     <Req ids={['R6.1', 'R6.4']}>
-      <div role="status" aria-live="polite" className="flex min-h-9 min-w-0 items-center gap-2.5 overflow-hidden rounded-full border border-border/70 bg-card/60 py-1 pr-1.5 pl-3 text-[0.82rem] shadow-panel">
+      <div className="flex min-h-9 min-w-0 items-center gap-2.5 overflow-hidden rounded-full border border-border/70 bg-card/60 py-1 pr-1.5 pl-3 text-[0.82rem] shadow-panel">
         <span className="relative flex size-2 shrink-0">
           {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
           <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />
         </span>
         <span className="hidden shrink-0 text-xs font-medium text-muted-foreground sm:inline">Just changed</span>
-        <div className="relative h-7 min-w-0 flex-1">
+        {/* Screen readers hear each new change once. The cycling line below is off for them, or every slide would be read forever. */}
+        <span role="status" aria-live="polite" className="sr-only">{newest ? `${changeWords(newest).verb}: ${newest.title}` : ''}</span>
+        <div aria-live="off" className="relative h-7 min-w-0 flex-1">
           <AnimatePresence initial={false} mode="popLayout">
             {change ? (
               <motion.button

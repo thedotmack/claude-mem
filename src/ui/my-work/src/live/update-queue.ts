@@ -23,6 +23,13 @@ export const RECENT_CHANGES_KEPT = 12
 const titleOf = (request: Request) => request.title ?? request.resolvesTo?.title ?? 'New request, title being written'
 
 /**
+ * A request goes idle on the clock alone: the local source rebuilds every minute and an untouched request turns idle
+ * after its quiet period, with nothing new recorded. That is not a change worth announcing or glowing for.
+ */
+const clockOnlyIdle = (previous: Request, next: Request) =>
+  next.state === 'idle' && previous.contentFingerprint === next.contentFingerprint
+
+/**
  * What changed between the shown model and the next one: a request that appeared, a state that moved, or a reviewed
  * percent that went up. Read only from the two models, never guessed. Nothing on the first model.
  */
@@ -35,7 +42,7 @@ export function requestChanges(shown: Request[], next: Request[], at: number): R
     const title = titleOf(request)
     if (!previous) {
       if (!request.closed) changes.push({ kind: 'new', requestId: request.id, title, at })
-    } else if (previous.state !== request.state) {
+    } else if (previous.state !== request.state && !clockOnlyIdle(previous, request)) {
       changes.push({ kind: 'state', requestId: request.id, title, from: previous.state, to: request.state, at })
     } else if (request.progress.percent !== null && request.progress.percent > (previous.progress.percent ?? -1)) {
       changes.push({ kind: 'progress', requestId: request.id, title, from: previous.progress.percent, to: request.progress.percent, at })

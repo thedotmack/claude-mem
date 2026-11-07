@@ -32,7 +32,10 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       state.work.load = { state: 'loaded', model }
       state.work.connection = model.connection
       if (changedIds.size > 0) state.work.freshlyUpdatedIds = changedIds
-      if (changes.length > 0) state.work.recentChanges = mergeRecentChanges(state.work.recentChanges, changes)
+      // A change whose request left the model (grouped into an overall request, or removed) would open nothing.
+      const present = new Set(model.requests.map((request) => request.id))
+      const kept = mergeRecentChanges(state.work.recentChanges, changes).filter((change) => present.has(change.requestId))
+      if (kept.length !== state.work.recentChanges.length || changes.length > 0) state.work.recentChanges = kept
     })
     if (changedIds.size > 0) {
       clearTimeout(freshTimer)

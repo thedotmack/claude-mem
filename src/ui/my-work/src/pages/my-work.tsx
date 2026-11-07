@@ -27,6 +27,7 @@ import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFresh
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
+import { cardGridEntries } from '@/live/card-groups'
 
 type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
@@ -213,17 +214,6 @@ function FlipStatus({ state }: { state: LiveState }) {
  * a card that grows or shrinks snaps, so text never stretches mid-animation. Off under reduced motion (MotionConfig). */
 const GLIDE = { type: 'spring', bounce: 0.15, duration: 0.55 } as const
 
-/**
- * The Cards view's sections when sorted attention-first: what needs you, then what is moving, then the rest. Idle and
- * Shipped show their newest few and fold the rest behind "Show all", so live work stays near the top of a long history.
- */
-const CARD_GROUPS: { id: string; label: string; states: LiveState[]; dot: string; foldAfter?: number }[] = [
-  { id: 'needs-you', label: 'Needs you', states: ['your-move', 'needs-check'], dot: 'bg-attention-foreground' },
-  { id: 'working', label: 'Working', states: ['working'], dot: 'bg-working-foreground motion-safe:animate-pulse' },
-  { id: 'idle', label: 'Idle', states: ['idle'], dot: 'bg-idle-foreground', foldAfter: 6 },
-  { id: 'shipped', label: 'Shipped', states: ['shipped'], dot: 'bg-shipped-foreground', foldAfter: 6 },
-]
-
 function CardCell({ request, onOpen, onOpenFocus }: { request: Request; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   return (
     <motion.div layout="position" transition={GLIDE} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="min-w-0">
@@ -252,27 +242,21 @@ function CardsView({ requests, grouped, readErrors, onOpen, onOpenFocus }: { req
   }
   return (
     <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {CARD_GROUPS.map((group) => {
-        const members = requests.filter((request) => group.states.includes(request.state))
-        if (members.length === 0) return null
-        const folds = group.foldAfter !== undefined && members.length > group.foldAfter
-        const open = !folds || unfolded[group.id]
-        const shown = open ? members : members.slice(0, group.foldAfter)
-        return [
-          <motion.div key={`heading-${group.id}`} layout="position" transition={GLIDE} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
-            <span className={cn('size-2 rounded-full', group.dot)} />
-            <h2 className="text-sm font-semibold tracking-tight">{group.label}</h2>
-            <span className="text-sm text-muted-foreground tabular-nums">{members.length}</span>
+      {cardGridEntries(requests, unfolded).map((entry) => entry.kind === 'card'
+        ? <CardCell key={entry.key} request={entry.request} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+        : (
+          <motion.div key={entry.key} layout="position" transition={GLIDE} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
+            <span className={cn('size-2 rounded-full', entry.group.dot)} />
+            <h2 className="text-sm font-semibold tracking-tight">{entry.group.label}</h2>
+            <span className="text-sm text-muted-foreground tabular-nums">{entry.count}</span>
             <span className="h-px flex-1 bg-border/70" />
-            {folds && (
-              <Button variant="ghost" size="sm" className="h-11 text-xs text-muted-foreground md:h-7" aria-expanded={open} onClick={() => setUnfolded((current) => ({ ...current, [group.id]: !open }))}>
-                {open ? 'Show fewer' : `Show all ${members.length}`}<ChevronDownIcon className={cn('transition-transform', open && 'rotate-180')} />
+            {entry.folds && (
+              <Button variant="ghost" size="sm" className="h-11 text-xs text-muted-foreground md:h-7" aria-expanded={entry.open} onClick={() => setUnfolded((current) => ({ ...current, [entry.group.id]: !entry.open }))}>
+                {entry.open ? 'Show fewer' : `Show all ${entry.count}`}<ChevronDownIcon className={cn('transition-transform', entry.open && 'rotate-180')} />
               </Button>
             )}
-          </motion.div>,
-          ...shown.map((request) => <CardCell key={request.id} request={request} onOpen={onOpen} onOpenFocus={onOpenFocus} />),
-        ]
-      })}
+          </motion.div>
+        ))}
       {errors.length > 0 && <p key="heading-errors" className="col-span-full pt-2 text-sm font-semibold tracking-tight">Couldn't read</p>}
       {errors}
     </div>

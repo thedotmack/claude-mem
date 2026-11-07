@@ -181,7 +181,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
     runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
-    runningLive: started && completedEpoch === null ? true : undefined,
+    runningLive: started && completedEpoch === null && status !== 'closed' ? true : undefined,
     stage,
     state,
     closed: status === 'closed' || undefined,
