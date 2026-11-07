@@ -14,6 +14,7 @@ import type { PidInfo } from '../src/supervisor/process-registry';
 import {
   overwriteWithWorkerStopped,
   requireWorkerStopped,
+  shouldSkipWorkerAutostart,
   workerShutdownFailure,
 } from '../src/npx-cli/commands/install';
 import { uninstallShutdownNotice } from '../src/npx-cli/commands/uninstall';
@@ -306,6 +307,25 @@ function fakeStop(result: ShutdownResult | Error) {
   };
   return { stop, calls };
 }
+
+describe('installer worker autostart — an update never ends with no worker', () => {
+  it('starts the new worker after a non-interactive update, which already stopped the old one', () => {
+    expect(shouldSkipWorkerAutostart({ interactive: false, runtime: 'worker', alreadyInstalled: true })).toBe(false);
+  });
+
+  it('still leaves a fresh non-interactive install for the user to start', () => {
+    expect(shouldSkipWorkerAutostart({ interactive: false, runtime: 'worker', alreadyInstalled: false })).toBe(true);
+  });
+
+  it('starts the worker for an interactive install', () => {
+    expect(shouldSkipWorkerAutostart({ interactive: true, runtime: 'worker', alreadyInstalled: false })).toBe(false);
+  });
+
+  it('skips when asked with --no-auto-start or for the server runtime', () => {
+    expect(shouldSkipWorkerAutostart({ interactive: true, noAutoStart: true, runtime: 'worker', alreadyInstalled: true })).toBe(true);
+    expect(shouldSkipWorkerAutostart({ interactive: true, runtime: 'server', alreadyInstalled: true })).toBe(true);
+  });
+});
 
 describe('installer pre-overwrite stop — never aborts before sign-in without a live worker', () => {
   const originalAutostart = process.env.CLAUDE_MEM_WORKER_AUTOSTART;

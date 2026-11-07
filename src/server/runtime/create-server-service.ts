@@ -12,7 +12,15 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
-import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import {
+  backfillMissingEmbeddings,
+  capEmbedderThreadsForBackfill,
+  getSharedEmbedder,
+  vectorSearchMode,
+  warmSharedEmbedder,
+} from '../services/ObservationEmbeddingService.js';
+import { ClaudeObservationProvider, resolveAnthropicMessagesUrl, type ClaudeObservationProviderOptions } from '../generation/providers/ClaudeObservationProvider.js';
+import { resolveObserverThinkingOption } from '../../sdk/hardened-options.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
@@ -217,9 +225,41 @@ export async function createServerService(
     generationWorkerManager,
   };
 
-  if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
-    generationWorkerManager.start();
+  // Rows written while vectors were unavailable (pgvector just installed,
+  // the model failed to load, or the rows predate this feature) get them in
+  // the background, so search by meaning covers the whole store. A generation
+  // worker runs the backfill, and so does a server that has none (no queue or
+  // provider), whose manual memories would otherwise never get vectors. Only a
+  // server told to run HTTP only, because a separate worker does, leaves it to
+  // that worker. Of several processes, one backfills at a time.
+  const active = generationWorkerManager instanceof ActiveServerGenerationWorkerManager;
+  const withoutWorker = !generationDisabled && options.generationWorkerManager === undefined;
+  if (active || withoutWorker) {
+    await capEmbedderThreadsForBackfill(pool).catch((error: unknown) => {
+      logger.warn('SYSTEM', 'could not size the embedding backfill; it runs uncapped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (active) generationWorkerManager.start();
+    const stop = new AbortController();
+    const backfill = backfillMissingEmbeddings(pool, { signal: stop.signal }).then(() => {}, (error: unknown) => {
+      logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next start', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    graph.stopBackgroundWork = async () => {
+      stop.abort();
+      await backfill;
+    };
   }
+  // Every role embeds (the server its queries, the worker its observations),
+  // so every role starts loading the model now rather than at the first
+  // request; after the thread cap above, which fixes the embedder it loads.
+  await warmSharedEmbedder(pool).catch((error: unknown) => {
+    logger.warn('SYSTEM', 'could not start loading the embedding model', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   return new ServerService({ graph });
 }
@@ -369,15 +409,66 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
   });
 }
 
+/**
+ * CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS, in the format of Claude Code's
+ * ANTHROPIC_CUSTOM_HEADERS: one `Name: Value` per line. A line that isn't a
+ * valid header is skipped with a warning that gives its position but never
+ * its text, since a header can carry a token; left in, it would make fetch
+ * throw on every request, with the value in the error.
+ */
+export function parseAnthropicCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw?.trim()) return undefined;
+  const headers: Record<string, string> = {};
+  raw.split(/\r?\n/).forEach((line, index) => {
+    if (!line.trim()) return;
+    const colon = line.indexOf(':');
+    const name = colon > 0 ? line.slice(0, colon).trim() : '';
+    const value = name ? line.slice(colon + 1).trim() : '';
+    // A cmem.ai memory key authenticates only against the cmem gateway; as a
+    // header it would leave for this third-party gateway (cmem-gateway.ts).
+    if (value.includes('cm_pro_')) {
+      logger.warn('SYSTEM', `server: ignoring line ${index + 1} of CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS: it carries a cmem.ai memory key (cm_pro_), which only works on the cmem gateway`);
+      return;
+    }
+    try {
+      // Headers accepts control characters that fetch then refuses to send.
+      if (!name || !/^[\t\x20-\x7e\x80-\xff]*$/.test(value)) throw new Error('invalid header');
+      new Headers([[name, value]]);
+    } catch {
+      logger.warn('SYSTEM', `server: ignoring line ${index + 1} of CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS: not a valid "Name: Value" header`);
+      return;
+    }
+    headers[name] = value;
+  });
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 /** Exported for tests. */
 export async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
   if (provider === 'claude' || provider === 'anthropic') {
-    const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-    if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
+    const configuredKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    // An Anthropic-compatible gateway. Only the CLAUDE_MEM_ names: a server
+    // started from a shell inherits that shell's ANTHROPIC_BASE_URL and
+    // ANTHROPIC_CUSTOM_HEADERS (sanitizeEnv keeps them), which point Claude
+    // Code at its own gateway and would carry this key there (#2375).
+    const baseUrl = process.env.CLAUDE_MEM_ANTHROPIC_BASE_URL;
+    // The shared cmem key lock, checked against the URL the key is sent to: a
+    // cm_pro_ account key never goes to api.anthropic.com or a third-party gateway.
+    const [apiKey] = keysForEndpoint(resolveAnthropicMessagesUrl(baseUrl), configuredKey ? [configuredKey] : []);
+    if (!apiKey) {
+      if (configuredKey) logger.warn('SYSTEM', 'server: withholding the Anthropic key: a cmem.ai memory key (cm_pro_) only goes to the cmem gateway, and the gateway only takes one');
+      return null;
+    }
+    const opts: ClaudeObservationProviderOptions = {
+      apiKey,
+      thinking: resolveObserverThinkingOption(process.env.CLAUDE_MEM_OBSERVER_THINKING),
+    };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     const maxOutputTokens = resolveServerMaxOutputTokens();
     if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    const extraHeaders = parseAnthropicCustomHeaders(process.env.CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS);
+    if (extraHeaders) opts.extraHeaders = extraHeaders;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
@@ -442,7 +533,7 @@ async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean):
     return { initialized: false, schemaVersion: null, appliedAt: null };
   }
 
-  await bootstrapServerPostgresSchema(pool);
+  await bootstrapServerPostgresSchema(pool, vectorSearchMode(), getSharedEmbedder().dims);
   const result = await pool.query(
     `
       SELECT version, applied_at

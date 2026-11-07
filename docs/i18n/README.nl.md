@@ -215,7 +215,6 @@ Het installatieprogramma regelt afhankelijkheden, plugin-instellingen, AI-provid
 
 - **[Configuratie](https://docs.claude-mem.ai/configuration)** - Omgevingsvariabelen & instellingen
 - **[Ontwikkeling](https://docs.claude-mem.ai/development)** - Bouwen, testen, bijdragen
-- **[Release Branches](https://docs.claude-mem.ai/branches)** - Stable, core-dev en community-edge branch-flow
 - **[Probleemoplossing](https://docs.claude-mem.ai/troubleshooting)** - Veelvoorkomende problemen & oplossingen
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Zie [Zoektools Gids](https://docs.claude-mem.ai/usage/search-tools) voor gedetailleerde voorbeelden.
-
----
-
-## Release Branches
-
-Stabiele releases worden uitgebracht vanuit `main` en gepubliceerd op npm. `core-dev` en
-`community-edge` zijn branches die vanuit de broncode draaien voor vroege betrouwbaarheidsfixes en
-community-integraties. Zie **[Release Branches](https://docs.claude-mem.ai/branches)**
-voor de branch-flow en instructies voor het draaien van niet-stabiele versies.
 
 ---
 
@@ -384,11 +374,6 @@ Bijdragen zijn welkom! Gelieve:
 4. Update documentatie
 5. Dien een Pull Request in
 
-Claude-Mem wordt uitgebracht vanuit drie branches: `main` (stable), `core-dev`, en
-`community-edge`. Alleen `main` wordt gepubliceerd op npm; de andere draaien vanuit
-de broncode. Zie [Release Branches](https://docs.claude-mem.ai/branches) voor de
-strategie en instructies voor lokaal draaien.
-
 Zie [Ontwikkelingsgids](https://docs.claude-mem.ai/development) voor bijdrageworkflow.
 
 ---
@@ -405,7 +390,6 @@ Zie het [LICENSE](LICENSE) bestand voor volledige details. Zie [docs/license.md]
 en [docs/ip-boundary.md](docs/ip-boundary.md) voor de licentiescope en de
 grens tussen open en commercieel gebruik.
 
-**Opmerking over Ragtime**: De `ragtime/` map is gelicenseerd onder de **Apache License 2.0**. Zie [ragtime/LICENSE](ragtime/LICENSE) voor details.
 
 ---
 

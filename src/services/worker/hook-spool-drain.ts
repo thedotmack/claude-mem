@@ -1,19 +1,35 @@
 import { mkdirSync, watch as fsWatch } from 'fs';
-import { HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
+import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
+import { isLiveObserverEvent, isExpiredObserverEvent } from '../../shared/observer-work-policy.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
 /**
  * Hand one spool entry to the SAME ingest function its HTTP route uses.
- * true = done (accepted or deliberately skipped) → unlink; false = keep.
+ * true = done (accepted or deliberately skipped) → unlink; false = keep;
+ * 'expired' = can never succeed → the drain moves it to expired/ (see
+ * HookSpool.drain).
  * `markHandedOff` goes to ingest, which calls it synchronously at the exact
  * point the entry is irrevocably accepted (see HookSpool.drain).
  */
-async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean> {
+export async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+  if (isLiveObserverEvent(entry.kind) && isExpiredObserverEvent(entry.enqueuedAtEpochMs)) {
+    logger.debug('HOOK', 'Skipped expired live observer handoff', { kind: entry.kind });
+    return true;
+  }
   switch (entry.kind) {
+    case 'work_state_telemetry': {
+      const { payload } = entry;
+      const db = requireIngestContext().dbManager.getSessionStore().db;
+      if (payload.kind === 'instruction') recordWorkStateInstruction(db, { ...payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, payload.state!, payload.eventId);
+      else recordWorkStateMcp(db, payload.tool!, payload.outcome!, payload.eventId, entry.enqueuedAtEpochMs);
+      markHandedOff();
+      return true;
+    }
     case 'observation':
     case 'file_edit': {
       // Attribute it to the prompt that was current when the hook saw it, not
@@ -30,14 +46,40 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       }
       return true;
     }
-    case 'summarize':
+    case 'summarize': {
       // unknown_session: init may not have landed yet (it raced the same
-      // outage) — keep the entry, exactly like the old SessionEnd replay.
-      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
-    case 'session_end':
-      return (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status !== 'unknown_session';
+      // outage), so keep it through the grace window. Past it the session
+      // never registered — the drain already holds a summarize behind any
+      // retained observation of its session — and it would only be retried
+      // until the retry window expires it, like session_end (#4629).
+      const outcome = (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
+    case 'session_end': {
+      // unknown_session here means the worker is up and its DB has no such
+      // session: a session registers within moments of starting or never, so
+      // past the grace window the end can never succeed and the entry only
+      // clogs the spool until the retry window expires it (issue #4629). The
+      // window itself just covers the init race. A DB outage throws instead
+      // of returning unknown_session, so this cannot retire an entry that an
+      // outage made undeliverable.
+      const outcome = (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
+    case 'subagent_stop':
+      // Stamped with the hook's time, not the drain's, so a late drain never
+      // makes the stop look newer than work the agent did after it resumed.
+      ingestSubagentStop({ ...entry.payload, stoppedAtEpoch: entry.enqueuedAtEpochMs }, { markHandedOff });
+      return true;
     case 'advisor_calls':
       ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
+      return true;
+    case 'deliverables':
+      // The copies are already in the bucket; stamped with the hook's time so
+      // the record says when the turn made them, not when the drain ran.
+      ingestDeliverables({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
       return true;
   }
 }
@@ -53,7 +95,15 @@ export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumed
 }
 
 export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
-  const result = await spool.drain(ingestHookSpoolEntry, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
+  const result = await spool.drain((entry, markHandedOff) => {
+    // Compatibility cleanup only. Before this change hooks persisted these
+    // inputs; replaying them now would restart a paid observer backlog.
+    if (isLiveObserverEvent(entry.kind)) {
+      logger.debug('HOOK', 'Discarded legacy observer spool entry without inference', { kind: entry.kind });
+      return true;
+    }
+    return ingestHookSpoolEntry(entry, markHandedOff);
+  }, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
   if (result.drained > 0 || result.quarantined > 0 || result.expired > 0) {
     logger.info('HOOK', 'Drained hook spool', { ...result });
   }

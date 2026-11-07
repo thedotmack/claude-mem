@@ -2,7 +2,7 @@ export const CONTENT_BODY_SCHEMA_VERSION = 1 as const;
 export const CONTENT_PAYLOAD_SCHEMA_VERSION = 2 as const;
 export const CONTENT_BODY_MAX_BYTES = 256_000;
 
-export type ContentKind = "observation" | "summary" | "prompt";
+export type ContentKind = "observation" | "summary" | "prompt" | "work_state";
 export type CanonicalKind = ContentKind | "mutation";
 
 export interface CanonicalMutation {
@@ -32,7 +32,15 @@ export interface CanonicalWireOp {
 	operation_sha256: string;
 }
 
-const CONTENT_KINDS = new Set<ContentKind>(["observation", "summary", "prompt"]);
+/**
+ * Every content kind this hub accepts, in protocol order. `work_state` (the
+ * agent's to-do lists) joined the three launch kinds later: GET /v1/sync/status
+ * advertises this list as `content_kinds`, and a client pushes a kind only
+ * once the hub it talks to lists it, so an older hub never refuses (and the
+ * client never dead-letters) a row of a kind it has not learned.
+ */
+export const CONTENT_KIND_NAMES: readonly ContentKind[] = ["observation", "summary", "prompt", "work_state"];
+const CONTENT_KINDS = new Set<ContentKind>(CONTENT_KIND_NAMES);
 const MUTATION_OPS = new Set(["set_title", "set_prompt_session", "remap_project"]);
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const UINT64_MAX = 18_446_744_073_709_551_615n;
@@ -213,6 +221,7 @@ const PAYLOAD_FIELDS: Record<ContentKind, readonly string[]> = {
 		"content_session_id", "created_at", "created_at_epoch", "memory_session_id",
 		"platform_source", "project", "prompt_number", "prompt_text",
 	],
+	work_state: ["created_at", "created_at_epoch", "fields", "list_name", "project"],
 };
 const PAYLOAD_ARRAY_FIELDS = new Set(["concepts", "facts", "files_edited", "files_modified", "files_read"]);
 const PAYLOAD_DECIMAL_FIELDS = new Set(["created_at_epoch", "discovery_tokens", "prompt_number"]);
@@ -244,7 +253,7 @@ async function validateBody(body: CanonicalContentBody): Promise<void> {
 		return;
 	}
 
-	if (!CONTENT_KINDS.has(record.kind as ContentKind)) invalid("kind must be observation, summary, or prompt");
+	if (!CONTENT_KINDS.has(record.kind as ContentKind)) invalid("kind must be observation, summary, prompt, or work_state");
 	const kind = record.kind as ContentKind;
 	const originLocalId = assertCanonicalDecimal(record.origin_local_id);
 	if (record.id !== await stableDocumentId(kind, originDeviceId, originLocalId)) {
@@ -278,12 +287,16 @@ function validatePayload(kind: ContentKind, value: unknown): void {
 	requiredDecimal(normalized, "created_at_epoch", kind);
 	if (kind === "observation" || kind === "summary") {
 		requiredString(normalized, "memory_session_id", kind);
-	} else {
+	} else if (kind === "prompt") {
 		requiredString(normalized, "content_session_id", kind);
 		requiredString(normalized, "prompt_text", kind);
+	} else {
+		requiredString(normalized, "list_name", kind);
+		validateWorkStateFields(normalized.fields, kind);
 	}
 	for (const [key, item] of Object.entries(normalized)) {
 		if (item === null) continue;
+		if (key === "fields") continue; // work_state only; validated above
 		if (PAYLOAD_ARRAY_FIELDS.has(key)) {
 			if (!Array.isArray(item) || item.some((entry) => typeof entry !== "string")) {
 				invalid(`${kind}.${key} must be a string array or null`);
@@ -296,6 +309,7 @@ function validatePayload(kind: ContentKind, value: unknown): void {
 		}
 		if (key === "metadata") {
 			if (typeof item !== "object" || Array.isArray(item)) invalid(`${kind}.metadata must be an object or null`);
+			validateMediaMetadataNamespace(kind, item as Record<string, unknown>);
 			continue;
 		}
 			if (typeof item !== "string") invalid(`${kind}.${key} must be a string or null`);
@@ -308,6 +322,66 @@ function validatePayload(kind: ContentKind, value: unknown): void {
 				}
 			}
 	}
+}
+
+/**
+ * work_state.fields: the keys one write set, each a string, a safe finite
+ * number, a boolean, or null (null clears the key when the list is folded).
+ * Same rule as the client's CanonicalContent validator.
+ */
+function validateWorkStateFields(value: unknown, kind: ContentKind): void {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		invalid(`${kind}.fields must be an object`);
+	}
+	for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+		if (key.length === 0) invalid(`${kind}.fields keys must be non-empty`);
+		if (item !== null && typeof item !== "string" && typeof item !== "boolean" && typeof item !== "number") {
+			invalid(`${kind}.fields.${key} must be a string, number, boolean or null`);
+		}
+	}
+}
+
+/**
+ * Bounded `metadata.cmem_media_v1` validator. This service deploys only its own
+ * src/ directory, so it copies the frozen rules of docs/media-contract-v1.md
+ * (and claude-mem src/shared/media-contract.ts validateMediaManifest) instead
+ * of importing them. Only this namespace is checked: every other metadata
+ * namespace passes through unchanged, and unknown top-level payload fields stay
+ * rejected above. IDs, labels and inspection state only; never paths, object
+ * keys, data URLs or bytes. Exact bodies and hashes are still forwarded as-is.
+ */
+export const MEDIA_METADATA_NAMESPACE = "cmem_media_v1";
+const MEDIA_MANIFEST_MAX_REFS = 32;
+const MEDIA_MANIFEST_MAX_BYTES = 8192;
+const MEDIA_ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MEDIA_LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function validateMediaMetadataNamespace(kind: ContentKind, metadata: Record<string, unknown>): void {
+	if (!Object.prototype.hasOwnProperty.call(metadata, MEDIA_METADATA_NAMESPACE)) return;
+	const fail = (reason: string): never => invalid(`${kind}.metadata.${MEDIA_METADATA_NAMESPACE} is invalid (${reason})`);
+	const manifest = metadata[MEDIA_METADATA_NAMESPACE];
+	if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) fail("invalid_manifest");
+	const manifestRecord = manifest as Record<string, unknown>;
+	if (Object.keys(manifestRecord).some((key) => !["version", "attachments", "overflow"].includes(key))) fail("invalid_manifest");
+	if (manifestRecord.version !== 1 || !Array.isArray(manifestRecord.attachments)) fail("invalid_manifest");
+	const attachments = manifestRecord.attachments as unknown[];
+	if (attachments.length > MEDIA_MANIFEST_MAX_REFS) fail("manifest_too_large");
+	if (manifestRecord.overflow !== undefined && typeof manifestRecord.overflow !== "boolean") fail("invalid_manifest");
+	const seenAttachmentIds = new Set<string>();
+	const normalizedAttachments = Array.from(attachments, (attachment) => {
+		if (attachment === null || typeof attachment !== "object" || Array.isArray(attachment)) fail("invalid_manifest");
+		const ref = attachment as Record<string, unknown>;
+		if (Object.keys(ref).some((key) => !["id", "label", "inspection"].includes(key))) fail("invalid_manifest");
+		if (typeof ref.id !== "string" || ref.id.length > 36 || !MEDIA_ATTACHMENT_ID.test(ref.id)) fail("invalid_manifest");
+		if (typeof ref.label !== "string" || ref.label.length > 64 || !MEDIA_LABEL.test(ref.label)) fail("invalid_manifest");
+		if (ref.inspection !== "inspected" && ref.inspection !== "uninspected") fail("invalid_manifest");
+		if (seenAttachmentIds.has(ref.id as string)) fail("invalid_manifest");
+		seenAttachmentIds.add(ref.id as string);
+		return { id: ref.id, label: ref.label, inspection: ref.inspection };
+	});
+	const normalizedManifest: Record<string, unknown> = { version: 1, attachments: normalizedAttachments };
+	if (manifestRecord.overflow !== undefined) normalizedManifest.overflow = manifestRecord.overflow;
+	if (encoder.encode(JSON.stringify(normalizedManifest)).length > MEDIA_MANIFEST_MAX_BYTES) fail("manifest_too_large");
 }
 
 function validateMutation(value: unknown): void {

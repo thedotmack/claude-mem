@@ -69,6 +69,28 @@ describe('server-owned sqlite storage boundary', () => {
     }
   });
 
+  it('stores no <private> sections from a raw event payload or session metadata', () => {
+    withDb(db => {
+      const project = new ProjectsRepository(db).create({ name: 'Private', rootPath: '/tmp/private' });
+      const session = new ServerSessionsRepository(db).create({
+        projectId: project.id,
+        metadata: { prompt: 'hello <private>session-secret</private>' },
+      });
+      const event = new AgentEventsRepository(db).create({
+        projectId: project.id,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        payload: { tool_input: { edits: [{ newText: 'x <private>confidential text</private>' }] } },
+        occurredAtEpoch: Date.now(),
+      });
+      const storedEvent = db.prepare('SELECT payload FROM agent_events WHERE id = ?').get(event.id) as { payload: string };
+      expect(storedEvent.payload).not.toContain('confidential text');
+      expect(JSON.parse(storedEvent.payload).tool_input.edits[0].newText).toBe('x');
+      const storedSession = db.prepare('SELECT metadata FROM server_sessions WHERE id = ?').get(session.id) as { metadata: string };
+      expect(storedSession.metadata).not.toContain('session-secret');
+    });
+  });
+
   it('round-trips repository records using JSON-as-TEXT fields', () => {
     withDb(db => {
       const projects = new ProjectsRepository(db);

@@ -3,9 +3,12 @@ import {
   classifyObserverOutput,
   describeObserverOutputShape,
   formatEmptyOutputReason,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -84,6 +87,98 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the Anthropic API credit-balance wording returned as assistant text', () => {
+    // #4632: on an API key with no credit, the SDK returns the billing notice
+    // as the whole assistant response instead of raising an error.
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects the credit-balance notice inside the CLI 400 envelope', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The deploy failed because the credit balance is too low on the staging key; nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
+});
+
+describe('isRateLimitedObserverOutput (#5428)', () => {
+  // The exact reply the reporter's observer received from Claude Code.
+  const REPORTED_429_REPLY =
+    'API Error: Request rejected (429) · The request was rate limited. Its source could not be identified. Retry after the indicated delay.';
+
+  it('detects a Claude provider 429 returned as reply text', () => {
+    // The CLI prints the rate limit as the assistant response instead of
+    // throwing. That text used to classify as prose, and the second reply
+    // confirmed the queued batch away.
+    expect(isRateLimitedObserverOutput(REPORTED_429_REPLY)).toBe(true);
+    expect(isRateLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}',
+      ),
+    ).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a throttle, not a spent allowance or a transport failure', () => {
+    // A quota match would book the half-hour quota cooldown for a throttle.
+    expect(isQuotaLimitedObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isQuotaLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+    expect(isTransportFailureObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+
+  it('does not treat a 429 or rate-limit wording in ordinary prose, a file count, or XML as a rate limit', () => {
+    expect(isRateLimitedObserverOutput('You have 429 files to review')).toBe(false);
+    expect(isRateLimitedObserverOutput('No observations to record.')).toBe(false);
+    expect(isRateLimitedObserverOutput('API Error: 4290 records were imported')).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The retry notes mention status 429, but this batch completed with nothing new to store.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited during testing; nothing new to record.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('Fixed the bug where the request was rate limited. Retry after the indicated delay.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited. Logged nothing new for this batch.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay. Then we fixed it.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        '<observation><title>Request rejected (429)</title><narrative>The request was rate limited.</narrative></observation>',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('isQuotaLimitedObserverOutput (continued)', () => {
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
@@ -116,12 +211,58 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
   });
 
+  it('detects the organization-disabled subscription notice (#4677)', () => {
+    // Returned as the whole assistant response when the account's org has
+    // disabled Claude subscription access for Claude Code.
+    const notice =
+      'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    expect(isAuthFailureObserverOutput(notice)).toBe(true);
+    // Disjoint from the quota and transport detectors: transport defers to
+    // auth, and quota must not claim an account-policy refusal.
+    expect(isQuotaLimitedObserverOutput(notice)).toBe(false);
+    expect(isTransportFailureObserverOutput(notice)).toBe(false);
+  });
+
+  it('does not treat prose narrating an organization policy as an auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput(
+        'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
+      ),
+    ).toBe(false);
+    // Opens with the notice's words but runs on: an observation, not the CLI.
+    expect(
+      isAuthFailureObserverOutput(
+        'Your organization has disabled Claude subscription access for Claude Code, so we updated the setup guide to use API keys.',
+      ),
+    ).toBe(false);
+  });
+
+  it('matches the org notice alone or with its own remediation only', () => {
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code.')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Not logged in · Please run /login')).toBe(false);
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
+  });
+
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
     expect(isAuthFailureObserverOutput('<observation><title>HTTP 401</title></observation>')).toBe(false);
     expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isAnthropicVerificationHoldObserverOutput (#5251)', () => {
+  const response = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=org-fixture";
+
+  it('recognises the complete Claude CLI verification-hold response', () => {
+    expect(isAnthropicVerificationHoldObserverOutput(response)).toBe(true);
+  });
+
+  it('does not match an observation discussing account verification', () => {
+    expect(isAnthropicVerificationHoldObserverOutput('<observation><title>Account verification</title><narrative>The portal returned an API Error.</narrative></observation>')).toBe(false);
+    expect(isAnthropicVerificationHoldObserverOutput('The account cannot receive replies from Claude until verification is complete.')).toBe(false);
   });
 });
 

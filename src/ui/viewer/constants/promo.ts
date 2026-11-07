@@ -27,3 +27,10 @@ export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get
 
 /** Header CTA label. The full pitch rides in the title/aria attributes. */
 export const PRO_TRIAL_SHORT = PRO_TRIAL_LABEL;
+
+/**
+ * TeamBrain discovery link, shown until this install joins a team. Mirrors
+ * teamBrainStartUrl() in `src/shared/teambrain.ts` for the hosted origin.
+ */
+export const TEAMBRAIN_START_URL = 'https://cmem.ai/teambrain/start';
+export const TEAMBRAIN_PITCH = 'TeamBrain: see who on your team is working on what, inside every session';

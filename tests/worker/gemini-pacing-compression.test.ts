@@ -10,7 +10,7 @@ it(`preserves Gemini pacing through ${scenario}`, async () => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     child = Bun.spawn([process.execPath, 'tests/fixtures/gemini/pacing-compression.ts', scenario], {
-      env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
+      env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
     });
     const exit = await Promise.race([child.exited, new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('Owned pacing fixture exceeded 18 seconds')), 18000);

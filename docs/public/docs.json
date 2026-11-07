@@ -37,6 +37,8 @@
           "installation",
           "t3code-integration",
           "usage/getting-started",
+          "usage/my-work",
+          "usage/teambrain",
           "usage/openrouter-provider",
           "usage/gemini-provider",
           "usage/openai-compatible-provider",
@@ -96,11 +98,15 @@
           "modes",
           "telemetry",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration",
-          "kimi-integration"
+          "hermes-integration",
+          "kimi-integration",
+          "devin-integration",
+          "qoder-integration",
+          "screenpipe-integration",
+          "notion-export"
         ]
       },
       {
@@ -109,7 +115,8 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
-          "cmem-pro-headless"
+          "cmem-pro-headless",
+          "usage/backups"
         ]
       },
       {
@@ -122,8 +129,7 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture",
-          "architecture/pm2-to-bun-migration"
+          "architecture/search-architecture"
         ]
       }
     ]
@@ -178,5 +184,15 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    },
+    {
+      "source": "/architecture/pm2-to-bun-migration",
+      "destination": "/architecture-evolution"
+    }
+  ]
 }

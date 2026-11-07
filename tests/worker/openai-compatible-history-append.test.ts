@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -6,11 +7,7 @@ import type { ActiveSession, ConversationMessage } from '../../src/services/work
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt',
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -50,11 +47,13 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
   protected readonly syntheticIdPrefix = 'test';
   protected readonly forwardEmptyMessageResponse = false;
   private readonly replies: string[];
+  private readonly onQuery?: () => void;
   queries = 0;
 
-  constructor(replies: string[], sessionManager: unknown) {
+  constructor(replies: string[], sessionManager: unknown, onQuery?: () => void) {
     super({} as never, sessionManager as never);
     this.replies = [...replies];
+    this.onQuery = onQuery;
   }
 
   protected getConfig() {
@@ -67,6 +66,7 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
 
   protected async query(_history: ConversationMessage[]): Promise<ProviderQueryResult> {
     this.queries++;
+    this.onQuery?.();
     return { content: this.replies.shift() ?? '' };
   }
 
@@ -145,5 +145,31 @@ describe('OpenAICompatibleProvider conversation history', () => {
     await provider.startSession(session);
 
     expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'user']);
+  });
+
+  it('does not send an observation after capture is disabled during field compression', async () => {
+    let enabled = true;
+    loadFromFileSpy.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OBSERVER_ENABLED: enabled ? 'true' : 'false',
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+    }));
+    const clearPendingForSession = mock(async () => 1);
+    const sessionManager = {
+      ...makeSessionManager([{
+        type: 'observation',
+        tool_name: 'Read',
+        tool_input: {},
+        tool_response: 'word '.repeat(10_000),
+        prompt_number: 2,
+      }]),
+      clearPendingForSession,
+    };
+    const provider = new TestProvider(['condensed field'], sessionManager, () => { enabled = false; });
+
+    await provider.startSession(makeSession());
+
+    expect(provider.queries).toBe(1);
+    expect(clearPendingForSession).toHaveBeenCalledWith(1);
   });
 });

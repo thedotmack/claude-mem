@@ -59,7 +59,9 @@ try {
   assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
   console.log(JSON.stringify({kind,observations:0}));
  } else {
-  const ingestedInTime=await Promise.race([ingested.then(()=>true),Bun.sleep(5000).then(()=>false)]);
+  let ingestTimer:ReturnType<typeof setTimeout>|undefined;
+  const ingestedInTime=await Promise.race([ingested.then(()=>true),new Promise<boolean>(resolve=>{ingestTimer=setTimeout(()=>resolve(false),5000);})]);
+  clearTimeout(ingestTimer); // an uncleared 5 s timer would hold this child open after it passes
   assert.ok(ingestedInTime && captured,'completion hook must reach actual worker ingestion');
   assert.equal(captured.tool_name,operation[0].toUpperCase()+operation.slice(1));
   for(const [key,value] of Object.entries(params)) assert.deepEqual(captured.tool_input[key],value);

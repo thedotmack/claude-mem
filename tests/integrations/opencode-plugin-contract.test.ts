@@ -60,20 +60,23 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
-  it("shipped bundle exports only a functional default factory", async () => {
+  it("shipped bundle exports only a default definition with id + server + setup", async () => {
     // Regression guard for #4197, coordinated with #3803: opencode's loader
-    // iterates every named export of the plugin file and calls each as a
-    // plugin factory. If a non-function export (e.g. the contract constants)
-    // leaks into the bundle, the whole plugin fails to load with
-    // "Plugin export is not a function".
+    // imports the plugin file and treats EVERY named export as a plugin. If a
+    // named export (e.g. the contract constants) leaks into the bundle, the
+    // whole plugin fails to load with "Plugin export is not a function".
     //
     // This must exercise the GENERATED bundle (the file users receive), not
     // the TypeScript entry: importing the entry cannot catch exports the
     // bundler itself introduces or leaks. It builds with the options
     // scripts/build-hooks.js uses (scripts/opencode-plugin-build-options.js),
-    // into a temp dir so the test stays self-contained. #3803 moved the entry
-    // module to a default-only export; this test pins the shipped artifact to
-    // that contract.
+    // into a temp dir so the test stays self-contained.
+    //
+    // The default export is an OBJECT, not a function: OpenCode V2 validates
+    // the module with Schema.Struct({ id, effect }) / Schema.Struct({ id,
+    // setup }) and rejects a bare plugin factory with "Plugin must export a
+    // default definition with an id and an effect or setup function". V1
+    // (1.3.4+) reads `server`, V2 reads `id` + `setup`.
     const { buildSync } = await import("esbuild");
     const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
     const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
@@ -83,7 +86,12 @@ describe("OpenCode plugin event contract", () => {
       const bundle = await import(pathToFileURL(outfile).href);
       const exportNames = Object.keys(bundle).sort();
       expect(exportNames).toEqual(["default"]);
-      expect(typeof bundle.default).toBe("function");
+
+      const definition = bundle.default as Record<string, unknown>;
+      expect(typeof definition).toBe("object");
+      expect(definition.id).toBe("claude-mem");
+      expect(typeof definition.server).toBe("function");
+      expect(typeof definition.setup).toBe("function");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -122,15 +130,16 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("reads the worker port from persisted settings without importing worker-utils", () => {
-    const source = readFileSync(
-      "src/integrations/opencode-plugin/index.ts",
-      "utf8",
-    );
-
-    expect(source).not.toContain('from "../../shared/worker-utils.js"');
-    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath)');
-    expect(source).toContain('settings.CLAUDE_MEM_WORKER_PORT');
+  it("keeps worker-utils out of every OpenCode plugin module", () => {
+    // The worker URL resolution lives in core.ts, the dependency-free module
+    // both the V1 and the V2 adapter share. Neither adapter may reach for
+    // worker-utils, which drags worker-only imports into the plugin bundle.
+    for (const module of ["core.ts", "v1.ts", "v2.ts", "index.ts"]) {
+      const source = readFileSync(`src/integrations/opencode-plugin/${module}`, "utf8");
+      expect(source, `${module} must not import worker-utils`).not.toContain(
+        'from "../../shared/worker-utils.js"',
+      );
+    }
   });
 
   it("uses the persisted worker port in OpenCode worker requests", async () => {
@@ -152,14 +161,19 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const { default: ReloadedPlugin } = await import(
-        `../../src/integrations/opencode-plugin/index.ts?opencode-settings-${Date.now()}`
+      // The worker URL is resolved when core.ts loads, so the cache-buster has
+      // to land on core.ts (a buster on the entry module would reuse the
+      // already-loaded core).
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-settings-${Date.now()}`
       );
-      const plugin = await ReloadedPlugin(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_45678", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
-      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_45678",
+        args: { path: "/a" },
+        output: "file contents",
+      });
 
       expect(seenUrls.some((url) => url.startsWith("http://127.0.0.1:45678/"))).toBe(true);
     } finally {
@@ -172,8 +186,223 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("strips a private block that straddles the 1,000-char tool_response cap", async () => {
+    // Capping first would sever `</private>`, and the worker's balanced
+    // stripper keeps an unclosed block verbatim, so the private prefix shipped.
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureTool({
+        tool: "read",
+        sessionID: "ses_private_cap",
+        args: { path: "/a" },
+        output: `${"a".repeat(990)}<private>${"TOKEN".repeat(10)}</private>tail`,
+      });
+
+      const observation = bodies.find((body) => "tool_response" in body);
+      expect(observation?.tool_response).toBe(`${"a".repeat(990)}tail`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("scopes injected context to OpenCode's own memory by default", async () => {
+    // The worker filters observations by the platform that recorded them, so
+    // the source parameter decides what a session can see. OpenCode must ask
+    // for its own source unless the user opted into every source.
+    //
+    // A temp data dir with an explicit settings file keeps this independent
+    // of the developer's own settings, and the env var is cleared so a
+    // developer who enabled the switch locally does not fail this test.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-scope-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-source-scope-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_scope_default");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      expect(new URL(inject!).searchParams.get("platformSource")).toBe("opencode");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects context from every source when CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES is true", async () => {
+    // The Claude Code hook path honors this switch (#4251); the OpenCode
+    // plugin must honor it too. Without it, a user who moves between
+    // harnesses sees their earlier memories disappear and the setting
+    // silently does nothing for OpenCode.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-all-sources-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    // The file is the switch under test; clear the env var so a developer
+    // who set it locally does not decide this test's outcome.
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+    );
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // core.ts is imported with a cache-buster so it re-reads the settings
+      // file for the data dir set above.
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-all-sources-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_all_sources");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      // No source parameter at all: the worker then returns every source,
+      // which is how the Claude Code hook path asks for it too.
+      expect(new URL(inject!).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("picks up a source-scope change between sessions without a restart", async () => {
+    // The switch is read per request so that changing it does not require an
+    // OpenCode restart. Two different session IDs on the same core instance
+    // prove the read is not frozen at module load; the per-session context
+    // cache is a separate contract and is left alone.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-live-switch-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-live-switch-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      await core.memoryContext("ses_live_before");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+      );
+      await core.memoryContext("ses_live_after");
+
+      const injects = seenUrls.filter((url) => url.includes("/api/context/inject"));
+      expect(injects).toHaveLength(2);
+      expect(new URL(injects[0]).searchParams.get("platformSource")).toBe("opencode");
+      expect(new URL(injects[1]).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the source scope without writing to the settings file", async () => {
+    // The plugin READS this switch on every context request. loadFromFile
+    // migrates a retired default in place, so the per-request read must be
+    // readOnly: rendering context must never rewrite the user's settings.
+    //
+    // The snapshot is taken AFTER the import because core.ts already reads
+    // the file (writably) when it resolves the worker URL, which is
+    // pre-existing behavior this test does not cover. What is guarded here is
+    // the per-request read: it must not change the file again.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-readonly-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    const original = JSON.stringify({
+      CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true",
+      CLAUDE_MEM_OPENROUTER_MODEL: "xiaomi/mimo-v2-flash:free",
+    });
+    writeFileSync(settingsPath, original);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("# memory context", { status: 200 })) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-readonly-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      // Re-seed the retired default AFTER the import: core.ts already reads
+      // the file (writably) when it resolves the worker URL, which is
+      // pre-existing behavior this test does not cover. What is guarded here
+      // is the per-request read, so the file is put back into a
+      // migration-triggering state right before the context request.
+      writeFileSync(settingsPath, original);
+      await core.memoryContext("ses_readonly");
+
+      // Rendering context must not have rewritten the file: a writable read
+      // would have migrated the retired default away.
+      expect(readFileSync(settingsPath, "utf8")).toBe(original);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("only registers hooks that are part of OpenCode's real contract", async () => {
-    const plugin = await ClaudeMemPlugin(pluginCtx);
+    const plugin = await ClaudeMemPlugin.server(pluginCtx);
     const hookKeys = Object.keys(plugin);
 
     for (const key of hookKeys) {
@@ -196,7 +425,7 @@ describe("OpenCode plugin event contract", () => {
   });
 
   it("does not register the phantom bus event names as hooks", async () => {
-    const plugin = await ClaudeMemPlugin(pluginCtx);
+    const plugin = await ClaudeMemPlugin.server(pluginCtx);
     const hookKeys = Object.keys(plugin);
     for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
       expect(hookKeys).not.toContain(phantom);
@@ -225,7 +454,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const toolAfter = plugin["tool.execute.after"];
       await toolAfter(
         {
@@ -246,6 +475,8 @@ describe("OpenCode plugin event contract", () => {
       expect(obsBody.tool_name).toBe("Read");
       expect(obsBody.tool_input).toEqual({ path: "/a" });
       expect(obsBody.tool_response).toBe("file contents");
+      expect(obsBody.tool_use_id).toBe("c1");
+      expect(obsBody.telemetryToolEpochMs).toEqual(expect.any(Number));
       expect(obsBody.platformSource).toBe(normalizePlatformSource("opencode"));
     } finally {
       globalThis.fetch = originalFetch;
@@ -267,7 +498,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const expectedPlatformSource = normalizePlatformSource("opencode");
 
       const postHookInvocations: Record<string, () => Promise<void>> = {
@@ -329,7 +560,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "write", sessionID: "ses_precedence", callID: "c2", args: { path: "/input" } },
         { title: "Write", output: "ok", metadata: {}, args: { path: "/output" } },
@@ -351,7 +582,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_output_fallback", callID: "c3" },
         { title: "Read", output: "ok", metadata: {}, args: { path: "/fallback" } },
@@ -373,7 +604,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "list", sessionID: "ses_empty_fallback", callID: "c4" },
         { title: "List", output: "ok", metadata: {} },
@@ -398,7 +629,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_empty_input", callID: "c5", args: {} },
         { title: "Read", output: "ok", metadata: {}, args: { path: "/output" } },
@@ -427,7 +658,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "edit", sessionID: "ses_args", callID: "c2", args: { filePath: "/a/b.ts" } },
         { title: "Edit", output: "applied", metadata: {} },
@@ -443,19 +674,25 @@ describe("OpenCode plugin event contract", () => {
 });
 
 describe("OpenCode plugin entry-module export contract", () => {
-  // OpenCode's loader treats EVERY export of the plugin entry module as a
-  // plugin factory: each must be a function, and each gets invoked. A
-  // non-function export (the v13.x data constants) fails the whole plugin
-  // load with "Plugin export is not a function"; an extra function export
-  // would run as a second plugin instance. The data constants therefore live
-  // in contract.ts, and this test pins the entry module to factory-only
-  // exports (#3330).
-  it("exports only the plugin factory (every export must be a function)", () => {
+  // OpenCode's loader treats EVERY named export of the plugin entry module as a
+  // plugin: a non-default export fails the load. The data constants therefore
+  // live in contract.ts, and this test pins the entry module to a default-only
+  // export (#3330).
+  //
+  // That default export is a plugin DEFINITION object, not a factory: OpenCode
+  // V2 validates it with Schema.Struct({ id, effect }) / Schema.Struct({ id,
+  // setup }). V1 (1.3.4+) reads `server` and uses the hooks it returns.
+  it("exports only a default plugin definition (id + server + setup)", () => {
     const exports = Object.entries(pluginEntry);
     expect(exports.length, "the entry module must have exports").toBeGreaterThan(0);
-    for (const [name, value] of exports) {
-      expect(typeof value, `export "${name}" must be a function`).toBe("function");
-    }
+    expect(exports.map(([name]) => name).sort()).toEqual(["default"]);
+
+    const definition = pluginEntry.default as unknown as Record<string, unknown>;
+    expect(typeof definition, "the default export must be a definition object").toBe("object");
+    expect(typeof definition.id).toBe("string");
+    expect(definition.id).toBe("claude-mem");
+    expect(typeof definition.server).toBe("function");
+    expect(typeof definition.setup).toBe("function");
   });
 });
 
@@ -481,7 +718,7 @@ describe("OpenCode plugin attribution contract", () => {
   it("sends platform_source=opencode on every worker POST", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin({
+      const plugin = await ClaudeMemPlugin.server({
         ...pluginCtx,
         directory: "/tmp/repo",
         worktree: "/tmp/repo",
@@ -523,7 +760,7 @@ describe("OpenCode plugin attribution contract", () => {
     // plugin's observations (tests/worker/http/routes/session-routes-init-checkout.test.ts).
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin({
+      const plugin = await ClaudeMemPlugin.server({
         ...pluginCtx,
         project: { name: "opencode", path: "/tmp/x" },
         directory: "/tmp/my-repo/sub/dir",
@@ -554,7 +791,7 @@ describe("OpenCode plugin attribution contract", () => {
   it("records the real user prompt at session init instead of [media prompt]", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["chat.message"](
         {},
         {
@@ -565,6 +802,7 @@ describe("OpenCode plugin attribution contract", () => {
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
       expect(initPost, "chat.message(user) should lazily init the session").toBeTruthy();
       expect(initPost!.body.prompt).toBe("investigate the flaky test");
+      expect(initPost!.body.telemetryPromptEpochMs).toEqual(expect.any(Number));
     } finally {
       restoreFetch();
     }
@@ -634,7 +872,7 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   it("records the real user prompt even when a tool ran before it", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_toolfirst", callID: "c1" },
         { title: "Read", output: "x", metadata: {}, args: {} },
@@ -658,7 +896,7 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   it("does not initialize consecutive activity-only calls", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_lazy", callID: "c1" },
         { title: "Read", output: "x", metadata: {}, args: {} },
@@ -679,7 +917,7 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   it("does not initialize an empty user message", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["chat.message"](
         {},
         {
@@ -697,7 +935,7 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   it("summarizes compaction and idle events without initializing a prompt", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["experimental.session.compacting"]({ sessionID: "ses_summarize_only" });
       await plugin.event({
         event: { type: "session.idle", properties: { sessionID: "ses_summarize_only" } },
@@ -714,7 +952,7 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   it("initializes each separate user prompt", async () => {
     captureFetch();
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["chat.message"](
         {},
         {
@@ -787,7 +1025,9 @@ describe("isConnectionRefusedError (worker-down warning suppression)", () => {
   });
 
   it("keeps the plugin bundle free of worker-only modules (dependency-free shared helper)", () => {
-    const pluginSource = readFileSync("src/integrations/opencode-plugin/index.ts", "utf8");
+    // core.ts is the module that posts to the worker; it must reach for the
+    // dependency-free helper rather than worker-utils.
+    const pluginSource = readFileSync("src/integrations/opencode-plugin/core.ts", "utf8");
     expect(pluginSource).toContain('from "../../shared/connection-errors.js"');
     const helperSource = readFileSync("src/shared/connection-errors.ts", "utf8");
     expect(helperSource).not.toMatch(/^import /m);
@@ -799,7 +1039,7 @@ describe("isConnectionRefusedError (worker-down warning suppression)", () => {
     const warnings: string[] = [];
     console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const runTool = () => plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_refused", callID: "c1" },
         { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
@@ -853,7 +1093,7 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     captureRequests(requests, (url) =>
       url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const transform = plugin["experimental.chat.system.transform"];
 
       const firstTurn = { system: ["base prompt"] };
@@ -887,7 +1127,7 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     captureRequests(requests, () => (workerUp ? new Response("# late context") : new Response("down", { status: 503 })));
     const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       const transform = plugin["experimental.chat.system.transform"];
 
       const failed = { system: [] as string[] };
@@ -915,6 +1155,34 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     }
   });
 
+  it("keeps the cached memory across an idle summary and drops it on compaction", async () => {
+    // Only compaction rewrites the conversation, so only compaction needs a
+    // fresh memory fetch. An idle summary that dropped the cache would add a
+    // context request to every turn and bypass the failed-fetch cooldown.
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_ctx_idle" } } });
+      const afterIdle = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_idle" }, afterIdle);
+      expect(afterIdle.system).toEqual(["# memory context"]);
+      expect(injects()).toBe(1);
+
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_ctx_idle" });
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      expect(injects()).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("sends the latest completed assistant reply when the session idles or compacts", async () => {
     const originalFetch = globalThis.fetch;
     const requests: Request[] = [];
@@ -937,7 +1205,7 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
       },
     };
     try {
-      const plugin = await ClaudeMemPlugin({ ...pluginCtx, client });
+      const plugin = await ClaudeMemPlugin.server({ ...pluginCtx, client });
       await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_reply" } } });
       await plugin["experimental.session.compacting"]({ sessionID: "ses_reply" });
 
@@ -959,7 +1227,7 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     const requests: Request[] = [];
     captureRequests(requests);
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
       await plugin["tool.execute.after"](
         { tool: "read", sessionID: "ses_bounded", callID: "c1", args: {} },
         { title: "Read", output: "x", metadata: {} },

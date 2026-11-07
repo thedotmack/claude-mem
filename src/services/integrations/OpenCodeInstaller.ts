@@ -2,9 +2,11 @@
 import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, findContextBlockRange } from '../../utils/context-injection.js';
+import { findContextBlockRange } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
@@ -30,8 +32,66 @@ export const OPENCODE_OLD_CONTEXT_BLOCK_LEFT = 3;
 type OpenCodeConfig = {
   $schema?: string;
   plugin?: unknown;
+  plugins?: unknown;
   [key: string]: unknown;
 };
+
+/** OpenCode's plugin API: 1 for OpenCode 1.x, 2 for OpenCode 2.x. */
+export type OpenCodePluginApi = 1 | 2;
+
+type OpenCodeVersion = [major: number, minor: number, patch: number];
+
+/**
+ * The oldest OpenCode that loads the plugin. Its default export is a
+ * `{ id, server, setup }` definition object, and 1.3.4 is the first release
+ * whose loader reads `server` from an object; older ones call every export
+ * as a function and reject it.
+ */
+const OPENCODE_MIN_SUPPORTED_VERSION: OpenCodeVersion = [1, 3, 4];
+
+/**
+ * Reads `opencode --version` output: "1.18.35", "2.0.22", or
+ * "opencode v2.0.23" (the form 2.0.23 prints, found live in #4519).
+ */
+export function parseOpenCodeVersion(output: string): OpenCodeVersion | null {
+  const match = output.match(/^\s*(?:opencode2?\s+)?v?(\d+)\.(\d+)\.(\d+)/im);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function compareOpenCodeVersions(left: OpenCodeVersion, right: OpenCodeVersion): number {
+  for (let index = 0; index < 3; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+/**
+ * The newest OpenCode on PATH, or null when none answers `--version`.
+ * OpenCode 2 installs its CLI as both `opencode` and `opencode2`.
+ */
+export function detectOpenCodeVersion(): OpenCodeVersion | null {
+  let newest: OpenCodeVersion | null = null;
+  for (const name of ['opencode', 'opencode2']) {
+    const command = process.platform === 'win32' ? lookupWindowsCommand(name) : name;
+    if (!command) continue;
+    const invocation = buildSpawnSyncInvocation(command, ['--version'], {
+      env: { ...process.env },
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    });
+    const result = spawnSync(invocation.command, invocation.args, invocation.options);
+    if (result.status !== 0 || typeof result.stdout !== 'string') continue;
+    const version = parseOpenCodeVersion(result.stdout);
+    if (version && (!newest || compareOpenCodeVersions(version, newest) > 0)) newest = version;
+  }
+  return newest;
+}
+
+/** OpenCode 1 when no CLI answers: that is the config every install wrote before. */
+function openCodePluginApiFor(version: OpenCodeVersion | null): OpenCodePluginApi {
+  return version && version[0] >= 2 ? 2 : 1;
+}
 
 export function getOpenCodeConfigDirectory(): string {
   if (process.env.OPENCODE_CONFIG_DIR) {
@@ -56,11 +116,11 @@ export function getInstalledPluginPath(): string {
   return path.join(getOpenCodePluginsDirectory(), 'claude-mem.js');
 }
 
-function getOpenCodePluginEntries(config: OpenCodeConfig): unknown[] {
-  if (Array.isArray(config.plugin)) {
-    return config.plugin;
+function getOpenCodePluginEntries(config: OpenCodeConfig, key: 'plugin' | 'plugins' = 'plugin'): unknown[] {
+  if (Array.isArray(config[key])) {
+    return config[key] as unknown[];
   }
-  return config.plugin === undefined ? [] : [config.plugin];
+  return config[key] === undefined ? [] : [config[key]];
 }
 
 export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
@@ -75,13 +135,19 @@ export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConf
   };
 }
 
+/**
+ * Remove claude-mem's entry from `plugin` (OpenCode 1) and `plugins`
+ * (OpenCode 2), keeping every other entry. A key the config lacks stays absent.
+ */
 export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  return {
-    ...config,
-    plugin: getOpenCodePluginEntries(config).filter(
+  const next: OpenCodeConfig = { ...config };
+  for (const key of ['plugin', 'plugins'] as const) {
+    if (config[key] === undefined) continue;
+    next[key] = getOpenCodePluginEntries(config, key).filter(
       (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
-    ),
-  };
+    );
+  }
+  return next;
 }
 
 function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
@@ -158,7 +224,13 @@ export function removeOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConf
   return next;
 }
 
-export function registerOpenCodePluginInConfig(): number {
+/**
+ * OpenCode 1 gets the `plugin` entry every install has written. OpenCode 2
+ * loads `plugins/claude-mem.js` from its plugin directory by itself and drops
+ * a configured plugin path that is a file, warning "configured plugin path
+ * must be a directory" on every start, so for 2 the entry is removed instead.
+ */
+export function registerOpenCodePluginInConfig(api: OpenCodePluginApi = 1): number {
   const configPath = getOpenCodeConfigPath();
   const defaultConfig: OpenCodeConfig = {
     $schema: 'https://opencode.ai/config.json',
@@ -168,7 +240,9 @@ export function registerOpenCodePluginInConfig(): number {
     const config = existsSync(configPath)
       ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
       : defaultConfig;
-    const withPlugin = addOpenCodePluginReference(config);
+    const withPlugin = api === 2
+      ? removeOpenCodePluginReference(config)
+      : addOpenCodePluginReference(config);
     const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
 
     writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
@@ -240,7 +314,13 @@ export function findBuiltPluginPath(): string | null {
   return null;
 }
 
-export function installOpenCodePlugin(): number {
+export function installOpenCodePlugin(version: OpenCodeVersion | null = detectOpenCodeVersion()): number {
+  if (version && compareOpenCodeVersions(version, OPENCODE_MIN_SUPPORTED_VERSION) < 0) {
+    console.warn(
+      `  OpenCode ${version.join('.')} cannot load the claude-mem plugin; it needs OpenCode ${OPENCODE_MIN_SUPPORTED_VERSION.join('.')} or later. Update OpenCode, then restart it.`,
+    );
+  }
+
   const builtPluginPath = findBuiltPluginPath();
   if (!builtPluginPath) {
     console.error('Could not find built OpenCode plugin bundle.');
@@ -260,7 +340,7 @@ export function installOpenCodePlugin(): number {
     console.log(`  Plugin installed to: ${destinationPath}`);
     logger.info('OPENCODE', 'Plugin installed', { destination: destinationPath });
 
-    const registerResult = registerOpenCodePluginInConfig();
+    const registerResult = registerOpenCodePluginInConfig(openCodePluginApiFor(version));
     if (registerResult !== 0) {
       return registerResult;
     }
@@ -351,52 +431,6 @@ export function removeContextBlockFromAgentsMd(): boolean {
     console.error(`  Failed to clean AGENTS.md: ${message}`);
     return false;
   }
-}
-
-export function checkOpenCodeStatus(): number {
-  console.log('\nClaude-Mem OpenCode Integration Status\n');
-
-  const configDirectory = getOpenCodeConfigDirectory();
-  const pluginPath = getInstalledPluginPath();
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Plugin: ${pluginPath}`);
-  console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Context: injected by the plugin into each request's system prompt`);
-  if (existsSync(agentsMdPath) && readFileSync(agentsMdPath, 'utf-8').includes(CONTEXT_TAG_OPEN)) {
-    console.log(`  Leftover claude-mem block from an older install in ${agentsMdPath}`);
-    console.log(`  (shown in every OpenCode project): re-run the install to remove it`);
-  }
-  console.log('');
-
-  console.log(`MCP server (opencode.json):`);
-  try {
-    if (existsSync(getOpenCodeConfigPath())) {
-      const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8')) as OpenCodeConfig;
-      const mcpEntry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
-      if (mcpEntry && typeof mcpEntry === 'object') {
-        const command = (mcpEntry as { command?: unknown }).command;
-        console.log(`  Registered: yes`);
-        console.log(`  Command: ${Array.isArray(command) ? command.join(' ') : 'unknown'}`);
-      } else {
-        console.log(`  Registered: no`);
-      }
-    } else {
-      console.log(`  Registered: no (${getOpenCodeConfigPath()} does not exist)`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`  Registered: unknown (could not read config: ${message})`);
-  }
-
-  console.log('');
-  return 0;
 }
 
 export async function installOpenCodeIntegration(): Promise<number> {

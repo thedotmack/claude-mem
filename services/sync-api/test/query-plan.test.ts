@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import postgres from "postgres";
+import { applyMigrations } from "../src/schema";
 import { SocketRegistry } from "../src/sockets";
 import { HubStore } from "../src/store";
 import { DEFAULT_DATABASE_URL, uniqueUser } from "./helpers";
@@ -44,6 +45,8 @@ describe("seq range queries", () => {
 			debug: (_connection, query, parameters) => { captured.push({ query, parameters }); },
 		});
 		try {
+			// This file may run before any file that starts the app (which applies the schema), so it applies it itself.
+			await applyMigrations(admin);
 			await admin`
 				INSERT INTO sync_ops (user_id, seq, entity_id, kind, origin_device_id, origin_local_id,
 				                      entity_rev, operation_sha256, body, deleted, server_ts)

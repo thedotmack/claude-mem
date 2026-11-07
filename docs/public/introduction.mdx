@@ -1,13 +1,15 @@
 ---
 title: "Introduction"
-description: "Persistent memory compression system for Claude Code"
+description: "Your coding agent forgets everything between sessions. Claude-Mem remembers for it."
 ---
 
 # Claude-Mem
 
-**Persistent memory compression system for Claude Code**
+**Your coding agent forgets everything between sessions. Claude-Mem remembers for it.**
 
-Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+Every new session, your agent starts from zero. It re-reads the same files, re-asks the same questions, and walks back into mistakes you already fixed together.
+
+Claude-Mem runs a second agent beside it that takes notes while it works. The next session starts with a short index of what matters, and pulls in the details only when it needs them. Works with Claude Code, Codex, Cursor, OpenCode and 11 more agents. Copilot CLI, Goose, Roo Code and Warp can search your memory, but their sessions aren't recorded.
 
 ## Quick Start
 
@@ -30,7 +32,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📁 **Folder Context Files** - Auto-generated `CLAUDE.md` in project folders with activity timelines
-- 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
+- 🌐 **Multilingual Modes** - Writes memory in 30 languages: English plus 29 others (Spanish, Chinese, French, Japanese, etc.)
 - 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
 - 🧠 **Knowledge Agents** - Build queryable "brains" from your observation history

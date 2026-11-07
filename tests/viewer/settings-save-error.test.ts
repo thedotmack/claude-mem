@@ -322,6 +322,35 @@ describe('describeSaveFailure', () => {
     expect(JSON.parse(postedBody)).toEqual({ CLAUDE_MEM_MODEL: 'haiku' });
   });
 
+  it('POSTs only the keys edited since the tab loaded, so other changes on disk survive (#4597)', async () => {
+    const loaded = {
+      CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+      CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: '4096',
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+      CLAUDE_CODE_PATH: '/usr/local/bin/claude',
+    };
+    const bodies: unknown[] = [];
+    let saved: unknown;
+    const deps = {
+      fetchImpl: async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body ?? '')));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+      setSettings: (settings: unknown) => { saved = settings; },
+      setSaveStatus: () => {},
+      setIsSaving: () => {},
+      setStatusTimeout: () => {},
+    } as never;
+
+    const edited = { ...loaded, CLAUDE_MEM_CONTEXT_OBSERVATIONS: '80' };
+    await saveSettings(edited as never, deps, loaded as never);
+    await saveSettings(edited as never, deps, edited as never);
+
+    expect(bodies).toEqual([{ CLAUDE_MEM_CONTEXT_OBSERVATIONS: '80' }, {}]);
+    // Local state still holds the whole form, so the next save diffs against it.
+    expect(saved).toEqual(edited);
+  });
+
   it('keeps a rejected production fetch inside the outer saveSettings catch', async () => {
     const statuses: string[] = [];
     let saving = false;

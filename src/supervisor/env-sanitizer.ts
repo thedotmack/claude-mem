@@ -23,6 +23,12 @@ export const ENV_PROXY_VARS = new Set([
   'npm_config_proxy',
   'npm_config_https_proxy',
   'npm_config_noproxy',
+  // Node's fetch ignores HTTP(S)_PROXY until this is set (NODE_USE_ENV_PROXY=1).
+  // Claude Code applies it from user settings; the observer child does not
+  // load those settings, so the flag has to travel with the other proxy vars
+  // (#5400). The lowercase spelling matches the http_proxy family.
+  'NODE_USE_ENV_PROXY',
+  'node_use_env_proxy',
 ]);
 
 export const ENV_PRESERVE = new Set([
@@ -33,6 +39,11 @@ export const ENV_PRESERVE = new Set([
   // back to /tmp, so the child hit that directory and exited 1 on every spawn
   // — the user's only documented escape did nothing.
   'CLAUDE_CODE_TMPDIR',
+  // Documented Claude Code gateway compatibility switch. The Observer must
+  // inherit an explicit beta opt-out because settingSources: [] prevents the
+  // SDK child from recovering it from user settings. Keep this as a single
+  // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
   // path to the claude binary, documented as settable from the file OR the
   // env. Every daemon spawn passes through sanitizeEnv, and the worker reads

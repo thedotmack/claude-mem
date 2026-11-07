@@ -18,7 +18,7 @@ describe('windowsHide regression coverage (#2900)', () => {
     );
     expectWindowsHideNear(
       readSource('src', 'services', 'infrastructure', 'WorktreeAdoption.ts'),
-      /spawnSync\('git',\s*\['-C',\s*cwd,\s*\.\.\.args\],\s*\{[\s\S]*?timeout:\s*GIT_TIMEOUT_MS,[\s\S]*?windowsHide:\s*true/s
+      /spawn\('git',\s*\['-C',\s*cwd,\s*\.\.\.args\],\s*\{[\s\S]*?windowsHide:\s*true[^}]*\}/s
     );
     expectWindowsHideNear(
       readSource('src', 'services', 'worker-service.ts'),

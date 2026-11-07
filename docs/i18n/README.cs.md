@@ -215,7 +215,6 @@ Instalátor se stará o závislosti, nastavení pluginu, konfiguraci AI poskytov
 
 - **[Konfigurace](https://docs.claude-mem.ai/configuration)** - Proměnné prostředí a nastavení
 - **[Vývoj](https://docs.claude-mem.ai/development)** - Sestavení, testování, přispívání
-- **[Vydávací větve](https://docs.claude-mem.ai/branches)** - Tok větví stable, core-dev a community-edge
 - **[Řešení problémů](https://docs.claude-mem.ai/troubleshooting)** - Běžné problémy a řešení
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Podrobné příklady najdete v [Průvodci vyhledávacími nástroji](https://docs.claude-mem.ai/usage/search-tools).
-
----
-
-## Vydávací větve
-
-Stabilní vydání jsou publikována z větve `main` a zveřejněna na npm. `core-dev` a
-`community-edge` jsou větve spouštěné ze zdrojového kódu určené pro včasné opravy
-spolehlivosti a komunitní integrace. Podrobnosti o toku větví a pokyny ke spuštění
-nestabilních verzí najdete v **[Vydávacích větvích](https://docs.claude-mem.ai/branches)**.
 
 ---
 
@@ -384,11 +374,6 @@ Příspěvky jsou vítány! Prosím:
 4. Aktualizujte dokumentaci
 5. Odešlete Pull Request
 
-Claude-Mem je vydáván ze tří větví: `main` (stabilní), `core-dev` a
-`community-edge`. Na npm je publikována pouze `main`; ostatní se spouštějí ze
-zdrojového kódu. Podrobnosti o strategii a pokyny ke spuštění lokálně najdete
-ve [Vydávacích větvích](https://docs.claude-mem.ai/branches).
-
 Pracovní postup pro přispívání najdete v [Průvodci vývojem](https://docs.claude-mem.ai/development).
 
 ---
@@ -405,7 +390,6 @@ systémů, robotických stacků a produkčních harnessů pro agenty.
 a [docs/ip-boundary.md](docs/ip-boundary.md) pro rozsah licencování a hranici
 mezi open source a komerčním využitím.
 
-**Poznámka k Ragtime**: Adresář `ragtime/` je licencován pod licencí **Apache License 2.0**. Podrobnosti najdete v [ragtime/LICENSE](ragtime/LICENSE).
 
 ---
 

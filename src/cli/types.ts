@@ -15,6 +15,8 @@ export interface NormalizedHookInput {
    */
   toolUseId?: string;
   transcriptPath?: string;
+  /** Claude Code SubagentStop only: the finished subagent's own transcript (agent_transcript_path). */
+  agentTranscriptPath?: string;
   lastAssistantMessage?: string;
   reason?: string;
   turnId?: string;
@@ -46,6 +48,8 @@ export interface NormalizedHookInput {
 }
 
 export interface HookResult {
+  /** Internal measurement hint; stripped before platform formatting/output. */
+  workStateTelemetry?: 'measure' | 'excluded' | 'unknown';
   continue?: boolean;
   suppressOutput?: boolean;
   hookSpecificOutput?: {

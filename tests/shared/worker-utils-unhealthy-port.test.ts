@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import { writeFileSync, mkdtempSync, rmSync } from 'fs';
+import { writeFileSync, mkdtempSync, rmSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
@@ -17,7 +17,6 @@ const realProcessManagerSnapshot = { ...realProcessManager };
 const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSpawnGateSnapshot = { ...realSpawnGate };
 const spawnCalls: string[] = [];
-const spawnLaunchCaps: Array<number | undefined> = [];
 const classifierTimeouts: number[] = [];
 type Occupancy = 'free' | 'occupied' | 'unbindable' | 'indeterminate';
 let occupancy: Occupancy = 'occupied';
@@ -26,6 +25,7 @@ let versionMatch = { matches: true, pluginVersion: '13.15.2', workerVersion: '13
 let versionCheckCalls = 0;
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 let spawnLockResult = true;
+let spawnResult: number | undefined = 4343;
 const reclaimCalls: number[] = [];
 const reclaimDeadlines: Array<number | null | undefined> = [];
 let reclaimResult: { reclaimed: boolean; reason?: string; killedPids: number[] } = {
@@ -58,10 +58,9 @@ mock.module('../../src/supervisor/index.js', () => ({
 // Every lazy spawn goes through the one hidden-daemon helper (#3529).
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
   ...realProcessManagerSnapshot,
-  spawnDetachedWorkerDaemon: (runtimePath: string, _scriptPath: string, _env: unknown, _platform?: string, launchCapMs?: number) => {
+  spawnDetachedWorkerDaemon: (runtimePath: string) => {
     spawnCalls.push(runtimePath);
-    spawnLaunchCaps.push(launchCapMs);
-    return 4343;
+    return spawnResult;
   },
 }));
 // The gate's one reclaim attempt on an occupied port; the real one shells out
@@ -97,7 +96,6 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
     process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
     spawnCalls.length = 0;
-    spawnLaunchCaps.length = 0;
     reclaimDeadlines.length = 0;
     classifierTimeouts.length = 0;
     classifierResults = [];
@@ -106,6 +104,7 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     versionCheckCalls = 0;
     ownedPidInfo = null;
     spawnLockResult = true;
+    spawnResult = 4343;
     reclaimCalls.length = 0;
     reclaimResult = { reclaimed: false, reason: 'not-supported', killedPids: [] };
     global.fetch = mock(() => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('') } as unknown as Response));
@@ -329,7 +328,98 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     expect(reclaimDeadlines[1]).toBeNull();
   });
 
-  it('caps the lazy-spawn launch at what is left of the hook budget', async () => {
+  // #4809 / plan-15 matrix: a wedged worker + a hook budget below
+  // RECLAIM_MIN_BUDGET_MS is reclaimed within one hook event. The hook hands
+  // the reclaim to a detached daemon launch (whose duplicate gate reclaims
+  // with no deadline) and returns its fallback without waiting.
+  it('out-of-budget reclaim: hands the reclaim to one detached daemon launch and returns the fallback', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(reclaimCalls).toHaveLength(1);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('out-of-budget reclaim: a handoff still in flight is not launched again by the next hook event', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const first = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: first.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await first.ensureWorkerRunning(7000)).toBe(false);
+    const second = await importWorkerUtilsFresh();
+    expect(await second.ensureWorkerRunning(7000)).toBe(false);
+    expect(reclaimCalls).toHaveLength(2);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  // Ages the in-flight marker so a test can step past the 30 s launch spacing.
+  function ageHandoffMarker(ageMs: number): void {
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(join(dataDir, 'reclaim-handoff.json'), when, when);
+  }
+
+  it('out-of-budget reclaim: a daemon still reclaiming past the 30 s spacing is not launched again', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    spawnResult = process.pid; // a live daemon pid
+    const first = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: first.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await first.ensureWorkerRunning(7000)).toBe(false);
+    ageHandoffMarker(60_000);
+    const second = await importWorkerUtilsFresh();
+    expect(await second.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('out-of-budget reclaim: once the launched daemon has exited and the spacing passed, the next hook launches again', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    spawnResult = 2 ** 22 + 7; // no such process
+    const first = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: first.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await first.ensureWorkerRunning(7000)).toBe(false);
+    ageHandoffMarker(60_000);
+    const second = await importWorkerUtilsFresh();
+    expect(await second.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(2);
+  });
+
+  it('out-of-budget reclaim: a fresh marker whose contents cannot be read still counts as in flight', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    writeFileSync(join(dataDir, 'reclaim-handoff.json'), ''); // e.g. truncated by a failed write
+    ageHandoffMarker(60_000);
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('out-of-budget reclaim: a launch that failed does not block the next hook from retrying', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    spawnResult = undefined;
+    const first = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: first.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await first.ensureWorkerRunning(7000)).toBe(false);
+    spawnResult = 4343;
+    const second = await importWorkerUtilsFresh();
+    expect(await second.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(2);
+  });
+
+  it('a reclaim that declines for any other reason starts no handoff', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'owner-responding', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('launches the worker when the port is free', async () => {
     occupancy = 'free';
     let healthCalls = 0;
     global.fetch = mock(() => {
@@ -338,9 +428,7 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     });
     const workerUtils = await importWorkerUtilsFresh();
     expect(await workerUtils.ensureWorkerRunning(7000)).toBe(true);
-    expect(spawnLaunchCaps).toHaveLength(1);
-    expect(spawnLaunchCaps[0]).toBeGreaterThan(0);
-    expect(spawnLaunchCaps[0]).toBeLessThanOrEqual(7000);
+    expect(spawnCalls).toHaveLength(1);
   });
 
   it('caches the failed fallback for later calls in the same hook process', async () => {

@@ -119,7 +119,9 @@ describe('response metadata uses the registered memory identity', () => {
       cleanup.push(() => fetch.mockRestore());
       await new GeminiProvider(db, manager).startSession(newSession);
       const registeredId = store.getSessionById(sid).memory_session_id!;
-      expect(registeredId).toStartWith('gemini-provider-change-content-');
+      // A provider switch must retain the durable identity, not rekey stored memories.
+      expect(registeredId).toBe('old-sdk-memory');
+      expect(newSession.memorySessionId).toBe(registeredId);
       expect(store.queryToolUses({ memorySessionId: registeredId }).map(row => row.id)).toEqual([receiptId!]);
       expect(store.getObservationById(observation.id)?.memory_session_id).toBe(registeredId);
       const receipt = store.getToolUsesByIds([receiptId!])[0];

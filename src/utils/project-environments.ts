@@ -11,12 +11,15 @@ import { logger } from './logger.js';
 export interface ProjectEnvironment {
   name: string;
   patterns: string[];
+  /** Omitted: retain derived keys. Empty: read only this environment. */
+  inherit?: string[];
 }
 
 /**
  * Parse the setting. settings.json may hold it as a JSON string or as a native
- * JSON array, so both are accepted. Anything invalid is skipped with a warning,
- * so a typo falls back to the ordinary naming rules instead of breaking capture.
+ * JSON array, so both are accepted. Invalid JSON, names and patterns keep their
+ * existing warn-and-skip behavior.
+ * An explicit invalid inherit list throws: ignoring it would widen read scope.
  */
 export function parseProjectEnvironments(raw: unknown): ProjectEnvironment[] {
   let value = raw;
@@ -39,7 +42,7 @@ export function parseProjectEnvironments(raw: unknown): ProjectEnvironment[] {
   }
 
   const environments: ProjectEnvironment[] = [];
-  for (const entry of value as Array<{ name?: unknown; patterns?: unknown }>) {
+  for (const entry of value as Array<{ name?: unknown; patterns?: unknown; inherit?: unknown }>) {
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const patterns = Array.isArray(entry?.patterns)
       ? entry.patterns.filter((pattern): pattern is string => typeof pattern === 'string' && pattern.trim() !== '')
@@ -48,7 +51,15 @@ export function parseProjectEnvironments(raw: unknown): ProjectEnvironment[] {
       logger.warn('PROJECT_NAME', 'Ignoring a project environment without a name or patterns', { name });
       continue;
     }
-    environments.push({ name, patterns });
+    if ('inherit' in entry) {
+      const inherit = entry.inherit;
+      if (!Array.isArray(inherit) || inherit.some(key => typeof key !== 'string' || !key.trim() || key.includes(','))) {
+        throw new Error(`CLAUDE_MEM_PROJECT_ENVIRONMENTS: inherit for "${name}" must be an array of non-empty project names without commas`);
+      }
+      environments.push({ name, patterns, inherit: [...new Set(inherit.map(key => key.trim()))] });
+    } else {
+      environments.push({ name, patterns });
+    }
   }
   return environments;
 }
@@ -66,13 +77,13 @@ function realpathOrSelf(dir: string): string {
  * realpath are tried, so a symlinked home or checkout matches patterns written
  * either way; the trailing-slash form lets `dir/**` match `dir` itself.
  */
-export function matchProjectEnvironment(dir: string, environments: ProjectEnvironment[]): string | null {
+export function matchProjectEnvironment(dir: string, environments: ProjectEnvironment[]): ProjectEnvironment | null {
   if (environments.length === 0) return null;
   const candidates = [...new Set([dir, realpathOrSelf(dir)])]
     .flatMap(candidate => [candidate, `${candidate.replace(/[\\/]+$/, '')}/`]);
   for (const environment of environments) {
     if (candidates.some(candidate => matchesAnyGlob(candidate, environment.patterns))) {
-      return environment.name;
+      return environment;
     }
   }
   return null;

@@ -10,5 +10,5 @@ const INTEGRATION_ID_ALIASES: Readonly<Record<string, string>> = {
 };
 
 export function canonicalIntegrationId(id: string): string {
-  return INTEGRATION_ID_ALIASES[id] ?? id;
+  return Object.hasOwn(INTEGRATION_ID_ALIASES, id) ? INTEGRATION_ID_ALIASES[id] : id;
 }

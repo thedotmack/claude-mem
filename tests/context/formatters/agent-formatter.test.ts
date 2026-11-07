@@ -209,6 +209,17 @@ describe('AgentFormatter', () => {
       expect(joined).toContain('85% savings');
     });
 
+    it('should show both savings amount and percent when both are enabled', () => {
+      const economics = createTestEconomics({ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 });
+      const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });
+
+      const result = renderAgentContextEconomics(economics, config);
+      const joined = result.join('\n');
+
+      expect(joined).toContain('4,500t saved');
+      expect(joined).toContain('90% savings');
+    });
+
     it('should not show savings when discovery tokens is 0', () => {
       const economics = createTestEconomics({ totalDiscoveryTokens: 0, savings: 0, savingsPercent: 0 });
       const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });

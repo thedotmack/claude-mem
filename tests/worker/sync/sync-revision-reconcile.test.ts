@@ -21,8 +21,9 @@ const fixture = String.raw`
     calls.push(tool);
     if (tool === 'chroma_create_collection') return {};
     if (tool === 'chroma_get_documents') {
-      const ids = args.ids ?? [...docs.keys()].filter(id => args.where.$and.every(condition => Object.entries(condition).every(([key, value]) => docs.get(id).metadata[key] === value)));
-      return { ids: ids.filter(id => docs.has(id)) };
+      const conditions = args.where ? (args.where.$and ?? [args.where]) : [];
+      const ids = (args.ids ?? [...docs.keys()].filter(id => conditions.every(condition => Object.entries(condition).every(([key, value]) => docs.get(id).metadata[key] === value)))).filter(id => docs.has(id));
+      return { ids, metadatas: ids.map(id => docs.get(id).metadata) };
     }
     if (tool === 'chroma_delete_documents') {
       if (failDelete) { failDelete = false; throw new Error('owned deletion failure'); }
