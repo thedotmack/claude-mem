@@ -581,6 +581,15 @@ describe('context hook reads the precomputed block', () => {
     return contextHandler.execute({ sessionId: 'cache-session', cwd, platform: 'claude-code' });
   }
 
+  it('re-renders an old cached body that has no room for current memory instructions', async () => {
+    writeContextCache(agentKeys, 'old record\n'.repeat(1_000).slice(0, 10_000), Date.now());
+    const result = await runHook();
+    expect(workerCalls).toHaveLength(1);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('LIVE CONTEXT');
+    expect(result.hookSpecificOutput?.additionalContext).not.toContain('old record');
+    expect(result.hookSpecificOutput!.additionalContext!.length).toBeLessThanOrEqual(10_000);
+  });
+
   it('serves a cached block without calling the worker', async () => {
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
@@ -720,6 +729,30 @@ const childScript = `
   const { contextHandler } = await import('./src/cli/handlers/context.ts');
   const hook = await contextHandler.execute({ sessionId: 'e2e', cwd, platform: 'claude-code' });
 
+  let budgetResult = null;
+  if (process.env.BUDGET_CASE === '1') {
+    for (let i = 0; i < 80; i++) {
+      store.storeObservations('memory-e2e', primary, [{
+        type: 'discovery', title: 'RECORD_' + i + '_' + 'x'.repeat(350),
+        subtitle: '', facts: [], narrative: '', concepts: ['how-it-works'], files_read: [], files_modified: [],
+      }], null, i + 3, 0, FIXED_NOW - (80 - i) * 60_000);
+    }
+    await service.flushPendingRenders();
+    const normal = await live({ projects: projectsParam, platformSource: 'claude', cwd });
+    const keys = cache.contextCacheKeys(projects, 'claude', false, cwd);
+    const cachedBefore = cache.readContextCache(keys, FIXED_NOW)?.body;
+    const reserved = await live({ projects: projectsParam, platformSource: 'claude', cwd, reserveChars: '3000' });
+    const cachedAfter = cache.readContextCache(keys, FIXED_NOW)?.body;
+    // A different, never-requested source scope starts with no cache file.
+    const coldKeys = cache.contextCacheKeys(projects, undefined, false, cwd);
+    const coldBefore = cache.readContextCache(coldKeys, FIXED_NOW);
+    const coldReserved = await live({ projects: projectsParam, cwd, reserveChars: '3000' });
+    await service.flushPendingRenders();
+    const coldFile = cache.readContextCache(coldKeys, FIXED_NOW);
+    const coldWarmed = coldFile ? cache.fillContextPlaceholders(coldFile.body, FIXED_NOW, coldFile.placeholderNonce) : null;
+    budgetResult = { normal, reserved, cachedBefore, cachedAfter, coldBefore, coldReserved, coldWarmed };
+  }
+
   // A write re-renders the block within the debounce.
   store.storeObservations('memory-e2e', primary, [{
     type: 'discovery', title: 'SECOND_OBSERVATION', subtitle: 'sub', facts: [], narrative: 'n',
@@ -728,11 +761,15 @@ const childScript = `
   await new Promise((resolve) => setTimeout(resolve, 200));
   await service.flushPendingRenders();
   const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
+  if (budgetResult) {
+    const coldAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, undefined, false, cwd), FIXED_NOW);
+    budgetResult.coldAfterWrite = coldAfterWrite?.body ?? null;
+  }
   service.stop();
   store.close();
 
   console.log(JSON.stringify({
-    liveAgent, liveColors,
+    liveAgent, liveColors, budgetResult,
     agentBody: agentFile?.body ?? null, agentRenderedAt: agentFile?.renderedAtEpochMs ?? null,
     colorBody: colorFile?.body ?? null,
     filledAgent: agentFile ? cache.fillContextPlaceholders(agentFile.body, FIXED_NOW, agentFile.placeholderNonce) : null,
@@ -746,6 +783,44 @@ const childScript = `
 `;
 
 describe('precomputed context end to end', () => {
+  it('fits a dynamic notice reserve with whole newest records and leaves the regular cache untouched', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'cmem-notice-budget-'));
+    const hookCwd = mkdtempSync(join(tmpdir(), 'cmem-notice-project-'));
+    try {
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false',
+        CLAUDE_MEM_WORKER_PORT: '1',
+        CLAUDE_MEM_PROVIDER: 'codex',
+        CLAUDE_MEM_CHROMA_ENABLED: 'false',
+        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: '80',
+      }));
+      const child = Bun.spawn([process.execPath, '-e', childScript], {
+        cwd: process.cwd(),
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, HOOK_CWD: hookCwd, BUDGET_CASE: '1', DO_NOT_TRACK: '1' },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(await child.exited).toBe(0);
+      const line = stdout.trim().split('\n').pop() ?? '';
+      if (!line.startsWith('{')) throw new Error(stdout + stderr);
+      const { budgetResult } = JSON.parse(line);
+      expect(budgetResult.normal).toContain('RECORD_79_' + 'x'.repeat(350));
+      expect(budgetResult.reserved).toContain('RECORD_79_' + 'x'.repeat(350));
+      expect(budgetResult.reserved.length + 3000 + MEMORY_PLUGIN_INSTRUCTIONS.length + 2).toBeLessThanOrEqual(10_000);
+      expect(budgetResult.reserved.length).toBeLessThan(budgetResult.normal.length);
+      expect(budgetResult.cachedAfter).toBe(budgetResult.cachedBefore);
+      expect(budgetResult.coldBefore).toBeNull();
+      expect(budgetResult.coldWarmed).toContain('RECORD_79_' + 'x'.repeat(350));
+      expect(budgetResult.coldWarmed.length).toBeGreaterThan(budgetResult.coldReserved.length);
+      expect(budgetResult.coldAfterWrite).toContain('SECOND_OBSERVATION');
+      expect(budgetResult.reserved).not.toContain('Recent context omitted');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(hookCwd, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('serves exactly what the live route sends, and keeps it fresh', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-cache-e2e-'));
     const hookCwd = mkdtempSync(join(tmpdir(), 'cmem-cache-e2e-project-'));

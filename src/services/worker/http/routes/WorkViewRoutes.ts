@@ -28,7 +28,7 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
 import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
 import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
-import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
+import { AutoRefreshWorker, refreshIntervalMs } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js';
@@ -403,6 +403,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     dir: ledgerDir,
     openDatabase,
     setupRunning,
+    checkMs: refreshIntervalMs(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN),
     enabled: () => !setupRunning()
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
