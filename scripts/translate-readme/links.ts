@@ -1,4 +1,9 @@
 import * as path from 'path';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
+import { visit } from 'unist-util-visit';
+
+const markdownParser = unified().use(remarkParse);
 
 // Leaves URLs with a scheme (https:, mailto:), protocol-relative URLs, root-absolute paths and
 // in-page anchors alone: they mean the same thing from any directory.
@@ -39,19 +44,20 @@ export function rewriteRelativeLinks(markdown: string, sourceDir: string, outDir
   const to = path.resolve(outDir);
   if (from === to) return markdown;
 
-  let inFence = false;
+  // Markdown containers (such as nested lists) determine how far a fence can be indented.
+  const codeLines = new Set<number>();
+  visit(markdownParser.parse(markdown), 'code', ({ position }) => {
+    if (!position) return;
+    for (let line = position.start.line; line <= position.end.line; line++) codeLines.add(line);
+  });
   return markdown
     .split('\n')
-    .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        inFence = !inFence;
-        return line;
-      }
-      if (inFence) return line;
+    .map((line, index) => {
+      if (codeLines.has(index + 1)) return line;
       return line
         .replace(/(\]\()([^)\s]+)/g, (_, open, target) => open + rewriteTarget(target, from, to))
-        .replace(/\b(href|src)="([^"]*)"/g, (_, attr, target) => `${attr}="${rewriteTarget(target, from, to)}"`)
-        .replace(/\bsrcset="([^"]*)"/g, (_, value) => `srcset="${rewriteSrcset(value, from, to)}"`);
+        .replace(/\b(href|src)=(["'])(.*?)\2/g, (_, attr, quote, target) => `${attr}=${quote}${rewriteTarget(target, from, to)}${quote}`)
+        .replace(/\bsrcset=(["'])(.*?)\1/g, (_, quote, value) => `srcset=${quote}${rewriteSrcset(value, from, to)}${quote}`);
     })
     .join('\n');
 }

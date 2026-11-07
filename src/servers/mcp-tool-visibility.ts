@@ -14,12 +14,21 @@ export const SERVER_BETA_ONLY_TOOL_NAMES = [
 
 const serverBetaOnlyToolNameSet = new Set<string>(SERVER_BETA_ONLY_TOOL_NAMES);
 
+/**
+ * Tools whose handler refuses the server runtime outright (dumb_search reads
+ * the local worker's SQLite index). Advertising them there only invites a call
+ * that always fails with unsupported_runtime.
+ */
+export const WORKER_ONLY_TOOL_NAMES = ['dumb_search'] as const;
+
+const workerOnlyToolNameSet = new Set<string>(WORKER_ONLY_TOOL_NAMES);
+
 export function getAdvertisedMcpToolsForRuntime<T extends { name: string }>(
   allTools: readonly T[],
   runtime: SelectedRuntime
 ): T[] {
   if (runtime === 'server') {
-    return [...allTools];
+    return allTools.filter((tool) => !workerOnlyToolNameSet.has(tool.name));
   }
   logger.debug('SYSTEM', 'Filtering server-beta-only MCP tools from worker runtime advertisement', {
     runtime,

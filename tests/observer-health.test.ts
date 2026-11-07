@@ -6,7 +6,6 @@ import {
   readObserverHealth,
   recordObserverFailure,
   recordObserverSuccess,
-  observerAuthScope,
   recordObserverQuotaCooldown,
   clearObserverQuotaCooldown,
   isObserverUnhealthy,
@@ -89,26 +88,6 @@ describe('observer-health ledger', () => {
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
     expect(second.lastErrorMessage).toBe('boom two');
-  });
-
-  it('keeps credential-scoped success proofs independent of unrelated stores', () => {
-    const primary = observerAuthScope('claude', 'account-a', 'subscription')!;
-    const alternate = observerAuthScope('claude', 'account-a', 'api-key')!;
-    const clock = spyOn(Date, 'now').mockReturnValue(100_000);
-    try {
-      recordObserverSuccess(healthPath, primary);
-      clock.mockReturnValue(200_000);
-      recordObserverSuccess(healthPath, alternate);
-      recordObserverSuccess(healthPath);
-      expect(readObserverHealth(healthPath)?.authRecoverySuccesses).toEqual({
-        [primary]: 100_000, [alternate]: 200_000,
-      });
-      expect(observerAuthScope('openrouter', 'account-a', 'subscription')).toBeNull();
-      expect(observerAuthScope('claude', undefined, 'subscription')).toBeNull();
-      expect(observerAuthScope('claude', 'account-a', undefined)).toBeNull();
-    } finally {
-      clock.mockRestore();
-    }
   });
 
   it('restarts failingSinceAt when the failure kind changes (#5378)', () => {

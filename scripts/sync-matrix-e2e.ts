@@ -652,10 +652,12 @@ async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixV
   const feedObservation = a.store.storeObservation(sessions[0].memory, 'matrix-view', observation('MATRIX_FEED_INITIAL', 'Browser convergence marker'), 1, 0);
   await drainDevice(a); await pullToHead(c); await local.notify(); await hosted.notify();
   await runViewerBrowsers(local, hosted, async pages => {
-    const browserWait = async (page: any, expression: string, label: string, timeoutMs = 25_000) => waitForAsync(() => page.evaluate(expression), label, timeoutMs).catch(async error => { console.error('BROWSER_DEBUG', label, JSON.stringify(await page.evaluate('({url:location.pathname,errors:window.matrixErrors,metrics:window.matrixMetrics,model:window.matrixModel?.()?.state,text:document.body.textContent.slice(0,1500)})'))); throw error; });
-    await browserWait(pages.local, `document.body.textContent.includes('Matrix shared viewer')`, 'local My Work visible');
-    await browserWait(pages.hosted, `document.body.textContent.includes('Matrix shared viewer')`, 'hosted My Work visible');
-    await browserWait(pages.classic, `document.body.textContent.includes('MATRIX_FEED_INITIAL')`, 'hosted classic feed visible');
+    const browserWait = async (page: any, expression: string, label: string, timeoutMs = 25_000) => waitForAsync(() => page.evaluate(expression), label, timeoutMs).catch(async error => { console.error('BROWSER_DEBUG', label, JSON.stringify(await page.evaluate('({url:location.pathname,errors:window.matrixErrors,metrics:window.matrixMetrics,model:window.matrixModel?.()?.state,text:document.body?.textContent?.slice(0,1500)})'))); throw error; });
+    // Page.navigate acknowledges before the new document has a body. Keep polling
+    // the intended page instead of turning that normal loading state into an exception.
+    await browserWait(pages.local, `location.pathname === '/' && document.body?.textContent?.includes('Matrix shared viewer') === true`, 'local My Work visible');
+    await browserWait(pages.hosted, `location.pathname === '/' && document.body?.textContent?.includes('Matrix shared viewer') === true`, 'hosted My Work visible');
+    await browserWait(pages.classic, `location.pathname === '/viewer' && document.body?.textContent?.includes('MATRIX_FEED_INITIAL') === true`, 'hosted classic feed visible');
     c.gate.pullRequests = 0; replaceClient(c, false, true);
     await waitFor(() => c.gate.pullRequests > 0 && !c.client.status().inFlight, 'initial normal hosted poll');
     await Bun.sleep(1500);

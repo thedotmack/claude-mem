@@ -4,6 +4,102 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.11.1] - 2026-11-07
+
+## Pro sign-in works again
+
+Signing in to cmem.ai Pro from the plugin returned a 500 error on every fresh plugin install. The plugin's install did not include `better-auth`, and its tables were never created. The plugin now ships `better-auth` and `@better-auth/api-key` as dependencies and creates the auth tables the first time they are needed (#5455, thanks @0xABCD01).
+
+## Fixes
+
+- **Worker:** when a run pauses after a transport, rate-limit or similar abort, it now releases its claims, so the paused session no longer holds pending work that can never expire (#5457, thanks @akashpandey).
+- **Worker:** an over-budget condense reply is clamped to the budget instead of being thrown away (#5452, thanks @xunguangzlj-cloud).
+- **Worker:** retry-without-reasoning now recognizes OpenCode Go's "cannot be represented" error wording (#5439, thanks @akashpandey).
+- **Hooks:** the Stop hook reads Claude Code's `last_assistant_message` directly and skips reading the transcript (#5449, thanks @xunguangzlj-cloud).
+- **Context:** the OAuth hint and gateway fallback notice are reserved before the context is fitted, so SessionStart context stays under Claude Code's 10,000-character limit (#5441, thanks @liuyinchu).
+- **Codex:** stale app-server child processes are recycled on the auth recovery probe (#5438, thanks @akashpandey).
+- **Installer:** the Goose YAML config is written atomically, so an interrupted install or uninstall can no longer leave a truncated config.yaml (#5442, thanks @DeryFerd).
+- **Tests:** the sync matrix waits for the page body before reading it, fixing a browser readiness race (#5448).
+
+## Also in this release
+
+- **My Work:** the scheduled refresh check interval is now a setting (#5437, thanks @weirui828).
+- **Docs:** one story across the README and docs: your coding agent forgets between sessions, Claude-Mem remembers (#5447).
+- **Docs:** README translations keep fenced code examples and single-quoted links intact (#5458, thanks @Afloat16).
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.11.0...v15.11.1
+
+## [15.11.0] - 2026-11-06
+
+# Installer screen telemetry and runtime fixes
+
+Claude-Mem now records progress through the local setup screens, so the admin can show where setup continues, goes back, encounters a known error, or has no recorded next step.
+
+- Track the nine actual setup screens: Scan, Reveal, Choose memory, Review savings, Checkout, Finish setup, Import history, Launch, and Workspace.
+- Count each rendered screen visit separately. Returning to a screen creates a new visit; failed hand-offs do not become successful forward transitions.
+- Preserve the real setup branches. At Home and existing Pro configurations skip checkout, history import returns to Finish setup, and reduced-motion setup skips the launch animation.
+- Record local setup completion only after the worker accepts the successful setup state write.
+- Preserve pending screen events when setup finishes and retry temporary local-worker connection failures, so a fast completion or a slow telemetry request does not lose the visit history.
+- Pass a fresh setup-attempt ID through the existing installer pairing when telemetry is enabled, allowing the matching admin report to connect setup progress to the authorized account flow.
+
+The events follow the existing analytics settings, including `DO_NOT_TRACK`. Their schema accepts only known screen IDs, actions, error codes, timestamps, and random attempt/visit IDs. Prompts, filenames, URLs, credentials, and free-form error text are excluded. Sample previews do not emit setup events. The worker's long-lived anonymous identity is not aliased to an account.
+
+Per-screen history starts with this release. Older installers did not record these screens, so their missing events are not treated as zero conversions or abandonment.
+
+## Runtime fixes included since v15.10.1
+
+- Stop replaying stale local observer work after quota or authentication recovery. Live capture uses a bounded handoff; pending inputs expire after five minutes and are discarded on quota/authentication failure. Saved memories and original transcripts remain intact. Capture skipped during an outage is not automatically backfilled.
+- Restore the server viewer's read endpoints using the server's Postgres data and existing team/project authorization. Shared server log files remain unavailable to tenant keys.
+- Stop advertising `dumb_search` on the server runtime, where only the local worker can execute it.
+- Derive the default worker port per installation to avoid local port collisions while preserving the legacy Windows server port.
+- Show files outside a project under the home directory as `~/…` in generated context, rather than long chains of parent-directory segments.
+- Prefer the configured provider's agent for My Work refreshes.
+
+Full comparison: https://github.com/thedotmack/claude-mem/compare/v15.10.1...v15.11.0
+
+## [15.10.1] - 2026-11-06
+
+A bug-fix release. No new settings and no breaking changes.
+
+## Reliability
+
+- Context reads keep working when the database's `-wal` and wal-index files are missing. (#5432 by @0xABCD01)
+- Queued batches are kept, not dropped, when Claude replies with a 429 rate limit. (#5430 by @markjoin123)
+- A stalled session's buffered work is discarded once its resume attempts are used up, so it no longer blocks the queue. (#5414 by @0xABCD01)
+- SSE frames queued for a slow consumer are now bounded. (#5395 by @liuyinchu)
+- The observer response deadline has its own constant. (#5406 by @lunetics)
+- The observer fills missing proxy settings from your Claude user settings. (#5401 by @markjoin123)
+- `/api/processing-status` reports sessions the stall pacer abandoned and the observer's last successful store time. (#5409, #5408 by @xunguangzlj-cloud)
+- Settings: SessionStart toggles persist, and zero context counts are accepted via `POST /api/settings`. (#5393 by @0xABCD01)
+
+## Security
+
+- All TeamBrain routes reject requests from foreign origins. (#5411 by @DeryFerd)
+- Perplexity API keys are redacted. (#5407 by @mertkayacs)
+
+## Viewer and My Work
+
+- My Work sharing stays on for the cloud viewer. (#5433 by @thedotmack)
+- Unparseable work-view frames are dropped instead of throwing. (#5412 by @DeryFerd)
+- Hosted usage reaches PostHog again (`randomUUID` is called on `crypto`). (#5421 by @thedotmack)
+- Windows file paths are shortened on observation cards. (#5419 by @Plastic-time)
+
+## Search and smart-read
+
+- Dumb search keeps fetchable memories ahead of prompts. (#5397 by @liuyinchu)
+- Search recalls supplementary Han and extended Katakana characters. (#5396 by @liuyinchu)
+- Outlines include C and C++ unions, and Zig struct, enum, union and opaque declarations. (#5403, #5402 by @L4XB)
+
+## Install, CLI and platforms
+
+- The installer writes MCP JSON configs atomically. (#5413 by @DeryFerd)
+- Agent-driven installs are guided into the user's browser setup, and the docs list the terminal prompts an agent must relay. (#5379 by @thedotmack)
+- Cursor: reads and searches are recorded through Cursor's `postToolUse` hook. (#5399 by @Lumea-art)
+- `--help` after a verb shows help instead of running the command. (#5394 by @Bortlesboat)
+- Windows: the data directory removal command works, and integration tests stay out of the fast lane. (#5420, #5418 by @Plastic-time)
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.10.0...v15.10.1
+
 ## [15.10.0] - 2026-11-05
 
 ## What's new

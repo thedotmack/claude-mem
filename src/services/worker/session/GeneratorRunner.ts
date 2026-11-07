@@ -15,7 +15,7 @@ import {
   type SelectableProvider,
 } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
-import { normalizeAbortReason, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
+import { normalizeAbortReason, OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -104,6 +104,9 @@ function recordDeadlineExpiry(
 /** Quota prose: the observer's own reply said its allowance is spent. */
 export const OBSERVER_TEXT_QUOTA_MESSAGE = 'The observer replied that its usage allowance is exhausted';
 
+/** Rate-limit reply text (#5428): the provider throttled the observer's request. */
+export const OBSERVER_TEXT_RATE_LIMIT_MESSAGE = 'The observer replied that the provider rate limited the request (429)';
+
 /**
  * The pause to book for a quota exit.
  * - 'quota:observer_text': the provider's own refusal, written as the reply
@@ -161,8 +164,6 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
-  session.pausedAtMs = null;
-  session.pausedAuthScope = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
@@ -201,8 +202,6 @@ export async function startGeneratorWithProvider(
   });
 
   session.currentProvider = provider;
-  session.observerProfile = undefined;
-  session.observerAuth = undefined;
   session.lastGeneratorActivity = Date.now();
   // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
   // the fallback when a generator dies before dispatching its first prompt.
@@ -283,9 +282,8 @@ export async function startGeneratorWithProvider(
         return;
       }
 
-      // No retry here: a paused run keeps its buffered work for the next
-      // generator, and a failed one leaves the transcript as the recovery
-      // path. The next observation ingest starts a fresh generator via
+      // No retry here: a quota or auth pause discards its buffered work, and
+      // a failed run leaves the transcript as the only record. The next observation ingest starts a fresh generator via
       // ensureGeneratorRunning.
       failureBooked = true;
 
@@ -440,6 +438,19 @@ export async function startGeneratorWithProvider(
         // the user is told nothing.
         recordObserverFailure(provider, pause);
       }
+      // A 429 the CLI wrote as the reply (#5428) aborts without throwing too,
+      // so it is booked here as the throttle it is, the way bookClassifiedFailure
+      // books a thrown rate_limit that named no Retry-After: move the work to
+      // the fallback when one can serve, otherwise hold the provider for the
+      // short 'rate_limit' window, never the half-hour quota cooldown.
+      if (reason === OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON && !failureBooked) {
+        if (routeAroundUnservableProvider(provider, OBSERVER_TEXT_RATE_LIMIT_MESSAGE, 'rate_limit', session.observerProfile) !== null) {
+          scheduledResume = { afterMs: 0, source: 'provider-fallback' };
+        } else {
+          recordQuotaExhausted(provider, OBSERVER_TEXT_RATE_LIMIT_MESSAGE, 'rate_limit', undefined, session.observerProfile);
+        }
+        recordObserverFailure(provider, { message: OBSERVER_TEXT_RATE_LIMIT_MESSAGE, kind: 'rate_limit' });
+      }
       // A signed-out Claude observer answers with the CLI's own prose ("Not
       // logged in · Please run /login"). ResponseProcessor resets the batch to
       // pending and aborts with 'auth:observer_text' rather than throwing, so
@@ -519,15 +530,6 @@ export async function startGeneratorWithProvider(
         resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
 
-      // A refused stand-in is not the user's provider failing: the fallback's
-      // credential was refused (and is now held), but the primary it stood in
-      // for can take the work back once it recovers. Left as an auth pause the
-      // periodic sweep would skip the session for good, so mark it resumable;
-      // the sweep paces itself on the primary's breaker.
-      if ((session.fallbackFrom != null || session.claudeAuthOverride != null) && session.pausedReason === 'auth') {
-        session.pausedReason = 'provider_switch';
-      }
-
       // Paused work that nothing else is guaranteed to pick up resumes on its
       // own — without it, a session's last event (a summarize) stays in RAM:
       //  - a cmem fallback (or a failed gateway re-probe) moves to the
@@ -535,8 +537,8 @@ export async function startGeneratorWithProvider(
       //  - a rate limit that named a Retry-After resumes after it, a bounded
       //    number of times in a row (the catch decided which);
       //  - a recycle reset its batch to pending and dropped the conversation.
-      // Other quota and auth pauses deliberately do NOT resume — those wait
-      // on the user. A zero delay still defers a tick: `session.generatorPromise`
+      // Quota and auth exits have already discarded their buffered work
+      // (handleGeneratorExit), so nothing of theirs resumes. A zero delay still defers a tick: `session.generatorPromise`
       // is assigned after this chain is built, so resuming inline could be
       // overwritten by that assignment and leave a settled promise blocking
       // every later start.
@@ -578,13 +580,30 @@ export async function startGeneratorWithProvider(
       if (reason === 'transport:response_stall' && !nothingLeftAfterParking) {
         const { resume, attempts } = planResponseStallResume(session);
         if (!resume) {
-          session.stallResumesExhaustedAt = Date.now();
-          logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
-            sessionId: session.sessionDbId,
-            consecutiveStalls: attempts,
-            maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
-            pendingCount: sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
-          });
+          // The bounded resumes are spent. Holding the buffer for "the next
+          // captured event" stranded it until a worker restart whenever the
+          // content session had already ended (#5405), and a later timer or
+          // event replaying it would be the stale-backlog spend the observer
+          // lifecycle forbids. Discard it now and say how much went; the next
+          // captured event still starts fresh work. A newer generator that a
+          // captured event started while this exit was handled owns the
+          // buffer, so it is left alone.
+          const newerGeneratorRunning = session.generatorPromise != null && session.generatorPromise !== generatorPromise;
+          if (!newerGeneratorRunning) {
+            session.stallResumesExhaustedAt = Date.now();
+            const buffer = sessionManager.getMessageBuffer();
+            const pendingCount = buffer.getPendingCount(session.sessionDbId);
+            const parkedCount = buffer.getParkedMessages(session.sessionDbId).length;
+            const discarded = sessionManager.discardBufferedWork(session.sessionDbId);
+            logger.warn('SESSION', `Observer went unanswered ${attempts} times in a row — discarding its buffered work instead of resuming`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+              pendingCount,
+              parkedCount,
+              discarded,
+            });
+          }
         } else {
           // The delayed retry may hit a quota cooldown and return without
           // starting a generator. Keep this pause eligible for the periodic

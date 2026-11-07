@@ -346,16 +346,25 @@ Review candidates via `GET /api/dedup/candidates?project=<name>` (add `&status=p
 unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/resolve` and a body of
 `{"status": "distinct"}` or `{"status": "dismissed"}`. A later scan keeps the verdict.
 
-### Screenshots and Images (opt-in)
+### Screenshots and Images
 
-claude-mem can keep the screenshots and images that tools return (browser
-screenshots, a `Read` of an image file inside the project) and, separately,
-let the observer model look at them. Both switches are **off by default** and
-independent: turning on capture does not send any image to a model.
+claude-mem keeps the screenshots and images that tools return (browser
+screenshots, a `Read` of an image file inside the project) and shows them on
+the request they belong to in My Work, both on this computer and at
+work.cmem.ai. Keeping images is **on by default**. Letting the observer model
+look at them is a separate switch that is **off by default**: keeping images
+never sends one to a model.
+
+To stop keeping images, turn off **Keep images** under **Images** in the
+memory viewer's Settings (`/viewer` on your worker's port), or set
+`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` to `false`. Images already kept stay until
+their event is deleted. An install whose `settings.json` still holds the old
+`false` default is moved to `true` once, on the first worker start after the
+update; a `false` you set after that is kept.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `false` | Convert and retain images from tool results |
+| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `true` | Convert and retain images from tool results, and show them in My Work (the **Keep images** switch) |
 | `CLAUDE_MEM_MEDIA_INFERENCE_ENABLED` | `false` | Send retained images to the observer model when the endpoint qualifies |
 
 **What is stored.** Only PNG, JPEG and WebP images, at most four per tool
@@ -374,15 +383,19 @@ source details in the image viewer and never appears in feeds, logs or sync.
 readable only by your user. The worker serves them only to the viewer page on
 the same loopback port; other origins, LAN clients and proxies are refused.
 
-**How long it is kept.** An image lives as long as an observation or its
-source tool event still references it. Deleting an observation, a session or
-a project removes the references at once; the files are removed by a
-background cleanup within about 30 seconds (retried with backoff if the disk
-refuses). Images are never kept for analytics.
+**How long it is kept.** Images are kept on this computer until their event
+is deleted: an image lives as long as an observation or its source tool event
+still references it. There is no total size cap and no age limit; each image
+is at most about 3.25&nbsp;MiB on disk and an event keeps at most four.
+Deleting an observation, a session or a project removes the references at
+once; the files are removed by a background cleanup within about 30 seconds
+(retried with backoff if the disk refuses). Images are never kept for
+analytics.
 
 **Cloud upload.** When capture is on *and* [Cloud Sync](cloud-sync) is
 configured, each converted image is uploaded privately to your cmem.ai account
-so your other devices can show it; they download it on first view. Deleting
+so your other devices and My Work at work.cmem.ai can show it; they download
+it on first view. Deleting
 it locally also deletes the cloud copy. Observation text syncs without the
 image bytes.
 

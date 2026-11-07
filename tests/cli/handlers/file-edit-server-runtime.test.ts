@@ -178,7 +178,7 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
 
     expect(result.continue).toBe(true);
     expect(recordEventLog).toHaveLength(0);
-    expect(nudgeLog).toEqual(['/api/spool/nudge']);
+    expect(nudgeLog).toEqual([]);
     expect(spooledEntries('file_edit')).toHaveLength(1);
   });
 

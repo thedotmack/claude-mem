@@ -1,11 +1,11 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { stripUtf8Bom } from '../../shared/atomic-json.js';
+import { stripUtf8Bom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
@@ -37,7 +37,10 @@ export function writeMcpJsonConfig(
 
   existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
 
-  writeFileSync(configFilePath, JSON.stringify(existingConfig, null, 2) + '\n');
+  // Other MCP servers live in this file too, so replace it rather than truncate
+  // it: an interrupted write must not leave a config every MCP host then fails
+  // to parse. writeJsonFileAtomic writes the same bytes via a temp file + rename.
+  writeJsonFileAtomic(configFilePath, existingConfig);
 }
 
 interface McpInstallerConfig {
@@ -130,7 +133,7 @@ export function uninstallCopilotCliMcpIntegration(): number {
   const config = readJsonSafe<Record<string, any>>(configPath, {});
   if (!config.mcpServers?.['claude-mem']) return 1;
   delete config.mcpServers['claude-mem'];
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeJsonFileAtomic(configPath, config);
   console.log(`  Removed claude-mem from the Copilot CLI MCP servers in: ${configPath}`);
   return 0;
 }
@@ -291,14 +294,17 @@ export function uninstallGooseMcpIntegration(configPath: string = getGooseConfig
   if (!existsSync(configPath)) return 1;
   const updated = removeGooseExtension(stripUtf8Bom(readFileSync(configPath, 'utf-8')));
   if (updated === null) return 1;
-  writeFileSync(configPath, updated);
+  // The Goose config is a user-owned YAML file other extensions share: write it
+  // through a temp file and a rename so an interrupted uninstall cannot leave a
+  // half-written config.yaml that stops Goose from starting.
+  writeTextFileAtomic(configPath, updated);
   console.log(`  Removed claude-mem from the Goose extensions of: ${configPath}`);
   return 0;
 }
 
 export function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
   const yamlContent = existsSync(configPath) ? stripUtf8Bom(readFileSync(configPath, 'utf-8')) : '';
-  writeFileSync(configPath, upsertGooseExtension(yamlContent, mcpServerPath));
+  writeTextFileAtomic(configPath, upsertGooseExtension(yamlContent, mcpServerPath));
   console.log(`  Registered claude-mem in the Goose extensions of: ${configPath}`);
 
   console.log(`

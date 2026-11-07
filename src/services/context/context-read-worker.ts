@@ -4,7 +4,7 @@ import { DB_PATH } from '../../shared/paths.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { resolveRuntimeContext } from '../hooks/runtime-selector.js';
-import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { SQLITE_BUSY_TIMEOUT_MS, openReaderDatabase } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 import { getWorkStateEntries, scopeWorkStateEntries } from '../sqlite/work-state.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
@@ -16,7 +16,7 @@ if (!parentPort) throw new Error('Context reader requires a worker thread');
 const port = parentPort;
 
 function readDatabase<T>(read: (db: Database) => T): T {
-  const db = new Database(DB_PATH, { readonly: true, create: false });
+  const db = openReaderDatabase(DB_PATH);
   try {
     db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     db.run('PRAGMA query_only = ON');
@@ -39,7 +39,7 @@ let keywordSearch: SessionSearch | null = null;
 
 function keywordSearchReader(): SessionSearch {
   if (keywordSearch) return keywordSearch;
-  const db = new Database(DB_PATH, { readonly: true, create: false });
+  const db = openReaderDatabase(DB_PATH);
   try {
     db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     keywordSearch = new SessionSearch(db, { readOnly: true });

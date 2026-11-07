@@ -119,12 +119,19 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
   );
 }
 
-// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
-// the HTTP write list below, this set keeps it from being persisted via POST.
+// Spawn-binary paths and filesystem/listen redirects: file/env only. Even if
+// a key is accidentally re-added to the HTTP write list below, this set keeps
+// it from being persisted via POST. CLAUDE_MEM_DATA_DIR is where memories and
+// every secret live — an HTTP-writable redirect hands them to any caller that
+// reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
+// it remotely could re-expose the worker on a non-loopback address without
+// the Observation TV guard's token ever being written.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_HOST',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -246,10 +253,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_PROVIDER_BY_SOURCE',
       'CLAUDE_MEM_OBSERVER_ENABLED',
+      // The viewer's "Keep images" switch. Inference stays file/env only: it
+      // sends images to a paid model and has no switch.
+      'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -280,7 +289,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
       'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
       'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
-      'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
@@ -367,11 +375,10 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
-    if (
-      settings.CLAUDE_MEM_OBSERVER_ENABLED !== undefined
-      && !['true', 'false'].includes(settings.CLAUDE_MEM_OBSERVER_ENABLED)
-    ) {
-      return { valid: false, error: 'CLAUDE_MEM_OBSERVER_ENABLED must be "true" or "false"' };
+    for (const key of ['CLAUDE_MEM_OBSERVER_ENABLED', 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'] as const) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
+      }
     }
 
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {

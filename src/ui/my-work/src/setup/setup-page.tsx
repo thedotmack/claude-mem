@@ -16,6 +16,8 @@ import { SavingsScreen } from './screens/savings-screen'
 import { ScanScreen } from './screens/scan-screen'
 import { prefersReducedMotion } from './format'
 import { WorkspaceScreen } from './screens/workspace-screen'
+import { connectSetupTelemetry, createSetupTracker, sendSetupEvent } from './setup-telemetry'
+import type { SetupError } from '../../../../shared/setup-funnel.ts'
 import './setup.css'
 
 const PARAMS = new URLSearchParams(window.location.search)
@@ -53,6 +55,17 @@ function ProgressBar({ step, branch, showCheckout }: { step: SetupStep; branch: 
 
 export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const source = useSetupSource()
+  const telemetry = useMemo(() => createSetupTracker(sendSetupEvent), [])
+  const [branchConfirmed, setBranchConfirmed] = useState(false)
+  useEffect(() => {
+    if (source?.kind !== 'local') return
+    const disconnect = connectSetupTelemetry(context => telemetry.start(context))
+    const visibility = () => telemetry.visibility(document.visibilityState !== 'hidden')
+    const leaving = () => telemetry.visibility(false)
+    document.addEventListener('visibilitychange', visibility)
+    window.addEventListener('pagehide', leaving)
+    return () => { disconnect(); document.removeEventListener('visibilitychange', visibility); window.removeEventListener('pagehide', leaving) }
+  }, [source, telemetry])
   const [data, setData] = useState<SetupData>(EMPTY_SETUP_DATA)
   useEffect(() => source?.subscribe(setData), [source])
 
@@ -62,10 +75,12 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const changeImproveProduct = async (checked: boolean) => {
     if (!source) return
     const revision = ++preferenceRevision.current
+    const failed = telemetry.failure('usage_preference_failed')
     // Keep the user's choice visible even if an earlier scan response arrives after their click.
     setImproveProduct(checked)
     setPreferenceError(null)
     try { await source.setImproveProduct(checked) } catch (error) {
+      failed()
       if (revision !== preferenceRevision.current) return
       setImproveProduct(null)
       setPreferenceError(`Could not save this choice: ${error instanceof Error ? error.message : String(error)}`)
@@ -80,10 +95,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     consentPending.current = true
     setConsentError(null)
     setConsentSending(true)
+    const failed = telemetry.failure('upload_consent_failed')
+    telemetry.action(upload ? 'upload_allowed' : 'upload_skipped')
     try {
       // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
       await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
     } catch (error) {
+      failed()
       setConsentError(`Could not confirm your choice: ${error instanceof Error ? error.message : String(error)}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.`)
     } finally { consentPending.current = false; setConsentSending(false) }
   }
@@ -96,7 +114,10 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     retryPending.current = true
     setRetrying(true)
     setRetryError(null)
+    telemetry.action('retry_scan')
+    const failed = telemetry.failure('scan_retry_failed')
     try { await source.retryScan() } catch (error) {
+      failed()
       setRetryError(error instanceof Error ? error.message : String(error))
     } finally {
       retryPending.current = false
@@ -132,6 +153,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   const step = guardStep(requested, flow)
+  useEffect(() => { if (data.scan.phase === 'failed') telemetry.error('scan_failed') }, [data.scan.phase, telemetry])
+  useEffect(() => { if (data.checkout?.state === 'failed') telemetry.error('checkout_failed') }, [data.checkout?.state, telemetry])
+  useEffect(() => { if (data.installer?.stage === 'failed') telemetry.error('installer_failed') }, [data.installer?.stage, telemetry])
+  useEffect(() => { if (data.historyImport?.error) telemetry.error('import_failed') }, [data.historyImport?.error, telemetry])
+  useEffect(() => {
+    if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed, importComplete: flow.importStatus === 'complete' })
+  }, [source, step, flow.branch, branchConfirmed, flow.importStatus, telemetry])
   const tools = useMemo(() => SETUP_TOOLS.filter((tool) => flow.branch === 'go' || tool.kind === 'local'), [flow.branch])
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])
 
@@ -149,8 +177,9 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   // The terminal waits on these two hand-offs; a refusal stays on this screen and says why.
   const [handOffError, setHandOffError] = useState<string | null>(null)
-  const handOff = async (send: () => Promise<void>): Promise<boolean> => {
-    try { await send() } catch (error) { setHandOffError(error instanceof Error ? error.message : String(error)); return false }
+  const handOff = async (send: () => Promise<void>, code: SetupError): Promise<boolean> => {
+    const failed = telemetry.failure(code)
+    try { await send() } catch (error) { failed(); setHandOffError(error instanceof Error ? error.message : String(error)); return false }
     setHandOffError(null)
     return true
   }
@@ -158,7 +187,9 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   // Leaving Token Savings is when both halves of the choice are final, so that is when the installer gets it.
   const toFinishSetup = async (changes: Partial<SetupFlowState>) => {
     const merged = { ...flow, ...changes }
-    if (!await handOff(() => source!.choose({ branch: merged.branch, memoryBilling: merged.memoryBilling }))) return
+    if (!await handOff(() => source!.choose({ branch: merged.branch, memoryBilling: merged.memoryBilling }), 'choice_failed')) return
+    setBranchConfirmed(true)
+    telemetry.action('choice_committed', { branch: merged.branch, branch_confirmed: true })
     // Detected tools come pre-ticked the first time Finish Setup opens for this branch.
     const available = SETUP_TOOLS.filter((tool) => merged.branch === 'go' || tool.kind === 'local').map((tool) => tool.id)
     const finishTools = merged.finishTools.length ? merged.finishTools.filter((id) => available.includes(id)) : data.detectedTools.filter((id) => available.includes(id))
@@ -173,30 +204,38 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   // The installer stops after a failed hand-off (e.g. On The Go sign-in could not start); only the terminal can restart it.
   const installerFailed = data.installer?.stage === 'failed'
+  const finishAll = async () => {
+    // Completion rides the successful state write before the installer can restart the worker.
+    await Promise.race([telemetry.flush(), new Promise(resolve => setTimeout(resolve, 300))])
+    if (await handOff(() => source!.complete(flow.finishTools, telemetry.completionEvents()), 'complete_failed')) {
+      telemetry.complete()
+      onComplete()
+    }
+  }
 
   const screens: Record<SetupStep, () => ReactNode> = {
     scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice} onContinue={() => update({ revealContinued: true }, 'choice')} />,
-    choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
+    choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => { telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
     savings: () => (
       <SavingsScreen usage={data.usage} branch={flow.branch}
         onPro={() => void toFinishSetup({ branch: 'go', memoryBilling: 'hosted' })}
         onExistingPlan={() => void toFinishSetup({ memoryBilling: 'existing' })}
         onSkip={() => void toFinishSetup({})} />
     ),
-    checkout: () => <CheckoutScreen checkout={data.checkout} installerStopped={installerFailed} onBack={() => setRequested('savings')} onContinue={() => void handOff(() => source!.checkout())} />,
+    checkout: () => <CheckoutScreen checkout={data.checkout} installerStopped={installerFailed} onBack={() => setRequested('savings')} onContinue={() => { telemetry.action('open_checkout'); void handOff(() => source!.checkout(), 'checkout_failed') }} />,
     'finish-setup': () => (
       <FinishSetupScreen branch={flow.branch} tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
         history={flow.branch === 'go' && historyAvailable ? data.history : null} importStatus={flow.importStatus}
         importResult={data.historyImport}
-        onImport={() => void handOff(() => source!.startHistoryImport()).then((started) => { if (started) update({ importStatus: 'running' }, 'import') })}
-        onSkipImport={() => update({ importStatus: 'skipped' })}
+        onImport={() => { telemetry.action('start_import'); void handOff(() => source!.startHistoryImport(), 'import_failed').then((started) => { if (started) update({ importStatus: 'running' }, 'import') }) }}
+        onSkipImport={() => { telemetry.action('skip_import'); update({ importStatus: 'skipped' }) }}
         onBack={nextAfterSavings(flow) === 'checkout' ? () => setRequested('checkout') : choiceLocked(data.installer?.stage) ? undefined : () => setRequested('savings')}
         onContinue={() => void finishSetup()} />
     ),
     import: () => <ImportScreen progress={data.historyImport} />,
     launch: () => <LaunchScreen tools={pickedTools} onDone={() => setRequested('workspace')} />,
-    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} forgetNote={(id) => source!.forgetNote(id)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
+    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} forgetNote={(id) => source!.forgetNote(id)} onContinue={() => void finishAll()} />,
   }
 
   return (

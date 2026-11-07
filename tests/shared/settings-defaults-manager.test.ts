@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync
 import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from '../../src/shared/install-port.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
@@ -17,6 +18,17 @@ function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
   } finally {
     console.warn = originalWarn;
   }
+}
+
+function defaultsForSettingsPath(dataDir: string) {
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const workerPort = String(getDefaultWorkerPort(dataDir));
+  const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+  defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+  defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+  defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+  defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+  return defaults;
 }
 
 describe('SettingsDefaultsManager', () => {
@@ -58,6 +70,26 @@ describe('SettingsDefaultsManager', () => {
     }
   });
 
+  it('ships the Grok Bot awareness push off with no agent IDs until explicitly configured', () => {
+    const defaults = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
+    };
+    expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
+
+    const optIn = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
+    };
+    writeFileSync(settingsPath, JSON.stringify(optIn));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+
+    writeFileSync(settingsPath, '{}');
+    Object.assign(process.env, optIn);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+  });
+
   describe('loadFromFile', () => {
     describe('file does not exist', () => {
       it('should create file with defaults when file does not exist', () => {
@@ -66,7 +98,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(existsSync(settingsPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(JSON.parse(readFileSync(settingsPath, 'utf-8')));
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
       });
 
       it('should write valid JSON to the created file', () => {
@@ -112,7 +145,7 @@ describe('SettingsDefaultsManager', () => {
 
         expect(existsSync(join(tempDir, 'nested', 'deep'))).toBe(true);
         expect(existsSync(nestedPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(join(tempDir, 'nested', 'deep'))));
       });
 
       it('should create deeply nested directories recursively', () => {
@@ -149,7 +182,7 @@ describe('SettingsDefaultsManager', () => {
         const defaults = SettingsDefaultsManager.getAllDefaults();
 
         expect(result.CLAUDE_MEM_MODEL).toBe('partial-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(defaults.CLAUDE_MEM_WORKER_PORT);
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
         expect(result.CLAUDE_MEM_WORKER_HOST).toBe(defaults.CLAUDE_MEM_WORKER_HOST);
         expect(result.CLAUDE_MEM_LOG_LEVEL).toBe(defaults.CLAUDE_MEM_LOG_LEVEL);
       });
@@ -157,6 +190,7 @@ describe('SettingsDefaultsManager', () => {
       it('should not modify existing file when loading', () => {
         const customSettings = {
           CLAUDE_MEM_MODEL: 'do-not-change',
+          CLAUDE_MEM_WORKER_PORT: '41234',
           CUSTOM_KEY: 'should-persist', // Extra key not in defaults
         };
         writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2));
@@ -166,6 +200,16 @@ describe('SettingsDefaultsManager', () => {
 
         const afterContent = readFileSync(settingsPath, 'utf-8');
         expect(afterContent).toBe(originalContent);
+      });
+
+      it('uses the data-directory port default without rewriting a partial settings file', () => {
+        const content = JSON.stringify({ CLAUDE_MEM_MODEL: 'existing-model', CUSTOM_KEY: 'keep' });
+        writeFileSync(settingsPath, content);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
       });
 
       it('should handle all settings keys correctly', () => {
@@ -241,7 +285,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains invalid JSON', () => {
@@ -249,7 +293,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains only whitespace', () => {
@@ -257,7 +301,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains null', () => {
@@ -265,7 +309,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains array instead of object', () => {
@@ -273,7 +317,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains primitive value', () => {
@@ -281,7 +325,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
     });
 
@@ -987,6 +1031,125 @@ describe('SettingsDefaultsManager', () => {
       expect(warnings.filter((line) => line.includes('Migrated CLAUDE_MEM_'))).toHaveLength(2);
     });
 
+    // Image capture became on by default. Every settings.json seeded while it
+    // was off holds 'false', and a persisted value wins over DEFAULTS, so the
+    // new default would never reach those installs without this one move. A
+    // 'false' saved afterwards (the "Keep images" switch) must stay, and a
+    // file the move cannot rewrite must keep saying what the worker does.
+    describe('image capture default-on migration', () => {
+      const KEY = 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
+
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes(KEY));
+      }
+
+      it('ships capture on and inference off, in the worker and the viewer', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+        expect(defaults[KEY]).toBe('true');
+        expect(defaults.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED).toBe('false');
+        expect(VIEWER_DEFAULT_SETTINGS[KEY]).toBe('true');
+      });
+
+      it('seeds a fresh settings file with capture on', () => {
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result[KEY]).toBe('true');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe('true');
+      });
+
+      it('moves the seeded false to true once, with one log line, and leaves inference off', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          [KEY]: 'false',
+          CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value[KEY]).toBe('true');
+        expect(first.value.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED).toBe('false');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          [KEY]: 'true',
+          CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
+        });
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain('off the old false default to true:');
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value[KEY]).toBe('true');
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ [KEY]: 'false' })],
+        ['on an install that already had capture on', JSON.stringify({ [KEY]: 'true' })],
+        ['on a settings file created fresh', null],
+      ])('keeps "Keep images" off when the user turns it off %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: 'false' }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value[KEY]).toBe('false');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe('false');
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('leaves a JSON boolean false written by hand untouched', () => {
+        const raw = JSON.stringify({ [KEY]: false });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result[KEY]).toBe('false');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it('a read-only load keeps the saved false and writes nothing', () => {
+        const raw = JSON.stringify({ [KEY]: 'false' });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
+
+        expect(result[KEY]).toBe('false');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        // The worker's writable load still gets its one chance afterwards.
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath, false)[KEY]).toBe('true');
+      });
+
+      it('keeps the saved false, warning once, when the move cannot be saved', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) return;
+        const storeDir = join(tempDir, 'read-only-store');
+        mkdirSync(storeDir);
+        const storedSettings = join(storeDir, 'settings.json');
+        const raw = JSON.stringify({ [KEY]: 'false' });
+        writeFileSync(storedSettings, raw);
+        symlinkSync(storedSettings, settingsPath);
+        chmodSync(storeDir, 0o555);
+        try {
+          const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
+
+          for (const { value } of loads) expect(value[KEY]).toBe('false');
+          const failures = loads.flatMap(({ warnings }) => migrationWarnings(warnings));
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toContain('keeping the saved false');
+          expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
+        } finally {
+          chmodSync(storeDir, 0o755);
+        }
+      });
+
+      it('an environment override still wins over the moved value', () => {
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: 'false' }));
+        process.env[KEY] = 'false';
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath)[KEY]).toBe('false');
+      });
+    });
+
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
     // sign-in keys were declared, an installer-written settings.json lost
     // them on every load (the round-trip-loss gap fixed by the install-first
@@ -1050,7 +1213,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should ignore unknown keys in file', () => {
@@ -1183,7 +1346,7 @@ describe('SettingsDefaultsManager', () => {
   describe('get', () => {
     it('should return default value for key', () => {
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
-      const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      const expectedPort = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
     });
 
@@ -1195,7 +1358,7 @@ describe('SettingsDefaultsManager', () => {
 
   describe('getInt', () => {
     it('should return integer value for numeric string', () => {
-      const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
+      const expectedPort = Number(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
     });
@@ -1334,7 +1497,7 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      const expectedDefault = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      const expectedDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe(expectedDefault); 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });
