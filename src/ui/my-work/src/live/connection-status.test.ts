@@ -96,11 +96,34 @@ describe('cloud viewer feed status', () => {
     const status = getConnectionStatus({ ...live, where: 'cloud' })
     assert.equal(status.state, 'live')
     assert.equal(status.label, 'Live updates')
-    assert.ok(status.detail.includes('as your computers sync'))
+    assert.ok(status.detail.includes('Incoming synchronization is reported separately'))
+    assert.equal(status.sync?.state, 'unknown')
     assert.ok(status.tooltip.includes(`Last successful cloud check: ${check}`))
     const stale = getConnectionStatus({ ...live, where: 'cloud', transportConnected: false, reconnecting: true, now: 99_000 + LOCAL_FEED_STALE_AFTER_MS + 1 })
     assert.equal(stale.label, 'Cloud feed stale')
     assert.ok(!stale.detail.includes('this computer'))
+  })
+  it('keeps live feed transport separate from a failed download lane', () => {
+    const status = getConnectionStatus({ ...live, where: 'cloud', syncReceivedAt: 99_000,
+      sync: { configured: true, state: 'offline', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
+        message: 'Cloud download failed.', download: { lastSuccessAt: 99_000 }, projection: { remaining: null },
+        completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' } } })
+    assert.equal(status.isLive, true)
+    assert.equal(status.sync?.isCurrent, false)
+    assert.equal(status.sync?.label, 'Cloud sync unavailable')
+  })
+  it('fresh heartbeat receipts do not make an old activity projection fresh', () => {
+    const status = getConnectionStatus({ ...live, activityCheckedAt: '2026-10-17T11:55:00.000Z',
+      activityReceivedAt: 99_000, activityAgeAtReceipt: 130_000 })
+    assert.equal(status.state, 'stale')
+    assert.equal(status.label, 'Saved activity stale')
+    assert.ok(status.tooltip.includes('Activity last inspected'))
+  })
+  it('does not claim fresh activity when source or browser clock evidence is invalid', () => {
+    const status = getConnectionStatus({ ...live, activityCheckedAt: check,
+      activityReceivedAt: null, activityAgeAtReceipt: null })
+    assert.equal(status.state, 'stale')
+    assert.equal(status.label, 'Activity freshness unknown')
   })
 })
 

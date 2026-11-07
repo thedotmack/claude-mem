@@ -9,6 +9,8 @@ import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
 import { hasInjected, markInjected } from '../../shared/kimi-context-gate.js';
 import { takeTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { sessionEndHandler } from './session-end.js';
@@ -104,10 +106,14 @@ export const sessionInitContextHandler: EventHandler = {
 // (every subagent thread, since Codex sends SessionStart only to the root)
 // gets its memory timeline back here, once, as PostToolUse additionalContext.
 // The observation is recorded first, so the context fetch can never cost the
-// write. See src/shared/codex-compaction-gate.ts.
+// write. See src/shared/codex-compaction-gate.ts. With observer capture off
+// nothing is recorded, but the thread still gets its timeline back: reading
+// memory stays on, and hookCommand leaves this case to this handler.
 export const observationWithPendingTimelineHandler: EventHandler = {
   async execute(input) {
-    const observationResult = await observationHandler.execute(input);
+    const observationResult: HookResult = isObserverCaptureEnabled(loadFromFileOnce())
+      ? await observationHandler.execute(input)
+      : { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     if (input.platform !== 'codex' || !takeTimelinePending(input.sessionId, input.agentId)) {
       return observationResult;
     }

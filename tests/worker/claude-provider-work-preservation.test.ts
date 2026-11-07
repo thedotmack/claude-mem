@@ -464,7 +464,7 @@ describe('work preservation — the SDK stream ends or breaks', () => {
     });
   }
 
-  it('a spent API key thrown mid-batch pauses on quota and preserves the batch', async () => {
+  it('a spent API key discards the batch when the generator exits', async () => {
     const h = createHarness(1);
     liveSessions.push(h.session);
     const { run } = await claimFirstObservation(h);
@@ -480,7 +480,7 @@ describe('work preservation — the SDK stream ends or breaks', () => {
     expect(h.pending()).toBe(1);
     expect(h.session.claimedMessageIds).toEqual([]);
     const outcome = await h.exit();
-    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
+    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 0 });
   });
 
   it('books observer health once when the stream keeps exiting without answering', async () => {
@@ -581,7 +581,7 @@ describe('work preservation — ordering and durable state', () => {
   });
 
 
-  it('carries the actual quota-guard window out of the stream and keeps the claimed batch', async () => {
+  it('carries the quota-guard window and skips the batch on exit', async () => {
     const h = createHarness(1);
     liveSessions.push(h.session);
     const { run, claimedId } = await claimFirstObservation(h);
@@ -595,15 +595,9 @@ describe('work preservation — ordering and durable state', () => {
       expect(h.session.abortController.signal.aborted).toBe(true);
       expect(h.pending()).toBe(1);
       const outcome = await h.exit();
-      expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
+      expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 0 });
 
-      // The next generation re-yields the message the guard interrupted.
-      h.session.abortController = new AbortController();
-      const next = h.sessionManager.getMessageIterator(SESSION_ID);
-      const reclaimed = await withTimeout(next.next(), 'reclaim after quota guard');
-      expect(reclaimed.value?._persistentId).toBe(claimedId);
-      h.session.abortController.abort();
-      await next.return?.(undefined);
+      expect(h.sessionManager.getMessageBuffer().peekTypes(SESSION_ID)).toEqual([]);
     } finally {
       globalRateLimitStore.set({ rateLimitType: 'seven_day', utilization: 0, status: 'allowed' });
     }
@@ -852,7 +846,56 @@ describe('work preservation — a generator that throws, seen from the runner', 
     }
   });
 
-  it('preserves a queued batch and records the Anthropic verification remedy (#5251)', async () => {
+  it('a model refusal is booked as a model outage, not dropped as prose (#5315)', async () => {
+    const booked: unknown[][] = [];
+    const { routes, session } = await buildRoutesWithRealProvider(6191);
+    liveSessions.push(session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation((...args: unknown[]) => {
+      booked.push(args);
+    });
+    const healthDir = mkdtempSync(join(tmpdir(), 'claude-mem-model-refusal-'));
+    try {
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await sdkStarted();
+      await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+
+      // The frame Claude Code 2.1.318 sends for ANTHROPIC_DEFAULT_HAIKU_MODEL=auto.
+      sdk().frame({
+        type: 'assistant',
+        error: 'model_not_found',
+        message: {
+          model: '<synthetic>',
+          content: [{ type: 'text', text: "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model." }],
+          usage: {},
+        },
+      });
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator chain after model refusal');
+      await settle(5);
+
+      expect(booked).toHaveLength(1);
+      expect(booked[0][0]).toBe('claude');
+      const detail = booked[0][1] as { kind: string; code: string; action: string; message: string };
+      expect(detail.kind).toBe('unrecoverable');
+      expect(detail.code).toBe('model_unavailable');
+      expect(detail.message).not.toContain('prose');
+
+      recordFailure.mockRestore();
+      const healthPath = join(healthDir, 'observer-health.json');
+      observerHealth.recordObserverFailure('claude', detail, healthPath);
+      const warning = observerHealth.renderObserverHealthWarning(observerHealth.readObserverHealth(healthPath)!);
+      expect(warning).toContain('Latest error: There\'s an issue with the selected model (auto)');
+      expect(warning).toContain('What to do: Set CLAUDE_MEM_MODEL in ~/.claude-mem/settings.json');
+      expect(warning).toContain('Restarting will NOT help here');
+      expect(warning).not.toContain('Click to restart');
+    } finally {
+      recordFailure.mockRestore();
+      rmSync(healthDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a queued batch and records the Anthropic verification remedy (#5251)', async () => {
     const cleanUp = useCredentialFallback('api-key');
     const booked: unknown[][] = [];
     const { routes, session, sessionManager, finalizeCalls } = await buildRoutesWithRealProvider(6110);
@@ -869,7 +912,7 @@ describe('work preservation — a generator that throws, seen from the runner', 
       await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator after verification hold');
       await settle(5);
 
-      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(0);
       expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
       expect(finalizeCalls()).toBe(0);
       expect(session.abortReason).toBeNull();
@@ -924,7 +967,7 @@ describe('work preservation — a generator that throws, seen from the runner', 
     await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
   }
 
-  it('a spent API key thrown mid-batch arms the breaker for the key, and the next run goes on the subscription login', async () => {
+  it('a spent API key thrown mid-batch arms the breaker for the key, and fresh work uses the subscription login', async () => {
     const cleanUp = useCredentialFallback('subscription');
     const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation(() => {});
     try {
@@ -941,8 +984,10 @@ describe('work preservation — a generator that throws, seen from the runner', 
 
       expect(getQuotaCooldown('claude')?.auth).toBe('api-key');
       expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
-      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(0);
 
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(0);
+      sessionManager.getMessageBuffer().enqueue(session.sessionDbId, { type: 'observation', tool_name: 'Read', toolUseId: 'fresh-after-quota' });
       currentSdk = null;
       await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
       expect(session.claudeAuthOverride).toBe('subscription');
@@ -953,12 +998,12 @@ describe('work preservation — a generator that throws, seen from the runner', 
     }
   });
 
-  it('a guard-paused login the CLI manages itself (no token injected) hands over to the fallback API key', async () => {
+  it('a guard-paused login the CLI manages itself (no token injected) sends fresh work to the fallback API key', async () => {
     const cleanUp = useCredentialFallback('api-key');
     try {
       // The token read came back expired or absent: no key, no token, no gateway.
       spawnCredentials = {};
-      const { routes, session } = await buildRoutesWithRealProvider(6121);
+      const { routes, session, sessionManager } = await buildRoutesWithRealProvider(6121);
       liveSessions.push(session);
       await startAndClaim(routes, session);
       expect(session.observerAuth).toBe('subscription');
@@ -968,6 +1013,8 @@ describe('work preservation — a generator that throws, seen from the runner', 
       await settle(5);
       expect(getQuotaCooldown('claude')?.auth).toBe('subscription');
 
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(0);
+      sessionManager.getMessageBuffer().enqueue(session.sessionDbId, { type: 'observation', tool_name: 'Read', toolUseId: 'fresh-after-quota' });
       currentSdk = null;
       await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
       expect(session.claudeAuthOverride).toBe('api-key');

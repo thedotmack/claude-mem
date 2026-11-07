@@ -28,6 +28,12 @@ interface AuthOk {
 	userId: string;
 	deviceId: string | null;
 	deviceName: string | null;
+	/**
+	 * Epoch ms at which the verdict backing this request expires. A fresh
+	 * verdict expires with the TTL that was just cached; a cached one expires
+	 * with the cache entry that authorized it — never with a newly minted TTL.
+	 */
+	authExpiresAtMs: number;
 }
 
 interface AuthFail {
@@ -47,20 +53,55 @@ interface MemoryVerdict {
 	expiresAtMs: number;
 }
 
+/**
+ * Cap on the per-isolate positive-verdict memo. Each entry lives for the whole
+ * AUTH_CACHE_TTL window (default 900s, max 3600s) and is only reclaimed when
+ * the same key is read again, so without a bound a long-lived process grows one
+ * entry per distinct (user, token) pair for its whole life. Eviction costs that
+ * key one more upstream verification, never a refusal — the same trade the
+ * Server Beta key cache makes (src/server/middleware/postgres-auth.ts,
+ * VERIFIED_KEY_CACHE_MAX_ENTRIES).
+ */
+export const VERDICT_MEMORY_MAX_ENTRIES = 10_000;
+
 const verdictMemory = new Map<string, MemoryVerdict>();
 const MEMORY_KV_HINT_SECONDS = 60;
 
 function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
+	return readVerdictMemoryExpiry(cacheKey, nowMs) !== null;
+}
+
+/** The memoized verdict's own expiry, or null when there is no live entry. */
+function readVerdictMemoryExpiry(cacheKey: string, nowMs = Date.now()): number | null {
 	const entry = verdictMemory.get(cacheKey);
-	if (!entry) return false;
+	if (!entry) return null;
 	if (entry.expiresAtMs <= nowMs) {
 		verdictMemory.delete(cacheKey);
-		return false;
+		return null;
 	}
-	return true;
+	return entry.expiresAtMs;
+}
+
+/**
+ * A cached verdict is handed back as its own expiry in epoch ms. Anything else
+ * (a bare "1" from an older caller, a torn value) carries no expiry, so it
+ * cannot authorize a socket deadline.
+ */
+function parseVerdictExpiryMs(raw: string | null): number | null {
+	if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+	const value = Number(raw);
+	return Number.isSafeInteger(value) ? value : null;
 }
 
 function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	// Re-inserting moves the key to the end, which is what makes the FIFO
+	// eviction below behave like "oldest verdict first" for the entries that
+	// were not refreshed.
+	verdictMemory.delete(cacheKey);
+	if (verdictMemory.size >= VERDICT_MEMORY_MAX_ENTRIES) {
+		const oldestKey = verdictMemory.keys().next().value;
+		if (oldestKey !== undefined) verdictMemory.delete(oldestKey);
+	}
 	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
 }
 
@@ -72,10 +113,16 @@ export function __resetAuthVerdictMemoryForTests(): void {
 	verdictMemory.clear();
 }
 
+/** Tests only: how many verdicts the isolate is currently holding. */
+export function __verdictMemorySizeForTests(): number {
+	return verdictMemory.size;
+}
+
 export function defaultAuthDependencies(_env: SyncApiEnv): AuthDependencies {
 	return {
 		async readCachedVerdict(cacheKey) {
-			return readVerdictMemory(cacheKey) ? "1" : null;
+			const expiresAtMs = readVerdictMemoryExpiry(cacheKey);
+			return expiresAtMs === null ? null : String(expiresAtMs);
 		},
 		async cacheVerifiedVerdict(cacheKey, ttlSeconds) {
 			if (readVerdictMemory(cacheKey)) return;
@@ -208,8 +255,21 @@ export async function authenticateRequest(
 	} catch (error) {
 		dependencies.logCacheFailure("get", error);
 	}
-	if (cached === "1") {
-		return { ok: true, userId, deviceId, deviceName };
+	if (cached !== null) {
+		// Authorize for exactly as long as the cached verdict was granted: the
+		// deadline is that verdict's own expiry, never a freshly minted TTL. A
+		// value that is not an expiry is not a verdict, so it falls through to
+		// the verifier rather than authorizing anything.
+		const cachedExpiryMs = parseVerdictExpiryMs(cached);
+		if (cachedExpiryMs !== null) {
+			return {
+				ok: true,
+				userId,
+				deviceId,
+				deviceName,
+				authExpiresAtMs: cachedExpiryMs,
+			};
+		}
 	}
 
 	let verifyRes: Response;
@@ -241,12 +301,14 @@ export async function authenticateRequest(
 				response: errorResponse(403, "token does not belong to the presented user id"),
 			};
 		}
+		const cacheTtl = cacheTtlSeconds(env);
+		const authExpiresAtMs = Date.now() + cacheTtl * 1_000;
 		try {
-			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
+			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtl);
 		} catch (error) {
 			dependencies.logCacheFailure("put", error);
 		}
-		return { ok: true, userId, deviceId, deviceName };
+		return { ok: true, userId, deviceId, deviceName, authExpiresAtMs };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 402) {
 		try {

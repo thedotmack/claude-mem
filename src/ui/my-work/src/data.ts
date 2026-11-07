@@ -25,6 +25,12 @@ export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Do
 
 export interface Request {
   id: string
+  /** False only for a compact overview; the drawer loads authoritative detail before showing its evidence. */
+  detailLoaded?: boolean
+  /** The content version used to request/cache detail, independent of unrelated snapshot changes. */
+  detailRevision?: string
+  /** Exact card counts when the overview carries only a bounded preview. */
+  detailCounts?: { workProduct: number }
   title: string | null
   /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
   titleRepeatsPrompt?: boolean
@@ -64,7 +70,7 @@ export interface Request {
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
   /** `deliverable` marks a copy claude-mem keeps in the project's deliverables bucket: a file the agent made, kept after its source is gone. */
-  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean }[]
+  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean; availability?: 'origin-only' }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
@@ -74,6 +80,9 @@ export interface Request {
   resolvesTo?: { title: string; summary: string }
   /** Set when a person marks this version checked (§6). Checking never marks a request shipped. */
   checkedAt?: string
+  /** Whether this acknowledgement is local-only or a shared, versioned decision. */
+  review?: { mode: 'local' | 'shared'; hash: string | null; version?: number; available: boolean; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string }
+  suggestion?: { conversationKey: string; requestId: string; requestTitle: string; evidence: string; expectedSuggestionHash?: string | null; sharedConflict?: boolean }
   /** Live records only: the version a check certifies. */
   contentFingerprint?: string
   /** Free-text stage from the title writer. Hover text only; the stage chip comes from the recorded status. */

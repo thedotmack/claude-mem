@@ -14,6 +14,12 @@
     "afterFileEdit": [
       { "command": "npx -y claude-mem hook cursor file-edit" }
     ],
+    "postToolUse": [
+      { "matcher": "Read|Grep|Task", "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "postToolUseFailure": [
+      { "matcher": "Read|Grep|Task|Write", "command": "npx -y claude-mem hook cursor observation" }
+    ],
     "stop": [
       { "command": "npx -y claude-mem hook cursor summarize" }
     ]

@@ -47,4 +47,4 @@ export interface RoutingPlan {
   unplaced: Array<{ conversationKey: string; root: string | null; openingAsk: string | null; reason: string }>;
 }
 export function routeUndecided(options: { dir?: string; database: LedgerDatabase; judge?: RequestJudge | null; now?: number; days?: number; apply?: boolean }): Promise<RoutingPlan>;
-export function decideSuggestion(options: { dir: string; database: LedgerDatabase; conversationKey: string; action: 'join' | 'not-this'; now?: number }): { status: 'joined' | 'declined'; requestId: string | null } | null;
+export function decideSuggestion(options: { dir: string; database: LedgerDatabase; conversationKey: string; action: 'join' | 'not-this'; now?: number; writeGroups?: (groups: unknown) => void; ledger?: any; resolution?: { suggestion: any; groupKeys: string[] } }): { status: 'joined' | 'declined'; requestId: string | null } | null;

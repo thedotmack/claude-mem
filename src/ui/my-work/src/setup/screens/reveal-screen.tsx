@@ -36,14 +36,14 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
   return (
     <div className="reveal-sets">
       <section className="reveal-set is-landed" aria-labelledby="reveal-prompts">
-        <h2 id="reveal-prompts">Prompts</h2>
+        <h2 id="reveal-prompts">Conversations</h2>
         <ol>
           {agents.map((agent) => (
             <li key={agent.id} className="reveal-card">
               <span className="lead-icon" aria-hidden="true"><AgentMark tool={agentToolFor(agent.id)} /></span>
               <div>
                 <p className="title">{agent.label}</p>
-                <p className="meta">{agent.prompts.toLocaleString('en-US')} prompts</p>
+                <p className="meta">{agent.prompts.toLocaleString('en-US')} messages</p>
               </div>
             </li>
           ))}
@@ -70,8 +70,8 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
 }
 
 /** Step 2: Work, Goals and Rules read from the person's own prompts. Live: each set lands as its extraction finishes; Continue never waits. */
-export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, onContinue }: {
-  agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; onContinue: () => void
+export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, onContinue }: {
+  agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null; onContinue: () => void
 }) {
   // The results came only from the tools the person chose to upload.
   const withPrompts = agents.filter((agent) => agent.prompts > 0 && (!uploadedAgents || uploadedAgents.includes(agent.id)))
@@ -79,12 +79,13 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const promptsOnly = extraction?.state === 'waiting-for-agent' && !reveal.goals && !reveal.work && !reveal.rules
   // The person kept everything local and no earlier run left results: say that instead of promising knowledge that
   // was never built. This reads the recorded answer, because an upload can also come back with nothing to show.
-  const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !reveal.goals?.length && !reveal.work?.length && !reveal.rules?.length
-  if (keptLocal) {
+  const hasResults = !!(reveal.goals?.length || reveal.work?.length || reveal.rules?.length)
+  const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !hasResults
+  if (keptLocal || (hostedNotice && !hasResults)) {
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title="Your prompts stayed on this computer."
-          lead="Nothing was uploaded, so there are no goals, work or rules to show yet. You can continue setting up claude-mem." />
+        <PageHeading id="reveal-title" title="Continue setup."
+          lead={hostedNotice ?? 'You skipped this step. Continue setting up Claude-Mem.'} />
         <div className="actions is-centered">
           <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
         </div>
@@ -93,8 +94,9 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   }
   return (
     <section aria-labelledby="reveal-title">
-      <PageHeading id="reveal-title" title="Claude-Mem already knows your work."
-        lead={promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} prompts across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
+      <PageHeading id="reveal-title" title={hostedNotice ? 'Continue setup.' : 'Claude-Mem already knows your work.'}
+        lead={!hostedNotice && promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} messages across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
+      {hostedNotice && <p className="scan-status" role="status">{hostedNotice}</p>}
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <div className="reveal-sets">
         <RevealSet title="Work" items={reveal.work} render={(work) => (
           <li key={work.id} className="reveal-card">
@@ -131,3 +133,4 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
     </section>
   )
 }
+

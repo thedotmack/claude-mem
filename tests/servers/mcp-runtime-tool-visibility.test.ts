@@ -6,6 +6,7 @@ import {
   withoutDisabledWorkStateTools,
   withoutUnjoinedTeamBrainTools,
   WORK_STATE_TOOL_NAMES,
+  WORKER_ONLY_TOOL_NAMES,
 } from '../../src/servers/mcp-tool-visibility.js';
 
 const allTools = [
@@ -21,6 +22,7 @@ const allTools = [
   { name: 'memory_search', description: '', inputSchema: {} },
   { name: 'memory_context', description: '', inputSchema: {} },
   { name: 'smart_search', description: '', inputSchema: {} },
+  { name: 'dumb_search', description: '', inputSchema: {} },
   { name: 'work_state_write', description: '', inputSchema: {} },
   { name: 'work_state_read', description: '', inputSchema: {} },
   { name: 'team_brief', description: '', inputSchema: {} },
@@ -42,6 +44,24 @@ describe('MCP runtime-aware tool visibility', () => {
     const names = new Set(serverTools.map(tool => tool.name));
 
     for (const toolName of SERVER_BETA_ONLY_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(true);
+    }
+  });
+
+  it('server runtime hides worker-only tools that always refuse it', () => {
+    const names = new Set(getAdvertisedMcpToolsForRuntime(allTools, 'server').map(tool => tool.name));
+
+    for (const toolName of WORKER_ONLY_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(false);
+    }
+    expect(names.has('search')).toBe(true);
+    expect(names.has('observation_search')).toBe(true);
+  });
+
+  it('worker runtime keeps worker-only tools', () => {
+    const names = new Set(getAdvertisedMcpToolsForRuntime(allTools, 'worker').map(tool => tool.name));
+
+    for (const toolName of WORKER_ONLY_TOOL_NAMES) {
       expect(names.has(toolName)).toBe(true);
     }
   });

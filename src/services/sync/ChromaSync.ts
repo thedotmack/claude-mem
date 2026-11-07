@@ -226,7 +226,8 @@ const CHROMA_OVERFETCH_CAP = 2000;
  * 697k-document collection even for a 71-observation project or a 66-row
  * platform (#5091). `sqlite_id: {$in}` with the rows SQLite says the search can
  * keep matches only their fragments: 0.6-3.7s for 67-8,000 ids at n_results
- * 2000 on the same collection. Past this many ids the plain `where` is sent.
+ * 2000 on the same collection. Past this many ids the fallback drops the
+ * `doc_type` clause instead and filters it client-side (#5354).
  */
 const CHROMA_FALLBACK_ROW_ID_CAP = 5000;
 
@@ -293,6 +294,73 @@ function isMetadataScalar(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
+interface DocTypeStripResult {
+  clause: Record<string, any> | undefined;
+  removed: boolean;
+  blocked: boolean;
+}
+
+/**
+ * Remove the `doc_type` clause from a `where` the client-side predicate
+ * already evaluates, for the filtered fallback (#5354). A `doc_type` leaf
+ * under an `$and` — or at the top level — only narrows its siblings, so
+ * dropping it broadens the clause chroma sees and the predicate restores
+ * the exact match here. Under an `$or` the leaf is one side of a union and
+ * dropping it would lose the documents it alone matched, so it blocks the
+ * rewrite unless it sits inside an `$and` branch, whose conjuncts stay
+ * removable. Anything else is left untouched.
+ */
+function stripDocTypeClause(where: unknown, removable: boolean): DocTypeStripResult {
+  if (!where || typeof where !== 'object' || Array.isArray(where)) {
+    return { clause: where as Record<string, any>, removed: false, blocked: false };
+  }
+  const entries = Object.entries(where);
+  if (entries.length !== 1) {
+    return { clause: where as Record<string, any>, removed: false, blocked: false };
+  }
+  const [key, value] = entries[0];
+
+  if (key === 'doc_type') {
+    return removable
+      ? { clause: undefined, removed: true, blocked: false }
+      : { clause: where as Record<string, any>, removed: false, blocked: true };
+  }
+
+  if (key === '$and' || key === '$or') {
+    if (!Array.isArray(value)) {
+      return { clause: where as Record<string, any>, removed: false, blocked: false };
+    }
+    let removed = false;
+    const kept: Array<Record<string, any>> = [];
+    for (const child of value) {
+      const childRemovable = key === '$and' ? removable : isSingleKeyClause(child, '$and');
+      const result = stripDocTypeClause(child, childRemovable);
+      if (result.blocked) {
+        return { clause: where as Record<string, any>, removed: false, blocked: true };
+      }
+      if (key === '$or' && result.clause === undefined) {
+        // The branch held `doc_type` alone, so stripping emptied it. An
+        // emptied `$or` branch is still one side of the union: dropping it
+        // would lose the documents it alone matched, so block the rewrite.
+        return { clause: where as Record<string, any>, removed: false, blocked: true };
+      }
+      removed = removed || result.removed;
+      if (result.clause !== undefined) kept.push(result.clause);
+    }
+    if (kept.length === 0) return { clause: undefined, removed, blocked: false };
+    if (kept.length === 1) return { clause: kept[0], removed, blocked: false };
+    return { clause: { [key]: kept }, removed, blocked: false };
+  }
+
+  return { clause: where as Record<string, any>, removed: false, blocked: false };
+}
+
+function isSingleKeyClause(value: unknown, key: string): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length === 1 && entries[0][0] === key;
+}
+
 // One `IN (...)` per chunk keeps a large pending list under SQLite's bound
 // parameter limit (#4818).
 const PENDING_ID_QUERY_CHUNK_SIZE = 500;
@@ -320,6 +388,14 @@ export class ChromaSync {
    */
   private selectiveFilters = new Map<string, number>();
   private static readonly SELECTIVE_FILTER_MEMO_CAP = 256;
+  /**
+   * Matches found in full doc_type-free windows that held too few, keyed by
+   * query, clause and window size. Search widens its limit in steps, and past
+   * the over-fetch cap each step asks the same window, so without this every
+   * step pays for a window already known to fall short (#5354). Shares the
+   * selective-filter memo's bound.
+   */
+  private thinDocTypeFreeWindows = new Map<string, number>();
   private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
   // How many rows in a row may fail to write before a backfill run gives up
@@ -1989,6 +2065,21 @@ export class ChromaSync {
         if (narrowed) return narrowed;
       }
 
+      // The plain fallback still sends `doc_type` to chroma, and that clause
+      // matches most of the collection (#5354). Send the clause without it
+      // and let the predicate restore the exact match client-side; only a
+      // window that cannot prove the top matches falls through to the plain
+      // query below.
+      if (predicate && whereFilter) {
+        const stripped = stripDocTypeClause(whereFilter, true);
+        if (!stripped.blocked && stripped.removed) {
+          const fallback = await this.queryDocTypeFreeFallback(
+            runQuery, query, limit, predicate, stripped.clause, progress
+          );
+          if (fallback) return fallback;
+        }
+      }
+
       // The fallback consumes the same row metadata and distances as the fast
       // path; document text is never read, even for large corpus budgets.
       results = await runQuery(limit, whereFilter, ['metadatas', 'distances']);
@@ -2081,6 +2172,70 @@ export class ChromaSync {
     return this.deduplicateQueryResults({
       ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
     });
+  }
+
+  /**
+   * The filtered fallback with `doc_type` left out of the clause sent to
+   * chroma (#5354): the remaining clauses still narrow server-side, and the
+   * predicate applies the full clause — `doc_type` included — to the
+   * returned metadata, the split #4682's fragment lookups use. Returns null
+   * when the over-fetched window is full yet holds too few matches: more
+   * matches may sit past it, and only the plain `where` can prove the top
+   * `limit` then.
+   */
+  private async queryDocTypeFreeFallback(
+    runQuery: (nResults: number, where: Record<string, any> | undefined, include: string[]) => Promise<any>,
+    query: string,
+    limit: number,
+    predicate: MetadataPredicate,
+    where: Record<string, any> | undefined,
+    progress?: ChromaQueryProgress
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] } | null> {
+    const nResults = Math.max(limit, Math.min(limit * CHROMA_OVERFETCH_FACTOR, CHROMA_OVERFETCH_CAP));
+    const windowKey = JSON.stringify([query, where, nResults]);
+    const knownMatches = this.thinDocTypeFreeWindows.get(windowKey);
+    if (knownMatches !== undefined && knownMatches < limit) return null;
+
+    const raw: any = await runQuery(nResults, where, ['metadatas', 'distances']);
+    const rawIds = raw?.ids?.[0] || [];
+    const rawMetadatas = raw?.metadatas?.[0] || [];
+    const rawDistances = raw?.distances?.[0] || [];
+
+    const keptIds: string[] = [];
+    const keptMetadatas: any[] = [];
+    const keptDistances: number[] = [];
+    for (let i = 0; i < rawIds.length; i++) {
+      if (!predicate(rawMetadatas[i] ?? {})) continue;
+      keptIds.push(rawIds[i]);
+      keptMetadatas.push(rawMetadatas[i]);
+      keptDistances.push(rawDistances[i]);
+    }
+
+    const filtered = this.deduplicateQueryResults({
+      ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+    });
+
+    if (filtered.ids.length >= limit) {
+      if (progress) progress.exhausted = rawIds.length < nResults && filtered.ids.length <= limit;
+      return {
+        ids: filtered.ids.slice(0, limit),
+        distances: filtered.distances.slice(0, limit),
+        metadatas: filtered.metadatas.slice(0, limit)
+      };
+    }
+
+    // A short window held every candidate the remaining clauses match, so
+    // the matches are complete even though they do not fill the limit.
+    if (rawIds.length < nResults) {
+      if (progress) progress.exhausted = true;
+      return filtered;
+    }
+
+    if (this.thinDocTypeFreeWindows.size >= ChromaSync.SELECTIVE_FILTER_MEMO_CAP) {
+      this.thinDocTypeFreeWindows.clear();
+    }
+    this.thinDocTypeFreeWindows.set(windowKey, filtered.ids.length);
+    return null;
   }
 
   private deduplicateQueryResults(results: any): { ids: number[]; distances: number[]; metadatas: any[] } {

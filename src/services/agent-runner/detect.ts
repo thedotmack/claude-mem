@@ -41,7 +41,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
-import { hasAnthropicApiKey, hasAnthropicAuthToken } from '../../shared/EnvManager.js';
+import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
 
 import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
 
@@ -137,6 +137,7 @@ export interface AgentDetectionDependencies {
   readClaudeOAuthToken: () => Promise<OAuthTokenResult>;
   hasAnthropicApiKey: () => boolean;
   hasAnthropicAuthToken: () => boolean;
+  hasConfiguredClaudeOAuthToken: () => boolean;
   fileExists: (path: string) => boolean;
   readTextFile: (path: string) => string;
   environment: NodeJS.ProcessEnv;
@@ -160,6 +161,7 @@ const defaultDependencies: AgentDetectionDependencies = {
   readClaudeOAuthToken: () => readClaudeOAuthToken(),
   hasAnthropicApiKey,
   hasAnthropicAuthToken,
+  hasConfiguredClaudeOAuthToken,
   fileExists: existsSync,
   readTextFile: path => readFileSync(path, 'utf8'),
   environment: process.env,
@@ -209,6 +211,9 @@ async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promi
   }
   if (dependencies.hasAnthropicAuthToken()) {
     return { id: 'claude-code', path, authenticated: true, reason: 'ANTHROPIC_AUTH_TOKEN in ~/.claude-mem/.env' };
+  }
+  if (dependencies.hasConfiguredClaudeOAuthToken()) {
+    return { id: 'claude-code', path, authenticated: true, reason: 'CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env' };
   }
 
   const token = await dependencies.readClaudeOAuthToken();

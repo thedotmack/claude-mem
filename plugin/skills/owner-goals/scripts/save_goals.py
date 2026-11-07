@@ -285,7 +285,7 @@ def write_json_atomic(path, value):
     os.replace(temp, path)
 
 
-def save_rules(ledger_dir, preferences):
+def save_rules(ledger_dir, preferences, shared_base_url=None):
     """Replace the rules an earlier save put in story.json; the story's own preferences stay."""
     path = os.path.join(ledger_dir, "story.json")
     story = {}
@@ -293,7 +293,12 @@ def save_rules(ledger_dir, preferences):
         with open(path) as handle:
             story = json.load(handle)
     story["preferences"] = [preference for preference in story.get("preferences", []) if preference.get("source") != RULE_SOURCE] + preferences
-    write_json_atomic(path, story)
+    if shared_base_url:
+        worker_request(shared_base_url, "/api/work-view/shared-ledger", {"file": "story.json", "value": story})
+    else:
+        # Old workers and explicit alternate ledgers keep the legacy path;
+        # the shared-state importer recognizes these files after upgrade.
+        write_json_atomic(path, story)
     return path
 
 
@@ -392,7 +397,8 @@ def main():
         sys.exit(f"this claude-mem worker predates {'Goals history' if history else 'My Focus'}; update claude-mem and restart the worker")
     previous = (next((month for month in view["goalHistory"] if month["listName"] == list_name), None) if history else view["goals"]) or {}
     try:
-        story_path, stale_tasks = write_everything(base_url, list_name, previous, focus_request, writes_for, ledger_dir, preferences, history, len(areas))
+        shared = view.get("sharedPersistenceVersion") == 1 and os.path.abspath(ledger_dir) == os.path.abspath(os.path.join(data_dir(), "work-view"))
+        story_path, stale_tasks = write_everything(base_url, list_name, previous, focus_request, writes_for, ledger_dir, preferences, history, len(areas), shared)
     except NothingWritten as refusal:
         # The first write was refused whole (a match to an area that is not saved): fixable, and nothing to undo.
         sys.exit(str(refusal))
@@ -411,7 +417,7 @@ def main():
                       "view": f"{base_url}/#cards", "list": list_name, "history": history}))
 
 
-def write_everything(base_url, list_name, previous, focus_request, writes_for, ledger_dir, preferences, history, area_count):
+def write_everything(base_url, list_name, previous, focus_request, writes_for, ledger_dir, preferences, history, area_count, shared=False):
     """The writes, in order: My Focus areas, owner-goals rows, then rules. Everything was validated before this runs."""
     area_ids = [None] * area_count
     if focus_request is not None and focus_request["areas"]:
@@ -427,7 +433,7 @@ def write_everything(base_url, list_name, previous, focus_request, writes_for, l
         reply = worker_request(base_url, "/api/work-state/entries", {"cwd": home, "list": list_name, "fields": fields})
         if not reply.startswith("Saved to"):
             sys.exit(f"work state did not save: {reply[:300]}")
-    return (save_rules(ledger_dir, preferences) if not history else None), stale_tasks
+    return (save_rules(ledger_dir, preferences, base_url if shared else None) if not history else None), stale_tasks
 
 
 if __name__ == "__main__":

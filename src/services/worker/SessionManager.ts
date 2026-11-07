@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger.js';
 import { redactForLog } from '../../utils/redaction.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
-import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit, getParkedSlotWaiterCount } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
@@ -13,6 +13,9 @@ import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './se
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
@@ -120,7 +123,7 @@ export class SessionManager {
     // shares its budget with rate-limit and fallback resumes. Spent, the pause
     // keeps its backoff position without a timer, and the next hook-driven
     // start still drains the buffer.
-    if (!planUnattendedGatewayResume(session, 'transport-resume', canCmemGatewayServe()).resume) {
+    if (!planUnattendedGatewayResume(session, 'transport-resume', canCmemGatewayServe(session.platformSource)).resume) {
       this.transportResumes.set(sessionDbId, { pauses });
       return;
     }
@@ -472,7 +475,7 @@ export class SessionManager {
    * so ingest can record the hook-spool hand-off before any await (and before
    * the generator kick) — see HookSpool.drain.
    */
-  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): void {
+  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -498,7 +501,7 @@ export class SessionManager {
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = redactForLog(logger.formatTool(data.tool_name, data.tool_input));
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -506,6 +509,7 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   /** Synchronous on purpose — see queueObservation. */
@@ -514,7 +518,7 @@ export class SessionManager {
     lastAssistantMessage?: string,
     promptNumber?: number,
     enqueuedAtEpochMs?: number,
-  ): void {
+  ): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -529,7 +533,7 @@ export class SessionManager {
     const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -537,16 +541,35 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
     return this.buffer.clear(sessionDbId);
+  }
+
+  /** Discard a session's buffered work for good: unlike clearPendingForSession, nothing in it can be re-enqueued. */
+  discardBufferedWork(sessionDbId: number): number {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
+    return this.buffer.discardKeepingDedup(sessionDbId);
   }
 
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
+      // Released claims are unsent again and may expire before a new claim, so
+      // their timestamp must not outlive them; the next claim recomputes it.
       session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
     }
     return this.buffer.resetClaimed(sessionDbId);
   }
@@ -607,6 +630,16 @@ export class SessionManager {
       if (session.respawnTimer) {
         clearTimeout(session.respawnTimer);
         session.respawnTimer = undefined;
+      }
+
+      if (session.stallResumeTimer) {
+        clearTimeout(session.stallResumeTimer);
+        session.stallResumeTimer = undefined;
+      }
+
+      if (session.scheduledResumeTimer) {
+        clearTimeout(session.scheduledResumeTimer);
+        session.scheduledResumeTimer = undefined;
       }
 
       session.abortReason = 'shutdown';
@@ -703,6 +736,16 @@ export class SessionManager {
       session.respawnTimer = undefined;
     }
 
+    if (session.stallResumeTimer) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
+    if (session.scheduledResumeTimer) {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
+    }
+
     if (this.takeRequestedSessionWrapup(session)) {
       this.deliverSessionWrapupInBackground(sessionDbId);
     }
@@ -783,8 +826,9 @@ export class SessionManager {
 
   /**
    * Snapshot paused in-memory work without loading sessions or changing the buffer.
-   * The automatic sweep resumes only pauses that time heals, each paced or
-   * capped where it is armed. A rate-limit pause is retried like a quota pause:
+   * Quota/auth failures have no pending work. The automatic sweep resumes
+   * only short-lived transitions that time heals, each paced or
+   * capped where it is armed. A short rate-limit pause may be retried:
    * the breaker it armed paces it. The sweep leaves a session to a resume it
    * scheduled for itself, too: a rate limit must not be retried before its
    * Retry-After. With memory on the cmem gateway, a session whose unattended
@@ -801,17 +845,38 @@ export class SessionManager {
    *    the sweep repeated every cooldown, forever.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
-    const memoryOnCmemGateway = !includeOperatorOnly && canCmemGatewayServe();
+    const automaticallyRetryable = new Set([null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
         && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
         && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
-        && (includeOperatorOnly || !(memoryOnCmemGateway && unattendedGatewayResumesSpent(session)))
+        && (includeOperatorOnly || !(unattendedGatewayResumesSpent(session) && canCmemGatewayServe(session.platformSource)))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
+  }
+
+  /**
+   * Sessions the response-stall pacer gave up on (#5405): its last exit spent
+   * the bounded stall resumes (stallResumesExhaustedAt, cleared by any
+   * generator start), no generator is running, no resume of any kind is
+   * scheduled, and buffered messages remain. The stall counter alone is not
+   * enough: it resets only on an answered turn, so a session restarted after
+   * exhaustion that later paused with its own retry timer would still look
+   * abandoned. The stall exit discards the buffer when it stamps the mark, so
+   * a session listed here holds work enqueued afterwards that no generator
+   * start took up. Reporting is all this does: nothing here resumes or
+   * discards them.
+   */
+  getAbandonedStallSessions(): Array<{ sessionDbId: number; pendingCount: number }> {
+    return Array.from(this.sessions.values())
+      .filter(session => session.stallResumesExhaustedAt !== undefined
+        && !session.generatorPromise
+        && session.stallResumeTimer === undefined
+        && session.scheduledResumeTimer === undefined
+        && this.buffer.getPendingCount(session.sessionDbId) > 0)
+      .map(session => ({ sessionDbId: session.sessionDbId, pendingCount: this.buffer.getPendingCount(session.sessionDbId) }));
   }
 
   getTotalQueueDepth(): number {
@@ -848,6 +913,9 @@ export class SessionManager {
     for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
+      // An idle generator must not hold its slot for the full idle
+      // timeout while other sessions are parked waiting for one (#5376).
+      shouldReleaseIdleSlot: () => getParkedSlotWaiterCount() > 0,
       onIdleTimeout: () => {
         logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
         session.idleTimedOut = true;
@@ -855,6 +923,19 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      // Re-check at every message boundary so a settings-file edit made while
+      // a generator is already alive takes effect after its current request.
+      // Clear the RAM-only queue: transcript replay remains the durable
+      // recovery path if capture is enabled again later.
+      if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+        const discarded = await this.clearPendingForSession(sessionDbId);
+        logger.info('SESSION', 'Observer capture disabled at message boundary; discarding buffered work', {
+          sessionId: sessionDbId,
+          discarded,
+        });
+        return;
+      }
+
       // The previous request is answered, so nothing is in flight: end this
       // generator before it sends on the old provider. The next generator
       // releases this claim when it starts.

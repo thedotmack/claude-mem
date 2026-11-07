@@ -36,13 +36,20 @@ export const cursorAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('invalid_cwd');
     }
     const sessionId = r.conversation_id || r.generation_id || r.id;
+    // postToolUse sends tool_output where the per-tool hooks send result_json.
+    // postToolUseFailure sends error_message instead of a result: keep it as an
+    // is_error response so the attempted paths are not read as completed work.
+    const failureMessage = typeof r.error_message === 'string' ? r.error_message : undefined;
+    const toolResponse = isShellCommand
+      ? { output: r.output }
+      : r.result_json ?? r.tool_output ?? (failureMessage === undefined ? undefined : { is_error: true, error: failureMessage });
     return {
       sessionId,
       cwd,
       prompt: r.prompt ?? r.query ?? r.input ?? r.message,
       toolName: isShellCommand ? 'Bash' : r.tool_name,
       toolInput: isShellCommand ? { command: r.command } : r.tool_input,
-      toolResponse: isShellCommand ? { output: r.output } : r.result_json,  // result_json not tool_response
+      toolResponse,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : (typeof r.tool_call_id === 'string' ? r.tool_call_id : undefined),
       // Cursor's stop hook does not pass a transcript path on stdin, but it
       // does write a JSONL transcript to disk under ~/.cursor/projects/...,

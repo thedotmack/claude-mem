@@ -10,8 +10,9 @@
  *     here once for an HttpOnly session cookie. Only VIEWER_OWNER_USER_ID gets in.
  *   - Reads pass, except the routes that expose settings, logs, backups or
  *     setup on the machine. Writes pass only for the My Work actions that save
- *     work state (review, rules, focus, suggestions, agent finished, usage);
- *     the worker syncs those rows back to the owner's other devices.
+ *     reviews, rules, focus, suggestions, agent-finished and usage actions.
+ *     The worker owns persistence and reports whether a save is local or
+ *     queued for sync; this gate never claims another replica applied it.
  *   - A write must come from this origin. The request then goes to the worker
  *     as if made on that machine: loopback Host and Origin, proxy headers
  *     and cookies removed.
@@ -22,10 +23,14 @@ import { anonymousDistinctId, anonCookie, hostedUsageEvent, requestHostname, sen
 export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
-/** Read routes that would show the cloud machine's own configuration. */
-const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/restart'];
+/**
+ * Read routes that would show the cloud machine's own configuration. Recovery
+ * reads are local-only on the worker, but this gate makes every request look
+ * local, so the worker's own check cannot stop them here.
+ */
+const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/api/sync/recovery', '/restart'];
 
-/** The My Work actions that save work state. Everything else that writes stays on the owner's own computer. */
+/** Narrow owner actions. Persistence scope is determined by the worker and its writer setting. */
 const ALLOWED_WRITES = new Set([
   '/api/work-view/review',
   '/api/work-view/rules',
@@ -181,7 +186,7 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
       const pageUrl = `${publicOrigin}/`;
       const parsed = hostedUsageEvent(body, hostname, pageUrl);
       if (!parsed) return json(400, { error: 'Unknown usage report.' });
-      const anon = anonymousDistinctId(request.headers.get('cookie'), (options.mintAnonymousId ?? crypto.randomUUID)());
+      const anon = anonymousDistinctId(request.headers.get('cookie'), options.mintAnonymousId?.() ?? crypto.randomUUID());
       const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
       if (anon.setCookie) headers['Set-Cookie'] = anonCookie(anon.id, secure);
       try {

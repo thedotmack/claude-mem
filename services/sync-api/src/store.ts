@@ -15,9 +15,11 @@
  * Neon, versus 2.7ms as a row comparison).
  */
 import type postgres from "postgres";
+import { createHash } from "node:crypto";
 import {
 	assertCanonicalDecimal,
 	compareCanonicalDecimals,
+	CONTENT_KIND_NAMES,
 	decimalMin,
 	incrementCanonicalDecimal,
 	newEpoch,
@@ -31,7 +33,7 @@ import {
 	PROJECTION_PAGE_MAX_OPS,
 	ProjectionPageByteCounter,
 } from "./projection-protocol";
-import type { SocketRegistry } from "./sockets";
+import { AUTH_EXPIRED_CLOSE_CODE, type SocketRegistry } from "./sockets";
 import { CLIENT_CLOSED_REQUEST_ERROR, UserQueue } from "./user-queue";
 
 const MAX_PAGE = 500;
@@ -59,6 +61,21 @@ export interface PushResult {
 	acked: AckedOp[];
 	head_seq: string;
 }
+
+export interface RepairHead {
+	entity_rev: string;
+	operation_sha256: string;
+	seq: string;
+}
+export interface RepairRequest {
+	repair_id: string;
+	expected_epoch: string;
+	expected_head: RepairHead | null;
+	op: PushOp;
+}
+export const REPAIR_PRECONDITION_ERROR = "repair_precondition_failed";
+export const REPAIR_AUTHORITY_ERROR = "repair_origin_required";
+interface RepairGuard extends RepairRequest { requestDigest: string }
 
 export interface HubRefusal {
 	refused: true;
@@ -91,6 +108,7 @@ export interface StatusResult {
 	projected_seq: string;
 	op_count: number;
 	device_count: number;
+	content_kinds: readonly string[];
 }
 
 export interface DeviceMetadata {
@@ -345,7 +363,14 @@ export class HubStore {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
+			const now = Date.now();
 			for (const socket of sockets) {
+				if (socket.authExpiresAtMs <= now) {
+					// Never feed committed content to a socket whose verdict has
+					// lapsed: close it so the client re-handshakes and re-authenticates.
+					try { socket.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch { /* drop */ }
+					continue;
+				}
 				if (socket.deviceId === originDeviceId) continue;
 				try { socket.send(frame); } catch { /* drop */ }
 			}
@@ -360,6 +385,7 @@ export class HubStore {
 		ops: PushOp[],
 		deviceName: string | null = null,
 		signal?: AbortSignal,
+		repair?: RepairGuard,
 	): Promise<PushOutcome> {
 		let rows: ValidatedOp[];
 		try {
@@ -393,15 +419,40 @@ export class HubStore {
 		const acked: AckedOp[] = [];
 		try {
 			await this.withUserLock(userId, async (tx) => {
-				await this.touchDevice(tx, userId, deviceId, normalizeDeviceName(deviceName), now);
 				const user = await this.loadUser(tx, userId);
 				headBefore = user.head_seq;
 				epoch = user.epoch;
+				if (repair) {
+					const receipts = await tx<{ request_digest: string; entity_id: string; entity_rev: string; operation_sha256: string; seq: string; epoch: string }[]>`
+						SELECT request_digest, entity_id, entity_rev, operation_sha256, seq, epoch FROM sync_repair_receipts
+						WHERE user_id = ${userId} AND repair_id = ${repair.repair_id}`;
+					const receipt = receipts[0];
+					if (receipt) {
+						if (receipt.request_digest !== repair.requestDigest) throw invalid(REPAIR_PRECONDITION_ERROR);
+						// Receipt remains evidence after an epoch change, but an old log's
+						// ack must never be claimed as applied in the new epoch.
+						if (receipt.epoch !== user.epoch) throw invalid(REPAIR_PRECONDITION_ERROR);
+						const body = rows[0]!.body;
+						acked.push({ id: receipt.entity_id, kind: body.kind, origin_local_id: body.origin_local_id,
+							entity_rev: receipt.entity_rev, operation_sha256: receipt.operation_sha256, seq: receipt.seq });
+						headAfter = user.head_seq;
+						return;
+					}
+					if (user.epoch !== repair.expected_epoch) throw invalid(REPAIR_PRECONDITION_ERROR);
+				}
+				await this.touchDevice(tx, userId, deviceId, normalizeDeviceName(deviceName), now);
 				// One lookup and three set-based writes per push, instead of three
 				// round trips per op while holding the user's lock. The loop below
 				// keeps the old per-op semantics: each op sees the heads written by
 				// earlier ops in the same batch, and any refusal rolls back all of it.
 				const heads = await this.loadEntityHeads(tx, userId, rows);
+				if (repair) {
+					const actual = heads.get(rows[0]!.body.id) ?? null;
+					const expected = repair.expected_head;
+					if ((actual === null) !== (expected === null) || (actual && expected &&
+						(actual.entity_rev !== expected.entity_rev || actual.operation_sha256 !== expected.operation_sha256 || actual.seq !== expected.seq))
+						|| (actual && compareCanonicalDecimals(rows[0]!.body.entity_rev, actual.entity_rev) <= 0)) throw invalid(REPAIR_PRECONDITION_ERROR);
+				}
 				const inserted: InsertedOp[] = [];
 				const finalHeads = new Map<string, InsertedOp>();
 				let head = user.head_seq;
@@ -458,6 +509,13 @@ export class HubStore {
 						WHERE user_id = ${userId}
 					`;
 				}
+				if (repair) {
+					const ack = acked[0]!;
+					await tx`INSERT INTO sync_repair_receipts
+						(user_id, repair_id, request_digest, entity_id, entity_rev, operation_sha256, seq, epoch, expected_head)
+						VALUES (${userId}, ${repair.repair_id}, ${repair.requestDigest}, ${ack.id}, ${ack.entity_rev},
+						${ack.operation_sha256}, ${ack.seq}, ${user.epoch}, ${JSON.stringify(repair.expected_head)}::jsonb)`;
+				}
 			}, signal);
 		} catch (error) {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
@@ -469,6 +527,47 @@ export class HubStore {
 
 		this.fanOutCommitted(userId, deviceId, headBefore, epoch, headAfter, newOps);
 		return { acked, head_seq: headAfter };
+	}
+
+	/** A true read-only snapshot: no device touch, cursor update or user creation. */
+	async getRepairHead(userId: string, deviceId: string, entityId: string) {
+		if (typeof entityId !== "string" || entityId.length > 200) throw invalid("invalid repair entity");
+		return this.sql.begin("isolation level repeatable read read only", async (tx) => {
+			const [user] = await tx<{ epoch: string; head_seq: string; projected_seq: string }[]>`
+				SELECT epoch, head_seq, projected_seq FROM sync_users WHERE user_id = ${userId}`;
+			if (!user) throw invalid("repair requires an existing sync account");
+			const [row] = await tx<(RepairHead & { body: string; origin_device_id: string })[]>`
+				SELECT h.entity_rev, h.operation_sha256, h.seq, o.body, h.origin_device_id
+				FROM sync_entity_heads h JOIN sync_ops o ON o.user_id = h.user_id AND o.seq = h.seq
+				WHERE h.user_id = ${userId} AND h.entity_id = ${entityId}`;
+			if (row && row.origin_device_id !== deviceId) throw invalid(REPAIR_AUTHORITY_ERROR);
+			return { protocol_version: 1 as const, capability: "origin-repair-v1" as const, ...user,
+				entity_id: entityId, head: row ? { entity_rev: row.entity_rev, operation_sha256: row.operation_sha256, seq: row.seq } : null,
+				op: row ? { body: row.body, operation_sha256: row.operation_sha256 } : null };
+		});
+	}
+
+	async repairContent(userId: string, deviceId: string, request: RepairRequest, deviceName: string | null = null, signal?: AbortSignal): Promise<PushOutcome> {
+		try {
+			if (!request || !/^[a-zA-Z0-9_-]{20,80}$/.test(request.repair_id) || typeof request.expected_epoch !== "string") throw invalid("invalid repair request");
+			assertCanonicalDecimal(request.expected_epoch, true);
+			const parsed = await parseCanonicalOperation(request.op);
+			if (parsed.body.kind === "mutation" || parsed.body.origin_device_id !== deviceId) throw invalid(REPAIR_AUTHORITY_ERROR);
+			if (request.expected_head !== null) {
+				const h = request.expected_head;
+				if (!h || typeof h !== "object" || Array.isArray(h) || Object.keys(h).sort().join(",") !== "entity_rev,operation_sha256,seq") throw invalid("invalid expected repair head");
+				assertCanonicalDecimal(h.entity_rev, true); assertCanonicalDecimal(h.seq, true);
+				if (!/^[A-Za-z0-9_-]{43}$/.test(h.operation_sha256)) throw invalid("invalid expected repair head");
+				if (compareCanonicalDecimals(parsed.body.entity_rev, h.entity_rev) <= 0) throw invalid(REPAIR_PRECONDITION_ERROR);
+			}
+			const requestDigest = createHash("sha256").update(JSON.stringify([request.expected_epoch, request.expected_head, request.op])).digest("base64url");
+			return this.pushOps(userId, deviceId, [request.op], deviceName, signal, { ...request, requestDigest });
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) return { refused: true, error: error.message };
+			// A malformed canonical wrapper is a client refusal, never an error
+			// log containing supplied content or a retryable server failure.
+			return { refused: true, error: `${INVALID_OPS_PREFIX} invalid repair request` };
+		}
 	}
 
 	/**
@@ -597,6 +696,7 @@ export class HubStore {
 			projected_seq: status.projected_seq,
 			op_count: Number(status.head_seq),
 			device_count: status.device_count,
+			content_kinds: CONTENT_KIND_NAMES,
 		};
 	}
 

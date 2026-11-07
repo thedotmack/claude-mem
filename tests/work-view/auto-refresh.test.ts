@@ -5,8 +5,8 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolvePreferredRefreshAgent, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -1088,5 +1088,101 @@ describe('automatic refresh timer', () => {
       worker.close();
       expect(logs).toEqual(['Work view refresh check failed: unable to open database file']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('automatic refresh interval setting', () => {
+  it('keeps the ten-minute default when the value is empty, not a number, or not positive', () => {
+    for (const value of [undefined, null, '', '   ', 'abc', '0', '-5', NaN]) expect(refreshIntervalMs(value as any)).toBe(10 * 60000);
+  });
+
+  it('turns minutes into milliseconds, so 1440 is one day', () => {
+    expect(refreshIntervalMs('10')).toBe(10 * 60000);
+    expect(refreshIntervalMs('60')).toBe(60 * 60000);
+    expect(refreshIntervalMs(' 1440 ')).toBe(86400000);
+    expect(refreshIntervalMs(30)).toBe(30 * 60000);
+  });
+
+  it('never goes under one minute or over what setInterval can hold', () => {
+    expect(refreshIntervalMs('0.01')).toBe(60000);
+    expect(refreshIntervalMs('99999999')).toBe(2 ** 31 - 1);
+  });
+
+  it('records the next check one interval after this one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, checkMs: refreshIntervalMs('1440'), runJob: async () => ({ state: 'ok', agent: null, result: null, error: null }) });
+      expect(await worker.check()).toBe('idle');
+      const status = worker.status()!;
+      expect(Date.parse(status.nextAt!) - Date.parse(status.checkedAt!)).toBe(86400000);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('after a failed run with an interval longer than four hours, the next check shown is the next tick, not four hours out', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const DAY = 86400000;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, checkMs: refreshIntervalMs('1440'),
+        runJob: async () => ({ state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' }) });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(NOW + DAY).toISOString() });
+      // The wait never grows past one interval when that is longer than four hours, and a failure before
+      // the run starts (runNow) reports the same next check.
+      writeFileSync(join(dir, 'request-groups.json'), '{not json');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(NOW + DAY).toISOString() });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('My Work refresh agent preference (#5435)', () => {
+  /** Run with a settings file and a clean CLAUDE_MEM_PROVIDER environment, restoring both afterwards. */
+  const withProvider = async <T>(file: Record<string, string> | null, env: Record<string, string>, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-agent-'));
+    const saved = process.env.CLAUDE_MEM_PROVIDER;
+    try {
+      delete process.env.CLAUDE_MEM_PROVIDER;
+      Object.assign(process.env, env);
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_PROVIDER; else process.env.CLAUDE_MEM_PROVIDER = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('names the agent CLAUDE_MEM_PROVIDER names', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('gemini'));
+  });
+
+  it('a provider that names no local agent leaves the detect order in charge', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+  });
+
+  it('an unset provider keeps today\'s first choice, Claude Code', async () => {
+    await withProvider(null, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+  });
+
+  it('lets the environment override the settings file, like every other setting', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+  });
+
+  it('a refresh task built under CLAUDE_MEM_PROVIDER=codex names codex as its preferred agent', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('codex');
+    });
+    await withProvider(null, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('claude-code');
+    });
   });
 });

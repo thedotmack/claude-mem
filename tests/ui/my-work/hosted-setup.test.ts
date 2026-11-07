@@ -11,7 +11,7 @@ const compiled = buildSync({
       import { renderToStaticMarkup } from 'react-dom/server';
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
-      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} onContinue={() => {}} />);
+      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
@@ -63,52 +63,85 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
 }
 
 describe('hosted setup scan control', () => {
-  it('renders the optional checkbox unchecked under the progress meter, and locks it only for upload', () => {
+  it('prechecks usage statistics under the progress meter, and locks it only for upload', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
-    expect(checkbox).not.toContain('checked=""');
+    expect(checkbox).toContain('checked=""');
     expect(checkbox).not.toContain('disabled');
-    expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
+    expect(initial).toContain('Share anonymous usage statistics to help improve your Claude-mem experience');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
-    expect(initial).not.toContain('Upload my prompts to cmem.ai');
+    expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
+    expect(initial).not.toContain('Discover My Work, Rules &amp; Focus');
     const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
-    expect(consent).toContain('Upload my prompts to cmem.ai');
-    expect(consent).toContain('Keep everything local');
+    expect(consent).toContain('Discover My Work, Rules &amp; Focus');
+    expect(consent).toContain('Skip this step');
     const undetected = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'claude-code', label: 'Claude Code', detected: false, prompts: 2, canRunSetup: null, cannotRunReason: null }] }));
-    expect(undetected).toContain('Claude Code (2 prompts)');
-    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(undetected).toContain('Claude Code (2 messages)');
+    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
     const sending = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }), null, false, null, null, true);
     expect(sending).toContain('Sending your choice');
-    expect(sending).toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(sending).toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
     expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
-    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
-    expect(consent).toContain('full text of the prompts you typed in the last 30 days');
+    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 messages)');
+    const visibleConsent = consent.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
+    expect(visibleConsent).toContain('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.');
+    expect(visibleConsent).toContain('Selected messages are sent to cmem.ai and an AI provider.');
+    expect(visibleConsent).not.toContain('session IDs');
+    expect(visibleConsent).not.toContain('timestamps');
+    expect(consent).toContain('What gets uploaded?');
+    expect(consent).toContain('The full text of your messages from the last 30 days in the selected tools');
+    expect(consent).toContain('session IDs, project names, folder paths and timestamps');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });
 
-  it('gives both consent buttons the same weight, local first', () => {
+  it('leads with discovering existing work and keeps skip available underneath', () => {
     const app = fixture();
     const html = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }));
-    const buttons = [...html.matchAll(/<button[^>]*class="([^"]*)"[^>]*>(Keep everything local|Upload my prompts to cmem.ai)</g)];
-    expect(buttons.map(match => match[2])).toEqual(['Keep everything local', 'Upload my prompts to cmem.ai']);
-    expect(buttons[0][1]).toBe(buttons[1][1]);
+    const buttons = [...html.matchAll(/<button[^>]*class="([^"]*)"[^>]*>(Skip this step|Discover My Work, Rules &amp; Focus)</g)];
+    expect(buttons.map(match => match[2])).toEqual(['Discover My Work, Rules &amp; Focus', 'Skip this step']);
+    expect(buttons.map(match => match[1])).toEqual(['primary', 'scan-consent-skip']);
   });
 
-  it('says prompts stayed local only when the person actually kept them local', () => {
+  it('shows the skipped-step message only when the person actually skipped', () => {
     const app = fixture();
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
     const empty = { goals: [], work: [], rules: [] };
     const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
-    expect(local).toContain('Your prompts stayed on this computer.');
+    expect(local).toContain('You skipped this step.');
     expect(local).not.toContain('already knows your work');
     // An upload that came back with nothing must never be described as "nothing was uploaded".
     const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
-    expect(uploadedEmpty).not.toContain('stayed on this computer');
+    expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
+  });
+
+  it('lets people continue after capacity refusal without claiming results or a voluntary skip', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }];
+    const notice = 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+    for (const uploaded of [[], ['codex']]) {
+      const html = app.renderReveal(agents, { goals: [], work: [], rules: [] }, { state: 'ok', step: null }, uploaded, notice);
+      expect(html).toContain(notice);
+      expect(html).toContain('Continue setup.');
+      expect(html).not.toContain('already knows your work');
+      expect(html).not.toContain('You skipped this step.');
+      expect(html).not.toContain('daily budget');
+    }
+  });
+
+  it('does not credit saved results to messages when this upload was refused', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }];
+    const notice = 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+    const saved = { goals: null, work: null, rules: [{ id: 'saved', text: 'Test the change.', quote: 'an earlier quote', quotedAt: '2026-10-01T00:00:00.000Z' }] };
+    const html = app.renderReveal(agents, saved, { state: 'ok', step: null }, ['codex'], notice);
+    expect(html).toContain(notice);
+    expect(html).toContain('an earlier quote');
+    expect(html).not.toContain('From 3 messages');
   });
 
   it('credits the results only to the tools that were uploaded', () => {
@@ -118,7 +151,7 @@ describe('hosted setup scan control', () => {
       { id: 'claude-code', label: 'Claude Code', detected: true, prompts: 7, canRunSetup: null, cannotRunReason: null },
     ];
     const html = app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex']);
-    expect(html).toContain('From 3 prompts across Codex');
+    expect(html).toContain('From 3 messages across Codex');
     expect(html).not.toContain('Claude Code');
   });
 
@@ -366,3 +399,4 @@ describe('hosted setup scan control', () => {
     stop();
   });
 });
+ 

@@ -49,9 +49,11 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { CONTEXT_OUTPUT_LIMIT } from '../../../context/ContextBudget.js';
 import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -93,7 +95,7 @@ const SETTINGS_CACHE_TTL_MS = 5000;
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
-This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+This project has no memory yet. This session will seed it.
 
 Memory injection starts on your second session in a project.
 
@@ -385,7 +387,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
     // session that asks, so only then is its id used, and that answer stays live.
@@ -408,10 +410,14 @@ export class SearchRoutes extends BaseRouteHandler {
       const resolvedProjects = this.contextReader
         ? await this.contextReader.projectsForCwd(hostCwd)
         : getProjectContext(hostCwd).allProjects;
-      projectsParam = resolvedProjects.join(',');
+      projectsParam = resolvedProjects.length > 0 ? resolvedProjects : undefined;
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    // Per-session hook notices are not part of the reusable cached body.
+    const rawReserve = Number(req.query.reserveChars ?? 0);
+    const reserveChars = Number.isFinite(rawReserve)
+      ? Math.min(CONTEXT_OUTPUT_LIMIT, Math.max(0, Math.floor(rawReserve))) : 0;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectsParam) {
@@ -419,7 +425,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+    const projects = parseProjectList(projectsParam);
 
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
@@ -440,7 +446,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const renderSequenceAtStart = this.contextCache?.beginRenderSequence?.();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage, reserveChars });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -473,11 +479,13 @@ export class SearchRoutes extends BaseRouteHandler {
     // from here on. `full` is a one-off human request and is never cached. An
     // answer with the prior reply is not persisted either, since the reply was
     // chosen for this session: its variant is warmed instead, without a reply.
+    // A per-session notice reserve must not replace the normal cache variant,
+    // but still learns and warms that variant for later offline sessions.
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
       try {
         const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
-        if (showLastMessage) {
+        if (showLastMessage || reserveChars > 0) {
           await this.contextCache.warmVariant(keys, rendered.readKeys);
         } else {
           await this.contextCache.recordLiveRender(
@@ -535,6 +543,7 @@ export class SearchRoutes extends BaseRouteHandler {
     sessionId?: string;
     /** "Include last message" for this render; false for any block that may be cached. */
     includePriorMessage: boolean;
+    reserveChars?: number;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
     // Health banners change with time, and a prior reply is chosen for the
@@ -596,7 +605,7 @@ export class SearchRoutes extends BaseRouteHandler {
       // Beside the work-state section: room for what the hook appends after
       // this body once the install is in a team (the TeamBrain brief). Env
       // first, as the hook reads it.
-      reserveChars: (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+      reserveChars: (request.reserveChars ?? 0) + (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
         CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
         CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
       }),
@@ -767,7 +776,7 @@ export class SearchRoutes extends BaseRouteHandler {
         'INVALID_PROJECTS'
       );
     }
-    return scopedProjects({ projects: entries.flatMap(entry => entry.split(',')) });
+    return scopedProjects({ projects: parseProjectList(entries) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {

@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 23 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
+That is all you need for the 35 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -45,14 +45,26 @@ That is all you need for the 23 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|ENCRYPTED\|]PRIVATE KEY[ BLOCK]-----` blocks |
 | `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…`, `whsec_…` |
 | `google_api_key` | `AIza…` (35 trailing chars) |
+| `google_oauth_token` | `ya29.…` Google OAuth access tokens, including the `ya29.c.…` metadata-server form (≥20 trailing chars) |
 | `gitlab_token` | `glpat-…`, `gldt-…` and `glrt-…` GitLab personal, project, group, deploy and runner access tokens (≥20 chars, routable `.`-segments included) |
 | `huggingface_token` | `hf_…` Hugging Face access tokens |
 | `npm_token` | `npm_…` npm access tokens (36 trailing alphanumerics) |
 | `docker_pat` | `dckr_pat_…` Docker Hub personal access tokens (≥27 trailing chars) |
+| `linear_key` | `lin_api_…` Linear personal API keys (40 trailing alphanumerics) |
+| `notion_token` | `ntn_…` Notion integration tokens (46 trailing alphanumerics) and the older `secret_…` form (43) |
 | `sendgrid_key` | `SG.…` SendGrid API keys (`SG.` + 22 + `.` + 43 chars) |
 | `digitalocean_token` | `dop_v1_…`, `doo_v1_…`, `dor_v1_…` DigitalOcean personal access, OAuth and refresh tokens (64 hex chars) |
 | `shopify_token` | `shpat_…`, `shpca_…`, `shppa_…`, `shpss_…` Shopify access tokens and shared secrets (32 hex chars) |
 | `pypi_token` | `pypi-AgE…` PyPI API tokens (≥50 trailing chars) |
+| `databricks_token` | `dapi…` Databricks personal access tokens (32 hex chars, optional `-<digit>` suffix) |
+| `vault_token` | `hvs.…` HashiCorp Vault service tokens (90-120 trailing chars) and `hvb.…` batch tokens (138-300 trailing chars) |
+| `nvidia_nim_key` | `nvapi-…` NVIDIA NIM keys from build.nvidia.com (≥32 trailing chars) |
+| `runcrate_key` | `rc_live_…` Runcrate keys (≥24 trailing chars) |
+| `groq_key` | `gsk_…` Groq API keys (52 trailing alphanumerics) |
+| `xai_key` | `xai-…` xAI API keys (80 trailing chars) |
+| `perplexity_key` | `pplx-…` Perplexity API keys (48 trailing alphanumerics) |
+| `supabase_token` | `sbp_…` Supabase personal access tokens (40 hex chars) |
+| `sentry_token` | `sntryu_…` Sentry personal auth tokens (64 hex chars) and `sntrys_…` organization auth tokens |
 | `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
 | `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |

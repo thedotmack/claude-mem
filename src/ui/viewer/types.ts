@@ -106,7 +106,10 @@ export type FeedItem =
 export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted' | 'sync_status' | 'data_changed';
+  /** Missing fields mean every memory kind/project may have changed. */
+  kinds?: string[];
+  sync?: import('./utils/sync-presentation').SyncStatusForDisplay;
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -137,6 +140,7 @@ export interface Settings {
   CLAUDE_MEM_WORKER_HOST: string;
 
   CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_OBSERVER_ENABLED?: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD?: string;
   CLAUDE_MEM_CODEX_MODEL?: string;
   CLAUDE_MEM_GEMINI_API_KEY?: string;
