@@ -33,13 +33,17 @@ let mockExtractedMessage: string = '';
 // Counts transcript reads: the Stop hook reads the transcript exactly once via
 // extractLastAssistantTurn (text + model together), never via extractLastMessage.
 let extractCallCount = 0;
+let modelExtractCallCount = 0;
 mock.module('../../../src/shared/transcript-parser.js', () => ({
   extractLastMessage: () => mockExtractedMessage,
   extractLastAssistantTurn: () => {
     extractCallCount += 1;
     return { text: mockExtractedMessage, model: 'claude-test-model' };
   },
-  extractLastAssistantModel: () => 'claude-test-model',
+  extractLastAssistantModel: () => {
+    modelExtractCallCount += 1;
+    return 'claude-test-model';
+  },
 }));
 
 // Awaited worker calls (must stay empty: Stop spools and exits) vs. the
@@ -74,6 +78,7 @@ beforeEach(() => {
   nudgeLog.length = 0;
   mockExtractedMessage = '';
   extractCallCount = 0;
+  modelExtractCallCount = 0;
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -133,7 +138,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(body.platformSource).toBe('codex');
   });
 
-  it('uses Claude Code last_assistant_message directly without reading a transcript', async () => {
+  it('uses Claude Code last_assistant_message directly to bypass transcript text extraction', async () => {
     const { claudeCodeAdapter } = await import('../../../src/cli/adapters/claude-code.js');
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     const input = {
@@ -149,7 +154,10 @@ describe('summarizeHandler — privacy tag stripping', () => {
     const result = await summarizeHandler.execute(input);
 
     expect(result.continue).toBe(true);
+    // Transcript text extraction is bypassed completely
     expect(extractCallCount).toBe(0);
+    // Bounded telemetry model lookup still happens when transcript_path is supplied
+    expect(modelExtractCallCount).toBe(1);
     const body = spooledSummarize();
     expect(body.lastAssistantMessage).toBe('Claude direct reply');
     expect(body.platformSource).toBe('claude');
