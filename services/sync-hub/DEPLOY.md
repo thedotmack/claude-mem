@@ -82,13 +82,28 @@ The token check plus checkpoint compare-and-set stay one synchronous
 transaction. A stale request cannot checkpoint after a successor acquires a
 new token.
 
-If a fetch times out/aborts, fails at the network, returns a retryable status,
-or yields a truncated, invalid, or ambiguous response, the Hub deliberately
-keeps the 90-second lease until its natural expiry. The upstream handler may
-have ignored cancellation and may still be applying the request. Early lease
-release is allowed only after a valid response has been checkpointed, an
-authoritative checkpoint already proves the target complete, or Pro returns
-its deterministic nonretryable 409 outcome.
+The lease outlives a drain only while a page that was **sent** has an unknown
+outcome. If a fetch times out/aborts, fails at the network, returns a retryable
+status, or yields a truncated, invalid, or ambiguous response, the Hub
+deliberately keeps the 90-second lease until its natural expiry: the upstream
+handler may have ignored cancellation and may still be applying the request.
+
+Every other ending releases the lease at once, so the next push for that user
+can drain instead of answering `projection_busy` for up to 90 seconds:
+
+| Ending | Why release is safe |
+|---|---|
+| A valid response was checkpointed, or the checkpoint already covers the target | The work is done. |
+| Pro's deterministic nonretryable 409 | No request remains that can change the projection. |
+| A local failure before the page was sent: an empty or oversize page, or a thrown store error | Nothing was sent, so nothing upstream is applying it. |
+| `projection_client_disconnected`: the pushing client went away | Checked only before the lease is taken and between pages, where no request is in flight. Pages already checkpointed stay. |
+
+A `503 projection_busy` response carries `Retry-After` set to the incumbent
+lease's remaining time in whole seconds (never more than 90). Other projection
+503s carry no `Retry-After`: their wait is unknown, and a wrong hint is worse
+than none. The client waits at least that long, and a flush that got pages
+acked before the refusal restarts its own backoff from the initial delay.
+`services/sync-api` (the Postgres hub) follows the same rules.
 
 A public push returns 200 only after the Hub's authoritative `projected_seq`
 covers the committed `head_seq` — including while the kill switch is tripped.
