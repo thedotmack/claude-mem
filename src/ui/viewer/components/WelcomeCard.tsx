@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useI18n } from '../../i18n';
 import { useDialogFocus } from '../hooks/useDialogFocus';
 
 interface WelcomeCardProps {
@@ -31,13 +32,14 @@ export function setStoredWelcomeDismissed(dismissed: boolean): void {
 }
 
 function DismissButton({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
       className="welcome-modal-dismiss"
       onClick={onClick}
-      aria-label="Close welcome"
-      title="Close (Esc)"
+      aria-label={t('Close welcome')}
+      title={t('Close (Esc)')}
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -161,6 +163,7 @@ const FEATURES: Feature[] = [
 ];
 
 export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
+  const { t } = useI18n();
   const dialogRef = useDialogFocus(true);
   const handleDismiss = () => {
     setStoredWelcomeDismissed(true);
@@ -191,8 +194,8 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
         <header className="welcome-modal-header">
           <img className="welcome-modal-logo" src="claude-mem-logo-stylized.png" alt="" width="96" height="96" />
-          <h2 id="welcome-modal-title">Welcome to claude-mem</h2>
-          <p>Keep useful context across your coding sessions.</p>
+          <h2 id="welcome-modal-title">{t('Welcome to claude-mem')}</h2>
+          <p>{t('Keep useful context across your coding sessions.')}</p>
         </header>
 
         <div className="welcome-modal-grid">
@@ -200,8 +203,8 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
             <div key={feature.kind} className={`welcome-modal-feature welcome-modal-feature-${feature.kind}`}>
               <div className="welcome-modal-feature-inner">
                 {feature.illustration}
-                <h3 className="welcome-modal-feature-title">{feature.title}</h3>
-                <p className="welcome-modal-feature-desc">{feature.description}</p>
+                <h3 className="welcome-modal-feature-title">{t(feature.title)}</h3>
+                <p className="welcome-modal-feature-desc">{t(feature.description)}</p>
               </div>
             </div>
           ))}
@@ -209,11 +212,11 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
         <footer className="welcome-modal-footer">
           <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
-            How it works
+            {t('How it works')}
           </a>
           <span className="welcome-modal-footer-sep">{'·'}</span>
           <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-            Read the docs
+            {t('Read the docs')}
           </a>
         </footer>
       </div>

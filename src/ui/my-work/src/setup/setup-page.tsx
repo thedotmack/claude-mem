@@ -4,6 +4,8 @@
 import { CheckIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
+import { interpolate, useI18n } from '@/lib/i18n'
+import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
 import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
 import { CheckoutScreen } from './screens/checkout-screen'
@@ -35,12 +37,13 @@ function useSetupSource(): SetupSource | null {
 }
 
 function ProgressBar({ step, branch, showCheckout }: { step: SetupStep; branch: MemoryBranch; showCheckout: boolean }) {
+  const { t } = useI18n()
   const current = progressItemFor(step)
   if (!current) return null
-  const items = [['memory', 'Memory'], ['savings', 'Token Savings'], ...(branch === 'go' && showCheckout ? [['checkout', 'Checkout']] : []), ['finish', 'Finish Setup']]
+  const items = [['memory', t('Memory')], ['savings', t('Token Savings')], ...(branch === 'go' && showCheckout ? [['checkout', t('Checkout')]] : []), ['finish', t('Finish Setup')]]
   const currentIndex = items.findIndex(([id]) => id === current)
   return (
-    <nav aria-label="Setup progress">
+    <nav aria-label={t('Setup progress')}>
       <ol className="progress">
         {items.map(([id, label], index) => (
           <li key={id} className={index < currentIndex ? 'is-done' : index === currentIndex ? 'is-current' : undefined} aria-current={index === currentIndex ? 'step' : undefined}>
@@ -54,6 +57,7 @@ function ProgressBar({ step, branch, showCheckout }: { step: SetupStep; branch: 
 }
 
 export default function SetupPage({ onComplete }: { onComplete: () => void }) {
+  const { t, locale, setLocale } = useI18n()
   const source = useSetupSource()
   const telemetry = useMemo(() => createSetupTracker(sendSetupEvent), [])
   const [branchConfirmed, setBranchConfirmed] = useState(false)
@@ -70,7 +74,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => source?.subscribe(setData), [source])
 
   const [improveProduct, setImproveProduct] = useState<boolean | null>(null)
-  const [preferenceError, setPreferenceError] = useState<string | null>(null)
+  const [preferenceError, setPreferenceError] = useState<UiMessage | null>(null)
   const preferenceRevision = useRef(0)
   const changeImproveProduct = async (checked: boolean) => {
     if (!source) return
@@ -83,11 +87,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       failed()
       if (revision !== preferenceRevision.current) return
       setImproveProduct(null)
-      setPreferenceError(`Could not save this choice: ${error instanceof Error ? error.message : String(error)}`)
+      setPreferenceError(uiMessage('Could not save this choice: {error}', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
-  const [consentError, setConsentError] = useState<string | null>(null)
+  const [consentError, setConsentError] = useState<UiMessage | null>(null)
   const consentPending = useRef(false)
   const [consentSending, setConsentSending] = useState(false)
   const confirmUpload = async (upload: boolean, agents?: string[]) => {
@@ -102,7 +106,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
     } catch (error) {
       failed()
-      setConsentError(`Could not confirm your choice: ${error instanceof Error ? error.message : String(error)}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.`)
+      setConsentError(uiMessage('Could not confirm your choice: {error}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.', { error: error instanceof Error ? error.message : String(error) }))
     } finally { consentPending.current = false; setConsentSending(false) }
   }
 
@@ -214,7 +218,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   const screens: Record<SetupStep, () => ReactNode> = {
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError && renderUiMessage(consentError, t)} consentSending={consentSending} preferenceError={preferenceError && renderUiMessage(preferenceError, t)} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => { telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
     savings: () => (
@@ -240,14 +244,32 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   return (
     <div className="cmem-setup" data-step={step}>
-      <a className="skip" href="#setup-main">Skip to content</a>
+      <a className="skip" href="#setup-main">{t('Skip to content')}</a>
       <header className="setup-header">
         <span className="brand" role="img" aria-label="CMEM"><CmemMark /></span>
         <ProgressBar step={step} branch={flow.branch} showCheckout={!flow.alreadyPro} />
+        <div className="setup-header-actions">
+          <select
+            aria-label={t('Language')}
+            value={locale}
+            onChange={(e) => setLocale(e.target.value as 'en' | 'zh-CN')}
+            className="setup-lang-select"
+          >
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </div>
       </header>
       <main id="setup-main" ref={main} tabIndex={-1} className={`setup-main step-${step}${['scan', 'reveal', 'choice', 'savings', 'workspace'].includes(step) ? ' is-centered' : ''}`}>
         {handOffError && <p className="scan-error" role="alert">{handOffError}</p>}
-        {installerFailed && <p className="scan-error" role="alert">Setup stopped in the terminal: {data.installer?.error ?? 'the installer did not say why.'} Run <code>npx claude-mem install</code> again to restart setup.</p>}
+        {installerFailed && (
+          <p className="scan-error" role="alert">
+            {interpolate(t('Setup stopped in the terminal: {error} Run {command} again to restart setup.'), {
+              error: data.installer?.error ?? t('the installer did not say why.'),
+              command: 'npx claude-mem install',
+            })}
+          </p>
+        )}
         {screens[step]()}
       </main>
     </div>

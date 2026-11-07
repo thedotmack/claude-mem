@@ -1,6 +1,8 @@
+import { displayTime } from '@/lib/display-time'
 import { useEffect, useState } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
@@ -57,8 +59,9 @@ function useAgentViewTransform(request: Request) {
 }
 
 function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) {
+  const { t } = useI18n()
   const { mode } = useWorkspace()
-  const label = settled ? 'Just updated' : mode === 'web' && word !== 'Translating' ? 'Working' : word
+  const label = settled ? t('Just updated') : mode === 'web' && word !== 'Translating' ? t('Working') : word === 'Translating' ? t('Translating') : word
   return (
     <Req ids={['D5']}>
       <Tooltip>
@@ -77,6 +80,7 @@ function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) 
 
 /** After ship (decision 4): the open Docs, Promo and Other follow-ups, each one actionable. Nothing renders when none are open. */
 export function OpenFollowUps({ request, limit }: { request: Request; limit?: number }) {
+  const { t } = useI18n()
   const open = request.followUps.filter((followUp) => !followUp.done)
   if (request.state !== 'shipped' || open.length === 0) return null
   const inStore = requestById(request.id) !== null
@@ -84,18 +88,18 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
   const finish = (text: string) => useStore.getState().updateSampleRequest(request.id, (current) => {
     const followUps = current.followUps.map((followUp) => followUp.text === text ? { ...followUp, done: true } : followUp)
     const stillOpen = followUps.find((followUp) => !followUp.done)
-    return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: 'Nothing left after ship' } }
+    return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: t('Nothing left after ship') } }
   })
   return (
     <Req ids={['R5.7']}>
       <div className="space-y-1">
-        <p className="section-label">Open after ship · {open.length}</p>
+        <p className="section-label">{interpolate(t('Open after ship · {count}'), { count: open.length })}</p>
         <ul className="divide-y divide-border/70">
           {open.slice(0, limit).map((followUp) => (
             <li key={followUp.text} className="flex min-h-11 items-center gap-2 text-sm md:min-h-9">
               <span className="w-12 shrink-0 text-[11px] font-medium text-muted-foreground uppercase">{followUp.tag}</span>
               <span className="min-w-0 flex-1 truncate">{followUp.text}</span>
-              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />Done</SaveButton>}
+              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />{t('Done')}</SaveButton>}
             </li>
           ))}
         </ul>
@@ -114,6 +118,7 @@ const CARD_DELIVERABLES = 3
  * commits and branches.
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
+  const { t } = useI18n()
   const products = request.workProduct.filter(isCardDeliverable)
   const count = request.detailLoaded === false ? request.detailCounts?.workProduct ?? products.length : products.length
   if (count === 0) return null
@@ -122,7 +127,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {count}</p>
+        <p className="section-label">{interpolate(t('Deliverables · {count}'), { count })}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
@@ -137,7 +142,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
           })}
           {hidden > 0 && (
             <li>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={`Open the request to see ${hidden} more deliverables`}>+{hidden} more</Button>
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={interpolate(t('Open the request to see {count} more deliverables'), { count: hidden })}>{interpolate(t('+{count} more'), { count: hidden })}</Button>
             </li>
           )}
         </ul>
@@ -147,6 +152,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
 }
 
 export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const { t } = useI18n()
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
   // The spinner means an agent is on it: an idle card still waiting on its title (or one whose title writer
@@ -169,7 +175,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             {/* Where it belongs, up front beside who is on it. */}
             <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.2', 'R9.3']}>
-              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>asked by {request.askedBy}</span>
+              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>{interpolate(t('asked by {askedBy}'), { askedBy: request.askedBy })}</span>
             </Req>
           </div>
           <div className="flex items-center gap-1.5">
@@ -192,11 +198,11 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             </button>
           ) : (
             <Req ids={['D5']}>
-              <button type="button" onClick={onOpen} className="text-left" aria-label="Open this request; its title is still being written">
+              <button type="button" onClick={onOpen} className="text-left" aria-label={t('Open this request; its title is still being written')}>
                 <Terminal output={request.terminal.join('\n')} isStreaming className="border-dashed border-terminal-border bg-terminal text-terminal-foreground">
                   <TerminalContent className="max-h-28 p-3.5 text-[11px] leading-relaxed">
                     <pre className="whitespace-pre-wrap text-terminal-foreground">{request.terminal.slice(-4).join('\n')}</pre>
-                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">Writing the human title…</Shimmer>}
+                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">{t('Writing the human title…')}</Shimmer>}
                   </TerminalContent>
                 </Terminal>
               </button>
@@ -216,14 +222,14 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
 
           <div className="mt-auto space-y-2.5 border-t border-border/70 pt-3">
             {/* An empty bar says nothing, so an unreviewed request says so in words instead. */}
-            {reviewed ? <ProgressMeter request={request} /> : <Req ids={['R5.9']}><p className="text-xs text-muted-foreground">Not reviewed yet</p></Req>}
+            {reviewed ? <ProgressMeter request={request} /> : <Req ids={['R5.9']}><p className="text-xs text-muted-foreground">{t('Not reviewed yet')}</p></Req>}
             {/* Stage, start and running time on one quiet line instead of a three-column grid. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <Req ids={['R5.3', 'R5.4', 'R5.5']}>
                 <dl className="flex flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·']">
-                  <div className="flex gap-1"><dt className="sr-only">Stage</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{request.stage}</dd></div>
-                  <div className="flex gap-1"><dt>Started</dt><dd><time dateTime={request.startedAtIso}>{request.startedAt}</time></dd></div>
-                  <div className="flex gap-1"><dt>{request.state === 'shipped' ? 'Took' : 'Running'}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
+                  <div className="flex gap-1"><dt className="sr-only">{t('Stage')}</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{t(request.stage)}</dd></div>
+                  <div className="flex gap-1"><dt>{t('Started')}</dt><dd><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></dd></div>
+                  <div className="flex gap-1"><dt>{request.state === 'shipped' ? t('Took') : t('Running')}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
                 </dl>
               </Req>
             </div>

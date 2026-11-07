@@ -91,6 +91,17 @@ export function resolvePreferredRefreshAgent(dataDir: string): UsableAgentId | u
   return undefined;
 }
 
+/** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
+const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
+
+/** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
+ * every run. It is never detected by a model: a detection call would spend the owner's agent quota on every
+ * automatic refresh. Empty or not a language name gives null, and the skills' own Language rule applies. */
+export function resolveTextLanguage(dataDir: string): string | null {
+  const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
+  return LANGUAGE_NAME.test(value) ? value : null;
+}
+
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
 const stringArray = { type: 'array', items: { type: 'string' } };
 /** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
@@ -308,9 +319,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try { return await work(); }
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
+    /**
+     * The owner's language, when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE names one, is named in every grouping, review,
+     * focus and story question. Those run as separate agents that each see only their own input (a review batch in
+     * "amend" mode sees only its later asks), so left to the skill's rule they could each pick a different language.
+     * The goals step reads every owner prompt in one question, so it keeps the skill's own rule.
+     */
+    const textLanguage = resolveTextLanguage(dataDir);
+    const languageRule = textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      const rule = name === 'goals' ? '' : languageRule;
+      return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
+    };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -328,7 +351,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       writeFileSync(answerPath, answer, { mode: 0o600 });
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
-    });
+    };
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
       agent === 'claude-code'
@@ -417,7 +440,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       let reviewed = 0;
       const coercedReviewFields = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
-      const reviewBatch = async (groups: Array<{ groupId: string }>) => {
+      const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
@@ -426,8 +449,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+            rule,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
-          ].join('\n\n'), stepModels.review);
+          ].filter(Boolean).join('\n\n'), stepModels.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
@@ -459,7 +483,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
-          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule), { groups: batch.length })]));
         }
       };
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));

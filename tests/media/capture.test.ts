@@ -108,7 +108,7 @@ describe('capture at the common ingest boundary', () => {
       expect(observation.mediaEventKey).toMatch(/^[0-9a-f]{64}$/);
       const metadata = media.getMetadata(ref.id);
       expect(metadata.state).toBe('ready');
-      expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxCanonicalBytes);
+      expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxEncodedCanonicalBytes);
       expect(metadata.llm!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxDerivativeBytes);
       for (const variant of ['viewer', 'llm'] as const) {
         expect((await sharp(await media.readVariant(ref.id, variant)).metadata()).format).toBe('webp');

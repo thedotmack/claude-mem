@@ -170,6 +170,27 @@
   // live = observations that arrived while this page was open; they play first,
   // in arrival order. replay = the recent backlog, cycled whenever live is
   // empty so an idle worker still leaves something on screen.
+  // Follow the same explicit preference as My Work and the classic viewer.
+  const languageKey = ['claude', 'mem', 'ui', 'language'].join('-');
+  function applyLanguage() {
+    let zh = false;
+    try {
+      zh = localStorage.getItem(languageKey) === 'zh-CN';
+    } catch {
+      // Privacy settings can deny storage; TV playback must still start.
+    }
+    document.documentElement.lang = zh ? 'zh-CN' : 'en';
+    document.title = zh ? 'claude-mem · 观察电视墙' : 'claude-mem · Observation TV';
+    els.idle.textContent = zh ? '等待观察记录' : 'waiting for observations';
+    els.dot.title = zh ? '实时流状态' : 'stream status';
+    els.pipBtn.textContent = zh ? '画中画' : 'PiP';
+    els.fsBtn.textContent = zh ? '全屏' : 'Full screen';
+  }
+  applyLanguage();
+  window.addEventListener('storage', event => {
+    if (event.key === languageKey || event.key === null) applyLanguage();
+  });
+
   const live = [];
   let replay = [];
   let replayIndex = 0;
@@ -247,12 +268,13 @@
 
   function relTime(epoch) {
     const secs = Math.max(0, Math.round((Date.now() - epoch) / 1000));
-    if (secs < 60) return 'just now';
+    const zh = document.documentElement.lang === 'zh-CN';
+    if (secs < 60) return zh ? '刚刚' : 'just now';
     const mins = Math.round(secs / 60);
-    if (mins < 60) return mins + 'm ago';
+    if (mins < 60) return mins + (zh ? ' 分钟前' : 'm ago');
     const hrs = Math.round(mins / 60);
-    if (hrs < 24) return hrs + 'h ago';
-    return Math.round(hrs / 24) + 'd ago';
+    if (hrs < 24) return hrs + (zh ? ' 小时前' : 'h ago');
+    return Math.round(hrs / 24) + (zh ? ' 天前' : 'd ago');
   }
 
   function render(item) {
