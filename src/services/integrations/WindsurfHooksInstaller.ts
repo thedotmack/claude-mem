@@ -7,7 +7,6 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
-import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
 interface WindsurfHookEntry {
@@ -269,10 +268,8 @@ async function fetchWindsurfContextFromWorker(
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
-  const ownerToken = loadWorkerAuthToken();
   const contextResponse = await fetch(
     `${workerUrl}/api/context/inject?project=${encodeURIComponent(projectName)}`,
-    { headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined },
   );
   if (!contextResponse.ok) return false;
 

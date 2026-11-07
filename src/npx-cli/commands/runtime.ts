@@ -8,7 +8,6 @@ import { npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
-import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 
 /**
  * The plugin root the worker spawns from — the shared resolveWorkerScript()
@@ -267,10 +266,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 
   let response: Response;
   try {
-    const ownerToken = loadWorkerAuthToken();
-    response = await fetch(searchUrl, {
-      headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined,
-    });
+    response = await fetch(searchUrl);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (isConnectionRefusedError(error)) {

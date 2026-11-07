@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ProjectCatalog, Settings } from '../types';
-import { authedFetch } from '../utils/auth';
 
 interface UseContextPreviewResult {
   preview: string;
@@ -39,7 +38,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     async function fetchProjects() {
       let data: ProjectCatalog;
       try {
-        const response = await authedFetch('/api/projects');
+        const response = await fetch('/api/projects');
         data = await response.json() as ProjectCatalog;
       } catch (err: unknown) {
         console.error('Failed to fetch projects:', err instanceof Error ? err.message : String(err));
@@ -110,7 +109,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
 
     try {
-      const response = await authedFetch(`/api/context/preview?${params}`);
+      const response = await fetch(`/api/context/preview?${params}`);
       const text = await response.text();
       if (!isCurrent()) return;
 
