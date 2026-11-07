@@ -1120,6 +1120,22 @@ describe('automatic refresh interval setting', () => {
       expect(Date.parse(status.nextAt!) - Date.parse(status.checkedAt!)).toBe(86400000);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('after a failed run with an interval longer than four hours, the next check shown is the next tick, not four hours out', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const DAY = 86400000;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, checkMs: refreshIntervalMs('1440'),
+        runJob: async () => ({ state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' }) });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(NOW + DAY).toISOString() });
+      // The wait never grows past one interval when that is longer than four hours, and a failure before
+      // the run starts (runNow) reports the same next check.
+      writeFileSync(join(dir, 'request-groups.json'), '{not json');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(NOW + DAY).toISOString() });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('My Work refresh agent preference (#5435)', () => {
