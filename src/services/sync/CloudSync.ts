@@ -645,6 +645,11 @@ export class CloudSync {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private nextBackoffMs: number;
+  /**
+   * Ops the hub acked during the current flush, counted where acks are
+   * stamped, so a page split across several requests still counts.
+   */
+  private ackedOpsThisFlush = 0;
   private flushing = false;
   private flushAgainRequested = false;
   private stopped = false;
@@ -826,11 +831,11 @@ export class CloudSync {
       return;
     }
     this.flushing = true;
-    // Whether this flush moved any page forward before it failed. A hub that is
-    // draining a backlog under contention (projection_busy) acks some pages
-    // and refuses the next; that is progress, not a failing hub, so the retry
-    // starts from the initial delay instead of doubling toward the maximum.
-    let progressedThisFlush = false;
+    // A hub draining a backlog under contention (projection_busy) acks some
+    // requests and refuses the next. That is progress, not a failing hub, so
+    // a flush that got any op acked retries from the initial delay instead of
+    // doubling toward the maximum.
+    this.ackedOpsThisFlush = 0;
     try {
       if (this.authFailure) {
         // Paused on 401/403: one cheap authenticated status GET decides
@@ -857,11 +862,9 @@ export class CloudSync {
         let progressed: boolean;
         do {
           progressed = await this.drainMutationPage();
-          progressedThisFlush ||= progressed;
           for (const kind of KINDS) {
             if (this.stopped) return;
             if (this.hubAcceptsKind(kind.kind)) progressed = await this.drainContentPage(kind) || progressed;
-            progressedThisFlush ||= progressed;
           }
           // Only one historical page may enter the outbox, and only when live
           // work has yielded. The next sweep always gives every live lane a turn.
@@ -895,7 +898,7 @@ export class CloudSync {
       }
       // Rows stay NULL — retried by the backoff timer below and on next notify().
       const retryAfterMs = err instanceof HubHttpError ? err.retryAfterMs : null;
-      if (progressedThisFlush) this.resetBackoff();
+      if (this.ackedOpsThisFlush > 0) this.resetBackoff();
       this.recordFlushFailure(err);
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
         retryInMs: Math.max(this.nextBackoffMs, retryAfterMs ?? 0),
@@ -1657,6 +1660,7 @@ export class CloudSync {
         if (this.stopped) return;
         this.validatePushResponse(response, remaining);
         this.stampAcked(response.acked, remaining, acknowledgementEpoch);
+        this.ackedOpsThisFlush += response.acked.length;
         const acknowledgedAt = Date.now();
         const deleted = new Set(remaining.filter(op => JSON.parse(op.body).deleted).map(op => JSON.parse(op.body).id));
         for (const ack of response.acked) {

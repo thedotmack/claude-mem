@@ -652,6 +652,35 @@ describe('CloudSync', () => {
     sync.stop();
   });
 
+  it('restarts the retry ladder when a page split across requests got its first request acked', async () => {
+    // ~240 KB rows: one 20-row page exceeds the 4 MB request cap and is sent
+    // as two requests. The first is acked, the second refused.
+    for (let i = 0; i < 20; i++) seedObservation({ title: `big ${i}`, narrative: `${i}`.padEnd(240_000, 'x') });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 20, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    const pending = pendingCount('observations');
+    expect(pending).toBeGreaterThan(0);
+    expect(pending).toBeLessThan(20);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
+  });
+
   it('falls back to the default content batch when the setting is out of range', async () => {
     for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
 
