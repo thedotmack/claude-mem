@@ -20,6 +20,9 @@ export interface RefreshStatus {
   failures?: number;
 }
 
+/** Milliseconds between scheduled checks for a CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN value; invalid input gives ten minutes. */
+export function refreshIntervalMs(minutes: string | number | null | undefined): number;
+
 export class AutoRefreshWorker {
   constructor(options: {
     dir: string;

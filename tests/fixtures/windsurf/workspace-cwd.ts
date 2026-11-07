@@ -18,11 +18,20 @@ const os = await import('node:os');
 mock.module('os', () => ({ ...os, homedir: () => ownedHome }));
 symlinkSync(process.execPath, join(ownedHome, '.bun', 'bin', 'bun'));
 process.env.CLAUDE_PLUGIN_ROOT = pluginRoot;
-const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('owned context') });
+// Stub worker: records the hook's one live observer handoff; anything else gets context.
+const liveHandoffs: { path: string; body: any }[] = [];
+const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async request => {
+  const path = new URL(request.url).pathname;
+  if (request.method === 'POST' && path === '/api/sessions/observations') {
+    liveHandoffs.push({ path, body: await request.json() });
+    return Response.json({ status: 'queued' });
+  }
+  return new Response('owned context');
+} });
 process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.1';
 process.env.CLAUDE_MEM_WORKER_PORT = String(server.port);
 writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'false' }));
-// The installed absolute command loads the actual adapter and spooling handler.
+// The installed absolute command loads the actual adapter and live-handoff handler.
 writeFileSync(join(pluginRoot, 'scripts', 'worker-service.cjs'), `
 (async () => {
   const { windsurfAdapter } = await import(${JSON.stringify(join(sourceRoot, 'src/cli/adapters/windsurf.ts'))});
@@ -57,21 +66,26 @@ try {
   const manager = new SessionManager(db);
   setIngestContext({ dbManager: db, sessionManager: manager, eventBroadcaster: { broadcastObservationQueued() {} } as any, ensureGeneratorRunning: async () => {} });
   try {
-    const payloads: unknown[] = [];
-    const result = await new HookSpool().drain(async (spooled, handedOff) => {
-      assert.equal(spooled.kind, 'observation');
-      payloads.push(spooled.payload);
-      const reply = await ingestObservation(spooled.payload as any, { markHandedOff: handedOff });
-      return reply.ok === true;
-    });
-    const sessions = store.db.query('SELECT project, cwd, platform_source FROM sdk_sessions').all();
-    console.log(JSON.stringify({ entry, result, payloads, sessions }));
-    assert.equal(payloads.length, 1);
-    assert.equal(result.drained, 1);
-    assert.equal((payloads[0] as any).cwd, workspace, 'installed hooks must inherit the active workspace');
-    assert.equal((sessions[0] as any).cwd, workspace);
-    assert.equal((sessions[0] as any).project, 'workspace');
-    assert.equal((sessions[0] as any).platform_source, 'windsurf');
+    // Observer inputs never land in the disk spool.
+    const spooled: unknown[] = [];
+    const result = await new HookSpool().drain(async entry => { spooled.push(entry); return true; });
+    const sessions = () => store.db.query('SELECT project, cwd, platform_source FROM sdk_sessions').all();
+    console.log(JSON.stringify({ entry, result, liveHandoffs }));
+    assert.equal(spooled.length, 0, 'observer inputs must not be written to the disk spool');
+    assert.equal(liveHandoffs.length, 1, 'the hook makes exactly one live handoff');
+    const body = liveHandoffs[0].body;
+    assert.equal(body.cwd, workspace, 'installed hooks must inherit the active workspace');
+    assert.equal(body.platformSource, 'windsurf');
+    assert.equal(body.contentSessionId, 'owned-windsurf-session');
+    // The worker attributes the handed-off event to the workspace project.
+    // Map the wire's snake_case tool fields the way SessionRoutes does.
+    const reply = await ingestObservation({ ...body, toolName: body.tool_name,
+      toolInput: body.tool_input, toolResponse: body.tool_response });
+    assert.equal(reply.ok, true);
+    const [session] = sessions() as any[];
+    assert.equal(session.cwd, workspace);
+    assert.equal(session.project, 'workspace');
+    assert.equal(session.platform_source, 'windsurf');
     assert.equal(manager.getTotalQueueDepth(), 1);
   } finally {
     for (const row of store.db.query('SELECT id FROM sdk_sessions').all() as { id: number }[]) manager.removeSessionImmediate(row.id);

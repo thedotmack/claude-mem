@@ -129,7 +129,9 @@ function isMandatoryReasoningRejection(lower: string): boolean {
  * Only that shape is stripped and retried. "unsupported", "invalid
  * parameter", and "requires reasoning" are value or policy refusals: a model
  * that will not disable reasoning must not have the field forgotten for
- * every later request to that URL.
+ * every later request to that URL. "cannot be represented" (OpenCode Go's
+ * openai-responses wording, #4581's endpoint) is a schema rejection: the
+ * field has no wire representation at all, so stripping it is correct.
  */
 export function isUnknownReasoningParameter(text: string): boolean {
   const lower = text.toLowerCase();
@@ -137,7 +139,7 @@ export function isUnknownReasoningParameter(text: string): boolean {
   if (isMandatoryReasoningRejection(lower)) return false;
   // "unsupported parameter" is OpenAI's unknown-field wording. A bare
   // "unsupported" is not: "unsupported reasoning effort" is a value refusal.
-  return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|unsupported parameter|extra fields?|additional propert|not permitted/.test(lower);
+  return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|unsupported parameter|extra fields?|additional propert|not permitted|cannot be represented/.test(lower);
 }
 
 /**

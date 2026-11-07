@@ -62,6 +62,14 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
       agentTranscriptPath: pickStringField(r.agent_transcript_path),
+      // Claude Code's Stop input carries the last assistant text so the
+      // summarize handler can skip reading the transcript (#5445). An empty
+      // string (a session ending mid-tool-call) is no message: leave it
+      // undefined so the handler falls back to the transcript, same as codex.
+      lastAssistantMessage:
+        typeof r.last_assistant_message === 'string' && r.last_assistant_message.length > 0
+          ? r.last_assistant_message
+          : undefined,
       // stop_hook_active is deliberately not mapped. Claude Code sets it once a
       // Stop hook has blocked the stop and Claude kept working. claude-mem's
       // Stop hook never blocks (it always exits 0 with continue: true), so the

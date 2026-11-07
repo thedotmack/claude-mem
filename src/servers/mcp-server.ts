@@ -1,3 +1,13 @@
+/**
+ * The MCP server your agent searches memory through.
+ *
+ * Its core is the three-step mem-search workflow: `search` for a compact
+ * index, `timeline` for what happened around a result, `get_observations`
+ * for full details of only the IDs that matter. It also offers code
+ * navigation (smart_*), saving a note on purpose (save_memory) and work
+ * state. The memory tools answer by calling the worker over HTTP
+ * (callWorker); the smart_* code tools read files in the workspace directly.
+ */
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';

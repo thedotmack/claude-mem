@@ -303,12 +303,24 @@ export function hasShownProFallbackNotice(dataDir: string = paths.dataDir()): bo
   return existsSync(join(dataDir, PRO_FALLBACK_NOTICE_MARKER));
 }
 
-export function markProFallbackNoticeShown(dataDir: string = paths.dataDir()): void {
+/**
+ * Claim the notice across hook processes. Call only after the asynchronous
+ * reads have succeeded, immediately before returning the composed output.
+ * A preflight hasShown check is only a budget hint, not ownership.
+ */
+export function markProFallbackNoticeShown(dataDir: string = paths.dataDir()): boolean {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dataDir, PRO_FALLBACK_NOTICE_MARKER), new Date().toISOString(), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+  try {
+    writeFileSync(join(dataDir, PRO_FALLBACK_NOTICE_MARKER), new Date().toISOString(), {
+      encoding: 'utf-8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
 }
 
 const DAY_MS = 86_400_000;

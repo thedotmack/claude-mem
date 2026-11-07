@@ -6,7 +6,7 @@ export function boundedInteger(value: unknown, fallback: number, max: number): n
   return Number.isSafeInteger(number) && number > 0 && number <= max ? number : fallback;
 }
 
-type Client = Pick<CodexAppServerClient, 'runTurn' | 'close'>;
+type Client = Pick<CodexAppServerClient, 'runTurn' | 'close' | 'recycle'>;
 type TurnClient = Pick<Client, 'runTurn'>;
 interface Job {
   signal?: AbortSignal;
@@ -73,6 +73,23 @@ export class CodexAppServerPool {
       });
       this.active.add(work);
     }
+  }
+
+  /**
+   * Kill idle app-server children so the next `ensureStarted()` spawns fresh
+   * processes that read the current credentials from disk. Active clients
+   * (mid-turn) are left alone and keep their child; the next auth probe
+   * recycles them if they are idle by then. While an auth cooldown holds,
+   * new starts are withheld, so a client is rarely mid-turn at probe time.
+   *
+   * Called before auth recovery probes, after a `codex login` may have
+   * written new tokens while the running app-server still holds the old ones.
+   */
+  async recycleIdle(): Promise<void> {
+    const toRecycle = [...this.idle];
+    if (toRecycle.length === 0) return;
+    logger.debug('SDK', 'Recycling idle app-server clients for credential refresh', { count: toRecycle.length });
+    await Promise.allSettled(toRecycle.map(client => client.recycle()));
   }
 
   close(): Promise<void> {

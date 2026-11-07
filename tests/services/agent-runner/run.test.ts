@@ -449,3 +449,61 @@ describe('agent runner', () => {
     expect(calls[0].child.killed).toBe(false);
   });
 });
+
+describe('agent runner: a task\'s preferred agent (#5435)', () => {
+  it('runs on the preferred agent first, not the first in detect order', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const preferred: AgentTask = { ...task(cwd), preferredAgent: 'codex' };
+      const result = await runTask(preferred, { detect: async () => agents('claude-code', 'codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toEqual({ state: 'ok', agent: 'codex', result: 'inline done: {"ok":true}', error: null, attempts: [] });
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('a preferred agent that is not logged in leaves the detect order in charge', async () => {
+    const query = ((input: any) => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })()) as never;
+    const preferred: AgentTask = { ...task('/data'), preferredAgent: 'codex' };
+    const result = await runTask(preferred, { detect: async () => agents('claude-code', 'gemini'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result).toMatchObject({ state: 'ok', agent: 'claude-code', attempts: [] });
+  });
+
+  it('when the preferred agent\'s run fails, the next agent in detect order is tried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-fail-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
+        call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
+        call.child.emit('close', 0);
+      });
+      const preferred: AgentTask = { ...task(cwd), preferredAgent: 'codex' };
+      const result = await runTask(preferred, { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'gemini' });
+      expect(result.attempts.map(attempt => attempt.agent)).toEqual(['codex']);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH, '/bin/gemini']);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('an answer refused on the preferred agent is not handed to another agent (#5189)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-refused-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const refusing: AgentTask = {
+        ...task(cwd),
+        preferredAgent: 'codex',
+        run: async ask => {
+          await ask('review these groups', {});
+          throw Object.assign(new Error('reviews: g_1: narrative is too long.'), { answerRefused: true });
+        },
+      };
+      const result = await runTask(refusing, { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'failed', agent: 'codex' });
+      expect(result.attempts.map(attempt => attempt.agent)).toEqual(['codex']);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+});

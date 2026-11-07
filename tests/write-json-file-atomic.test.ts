@@ -76,6 +76,23 @@ describe('writeJsonFileAtomic', () => {
     expect(mode).toBe(0o600);
   });
 
+  it('keeps an existing group-writable mode exactly, whatever the umask', () => {
+    if (IS_WINDOWS) return;
+    const target = join(tempDir, 'shared-config.json');
+    writeFileSync(target, '{}');
+    chmodSync(target, 0o660);
+
+    // open(2) masks the mode it is given with the umask; 022 would turn 0660 into 0640.
+    const previousUmask = process.umask(0o022);
+    try {
+      writeJsonFileAtomic(target, { shared: true });
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    expect(statSync(target).mode & 0o777).toBe(0o660);
+  });
+
   it('can tighten an existing destination mode before writing secrets', () => {
     if (IS_WINDOWS) return;
     const target = join(tempDir, 'previously-public.json');

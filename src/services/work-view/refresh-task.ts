@@ -79,6 +79,18 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
   return Object.fromEntries((Object.keys(STEP_MODELS) as Step[]).map(step => [step, withOverrides(STEP_MODELS[step])])) as Record<Step, StepModels>;
 }
 
+/** The agent the refresh tries first: the one CLAUDE_MEM_PROVIDER names (#5435). The worker builds a fresh
+ * task for every run, so reading it here applies a provider change to the next refresh. A provider that names
+ * an API endpoint instead of a local agent ('openrouter', 'openai-compatible') names no agent, and the
+ * runner's detect order decides, as before. */
+export function resolvePreferredRefreshAgent(dataDir: string): UsableAgentId | undefined {
+  const provider = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_PROVIDER ?? '').trim();
+  if (provider === 'codex') return 'codex';
+  if (provider === 'gemini') return 'gemini';
+  if (provider === 'claude') return 'claude-code';
+  return undefined;
+}
+
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
 const stringArray = { type: 'array', items: { type: 'string' } };
 /** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
@@ -545,6 +557,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   return {
     reason,
     steps,
+    // The refresh runs on the agent the owner's provider setting names first (#5435).
+    preferredAgent: resolvePreferredRefreshAgent(dataDir),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {
