@@ -1,4 +1,5 @@
 import type { MediaMetadataResponse, MediaOwnerDetailsResponse, ObservationMediaRef } from '../types';
+import { t, interpolate } from '../../i18n';
 
 /** Thumbnails rendered on a card; the rest are counted and reachable in the gallery. */
 export const MAX_CARD_THUMBNAILS = 4;
@@ -100,7 +101,9 @@ export function mediaStatusText(state: MediaDisplayState): string {
 
 /** Alt text comes from the bounded request label, never filenames or captions. */
 export function mediaAltText(ref: ObservationMediaRef, index: number, count: number, observationId: number): string {
-  return `Image ${ref.label} (${index + 1} of ${count}) attached to observation #${observationId}`;
+  return interpolate(t('Image {label} ({current} of {total}) attached to observation #{id}'), {
+    label: ref.label, current: index + 1, total: count, id: observationId,
+  });
 }
 
 export const inspectionText = (ref: ObservationMediaRef) =>

@@ -377,7 +377,7 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
     timesSeen: rule.timesSeen,
     latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : 'not recorded',
     // Only orders rules by strength; an unrecorded date counts as a year old rather than as recent.
-    latestDaysAgo: Number.isFinite(latest) ? Math.max(0, Math.floor((now - latest) / DAY_MS)) : 365,
+    latestDaysAgo: Number.isFinite(latest) ? Math.max(0, (now - latest) / DAY_MS) : 365,
     source,
     status: rule.status,
     replacedBy: rule.replacedBy ? { ruleId: rule.replacedBy, at: Number.isFinite(replacedAt) ? formatRecordTime(replacedAt, now) : 'a date not recorded' } : undefined,

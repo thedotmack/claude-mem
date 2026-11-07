@@ -10,7 +10,9 @@ export default defineConfig({
   base: '/work-view/',
   build: { outDir: '../../../plugin/ui/work-view', emptyOutDir: true },
   plugins: [react(), tailwindcss()],
-  resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+  // Shared UI localization lives outside this Vite package. Resolve React from
+  // this app for both it and the app, so hooks never cross React instances.
+  resolve: { alias: { '@': path.resolve(__dirname, './src') }, dedupe: ['react', 'react-dom'] },
   server: {
     proxy: {
       // The worker's /api/work-view routes are loopback-only and reject forwarded headers, so no xfwd.

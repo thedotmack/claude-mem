@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useI18n, interpolate } from '../../i18n';
+import { translateViewerError } from '../../i18n/errors';
 import { deleteFeedItem, type DeletableItemType } from '../utils/feed-deletion';
 
 interface DeleteButtonProps {
@@ -18,11 +20,19 @@ const CONFIRM_LABELS: Record<DeletableItemType, string> = {
  * down) is shown inline next to the button instead of failing silently.
  */
 export function DeleteButton({ itemType, id, onDeleted }: DeleteButtonProps) {
+  const { t } = useI18n();
   const [isDeleting, setIsDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
+  const label = CONFIRM_LABELS[itemType];
+  const translatedLabel = t(label);
+
   const handleClick = async () => {
-    if (!window.confirm(`Delete this ${CONFIRM_LABELS[itemType]}? This cannot be undone.`)) return;
+    const confirmMessage = interpolate(
+      t('Delete this {item}? This cannot be undone.'),
+      { item: translatedLabel }
+    );
+    if (!window.confirm(confirmMessage)) return;
     setIsDeleting(true);
     setFailure(null);
     try {
@@ -34,14 +44,16 @@ export function DeleteButton({ itemType, id, onDeleted }: DeleteButtonProps) {
     }
   };
 
+  const actionTitle = interpolate(t('Delete {item}'), { item: translatedLabel });
+
   return (
     <>
       <button
         className="card-delete-btn"
         onClick={handleClick}
         disabled={isDeleting}
-        title={`Delete ${CONFIRM_LABELS[itemType]}`}
-        aria-label={`Delete ${CONFIRM_LABELS[itemType]}`}
+        title={actionTitle}
+        aria-label={actionTitle}
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="3 6 5 6 21 6"></polyline>
@@ -50,7 +62,7 @@ export function DeleteButton({ itemType, id, onDeleted }: DeleteButtonProps) {
           <line x1="14" y1="11" x2="14" y2="17"></line>
         </svg>
       </button>
-      {failure && <span className="card-delete-error" role="alert">{failure}</span>}
+      {failure && <span className="card-delete-error" role="alert">{translateViewerError(failure, t)}</span>}
     </>
   );
 }
