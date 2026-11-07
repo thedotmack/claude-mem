@@ -50,6 +50,30 @@ describe('worker dependency preflight', () => {
     expect(getDependencyStatus('uvx')?.remediation).toContain('uv/uvx');
   });
 
+  it('checks Claude for Gemini when a source maps to claude', () => {
+    let claudeChecked = false;
+
+    runWorkerDependencyPreflight({
+      settings: {
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
+        CLAUDE_MEM_CHROMA_ENABLED: 'false',
+      },
+      classifyClaudeError: classifier,
+      findClaudeExecutable: () => {
+        claudeChecked = true;
+        return '/usr/bin/claude';
+      },
+      env: { PATH: '/tmp' },
+      platform: 'linux',
+      homedir: () => '/tmp/home',
+      pathExists: () => false,
+      isFile: () => false,
+    });
+
+    expect(claudeChecked).toBe(true);
+  });
+
   it('recognizes a Homebrew-only uvx install on darwin', () => {
     let claudeChecked = false;
 

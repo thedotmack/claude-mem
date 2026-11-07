@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "description": "Pro gateway request validation that runs before JSON parsing and before any upstream call. Rejections use the existing bad_request envelope (HTTP 400) with detail media_request_invalid:<reason>. synthetic entries describe inputs too large to inline; a test materializes them.",
+  "bounds": {
+    "max_body_bytes": 4194304,
+    "max_images_per_request": 4,
+    "max_image_decoded_bytes": 262144,
+    "max_aggregate_image_decoded_bytes": 1048576,
+    "max_aggregate_image_data_url_bytes": 1398204,
+    "accepted_data_url_mime_types": ["image/webp", "image/png", "image/jpeg"]
+  },
+  "reasons": [
+    "body_too_large", "invalid_json", "invalid_messages", "invalid_content_part",
+    "external_image_url", "unsupported_image_type", "invalid_image_data",
+    "image_outside_user_message", "too_many_images", "image_too_large"
+  ],
+  "accept": [
+    {
+      "name": "text_only_string_content",
+      "body": { "model": "cmem-observer", "messages": [{ "role": "system", "content": "s" }, { "role": "user", "content": "hello" }], "temperature": 0.3, "max_tokens": 4096 }
+    },
+    {
+      "name": "text_parts_array",
+      "body": { "model": "cmem-observer", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hello" }] }] }
+    },
+    {
+      "name": "tool_message_string_content",
+      "body": { "model": "cmem-observer", "messages": [{ "role": "user", "content": "q" }, { "role": "assistant", "content": null, "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "f", "arguments": "{}" } }] }, { "role": "tool", "tool_call_id": "call_1", "content": "result" }] }
+    },
+    { "name": "two_webp_images", "body_file": "request-two-images.json", "body_pointer": "/body" },
+    {
+      "name": "png_data_url_accepted",
+      "body": { "model": "cmem-observer", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "[image event1_image1]" }, { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=" } }] }] }
+    },
+    {
+      "name": "exactly_max_body_bytes",
+      "synthetic": { "kind": "text_body_bytes", "bytes": 4194304 }
+    },
+    {
+      "name": "four_images_at_per_image_bound",
+      "synthetic": { "kind": "webp_images", "count": 4, "decoded_bytes_each": 262144 }
+    }
+  ],
+  "reject": [
+    { "name": "body_over_cap", "synthetic": { "kind": "text_body_bytes", "bytes": 4194305 }, "reason": "body_too_large" },
+    { "name": "content_length_over_cap", "synthetic": { "kind": "content_length_header", "value": 4194305 }, "reason": "body_too_large" },
+    { "name": "malformed_json", "raw_body": "{\"messages\":[", "reason": "invalid_json" },
+    { "name": "messages_missing", "body": { "model": "cmem-observer" }, "reason": "invalid_messages" },
+    { "name": "messages_empty", "body": { "model": "cmem-observer", "messages": [] }, "reason": "invalid_messages" },
+    {
+      "name": "https_image_url",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "https://example.test/a.webp" } }] }] },
+      "reason": "external_image_url"
+    },
+    {
+      "name": "http_image_url",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "http://169.254.169.254/latest" } }] }] },
+      "reason": "external_image_url"
+    },
+    {
+      "name": "image_url_as_bare_string",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA8AAAAdQlHIXpf+BiOh/AAA=" }] }] },
+      "reason": "invalid_content_part"
+    },
+    {
+      "name": "unknown_part_type",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "input_file", "file_id": "f" }] }] },
+      "reason": "invalid_content_part"
+    },
+    {
+      "name": "input_references_part",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }] }], "input_references": [{ "type": "image_url", "image_url": { "url": "https://example.test/a.png" } }] },
+      "reason": "invalid_content_part"
+    },
+    {
+      "name": "gif_data_url",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "data:image/gif;base64,R0lGODlhAQABAAAAACw=" } }] }] },
+      "reason": "unsupported_image_type"
+    },
+    {
+      "name": "svg_data_url",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "data:image/svg+xml;base64,PHN2Zy8+" } }] }] },
+      "reason": "unsupported_image_type"
+    },
+    {
+      "name": "non_base64_data_url",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "data:image/webp,RIFF" } }] }] },
+      "reason": "unsupported_image_type"
+    },
+    {
+      "name": "invalid_base64_alphabet",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "data:image/webp;base64,UklGR!!!" } }] }] },
+      "reason": "invalid_image_data"
+    },
+    {
+      "name": "declared_webp_is_png",
+      "body": { "messages": [{ "role": "user", "content": [{ "type": "text", "text": "x" }, { "type": "image_url", "image_url": { "url": "data:image/webp;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=" } }] }] },
+      "reason": "invalid_image_data"
+    },
+    {
+      "name": "image_in_assistant_message",
+      "body": { "messages": [{ "role": "user", "content": "q" }, { "role": "assistant", "content": [{ "type": "image_url", "image_url": { "url": "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA8AAAAdQlHIXpf+BiOh/AAA=" } }] }] },
+      "reason": "image_outside_user_message"
+    },
+    { "name": "five_images", "synthetic": { "kind": "webp_images", "count": 5, "decoded_bytes_each": 38 }, "reason": "too_many_images" },
+    { "name": "five_images_across_turns", "synthetic": { "kind": "webp_images_split_across_user_turns", "counts": [3, 2], "decoded_bytes_each": 38 }, "reason": "too_many_images" },
+    { "name": "one_image_over_per_image_bound", "synthetic": { "kind": "webp_images", "count": 1, "decoded_bytes_each": 262145 }, "reason": "image_too_large" },
+    { "name": "fourth_image_over_per_image_bound", "synthetic": { "kind": "webp_images_with_sizes", "decoded_bytes": [262144, 262144, 262144, 262145] }, "reason": "image_too_large" },
+    { "name": "data_url_longer_than_per_image_bound", "synthetic": { "kind": "data_url_chars", "mime": "image/webp", "chars": 349552 }, "reason": "image_too_large" }
+  ]
+}

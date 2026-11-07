@@ -1,14 +1,9 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
+failOnCiWithoutChrome('CI requires Chrome for live catalog request-order tests');
 
 for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed', 'item-deleted-recreated', 'item-deleted-recreated-removed', 'item-deleted-recreated-stale'] as const) {
   const staleRecreated = scenario === 'item-deleted-recreated-stale';
@@ -18,18 +13,14 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
   const again = scenario === 'item-deleted-confirmation';
   const outside = scenario.startsWith('item-deleted-outside');
   const removeOutside = scenario === 'item-deleted-outside-removed';
-  (chrome ? it : it.skip)(`catalog refresh preserves live changes: ${scenario}`, async () => {
+  (chromeExecutablePath ? it : it.skip)(`catalog refresh preserves live changes: ${scenario}`, async () => {
     let release!: () => void;
     const ready = new Promise<void>(resolve => { release = resolve; });
     let releaseFirst!:()=>void;
     const firstReady = new Promise<void>(resolve=>{releaseFirst=resolve});
     let finish!: (result: any) => void;
     const result = new Promise<any>(resolve => { finish = resolve; });
-    // The one-shot compiler exits before Chrome starts, keeping the browser
-    // phase free of shared esbuild service handles.
-    const esbuild = createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`);
-    const bundle = execFileSync(esbuild, ['--bundle', '--loader=tsx', '--platform=browser', '--format=iife', '--define:process.env.NODE_ENV="production"', '--log-level=error'], {
-      cwd: resolve(import.meta.dir, '../../..'), encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, input: `
+    const bundle = compileBrowserFixture(`
         import React, {useEffect} from 'react';
         import {createRoot} from 'react-dom/client';
         import {useSessionCatalog} from './src/ui/viewer/hooks/useSessionCatalog';
@@ -100,7 +91,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           await fetch('/result',{method:'POST',body:document.getElementById('rows').textContent});
         }
         run().catch(error=>fetch('/result',{method:'POST',body:JSON.stringify({error:String(error)})}));
-      ` });
+      `);
     let requests=0;
     let serverCount=5;
     let snapshotReady!:()=>void;
@@ -118,7 +109,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     const outsideCatalog = [{...entry,started_at_epoch:101}, ...Array.from({length:99},(_,i)=>({...entry,content_session_id:`seed-${i}`,started_at_epoch:100-i}))];
     const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
       const path=new URL(request.url).pathname;
-      if(path==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+      if(path==='/fixture.js')return scriptResponse(bundle);
       if(path==='/ready'){markBrowserReady();return new Response('ready');}
       if(path==='/api/sessions'){
         const page=++requests;
@@ -155,18 +146,14 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
       if(path==='/latest-requested'){await latestRequested;return new Response('ok');}
       if(path==='/release'){release();return new Response('ok');}
       if(path==='/result'){finish(await request.json());return new Response('ok');}
-      return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
+      return htmlResponse(FIXTURE_PAGE_HTML);
     }});
-    const profile=mkdtempSync(join(tmpdir(),'claude-mem-catalog-count-'));
-    const child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
-      '--disable-background-timer-throttling','--disable-renderer-backgrounding',
-      '--no-first-run',`--user-data-dir=${profile}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
-    let timer:ReturnType<typeof setTimeout>|undefined;
+    let chrome:OwnedChrome|undefined;
     try{
+      chrome=launchChrome(server.url.href,{profilePrefix:'claude-mem-catalog-count-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
       // Separate Chrome's cold start from the fixture's request choreography.
-      await Promise.race([browserReady,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Catalog browser did not become ready')),30000);})]);
-      clearTimeout(timer);
-      const actual:any=await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser result timed out')),25000);})]);
+      await withTimeout(browserReady,30000,'Catalog browser did not become ready');
+      const actual:any=await withTimeout(result,25000,'Browser result timed out');
       if(outside){
         expect(actual).toHaveLength(removeOutside?100:101);
         expect(outsideCatalog).toHaveLength(removeOutside?100:101);
@@ -193,7 +180,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         expect(actual[0].custom_title).toBe(scenario==='placeholder'?null:'Server title');
       }
     }finally{
-      clearTimeout(timer);releaseFirst();release();confirmRelease();child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
+      releaseFirst();release();confirmRelease();await chrome?.close();server.stop(true);
     }
   },80000);
 }

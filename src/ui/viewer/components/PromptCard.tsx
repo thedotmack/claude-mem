@@ -4,6 +4,8 @@ import { formatDate } from '../utils/formatters';
 
 interface PromptCardProps {
   prompt: UserPrompt;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 // A prompt past these bounds renders with a line clamp plus a "Show more"
@@ -15,8 +17,13 @@ interface PromptCardProps {
 const CLAMP_LINES = 8;
 const CLAMP_MIN_CHARS = 600;
 
-export function PromptCard({ prompt }: PromptCardProps) {
-  const [expanded, setExpanded] = useState(false);
+export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedChange }: PromptCardProps) {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? localExpanded;
+  const setExpanded = (next: boolean) => {
+    if (controlledExpanded === undefined) setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
   const date = formatDate(prompt.created_at_epoch);
   const isLong =
     prompt.prompt_text.split('\n').length > CLAMP_LINES ||

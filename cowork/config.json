@@ -9,6 +9,7 @@
     "maxChars": 6000
   },
   "capture": {
-    "skipTools": []
+    "skipTools": [],
+    "media": false
   }
 }

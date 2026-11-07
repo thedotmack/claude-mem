@@ -50,6 +50,10 @@ mock.module('../../src/cli/handlers/file-edit.js', () => ({
 }));
 mock.module('../../src/services/worker/http/shared.js', () => ({
   ...realIngestSnapshot,
+  ingestSummarize: async (payload: Record<string, unknown>) => {
+    summarizeBodies.push(payload);
+    return { status: 'accepted' };
+  },
   ingestObservation: async (payload: { toolName: string; cwd?: string }) => {
     observations.push({ toolName: payload.toolName, cwd: payload.cwd });
     ingested.push({ ...payload });
@@ -61,7 +65,6 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   ...realWorkerUtilsSnapshot,
   ensureWorkerRunning: async () => true,
   workerHttpRequest: async (apiPath: string, init?: { body?: string }) => {
-    if (apiPath === '/api/sessions/summarize' && init?.body) summarizeBodies.push(JSON.parse(init.body));
     return new Response('{}');
   },
 }));
@@ -298,7 +301,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
         [sessionId, 'call-current', [{ type: 'text', text: 'current result' }]],
         [sessionId, 'call-legacy', [{ type: 'text', text: 'legacy result' }]],
       ]);
-      expect(summarizeBodies.map(body => [body.contentSessionId, body.cwd, body.last_assistant_message])).toEqual([
+      expect(summarizeBodies.map(body => [body.contentSessionId, body.cwd, body.lastAssistantMessage])).toEqual([
         [sessionId, PROJECT_DIR, 'Done'], [sessionId, PROJECT_DIR, 'Done'],
       ]);
     });

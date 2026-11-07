@@ -1,3 +1,9 @@
+/**
+ * Builds the context a new session starts with: a compact index of the
+ * observations and summaries that matter for this project, fitted to the
+ * delivery limit. The same rows render two ways: terse for the agent, and a
+ * readable preview for the person (forHuman).
+ */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -7,13 +13,13 @@ import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { SQLITE_BUSY_TIMEOUT_MS, openReaderDatabase } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
-import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -67,7 +73,7 @@ const VERSION_MARKER_PATH = path.join(
 function initializeDatabase(): Database | null {
   try {
     if (!existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH, { readonly: true, create: false });
+    const db = openReaderDatabase(DB_PATH);
     try {
       db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       return db;
@@ -403,7 +409,7 @@ export function fitContextForDelivery(
     const warningLength = warning ? warning.length + 2 : 0;
     text = appendObserverHealthWarning(warning, truncateTerminalPreview(
       renderPreview(selected, budget.config),
-      limit - warningLength
+      limit - warningLength - TERMINAL_BANNER_RESERVE_CHARS
     ));
   }
 

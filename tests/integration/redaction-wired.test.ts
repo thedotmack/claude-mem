@@ -54,6 +54,15 @@ describe('redaction at the tag-stripping choke point', () => {
     expect(parsed.url).toBe('https://api.example.com');
   });
 
+  // The worker stores stripMemoryTags(JSON.stringify(toolResponse)), so a
+  // newline before the key arrives as the two characters `\n`, where a bare
+  // `\b` cannot match.
+  it('redacts a Perplexity key printed right after a newline in tool output', () => {
+    const pplx = 'ppl' + 'x-' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789' + 'AbCdEfGhIjKl';
+    const stored = stripMemoryTags(JSON.stringify({ stdout: `Deployment ready.\n${pplx}` }));
+    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
+  });
+
   // #4745: the worker stores stripMemoryTags(JSON.stringify(toolInput)), so
   // quotes inside a command reach the generic patterns backslash-escaped.
   it.each([

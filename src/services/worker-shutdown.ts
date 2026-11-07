@@ -1,8 +1,7 @@
 /**
  * Guarded worker shutdown sequence: the dying worker drains gracefully under
  * a hard deadline and, on restart, spawns its own successor so no other
- * process races it for the port
- * (plans/2026-06-10-worker-restart-single-source-of-truth.md).
+ * process races it for the port.
  *
  * This lives in its own module rather than inside worker-service.ts for the
  * same reason as restart-verify.ts: worker-service.ts drags in a very large
@@ -36,6 +35,14 @@ import { logger } from '../utils/logger.js';
  * interactions).
  */
 export type WorkerShutdownReason = 'stop' | 'restart' | 'signal' | 'idle';
+
+/**
+ * Base deadline (before getPlatformTimeout scaling) for the dying worker's
+ * graceful shutdown. A restart successor can boot while its predecessor is
+ * still inside this window, so anything the successor must wait out (a
+ * staged restore waiting for the old process to release SQLite) uses it too.
+ */
+export const WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS = 10_000;
 
 export interface RestartHandoffDeps {
   port: number;

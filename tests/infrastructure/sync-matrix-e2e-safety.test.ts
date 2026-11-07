@@ -14,6 +14,7 @@ describe('sync matrix E2E safety contract', () => {
     expect(script).toContain('SYNC_API_ENTRY');
     expect(script).toContain("hostname: '127.0.0.1'");
     expect(script).toContain('refused non-loopback URL');
+    expect(script).toContain('sync matrix refuses non-loopback PostgreSQL');
     expect(script).not.toContain('wrangler');
     expect(script).not.toContain('cmem.ai');
     expect(script).not.toContain('https://');
@@ -27,9 +28,10 @@ describe('sync matrix E2E safety contract', () => {
     expect(script).not.toContain('CMEM_HUB_WORKER_ROOT: process.env');
   });
 
-  it('defines exactly two real client identities and canonical protocol-v2 pushes', () => {
-    expect(script).toContain("const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' }");
-    expect(script).not.toContain('matrix-device-c');
+  it('defines three real client identities including the hosted replica and canonical protocol-v2 pushes', () => {
+    expect(script).toContain("const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b', c: 'matrix-device-c' }");
+    expect(script).toContain('openMatrixViewer');
+    expect(script).toContain('runViewerBrowsers');
     expect(script).not.toContain('rawPush');
     expect(script).toContain('SessionStore');
     expect(script).toContain('CloudSync');

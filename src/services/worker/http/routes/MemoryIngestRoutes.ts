@@ -12,6 +12,7 @@ import {
 import { computeObservationContentHash } from '../../../sqlite/observations/store.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 /**
  * Auto-memory ingest route. Stores Claude Code memory files DIRECTLY as
@@ -89,6 +90,13 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
   }
 
   private async handleIngest(req: Request, res: Response): Promise<void> {
+    // A full-tree ingest stores observations and nudges Chroma, so other
+    // localhost pages may not trigger it — same policy as /api/memory/save.
+    // Origin-less clients (the npx CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Memory ingests from a different localhost origin are not allowed' });
+      return;
+    }
     const body = (req.body ?? {}) as { source?: unknown; all?: unknown; requireCwd?: unknown };
     const source = typeof body.source === 'string' ? body.source.trim() : '';
     const all = body.all === true;

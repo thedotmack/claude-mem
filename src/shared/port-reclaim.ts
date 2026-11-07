@@ -62,14 +62,14 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readdirSync, readFileSync, statSync, promises as fsPromises } from 'node:fs';
+import { readdirSync, readFileSync, readlinkSync, statSync, promises as fsPromises } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive, type PidInfo } from '../supervisor/process-registry.js';
 import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
-import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, isSameProcessStartToken, normalizeProcessName, startTokenProbeEnv, withUtcStartTokenPrefix } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
 import { DATA_DIR, USER_SETTINGS_PATH, paths } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
@@ -278,7 +278,10 @@ export function parseLinuxProcStat(raw: string): { ppid: number; startToken: str
  * this platform — the same agreement readProcessTablePosix() in
  * kill-process-tree.ts relies on (and asserts by test). LC_ALL/LANG are
  * pinned so a locale-formatted date would not compare unequal on the
- * revalidation.
+ * revalidation, and TZ is pinned with them (#5311): ps prints lstart in the
+ * calling process's zone, and a token that shifts with it misreads every
+ * zone change as PID reuse. The rows carry the same utc: prefix the
+ * single-PID reader stamps, so the byte-identical agreement survives.
  */
 async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
   let stdout: string;
@@ -286,7 +289,7 @@ async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProc
     const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,uid=,lstart=,command='], {
       timeout: cappedTimeoutMs(10_000, capMs),
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      env: startTokenProbeEnv(process.env),
     });
     stdout = result.stdout;
   } catch (error) {
@@ -306,7 +309,8 @@ export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
   for (const line of stdout.split('\n')) {
     // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal
     // padding ps printed, preserved verbatim so the token byte-matches the
-    // later revalidation read. The command line follows it.
+    // later revalidation read (which stamps the same utc: prefix onto the
+    // same string). The command line follows it.
     const match = line.trim().match(
       /^(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
     );
@@ -317,7 +321,7 @@ export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
       uid: Number.parseInt(match[3]!, 10),
       name: normalizeProcessName(match[5]!.split(' ')[0] ?? ''),
       cmdline: match[5]!.trim().length > 0 ? match[5]! : null,
-      startToken: match[4]!.trim(),
+      startToken: withUtcStartTokenPrefix(match[4]!.trim()),
     });
   }
   return rows;
@@ -391,8 +395,87 @@ export function parsePidLines(output: string): number[] {
   return [...pids];
 }
 
-/** Full command line of a POSIX process, or null when it cannot be read. */
-async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+/**
+ * Linux counterpart of listListeningOwnerPidsPosix, read from /proc like this
+ * module's other Linux reads: the LISTEN sockets on `port` from
+ * /proc/net/tcp{,6}, then the processes holding one of those inodes. BusyBox
+ * `lsof` ignores `-iTCP -sTCP:LISTEN -t` and lists every open file of every
+ * process, so every PID it printed looked like an owner (#5098). As with `lsof`
+ * run as the user, only the user's own processes' fds are readable. Null when
+ * /proc/net/tcp cannot be read. Exported for tests.
+ */
+export function listListeningOwnerPidsLinux(port: number): number[] | null {
+  const inodes = new Set<string>();
+  let readAnyTable = false;
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text: string;
+    try {
+      text = readFileSync(table, 'utf-8');
+    } catch {
+      continue; // tcp6 is absent on a kernel without IPv6
+    }
+    readAnyTable = true;
+    for (const inode of parseProcNetTcpListenInodes(text, port)) inodes.add(inode);
+  }
+  if (!readAnyTable) {
+    logger.warn('PROCESS', 'Cannot read /proc/net/tcp, so the worker port owner cannot be verified', { port });
+    return null;
+  }
+  if (inodes.size === 0) return [];
+  const owners = new Set<number>();
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let fds: string[];
+    try {
+      fds = readdirSync(`/proc/${entry}/fd`);
+    } catch {
+      continue; // another user's process, or exited
+    }
+    for (const fd of fds) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/${entry}/fd/${fd}`);
+      } catch {
+        continue;
+      }
+      const socket = /^socket:\[(\d+)\]$/.exec(target);
+      if (socket && inodes.has(socket[1])) {
+        owners.add(Number.parseInt(entry, 10));
+        break;
+      }
+    }
+  }
+  return [...owners];
+}
+
+/** Inodes of the LISTEN (state 0A) sockets on `port` in a /proc/net/tcp or tcp6 table. Pure and exported for tests. */
+export function parseProcNetTcpListenInodes(table: string, port: number): string[] {
+  const portHex = port.toString(16).toUpperCase().padStart(4, '0');
+  const inodes: string[] = [];
+  // Columns: sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode
+  for (const line of table.split(/\r?\n/).slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 10) continue;
+    const localPort = fields[1].split(':').pop()?.toUpperCase();
+    if (localPort === portHex && fields[3] === '0A' && fields[9] !== '0') inodes.push(fields[9]);
+  }
+  return inodes;
+}
+
+/**
+ * Full command line of a POSIX process, or null when it cannot be read. Linux
+ * reads /proc/<pid>/cmdline, joined as readLinuxProcessTableWithNames does:
+ * BusyBox `ps` has no `-p` and no `command` field, so the `ps` read always
+ * failed there and no wedged worker was ever reclaimed (#5098). Exported for tests.
+ */
+export async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], { timeout: cappedTimeoutMs(5_000, capMs) });
     const cmdline = result.stdout.trim();
@@ -630,9 +713,14 @@ async function reclaimWedgedOwnedWorker(
   }
 
   const identity = await deps.readIdentity(owned.pid);
+  // isSameProcessStartToken, not ===: a PID file written before the UTC pin
+  // (#5311) holds a local-time token no pinned read can reproduce. A skew of a
+  // possible UTC offset must fall through to the command-line check below
+  // instead of refusing as owner-identity-mismatch — which is exactly the
+  // recycle deadlock this module exists to break.
   const tokenMismatch = owned.startToken !== undefined
     && identity.startToken !== null
-    && identity.startToken !== owned.startToken;
+    && !isSameProcessStartToken(identity.startToken, owned.startToken);
   if (tokenMismatch || identity.cmdline === null || !WORKER_CMDLINE_PATTERN.test(identity.cmdline)) {
     return refuse('owner-identity-mismatch', { tokenMismatch, hasCmdline: identity.cmdline !== null });
   }
@@ -742,7 +830,11 @@ export async function reclaimGhostListeningPort(
   }
 
   const readOwners = deps.listOwners
-    ?? ((p: number, capMs?: number) => (isWin32() ? listListeningOwnerPids(p, capMs) : listListeningOwnerPidsPosix(p, capMs)));
+    ?? ((p: number, capMs?: number) => (isWin32()
+      ? listListeningOwnerPids(p, capMs)
+      : process.platform === 'linux'
+        ? Promise.resolve(listListeningOwnerPidsLinux(p))
+        : listListeningOwnerPidsPosix(p, capMs)));
   const listOwners = (p: number) => readOwners(p, readCapMs());
   const readProcessTable = deps.readTable ?? readWindowsProcessTableWithNames;
   const readTable = () => readProcessTable(readCapMs());

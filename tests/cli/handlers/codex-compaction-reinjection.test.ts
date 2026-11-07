@@ -7,6 +7,10 @@ import { observationHandler } from '../../../src/cli/handlers/observation.js';
 import { contextHandler } from '../../../src/cli/handlers/context.js';
 import { codexAdapter } from '../../../src/cli/adapters/codex.js';
 import type { NormalizedHookInput } from '../../../src/cli/types.js';
+import { hookCommand } from '../../../src/cli/hook-command.js';
+import { resetHookSettingsCacheForTesting } from '../../../src/shared/hook-settings.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { installFakeStdin, restoreStdin } from '../../fake-stdin.js';
 
 // Codex sends the root's session_id on every thread of an agent tree; a
 // subagent thread is told apart by agent_id (its own thread id).
@@ -89,6 +93,70 @@ describe('Codex PostToolUse after a compaction', () => {
     expect(observationSpy).toHaveBeenCalledTimes(2);
     expect(second).toEqual(observationResult);
     expect(contextSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe('with observer capture off', () => {
+    let settingsSpy: ReturnType<typeof spyOn>;
+    const realStdoutWrite = process.stdout.write;
+
+    beforeEach(() => {
+      resetHookSettingsCacheForTesting();
+      settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+      }));
+    });
+
+    afterEach(() => {
+      settingsSpy.mockRestore();
+      resetHookSettingsCacheForTesting();
+      restoreStdin();
+      process.stdout.write = realStdoutWrite;
+    });
+
+    it('returns the timeline to the thread that compacted and records nothing', async () => {
+      await getEventHandler('post-compact').execute(codexCompaction(SUBAGENT));
+
+      const result = await getEventHandler('observation').execute(codexToolCall(SUBAGENT));
+
+      expect(observationSpy).not.toHaveBeenCalled();
+      expect(codexAdapter.formatOutput(result)).toEqual({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'memory timeline' },
+      });
+    });
+
+    it('does nothing on a thread that has not compacted', async () => {
+      const result = await getEventHandler('observation').execute(codexToolCall(SUBAGENT));
+
+      expect(observationSpy).not.toHaveBeenCalled();
+      expect(contextSpy).not.toHaveBeenCalled();
+      expect(result.continue).toBe(true);
+    });
+
+    it('reaches the handler through hookCommand, which no-ops other platforms early', async () => {
+      await getEventHandler('post-compact').execute(codexCompaction());
+      installFakeStdin(JSON.stringify({
+        session_id: ROOT_SESSION,
+        cwd: process.cwd(),
+        hook_event_name: 'PostToolUse',
+        tool_name: 'exec_command',
+        tool_input: { cmd: 'ls' },
+        tool_response: 'README.md',
+      }));
+      const output: string[] = [];
+      process.stdout.write = ((chunk: string, callback: () => void): boolean => {
+        output.push(String(chunk));
+        callback();
+        return true;
+      }) as typeof process.stdout.write;
+
+      const exitCode = await hookCommand('codex', 'observation', { skipExit: true });
+
+      expect(exitCode).toBe(0);
+      expect(observationSpy).not.toHaveBeenCalled();
+      expect(output.join('')).toContain('memory timeline');
+    });
   });
 
   it('leaves tool calls alone on a thread that has not compacted', async () => {

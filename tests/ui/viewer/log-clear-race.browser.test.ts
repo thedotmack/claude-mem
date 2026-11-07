@@ -1,54 +1,24 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome for log request-order tests');
-
-// The one-shot compiler exits before Chrome starts, keeping the browser
-// phase free of shared esbuild service handles.
-const esbuildBinary = createRequire(import.meta.url).resolve(
-  `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
-);
-function compileFixture(source: string): string {
-  return execFileSync(esbuildBinary, ['--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-    '--define:process.env.NODE_ENV="production"', '--log-level=error'], {
-    cwd: resolve(import.meta.dir, '../../..'), input: source, encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024,
-  });
-}
+failOnCiWithoutChrome('CI requires Chrome for log request-order tests');
 
 // The page's 5 s abort timers must fire on time on a loaded runner.
-function spawnChrome(profile: string, url: string) {
-  return Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking',
-    '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run',
-    `--user-data-dir=${profile}`, url], { stdout: 'ignore', stderr: 'ignore' });
-}
+const launchUnthrottledChrome = (url: string, profilePrefix: string) =>
+  launchChrome(url, { profilePrefix, extraFlags: UNTHROTTLED_TIMER_FLAGS });
 
 // Chrome's cold start gets its own 30 s window. The page's own phases start
 // only once its script fetches /ready, so a slow start cannot eat into them.
 async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, resultWindowMs: number): Promise<unknown> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([ready, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Chrome did not become ready')), 30000);
-    })]);
-    clearTimeout(timer);
-    return await Promise.race([result, new Promise(resolve => {
-      timer = setTimeout(() => resolve({ failure: 'Browser timed out' }), resultWindowMs);
-    })]);
-  } finally {
-    clearTimeout(timer);
-  }
+  await withTimeout(ready, 30000, 'Chrome did not become ready');
+  return withTimeout(result, resultWindowMs, 'Browser timed out');
 }
 
-(chrome ? it : it.skip)('a late auto-refresh response cannot restore logs after clearing them', async () => {
-  const owned = mkdtempSync(join(tmpdir(), 'claude-mem-log-clear-race-'));
-  let child: ReturnType<typeof Bun.spawn> | undefined;
+(chromeExecutablePath ? it : it.skip)('a late auto-refresh response cannot restore logs after clearing them', async () => {
+  let chrome: OwnedChrome | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -57,7 +27,7 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
   let requests = 0;
   const line = (message: string) => `[2026-10-05 12:00:00] [INFO ] [WORKER ] ${message}`;
   try {
-    const bundle = compileFixture(`
+    const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { LogsDrawer } from './src/ui/viewer/components/LogsModal';
@@ -97,10 +67,8 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
     const result = new Promise(resolve => { report = resolve; });
     server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>',
-        { headers: { 'Content-Type': 'text/html' } });
-      if (path === '/fixture.js') return new Response(bundle,
-        { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+      if (path === '/fixture.js') return scriptResponse(bundle);
       if (path === '/ready') { markReady(); return new Response('ready'); }
       if (path === '/api/logs') {
         const number = ++requests;
@@ -119,21 +87,19 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
       if (path === '/result') { report(await request.json()); return new Response('received'); }
       return new Response('not found', { status: 404 });
     } });
-    child = spawnChrome(join(owned, 'browser'), server.url.href);
+    chrome = launchUnthrottledChrome(server.url.href, 'claude-mem-log-clear-race-');
     const received = await reportAfterReady(ready, result, 25000);
     expect(requests).toBeGreaterThanOrEqual(3);
     expect(received).toEqual({ messages: [] });
   } finally {
     release();
-    if (child) { child.kill(); await child.exited; }
+    await chrome?.close();
     server?.stop(true);
-    rmSync(owned, { recursive: true, force: true });
   }
 }, 80000);
 
-(chrome ? it : it.skip)('a stalled clear request times out and releases log polling', async () => {
-  const owned=mkdtempSync(join(tmpdir(),'claude-mem-clear-timeout-'));
-  let child:ReturnType<typeof Bun.spawn>|undefined;
+(chromeExecutablePath ? it : it.skip)('a stalled clear request times out and releases log polling', async () => {
+  let chrome:OwnedChrome|undefined;
   let server:ReturnType<typeof Bun.serve>|undefined;
   let markReady!:()=>void;
   const ready=new Promise<void>(resolve=>{markReady=resolve});
@@ -141,7 +107,7 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
   let report!:(value:unknown)=>void;
   const result=new Promise(resolve=>{report=resolve});
   try {
-    const bundle=compileFixture(`
+    const bundle=compileBrowserFixture(`
         import React from 'react';
         import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
@@ -160,26 +126,25 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
       `);
     server=Bun.serve({hostname:'127.0.0.1',port:0,fetch(request){
       const path=new URL(request.url).pathname;
-      if(path==='/')return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
-      if(path==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+      if(path==='/')return htmlResponse(FIXTURE_PAGE_HTML);
+      if(path==='/fixture.js')return scriptResponse(bundle);
       if(path==='/ready'){markReady();return new Response('ready');}
       if(path==='/api/logs')return Response.json({logs:`[2026-10-05 12:00:00] [INFO ] [WORKER ] ${++requests===1?'INITIAL':'RECOVERED'}`});
       if(path==='/api/logs/clear')return new Promise<Response>(()=>{});
       if(path==='/result')return request.json().then(value=>{report(value);return new Response('received')});
       return new Response('missing',{status:404});
     }});
-    child=spawnChrome(join(owned,'browser'),server.url.href);
+    chrome=launchUnthrottledChrome(server.url.href,'claude-mem-clear-timeout-');
     const received=await reportAfterReady(ready,result,25000);
     expect(received).toEqual({recovered:true});expect(requests).toBeGreaterThan(1);
   }finally{
-    if(child){child.kill();await child.exited;}server?.stop(true);rmSync(owned,{recursive:true,force:true});
+    await chrome?.close();server?.stop(true);
   }
 },80000);
 
 for(const scenario of ['reconciled','read-hung'] as const) {
-(chrome ? it : it.skip)(`a clear with a lost acknowledgment reconciles current logs while auto-refresh is off: ${scenario}`, async () => {
-  const owned=mkdtempSync(join(tmpdir(),'claude-mem-clear-reconcile-'));
-  let child:ReturnType<typeof Bun.spawn>|undefined;
+(chromeExecutablePath ? it : it.skip)(`a clear with a lost acknowledgment reconciles current logs while auto-refresh is off: ${scenario}`, async () => {
+  let chrome:OwnedChrome|undefined;
   let server:ReturnType<typeof Bun.serve>|undefined;
   let release!:()=>void;
   const held=new Promise<void>(resolve=>{release=resolve});
@@ -190,7 +155,7 @@ for(const scenario of ['reconciled','read-hung'] as const) {
   let report!:(value:unknown)=>void;
   const result=new Promise(resolve=>{report=resolve});
   try {
-    const bundle=compileFixture(`
+    const bundle=compileBrowserFixture(`
         import React from 'react';import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
@@ -207,20 +172,20 @@ for(const scenario of ['reconciled','read-hung'] as const) {
       `);
     server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
       const path=new URL(request.url).pathname;
-      if(path==='/')return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
-      if(path==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+      if(path==='/')return htmlResponse(FIXTURE_PAGE_HTML);
+      if(path==='/fixture.js')return scriptResponse(bundle);
       if(path==='/ready'){markReady();return new Response('ready');}
       if(path==='/api/logs'){requests++;if(scenario==='read-hung'&&requests>1)await held;return Response.json({logs:cleared?'':'[2026-10-05 12:00:00] [INFO ] [WORKER ] OLD_BEFORE_CLEAR'});}
       if(path==='/api/logs/clear'){cleared=true;await held;return Response.json({success:true});}
       if(path==='/result'){report(await request.json());return new Response('received');}
       return new Response('missing',{status:404});
     }});
-    child=spawnChrome(join(owned,'browser'),server.url.href);
+    chrome=launchUnthrottledChrome(server.url.href,'claude-mem-clear-reconcile-');
     // The read-hung path waits out two 5 s aborts: the clear, then its reconciliation read.
     const received=await reportAfterReady(ready,result,30000);
     expect(received).toEqual({messages:scenario==='read-hung'?['OLD_BEFORE_CLEAR']:[],unknown:true,autoRefresh:false});expect(requests).toBe(2);
   }finally{
-    release();if(child){child.kill();await child.exited;}server?.stop(true);rmSync(owned,{recursive:true,force:true});
+    release();await chrome?.close();server?.stop(true);
   }
 },80000);
 

@@ -8,7 +8,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
+import { formatHeaderDateTime, compactTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
 
 function formatActiveMode(): string {
@@ -75,9 +75,6 @@ export function renderAgentDayHeader(day: string): string[] {
   ];
 }
 
-function compactTime(time: string): string {
-  return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
 
 export function renderAgentTableRow(
   obs: Observation,

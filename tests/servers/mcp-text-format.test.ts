@@ -106,6 +106,15 @@ describe('purpose-specific model responses', () => {
     expect(list).not.toHaveProperty('structuredContent');
     expect(formatMcpPayload('corpus-query', { answer: 'Selected answer', session_id: 'PRIVATE_SESSION' }).content[0].text).toBe('Corpus answer:\n\nSelected answer');
   });
+  it('cuts long titles and excerpts without splitting an emoji', () => {
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const index = formatMcpPayload('search', { prompts: [{ id: 3, prompt_text: `${'x'.repeat(179)}😀 and the rest of the prompt` }] }).content[0].text;
+    expect(index).toContain(`#P3 — ${'x'.repeat(179)}\n`);
+    expect(index).not.toMatch(loneSurrogate);
+    const timeline = formatMcpPayload('server-timeline', { observations: [{ id: 'e', content: `${'x'.repeat(159)}😀 and more context` }] }).content[0].text;
+    expect(timeline).toContain(`#e — Excerpt: ${'x'.repeat(159)}…`);
+    expect(timeline).not.toMatch(loneSurrogate);
+  });
   it('preserves operation receipts, actionable error advice, and valid bounded UTF-8', () => {
     expect(formatMcpPayload('event', { event: { id: 'e' }, generationJob: { id: 'j', status: 'queued', payload: 'PRIVATE_PAYLOAD' } }).content[0].text).toBe('Recorded event #e. Generation job j: queued.');
     expect(formatMcpPayload('job', { generationJob: { id: 'j', status: 'failed', payload: 'PRIVATE_PAYLOAD' } }).content[0].text).toBe('Generation job j: failed.');

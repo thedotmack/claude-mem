@@ -17,13 +17,14 @@ dist/
 .claude/worktrees/
 plugin/data/
 plugin/data.backup/
-# Staged per run by scripts/eval-read-gate.ts from evals/read-gate (tracked).
+# Staged per run by scripts/eval-read-gate.ts from tests/evals/read-gate (tracked).
 plugin/evals-read-gate/
 package-lock.json
 bun.lock
 !plugin/bun.lock
-!workers/sync-hub/bun.lock
+!services/sync-hub/bun.lock
 !services/sync-api/bun.lock
+!src/ui/my-work/package-lock.json
 private/
 Auto Run Docs/
 
@@ -53,9 +54,21 @@ CLAUDE.local.md
 .scratch/
 docker/install-test/
 
+# Plans stay local; this repo is public
+/plans/
+
+# Context files claude-mem writes into a workspace (Warp, Windsurf, Antigravity, Copilot)
+/WARP.md
+/.windsurf/
+/.agent/
+/.github/copilot-instructions.md
+
 # Local session report artifacts (not part of distribution)
 reports/
 
 # Python bytecode (Hermes provider and tests)
 __pycache__/
 *.pyc
+
+# Fixture homes written by tests (tests/services/prompt-import/token-usage.test.ts)
+tests/**/.generated/

@@ -2,6 +2,7 @@ import type { ContextConfig, ContextInput } from './types.js';
 import type { ContextInjectStats } from './ContextBuilder.js';
 import type { WorkStateEntry } from '../sqlite/work-state.js';
 import type { ModeConfig } from '../domain/types.js';
+import type { ObservationSearchResult, SearchOptions, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 
 export interface ContextReadOptions {
   execution?: 'inline' | 'worker';
@@ -35,6 +36,9 @@ export interface ContextReadMethods {
   workState: { input: { projects: string[]; localDeviceId: string }; result: WorkStateEntry[] };
   hasObservations: { input: { projects: string[]; platformSource?: string }; result: boolean };
   projectsForCwd: { input: { cwd: string }; result: string[] };
+  searchObservations: { input: { query: string | undefined; options: SearchOptions }; result: ObservationSearchResult[] };
+  searchSessions: { input: { query: string | undefined; options: SearchOptions }; result: SessionSummarySearchResult[] };
+  searchUserPrompts: { input: { query: string | undefined; options: SearchOptions }; result: UserPromptSearchResult[] };
 }
 
 export type ContextReadRequest = {

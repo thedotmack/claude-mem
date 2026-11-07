@@ -226,16 +226,35 @@ async function runServerKeysRotateCommand(): Promise<void> {
 async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null> {
   const { createPostgresPool } = await import('../../storage/postgres/pool.js');
   const { parsePostgresConfig } = await import('../../storage/postgres/config.js');
-  const { hashApiKey } = await import('../../services/hooks/server-bootstrap.js');
+  const { apiKeyPrefix, verifyRawKeyAgainstStoredHashAsync, hashApiKeyLegacySha256 } = await import(
+    '../../server/auth/api-key-hash.js'
+  );
+  const { ensureApiKeySchema } = await import('../../storage/postgres/schema.js');
   const config = parsePostgresConfig({ requireDatabaseUrl: true });
   if (!config) return null;
   const pool = createPostgresPool(config);
   try {
-    const result = await pool.query<{ id: string }>(
-      'SELECT id FROM api_keys WHERE key_hash = $1 LIMIT 1',
-      [hashApiKey(rawKey)],
+    // The standalone key commands run before any server process has bootstrapped
+    // the schema; apply the key_prefix upgrade first so these queries never fail
+    // against an existing database.
+    await ensureApiKeySchema(pool);
+    // Salted rows: narrow by prefix, verify each candidate. (scrypt is
+    // non-deterministic, so a direct key_hash equality lookup cannot work.)
+    const prefix = apiKeyPrefix(rawKey);
+    const candidates = await pool.query<{ id: string; key_hash: string }>(
+      'SELECT id, key_hash FROM api_keys WHERE key_prefix = $1',
+      [prefix],
     );
-    return result.rows[0]?.id ?? null;
+    for (const row of candidates.rows) {
+      if (await verifyRawKeyAgainstStoredHashAsync(rawKey, row.key_hash)) return row.id;
+    }
+    // Legacy unsalted SHA-256 rows never got a prefix column populated yet;
+    // fall back to deterministic lookup so they stay revocable/rotatable.
+    const legacy = await pool.query<{ id: string }>(
+      'SELECT id FROM api_keys WHERE key_hash = $1 LIMIT 1',
+      [hashApiKeyLegacySha256(rawKey)],
+    );
+    return legacy.rows[0]?.id ?? null;
   } finally {
     await pool.end().catch(() => undefined);
   }

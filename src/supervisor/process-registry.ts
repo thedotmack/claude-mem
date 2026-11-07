@@ -9,8 +9,8 @@ import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
-export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, normalizeProcessName };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -96,9 +96,19 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   const currentToken = captureProcessStartToken(info.pid);
   if (currentToken === null) return true;
 
-  const match = currentToken === info.startToken;
+  const match = isSameProcessStartToken(currentToken, info.startToken);
   if (!match) {
     logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
+      pid: info.pid,
+      stored: info.startToken,
+      current: currentToken
+    });
+  } else if (currentToken !== info.startToken) {
+    // The record carries a pre-UTC-pin local-time token (#5311) that differs
+    // from the pinned read by a possible UTC offset, so both name one start
+    // instant. One-time migration only — this record is rewritten with a
+    // pinned token on the next worker start.
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: pre-UTC-pin start token accepted (differs by a UTC offset)', {
       pid: info.pid,
       stored: info.startToken,
       current: currentToken
@@ -735,11 +745,15 @@ export async function waitForSlot(
   signal?: AbortSignal,
   sessionId?: number | string
 ): Promise<SlotReservation> {
-  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  const getConfiguredMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  // #5376: a limit at or above the hard cap behaves like a limit AT the cap.
+  // A full pool parks the session; only a registry already OVER the cap
+  // (processes that never went through this gate) is refused.
+  const getMax = () => Math.min(getConfiguredMax(), TOTAL_PROCESS_HARD_CAP);
 
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
-  if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
+  if (activeCount > TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
@@ -771,7 +785,7 @@ export async function waitForSlot(
       // reaches an already-parked waiter the next time it's poked — either
       // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
-      if (count >= TOTAL_PROCESS_HARD_CAP) {
+      if (count > TOTAL_PROCESS_HARD_CAP) {
         cleanup();
         reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
         return;

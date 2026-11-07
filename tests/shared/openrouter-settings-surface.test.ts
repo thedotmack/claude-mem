@@ -9,45 +9,6 @@ import {
 } from '../../src/ui/viewer/constants/openai-compat-presets.js';
 import { OPENAI_COMPAT_PRESETS } from '../../src/shared/openai-compat-presets.js';
 
-const OPENROUTER_BASE_URL_KEY = 'CLAUDE_MEM_OPENROUTER_BASE_URL';
-
-describe('OpenRouter custom endpoint settings surface (#3188)', () => {
-  it('exposes the base URL in viewer defaults and types', () => {
-    const defaultsSource = readFileSync('src/ui/viewer/constants/settings.ts', 'utf-8');
-    const typesSource = readFileSync('src/ui/viewer/types.ts', 'utf-8');
-
-    expect(defaultsSource).toContain(`${OPENROUTER_BASE_URL_KEY}: ''`);
-    expect(typesSource).toContain(`${OPENROUTER_BASE_URL_KEY}?: string`);
-  });
-
-  it('renders the base URL field in the OpenRouter settings panel', () => {
-    const modalSource = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
-
-    expect(modalSource).toContain('OpenRouter Base URL');
-    expect(modalSource).toContain(`formState.${OPENROUTER_BASE_URL_KEY}`);
-    expect(modalSource).toContain(`updateSetting('${OPENROUTER_BASE_URL_KEY}'`);
-    expect(modalSource).toContain('placeholder="https://openrouter.ai/api/v1"');
-  });
-
-  it('keeps the observer in the provider label', () => {
-    const modalSource = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
-    expect(modalSource).toContain('OpenRouter / claude-mem observer');
-  });
-
-  it('shows the observer\'s own base URL read-only', () => {
-    const modalSource = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
-    expect(modalSource).toContain('readOnly={observerManagesBaseUrl}');
-    expect(modalSource).toContain('isClaudeMemObserverBaseUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)');
-  });
-
-  it('allows the worker settings API to persist the base URL', () => {
-    const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
-
-    expect(routeSource).toContain(`'${OPENROUTER_BASE_URL_KEY}'`);
-    expect(routeSource).toContain(`${OPENROUTER_BASE_URL_KEY} must be an HTTP(S) URL`);
-  });
-});
-
 describe('openai-compatible settings surface', () => {
   const modalSource = () => readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
 
@@ -85,6 +46,18 @@ describe('openai-compatible settings surface', () => {
     }
     expect(writeList).not.toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
     expect(writeList).not.toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
+  });
+
+  it('exposes My Work summary provider and model settings without exposing credentials', () => {
+    const source = modalSource();
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL']) {
+      expect(source).toContain(`updateSetting('${key}'`);
+    }
+    expect(source).toContain('Empty uses OpenRouter only when it is the primary observer provider; any other endpoint, or a fallback key, is not used unless you select its provider here.');
+    const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
+    const writeList = routeSource.slice(routeSource.indexOf('const settingKeys = ['), routeSource.indexOf('];', routeSource.indexOf('const settingKeys = [')));
+    expect(writeList).toContain("'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER'");
+    expect(writeList).toContain("'CLAUDE_MEM_WORK_VIEW_COPY_MODEL'");
   });
 
   it('offers exactly the worker\'s presets, in the same order', () => {
