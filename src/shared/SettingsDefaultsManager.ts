@@ -736,8 +736,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_NOTION_DATABASE_ID: '',
     CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: 'true',
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
-    // observations land. Opt-in; no-op when no Grok Bot seats exist.
-    CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
+    // observations land. Default on; no-op when no Grok Bot seats exist.
+    CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
     CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: '*',
     CLAUDE_MEM_GROK_BOT_INJECT_TIER: 'episode',
     CLAUDE_MEM_GROK_BOT_INJECT_WINDOW: '80',
@@ -747,7 +747,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: '160',
     CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: '1500',
     CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: '',
-    CLAUDE_MEM_CCS_ALIGN_ENABLED: 'false',
+    CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
     // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
     CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',

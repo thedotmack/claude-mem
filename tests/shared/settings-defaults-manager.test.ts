@@ -70,12 +70,10 @@ describe('SettingsDefaultsManager', () => {
     }
   });
 
-  it('keeps personal integrations disabled until explicitly configured', () => {
+  it('ships the Grok Bot awareness push off with no agent IDs until explicitly configured', () => {
     const defaults = {
       CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
       CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
-      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
-      CLAUDE_MEM_CCS_ALIGN_ENABLED: 'false',
     };
     expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
     expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
@@ -83,8 +81,6 @@ describe('SettingsDefaultsManager', () => {
     const optIn = {
       CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
       CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
-      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
-      CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     };
     writeFileSync(settingsPath, JSON.stringify(optIn));
     expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
