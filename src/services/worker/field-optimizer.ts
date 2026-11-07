@@ -187,16 +187,31 @@ export async function optimizeField(
   // A reply cut at max_tokens is a fragment however well it fits: accepting it
   // would store half a summary marked as the whole field.
   const trimmed = condensed?.text.trim();
-  if (!trimmed || condensed?.truncated || trimmed.length > maxChars) {
+  if (!trimmed || condensed?.truncated) {
     logger.warn('SDK', 'Oversized field compression unusable; falling back to truncation', {
       sessionId: context.sessionDbId,
       field: context.field,
       toolName: context.toolName,
       originalChars: raw.length,
       returnedChars: trimmed?.length ?? 0,
-      reason: !trimmed ? 'empty-or-timeout' : condensed?.truncated ? 'cut-at-max-tokens' : 'still-over-budget',
+      reason: !trimmed ? 'empty-or-timeout' : 'cut-at-max-tokens',
     });
     return value;
+  }
+  if (trimmed.length > maxChars) {
+    // Still over budget: the reply shortened the field (median ~77% in the
+    // wild) but rarely reaches the target. Its tokens are already spent and it
+    // carries more of the field than a raw truncation would, so clamp it to
+    // the budget instead of throwing it away (#5450).
+    logger.warn('SDK', 'Oversized field compression still over budget; clamping the condensed text', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      returnedChars: trimmed.length,
+      budgetChars: maxChars,
+    });
+    return `<condensed original_size_chars="${raw.length}" reason="oversize">\n${trimmed.slice(0, maxChars)}\n</condensed>`;
   }
 
   logger.info('SDK', 'Condensed an oversized observation field to fit', {

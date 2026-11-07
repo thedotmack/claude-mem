@@ -62,9 +62,15 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
     expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
   });
 
-  it('falls back when the model returns something still over budget', async () => {
+  it('clamps a reply that is still over budget to the cap instead of discarding it (#5450)', async () => {
+    // The reply shortened the field but missed the target: its tokens are
+    // already spent and it carries more of the field than a raw truncation
+    // would, so the condensed text is kept and clamped to maxChars.
     const compress: FieldCompressor = async () => ok('y'.repeat(MAX * 2));
-    expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
+    const out = await optimizeField(oversized, compress, CTX, MAX) as string;
+    expect(out).toContain('<condensed');
+    expect(out).toContain('y'.repeat(MAX));
+    expect(out.length).toBeLessThanOrEqual(MAX + 80); // the wrapper marks, not the payload
   });
 
   it('falls back when the model throws, rather than losing the observation', async () => {
