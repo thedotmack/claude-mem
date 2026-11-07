@@ -7,7 +7,7 @@ server-side; this is deliberately the same shape as the local pipeline so the
 existing worker code path can be reused.
 
 Client reference implementation: `scripts/cmem-hook.mjs` in the
-`claude-mem-cowork` plugin (this package).
+`cmem-pro` plugin (this package).
 
 ---
 
