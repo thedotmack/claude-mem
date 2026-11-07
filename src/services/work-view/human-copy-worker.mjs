@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename, appendFile } from 'node:fs/promises
 import { join, dirname } from 'node:path';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy, HUMAN_COPY_INSTRUCTIONS } from './human-copy.mjs';
 import { endpointRejectsReasoningField, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
 
 function fitText(value, limit) {
   if (typeof value !== 'string') return value;
@@ -113,10 +114,10 @@ export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackM
 const MAX_RETRY_MS = 60 * 60 * 1000;
 
 export class HumanCopyWorker {
-  constructor({ provider, cachePath = null,
+  constructor({ provider, cachePath = null, persistSharedCopy = null,
     concurrency = 2, quietMs = 6000, maxWaitMs = 20000, minIntervalMs = 60000, retryMs = 60000, maxRetryMs = MAX_RETRY_MS,
     now = Date.now, warn = message => console.warn(message) } = {}) {
-    Object.assign(this, { provider, cachePath, concurrency, quietMs, maxWaitMs, minIntervalMs, retryMs, maxRetryMs, now, warn });
+    Object.assign(this, { provider, cachePath, persistSharedCopy, concurrency, quietMs, maxWaitMs, minIntervalMs, retryMs, maxRetryMs, now, warn });
     this.cache = new Map(); this.pending = new Map(); this.running = new Set(); this.failures = new Map(); this.lastAttempt = new Map();
     this.warnedFailures = new Set(); this.providerConfigKey = undefined;
     this.revision = 0; this.closed = false; this.saveChain = Promise.resolve(); this.timer = null;
@@ -178,7 +179,8 @@ export class HumanCopyWorker {
       let input, fingerprint;
       try { input = createHumanCopyInput(request); fingerprint = humanCopyFingerprint(input); }
       catch { return { ...request, humanCopy: { state: 'unavailable' } }; }
-      let entry = this.cache.get(request.id);
+      const sharedEntry = request.sharedHumanCopy?.fingerprint === fingerprint ? request.sharedHumanCopy : null;
+      let entry = request.sharedHumanCopyDisabled ? null : sharedEntry ?? this.cache.get(request.id);
       if (entry) {
         try {
           if (!Array.isArray(entry.copy?.workstreams) || entry.copy.workstreams.some(stream => typeof stream.id !== 'string' || !stream.id)) throw new Error('Invalid cached streams');
@@ -202,10 +204,12 @@ export class HumanCopyWorker {
         this.failures.delete(request.id);
         failure = null;
       }
-      const visibleEntry = explicitlyOff ? null : entry;
+      // Generation can be off on replicas without hiding validated origin copy.
+      const visibleEntry = explicitlyOff && !sharedEntry ? null : entry;
+      const localStreamIds = new Map((request.workstreams ?? []).map(stream => [stream.stableId ?? stream.id, stream.id]));
       return { ...request, humanCopy: {
         state: visibleEntry?.fingerprint === fingerprint ? 'current' : visibleEntry ? 'outdated' : failure || !configured ? 'unavailable' : 'pending',
-        ...(visibleEntry ? { ...visibleEntry.copy, generatedAt: visibleEntry.generatedAt } : {}),
+        ...(visibleEntry ? { ...visibleEntry.copy, workstreams: visibleEntry.copy.workstreams.map(stream => ({ ...stream, id: localStreamIds.get(stream.id) ?? stream.id })), generatedAt: visibleEntry.generatedAt } : {}),
       } };
     });
     this.pump();
@@ -247,10 +251,14 @@ export class HumanCopyWorker {
         await appendFile(join(dirname(this.cachePath), 'human-copy-usage.jsonl'), `${JSON.stringify({ at: this.now(), requestId: job.id, fingerprint: job.fingerprint, model: result.model ?? null, usage: result.usage ?? null })}\n`, { mode: 0o600 });
       }
       if (result.error) throw new Error(result.error);
-      const copy = validateHumanCopy(fitGeneratedCopy(result.output ?? result), job.input);
+      const copy = validateHumanCopy(fitGeneratedCopy(redactJsonStrings(result.output ?? result)), job.input);
       // A response for an old snapshot never overwrites the newer request.
       if (this.closed || this.refreshProviderConfigKey() !== configKeyAtStart || this.pending.get(job.id)?.fingerprint !== job.fingerprint) return;
       const entry = { fingerprint: job.fingerprint, copy, generatedAt: this.now(), model: result.model ?? null, usage: result.usage ?? null };
+      // Persist the shared result before exposing its local cache. A rejected
+      // durable write is retried through the ordinary failure path.
+      if (this.persistSharedCopy) await this.persistSharedCopy(job.id, { fingerprint: entry.fingerprint, copy: entry.copy, generatedAt: entry.generatedAt });
+      if (this.closed || this.refreshProviderConfigKey() !== configKeyAtStart || this.pending.get(job.id)?.fingerprint !== job.fingerprint) return;
       this.cache.set(job.id, entry); this.pending.delete(job.id); this.failures.delete(job.id); this.revision++;
       if (this.cachePath) {
         await this.save();

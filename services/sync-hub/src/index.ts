@@ -38,8 +38,10 @@ import type { PushOp } from "./do/SyncHub";
 import {
 	DEVICE_LIMIT_ERROR,
 	INVALID_OPS_PREFIX,
+	PROJECTION_LEASE_MIN_REMAINING_MS,
 	PROJECTION_LEASE_MS,
 	PROJECTION_ERROR_PREFIX,
+	SOCKET_AUTH_DEADLINE_HEADER,
 	SyncHub,
 } from "./do/SyncHub";
 import { readKillSwitch, SYNC_MODE_HEADER, SYNC_MODE_POLL } from "./kill-switch";
@@ -107,9 +109,11 @@ export const POLL_PUSH_DRAIN_MAX_PAGES = 8;
  * Pro declares a 60-second maximum duration. Abort the complete response-body
  * read at 45 seconds while the Hub holds a 90-second fencing lease:
  * Hub abort (45s) < Pro platform ceiling (60s) < Hub lease (90s).
+ * getProjectionPage can hand out a page with only
+ * PROJECTION_LEASE_MIN_REMAINING_MS (85s) left, so the abort must also fit inside that.
  */
-if (PROJECTION_FETCH_TIMEOUT_MS >= PROJECTION_LEASE_MS) {
-	throw new Error("projection fetch timeout must be strictly shorter than the Hub lease");
+if (PROJECTION_FETCH_TIMEOUT_MS >= PROJECTION_LEASE_MIN_REMAINING_MS) {
+	throw new Error("projection fetch timeout must be strictly shorter than the Hub lease left on a page");
 }
 
 const encoder = new TextEncoder();
@@ -212,6 +216,12 @@ interface AuthOk {
 	userId: string;
 	deviceId: string | null;
 	deviceName: string | null;
+	/**
+	 * Epoch ms at which the verdict backing this request expires. A fresh
+	 * verdict expires with the TTL that was just cached; a cached one expires
+	 * with the cache entry that authorized it — never with a newly minted TTL.
+	 */
+	authExpiresAtMs: number;
 }
 
 interface AuthFail {
@@ -229,7 +239,14 @@ export interface AuthDependencies {
 }
 
 interface MemoryVerdict {
+	/** The verdict's own expiry: the deadline a socket may be authorized for. */
 	expiresAtMs: number;
+	/**
+	 * When this memo must fall back to KV. For a verdict this isolate verified
+	 * that is its expiry; for a KV hit it is the short re-read hint, which must
+	 * never shorten the verdict itself.
+	 */
+	refreshAtMs: number;
 }
 
 /** Per-isolate positive verdicts. Avoids a KV write on every miss this isolate can already serve. */
@@ -248,16 +265,27 @@ export const VERDICT_MEMORY_MAX_ENTRIES = 10_000;
 const MEMORY_KV_HINT_SECONDS = 60;
 
 function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
+	return readVerdictMemoryExpiry(cacheKey, nowMs) !== null;
+}
+
+/** The memoized verdict's own expiry, or null when the memo owes a KV re-read. */
+function readVerdictMemoryExpiry(cacheKey: string, nowMs = Date.now()): number | null {
 	const entry = verdictMemory.get(cacheKey);
-	if (!entry) return false;
-	if (entry.expiresAtMs <= nowMs) {
+	if (!entry) return null;
+	if (entry.refreshAtMs <= nowMs) {
 		verdictMemory.delete(cacheKey);
-		return false;
+		return null;
 	}
-	return true;
+	return entry.expiresAtMs;
 }
 
 function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	// This isolate verified the verdict itself, so nothing in KV can undercut it
+	// before it expires: the refresh point is the expiry.
+	writeVerdictMemoryAt(cacheKey, nowMs + ttlSeconds * 1_000, nowMs + ttlSeconds * 1_000);
+}
+
+function writeVerdictMemoryAt(cacheKey: string, expiresAtMs: number, refreshAtMs = expiresAtMs): void {
 	// Re-inserting moves the key to the end, so the FIFO eviction below drops
 	// the verdict that has gone longest without a refresh.
 	verdictMemory.delete(cacheKey);
@@ -265,7 +293,18 @@ function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.n
 		const oldestKey = verdictMemory.keys().next().value;
 		if (oldestKey !== undefined) verdictMemory.delete(oldestKey);
 	}
-	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
+	verdictMemory.set(cacheKey, { expiresAtMs, refreshAtMs });
+}
+
+/**
+ * A positive verdict is cached as its own expiry in epoch ms. Anything else
+ * (the bare "1" older deployments wrote, or a torn value) carries no expiry,
+ * so it can neither authorize a socket deadline nor be trusted as a verdict.
+ */
+function parseVerdictExpiryMs(raw: string | null): number | null {
+	if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+	const value = Number(raw);
+	return Number.isSafeInteger(value) ? value : null;
 }
 
 function deleteVerdictMemory(cacheKey: string): void {
@@ -288,19 +327,39 @@ export { writeVerdictMemory, readVerdictMemory };
 export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
 		async readCachedVerdict(cacheKey) {
-			if (readVerdictMemory(cacheKey)) return "1";
+			const memoExpiry = readVerdictMemoryExpiry(cacheKey);
+			if (memoExpiry !== null) return String(memoExpiry);
 			const stored = await env.AUTH_CACHE.get(cacheKey);
-			if (stored === "1") {
-				writeVerdictMemory(cacheKey, MEMORY_KV_HINT_SECONDS);
+			if (stored === null) return null;
+			const expiresAtMs = parseVerdictExpiryMs(stored);
+			if (expiresAtMs === null) {
+				// A verdict written before deadlines existed (the bare "1") has no
+				// expiry to bound a socket with. Drop it and verify upstream, which
+				// rewrites the key with one.
+				await env.AUTH_CACHE.delete(cacheKey);
+				return null;
 			}
-			return stored;
+			const now = Date.now();
+			if (expiresAtMs <= now) {
+				await env.AUTH_CACHE.delete(cacheKey);
+				return null;
+			}
+			// Re-read KV after at most the hint (another isolate may have revoked
+			// it), but keep the verdict's own expiry as the deadline it grants.
+			writeVerdictMemoryAt(
+				cacheKey,
+				expiresAtMs,
+				Math.min(expiresAtMs, now + MEMORY_KV_HINT_SECONDS * 1_000),
+			);
+			return String(expiresAtMs);
 		},
 		async cacheVerifiedVerdict(cacheKey, ttlSeconds) {
 			// A live isolate memo means a concurrent miss already verified and
 			// wrote KV. Do not refresh the key — that was the 60s rewrite bill.
 			if (readVerdictMemory(cacheKey)) return;
-			writeVerdictMemory(cacheKey, ttlSeconds);
-			await env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds });
+			const expiresAtMs = Date.now() + ttlSeconds * 1_000;
+			writeVerdictMemoryAt(cacheKey, expiresAtMs);
+			await env.AUTH_CACHE.put(cacheKey, String(expiresAtMs), { expirationTtl: ttlSeconds });
 		},
 		async invalidateCachedVerdict(cacheKey) {
 			deleteVerdictMemory(cacheKey);
@@ -425,8 +484,21 @@ export async function authenticateRequest(
 		// becomes a cache miss and still requires the upstream verifier to pass.
 		dependencies.logCacheFailure("get", error);
 	}
-	if (cached === "1") {
-		return { ok: true, userId, deviceId, deviceName };
+	if (cached !== null) {
+		// Authorize for exactly as long as the cached verdict was granted: the
+		// deadline is that verdict's own expiry, never a freshly minted TTL. A
+		// value that is not an expiry is not a verdict, so it falls through to
+		// the verifier rather than authorizing anything.
+		const cachedExpiryMs = parseVerdictExpiryMs(cached);
+		if (cachedExpiryMs !== null) {
+			return {
+				ok: true,
+				userId,
+				deviceId,
+				deviceName,
+				authExpiresAtMs: cachedExpiryMs,
+			};
+		}
 	}
 
 	let verifyRes: Response;
@@ -464,14 +536,16 @@ export async function authenticateRequest(
 		// a newly-revoked token lingers at most AUTH_CACHE_TTL (default 15m,
 		// max 60m); a newly-issued token is never wrongly rejected; a forged
 		// pair is never pinned.
+		const cacheTtl = cacheTtlSeconds(env);
+		const authExpiresAtMs = Date.now() + cacheTtl * 1_000;
 		try {
-			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
+			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtl);
 		} catch (error) {
 			// A verified request must not fail because the positive-verdict cache
 			// could not be populated. The next request will verify upstream again.
 			dependencies.logCacheFailure("put", error);
 		}
-		return { ok: true, userId, deviceId, deviceName };
+		return { ok: true, userId, deviceId, deviceName, authExpiresAtMs };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 402) {
 		// The only revocation signal this Worker sees: upstream rejected the
@@ -816,7 +890,7 @@ function projectionNow(dependencies: ProjectionDrainDependencies): number | unde
  *
  * RPC budget (deliberate): one getProjectionState, one acquire, then per page
  * getProjectionPage + advanceProjectionCheckpoint. acquire already returns
- * projected_seq, getProjectionPage already renews the 90s lease, and
+ * projected_seq, getProjectionPage keeps at least 85s on the 90s lease, and
  * advance returns the new checkpoint — extra getProjectionState /
  * heartbeatProjectionLease round-trips were waking SQLite DOs for no
  * fencing value.
@@ -934,9 +1008,9 @@ export async function drainProjection(
 					retryable: true,
 				};
 			}
-			// getProjectionPage already renews the 90s fencing lease. A second
-			// heartbeat RPC here was waking the SQLite DO again for no extra
-			// fencing: Hub abort (45s) is already strictly inside that window.
+			// getProjectionPage hands out every page with at least 85s left on the
+			// 90s fencing lease. A second heartbeat RPC here was waking the SQLite
+			// DO again for no extra fencing: Hub abort (45s) is strictly inside that.
 			// From this point until a deterministic response/checkpoint outcome,
 			// the upstream may still be applying the request even if our fetch
 			// rejects. Never let a successor overlap that ambiguous predecessor.
@@ -1204,8 +1278,13 @@ export default {
 				return refusal;
 			}
 			const stub = env.SYNC_HUB.getByName(auth.userId);
+			// The socket must stop receiving content when the verdict that
+			// authorized it lapses, so hand the DO the deadline (the verdict's own
+			// expiry) with the upgrade it accepts.
+			const upgradeRequest = new Request(request);
+			upgradeRequest.headers.set(SOCKET_AUTH_DEADLINE_HEADER, String(auth.authExpiresAtMs));
 			try {
-				return await stub.fetch(request);
+				return await stub.fetch(upgradeRequest);
 			} catch (error) {
 				return retryableStoreUnavailable("websocket upgrade", error);
 			}

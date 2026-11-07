@@ -60,6 +60,8 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
+  /** Set when hosted extraction was unavailable (budget/rate limit) and setup finished locally without it. */
+  hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
 }
@@ -111,12 +113,12 @@ function completeTranscript(summary: AgentScanSummary | undefined, sessionId: st
 
 function idleState(): SetupScanState {
   return {
-    // Opt-in: nothing about setup results is shared unless the person ticks this.
-    improveProduct: false,
+    // This preference does not start an upload; discovery still requires the person's confirmation.
+    improveProduct: true,
     uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
   };
 }
 
@@ -243,9 +245,22 @@ export class SetupScan {
       await this.extract!(selected, this.current.improveProduct);
       this.finish(pending.summary, pending.startedAt);
     } catch (error) {
+      if ((error as { code?: string } | null)?.code === 'hosted-unavailable') {
+        // Preserve setup progress if automatic organization cannot run right now.
+        logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
+        try {
+          await this.extract!([], this.current.improveProduct);
+          // A refusal of the upload itself arrives after the request was sent; a preflight or cooldown refusal sent nothing.
+          const sent = (error as { sent?: boolean }).sent !== false;
+          if (!sent) this.current = { ...this.current, uploadedAgents: [] };
+          this.finish({ ...pending.summary, hostedNotice: 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.' }, pending.startedAt);
+          return this.state();
+        } catch { /* fall through to the failure below */ }
+      }
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
-      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+      const nothingSent = (error as { sent?: boolean } | null)?.sent === false;
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt, ...(nothingSent ? { uploadedAgents: [] } : {}) }, true);
     }
     return this.state();
   }

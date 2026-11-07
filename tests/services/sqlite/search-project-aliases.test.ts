@@ -126,7 +126,8 @@ describe('projectReadKeys', () => {
     store.createSDKSession('content-metadata-only', 'Api', 'metadata-only prompt');
     seedSummary('mem-summary-case', 'aPI');
 
-    expect(projectReadKeys(store.db, [' api ', 'API', 'api', '', '   ']).sort()).toEqual(['API', 'Api', 'aPI', 'api']);
+    expect(projectReadKeys(store.db, [' api ', 'API', 'api', '', '   ']).sort()).toEqual([' api ', 'API', 'Api', 'aPI', 'api']);
+    expect(projectReadKeys(store.db, [' api '])).toEqual([' api ']);
   });
 
   it('includes a source project represented only by summaries merged into the requested key', () => {

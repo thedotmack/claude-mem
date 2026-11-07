@@ -19,6 +19,13 @@ import { logger } from '../../../utils/logger.js';
 export type PacerWaitOutcome = 'answered' | 'aborted' | 'closed' | 'stalled';
 
 /**
+ * How long an unanswered prompt may go without SDK activity before the
+ * generation is abandoned (#4066). Kept apart from the drain's idle timeout:
+ * shortening that one to free idle slots must not shorten this deadline too.
+ */
+export const RESPONSE_STALL_MS = 3 * 60 * 1000;
+
+/**
  * Delay before a generation that stalled on an unanswered prompt is restarted.
  * The stall already preserved the claimed batch; without a resume the backlog
  * would wait for the next captured tool call, which may never come.
@@ -28,7 +35,9 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 /**
  * Consecutive stall resumes allowed before the observer stops restarting on its
  * own. An answered queued-work turn resets the count, so this only trips when
- * the provider keeps going silent. The next hook event can still start one.
+ * the provider keeps going silent. Once it trips, the session's buffered work
+ * is discarded rather than held for an event that may never come (#5405); the
+ * next hook event can still start fresh work.
  */
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
 

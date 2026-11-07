@@ -12,7 +12,7 @@ function createMockReqRes(): { req: Partial<Request>; res: Partial<Response>; js
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
     req: { path: '/api/sync/status', query: {} } as Partial<Request>,
-    res: { json: jsonSpy, status: statusSpy } as unknown as Partial<Response>,
+    res: { json: jsonSpy, status: statusSpy, setHeader: mock(() => {}) } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
   };

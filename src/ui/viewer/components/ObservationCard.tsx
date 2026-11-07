@@ -6,12 +6,17 @@ import { ObservationMediaSection } from './ObservationMedia';
 import type { DeletableItemType } from '../utils/feed-deletion';
 import { parseStoredStringList } from '../utils/stored-string-list';
 
+export type ObservationViewMode = 'summary' | 'facts' | 'narrative';
 interface ObservationCardProps {
   observation: Observation;
   onDeleted: (itemType: DeletableItemType, id: number) => void;
+  viewMode?: ObservationViewMode;
+  onViewModeChange?: (mode: ObservationViewMode) => void;
 }
 
-function stripProjectRoot(filePath: string): string {
+function stripProjectRoot(storedPath: string): string {
+  // Windows sessions record `C:\Users\…\src\app.ts`; shorten it like a `/` path.
+  const filePath = storedPath.replace(/\\/g, '/');
   const markers = ['/Scripts/', '/src/', '/plugin/', '/docs/'];
 
   for (const marker of markers) {
@@ -30,9 +35,15 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation, onDeleted }: ObservationCardProps) {
-  const [showFacts, setShowFacts] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+export function ObservationCard({ observation, onDeleted, viewMode, onViewModeChange }: ObservationCardProps) {
+  const [localViewMode, setLocalViewMode] = useState<ObservationViewMode>('summary');
+  const mode = viewMode ?? localViewMode;
+  const showFacts = mode === 'facts';
+  const showNarrative = mode === 'narrative';
+  const setMode = (next: ObservationViewMode) => {
+    if (viewMode === undefined) setLocalViewMode(next);
+    onViewModeChange?.(next);
+  };
   const date = formatDate(observation.created_at_epoch);
 
   const facts = parseStoredStringList(observation.facts);
@@ -66,8 +77,7 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
               aria-pressed={showFacts}
               onClick={() => {
-                setShowFacts(!showFacts);
-                if (!showFacts) setShowNarrative(false); 
+                setMode(showFacts ? 'summary' : 'facts');
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -82,8 +92,7 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
               aria-pressed={showNarrative}
               onClick={() => {
-                setShowNarrative(!showNarrative);
-                if (!showNarrative) setShowFacts(false); 
+                setMode(showNarrative ? 'summary' : 'narrative');
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

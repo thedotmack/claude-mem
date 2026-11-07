@@ -126,6 +126,8 @@ function makeRoutes(session: ActiveSession, agents: {
     getSession: mock((id: number) => (id === session.sessionDbId ? session : undefined)),
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
+    // A start refused under a quota/auth cooldown discards buffered work.
+    discardBufferedWork: mock(() => 1),
   };
   const completionHandler = {
     finalizeSession: mock(() => Promise.resolve()),
@@ -601,10 +603,11 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
 describe('SessionRoutes — the parked-slot race at a quota window edge (quota fallback)', () => {
   // When the primary's window elapses, several sessions parked on a Claude
   // fallback slot can each be sent back to the primary; only one wins its
-  // probe. That race is accepted, with no mitigation code. What must never
-  // happen is a loser being finalized: its buffered work has to wait for its
-  // next event, intact. Nested one level in, so this cleanup runs before the
-  // file-level singleton guards check the breaker.
+  // probe. That race is accepted, with no mitigation code. A loser is refused
+  // by the quota breaker, so it discards its buffered work like any start
+  // refused under a spent quota (observer-lifecycle.md); it must still not be
+  // finalized, so its next event starts fresh work. Nested one level in, so
+  // this cleanup runs before the file-level singleton guards check the breaker.
   beforeEach(() => {
     providerSelectionBox.current = 'claude';
     providerSelectionBox.fallbackFrom = undefined;
@@ -628,7 +631,7 @@ describe('SessionRoutes — the parked-slot race at a quota window edge (quota f
     resetQuotaCooldownsForTesting();
   });
 
-  it('a parked session that loses the primary probe starts nothing and keeps its work', async () => {
+  it('a parked session that loses the primary probe starts nothing and discards its work, without finalizing', async () => {
     const sessionDbId = 900101;
     const session = makeFakeSession(sessionDbId);
     registerFakeOccupant('occupant-for-900101');
@@ -651,8 +654,10 @@ describe('SessionRoutes — the parked-slot race at a quota window edge (quota f
 
     expect(isSessionParkedForSlot(sessionDbId)).toBe(false);
     expect(geminiAgent.startSession).not.toHaveBeenCalled();
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledTimes(1);
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledWith(sessionDbId);
+    expect(session.pausedReason).toBe('quota');
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
-    expect(session.conversationHistory).toHaveLength(1);
   });
 });

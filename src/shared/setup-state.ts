@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path';
 import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
+import { randomUUID } from 'node:crypto';
+import { isSetupId, type SetupTelemetryContext } from './setup-funnel.js';
 
 export type SetupBranch = 'home' | 'go';
 /** Who generates memories: CMEM Pro (hosted) or the person's own token plan. */
@@ -65,8 +67,18 @@ export function setupSessionPath(statePath: string = setupStatePath()): string {
   return join(dirname(statePath), 'setup-session.json');
 }
 
-export function startSetupSession(statePath: string = setupStatePath()): void {
-  writeJsonAtomically(setupSessionPath(statePath), { pid: process.pid });
+export function startSetupSession(statePath: string = setupStatePath(), alreadyPro = false): void {
+  writeJsonAtomically(setupSessionPath(statePath), { pid: process.pid, setup_flow_id: randomUUID(), already_pro: alreadyPro });
+}
+
+/** One non-secret episode id per live installer, never the worker's persistent identity. */
+export function readSetupTelemetryContext(statePath: string = setupStatePath()): SetupTelemetryContext | null {
+  try {
+    const value = JSON.parse(readFileSync(setupSessionPath(statePath), 'utf8'));
+    if (!isSetupId(value.setup_flow_id) || typeof value.already_pro !== 'boolean' || !Number.isInteger(value.pid) || value.pid <= 0) return null;
+    process.kill(value.pid, 0);
+    return { setup_flow_id: value.setup_flow_id, already_pro: value.already_pro };
+  } catch { return null; }
 }
 
 export function endSetupSession(statePath: string = setupStatePath()): void {

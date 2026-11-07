@@ -18,7 +18,7 @@ import {
 import {
 	PROJECTION_PAGE_MAX_BYTES,
 	PROJECTION_PAGE_MAX_OPS,
-	projectionRequestBytes,
+	ProjectionPageByteCounter,
 } from "../projection-protocol";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -29,6 +29,28 @@ export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
+/**
+ * A lease renewal is skipped while at least this much lease remains. A page
+ * within 5s of the last acquire or renewal then skips a billed row write,
+ * and every page still goes out with at least 85s left.
+ */
+export const PROJECTION_LEASE_MIN_REMAINING_MS = PROJECTION_LEASE_MS - 5_000;
+/**
+ * How stale devices.last_seen may get before a pull, push, status call or
+ * WebSocket connect refreshes it. Every SQL row write is billed, and clients
+ * call these all day, so a device row is written only when something changed
+ * or last_seen is this old. Readers of devices.last_seen (getMetadata) can
+ * therefore see a value up to this much older than the device's last request.
+ */
+export const LAST_SEEN_REFRESH_MS = 5 * 60_000;
+/**
+ * Close code for an advisory socket whose cached auth verdict has lapsed.
+ * 4401 mirrors HTTP 401 in the application close-code range; clients already
+ * reconnect on any close, and reconnecting re-authenticates.
+ */
+export const AUTH_EXPIRED_CLOSE_CODE = 4401;
+/** Worker → DO header carrying the socket's auth deadline (epoch ms). */
+export const SOCKET_AUTH_DEADLINE_HEADER = "X-Sync-Auth-Expires-At";
 const encoder = new TextEncoder();
 
 export type PushOp = CanonicalWireOp;
@@ -180,6 +202,37 @@ function toChange(row: {
 	};
 }
 
+/**
+ * Hibernation-safe per-socket state. `auth_expires_at_ms` is the expiry of the
+ * cached verdict that authorized the upgrade; a socket past it may no longer
+ * receive committed content.
+ */
+interface SocketAttachment {
+	device_id: string;
+	auth_expires_at_ms: number;
+}
+
+function readSocketAttachment(socket: WebSocket): Record<string, unknown> | null {
+	try {
+		const attachment = socket.deserializeAttachment() as Record<string, unknown> | null;
+		return typeof attachment === "object" && attachment !== null ? attachment : null;
+	} catch {
+		return null;
+	}
+}
+
+function socketAuthDeadlineMs(socket: WebSocket): number | null {
+	const expiresAt = readSocketAttachment(socket)?.auth_expires_at_ms;
+	return typeof expiresAt === "number" && Number.isSafeInteger(expiresAt) ? expiresAt : null;
+}
+
+/** Parse the Worker-supplied deadline; anything malformed is refused, never guessed. */
+function parseAuthDeadlineHeader(raw: string | null): number | null {
+	if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+	const value = Number(raw);
+	return Number.isSafeInteger(value) ? value : null;
+}
+
 export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -286,6 +339,14 @@ export class SyncHub extends DurableObject<Env> {
 		if (request.headers.get("Upgrade") !== "websocket") {
 			return new Response("SyncHub expected Upgrade: websocket", { status: 426 });
 		}
+		const authExpiresAtMs = parseAuthDeadlineHeader(
+			request.headers.get(SOCKET_AUTH_DEADLINE_HEADER),
+		);
+		if (authExpiresAtMs === null) {
+			// No deadline means no way to stop feeding the socket after its token
+			// lapses, so refuse the upgrade instead of accepting an unbounded one.
+			return new Response(`missing ${SOCKET_AUTH_DEADLINE_HEADER} header`, { status: 400 });
+		}
 		const deviceId = (request.headers.get("X-Device-Id") ?? "").trim();
 		if (deviceId.length === 0) return new Response("missing X-Device-Id header", { status: 400 });
 		const deviceName = normalizeDeviceName(request.headers.get("X-Device-Name"));
@@ -302,7 +363,15 @@ export class SyncHub extends DurableObject<Env> {
 		}
 		const [client, server] = Object.values(new WebSocketPair());
 		this.ctx.acceptWebSocket(server);
-		server.serializeAttachment({ device_id: deviceId });
+		const attachment: SocketAttachment = { device_id: deviceId, auth_expires_at_ms: authExpiresAtMs };
+		server.serializeAttachment(attachment);
+		// A hibernated socket cannot hold a timer, so the alarm is the only way to
+		// close it while the log is quiet. Move the daily no-op earlier when this
+		// socket lapses first.
+		const scheduled = await this.ctx.storage.getAlarm();
+		if (scheduled === null || authExpiresAtMs < scheduled) {
+			await this.ctx.storage.setAlarm(authExpiresAtMs);
+		}
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
@@ -347,13 +416,21 @@ export class SyncHub extends DurableObject<Env> {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
+			const now = Date.now();
 			for (const ws of sockets) {
-				let attachedDevice: string | null = null;
+				let attachment: Record<string, unknown> | null = null;
 				try {
-					const attachment = ws.deserializeAttachment() as { device_id?: unknown } | null;
-					attachedDevice = typeof attachment?.device_id === "string" ? attachment.device_id : null;
+					attachment = ws.deserializeAttachment() as Record<string, unknown> | null;
 				} catch {}
-				if (attachedDevice === originDeviceId) continue;
+				const deadline = attachment?.auth_expires_at_ms;
+				if (typeof deadline !== "number" || !Number.isSafeInteger(deadline) || deadline <= now) {
+					// Never feed committed content to a socket whose verdict has
+					// lapsed (or which predates deadlines): close it so the client
+					// re-handshakes and re-authenticates instead.
+					try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+					continue;
+				}
+				if (attachment?.device_id === originDeviceId) continue;
 				try { ws.send(frame); } catch {}
 			}
 		} catch (error) {
@@ -487,6 +564,7 @@ export class SyncHub extends DurableObject<Env> {
 		sinceSeq: string,
 		limit = MAX_PAGE,
 		deviceName: string | null = null,
+		now = Date.now(),
 	): ChangesOutcome {
 		if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
 		const since = assertCanonicalDecimal(sinceSeq);
@@ -496,19 +574,7 @@ export class SyncHub extends DurableObject<Env> {
 		const sql = this.ctx.storage.sql;
 		try {
 			this.ctx.storage.transactionSync(() => {
-				this.touchDevice(deviceId, normalizeDeviceName(deviceName));
-				const existing = sql.exec<{ last_ack_seq: string }>(
-					"SELECT last_ack_seq FROM devices WHERE device_id = ?",
-					deviceId.trim(),
-				).one();
-				const nextAck = compareCanonicalDecimals(existing.last_ack_seq, acknowledged) > 0
-					? existing.last_ack_seq
-					: acknowledged;
-				sql.exec(
-					"UPDATE devices SET last_ack_seq = ? WHERE device_id = ?",
-					nextAck,
-					deviceId.trim(),
-				);
+				this.recordPull(deviceId, normalizeDeviceName(deviceName), acknowledged, now);
 			});
 		} catch (error) {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
@@ -567,11 +633,14 @@ export class SyncHub extends DurableObject<Env> {
 		const head = this.headSeq();
 		const projected = this.projectedSeq();
 		const connected = new Set<string>();
+		const now = Date.now();
 		for (const socket of this.ctx.getWebSockets()) {
-			try {
-				const attachment = socket.deserializeAttachment() as { device_id?: unknown } | null;
-				if (typeof attachment?.device_id === "string") connected.add(attachment.device_id);
-			} catch {}
+			const attachment = readSocketAttachment(socket);
+			const deadline = attachment?.auth_expires_at_ms;
+			if (typeof attachment?.device_id !== "string") continue;
+			// A socket past its verdict is no longer a live reader.
+			if (typeof deadline !== "number" || deadline <= now) continue;
+			connected.add(attachment.device_id);
 		}
 		const devices = this.ctx.storage.sql.exec<{
 			device_id: string;
@@ -690,17 +759,14 @@ export class SyncHub extends DurableObject<Env> {
 				limit,
 			).toArray();
 		const ops: ChangeOp[] = [];
+		const pageBytes = new ProjectionPageByteCounter({
+			userId,
+			epoch,
+			fromSeqExclusive: projected,
+		});
 		for (const row of rows) {
 			const op = toChange(row);
-			const candidate = [...ops, op];
-			const bytes = projectionRequestBytes({
-				userId,
-				epoch,
-				fromSeqExclusive: projected,
-				throughSeq: op.seq,
-				ops: candidate,
-			});
-			if (bytes > byteLimit) {
+			if (pageBytes.add(op) > byteLimit) {
 				if (ops.length === 0) throw projectionError("one operation exceeds projection request byte budget");
 				break;
 			}
@@ -746,18 +812,21 @@ export class SyncHub extends DurableObject<Env> {
 			if (compareCanonicalDecimals(through, current) < 0 || compareCanonicalDecimals(through, this.headSeq()) > 0) {
 				throw projectionError("invalid projected through_seq");
 			}
+			// No lease extension here: the next getProjectionPage renews when
+			// needed, and a drain that ends releases the lease right after.
 			this.setMeta("projected_seq", through);
-			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 		return this.getProjectionState();
 	}
 
+	/**
+	 * Expire the lease in place instead of deleting its two meta rows. A delete
+	 * and the next acquire's re-insert each cost billed index writes, but two
+	 * updates do not. The released token still fails assertLease, as expired.
+	 */
 	releaseProjectionLease(leaseToken: string): void {
 		if (this.metaOptional("projection_lease_token") !== leaseToken) return;
-		this.ctx.storage.transactionSync(() => {
-			this.deleteMeta("projection_lease_token");
-			this.deleteMeta("projection_lease_expires_at");
-		});
+		this.setMeta("projection_lease_expires_at", "0");
 	}
 
 	getProjectionState(): ProjectionState {
@@ -769,7 +838,8 @@ export class SyncHub extends DurableObject<Env> {
 		};
 	}
 
-	private assertLease(token: string, now: number): void {
+	/** Returns the lease expiry, which renewProjectionLease uses to skip a fresh lease. */
+	private assertLease(token: string, now: number): string {
 		if (typeof token !== "string" || token.length === 0 || this.metaOptional("projection_lease_token") !== token) {
 			throw projectionError("projection lease is not held");
 		}
@@ -777,11 +847,13 @@ export class SyncHub extends DurableObject<Env> {
 		if (!expires || compareCanonicalDecimals(expires, this.leaseNow(now)) <= 0) {
 			throw projectionError("projection lease expired");
 		}
+		return expires;
 	}
 
 	private renewProjectionLease(token: string, now: number): void {
 		this.ctx.storage.transactionSync(() => {
-			this.assertLease(token, now);
+			const expires = this.assertLease(token, now);
+			if (Number(expires) - now >= PROJECTION_LEASE_MIN_REMAINING_MS) return;
 			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 	}
@@ -803,7 +875,27 @@ export class SyncHub extends DurableObject<Env> {
 		// A cursor-0 device has no snapshot/reset bootstrap yet, so every
 		// canonical operation remains replayable. Keep the alarm surface for
 		// deployed-object compatibility, but deliberately delete zero rows.
-		await this.ctx.storage.setAlarm(Date.now() + DAY_MS);
+		//
+		// The same alarm closes sockets whose auth verdict lapsed while the log
+		// was quiet: a hibernated DO cannot hold a timer, so the alarm is re-armed
+		// to the earliest pending deadline (or the daily no-op, whichever is
+		// sooner).
+		const now = Date.now();
+		let next = now + DAY_MS;
+		for (const ws of this.ctx.getWebSockets()) {
+			const deadline = socketAuthDeadlineMs(ws);
+			if (deadline === null) {
+				// A socket that predates deadlines cannot be bounded; drop it.
+				try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+				continue;
+			}
+			if (deadline <= now) {
+				try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+			} else if (deadline < next) {
+				next = deadline;
+			}
+		}
+		await this.ctx.storage.setAlarm(next);
 	}
 
 	private headSeq(): string { return this.meta("head_seq"); }
@@ -893,6 +985,7 @@ export class SyncHub extends DurableObject<Env> {
 
 	private touchDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		const result = this.ctx.storage.sql.exec(
 			`INSERT INTO devices (device_id, name, last_seen)
 			 SELECT ?, ?, ?
@@ -910,8 +1003,52 @@ export class SyncHub extends DurableObject<Env> {
 		if (result.rowsWritten === 0) throw deviceLimitError();
 	}
 
+	/**
+	 * Pull bookkeeping: register a new device, or update a known one only when
+	 * its name is still unset, its ack cursor advances, or last_seen is older
+	 * than LAST_SEEN_REFRESH_MS. An idle poll therefore writes no rows.
+	 */
+	private recordPull(deviceId: string, name: string | null, acknowledged: string, now: number): void {
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		const sql = this.ctx.storage.sql;
+		let row = sql.exec<{ name: string | null; last_ack_seq: string; last_seen: number | null }>(
+			"SELECT name, last_ack_seq, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) {
+			// touchDevice enforces the device limit. The new row starts at the column defaults.
+			this.touchDevice(normalizedId, name, now);
+			row = { name, last_ack_seq: "0", last_seen: now };
+		}
+		const nextName = row.name ?? name;
+		const nextAck = compareCanonicalDecimals(acknowledged, row.last_ack_seq) > 0 ? acknowledged : row.last_ack_seq;
+		if (nextName === row.name && nextAck === row.last_ack_seq && !lastSeenStale(row.last_seen, now)) return;
+		sql.exec(
+			"UPDATE devices SET name = ?, last_ack_seq = ?, last_seen = ? WHERE device_id = ?",
+			nextName,
+			nextAck,
+			now,
+			normalizedId,
+		);
+	}
+
+	/**
+	 * True when a touch would change nothing worth a billed write: the device
+	 * exists, its name needs no fill, and last_seen is still fresh.
+	 */
+	private deviceTouchIsRedundant(normalizedId: string, name: string | null, now: number): boolean {
+		const row = this.ctx.storage.sql.exec<{ name: string | null; last_seen: number | null }>(
+			"SELECT name, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) return false;
+		const needsNameFill = row.name === null && name !== null;
+		return !needsNameFill && !lastSeenStale(row.last_seen, now);
+	}
+
 	private touchExistingDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		this.ctx.storage.sql.exec(
 			`UPDATE devices
 			 SET name = COALESCE(name, ?), last_seen = ?
@@ -947,10 +1084,10 @@ export class SyncHub extends DurableObject<Env> {
 			value,
 		);
 	}
+}
 
-	private deleteMeta(key: string): void {
-		this.ctx.storage.sql.exec("DELETE FROM meta WHERE k = ?", key);
-	}
+function lastSeenStale(lastSeen: number | null, now: number): boolean {
+	return lastSeen === null || now - lastSeen >= LAST_SEEN_REFRESH_MS;
 }
 
 function normalizeDeviceName(value: string | null): string | null {

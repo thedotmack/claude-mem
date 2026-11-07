@@ -137,7 +137,7 @@ type Device = ReturnType<typeof makeDevice>;
 let clock = 1_800_000_000_000;
 function mediaCloud(device: Device, pro: ReturnType<typeof makeFakePro>, uploadsEnabled = true) {
   const client = new MediaCloudClient({ baseUrl: PRO, token: TOKEN, fetchImpl: pro.impl });
-  return new MediaCloudSync(device.db, device.media, client, { uploadsEnabled, now: () => clock });
+  return new MediaCloudSync(device.db, device.media, client, { uploadsEnabled: () => uploadsEnabled, now: () => clock });
 }
 
 async function captureImage(device: Device, toolUseId: string, bytes = png, extra: Record<string, unknown> = {}): Promise<{ ref: MediaAttachmentRef; eventKey: string; sessionDbId: number }> {
@@ -495,6 +495,31 @@ describe('media upload state is independent of text sync', () => {
     expect(hub.log).toHaveLength(1);
   });
 
+  // The "Keep images" switch saves settings.json while the worker runs; the
+  // uploader asks on every drain, so a flip takes effect without a restart.
+  it('follows the switch between drains of one running uploader', async () => {
+    const pro = makeFakePro();
+    const device = makeDevice('a');
+    const capture = await captureImage(device, 'switch');
+    storeLinkedObservation(device, capture);
+    let keepImages = false;
+    const client = new MediaCloudClient({ baseUrl: PRO, token: TOKEN, fetchImpl: pro.impl });
+    const sync = new MediaCloudSync(device.db, device.media, client, { uploadsEnabled: () => keepImages, now: () => clock });
+
+    expect((await sync.drain()).uploaded).toBe(0);
+    expect(pro.calls).toHaveLength(0);
+
+    keepImages = true;
+    expect((await sync.drain()).uploaded).toBe(1);
+    const callsAfterUpload = pro.calls.length;
+
+    const second = await captureImage(device, 'switch-off', otherPng);
+    storeLinkedObservation(device, second);
+    keepImages = false;
+    expect((await sync.drain()).uploaded).toBe(0);
+    expect(pro.calls).toHaveLength(callsAfterUpload);
+  });
+
   it('offline spool, backoff, reconnect and a lost acknowledgement reuse the stable attachment ID', async () => {
     const pro = makeFakePro();
     const device = makeDevice('a');
@@ -707,7 +732,7 @@ describe('deletion wins over uploads', () => {
     let requested!: () => void;
     const inFlight = new Promise<void>(resolve => { requested = resolve; });
     const client = { deleteAttachment: async () => { requested(); await gate; return { kind: 'ok' as const, value: null }; } } as unknown as MediaCloudClient;
-    const sync = new MediaCloudSync(device.db, device.media, client, { uploadsEnabled: true, now: () => clock });
+    const sync = new MediaCloudSync(device.db, device.media, client, { uploadsEnabled: () => true, now: () => clock });
     const draining = sync.drain();
     await inFlight;
     sync.stop();

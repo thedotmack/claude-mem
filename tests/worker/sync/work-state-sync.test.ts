@@ -25,6 +25,7 @@ import { SyncApply, type SyncOp } from '../../../src/services/sync/SyncApply.js'
 import { SyncClient, decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { buildContentOperation, parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 import { renderWorkStateLines } from '../../../src/services/context/sections/WorkStateRenderer.js';
+import { onContextInvalidation } from '../../../src/shared/context-invalidation.js';
 
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
@@ -173,6 +174,21 @@ describe('work_state cloud sync', () => {
   afterEach(() => {
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('announces committed work-state kinds and lists without triggering unrelated rule rebuilds', () => {
+    const observed: unknown[] = [];
+    const stop = onContextInvalidation(event => {
+      if (event.reason !== 'SyncApply.applyOps') return;
+      expect(db.inTransaction).toBe(false);
+      expect(db.query('SELECT COUNT(*) AS n FROM work_state_entries').get()).toEqual({ n: 1 });
+      observed.push(event.changes);
+    });
+    try {
+      const apply = new SyncApply(db, { deviceId: SELF, now: () => FIXED_NOW });
+      expect(apply.applyOps([workStateOp('rule', { task: 'Rule: one', then: 'Keep source evidence.' }, { listName: 'my-rules' })]).applied).toBe(1);
+      expect(observed).toEqual([{ kinds: ['work_state'], workStateLists: ['my-rules'] }]);
+    } finally { stop(); }
   });
 
   it('gives the table its sync columns (v66) and replays rows by write clock, not rowid', () => {
@@ -506,7 +522,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
   // Roll back everything after v65, not just the work-state steps: v68's
-  // observation_files row and the v69-v71 media schema would otherwise remain
+  // observation_files row and the v69-v72 media schema would otherwise remain
   // the newest applied versions and the fixture would no longer be a database
   // main left at v65.
   db.run('DROP TABLE IF EXISTS observation_files');
@@ -516,7 +532,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
     'media_cloud_deletions', 'media_attachments', 'media_events']) {
     db.run(`DROP TABLE IF EXISTS ${table}`);
   }
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71)');
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

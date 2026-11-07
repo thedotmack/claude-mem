@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
+import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -27,12 +27,18 @@ import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
 import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
 import { shownFocusAreaId } from '@/store/slices/view-slice'
 import { useFocusSharesLoader } from '@/live/focus-shares'
+import { isServedFromCloud } from '@/live/served-from'
+import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
+import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
+import { workerMediaSource } from '@/components/observation-media/worker-media-source'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
 ]
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
+/** Billing, cancel, card and synced devices live on cmem.ai; viewer accounts land here and have no other way there. */
+const ACCOUNT_AND_BILLING_URL = 'https://cmem.ai/account'
 
 
 /** Wireframe-only theme switch: starts from ?theme=dark|light, else the system preference. */
@@ -48,6 +54,19 @@ function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boole
     <span className={cn('relative flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
       <Icon className="size-4" />
     </span>
+  )
+}
+
+/** Bottom of the rail, cloud viewer only (R18.1). Same row markup as the pages above it; local My Work has no cmem.ai account to manage. */
+function AccountAndBillingLink() {
+  if (!isServedFromCloud(window.location.hostname)) return null
+  return (
+    <Req ids={['R18.1']}>
+      <a href={ACCOUNT_AND_BILLING_URL} title="Account & billing" className="relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] text-foreground/85 transition-colors hover:bg-card/70">
+        <NavTile icon={CreditCardIcon} active={false} />
+        <span className="relative hidden lg:inline">Account &amp; billing</span>
+      </a>
+    </Req>
   )
 }
 
@@ -141,6 +160,8 @@ function LoadedApp() {
 
   return (
     <MotionConfig reducedMotion="user">
+      {/* Images come from the worker (this machine's, or the hosted one behind work.cmem.ai); sample mode draws fixtures. */}
+      <MediaSourceContext.Provider value={sample ? SAMPLE_MEDIA_SOURCE : workerMediaSource}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
             <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
@@ -205,6 +226,7 @@ function LoadedApp() {
                       </div>
                     ))}
                     <div className="hidden border-t border-border/70 pt-3 lg:block"><PastFocusLink selected={selected} onSelect={selectFocus} /></div>
+                    <AccountAndBillingLink />
                   </nav>
                 </Req>
 
@@ -249,6 +271,7 @@ function LoadedApp() {
             </div>
           </Req>
         </TooltipProvider>
+      </MediaSourceContext.Provider>
     </MotionConfig>
   )
 }

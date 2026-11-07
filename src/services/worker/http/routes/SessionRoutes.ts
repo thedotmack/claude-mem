@@ -23,6 +23,7 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
@@ -265,6 +266,21 @@ export class SessionRoutes extends BaseRouteHandler {
   private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      // A request already in flight still needs its claimed messages to join
+      // file evidence when the response returns. Drop only work that has not
+      // been handed to a provider.
+      const discarded = this.sessionManager.getMessageBuffer().clearUnclaimed(sessionDbId);
+      if (discarded > 0) {
+        logger.info('SESSION', 'Observer capture disabled; discarding buffered work without starting a provider', {
+          sessionId: sessionDbId,
+          source,
+          discarded,
+        });
+      }
+      return;
+    }
 
     // Nothing is buffered, so a generator would only open with its INIT turn
     // and idle out: one paid request per user prompt, including prompts that
@@ -523,6 +539,16 @@ export class SessionRoutes extends BaseRouteHandler {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
+        // A quota/auth outage must not turn later hooks into a backlog. A
+        // short rate limit may retain the bounded live buffer; spent quota
+        // and refused credentials skip it, including legacy paused work.
+        if (cooldown?.window !== 'rate_limit') {
+          this.sessionManager.discardBufferedWork(sessionDbId);
+          session.pendingAgentId = null;
+          session.pendingAgentType = null;
+          session.paidSendBudget = undefined;
+          session.pausedReason = cooldown?.cause === 'auth' ? 'auth' : 'quota';
+        }
         logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
           sessionId: sessionDbId,
           source,
@@ -755,6 +781,7 @@ export class SessionRoutes extends BaseRouteHandler {
       contentSessionId,
       platformSource: this.getPlatformSourceFromRequest(req),
       lastAssistantMessage: last_assistant_message,
+      enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
       agentId,
       observedModel,
       observedBilling,

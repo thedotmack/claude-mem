@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
+// Test harness for the cmem-pro (CMEM Pro) hooks. Mock cmem.ai server + assertions.
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { existsSync, rmSync, readFileSync, writeFileSync, statSync, mkdirSync, appendFileSync, mkdtempSync, cpSync } from 'node:fs';
@@ -79,6 +79,17 @@ const PORT = await new Promise(r => server.listen(0, '127.0.0.1', () => r(server
 rmSync(TESTHOME, { recursive: true, force: true });
 
 // ---- 1. observation capture ----
+console.log('\n[0] plugin identity');
+{
+  const plugin = JSON.parse(readFileSync(PLUGIN_DIR + '/.claude-plugin/plugin.json', 'utf8'));
+  const marketplace = JSON.parse(readFileSync(PLUGIN_DIR + '/../.claude-plugin/marketplace.json', 'utf8'));
+  const entry = marketplace.plugins.find(p => p.source === './cowork');
+  const header = (readFileSync(HOOK, 'utf8').match(/const PLUGIN_HEADER = '([^']+)'/) || [])[1];
+  check('plugin is named cmem-pro in plugin.json and the marketplace', plugin.name === 'cmem-pro' && entry?.name === 'cmem-pro', `${plugin.name} ${entry?.name}`);
+  check('old installs are renamed to cmem-pro', marketplace.renames?.['claude-mem-cowork'] === 'cmem-pro', JSON.stringify(marketplace.renames));
+  check('plugin.json, marketplace and X-CMEM-Plugin header carry one version', entry?.version === plugin.version && header === `cmem-pro/${plugin.version}`, `${plugin.version} ${entry?.version} ${header}`);
+}
+
 console.log('\n[1] PostToolUse observation');
 received = [];
 await run('observation', { session_id: 's1', cwd: '/home/claude', tool_name: 'Write', tool_use_id: 'tu_1', tool_input: { file_path: '/x.md', content: 'hello' }, tool_response: 'ok' });
@@ -188,6 +199,16 @@ console.log('\n[3] skip guard');
 received = [];
 await run('observation', { session_id: 's1', tool_name: 'mcp__memory__memory_write', tool_use_id: 'tu_3' });
 check('memory tool calls not captured', !received.some(r => r.url.startsWith('/api/hooks/ingest')));
+// the Claude-Mem connector as the Claude app names it, and as Claude Code names it
+for (const tool of ['mcp__Claude-Mem__memory_search', 'mcp__Claude-Mem__timeline', 'mcp__Claude-Mem__save_memory', 'mcp__claude_ai_Claude-Mem__get_observations', 'mcp__plugin_cmem-pro_cmem__memory_search']) {
+  received = [];
+  await run('observation', { session_id: 's1', tool_name: tool, tool_use_id: 'tu_3b' });
+  check(`${tool} not captured`, !received.some(r => r.url.startsWith('/api/hooks/ingest')));
+}
+// a tool that only mentions claude-mem later in its name is still captured
+received = [];
+await run('observation', { session_id: 's1', tool_name: 'mcp__github__search_claude-mem_issues', tool_use_id: 'tu_3c' });
+check('other tools are still captured', received.some(r => r.url.startsWith('/api/hooks/ingest')));
 
 // ---- 4. SessionStart context injection ----
 console.log('\n[4] SessionStart inject');
@@ -495,7 +516,7 @@ check('unreachable cloud → honest notice', j?.hookSpecificOutput?.additionalCo
 {
   const ctx = j?.hookSpecificOutput?.additionalContext || '';
   const proj = (ctx.match(/project="([^"]+)"/) || [])[1];
-  check('unreachable cloud → points at the Claude-Mem connector for recall', ctx.includes('Claude-Mem connector') && ctx.includes('memory_search'), out);
+  check('unreachable cloud → points at the plugin\'s cmem.ai connector for recall', ctx.includes('"cmem" connector on the CMEM Pro plugin\'s Connectors tab') && ctx.includes('Claude-Mem connector') && ctx.includes('memory_search'), out);
   check('…searching this project first, then without a filter', !!proj && ctx.includes(`try project ${proj} first`) && ctx.includes('without a project filter'), out);
   check('…and saving only if the connector offers save_memory', ctx.includes('If that connector offers save_memory') && ctx.includes(`(project: ${proj})`), out);
 }

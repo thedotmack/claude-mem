@@ -2,7 +2,7 @@ import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, posix } from 'path';
 import {
   claudeSettingsPath,
   installedPluginsPath,
@@ -14,7 +14,7 @@ import {
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, resolveDataDir } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
@@ -251,6 +251,34 @@ export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info'
   }
 }
 
+/** PowerShell ends a single-quoted string at any of these; doubling one keeps it. */
+const POWERSHELL_SINGLE_QUOTES = /['‘’‚‛]/g;
+
+/**
+ * Where the data directory that uninstall keeps is, and a command that removes
+ * it. The directory honors CLAUDE_MEM_DATA_DIR. Windows shells have no
+ * `rm -rf`: PowerShell reads `-rf` as an unknown parameter and cmd has no `rm`.
+ * Windows gets a PowerShell command with the path in single quotes, where
+ * PowerShell expands nothing. Wrapping it in `powershell -c "…"` would let the
+ * shell it is pasted into expand `$name` or `$(…)` in the path, and a
+ * `…\$archive` directory would then remove its parent. Exported for tests.
+ */
+export function preservedDataDirectoryHint(
+  dataDirectory: string = resolveDataDir(),
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): { location: string; removeCommand: string; shell: 'PowerShell' | 'sh' } {
+  if (platform === 'win32') {
+    const quoted = `'${dataDirectory.replace(POWERSHELL_SINGLE_QUOTES, (quote) => quote + quote)}'`;
+    return { location: dataDirectory, removeCommand: `Remove-Item -LiteralPath ${quoted} -Recurse -Force`, shell: 'PowerShell' };
+  }
+  if (dataDirectory === posix.join(home, '.claude-mem')) {
+    return { location: '~/.claude-mem', removeCommand: 'rm -rf ~/.claude-mem', shell: 'sh' };
+  }
+  // `--` because a relative CLAUDE_MEM_DATA_DIR such as `-memory` would otherwise be read as options.
+  return { location: dataDirectory, removeCommand: `rm -rf -- '${dataDirectory.replaceAll("'", "'\\''")}'`, shell: 'sh' };
+}
+
 export async function runUninstallCommand(): Promise<void> {
   p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
@@ -483,10 +511,13 @@ export async function runUninstallCommand(): Promise<void> {
     p.log.info(launcherRemovalOutcome.result.pathCleanupHint);
   }
 
+  const dataDirectory = preservedDataDirectoryHint();
   p.note(
     [
-      `Your data directory at ${styleText('cyan', '~/.claude-mem')} was preserved.`,
-      'To remove it manually: rm -rf ~/.claude-mem',
+      `Your data directory at ${styleText('cyan', dataDirectory.location)} was preserved.`,
+      dataDirectory.shell === 'PowerShell'
+        ? `To remove it manually, in PowerShell: ${dataDirectory.removeCommand}`
+        : `To remove it manually: ${dataDirectory.removeCommand}`,
     ].join('\n'),
     'Note',
   );

@@ -475,6 +475,49 @@ describe('status substitution leaves untouched text alone', () => {
   });
 });
 
+// Capture is on by default, so ingest runs it for every tool event. The media
+// store is looked up only when an event holds an image: a text-only event never
+// touches media storage, and a store that cannot be reached fails that image,
+// never the event.
+describe('the media store is looked up only for an event that holds an image', () => {
+  function wireStoreGetter(getMediaStore: () => MediaStore) {
+    setIngestContext({
+      dbManager: { getSessionStore: () => sessions, getMediaStore } as any,
+      sessionManager: { queueObservation: async (_id: number, observation: any) => { queued.push(observation); } } as any,
+      eventBroadcaster: { broadcastObservationQueued: () => {} } as any,
+      ensureGeneratorRunning: async () => {},
+    });
+  }
+
+  it('a text-only event never asks for the store', async () => {
+    let lookups = 0;
+    wireStoreGetter(() => { lookups += 1; return media; });
+    const observation = await ingest({ stdout: 'build ok' }, { toolName: 'Bash', toolInput: { command: 'npm run build' } });
+    expect(lookups).toBe(0);
+    expect(observation.mediaRefs ?? []).toEqual([]);
+  });
+
+  it('an event with two images asks once and retains both', async () => {
+    let lookups = 0;
+    wireStoreGetter(() => { lookups += 1; return media; });
+    const observation = await ingest({ content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: otherB64 } },
+    ] });
+    expect(lookups).toBe(1);
+    expect(observation.mediaRefs).toHaveLength(2);
+  });
+
+  it('a store that cannot be reached fails the image as storage_unavailable and still queues the event', async () => {
+    wireStoreGetter(() => { throw new Error('Database not initialized'); });
+    const observation = await ingest(anthropic());
+    expect(observation.mediaRefs ?? []).toEqual([]);
+    expect(observation.tool_response).toContain('storage_unavailable');
+    noBytes(observation.tool_response);
+    expect(count('SELECT COUNT(*) AS n FROM media_attachments')).toBe(0);
+  });
+});
+
 describe('scoped deletion triggers and indexed reference lookups', () => {
   const insertAttachment = (id: string, state = 'failed') => db.prepare(`INSERT INTO media_attachments(id,replay_key,provenance,recipe,state,created_at)
     VALUES(?,?,'{}','screenshot-v1',?,1)`).run(id, 'replay-' + id, state);

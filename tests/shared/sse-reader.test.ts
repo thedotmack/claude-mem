@@ -128,3 +128,46 @@ describe('SSE reader failure cleanup', () => {
     expect(stream.locked).toBe(false);
   });
 });
+
+
+describe('SSE framing across transport boundaries', () => {
+  it('recognizes a BOM only at the start of the stream, including a BOM-prefixed heartbeat', async () => {
+    const bytes = encoder.encode('\ufeff: ping\ndata: answer\n\n\ufeffevent: ignored\ndata: next\n\n');
+    for (let split = 1; split < bytes.length; split++) {
+      let activity = 0;
+      const events = await collect(streamOf(bytes.slice(0, split), bytes.slice(split)), {
+        onActivity: () => { activity++; },
+      });
+      expect(activity).toBe(1);
+      expect(events).toEqual([
+        { event: 'message', data: 'answer' },
+        { event: 'message', data: 'next' },
+      ]);
+    }
+  });
+
+  it('does not charge fragmented comments against the current event budget', async () => {
+    const bytes = encoder.encode('data: x\n: ' + 'ping '.repeat(100) + '\n\n');
+    for (let split = 1; split < bytes.length; split++) {
+      let activity = 0;
+      expect(await collect(streamOf(bytes.slice(0, split), bytes.slice(split)), {
+        maxEventBytes: 7,
+        onActivity: () => { activity++; },
+      })).toEqual([{ event: 'message', data: 'x' }]);
+      expect(activity).toBe(1);
+    }
+  });
+
+  it('carries the last event ID through dispatches, ignores NUL IDs, and supports an explicit reset', async () => {
+    expect(await collect(streamOf(
+      'id: 7\n\ndata: first\n\n',
+      'id: bad\0id\ndata: second\n\n',
+      'id:\ndata: third\n\ndata: fourth\n\n',
+    ))).toEqual([
+      { event: 'message', data: 'first', id: '7' },
+      { event: 'message', data: 'second', id: '7' },
+      { event: 'message', data: 'third', id: '' },
+      { event: 'message', data: 'fourth', id: '' },
+    ]);
+  });
+});

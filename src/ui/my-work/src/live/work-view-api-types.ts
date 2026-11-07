@@ -1,6 +1,13 @@
 // Types for GET /api/work-view on the local worker (claude-mem 15.0.1), written from a real response
 // (.scratch/work-view-sample.json). Only the keys the mapper reads are typed; the rest are left out on purpose.
 
+/** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
+ * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
+export interface WorkViewMediaRef { id: string; label: string; inspection: 'inspected' | 'uninspected' }
+
+/** An observation's image refs, as media-contract.ts MediaManifest defines it (ids and labels only, never readiness). */
+export interface WorkViewMediaManifest { version: 1; attachments: WorkViewMediaRef[]; overflow?: boolean }
+
 export type EvidenceKind = 'work-state' | 'observation' | 'prompt' | 'summary' | 'session'
 
 export interface WorkViewSourceRef { kind: string; id: number }
@@ -26,6 +33,15 @@ export interface WorkViewActivity {
   detail: string | null
   atEpoch: number
   url: string
+  /** The observation's image refs (agent-view.mjs). Absent on image-free rows. Older workers leave it out. */
+  media?: WorkViewMediaManifest
+}
+
+/** A request's images for its card (request-projection.mjs requestMediaSummary): the number of distinct images its
+ * listed activity links and the newest few. Absent when it has none. Older workers leave it out. */
+export interface WorkViewRequestMedia {
+  count: number
+  preview: WorkViewMediaRef[]
 }
 
 export interface WorkViewWorkstream {
@@ -56,21 +72,26 @@ export interface WorkViewLifecycle {
 
 export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
 
-export interface WorkViewReview { checked: boolean; checkedAtEpoch: number | null; available: boolean }
+export interface WorkViewReview {
+  actor?: 'local-user' | 'shared-user' | null
+  checked: boolean; checkedAtEpoch: number | null; available: boolean
+  mode?: 'local' | 'shared'; hash?: string | null; version?: number; conflict?: boolean
+  legacy?: boolean; pending?: boolean; message?: string
+}
 
 /** A request-progress memory review of one overall request (request-groups.mjs `record-progress`). */
 export interface WorkViewProgress {
   state: 'shipped' | 'in-progress' | 'stalled' | 'abandoned' | 'unknown'
   percent: number
-  summary: string
-  narrative: string
-  milestones: { at: string | null; text: string }[]
+  summary?: string
+  narrative?: string
+  milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
-  checkedAt: string
+  checkedAt?: string
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
-  /** Every review's percent, oldest first; files from before readings existed carry one. */
-  readings: { at: string; percent: number }[]
+  /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
+  readings?: { at: string; percent: number }[]
 }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
@@ -81,6 +102,8 @@ export interface WorkViewWorkProduct {
   url?: string
   fileUrl?: string | null
   available?: boolean
+  /** Metadata for an origin-local file; never an implied hosted download. */
+  availability?: 'origin-only'
   sha?: string
   branch?: string | null
   /** A copy the Stop hook put in the project's deliverables bucket (~/.claude-mem/deliverables/<project>/); `url` opens it. Older workers leave it out. */
@@ -94,6 +117,8 @@ export interface WorkViewBuildStory { narrative: string; writtenAt: string | nul
 /** The judge's "Looks like part of <request>" for one conversation (request-judge.mjs), waiting for the owner's
  * Join / Not this (POST /api/work-view/suggestions `{ conversationKey, action: 'join' | 'not-this' }`). */
 export interface WorkViewRequestSuggestion {
+  expectedSuggestionHash?: string | null
+  sharedConflict?: boolean
   conversationKey: string
   /** The suggested request's group id and title. */
   requestId: string
@@ -129,6 +154,7 @@ export interface WorkViewHumanRequest {
   progress?: WorkViewProgress | null
   /** Newest first. Older workers leave it out. */
   workProduct?: WorkViewWorkProduct[]
+  media?: WorkViewRequestMedia
   /** The conversation its my-focus placement is keyed by: its group's anchor, else its own. Older workers leave it out. */
   anchorConversationKey?: string | null
   /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */
@@ -155,6 +181,8 @@ export interface WorkViewSource {
   connected: boolean
   error: string | null
   lastCheckedAt: string | null
+  /** Last actual activity inspection; lightweight cache checks do not renew it. */
+  activityCheckedAt?: string | null
 }
 
 /** What one owner-goals item is (owner-goals.mjs GOAL_KINDS). Rows saved as priorities or open asks are read as these. */
@@ -260,6 +288,8 @@ export interface WorkViewSnapshot {
   unlinkedWork: unknown[]
   source: WorkViewSource
   revision: string
+  sync?: import('../../../viewer/utils/sync-presentation.js').SyncStatusForDisplay
+  sharedState?: WorkViewSharedState
   /** The current owner-goals run; null until the owner-goals skill has run. Older workers leave it out. */
   goals?: WorkViewGoalList | null
   /** Saved past months, newest first. */
@@ -277,6 +307,17 @@ export interface WorkViewSnapshot {
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
   suggestions?: WorkViewRequestSuggestion[]
+}
+
+/** Shared display facts are readable before this installation enables new writes. */
+export interface WorkViewSharedState {
+  enabled: boolean
+  pending?: number
+  invalid?: number
+  unsupported?: number
+  conflicts?: unknown[]
+  files?: Array<{ file: string; message: string }>
+  error?: string
 }
 
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */

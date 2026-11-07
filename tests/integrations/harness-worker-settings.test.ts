@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHarnessWorkerClient, resolveHarnessContextTimeoutMs, resolveHarnessWorkerUrl } from '../../src/integrations/harness-worker.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../src/shared/hook-constants.js';
+import { getDefaultWorkerPort } from '../../src/shared/install-port.js';
 
 let dir: string;
 let previous: Record<string, string | undefined>;
@@ -27,6 +28,15 @@ it('honors BOM and nested settings, normalizes localhost, and prefers environmen
 it('brackets IPv6 and resolves flat settings', () => {
   writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '40500', CLAUDE_MEM_WORKER_HOST: '::1' }));
   expect(resolveHarnessWorkerUrl()).toBe('http://[::1]:40500');
+});
+
+it('uses the data-directory default when settings have no worker port', () => {
+  expect(resolveHarnessWorkerUrl()).toBe(`http://127.0.0.1:${getDefaultWorkerPort(dir)}`);
+});
+
+it('keeps the legacy Windows default when it is persisted', () => {
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37777' }));
+  expect(resolveHarnessWorkerUrl()).toBe('http://127.0.0.1:37777');
 });
 
 it('gives context renders the hooks API budget, configurable like the hooks', () => {

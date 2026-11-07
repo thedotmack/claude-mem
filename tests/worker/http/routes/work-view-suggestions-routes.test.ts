@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { groupIdFor, readLedger } from '../../../../src/services/work-view/request-groups.mjs';
+import { holdEnrichedOverview } from './work-view-test-utils.js';
 
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 const A = key('a'), C = key('c');
@@ -81,6 +82,46 @@ function answer(body: unknown, headers: Record<string, string> = {}) {
 const cardOf = (view: any, conversationKey: string) => view.humanRequests.find((request: any) => request.conversationKeys.includes(conversationKey));
 
 describe('request suggestions', () => {
+  it('acknowledges durable shared intent when the local compatibility file is still pending', async () => {
+    Object.assign(routes, {
+      getSharedStatus: () => ({ enabled: true, pendingLocalMaterialization: true }),
+      prepareSharedOwnerAction: async () => {},
+      answerSharedSuggestion: () => ({ status: 'declined', materialization: 'pending' }),
+    });
+    const response = await answer({ conversationKey: C, action: 'not-this', expectedSuggestionHash: 'a'.repeat(64) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).save).toEqual({ scope: 'shared', state: 'queued', localMaterialization: 'pending' });
+  });
+
+  it('does not reuse a pending overview after an external ledger writer finishes', async () => {
+    const held = holdEnrichedOverview(routes);
+    const old = fetch(`${origin}/api/work-view/overview`).then(response => response.json());
+    const before = await held.ready;
+    const requestId = cardOf(before, A).id;
+    const ledger = readLedger(ledgerDir);
+    ledger.groups.groups[RELEASE_CARDS].title = 'New title from the grouping agent';
+    writeFileSync(join(ledgerDir, 'request-groups.json'), JSON.stringify(ledger.groups));
+    try {
+      const current = await (await fetch(`${origin}/api/work-view/overview`)).json();
+      expect(current.revision).not.toBe(before.revision);
+      expect(current.model.requests.find((request: any) => request.id === requestId).title).toBe('New title from the grouping agent');
+    } finally { held.release(); }
+    expect((await old).model.requests.find((request: any) => request.id === requestId).title).toBe('Release cards');
+  });
+
+  it('does not reuse a pending overview after a suggestion changes the ledger', async () => {
+    const held = holdEnrichedOverview(routes);
+    const old = fetch(`${origin}/api/work-view/overview`).then(response => response.json());
+    await held.ready;
+    try {
+      const response = await answer({ conversationKey: C, action: 'join' });
+      expect(response.status).toBe(200);
+      const current = await (await fetch(`${origin}/api/work-view/overview`)).json();
+      expect(current.model.requests).toHaveLength(1);
+    } finally { held.release(); }
+    expect((await old).model.requests).toHaveLength(2);
+  });
+
   it('the snapshot carries the judge\'s suggestion on the conversation\'s own card', async () => {
     const view = await snapshot();
     expect(view.suggestions).toEqual([{ conversationKey: C, requestId: RELEASE_CARDS, requestTitle: 'Release cards', confidence: 0.63, evidence: EVIDENCE, judge: 'jev', at: expect.any(String) }]);

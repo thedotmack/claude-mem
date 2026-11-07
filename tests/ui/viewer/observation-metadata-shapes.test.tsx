@@ -30,6 +30,22 @@ describe('observation metadata recovery', () => {
     });
   }
 });
+describe('observation file paths', () => {
+  const filesShown = (files: string[]) => {
+    const html = renderToStaticMarkup(<ObservationCard observation={{ ...base, facts: '["a fact"]',
+      files_read: JSON.stringify(files), files_modified: JSON.stringify(files) }}
+      onDeleted={() => {}} viewMode="facts" />);
+    return [...html.matchAll(/(read|modified):<\/span> ([^<]*)/g)].map(match => `${match[1]}: ${match[2]}`);
+  };
+  it('shortens a Windows path the same way as a POSIX path', () => {
+    expect(filesShown(['C:\\Users\\me\\code\\app\\src\\server\\index.ts', 'C:\\Users\\me\\code\\app\\README.md']))
+      .toEqual(filesShown(['/Users/me/code/app/src/server/index.ts', '/Users/me/code/app/README.md']));
+    expect(filesShown(['C:\\Users\\me\\code\\app\\src\\server\\index.ts'])).toEqual([
+      'read: src/server/index.ts',
+      'modified: src/server/index.ts',
+    ]);
+  });
+});
 describe('parseStoredStringList', () => {
   it('keeps the non-blank strings of a JSON array', () => {
     expect(parseStoredStringList('["a","  ",3,null,{"b":1},"c"]')).toEqual(['a', 'c']);

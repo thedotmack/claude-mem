@@ -94,4 +94,32 @@ describe('hosted viewer usage', () => {
     expect(JSON.parse(posts[1].body).event).toBe('$pageview');
     expect(pageview.headers.get('set-cookie')).toBeNull();
   });
+
+  it('mints a real anonymous id when none is injected', async () => {
+    const posts: string[] = [];
+    const gate = createGate({
+      ownerUserId: OWNER,
+      secret: SECRET,
+      upstreamOrigin: 'http://127.0.0.1:9',
+      publicOrigin: PUBLIC_ORIGIN,
+      signInUrl: 'https://cmem.ai/work',
+      now: () => now() * 1000,
+      env: { POSTHOG_API_KEY: 'phc_hosted' },
+      posthogFetch: async (_input, init) => {
+        posts.push(String(init?.body ?? ''));
+        return new Response('ok', { status: 200 });
+      },
+    });
+
+    const response = await gate(new Request(`${PUBLIC_ORIGIN}/api/viewer-usage`, {
+      method: 'POST',
+      headers: { cookie: sessionCookie(), origin: PUBLIC_ORIGIN, host: 'work.cmem.ai', 'content-type': 'application/json' },
+      body: JSON.stringify({ event: 'pageview' }),
+    }));
+    expect(response.status).toBe(204);
+    expect(posts).toHaveLength(1);
+    const distinctId = (JSON.parse(posts[0]) as { distinct_id: string }).distinct_id;
+    expect(distinctId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(response.headers.get('set-cookie')).toContain(`cmem_viewer_anon=${distinctId}`);
+  });
 });

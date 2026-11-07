@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn, mock } from 'bun:test';
 import express from 'express';
 import type { Server } from 'http';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
@@ -8,6 +8,8 @@ import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
 import { createMiddleware } from '../../src/services/worker/http/middleware.js';
+import { setIngestContext } from '../../src/services/worker/http/shared.js';
+import { LIVE_OBSERVER_MAX_AGE_MS } from '../../src/shared/observer-work-policy.js';
 import { hookSpoolConsumedMarkers } from '../../src/services/worker/hook-spool-drain.js';
 import { DELIVERABLE_ERRORS_PER_EVENT, HookSpool, HOOK_SPOOL_RETRY_WINDOW_MS, remoteHookSpoolReceipt, remoteHookSpoolReceivedKey, type HookSpoolEntry } from '../../src/shared/hook-spool.js';
 import { remoteSpoolEnvelopeSchema, usesRemoteHookSpool, remoteHookSpoolToken } from '../../src/shared/hook-spool-remote.js';
@@ -19,6 +21,12 @@ let server: Server;
 let address: string;
 let token: string;
 let drains: number;
+let queueObservation: ReturnType<typeof mock>;
+let startGenerator: ReturnType<typeof mock>;
+const metadataEntry: HookSpoolEntry = { kind: 'advisor_calls', enqueuedAtEpochMs: 1700000000000,
+  payload: { contentSessionId: 'metadata-session', platformSource: 'claude',
+    calls: [{ toolUseId: 'advisor-1', advice: 'recorded advice', occurredAtEpoch: 1 }] } };
+
 const entry: HookSpoolEntry = {
   kind: 'observation', enqueuedAtEpochMs: 1700000000000,
   payload: { contentSessionId: 'remote-session', platformSource: 'codex',
@@ -32,6 +40,12 @@ beforeEach(async () => {
   spool = new HookSpool(join(directory, 'server-spool'));
   token = 'test-ingest-token';
   drains = 0;
+  queueObservation = mock(() => {});
+  startGenerator = mock(async () => {});
+  setIngestContext({ sessionManager: { queueObservation, queueSummarize: mock(() => {}) } as any,
+    dbManager: { getSessionStore: () => store } as any,
+    eventBroadcaster: { broadcastObservationQueued() {}, broadcastSummarizeQueued() {} } as any,
+    ensureGeneratorRunning: startGenerator });
   const app = express();
   app.use(...createMiddleware());
   new HookSpoolRoutes(spool, () => hookSpoolConsumedMarkers(store), () => { drains++; }, () => token).setupRoutes(app);
@@ -58,6 +72,29 @@ function send(value: unknown = entry, authorization: string = 'Bearer test-inges
 }
 
 describe('remote hook spool receipts', () => {
+
+  it('accepts a fresh live event once without persisting its payload, even after redelivery', async () => {
+    const fresh = { ...entry, enqueuedAtEpochMs: Date.now() };
+    const responses = await Promise.all([send(fresh), send(fresh), send(fresh)]);
+    expect(responses.map(r => r.status)).toEqual([202, 202, 202]);
+    expect(queueObservation).toHaveBeenCalledTimes(1);
+    expect(startGenerator).toHaveBeenCalledTimes(1);
+    expect(spool.entries()).toEqual([]);
+    store.close();
+    store = new SessionStore(join(directory, 'worker.db'));
+    expect((await send(fresh)).status).toBe(202);
+    expect(queueObservation).toHaveBeenCalledTimes(1);
+    expect(drains).toBe(0);
+  });
+
+  it('acknowledges a stale legacy sender without starting inference or storing a payload', async () => {
+    expect((await send({ ...entry, enqueuedAtEpochMs: Date.now() - LIVE_OBSERVER_MAX_AGE_MS })).status).toBe(202);
+    expect(queueObservation).not.toHaveBeenCalled();
+    expect(startGenerator).not.toHaveBeenCalled();
+    expect(spool.entries()).toEqual([]);
+  });
+
+
   it('delivers both work-state telemetry variants with stable retry receipts', async () => {
     for (const payload of [
       { contentSessionId: 'telemetry-session', platformSource: 'codex', eventId: 'instruction-1', agentRole: 'main', kind: 'instruction', state: 'returned' },
@@ -101,7 +138,8 @@ describe('remote hook spool receipts', () => {
   });
 
   it('acknowledges the exact event only after it is in the server spool', async () => {
-    const response = await send();
+    const entry = metadataEntry;
+    const response = await send(entry);
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ protocolVersion: 1, status: 'accepted', receipt: remoteHookSpoolReceipt(entry) });
     expect(spool.entries()).toEqual([entry]);
@@ -111,14 +149,15 @@ describe('remote hook spool receipts', () => {
   });
 
   it('keeps a consumed remote receipt across restart and returns it after a lost ACK', async () => {
-    await send();
+    const entry = metadataEntry;
+    await send(entry);
     let ingested = 0;
     await spool.drain((_entry, mark) => { ingested++; mark(); return true; }, hookSpoolConsumedMarkers(store));
     expect(spool.entries()).toEqual([]);
     expect(store.isHookSpoolEntryConsumed(remoteHookSpoolReceipt(entry))).toBe(true);
     store.close();
     store = new SessionStore(join(directory, 'worker.db'));
-    const retried = await send();
+    const retried = await send(entry);
     expect(retried.status).toBe(202);
     expect((await retried.json()).receipt).toBe(remoteHookSpoolReceipt(entry));
     await spool.drain(() => { ingested++; return true; }, hookSpoolConsumedMarkers(store));
@@ -127,12 +166,14 @@ describe('remote hook spool receipts', () => {
   });
 
   it('deduplicates repeated pending deliveries before ingest', async () => {
-    await Promise.all([send(), send(), send()]);
+    const entry = metadataEntry;
+    await Promise.all([send(entry), send(entry), send(entry)]);
     expect(spool.entries()).toEqual([entry]);
   });
 
   it('retains transport receipt protection even when the later ingest marker write fails', async () => {
-    await send();
+    const entry = metadataEntry;
+    await send(entry);
     const mark = store.markHookSpoolEntryConsumed.bind(store);
     const failure = spyOn(store, 'markHookSpoolEntryConsumed').mockImplementation((key, at) => {
       if (key.startsWith('remote_')) throw new Error('ingest marker write failed');
@@ -142,23 +183,25 @@ describe('remote hook spool receipts', () => {
     try {
       await spool.drain((_entry, handedOff) => { ingested++; handedOff(); return true; }, hookSpoolConsumedMarkers(store));
       expect(store.isHookSpoolEntryConsumed(remoteHookSpoolReceivedKey(remoteHookSpoolReceipt(entry)))).toBe(true);
-      expect((await send()).status).toBe(202);
+      expect((await send(entry)).status).toBe(202);
       await spool.drain(() => { ingested++; return true; }, hookSpoolConsumedMarkers(store));
       expect(ingested).toBe(1);
     } finally { failure.mockRestore(); }
   });
 
   it('does not acknowledge a failed transport receipt commit', async () => {
+    const entry = metadataEntry;
     const failure = spyOn(store, 'markHookSpoolEntryConsumed').mockImplementation(() => { throw new Error('receipt commit failed'); });
     try {
-      expect((await send()).status).toBe(500);
+      expect((await send(entry)).status).toBe(500);
       expect(spool.entries()).toEqual([entry]);
       expect(drains).toBe(0);
     } finally { failure.mockRestore(); }
   });
 
   it('retains a remote receipt when a crash leaves the already-consumed spool file', async () => {
-    await send();
+    const entry = metadataEntry;
+    await send(entry);
     store.markHookSpoolEntryConsumed(remoteHookSpoolReceipt(entry), Date.now());
     let ingested = 0;
     expect((await spool.drain(() => { ingested++; return true; }, hookSpoolConsumedMarkers(store))).drained).toBe(1);
@@ -186,9 +229,10 @@ describe('remote hook spool receipts', () => {
   });
 
   it('does not acknowledge a failed durable write', async () => {
+    const entry = metadataEntry;
     const failure = spyOn(spool, 'enqueueRemote').mockImplementation(() => { throw new Error('disk full'); });
     try {
-      expect((await send()).status).toBe(500);
+      expect((await send(entry)).status).toBe(500);
       expect(spool.entries()).toEqual([]);
       expect(drains).toBe(0);
     } finally { failure.mockRestore(); }
@@ -217,7 +261,7 @@ describe('remote hook spool receipts', () => {
       { kind: 'advisor_calls', payload: { ...common, calls: [{ toolUseId: 'advisor-1', advice: 'keep the queue', occurredAtEpoch: 13 }] }, enqueuedAtEpochMs: 13 },
     ];
     for (const value of entries) expect((await send(value)).status).toBe(202);
-    expect(spool.entries()).toHaveLength(4);
+    expect(spool.entries()).toHaveLength(2);
     expect(remoteSpoolEnvelopeSchema.safeParse({ protocolVersion: 1, entry, filename: '../outside.json' }).success).toBe(false);
   });
 

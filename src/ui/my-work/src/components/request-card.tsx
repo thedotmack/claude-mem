@@ -17,6 +17,7 @@ import { Req } from '@/spec/req'
 import type { Request } from '@/data'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -114,13 +115,14 @@ const CARD_DELIVERABLES = 3
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
   const products = request.workProduct.filter(isCardDeliverable)
-  if (products.length === 0) return null
+  const count = request.detailLoaded === false ? request.detailCounts?.workProduct ?? products.length : products.length
+  if (count === 0) return null
   const shown = products.slice(0, CARD_DELIVERABLES)
-  const hidden = products.length - shown.length
+  const hidden = Math.max(0, count - shown.length)
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {products.length}</p>
+        <p className="section-label">Deliverables · {count}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
@@ -173,6 +175,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           <div className="flex items-center gap-1.5">
             {/* A status change cross-fades the badge, so the move is seen, not just the result. */}
             <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} /></span>
+            {request.media && <MediaCountBadge media={{ version: 1, attachments: request.media.preview }} count={request.media.count} />}
             {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
           </div>
         </CardHeader>
@@ -205,6 +208,10 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}
 
           <Deliverables request={request} onOpen={onOpen} />
+
+          {/* The request's images: its first few, with "+N" opening the drawer that holds every one. */}
+          {request.media && <ObsMediaStrip media={{ version: 1, attachments: request.media.preview }} total={request.media.count} title={text?.title ?? 'Untitled request'} onMore={onOpen} />}
+
           <OpenFollowUps request={request} limit={3} />
 
           <div className="mt-auto space-y-2.5 border-t border-border/70 pt-3">

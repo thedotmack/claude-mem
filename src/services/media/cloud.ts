@@ -268,7 +268,11 @@ export interface MediaCloudDrainResult {
 }
 
 export interface MediaCloudSyncOptions {
-  uploadsEnabled: boolean;
+  /**
+   * Asked on every drain, so flipping "Keep images" starts or stops uploads
+   * without a worker restart. Deletions drain either way.
+   */
+  uploadsEnabled: () => boolean;
   now?: () => number;
   drainIntervalMs?: number;
 }
@@ -329,7 +333,7 @@ export class MediaCloudSync {
     const result: MediaCloudDrainResult = { uploaded: 0, uploadRetries: 0, uploadFailures: 0, deleted: 0, deleteRetries: 0 };
     if (this.stopped) return result;
     await this.drainDeletions(result);
-    if (this.options.uploadsEnabled && !this.stopped) await this.drainUploads(result);
+    if (!this.stopped && this.options.uploadsEnabled()) await this.drainUploads(result);
     return result;
   }
 

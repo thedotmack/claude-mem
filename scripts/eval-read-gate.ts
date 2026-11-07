@@ -29,6 +29,7 @@ import path from 'path';
 import { isTreeSitterCliAvailable } from '../src/services/smart-file-read/tree-sitter-bin-path.js';
 import { treeSitterBinaryName } from '../src/services/smart-file-read/tree-sitter-bin-name.js';
 import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision.js';
+import { getDefaultWorkerPort } from '../src/shared/install-port.js';
 
 const repoRoot = path.resolve(import.meta.dir, '..');
 const pluginDirectory = path.join(repoRoot, 'plugin');
@@ -533,7 +534,7 @@ function findFreePort(): Promise<number> {
 
 /** claude-mem's default worker port (SettingsDefaultsManager): the eval never uses it. */
 function defaultWorkerPort(): number {
-  return 37700 + ((process.getuid?.() ?? 77) % 100);
+  return getDefaultWorkerPort();
 }
 
 function armSettings(arm: EvalArm): Record<string, unknown> {
