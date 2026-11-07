@@ -969,6 +969,17 @@ describe('renderObserverQuotaCooldownNotice', () => {
     expect(new TextDecoder().decode(result.stdout)).toContain('tries cmem.ai again at 11:17 PM.');
   });
 
+  it('stays silent when a held backup Claude credential is covered by the other credential', () => {
+    const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
+    const notice = fixture.state.quotaCooldown!.notice!;
+    notice.holds = notice.holds.filter(hold => hold.role === 'backup').map(hold => ({ ...hold, provider: 'claude', auth: 'subscription' }));
+    notice.servingProvider = 'claude';
+    notice.servingAuth = 'api-key';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toBe('');
+    notice.servingAuth = 'subscription';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('has paused saving memories');
+  });
+
   it('never promises to queue, resume or catch up on work the pause discarded', () => {
     // Live-only observer (AGENTS.md): quota and auth discard pending inputs.
     for (const fixture of QUOTA_NOTICE_CASES) {

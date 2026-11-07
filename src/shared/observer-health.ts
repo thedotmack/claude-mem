@@ -692,7 +692,10 @@ export function renderObserverQuotaCooldownNotice(
     // to Claude via CLAUDE_MEM_PRO_FALLBACK_AT, then Claude was held), saving
     // has stopped and the user must hear it.
     const serving = context.servingProvider;
-    const servingIsHeld = context.holds.some(hold => hold.provider === serving && hold.until > nowMs);
+    // A held Claude credential stops nothing while the other one is serving
+    // (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD).
+    const servingIsHeld = context.holds.some(hold => hold.provider === serving && hold.until > nowMs
+      && (!hold.auth || !context.servingAuth || hold.auth === context.servingAuth));
     if (!backup || (serving && !servingIsHeld)) return '';
     const backupTime = quotaRetryTime(backup.until, nowMs);
     return `⚠️ claude-mem has paused saving memories because ${quotaHoldReason(backup, nowMs, true)}. Activity during the pause isn't saved; saving starts again with new activity after ${backupTime}, when it tries ${relayedProviderText(backup.retryName)} again. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
