@@ -212,6 +212,7 @@ export const myworkZh: Record<string, string> = {
   'Stage': '阶段',
   'Started': '开始时间',
   'Running': '运行时长',
+  'Took': '用时',
   'Planning': '规划中',
   'Building': '构建中',
   'Reviewing': '审核中',

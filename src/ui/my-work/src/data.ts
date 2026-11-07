@@ -49,6 +49,8 @@ export interface Request {
   /** Sortable start time. The List sorts on this, never on the display string. */
   startedAtIso?: string
   runningFor: string
+  /** Live records only: no completion is recorded, so `runningFor` counts up to now and the card keeps it ticking. */
+  runningLive?: boolean
   stage: Stage
   state: LiveState
   progress: {

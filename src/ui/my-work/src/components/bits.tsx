@@ -150,7 +150,7 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
   return (
     <Req ids={['R5.9', 'R5.6', 'R5.11']}>
       <div className="space-y-1.5">
-        <Progress value={progress.percent ?? 0} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('h-1.5 bg-muted', {
+        <Progress value={progress.percent ?? 0} aria-label={progress.percent === null ? t('Not reviewed yet') : interpolate(t('{percent}% complete'), { percent: progress.percent })} className={cn('h-1.5 bg-muted [&_[data-slot=progress-indicator]]:duration-700 [&_[data-slot=progress-indicator]]:ease-out', request.state === 'working' && 'progress-sweep', {
           '[&_[data-slot=progress-indicator]]:bg-working-foreground/75': request.state === 'working',
           '[&_[data-slot=progress-indicator]]:bg-review-foreground/75': request.state === 'needs-check',
           '[&_[data-slot=progress-indicator]]:bg-attention-foreground/75': request.state === 'your-move',

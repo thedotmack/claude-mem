@@ -1,8 +1,8 @@
 import { displayTime } from '@/lib/display-time'
 import { t, useI18n, interpolate } from '@/lib/i18n'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { useReducedMotion } from 'motion/react'
-import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
+import { motion, useReducedMotion } from 'motion/react'
+import { ArrowRightIcon, ArrowUpDownIcon, ChevronDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
+import { ChangeTicker } from '@/components/live-motion'
 import { RequestCard } from '@/components/request-card'
 import { SplitFlapText } from '@/components/split-flap'
 import { SaveButton } from '@/components/save-button'
@@ -24,10 +25,11 @@ import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
-import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useStore, useWorkModel, useWorkspace } from '@/store'
+import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
+import { cardGridEntries } from '@/live/card-groups'
 
 type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
@@ -42,6 +44,7 @@ type SortKey = WorkSort
 const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
   { value: 'all', label: 'All', matches: (request) => !request.closed },
   { value: 'needs-you', label: 'Needs you', matches: (request) => !request.closed && needsYou(request), dot: 'bg-attention-foreground' },
+  { value: 'working', label: 'Working', matches: (request) => !request.closed && request.state === 'working', dot: 'bg-working-foreground motion-safe:animate-pulse' },
   { value: 'shipped', label: 'Shipped', matches: (request) => !request.closed && request.state === 'shipped', dot: 'bg-shipped-foreground' },
   { value: 'closed', label: 'Closed', matches: (request) => !!request.closed },
 ]
@@ -61,11 +64,14 @@ function sortRequests(requests: Request[], sort: SortKey) {
         : ATTENTION_ORDER.indexOf(a.state) - ATTENTION_ORDER.indexOf(b.state) || newest(a, b))
 }
 
-/** One actionable sentence that leads the page (§12): what needs you is a link straight to it. */
-function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; onOpen: (request: Request) => void; onShowNeedsYou: () => void }) {
+/** How many moving requests the summary names before it says "and N more". */
+const MOVING_NAMED = 3
+
+/** One actionable sentence that leads the page (§12): what needs you is a link straight to it, then what is moving, by name. */
+function Summary({ requests, onOpen, onShowNeedsYou, onShowWorking }: { requests: Request[]; onOpen: (request: Request) => void; onShowNeedsYou: () => void; onShowWorking: () => void }) {
   const yourMove = requests.filter((request) => request.state === 'your-move')
   const toCheck = requests.filter((request) => request.state === 'needs-check')
-  const working = requests.filter((request) => request.state === 'working').length
+  const moving = sortRequests(requests.filter((request) => request.state === 'working'), 'started')
   const first = yourMove[0] ?? toCheck[0]
   const waiting = yourMove.length + toCheck.length
   const reduceMotion = useReducedMotion()
@@ -82,9 +88,26 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
             </>
           ) : <span className="font-semibold">{t("Nothing needs you right now.")}</span>}
         </p>
-        <p className="flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
-          <span>{interpolate(t('{count} working'), { count: working })}{toCheck.length ? interpolate(t(' · {count} waiting for your check'), { count: toCheck.length }) : ''}</span>
-          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">{interpolate(t('Show all {count}'), { count: waiting })}</button></>}
+        {/* What is moving, by name: the reader sees which requests are live without opening a filter. */}
+        <p className={cn('flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground', first && !reduceMotion && 'pt-4')}>
+          {moving.length ? (
+            <>
+              <span className="inline-flex items-center gap-1.5 text-working-foreground"><span className="size-1.5 rounded-full bg-working-foreground motion-safe:animate-pulse" />Moving now:</span>
+              {/* Phones name the first one; wider screens name up to MOVING_NAMED. */}
+              {moving.slice(0, MOVING_NAMED).map((request, index) => (
+                <span key={request.id} className={cn('min-w-0 items-center', index === 0 ? 'inline-flex' : 'hidden md:inline-flex')}>
+                  <button type="button" onClick={() => onOpen(request)} className="inline-flex min-h-11 max-w-[16rem] items-center truncate text-left text-foreground/85 underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current md:min-h-6">
+                    <span className="truncate">{titleOf(request)}</span>
+                  </button>
+                  {index < Math.min(moving.length, MOVING_NAMED) - 1 && <span className="hidden md:inline">,</span>}
+                </span>
+              ))}
+              {moving.length > 1 && <button type="button" onClick={onShowWorking} className="min-h-11 underline underline-offset-4 hover:text-foreground md:hidden">and {moving.length - 1} more</button>}
+              {moving.length > MOVING_NAMED && <button type="button" onClick={onShowWorking} className="hidden underline underline-offset-4 hover:text-foreground md:inline md:min-h-6">and {moving.length - MOVING_NAMED} more</button>}
+            </>
+          ) : <span>Nothing is moving right now.</span>}
+          {toCheck.length > 0 && <span>{interpolate(t(' · {count} waiting for your check'), { count: toCheck.length }).trim()}</span>}
+          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">Show all {waiting} that need you</button></>}
         </p>
       </div>
     </Req>
@@ -189,8 +212,78 @@ function FlipStatus({ state }: { state: LiveState }) {
   return <SplitFlapText text={t(STATE_LABEL[state])} tileClassName={STATE_SURFACE[state]} />
 }
 
+/** A card or row glides to its new place when the order changes (a status moved, a new request arrived). Position only:
+ * a card that grows or shrinks snaps, so text never stretches mid-animation. Off under reduced motion (MotionConfig). */
+const GLIDE = { type: 'spring', bounce: 0.15, duration: 0.55 } as const
+
+function CardCell({ request, onOpen, onOpenFocus }: { request: Request; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  return (
+    <motion.div layout="position" transition={GLIDE} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="min-w-0">
+      <HoverCell>
+        <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
+      </HoverCell>
+    </motion.div>
+  )
+}
+
+/**
+ * The Cards view. Attention-first with every request shown, the cards sit under section headings in one grid, so a
+ * card whose status changes glides from one section to the other. Cards keep their own height: a short card no
+ * longer stretches to the tallest card in its row.
+ */
+function CardsView({ requests, grouped, readErrors, onOpen, onOpenFocus }: { requests: Request[]; grouped: boolean; readErrors: RequestReadError[]; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const [unfolded, setUnfolded] = useState<Record<string, boolean>>({})
+  const errors = readErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)
+  if (!grouped) {
+    return (
+      <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {requests.map((request) => <CardCell key={request.id} request={request} onOpen={onOpen} onOpenFocus={onOpenFocus} />)}
+        {errors}
+      </div>
+    )
+  }
+  return (
+    <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {cardGridEntries(requests, unfolded).map((entry) => entry.kind === 'card'
+        ? <CardCell key={entry.key} request={entry.request} onOpen={onOpen} onOpenFocus={onOpenFocus} />
+        : (
+          <motion.div key={entry.key} layout="position" transition={GLIDE} className="col-span-full flex items-center gap-2.5 pt-2 first:pt-0">
+            <span className={cn('size-2 rounded-full', entry.group.dot)} />
+            <h2 className="text-sm font-semibold tracking-tight">{entry.group.label}</h2>
+            <span className="text-sm text-muted-foreground tabular-nums">{entry.count}</span>
+            <span className="h-px flex-1 bg-border/70" />
+            {entry.folds && (
+              <Button variant="ghost" size="sm" className="h-11 text-xs text-muted-foreground md:h-7" aria-expanded={entry.open} onClick={() => setUnfolded((current) => ({ ...current, [entry.group.id]: !entry.open }))}>
+                {entry.open ? 'Show fewer' : `Show all ${entry.count}`}<ChevronDownIcon className={cn('transition-transform', entry.open && 'rotate-180')} />
+              </Button>
+            )}
+          </motion.div>
+        ))}
+      {errors.length > 0 && <p key="heading-errors" className="col-span-full pt-2 text-sm font-semibold tracking-tight">Couldn't read</p>}
+      {errors}
+    </div>
+  )
+}
+
 // The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
 const TABLE_QUERY = '(min-width: 768px)'
+
+/** A List line that glides when the order changes and glows once when its record changes. */
+function ListItem({ requestId, children }: { requestId: string; children: ReactNode }) {
+  const fresh = useFreshlyUpdated(requestId)
+  return <motion.li layout="position" transition={GLIDE} className={cn(fresh && 'just-updated')}>{children}</motion.li>
+}
+
+/** The table row version of ListItem, with TableRow's own look (components/ui/table.tsx). */
+function ListTableRow({ requestId, onClick, children }: { requestId: string; onClick: () => void; children: ReactNode }) {
+  const fresh = useFreshlyUpdated(requestId)
+  return (
+    <motion.tr layout="position" transition={GLIDE} data-slot="table-row" onClick={onClick}
+      className={cn('cursor-pointer border-b border-border/80 transition-colors hover:bg-surface', fresh && 'just-updated')}>
+      {children}
+    </motion.tr>
+  )
+}
 
 function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
@@ -205,7 +298,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
       {/* Phones: stacked rows, request then status then next step. */}
       {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
         {requests.map((request) => (
-          <li key={request.id}>
+          <ListItem key={request.id} requestId={request.id}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
               <span className="flex w-full items-start gap-2.5">
                 <AgentIcon agentId={request.agentId} />
@@ -216,7 +309,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
                 <NextMove next={request.next} />
               </span>
             </button>
-          </li>
+          </ListItem>
         ))}
       </ul>}
 
@@ -235,7 +328,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
           </TableHeader>
           <TableBody>
             {requests.map((request) => (
-              <TableRow key={request.id} className="cursor-pointer" onClick={() => onOpen(request)}>
+              <ListTableRow key={request.id} requestId={request.id} onClick={() => onOpen(request)}>
                 <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
                 <TableCell className="max-w-72 align-top whitespace-normal">
                   <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
@@ -246,7 +339,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
                 <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
                 <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
                 <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{displayTime(request.startedAt)}</time></TableCell>
-              </TableRow>
+              </ListTableRow>
             ))}
           </TableBody>
         </Table>
@@ -294,17 +387,27 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
   )
 }
 
+/** Each agent with its requests in this view, busiest first: most urgent request, then how many; idle agents last. */
+function agentsByUrgency(agents: WorkAgent[], requests: Request[]) {
+  const urgency = (theirs: Request[]) => theirs.length ? Math.min(...theirs.map((request) => ATTENTION_ORDER.indexOf(request.state))) : ATTENTION_ORDER.length
+  return agents
+    .map((agent, index) => ({ agent, index, theirs: requests.filter((request) => request.agentId === agent.id) }))
+    .sort((a, b) => urgency(a.theirs) - urgency(b.theirs) || b.theirs.length - a.theirs.length || a.index - b.index)
+}
+
 /** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
 function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
   return (
     <Req ids={['R4.3', 'R13.2', 'R13.4']}>
-      <div className="grid min-w-0 items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {agents.map((agent) => {
+      {/* Masonry columns, so a short card never leaves a gap under a long one. Agents with work in this view come
+          first, the one with the most urgent request on top; agents with nothing here go last. */}
+      <div className="min-w-0 gap-4 md:columns-2 xl:columns-3">
+        {agentsByUrgency(agents, requests).map(({ agent, theirs }) => {
           const device = deviceById(agent.deviceId)
-          const theirs = requests.filter((request) => request.agentId === agent.id)
           return (
-            <HoverCell key={agent.id}>
+            <motion.div key={agent.id} layout="position" transition={GLIDE} className="mb-4 break-inside-avoid">
+            <HoverCell>
             <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
                 model={`${device.name} · ${device.syncedMinutesAgo === 0 ? t("this machine") : interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })}`} />
@@ -323,6 +426,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
               </AgentContent>
             </Agent>
             </HoverCell>
+            </motion.div>
           )
         })}
       </div>
@@ -411,7 +515,8 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
-      <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} />
+      <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} onShowWorking={() => setFilter('working')} />
+      <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
@@ -482,14 +587,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
           </Empty>
         </Req>
       ) : view === 'cards' ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((request) => (
-            <HoverCell key={request.id}>
-              <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
-            </HoverCell>
-          ))}
-          {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
-        </div>
+        <CardsView requests={visible} grouped={sort === 'attention' && filter === 'all'} readErrors={requestReadErrors} onOpen={onOpen} onOpenFocus={onOpenFocus} />
       ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
         : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
           : <TeamBoard requests={visible} onOpen={onOpen} />}

@@ -111,6 +111,18 @@ test('a request whose work-state items were all dropped is closed, with no lifec
   assert.equal(request.closed, true)
 })
 
+test('a closed request with a start and no completion does not count up as running', () => {
+  const dropped = baseRequest.items.map((item) => ({ ...item, kind: 'work-state' as const, status: 'dropped' }))
+  const { request } = mapOne({ lifecycle: null, items: dropped, completedAtEpoch: null })
+  assert.equal(request.closed, true)
+  assert.ok(request.startedAtIso, 'the fixture has a recorded start')
+  assert.equal(request.runningLive, undefined)
+  const complete = mapOne({ lifecycle: { explicit: true, complete: true, status: 'done' }, completedAtEpoch: null }).request
+  assert.equal(complete.runningLive, undefined, 'a lifecycle that says complete has finished, even without a time')
+  const open = mapOne({ completedAtEpoch: null }).request
+  assert.equal(open.runningLive, true, 'an open request with a start and no completion still counts up')
+})
+
 const syntheticRequest = (): WorkViewHumanRequest => ({
   id: '["overall-request","g_000000000001"]', contentFingerprint: 'f', title: 'Cards', original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18) },
   scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [], agentIds: [], conversationKeys: [],

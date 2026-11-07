@@ -16,19 +16,21 @@ export const SIDE_NAV_PILL = 'side-nav-active-pill'
 
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
 
-interface FocusNavEntry { key: string; label: string; count: number; selection: Exclude<FocusSelection, null>; muted?: boolean }
+/** `moving`: a request in it is working right now, so the entry carries a pulsing dot. */
+interface FocusNavEntry { key: string; label: string; count: number; moving?: boolean; selection: Exclude<FocusSelection, null>; muted?: boolean }
 
 /** The entries in rail order. Rail and chip row read the same list. */
 function useFocusNavEntries(): { focus: FocusNavEntry[]; pastFocus: FocusNavEntry } {
   const { t } = useI18n()
   const { focusAreas, requests } = useWorkModel()
   const needsYouIn = (id: string) => requests.filter((request) => needsYou(request) && resolveFocusAreaId(request.focusAreaId, focusAreas) === id).length
+  const movingIn = (id: string) => requests.some((request) => !request.closed && request.state === 'working' && resolveFocusAreaId(request.focusAreaId, focusAreas) === id)
   const kept = focusAreas.filter((area) => area.status === 'kept' && !area.mergedInto)
   const suggested = focusAreas.filter((area) => area.status === 'suggested' && !area.mergedInto).length
   return {
     focus: [
-      ...kept.map((area) => ({ key: area.id, label: area.name, count: needsYouIn(area.id), selection: { kind: 'area' as const, focusAreaId: area.id } })),
-      { key: OTHER_FOCUS_AREA_ID, label: t('Other'), count: needsYouIn(OTHER_FOCUS_AREA_ID), selection: { kind: 'area', focusAreaId: OTHER_FOCUS_AREA_ID } },
+      ...kept.map((area) => ({ key: area.id, label: area.name, count: needsYouIn(area.id), moving: movingIn(area.id), selection: { kind: 'area' as const, focusAreaId: area.id } })),
+      { key: OTHER_FOCUS_AREA_ID, label: t('Other'), count: needsYouIn(OTHER_FOCUS_AREA_ID), moving: movingIn(OTHER_FOCUS_AREA_ID), selection: { kind: 'area', focusAreaId: OTHER_FOCUS_AREA_ID } },
       ...(suggested > 0 ? [{ key: 'suggested', label: interpolate(t('{count} suggested'), { count: suggested }), count: 0, selection: { kind: 'suggested' as const }, muted: true }] : []),
     ],
     pastFocus: { key: 'past-focus', label: t('Past focus'), count: 0, selection: { kind: 'past-focus' }, muted: true },
@@ -36,6 +38,12 @@ function useFocusNavEntries(): { focus: FocusNavEntry[]; pastFocus: FocusNavEntr
 }
 
 const sameSelection = (a: FocusSelection, b: FocusSelection) => !!a && !!b && a.kind === b.kind && (a.kind !== 'area' || (b.kind === 'area' && a.focusAreaId === b.focusAreaId))
+
+/** Work is moving in this area right now. Pulses; reduced motion keeps the dot still. */
+function MovingDot({ moving, className }: { moving?: boolean; className?: string }) {
+  if (!moving) return null
+  return <span title="Work moving now" className={cn('size-1.5 shrink-0 rounded-full bg-working-foreground motion-safe:animate-pulse', className)}><span className="sr-only">Work moving now</span></span>
+}
 
 function Count({ count, className }: { count: number; className?: string }) {
   const { t } = useI18n()
@@ -58,6 +66,7 @@ export function FocusRail({ selected, onSelect }: { selected: FocusSelection; on
             {sameSelection(selected, entry.selection) && <ActivePill layoutId={SIDE_NAV_PILL} />}
             {entry.selection.kind === 'suggested' && <SparklesIcon className="relative size-3.5 shrink-0" />}
             <span className="relative min-w-0 flex-1 break-words">{entry.label}</span>
+            <MovingDot moving={entry.moving} className="relative" />
             <Count count={entry.count} className="relative" />
           </button>
         ))}
@@ -100,6 +109,7 @@ export function FocusChipRow({ selected, onSelect }: { selected: FocusSelection;
               {entry.selection.kind === 'suggested' && <SparklesIcon className="relative size-3.5" />}
               {entry.selection.kind === 'past-focus' && <HistoryIcon className="relative size-3.5" />}
               <span className="relative">{entry.label}</span>
+              <MovingDot moving={entry.moving} className="relative" />
               <Count count={entry.count} className="relative h-4 min-w-4 text-[10px]" />
             </button>
           )

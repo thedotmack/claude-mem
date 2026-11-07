@@ -331,6 +331,28 @@
 .split-flap-gap { min-width: 0.4em; border-color: transparent; background: transparent !important; }
 .split-flap-gap::after { display: none; }
 
+/*
+ * Live motion on My Work (components/live-motion.tsx). A card whose record just changed glows once in the accent
+ * color, so the eye lands on it. A working request's progress bar carries a slow light sweep: work is moving.
+ * Both stop under reduced motion (the rule below).
+ */
+@keyframes just-updated-glow {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 55%, transparent); }
+  35% { box-shadow: 0 0 0 6px color-mix(in oklab, var(--primary) 22%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.just-updated { animation: just-updated-glow 1.6s ease-out 2; }
+@keyframes progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+.progress-sweep [data-slot=progress-indicator] { position: relative; overflow: hidden; transition: transform 900ms cubic-bezier(0.22, 1, 0.36, 1); }
+.progress-sweep [data-slot=progress-indicator]::after {
+  content: ''; position: absolute; inset-block: 0; left: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, white 55%, transparent), transparent);
+  animation: progress-sweep 2.4s ease-in-out infinite;
+}
+
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
