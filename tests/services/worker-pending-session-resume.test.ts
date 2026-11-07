@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { SESSION_REAP_IDLE_MS } from '../../src/services/worker/SessionManager.js';
 import { WorkerService } from '../../src/services/worker-service.js';
 import * as gracefulShutdown from '../../src/services/infrastructure/GracefulShutdown.js';
 import * as telemetry from '../../src/services/telemetry/telemetry.js';
@@ -26,12 +27,14 @@ function fixture() {
   }) as any);
   const clear = spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
   const routes = { resumePendingSessions: mock(() => 2) };
-  return { worker, timer, interval, clear, routes, tick: () => tick() };
+  const sessionManager = { reapIdlePausedSessions: mock(() => 0) };
+  worker.sessionManager = sessionManager;
+  return { worker, timer, interval, clear, routes, sessionManager, tick: () => tick() };
 }
 
 describe('WorkerService pending session resume timer', () => {
   it('runs one unref timer every minute and only sweeps while ready', () => {
-    const { worker, timer, interval, routes, tick } = fixture();
+    const { worker, timer, interval, routes, sessionManager, tick } = fixture();
     worker.startPendingSessionResume(routes);
     worker.startPendingSessionResume(routes);
     expect(interval).toHaveBeenCalledTimes(1);
@@ -42,6 +45,8 @@ describe('WorkerService pending session resume timer', () => {
     worker.initializationCompleteFlag = true;
     tick();
     expect(routes.resumePendingSessions).toHaveBeenCalledWith('periodic-resume');
+    // The same tick reaps cold paused-session buffers on the default threshold.
+    expect(sessionManager.reapIdlePausedSessions).toHaveBeenCalledWith(SESSION_REAP_IDLE_MS);
     worker.isShuttingDown = true;
     tick();
     expect(routes.resumePendingSessions).toHaveBeenCalledTimes(1);
