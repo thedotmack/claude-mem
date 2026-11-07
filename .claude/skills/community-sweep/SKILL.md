@@ -1,6 +1,6 @@
 ---
 name: community-sweep
-description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included, except the ones the owner marked experimental) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
+description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included, except the ones the owner marked experimental) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what it decided. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
 ---
 
 # Community Sweep
@@ -44,7 +44,7 @@ To append a ledger row (tab-separated; PR and issue numbers share one namespace)
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" <number> "$RUN_ID" <action> <merge_sha|-> <author> <coauthors|-> "<one-line note>" >> "$STATE/ledger.tsv"
 ```
 
-- **Actions for PRs:** `merged`, `closed`, `blocked`, `skipped`; for the owner's PRs, also `experimental`. Older runs also wrote `held`.
+- **Actions for PRs:** `merged`, `closed`, `blocked`, `skipped`; for the owner's PRs, also `experimental`, and `approved`, which the owner writes to take a PR out of experimental. Older runs also wrote `held`, and `approved` for owner sign-offs.
 - **Actions for issues:** `issue-closed`, `issue-answered`, `issue-routed`. Older runs also wrote `issue-held`.
 - **New ledger:** if `ledger.tsv` doesn't exist, create it with the header `ts pr phase action merge_sha pr_author coauthors note` (tab-separated).
 
@@ -61,19 +61,28 @@ Put every open PR in exactly one bucket, using its last ledger row. Use the firs
 |---|---|---|
 | Experimental | the owner's PR, last row is `experimental` | Leave it alone. Report any new activity. |
 | Held | last row is `held` (written before 2026-11-07) | Triage it from scratch this run and settle it yourself, like a new PR. |
+| Approved | last row is `approved` (the owner took it out of experimental, or an older run recorded an owner sign-off) | Triage it from scratch this run, like a new PR. |
 | Blocked | last row is `blocked` | Re-triage only if the author pushed or replied after that row. |
 | Done | last row is `merged` or `closed` | It shouldn't be open, so find out why. |
 | New | no row | Triage it (step 2). |
 
-For issues, skip the maintainer-authored ones: the `[plan-NN]` masters and the Merge Clinic. Triage community issues created or updated since the last run (the ledger's latest `ts`). On a first run, triage all of them.
+For issues, skip the maintainer-authored ones: the `[plan-NN]` masters and the Merge Clinic. Triage every other open issue that:
+- has no ledger row, however old it is (a run that stopped early leaves these behind);
+- has `issue-held` as its last row (written before 2026-11-07): triage it from scratch this run, like a held PR;
+- was updated after its own last ledger row.
+
+On a first run, that is all of them.
 
 **Test baseline.** Take it once per run, before landing anything. Use a clean `origin/main` worktree and the same Bun as CI (`bun-version: latest`), because an older local Bun can fail subprocess tests that CI passes. If local Bun is behind, run every suite in the run (baseline, per-PR and gate) as `npx -y bun@<latest> test …`. `npm view bun version` gives the latest version.
 
 ```bash
 npm install --no-audit --no-fund && npm run build
-env -u CLAUDE_MEM_LLM_TIMEOUT_MS bun test tests 2>&1 | tee "$RUN/baseline-suite.log"
-grep -E '^\(fail\)' "$RUN/baseline-suite.log" | sort -u > "$RUN/baseline-failures.txt"
+env -u CLAUDE_MEM_LLM_TIMEOUT_MS bun test tests > "$RUN/baseline-suite.log" 2>&1; echo "suite exit $?"
+grep -E '^\(fail\)' "$RUN/baseline-suite.log" | sed -E 's/ \[[0-9.]+m?s\]$//' | sort -u > "$RUN/baseline-failures.txt"
+tail -n 40 "$RUN/baseline-suite.log" | grep -E '^ *[0-9]+ pass$|^ *[0-9]+ fail$|^Ran [0-9]+ tests across'
 ```
+
+The last command must print the suite's own summary: `N pass`, `N fail` and `Ran N tests across M files`, with M close to the number of test files. If it prints nothing, the run died before finishing (a crash, a timeout, a missing dependency) and an empty `baseline-failures.txt` means nothing. Stop, fix the cause, and take the baseline again; never land PRs against an incomplete one. A nonzero exit on its own is not that: failing tests exit nonzero, and some Bun versions crash at exit after printing the summary. The `sed` drops each failure's timing so the lists compare line for line.
 
 ## 2. Triage each new PR (read-only)
 
@@ -116,7 +125,7 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 
 The owner's PRs go through the same triage and landing as everyone's.
 
-- **Experimental.** The owner marks a PR `experimental` in the ledger. It stays out of the sweep until the owner takes it out of experimental; each run, list any new activity on it.
+- **Experimental.** The owner marks a PR `experimental` in the ledger. It stays out of the sweep until the owner takes it out of experimental by writing an `approved` row, which puts it in the Approved bucket; each run, list any new activity on it.
 - A boundary change in the owner's own PR is the owner's intent, so it isn't trimmed for that reason. Check that it doesn't clash with a boundary change already on main, and resolve any clash yourself.
 - **No thank-you comment.** After a merge, post a 1–3 bullet note only if we pushed changes (what we changed and why). Don't add the owner to the roster.
 
@@ -157,7 +166,8 @@ git merge --no-edit origin/main                                   # a merge comm
 - `plugin/scripts/{worker-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
 - `plugin/sqlite/**`;
 - `plugin/ui/viewer-bundle.js`, `plugin/ui/viewer.html`, `plugin/ui/tv.html`, `plugin/ui/work-view/**` (the Vite build of `src/ui/my-work`), and the fonts and icons copied into `plugin/ui/`;
-- `plugin/package.json`.
+- `plugin/package.json`;
+- `plugin/skills/request-progress/scripts/request-groups.mjs`.
 
 If the PR changed any of them, restore them with `git checkout origin/main -- <paths>` (or `git rm` any the PR added) and commit `chore: drop generated bundles (rebuilt at release)`. If the PR edited only a copy (say `plugin/ui/viewer.html`), move the edit to its source under `src/`. Hand-written files under `plugin/` stay: `plugin/scripts/{bun-runner.js,statusline-counts.js,version-check.js,worker-wrapper.cjs,qoder-hook-launcher.cjs}`, hooks, skills, modes and manifests.
 
@@ -165,11 +175,12 @@ If the PR changed any of them, restore them with `git checkout origin/main -- <p
 
 **Verify on the exact head you will merge:**
 1. Run `npm run typecheck`.
-2. Commit everything first. Then run `npm run build` (the bundle-size guardrail), `git checkout -- plugin/` and `git clean -fd -- plugin/`, so build output is never committed. The checkout alone leaves untracked output behind, such as `plugin/scripts/work-view-read-worker.cjs` and `plugin/ui/work-view/assets/*`. Stage files by name, not with `git add -A`.
+2. Commit everything first. Then run `npm run build` (the bundle-size guardrail) and leave its output in place for steps 3–5, so tests that load built bundles run the PR's code, not main's.
 3. Run the PR's targeted tests.
 4. For any non-trivial change, run `env -u CLAUDE_MEM_LLM_TIMEOUT_MS bun test tests` and compare it with `$RUN/baseline-failures.txt`. For a failure that isn't in the baseline, re-run that file alone first. If it passes alone and in CI, it was load from parallel suites. If it still fails, it's the PR's to fix.
 5. If `openclaw/` is touched, run `bun test openclaw`.
-6. A PR that adds a SessionStore migration takes the next free schema version on main at merge time. Two PRs raced for one version during the sweep.
+6. Then run `git checkout -- plugin/` and `git clean -fd -- plugin/`, so build output is never committed. Do this before any further commit too. The checkout alone leaves untracked output behind, such as `plugin/scripts/work-view-read-worker.cjs` and `plugin/ui/work-view/assets/*`. Stage files by name, not with `git add -A`.
+7. A PR that adds a SessionStore migration takes the next free schema version on main at merge time. Two PRs raced for one version during the sweep.
 
 **Push to their branch**, which is needed only if you merged main with conflicts or added commits. Never force-push.
 
@@ -182,12 +193,12 @@ git push "$remote" "HEAD:$head"    # a bare `git push` is refused: the local nam
 If the push is rejected as non-fast-forward, they pushed meanwhile. Run `git pull --no-rebase "$remote" "$head"`, re-verify and push again. If their new head already does what you did, drop yours.
 
 **CI.**
-- First-time contributors' runs sit in `action_required`. Read the whole diff for anything that executes in CI (workflows, package scripts, postinstall, tests that shell out). Then approve the `CI` and `Windows` runs for the PR head. Look them up by head SHA: `gh run list --branch` misses fork PRs.
+- First-time contributors' runs sit in `action_required`. Read the whole diff for anything that executes in CI (workflows, package scripts, postinstall, tests that shell out). Then approve every waiting run for the PR head except `Claude Code`: `CI` and `Windows` always, plus `Media native runtime` and `Native ODS integration` when the PR's paths start them. Look them up by head SHA: `gh run list --branch` misses fork PRs.
 
   ```bash
   sha=$(gh pr view <N> --repo thedotmack/claude-mem --json headRefOid --jq .headRefOid)
-  gh api "repos/thedotmack/claude-mem/actions/runs?head_sha=$sha" --jq '.workflow_runs[] | "\(.id) \(.name) \(.conclusion)"'
-  gh api -X POST repos/thedotmack/claude-mem/actions/runs/<id>/approve
+  gh api "repos/thedotmack/claude-mem/actions/runs?head_sha=$sha" --jq '.workflow_runs[] | select(.conclusion=="action_required" and .name!="Claude Code") | "\(.id) \(.name)"'
+  gh api -X POST repos/thedotmack/claude-mem/actions/runs/<id>/approve   # once per id listed
   ```
 
 - Never approve CI for `SPAM` or `DECLINE`.
@@ -210,7 +221,7 @@ If the push is rejected as non-fast-forward, they pushed meanwhile. Run `git pul
 
 The author on main must be the contributor. If it isn't, stop merging and record it as an incident in the report. Then comment (step 6), ledger the merge with the full SHA, and close any issue the PR fixed that GitHub didn't auto-close (step 5).
 
-**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. The release includes the X post from `@Claude_Memory` (version-bump step 12). Post it at any hour without asking. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges ride along in the next release.
+**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Run it from a fresh worktree of main (`git fetch origin`, then `git worktree add --detach "$MAIN_CHECKOUT/.claude/worktrees/community-release" origin/main`), never from a PR landing worktree, whose HEAD is a PR branch. Hold `merge.lock` from the fetch until the release commit and tag are pushed, so no merge lands mid-release, then release it and remove the worktree. This is the one hold allowed past 5 minutes. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. The release includes the X post from `@Claude_Memory` (version-bump step 12). Post it at any hour without asking. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges ride along in the next release.
 
 ## 4. Help the PRs that aren't ready
 
@@ -244,7 +255,7 @@ git log origin/main --oneline --grep="#<N>\b"
 
 Before posting, reconcile the claims. If a PR's triage and an issue's triage disagree about what fixes an issue (for example `project=` versus `projects=`), read main yourself. Never credit the wrong person.
 
-Release status matters to reporters. `git tag --contains <sha>` names the first release with the fix. If no tag contains it, say "it's on main and ships in the next release". Never promise a date.
+Release status matters to reporters. `git tag --contains <sha> --sort=v:refname | head -1` names the first release with the fix. If no tag contains it, say "it's on main and ships in the next release". Never promise a date.
 
 ## 6. Comments
 
@@ -265,7 +276,7 @@ Make them warm, specific and short: name the person, and say what changed for us
 2. **Roster.** Add new merged human authors to `$STATE/ROSTER.md`: login, public name (the squash commit's author), PRs and short SHAs. Add co-author-only credits from `Co-authored-by` trailers, then recount the totals. One person can have two git identities; map them to one login.
 3. **Gate.** After the run's last merge, verify in a fresh `origin/main` worktree:
    - typecheck, build, and the full suite against the baseline;
-   - `git log <run-start>..origin/main --format='%h %an %s' -- 'plugin/scripts/*.cjs' plugin/sqlite plugin/ui CHANGELOG.md` lists no contributor PR. A hand-written `.cjs` like `worker-wrapper.cjs` is fine, and so are the owner's own UI builds.
+   - `git log <run-start>..origin/main --format='%h %an %s' -- 'plugin/scripts/*.cjs' 'plugin/scripts/*.map' plugin/sqlite plugin/ui plugin/package.json plugin/skills/request-progress/scripts/request-groups.mjs CHANGELOG.md` lists no contributor PR. A hand-written `.cjs` like `worker-wrapper.cjs` is fine, and so are the owner's own UI builds.
    - `git log <run-start>..origin/main --format='%an' | sort | uniq -c` shows contributors, not only the maintainer.
 
    Fix any regression forward in our own PR, test-first.
@@ -288,7 +299,7 @@ Make them warm, specific and short: name the person, and say what changed for us
   rm -f "$STATE/merge.lock/owner"; rmdir "$STATE/merge.lock"
   ```
 
-  Hold the lock for 5 minutes at most. Never break someone else's lock; if it has been held for more than 20 minutes, tell the orchestrator.
+  Hold the lock for 5 minutes at most (a critical-fix release is the one exception, step 3). Never break someone else's lock; if it has been held for more than 20 minutes, tell the orchestrator.
 - **GitHub's API budget is shared:** 5,000 requests an hour each for REST and GraphQL. Poll CI no faster than every 60 seconds, batch fields into one `--json` call, and on a rate-limit error wait for the reset (`gh api rate_limit`) instead of retrying.
 - **Keep helper scripts in each executor's own subdirectory.** During the sweep, shared helpers at a common root were overwritten by another executor.
 - **Stop cleanly on a spend or usage limit:** release the lock, stop making changes, and report what is mid-flight.
