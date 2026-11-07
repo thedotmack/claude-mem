@@ -137,7 +137,7 @@ describe('SessionStore.storeObservations', () => {
       platformSource: 'claude', contentSessionId: 'prior-session', toolUseIds: ['toolu_prior'],
     });
     expect(store.hasCommittedToolUse('claude', 'prior-session', 'toolu_prior')).toBe(true);
-    expect((db.prepare('SELECT MAX(version) AS version FROM schema_versions').get() as { version: number }).version).toBe(73);
+    expect(db.prepare('SELECT version FROM schema_versions WHERE version = 73').get()).toEqual({ version: 73 });
   });
 
   it('applies promptNumber to every observation in the batch', () => {

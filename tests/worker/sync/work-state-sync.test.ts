@@ -540,7 +540,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   for (const table of ['committed_observation_tool_uses', 'deleted_content_sessions', 'deleted_memory_sessions']) {
     db.run(`DROP TABLE IF EXISTS ${table}`);
   }
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72, 73)');
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72, 73, 74)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

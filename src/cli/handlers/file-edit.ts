@@ -98,6 +98,8 @@ export const fileEditHandler: EventHandler = {
       toolInput,
       toolResponse,
       cwd,
+      // A live hook's edit happens now; the transcript watcher passes its line's time.
+      eventOccurredAtEpochMs: input.eventOccurredAtEpochMs === undefined ? Date.now() : input.eventOccurredAtEpochMs,
     });
 
     logger.debug('HOOK', 'File edit observation spooled', { filePath });
