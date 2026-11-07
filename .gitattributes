@@ -2,7 +2,6 @@
 
 plugin/scripts/*.cjs eol=lf
 plugin/scripts/*.js  eol=lf
-plugin/scripts/*.cmd eol=lf
 
 *.png  binary
 *.jpg  binary

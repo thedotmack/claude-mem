@@ -49,7 +49,6 @@
     "plugin/modes",
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
-    "plugin/scripts/*.cmd",
     "plugin/scripts/*.map",
     "plugin/sqlite",
     "plugin/skills",
