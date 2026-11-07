@@ -4,6 +4,7 @@ import {
   optimizeObservationFields,
   buildFieldCompressionPrompt,
   fieldCompressionBudget,
+  wrapCondensed,
   FIELD_OPTIMIZE_OUTPUT_SAFETY,
   FIELD_OPTIMIZE_TIMEOUT_MS,
   type FieldCompressor,
@@ -62,9 +63,37 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
     expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
   });
 
-  it('falls back when the model returns something still over budget', async () => {
-    const compress: FieldCompressor = async () => ok('y'.repeat(MAX * 2));
-    expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
+  it('truncates the condensed text to fit when the model returns something still over budget (#5450)', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      // Returned 400 chars (down from 600 raw, but still over MAX 200):
+      // Instead of discarding the model's work, it truncates the summary to fit.
+      const compress: FieldCompressor = async () => ok('y'.repeat(MAX * 2));
+      const out = await optimizeField(oversized, compress, CTX, MAX) as string;
+      expect(out).toContain('<condensed');
+      expect(out.length).toBeLessThanOrEqual(MAX);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [, message, data] = warn.mock.calls[0] as [string, string, Record<string, unknown>];
+      expect(message).toBe('Condensed field still over budget; truncating summary to fit');
+      expect(data.returnedChars).toBe(MAX * 2);
+      expect(data.maxChars).toBe(MAX);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('falls back when the model output is not shorter than the original field', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      // 800 chars >= 600 raw chars: model did not condense at all
+      const compress: FieldCompressor = async () => ok('y'.repeat(MAX * 4));
+      expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
+      const [, message, data] = warn.mock.calls[0] as [string, string, Record<string, unknown>];
+      expect(message).toBe('Oversized field compression unusable; falling back to truncation');
+      expect(data.reason).toBe('still-over-budget');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('falls back when the model throws, rather than losing the observation', async () => {
@@ -290,5 +319,30 @@ describe('a field too large for the observer model\'s condense prompt skips the 
     expect(calls).toBe(0);
     await optimizeField(huge, compress, CTX, MAX);
     expect(calls).toBe(1);
+  });
+});
+
+describe('wrapCondensed ensures envelope and text fit strictly within maxChars (#5450)', () => {
+  it('wraps short text completely when it fits inside the envelope and budget', () => {
+    const wrapped = wrapCondensed(1000, 'short summary', 200);
+    expect(wrapped).toContain('<condensed original_size_chars="1000" reason="oversize">');
+    expect(wrapped).toContain('short summary');
+    expect(wrapped).toContain('</condensed>');
+    expect(wrapped.length).toBeLessThanOrEqual(200);
+  });
+
+  it('truncates oversized text so the final wrapped output strictly respects maxChars', () => {
+    const longSummary = 'a'.repeat(500);
+    const wrapped = wrapCondensed(2000, longSummary, 150);
+    expect(wrapped).toContain('<condensed original_size_chars="2000" reason="oversize">');
+    expect(wrapped).toContain('</condensed>');
+    expect(wrapped.length).toBeLessThanOrEqual(150);
+  });
+
+  it('falls back to raw head truncation when maxChars cannot even hold the XML wrapper tags', () => {
+    const text = 'abcdefghijklm';
+    const wrapped = wrapCondensed(500, text, 10);
+    expect(wrapped.length).toBeLessThanOrEqual(10);
+    expect(wrapped).toBe('abcdefghij');
   });
 });

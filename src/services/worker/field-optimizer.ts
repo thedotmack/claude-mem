@@ -16,15 +16,17 @@
  * the class of bug this whole change exists to remove:
  *  - one attempt per field, never a retry ladder;
  *  - a wall-clock timeout, so a hung compressor cannot stall the observer;
- *  - any failure — throw, timeout, empty, a reply cut off at the output-token
- *    limit, or output that still does not fit — falls through to the existing
- *    truncation, so an observation is degraded rather than lost.
+ *  - any unrecoverable failure — throw, timeout, empty, a reply cut off at the
+ *    output-token limit, or output not shorter than the raw field — falls through
+ *    to the existing truncation, while a reply that is condensed but still over
+ *    budget is truncated to fit rather than discarded (#5450).
  */
 
 import { OBS_PROMPT_FIELD_MAX_CHARS, stripImagePayloadsFromField } from '../../sdk/prompts.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
 import { logger } from '../../utils/logger.js';
 import { condenseInputMaxTokens, estimateCondenseTokens } from './context-window.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 
 /**
  * A compressor's reply. `truncated` is true when the provider reported that
@@ -185,9 +187,10 @@ export async function optimizeField(
   }
 
   // A reply cut at max_tokens is a fragment however well it fits: accepting it
-  // would store half a summary marked as the whole field.
+  // would store half a summary marked as the whole field. Likewise, if the compressor
+  // produced output that is not shorter than the raw field, it did not condense it.
   const trimmed = condensed?.text.trim();
-  if (!trimmed || condensed?.truncated || trimmed.length > maxChars) {
+  if (!trimmed || condensed?.truncated || trimmed.length >= raw.length) {
     logger.warn('SDK', 'Oversized field compression unusable; falling back to truncation', {
       sessionId: context.sessionDbId,
       field: context.field,
@@ -199,17 +202,47 @@ export async function optimizeField(
     return value;
   }
 
-  logger.info('SDK', 'Condensed an oversized observation field to fit', {
-    sessionId: context.sessionDbId,
-    field: context.field,
-    toolName: context.toolName,
-    originalChars: raw.length,
-    condensedChars: trimmed.length,
-  });
+  // If the condensed reply is still longer than maxChars, truncate the condensed
+  // text to fit rather than throwing away the model's work and falling back to
+  // truncating the original raw field (#5450).
+  if (trimmed.length > maxChars) {
+    logger.warn('SDK', 'Condensed field still over budget; truncating summary to fit', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      returnedChars: trimmed.length,
+      maxChars,
+    });
+  } else {
+    logger.info('SDK', 'Condensed an oversized observation field to fit', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      condensedChars: trimmed.length,
+    });
+  }
 
   // Marked as condensed, not elided: the observer should treat this as a
   // faithful summary of the whole field rather than a fragment with a gap.
-  return `<condensed original_size_chars="${raw.length}" reason="oversize">\n${trimmed}\n</condensed>`;
+  return wrapCondensed(raw.length, trimmed, maxChars);
+}
+
+/**
+ * Wrap condensed text in the `<condensed>` envelope, ensuring the result strictly
+ * fits within `maxChars` by truncating the condensed text if necessary.
+ */
+export function wrapCondensed(rawLength: number, text: string, maxChars: number): string {
+  const prefix = `<condensed original_size_chars="${rawLength}" reason="oversize">\n`;
+  const suffix = `\n</condensed>`;
+  const tagLength = prefix.length + suffix.length;
+  if (maxChars < tagLength) {
+    return retainTextHeadTail(text, maxChars, 0).head;
+  }
+  const available = maxChars - tagLength;
+  const body = text.length <= available ? text : retainTextHeadTail(text, available, 0).head;
+  return `${prefix}${body}${suffix}`;
 }
 
 /**
