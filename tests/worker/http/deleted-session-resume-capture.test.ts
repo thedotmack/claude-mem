@@ -1,7 +1,7 @@
 // A session the user deleted in the viewer keeps out everything from before
 // the deletion, but a resumed conversation's new work is captured again
 // (follow-up to #5321, whose tombstone blocked the content session id forever).
-// Hook path: the real session-init hook handler and the real worker routes,
+// Hook path: the hooks' request bodies against the real worker routes,
 // SessionManager and SessionStore, over HTTP.
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -9,7 +9,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { sessionInitHandler } from '../../../src/cli/handlers/session-init.js';
 import { deleteSessionLikeTheViewer, startCaptureWorker, type CaptureWorker } from '../../helpers/deleted-session-capture-fixture.js';
 
 const CONTENT_SESSION = 'resumed-conversation';
@@ -33,9 +32,11 @@ describe('a deleted session on the hook path', () => {
   });
 
   const post = (route: string, body: object) => worker.post(route, body);
-  // The real UserPromptSubmit hook handler, which stamps the hook's clock.
-  const hookPrompt = (prompt: string) => sessionInitHandler.execute({
-    sessionId: CONTENT_SESSION, cwd: dir, prompt, platform: 'claude-code',
+  // The UserPromptSubmit hook's init body, stamped with the hook's clock
+  // (tests/cli/handlers/session-init-event-time.test.ts pins that the hook sends it).
+  const hookPrompt = (prompt: string) => post('init', {
+    contentSessionId: CONTENT_SESSION, project: 'resume-project', prompt, platformSource: 'claude',
+    cwd: dir, eventOccurredAtEpochMs: Date.now(),
   });
   // The PostToolUse hook's live handoff body, stamped with the hook's clock.
   const hookToolUse = (toolUseId: string, eventOccurredAtEpochMs?: number | null) => post('observations', {

@@ -540,6 +540,11 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   for (const table of ['committed_observation_tool_uses', 'deleted_content_sessions', 'deleted_memory_sessions']) {
     db.run(`DROP TABLE IF EXISTS ${table}`);
   }
+  // v74: the deletion-cutoff triggers that replaced v73's.
+  for (const trigger of ['block_pre_deletion_sdk_session_insert', 'block_deleted_sdk_session_rekey',
+    'block_pre_deletion_tool_use_insert', 'block_pre_deletion_tool_use_update']) {
+    db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
+  }
   db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72, 73, 74)');
 }
 
