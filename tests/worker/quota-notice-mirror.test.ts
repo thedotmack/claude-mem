@@ -126,6 +126,40 @@ describe('quota notice from the persisted dispatch mirror', () => {
     expect(renderObserverQuotaCooldownNotice(health)).toBe('');
   });
 
+  it('says saving stopped when cmem.ai switched to Claude via its trial-expiry fallback and Claude is then held', () => {
+    // Greptile P1 on #5134: only a backup hold exists here, but the backup is
+    // the provider doing the work, so a silent notice would hide the outage.
+    Object.assign(process.env, {
+      CLAUDE_MEM_PRO_FALLBACK_AT: new Date(NOW - 60_000).toISOString(),
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: '',
+    });
+    recordQuotaExhausted('claude', 'weekly reserve guard', 'seven_day', undefined, undefined, 'subscription', {
+      kind: 'limit_guard', window: 'seven_day', usagePercent: 99, thresholdPercent: 93,
+    });
+
+    const health = readObserverHealth()!;
+    expect(health.quotaCooldown?.servingProvider).toBeUndefined();
+    expect(health.quotaCooldown?.notice?.holds.map(hold => [hold.provider, hold.role])).toEqual([['claude', 'backup']]);
+    const notice = renderObserverQuotaCooldownNotice(health);
+    expect(notice.startsWith("⚠️ claude-mem has paused saving memories because you've used 99% of your weekly Claude limit")).toBe(true);
+    expect(notice).toContain("Activity during the pause isn't saved");
+    expect(observerHealthWarning()).toContain('⚠️ claude-mem has paused saving memories');
+  });
+
+  it('keeps the notice role-free when sessions route to different providers', () => {
+    writeFileSync(paths.settings(), JSON.stringify({
+      CLAUDE_MEM_PROVIDER_BY_SOURCE: JSON.stringify({ claude: 'claude', codex: 'gemini' }),
+    }));
+    recordQuotaExhausted('gemini', 'quota exhausted');
+
+    const health = readObserverHealth()!;
+    expect(health.quotaCooldown?.notice).toBeUndefined();
+    const notice = renderObserverQuotaCooldownNotice(health);
+    expect(notice).toContain('Gemini is on hold');
+    expect(notice).not.toMatch(/\bmain\b|\bbackup\b/);
+  });
+
   it('preserves both holds and retries at the earliest time even when the legacy slot keeps the longest', () => {
     recordQuotaExhausted('openrouter', 'upstream 503', 'unavailable');
     setSystemTime(NOW + 12_000);
@@ -137,7 +171,7 @@ describe('quota notice from the persisted dispatch mirror', () => {
     expect(health.quotaCooldown?.provider).toBe('claude');
     expect(health.quotaCooldown?.notice?.holds.map(hold => hold.role)).toEqual(['main', 'backup']);
     expect(health.quotaCooldown?.until).toBeGreaterThan(NOW + 90_000);
-    expect(renderObserverQuotaCooldownNotice(health)).toBe("⚠️ claude-mem has paused saving memories because cmem.ai isn't available and its backup, your Claude plan, is paused (you've used 99% of your weekly Claude limit). New activity is queued and saved when either comes back; it tries again at 8:17 PM. You don't need to do anything, and restarting won't change it.\n" + MODEL_LINE);
+    expect(renderObserverQuotaCooldownNotice(health)).toBe("⚠️ claude-mem has paused saving memories because cmem.ai isn't available and its backup, your Claude plan, is paused (you've used 99% of your weekly Claude limit). Activity during the pause isn't saved; saving starts again with new activity after 8:17 PM, when it tries again. You don't need to do anything, and restarting won't change it.\n" + MODEL_LINE);
   });
 
   it('keeps a live Gemini notice visible when the longer Claude hold belongs to another account', () => {

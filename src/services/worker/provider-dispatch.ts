@@ -420,17 +420,26 @@ function usesDefaultClaudeBackup(): boolean {
 
 /** Display-only snapshot: dispatch still owns every routing and admission decision. */
 const quotaNoticeResolution: QuotaFallbackResolver = (held, nowMs, activeHolds) => {
+  // Roles are per route. When CLAUDE_MEM_PROVIDER_BY_SOURCE sends sessions to
+  // different primaries, no single main/backup pair describes them all, so the
+  // notice stays role-free: it names only who is serving, and
+  // quotaServingProvider names one only when every route still has one.
+  const primaries = new Set([globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured));
+  if (primaries.size > 1) return quotaServingProvider(held, nowMs);
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const selected = settings.CLAUDE_MEM_PROVIDER;
   const main = (['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'] as string[]).includes(selected)
     ? selected : 'claude';
   const backup = readQuotaFallbackProvider();
+  // Where main's runs actually go: Claude while cmem.ai's trial-expiry
+  // fallback stands, so a hold on it is a hold on the provider doing the work.
+  const routed = routedProviderFor(main as SelectableProvider);
   const mainAuth = hasAnthropicApiKey() ? 'api-key' : 'subscription';
   const displayName = (provider: string, auth?: string) => quotaProviderDisplayName(provider, settings, auth);
   const retryName = (provider: string, auth?: string) => provider === 'claude' && auth !== 'api-key'
     ? 'Claude' : displayName(provider, auth);
   const holds: ObserverQuotaNoticeHold[] = activeHolds
-    .filter(hold => cooldownAppliesToCurrentAccount(hold) && (hold.provider === main || hold.provider === backup))
+    .filter(hold => cooldownAppliesToCurrentAccount(hold) && (hold.provider === main || hold.provider === backup || hold.provider === routed))
     .map(hold => ({
       provider: hold.provider,
       displayName: displayName(hold.provider, hold.auth ?? mainAuth),

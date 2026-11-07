@@ -585,14 +585,31 @@ const CLAUDE_LIMIT_NAMES: Record<string, string> = {
   overage: 'Claude extra usage',
 };
 
+/**
+ * The zone notice times are shown in: TZ as it reads right now, else the
+ * system zone. Passing it to Intl explicitly means a TZ set after startup is
+ * honored even where the runtime cached the zone it started with (CI runners
+ * are UTC). An unknown TZ falls back to the system zone, as Date itself does.
+ */
+function noticeTimeZone(): string | undefined {
+  const zone = process.env.TZ?.trim();
+  if (!zone) return undefined;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return zone;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Round upward so the displayed minute never promises a retry before admission. */
 function quotaRetryTime(timestamp: number, nowMs: number): string {
+  const timeZone = noticeTimeZone();
   const retry = new Date(Math.ceil(timestamp / 60_000) * 60_000);
-  const now = new Date(nowMs);
-  const today = retry.getFullYear() === now.getFullYear()
-    && retry.getMonth() === now.getMonth()
-    && retry.getDate() === now.getDate();
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = day.format(retry) === day.format(new Date(nowMs));
   return new Intl.DateTimeFormat('en-US', {
+    timeZone,
     ...(today ? {} : { weekday: 'short' as const }),
     hour: 'numeric',
     minute: '2-digit',
@@ -662,13 +679,22 @@ export function renderObserverQuotaCooldownNotice(
       const serving = legacyQuotaProviderName(cooldown.servingProvider);
       return `ℹ️ claude-mem is using ${serving} to save memories while ${held} is on hold; it tries ${retry} again at ${time}.`;
     }
-    return `⚠️ claude-mem has paused saving memories while ${held} is on hold. New activity is queued and saved when it resumes; it tries ${retry} again at ${time}. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
+    return `⚠️ claude-mem has paused saving memories while ${held} is on hold. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retry} again. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
   }
 
-  const main = context.holds.find(hold => hold.role === 'main' && hold.until > nowMs);
-  // A held backup says nothing is wrong while the selected provider is serving.
-  if (!main) return '';
   const backup = context.holds.find(hold => hold.role === 'backup' && hold.until > nowMs);
+  const main = context.holds.find(hold => hold.role === 'main' && hold.until > nowMs);
+  if (!main) {
+    // A held backup says nothing is wrong only while another provider is
+    // actually saving. When the backup was the one serving (cmem.ai switched
+    // to Claude via CLAUDE_MEM_PRO_FALLBACK_AT, then Claude was held), saving
+    // has stopped and the user must hear it.
+    const serving = context.servingProvider;
+    const servingIsHeld = context.holds.some(hold => hold.provider === serving && hold.until > nowMs);
+    if (!backup || (serving && !servingIsHeld)) return '';
+    const backupTime = quotaRetryTime(backup.until, nowMs);
+    return `⚠️ claude-mem has paused saving memories because ${quotaHoldReason(backup, nowMs, true)}. Activity during the pause isn't saved; saving starts again with new activity after ${backupTime}, when it tries ${relayedProviderText(backup.retryName)} again. You don't need to do anything, and restarting won't change it.\n${QUOTA_PAUSE_MODEL_LINE}`;
+  }
   const time = quotaRetryTime(main.until, nowMs);
   const retryName = relayedProviderText(main.retryName);
 
@@ -694,14 +720,14 @@ export function renderObserverQuotaCooldownNotice(
   if (backup) {
     const backupReason = quotaHoldReason(backup, nowMs, true, true);
     const earliestTime = quotaRetryTime(Math.min(main.until, backup.until), nowMs);
-    notice = `⚠️ claude-mem has paused saving memories because ${reason} and its backup, ${relayedProviderText(backup.displayName)}, is paused (${backupReason}). New activity is queued and saved when either comes back; it tries again at ${earliestTime}. You don't need to do anything, and restarting won't change it.`;
+    notice = `⚠️ claude-mem has paused saving memories because ${reason} and its backup, ${relayedProviderText(backup.displayName)}, is paused (${backupReason}). Activity during the pause isn't saved; saving starts again with new activity after ${earliestTime}, when it tries again. You don't need to do anything, and restarting won't change it.`;
   } else if (main.reason?.kind === 'busy') {
-    notice = `⚠️ claude-mem has paused saving memories because ${reason}. New activity is queued; it tries ${retryName} again at ${time}.`;
+    notice = `⚠️ claude-mem has paused saving memories because ${reason}. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retryName} again.`;
   } else {
     const chooseBackup = !context.backupProvider || context.backupProvider === context.mainProvider
       ? ' (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)'
       : '';
-    notice = `⚠️ claude-mem has paused saving memories because ${reason}. New activity is queued and saved when it resumes; it tries ${retryName} again at ${time}. You don't need to do anything, and restarting won't change it.${chooseBackup}`;
+    notice = `⚠️ claude-mem has paused saving memories because ${reason}. Activity during the pause isn't saved; saving starts again with new activity after ${time}, when it tries ${retryName} again. You don't need to do anything, and restarting won't change it.${chooseBackup}`;
   }
   return `${notice}\n${QUOTA_PAUSE_MODEL_LINE}`;
 }

@@ -969,6 +969,22 @@ describe('renderObserverQuotaCooldownNotice', () => {
     expect(new TextDecoder().decode(result.stdout)).toContain('tries cmem.ai again at 11:17 PM.');
   });
 
+  it('never promises to queue, resume or catch up on work the pause discarded', () => {
+    // Live-only observer (AGENTS.md): quota and auth discard pending inputs.
+    for (const fixture of QUOTA_NOTICE_CASES) {
+      const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
+      expect(notice).not.toMatch(/queued|resum|saved when|catch up/i);
+    }
+  });
+
+  it('shows retry times in TZ as it reads at render time', () => {
+    const fixture = QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('4. Claude'))!;
+    process.env.TZ = 'Asia/Tokyo';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('after 12:47 PM,');
+    process.env.TZ = 'UTC';
+    expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('after 3:47 AM,');
+  });
+
   it('ignores an expired main hold while a longer backup hold remains', () => {
     const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
     fixture.state.quotaCooldown!.notice!.holds[0].until = QUOTA_NOTICE_NOW;
@@ -981,7 +997,7 @@ describe('renderObserverQuotaCooldownNotice', () => {
     const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
     fixture.state.quotaCooldown!.notice!.holds[1].until = QUOTA_NOTICE_NOW;
     const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
-    expect(notice).toContain('tries cmem.ai again at 8:49 PM.');
+    expect(notice).toContain('after 8:49 PM, when it tries cmem.ai again.');
     expect(notice).not.toContain('and its backup');
   });
 
@@ -998,7 +1014,7 @@ describe('renderObserverQuotaCooldownNotice', () => {
     delete fixture.state.quotaCooldown!.servingProvider;
     const notice = renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW);
     expect(notice).toContain('has paused saving memories while your Claude plan is on hold.');
-    expect(notice).toContain('tries Claude again at 8:47 PM.');
+    expect(notice).toContain('after 8:47 PM, when it tries Claude again.');
     expect(notice).toContain(QUOTA_NOTICE_MODEL_LINE);
     expect(notice).not.toMatch(/used up|quota cooldown|seven_day/);
   });
@@ -1145,7 +1161,7 @@ describe('ContextBuilder observer-health injection', () => {
     );
     const { emptyDbText, humanText } = runContextChild(dataDir);
     expect(emptyDbText).toContain('has paused saving memories while Claude is on hold');
-    expect(emptyDbText).toContain('New activity is queued');
+    expect(emptyDbText).toContain("Activity during the pause isn't saved");
     expect(emptyDbText).not.toContain("can't save memories");
     expect(humanText).toContain('has paused saving memories while Claude is on hold');
     expect(humanText).toContain('TIMELINE_BODY');

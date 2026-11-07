@@ -80,19 +80,19 @@ export const QUOTA_NOTICE_CASES: Array<{ name: string; state: ObserverHealthStat
   {
     name: '4. Claude reserve; no different backup configured',
     state: state([claudeGuard], { backupProvider: 'claude', backupDisplayName: 'your Claude plan', defaultClaudeBackup: true }),
-    expected: "⚠️ claude-mem has paused saving memories because you've used 95% of your 5-hour Claude limit (it stops at 95% to leave the rest for you). New activity is queued and saved when it resumes; it tries Claude again at 8:47 PM. You don't need to do anything, and restarting won't change it. (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)\n" + QUOTA_NOTICE_MODEL_LINE,
+    expected: "⚠️ claude-mem has paused saving memories because you've used 95% of your 5-hour Claude limit (it stops at 95% to leave the rest for you). Activity during the pause isn't saved; saving starts again with new activity after 8:47 PM, when it tries Claude again. You don't need to do anything, and restarting won't change it. (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)\n" + QUOTA_NOTICE_MODEL_LINE,
   },
   {
     name: '4. Gemini quota; configured backup cannot serve',
     state: state([{ ...gatewayOutage, provider: 'gemini', displayName: 'Gemini', retryName: 'Gemini', until: Date.parse('2026-10-27T21:14:30-07:00'), reason: { kind: 'out_of_quota' } }], {
       backupProvider: 'claude', backupDisplayName: 'your Claude plan',
     }),
-    expected: "⚠️ claude-mem has paused saving memories because Gemini says you're out of quota. New activity is queued and saved when it resumes; it tries Gemini again at 9:15 PM. You don't need to do anything, and restarting won't change it.\n" + QUOTA_NOTICE_MODEL_LINE,
+    expected: "⚠️ claude-mem has paused saving memories because Gemini says you're out of quota. Activity during the pause isn't saved; saving starts again with new activity after 9:15 PM, when it tries Gemini again. You don't need to do anything, and restarting won't change it.\n" + QUOTA_NOTICE_MODEL_LINE,
   },
   {
     name: '4. Busy provider; short hold',
     state: state([{ ...gatewayOutage, reason: { kind: 'busy' } }]),
-    expected: '⚠️ claude-mem has paused saving memories because cmem.ai is busy (rate limited or over capacity). New activity is queued; it tries cmem.ai again at 8:17 PM.\n' + QUOTA_NOTICE_MODEL_LINE,
+    expected: "⚠️ claude-mem has paused saving memories because cmem.ai is busy (rate limited or over capacity). Activity during the pause isn't saved; saving starts again with new activity after 8:17 PM, when it tries cmem.ai again.\n" + QUOTA_NOTICE_MODEL_LINE,
   },
   {
     name: '5. Main and backup held; earliest retry',
@@ -100,7 +100,7 @@ export const QUOTA_NOTICE_CASES: Array<{ name: string; state: ObserverHealthStat
       { ...gatewayOutage, until: Date.parse('2026-10-27T20:49:00-07:00') },
       { ...weeklyGuard, role: 'backup' },
     ]),
-    expected: "⚠️ claude-mem has paused saving memories because cmem.ai isn't available and its backup, your Claude plan, is paused (you've used 99% of your weekly Claude limit). New activity is queued and saved when either comes back; it tries again at 8:47 PM. You don't need to do anything, and restarting won't change it.\n" + QUOTA_NOTICE_MODEL_LINE,
+    expected: "⚠️ claude-mem has paused saving memories because cmem.ai isn't available and its backup, your Claude plan, is paused (you've used 99% of your weekly Claude limit). Activity during the pause isn't saved; saving starts again with new activity after 8:47 PM, when it tries again. You don't need to do anything, and restarting won't change it.\n" + QUOTA_NOTICE_MODEL_LINE,
   },
   {
     name: '6. Only backup held; cmem.ai serving',
