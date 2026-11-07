@@ -31,7 +31,9 @@ import { KILL_SWITCH_KEY } from "../src/kill-switch";
 import {
 	PROJECTION_FETCH_TIMEOUT_MS,
 	PROJECTION_PAGE_MAX_BYTES,
+	ProjectionPageByteCounter,
 	projectionRequestBytes,
+	type ProjectionWireOp,
 } from "../src/projection-protocol";
 import worker, { drainProjection, fetchProjectionWithTimeout } from "../src/index";
 import {
@@ -373,6 +375,24 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		expect(firstSeen.ops.every((op, index) => BigInt(op.seq) === BigInt(index + 1))).toBe(true);
 		expect(firstSeen.head_seq).toBe("2");
 		expect(firstSeen.more).toBe(false);
+	});
+
+	it("counts a growing projection page's bytes exactly like serializing the whole request", () => {
+		const envelope = { userId: "user-ü\"\\", epoch: "18446744073709551615", fromSeqExclusive: "99" };
+		const ops: ProjectionWireOp[] = [
+			{ seq: "100", body: "{\"text\":\"plain\"}", operation_sha256: "a".repeat(43) },
+			{ seq: "101", body: "{\"text\":\"quote \\\" and backslash \\\\\"}", operation_sha256: "b".repeat(43) },
+			{ seq: "102", body: "{\"text\":\"ünïcödé 🚀 \\u0000\"}", operation_sha256: "c".repeat(43) },
+			{ seq: "1000", body: "x".repeat(10_000), operation_sha256: "d".repeat(43) },
+		];
+		const counter = new ProjectionPageByteCounter(envelope);
+		ops.forEach((op, index) => {
+			expect(counter.add(op)).toBe(projectionRequestBytes({
+				...envelope,
+				throughSeq: op.seq,
+				ops: ops.slice(0, index + 1),
+			}));
+		});
 	});
 
 	it("enforces 100-op projection pages", async () => {
