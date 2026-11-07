@@ -10,8 +10,11 @@ export const MEDIA_METADATA_NAMESPACE = 'cmem_media_v1' as const;
 /**
  * Frozen v1 bounds (docs/media-contract-v1.md). Each one's reason is next to it.
  * "Abuse protection" means the bound keeps one request or one owner from using
- * unbounded memory, CPU, storage or bandwidth. Hitting any bound rejects the
- * image with its MediaError code; nothing is truncated.
+ * unbounded memory, CPU, storage or bandwidth. Pro's upload route rejects an
+ * image that hits any bound with its MediaError code. The local worker instead
+ * fits a canonical or derivative over its pixel, dimension or byte bound
+ * (docs/media-contract-v1.md, "Where the size bounds apply"). Nothing is
+ * truncated.
  */
 export const MEDIA_LIMITS = Object.freeze({
   // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
