@@ -164,8 +164,6 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
-  session.pausedAtMs = null;
-  session.pausedAuthScope = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
@@ -204,8 +202,6 @@ export async function startGeneratorWithProvider(
   });
 
   session.currentProvider = provider;
-  session.observerProfile = undefined;
-  session.observerAuth = undefined;
   session.lastGeneratorActivity = Date.now();
   // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
   // the fallback when a generator dies before dispatching its first prompt.
@@ -286,9 +282,8 @@ export async function startGeneratorWithProvider(
         return;
       }
 
-      // No retry here: a paused run keeps its buffered work for the next
-      // generator, and a failed one leaves the transcript as the recovery
-      // path. The next observation ingest starts a fresh generator via
+      // No retry here: a quota or auth pause discards its buffered work, and
+      // a failed run leaves the transcript as the only record. The next observation ingest starts a fresh generator via
       // ensureGeneratorRunning.
       failureBooked = true;
 
@@ -535,15 +530,6 @@ export async function startGeneratorWithProvider(
         resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
 
-      // A refused stand-in is not the user's provider failing: the fallback's
-      // credential was refused (and is now held), but the primary it stood in
-      // for can take the work back once it recovers. Left as an auth pause the
-      // periodic sweep would skip the session for good, so mark it resumable;
-      // the sweep paces itself on the primary's breaker.
-      if ((session.fallbackFrom != null || session.claudeAuthOverride != null) && session.pausedReason === 'auth') {
-        session.pausedReason = 'provider_switch';
-      }
-
       // Paused work that nothing else is guaranteed to pick up resumes on its
       // own — without it, a session's last event (a summarize) stays in RAM:
       //  - a cmem fallback (or a failed gateway re-probe) moves to the
@@ -551,8 +537,8 @@ export async function startGeneratorWithProvider(
       //  - a rate limit that named a Retry-After resumes after it, a bounded
       //    number of times in a row (the catch decided which);
       //  - a recycle reset its batch to pending and dropped the conversation.
-      // Other quota and auth pauses deliberately do NOT resume — those wait
-      // on the user. A zero delay still defers a tick: `session.generatorPromise`
+      // Quota and auth exits have already discarded their buffered work
+      // (handleGeneratorExit), so nothing of theirs resumes. A zero delay still defers a tick: `session.generatorPromise`
       // is assigned after this chain is built, so resuming inline could be
       // overwritten by that assignment and leave a settled promise blocking
       // every later start.

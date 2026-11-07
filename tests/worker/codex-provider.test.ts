@@ -92,15 +92,16 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
   const other = mock(async () => {});
   const finalize = mock(async () => {});
   const scheduleTransportResume = mock(() => {});
+  const discard = mock(() => 1);
   const codex = mock(startSession);
-  const manager = { getSession: () => s, resetProcessingToPending: reset,
+  const manager = { getSession: () => s, resetProcessingToPending: reset, discardBufferedWork: discard,
     getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
     clearTransportResume: mock(() => {}), scheduleTransportResume,
     removeSessionImmediate: mock(() => {}) };
   const routes = new SessionRoutes(manager as any, {} as any, { startSession: other } as any,
     { startSession: other } as any, { startSession: other } as any, {} as any, {} as any,
     { finalizeSession: finalize } as any, { startSession: codex } as any);
-  return { s, routes, codex, other, reset, finalize, scheduleTransportResume };
+  return { s, routes, codex, other, reset, finalize, scheduleTransportResume, discard };
 }
 
 /** A generator that fails the way the real provider does: through its handleSessionError. */
@@ -331,7 +332,7 @@ describe('Codex provider integration', () => {
   for (const [kind, pause] of [
     ['quota_exhausted', 'quota'], ['auth_invalid', 'auth'], ['rate_limit', 'rate_limit'], ['transient', 'transport'],
   ] as const) {
-    it(`pauses on ${kind}, keeps Codex selected and preserves buffered work`, async () => {
+    it(`pauses on ${kind}, keeps Codex selected and ${kind === 'quota_exhausted' || kind === 'auth_invalid' ? 'discards' : 'preserves'} buffered work`, async () => {
       const h = harness(failingLikeCodex(new ClassifiedProviderError('fixture failure', { kind, cause: null })));
       await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
       await h.s.generatorPromise;
@@ -339,6 +340,9 @@ describe('Codex provider integration', () => {
       expect(h.other).not.toHaveBeenCalled();
       expect(h.finalize).not.toHaveBeenCalled();
       expect(h.s.pausedReason).toBe(pause);
+      // Quota and auth discard pending inputs; other pauses keep the bounded live buffer.
+      if (pause === 'quota' || pause === 'auth') expect(h.discard).toHaveBeenCalledWith(h.s.sessionDbId);
+      else expect(h.discard).not.toHaveBeenCalled();
       expect(getSelectedProvider()).toBe('codex');
       expect(selectProviderForGenerator().provider).toBe('codex');
       expect(h.s.generatorPromise).toBeNull();
@@ -360,6 +364,9 @@ describe('Codex provider integration', () => {
     recordQuotaExhausted('codex', 'fixture');
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     expect(h.codex).not.toHaveBeenCalled();
+    // The withheld start skips the work it found rather than holding it for the reset.
+    expect(h.discard).toHaveBeenCalledTimes(1);
+    expect(h.s.pausedReason).toBe('quota');
     recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     await h.s.generatorPromise;

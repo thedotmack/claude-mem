@@ -2,7 +2,7 @@ import { afterEach, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TranscriptEventProcessor, TranscriptSpoolError } from '../../src/services/transcripts/processor.js';
+import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import { nudgeWorkerToDrainHookSpool, settleHookSpoolNudges } from '../../src/cli/spool-hook-event.js';
 import { HookSpool } from '../../src/shared/hook-spool.js';
@@ -20,50 +20,66 @@ const schema = { name: 'spool', sessionIdPath: 'session', events: [
   { name: 'end', match: { path: 'type', equals: 'end' }, action: 'session_end' },
 ] } as any;
 
-it('retries a disk-rejected result after restart and spools summary behind it', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cm-standalone-retry-'));
+// Records each live observer handoff and answers as an unavailable worker:
+// the contract skips the event, so nothing may be retried or spooled.
+function unavailableWorker() {
+  const handoffs: { path: string; body: any }[] = [];
+  const request = spyOn(workerUtils, 'workerHttpRequest').mockImplementation(async (path: string, init: any = {}) => {
+    handoffs.push({ path, body: init.body ? JSON.parse(init.body) : undefined });
+    throw new Error('worker unavailable');
+  });
+  return { handoffs, request };
+}
+
+function diskSpoolEntries(): any[] {
+  const entries: any[] = [];
+  return new HookSpool().drain(entry => { entries.push(entry); return true; }).then(() => entries);
+}
+
+it('pairs a pending tool across restart and hands result and summary off live once, in order', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-standalone-live-'));
   process.env.CLAUDE_MEM_DATA_DIR = root;
   const file = join(root, 'session.jsonl'); const state = join(root, 'state.json');
   const use = JSON.stringify({ session: 's', type: 'use', id: 't', name: 'Read', input: { path: 'a' } }) + '\n';
-  writeFileSync(file, use + JSON.stringify({ session: 's', type: 'result', id: 't', output: 'contents' }) + '\n' + JSON.stringify({ session: 's', type: 'end' }) + '\n');
-  // A file where the spool's parent directory belongs makes every spool write fail.
-  const obstruction = join(root, 'state'); writeFileSync(obstruction, 'blocks spool directory');
+  writeFileSync(file, use);
   const watch = { name: 'spool', path: file, workspace: '/repo', schema };
   const first = new TranscriptWatcher({ version: 1, watches: [watch] }, state, 'spool');
   let second: TranscriptWatcher | undefined;
+  const { handoffs, request } = unavailableWorker();
   try {
     await (first as any).addTailer(file, watch, schema); await (first as any).tailers.get(file).readTask;
     first.stop();
     const saved = JSON.parse(readFileSync(state, 'utf8'));
     expect(saved.offsets[file]).toBe(Buffer.byteLength(use));
     expect(saved.pendingTools[file]['spool:s'].t.toolName).toBe('Read');
-    rmSync(obstruction);
+    writeFileSync(file, use + JSON.stringify({ session: 's', type: 'result', id: 't', output: 'contents' }) + '\n' + JSON.stringify({ session: 's', type: 'end' }) + '\n');
     second = new TranscriptWatcher({ version: 1, watches: [watch] }, state, 'spool');
     await (second as any).addTailer(file, watch, schema); await (second as any).tailers.get(file).readTask;
-    const entries: any[] = [];
-    await new HookSpool().drain(entry => { entries.push(entry); return true; });
-    expect(entries.map(entry => entry.kind)).toEqual(['observation', 'summarize']);
-    expect(entries[0].payload).toMatchObject({ toolName: 'Read', toolInput: { path: 'a' }, toolResponse: 'contents' });
+    await settleHookSpoolNudges();
+    const observer = handoffs.filter(h => h.path === '/api/sessions/observations' || h.path === '/api/sessions/summarize');
+    expect(observer.map(h => h.path)).toEqual(['/api/sessions/observations', '/api/sessions/summarize']);
+    expect(observer[0].body).toMatchObject({ contentSessionId: 's', tool_name: 'Read', tool_input: { path: 'a' }, tool_response: 'contents' });
+    expect(observer[1].body).toMatchObject({ contentSessionId: 's' });
+    // A failed handoff is skipped: the cursor moves on and nothing is kept for replay.
     expect(JSON.parse(readFileSync(state, 'utf8')).offsets[file]).toBe(Buffer.byteLength(readFileSync(file)));
-  } finally { first.stop(); second?.stop(); await settleHookSpoolNudges(); rmSync(root, { recursive: true, force: true }); }
+    expect(await diskSpoolEntries()).toEqual([]);
+  } finally { first.stop(); second?.stop(); await settleHookSpoolNudges(); request.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 
-it('retries a transcript file edit whose spool write fails, instead of skipping it', async () => {
+it('hands a transcript file edit off live once, with no disk spool or retry', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cm-standalone-edit-'));
   process.env.CLAUDE_MEM_DATA_DIR = root;
-  const obstruction = join(root, 'state'); writeFileSync(obstruction, 'blocks spool directory');
   const watch = { name: 'spool', path: '/unused', workspace: '/repo', schema };
   const processor = new TranscriptEventProcessor('spool');
   const edit = { session: 's', type: 'edit', path: 'src/a.ts' };
+  const { handoffs, request } = unavailableWorker();
   try {
-    await expect(processor.processEntry(edit, watch, schema)).rejects.toBeInstanceOf(TranscriptSpoolError);
-    rmSync(obstruction);
     await processor.processEntry(edit, watch, schema);
-    const entries: any[] = [];
-    await new HookSpool().drain(entry => { entries.push(entry); return true; });
-    expect(entries.map(entry => entry.kind)).toEqual(['file_edit']);
-    expect(entries[0].payload).toMatchObject({ contentSessionId: 's', toolInput: { filePath: 'src/a.ts' } });
-  } finally { await settleHookSpoolNudges(); rmSync(root, { recursive: true, force: true }); }
+    await settleHookSpoolNudges();
+    expect(handoffs.map(h => h.path)).toEqual(['/api/sessions/observations']);
+    expect(handoffs[0].body).toMatchObject({ contentSessionId: 's', tool_input: { filePath: 'src/a.ts' } });
+    expect(await diskSpoolEntries()).toEqual([]);
+  } finally { await settleHookSpoolNudges(); request.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 
 it('keeps same-session summaries behind a declined observation while other sessions progress', async () => {
