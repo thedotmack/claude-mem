@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
 
 /**
  * First backward chunk. The last 64 KB of a 2 GB Claude Code transcript already
@@ -172,6 +172,31 @@ function* parseJsonlLinesBackward(content: string): Generator<any> {
     }
     yield line;
   }
+}
+
+/**
+ * Walk a JSONL transcript backwards in chunks and return the newest entry
+ * `pick` maps to a value, reading only as far back as that entry. Returns
+ * `undefined` when the file is missing, empty, or has no such entry. A file
+ * that exists but cannot be opened or read throws, so the caller decides what
+ * an unreadable transcript means.
+ */
+export function findLastJsonlEntryBackward<T>(
+  transcriptPath: string,
+  pick: (entry: any) => T | undefined,
+  options: TranscriptTailOptions = {}
+): T | undefined {
+  return scanTranscriptBackward(
+    transcriptPath,
+    (chunkText) => {
+      for (const entry of parseJsonlLinesBackward(chunkText)) {
+        const picked = pick(entry);
+        if (picked !== undefined) return picked;
+      }
+      return undefined;
+    },
+    options
+  );
 }
 
 export function extractLastMessage(
@@ -419,7 +444,7 @@ export function findLastMessageInJsonl(
     }
 
     if (stripSystemReminders) {
-      text = text.replace(SYSTEM_REMINDER_REGEX, '');
+      text = stripSystemReminderBlocks(text);
       text = text.replace(/\n{3,}/g, '\n\n').trim();
     }
 

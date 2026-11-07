@@ -48,6 +48,11 @@ export interface OpenAICompatPreset {
   requiresApiKey: boolean;
   /** One line for the installer/docs. */
   hint: string;
+  /**
+   * Header that carries the observed session's hashed id on every request,
+   * for endpoints that route or cache per conversation.
+   */
+  sessionHeader?: string;
 }
 
 export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
@@ -89,6 +94,26 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'EU-hosted gateway. One Opper key for pooled model ids such as claude-haiku-4-5; a provider/model id pins one route.',
   },
   {
+    id: 'atlascloud',
+    label: 'Atlas Cloud (atlascloud.ai)',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek-ai/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
+  },
+  {
+    id: 'runcrate',
+    label: 'Runcrate (runcrate.ai)',
+    baseUrl: 'https://api.runcrate.ai/v1',
+    // A small, fast open model for the same reason as NVIDIA's default:
+    // extraction is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    requiresApiKey: true,
+    hint: 'rc_live_ key from runcrate.ai; vendor-prefixed open model ids such as deepseek-ai/DeepSeek-V4.1-Flash or zai-org/GLM-5.3.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
@@ -103,6 +128,8 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     defaultModel: 'kimi-k3',
     requiresApiKey: true,
     hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
+    // Go answers 400 without it (#4581).
+    sessionHeader: 'x-opencode-session',
   },
   {
     id: 'opencode-zen',
@@ -134,7 +161,7 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     baseUrl: 'https://api.minimax.io/v1',
     defaultModel: 'MiniMax-M3',
     requiresApiKey: true,
-    hint: 'Key from platform.minimax.io; the model id is passed verbatim (e.g. MiniMax-M2.7).',
+    hint: 'Key from platform.minimax.io; defaults to MiniMax-M3. Set MiniMax-M3.1-Flash (or any model id your account serves) to use Flash.',
   },
   {
     id: 'minimax-cn',

@@ -107,7 +107,7 @@ describe('SessionStart newest rows per project key (v63)', () => {
       const summaries = querySummariesMulti(store, keys, config);
       expect(summaries.map(row => row.request)).toEqual(newest.slice(0, 2));
       expect(new Set(summaries.map(row => row.id)).size).toBe(summaries.length);
-      for (const { sql, params } of captured) {
+      for (const { sql, params } of [...captured]) {
         expect((sql.match(/ UNION /g) ?? []).length).toBeLessThan(500);
         const plan = (store.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as [])) as Array<{ detail: string }>).map(row => row.detail).join('\n');
         expect(plan).toContain(sql.includes('FROM observations o') ? 'idx_observations_project_nocase_recent' : 'idx_summaries_project_nocase_recent');

@@ -1,6 +1,6 @@
 // SyncApply — the client-side apply path for the two-lane sync hub
 // (plan Phase 2, tasks 2-3). Pulled ops from the per-user SyncHub log
-// (workers/sync-hub/src/do/SyncHub.ts) are applied to the local SQLite in ONE
+// (services/sync-hub/src/do/SyncHub.ts) are applied to the local SQLite in ONE
 // transaction per batch, with the pull cursor advanced in that SAME
 // transaction — crash-safe exactly-once: either a batch's rows AND its cursor
 // land together, or neither does. Application is idempotent (re-applying any
@@ -132,7 +132,17 @@
 // stub session (precedent: SessionStore.getOrCreateManualSession). Stubs use
 // the body's content_session_id/platform_source when the body carries them
 // (prompts do); otherwise content_session_id falls back to the
-// memory_session_id (globally unique, so no collision).
+// memory_session_id (globally unique, so no collision). A prompt whose
+// origin session has no memory id yet gets a content-keyed stub when the
+// op carries a real project (the origin session exists; its memory agent
+// may never register), and stays an orphan when the project is 'unknown'
+// (no session on the origin either; set_prompt_session links it later).
+// When an op later links that content id to a memory id that already has
+// its own stub, mergeContentSession folds the content-keyed stub into the
+// memory-keyed one: referencing rows move, and the memory-keyed row takes
+// the real content id and platform if it still had the synthetic ones.
+// Only sync stubs (SYNC_STUB_PREDICATE) are ever folded or handed a remote
+// memory id; a session native to this device is left untouched.
 //
 // FTS: all writes here are plain SQL INSERT/UPDATE against the base tables,
 // so the existing FTS5 triggers (observations/summaries:
@@ -155,22 +165,111 @@
 //   - Stub-session warts: a stub created from observations/summaries only
 //     keeps content_session_id = memory_session_id (their bodies carry no
 //     content id) until an op carrying the real association (prompt row op
-//     or set_prompt_session) arrives — and even then the stub's content id
-//     is not rewritten; only prompt linking and parked-title claiming use
-//     the association. Stubs are created with status 'completed' and stay
+//     or set_prompt_session) arrives. Its content id is rewritten only when
+//     a content-keyed stub for that session exists to fold in; otherwise
+//     only prompt linking and parked-title claiming use the association.
+//     Prompts orphaned before a content-keyed stub could be created stay
+//     orphaned (their project was never stored locally). Stubs are created
+//     with status 'completed' and stay
 //     'completed' even if a live local session later adopts them.
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
+import { syncReplicaMediaLinks } from '../media/replica.js';
 import type { Database } from 'bun:sqlite';
+import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
+import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
-import { parseFileList } from '../sqlite/observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from '../sqlite/observations/files.js';
 import {
   assertCanonicalDecimal,
   compareCanonicalDecimals,
   incrementCanonicalDecimal,
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
+import { getRedactionConfig, redactJsonStrings, redactSensitive, type RedactionConfig } from '../../utils/redaction.js';
+import { redactSyncDiagnostic } from './diagnostic-redaction.js';
+import { isSharedWorkList } from '../work-view/shared-records.mjs';
+import { redactSharedInboundRow, saveSharedRedactionReceipt } from '../work-view/shared-redaction.mjs';
+
+/** sync_state key: replaySetAsideWorkState has run on this database. */
+const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
+
+/** Text fields redacted as plain text; a marker sits inside the value. */
+const OBSERVATION_TEXT_FIELDS = ['text', 'title', 'subtitle', 'narrative'] as const;
+/**
+ * JSON-string columns redacted by walking parsed values. Text-level patterns
+ * must start and end inside string literals, so a multi-quote pattern (the PEM
+ * block) would swallow the members between its two fragments while leaving the
+ * document parseable; the walker redacts each string on its own instead.
+ */
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'metadata'] as const;
+const SUMMARY_TEXT_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'] as const;
+const PROMPT_TEXT_FIELDS = ['prompt_text'] as const;
+const WORK_STATE_JSON_FIELDS = ['fields'] as const;
+
+/**
+ * Apply this device's redaction policy to a body pulled from a peer.
+ *
+ * Capture redaction runs only where the content is captured: the origin
+ * writes `stripMemoryTags(JSON.stringify(...))`, whose `stripTags` finishes
+ * with `redactSensitive`. A peer running with `CLAUDE_MEM_REDACT_ENABLED` off
+ * — the default — therefore ships raw values, and applying them here would
+ * store them raw even though this device opted in. `content_hash` is left as
+ * the origin sent it: it is the dedup identity of that content, not a checksum
+ * of the stored text.
+ */
+function redactInboundFields(
+  body: Record<string, unknown>,
+  textFields: readonly string[],
+  jsonFields: readonly string[] = []
+): Record<string, unknown> {
+  const config = getRedactionConfig();
+  if (!config.enabled) return body;
+  return redactFields(body, config, textFields, jsonFields);
+}
+
+function redactFields(
+  body: Record<string, unknown>,
+  config: RedactionConfig,
+  textFields: readonly string[],
+  jsonFields: readonly string[]
+): Record<string, unknown> {
+  let redacted: Record<string, unknown> | null = null;
+  const replace = (field: string, value: string): void => {
+    redacted ??= { ...body };
+    redacted[field] = value;
+  };
+  for (const field of textFields) {
+    const value = body[field];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const next = redactSensitive(value, config).redacted;
+    if (next !== value) replace(field, next);
+  }
+  for (const field of jsonFields) {
+    const value = body[field];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const next = redactJsonText(value, config);
+    if (next !== value) replace(field, next);
+  }
+  return redacted ?? body;
+}
+
+/** Redact a JSON string by walking its parsed values; fall back to text if it does not parse. */
+function redactJsonText(value: string, config: RedactionConfig): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed !== 'object') {
+      return redactSensitive(value, config).redacted;
+    }
+    const walked = redactJsonStrings(parsed, config);
+    const before = JSON.stringify(parsed);
+    const after = JSON.stringify(walked);
+    return after === before ? value : after;
+  } catch {
+    return redactSensitive(value, config).redacted;
+  }
+}
 
 /**
  * A hub change this client could not decode. It keeps its seq so the page
@@ -188,7 +287,7 @@ export interface UndecodableOp {
 /** One op as returned by the hub's getChanges (SyncHub.ts ChangeOp). */
 export interface SyncOp {
   seq: string;
-  kind: 'observation' | 'summary' | 'prompt' | 'mutation';
+  kind: 'observation' | 'summary' | 'prompt' | 'work_state' | 'mutation';
   origin_device: string;
   origin_id: string;
   rev: string;
@@ -226,7 +325,8 @@ export interface ChromaSyncLike {
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
-    replaceExisting?: boolean
+    replaceExisting?: boolean,
+    loadCurrent?: () => CurrentRow<StoredObservation> | undefined
   ): Promise<void>;
   syncSummary(
     summaryId: number,
@@ -244,7 +344,8 @@ export interface ChromaSyncLike {
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
-    replaceExisting?: boolean
+    replaceExisting?: boolean,
+    loadCurrent?: () => CurrentRow<StoredSummary> | undefined
   ): Promise<void>;
   syncUserPrompt(
     promptId: number,
@@ -253,7 +354,8 @@ export interface ChromaSyncLike {
     promptText: string,
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    loadCurrent?: () => StoredUserPrompt | undefined
   ): Promise<void>;
 }
 
@@ -310,7 +412,7 @@ type ChromaJob = () => Promise<void>;
 export class SyncApplyInvalidOpError extends Error {}
 
 function invalidOp(op: SyncOp, message: string): SyncApplyInvalidOpError {
-  return new SyncApplyInvalidOpError(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`);
+  return new SyncApplyInvalidOpError(redactSyncDiagnostic(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`));
 }
 
 /** A violated constraint depends on local rows, so a later retry can succeed. */
@@ -413,6 +515,7 @@ export class SyncApply {
           { table: 'observations', kind: 'observation' },
           { table: 'session_summaries', kind: 'summary' },
           { table: 'user_prompts', kind: 'prompt' },
+          { table: 'work_state_entries', kind: 'work_state' },
         ]) {
           requeued += this.db.prepare(`
             UPDATE ${table} SET synced_at = NULL
@@ -495,6 +598,9 @@ export class SyncApply {
     const setAside: Array<Record<string, unknown>> = [];
     const recovered: Array<Record<string, unknown>> = [];
     let removedOrRemapped = false;
+    const changedKinds = new Set<string>();
+    const changedLists = new Set<string>();
+    let unknownWorkStateList = false;
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
@@ -554,6 +660,12 @@ export class SyncApply {
         }
         if (attempt.outcome === 'applied') {
           result.applied++;
+          changedKinds.add(op.kind);
+          if (op.kind === 'work_state') {
+            const list = op.deleted ? null : (JSON.parse(op.body) as Record<string, unknown>).list_name;
+            if (!op.deleted && typeof list === 'string') changedLists.add(list);
+            else unknownWorkStateList = true;
+          }
           // A tombstone deletes a row; a mutation can re-key or retitle rows.
           if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
         } else {
@@ -577,7 +689,9 @@ export class SyncApply {
     // 'removal' when a tombstone or mutation applied: the cached block may show
     // what is now gone, so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
-      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive');
+      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive', recovered.length ? undefined : {
+        kinds: [...changedKinds], ...(!unknownWorkStateList ? { workStateLists: [...changedLists] } : {}),
+      });
     }
 
     // Logged after commit so a batch that later rolls back (and is retried)
@@ -595,7 +709,7 @@ export class SyncApply {
       job().then(() => {
         logger.debug('SYNC_APPLY', 'Applied row forwarded to Chroma');
       }).catch((error) => {
-        logger.error('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
+        logChromaWriteFailure('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
           error instanceof Error ? error : new Error(String(error)));
       });
     }
@@ -652,14 +766,26 @@ export class SyncApply {
    */
   private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): void {
     const rows = this.db.prepare(`
-      SELECT id, seq, kind, entity_id, origin_device_id, origin_local_id,
-             entity_rev, operation_sha256, raw_body
+      SELECT id, epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
+             entity_rev, operation_sha256, raw_body, reason
       FROM sync_pull_quarantine WHERE retryable = 1 ORDER BY id
     `).all() as Array<{
-      id: number; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
-      origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string;
+      id: number; epoch: string; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
+      origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string; reason: string;
     }>;
     for (const row of rows) {
+      const safe = redactSyncDiagnostic(row);
+      if (JSON.stringify(safe) !== JSON.stringify(row)) {
+        const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq && safe.kind === row.kind
+          && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
+          && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
+          && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
+        this.db.prepare(`UPDATE sync_pull_quarantine SET epoch=?, seq=?, kind=?, entity_id=?,
+          origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, raw_body=?, reason=?, retryable=? WHERE id=?`)
+          .run(safe.epoch, safe.seq, safe.kind, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
+            safe.entity_rev, safe.operation_sha256, safe.raw_body, safe.reason, Number(replaySafe), row.id);
+        if (!replaySafe) continue;
+      }
       const op: SyncOp = {
         seq: row.seq,
         kind: row.kind,
@@ -682,8 +808,73 @@ export class SyncApply {
       }
       if ('unapplicable' in attempt) continue;
       this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
-      recovered.push({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome });
+      recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
     }
+  }
+
+  /**
+   * Builds from before work_state was a content kind could not decode a pulled
+   * work_state op, so they set it aside as undecodable (kind NULL, the raw hub
+   * change kept), and retrySetAside never retries those. Once per database,
+   * decode them again with this build's decoder and apply the work_state ones
+   * the normal way. The sync_state marker commits with them; an op that still
+   * cannot apply stays set aside under its new reason. Returns the ops applied.
+   */
+  replaySetAsideWorkState(decode: (changes: unknown[]) => Array<SyncOp | UndecodableOp>): number {
+    if (this.db.prepare('SELECT 1 FROM sync_state WHERE k = ?').get(WORK_STATE_REPLAY_MARKER) !== null) return 0;
+    const chromaJobs: ChromaJob[] = []; // work_state has no Chroma copy
+    let applied = 0;
+    const tx = this.db.transaction(() => {
+      const rows = this.db.prepare(
+        'SELECT id, epoch, seq, entity_id, origin_device_id, origin_local_id, entity_rev, operation_sha256, reason, raw_body FROM sync_pull_quarantine WHERE kind IS NULL ORDER BY id'
+      ).all() as Array<{ id: number; epoch: string; seq: string; entity_id: string | null; origin_device_id: string | null;
+        origin_local_id: string | null; entity_rev: string | null; operation_sha256: string | null; reason: string; raw_body: string }>;
+      for (const row of rows) {
+        const safe = redactSyncDiagnostic(row);
+        const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq
+          && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
+          && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
+          && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
+        if (JSON.stringify(safe) !== JSON.stringify(row)) this.db.prepare(`UPDATE sync_pull_quarantine
+          SET epoch=?, seq=?, entity_id=?, origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, reason=?, raw_body=?, retryable=0 WHERE id=?`)
+          .run(safe.epoch, safe.seq, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
+            safe.entity_rev, safe.operation_sha256, safe.reason, safe.raw_body, row.id);
+        // A sanitized wrapper is diagnostic evidence, not an operation with
+        // the same authenticated bytes. Never decode its original raw form.
+        if (!replaySafe) continue;
+        let op: SyncOp | UndecodableOp | undefined;
+        try { [op] = decode([JSON.parse(safe.raw_body)]); }
+        catch { continue; } // A redacted/invalid diagnostic is never a replay source.
+        if (!op || 'undecodable' in op || op.kind !== 'work_state') continue;
+        if (op.origin_device !== this.deviceId) {
+          const attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
+          if ('unapplicable' in attempt) {
+            const reason = attempt.unapplicable instanceof Error ? attempt.unapplicable.message : String(attempt.unapplicable);
+            const diagnostic = redactSyncDiagnostic({ kind: op.kind, entityId: op.entity_id ?? null,
+              originDevice: op.origin_device, originId: op.origin_id, entityRev: op.entity_rev ?? op.rev,
+              operationHash: op.operation_sha256 ?? null, reason });
+            this.db.prepare(`
+              UPDATE sync_pull_quarantine
+              SET kind = ?, entity_id = ?, origin_device_id = ?, origin_local_id = ?,
+                  entity_rev = ?, operation_sha256 = ?, reason = ?
+              WHERE id = ?
+            `).run(diagnostic.kind, diagnostic.entityId, diagnostic.originDevice, diagnostic.originId,
+              diagnostic.entityRev, diagnostic.operationHash, diagnostic.reason, row.id);
+            continue;
+          }
+          if (attempt.outcome === 'applied') applied++;
+        }
+        this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      }
+      this.db.prepare('INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING')
+        .run(WORK_STATE_REPLAY_MARKER, String(this.now()));
+    });
+    tx();
+    if (applied > 0) {
+      emitContextInvalidation('all', 'SyncApply.replaySetAsideWorkState', 'additive');
+      logger.info('SYNC_APPLY', 'Applied work_state ops an older build had set aside', { applied });
+    }
+    return applied;
   }
 
   /**
@@ -699,22 +890,37 @@ export class SyncApply {
     rawBody: string,
     retryable = false,
   ): Record<string, unknown> {
+    const diagnostic = redactSyncDiagnostic({
+      epoch, seq, kind: op?.kind ?? null, entityId: op?.entity_id ?? null,
+      originDevice: op?.origin_device ?? null, originId: op?.origin_id ?? null,
+      entityRev: op?.entity_rev ?? op?.rev ?? null, operationHash: op?.operation_sha256 ?? null,
+      reason, rawBody,
+    });
+    // A transformed body or identity is diagnostic evidence, not a replayable
+    // operation. Keep safe hashes/sequence facts but never fabricate a retry.
+    retryable = retryable && diagnostic.rawBody === rawBody
+      && diagnostic.epoch === epoch && diagnostic.seq === seq && diagnostic.kind === (op?.kind ?? null)
+      && diagnostic.entityId === (op?.entity_id ?? null)
+      && diagnostic.originDevice === (op?.origin_device ?? null)
+      && diagnostic.originId === (op?.origin_id ?? null)
+      && diagnostic.entityRev === (op?.entity_rev ?? op?.rev ?? null)
+      && diagnostic.operationHash === (op?.operation_sha256 ?? null);
     this.db.prepare(`
       INSERT OR IGNORE INTO sync_pull_quarantine
         (epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
          entity_rev, operation_sha256, reason, raw_body, retryable, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      epoch, seq, op?.kind ?? null, op?.entity_id ?? null, op?.origin_device ?? null,
-      op?.origin_id ?? null, op?.entity_rev ?? op?.rev ?? null, op?.operation_sha256 ?? null,
-      reason, rawBody, retryable ? 1 : 0, this.now(),
+      diagnostic.epoch, diagnostic.seq, diagnostic.kind, diagnostic.entityId, diagnostic.originDevice,
+      diagnostic.originId, diagnostic.entityRev, diagnostic.operationHash,
+      diagnostic.reason, diagnostic.rawBody, retryable ? 1 : 0, this.now(),
     );
     return {
-      seq,
-      kind: op?.kind ?? null,
-      entityId: op?.entity_id ?? null,
-      origin: op ? `${op.origin_device}/${op.origin_id}` : null,
-      reason,
+      seq: diagnostic.seq,
+      kind: diagnostic.kind,
+      entityId: diagnostic.entityId,
+      origin: op ? `${diagnostic.originDevice}/${diagnostic.originId}` : null,
+      reason: diagnostic.reason,
       retryable,
     };
   }
@@ -776,7 +982,9 @@ export class SyncApply {
         ? 'observations'
         : op.kind === 'summary'
           ? 'session_summaries'
-          : 'user_prompts';
+          : op.kind === 'work_state'
+            ? 'work_state_entries'
+            : 'user_prompts';
       this.db.prepare(
         `DELETE FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
       ).run(op.origin_device, op.origin_id);
@@ -811,9 +1019,65 @@ export class SyncApply {
         return this.applySummary(op, body, chromaJobs);
       case 'prompt':
         return this.applyPrompt(op, body, chromaJobs);
+      case 'work_state':
+        return this.applyWorkState(op, body);
       default:
         throw invalidOp(op, `unknown row kind`);
     }
+  }
+
+  /**
+   * work_state rows (sqlite/work-state.ts) are an append-only log the agent
+   * keeps: a pulled row is inserted once under its origin identity and only a
+   * higher revision rewrites it. The table has no session FK and no Chroma
+   * copy, so nothing else is created for it.
+   */
+  private applyWorkState(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+    let shared: ReturnType<typeof redactSharedInboundRow> = null;
+    if (typeof body.list_name === 'string' && isSharedWorkList(body.list_name)) {
+      try { shared = redactSharedInboundRow({ project: typeof body.project === 'string' ? body.project : undefined, list_name: body.list_name, fields: String(body.fields), origin_device_id: op.origin_device }, this.deviceId); }
+      catch (error) { throw invalidOp(op, error instanceof Error ? error.message : 'invalid shared record'); }
+    }
+    body = shared ? { ...body, fields: shared.fields } : redactInboundFields(body, [], WORK_STATE_JSON_FIELDS);
+    const project = fieldString(op, body, 'project');
+    const listName = fieldString(op, body, 'list_name');
+    const fields = fieldString(op, body, 'fields');
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
+    if (!project || !listName || fields === null || createdAtEpoch === null) {
+      throw invalidOp(op, 'work_state body requires project, list_name, fields, created_at_epoch');
+    }
+    let parsedFields: unknown;
+    try {
+      parsedFields = JSON.parse(fields);
+    } catch {
+      throw invalidOp(op, 'work_state fields is not parseable JSON');
+    }
+    if (parsedFields === null || typeof parsedFields !== 'object' || Array.isArray(parsedFields)) {
+      throw invalidOp(op, 'work_state fields must be a JSON object');
+    }
+    const createdAt = fieldString(op, body, 'created_at') ?? new Date(createdAtEpoch).toISOString();
+
+    const existing = this.findByOrigin('work_state_entries', op.origin_device, op.origin_id);
+    if (existing) {
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
+      this.db.prepare(`
+        UPDATE work_state_entries SET
+          project = ?, list_name = ?, fields = ?, created_at = ?, created_at_epoch = ?,
+          sync_rev = ?, synced_at = ?
+        WHERE id = ?
+      `).run(project, listName, fields, createdAt, createdAtEpoch, op.rev, this.now(), existing.id);
+      if (shared) saveSharedRedactionReceipt(this.db, { id: existing.id, origin_device_id: op.origin_device, origin_local_id: op.origin_id, sync_rev: op.rev }, shared.receipt);
+      return 'applied';
+    }
+    // synced_at pre-stamped: the push drain's WHERE synced_at IS NULL never selects it.
+    const inserted = this.db.prepare(`
+      INSERT INTO work_state_entries
+        (project, list_name, fields, created_at, created_at_epoch,
+         synced_at, origin_device_id, origin_local_id, sync_rev)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(project, listName, fields, createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev);
+    if (shared) saveSharedRedactionReceipt(this.db, { id: String(inserted.lastInsertRowid), origin_device_id: op.origin_device, origin_local_id: op.origin_id, sync_rev: op.rev }, shared.receipt);
+    return 'applied';
   }
 
   // ------------------------------------------------------------------------
@@ -853,6 +1117,92 @@ export class SyncApply {
   }
 
   /**
+   * Insert a stub sdk_sessions row for a remote session, or adopt the local
+   * row that already holds its (platform_source, content_session_id) identity
+   * (migration v33) instead of failing the batch. An adopted row without a
+   * memory id takes this one, so a prompt's content-keyed session and the
+   * memory id that arrives later end up in one row. Returns the row id.
+   */
+  private upsertStubSession(
+    contentSessionId: string,
+    memorySessionId: string | null,
+    project: string,
+    platform: string,
+    createdAtEpoch: number
+  ): number {
+    const row = this.db.prepare(`
+      INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, 'completed')
+      ON CONFLICT(platform_source, content_session_id)
+        DO UPDATE SET memory_session_id = CASE
+          WHEN sdk_sessions.memory_session_id IS NULL AND ${SyncApply.SYNC_STUB_PREDICATE}
+            THEN excluded.memory_session_id
+          ELSE sdk_sessions.memory_session_id
+        END
+      RETURNING id
+    `).get(
+      contentSessionId, memorySessionId, project, platform, new Date(createdAtEpoch).toISOString(), createdAtEpoch
+    ) as { id: number };
+    return row.id;
+  }
+
+  /**
+   * True for an sdk_sessions row this module created (a sync stub), false for
+   * a session native to this device. Stubs are inserted with user_prompt NULL
+   * and only ever hold replica prompts; createSDKSession always stores the
+   * prompt, and a live local session owns native prompts or queued messages.
+   * A native session is never folded away or handed a remote memory id: the
+   * same content session can run here too (resume on a second machine), and
+   * its own memory agent registers its own id.
+   */
+  private static readonly SYNC_STUB_PREDICATE = `(
+    sdk_sessions.user_prompt IS NULL
+    AND NOT EXISTS (SELECT 1 FROM user_prompts up WHERE up.session_db_id = sdk_sessions.id AND up.origin_device_id IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM pending_messages pm WHERE pm.session_db_id = sdk_sessions.id)
+  )`;
+
+  /**
+   * Fold a content-keyed session (no memory id) into the memory session
+   * `targetId` once an op links the two ids. A prompt that arrived before
+   * its memory id got the content-keyed row (resolvePromptSession), and an
+   * observation that overtook the repair op got the memory-keyed one, with
+   * the memory id as its synthetic content id and the default platform. The
+   * merge moves the rows that point at the content-keyed session, keeps its
+   * title when the target has none, and gives the target the real content
+   * id and platform.
+   */
+  private mergeContentSession(targetId: number, platform: string, contentSessionId: string): void {
+    const other = this.db.prepare(`
+      SELECT id, custom_title FROM sdk_sessions
+      WHERE platform_source = ? AND content_session_id = ? AND memory_session_id IS NULL AND id != ?
+        AND ${SyncApply.SYNC_STUB_PREDICATE}
+    `).get(platform, contentSessionId, targetId) as { id: number; custom_title: string | null } | undefined;
+    if (!other) return;
+    // Every column that references sdk_sessions(id): the declared foreign keys,
+    // read from the schema so a new referencing table moves instead of
+    // cascading away, plus tool_uses.session_db_id, which has none on purpose.
+    const refs = this.db.prepare(`
+      SELECT m.name AS tbl, f."from" AS col FROM sqlite_master m
+      JOIN pragma_foreign_key_list(m.name) f
+      WHERE m.type = 'table' AND f."table" = 'sdk_sessions' AND f."to" = 'id'
+    `).all() as Array<{ tbl: string; col: string }>;
+    for (const { tbl, col } of [...refs, { tbl: 'tool_uses', col: 'session_db_id' }]) {
+      this.db.prepare(`UPDATE "${tbl}" SET "${col}" = ? WHERE "${col}" = ?`).run(targetId, other.id);
+    }
+    // Delete first: the target cannot take the content id while the other row
+    // still holds it under the (platform_source, content_session_id) index.
+    this.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(other.id);
+    this.db.prepare(`
+      UPDATE sdk_sessions SET
+        custom_title = COALESCE(custom_title, ?),
+        platform_source = CASE WHEN content_session_id = memory_session_id THEN ? ELSE platform_source END,
+        content_session_id = CASE WHEN content_session_id = memory_session_id THEN ? ELSE content_session_id END
+      WHERE id = ?
+    `).run(other.custom_title, platform, contentSessionId, targetId);
+  }
+
+  /**
    * Ensure a local sdk_sessions row exists for a remote memory_session_id;
    * returns its local id. Creates a minimal stub when unknown (see module
    * header — FK is enforced and sessions do not sync). Every path through
@@ -875,40 +1225,19 @@ export class SyncApply {
       // content id, so the association first shows up here (via a prompt row
       // op or a set_prompt_session repair), not at stub creation.
       if (contentSessionId) {
+        this.mergeContentSession(existing.id, platform, contentSessionId);
         this.claimParkedTitle(existing.id, SyncApply.parkedTitleContentKey(platform, contentSessionId));
       }
       return existing.id;
     }
 
-    const content = contentSessionId ?? memorySessionId;
-    const iso = new Date(createdAtEpoch).toISOString();
-    // ON CONFLICT on the (platform_source, content_session_id) identity
-    // (migration v33): if a local session already claims this content id
-    // under another memory id, adopt it instead of failing the batch.
-    const inserted = this.db.prepare(`
-      INSERT INTO sdk_sessions
-        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, NULL, ?, ?, 'completed')
-      ON CONFLICT(platform_source, content_session_id) DO NOTHING
-      RETURNING id
-    `).get(content, memorySessionId, project, platform, iso, createdAtEpoch) as { id: number } | null;
-
-    let sessionId: number;
-    if (inserted) {
-      logger.debug('SYNC_APPLY', 'Created stub sdk_session for remote memory session', {
-        memorySessionId,
-        project,
-      });
-      sessionId = inserted.id;
-    } else {
-      const adopted = this.db.prepare(
-        'SELECT id FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?'
-      ).get(platform, content) as { id: number } | undefined;
-      if (!adopted) {
-        throw new Error(`SyncApply: could not create or adopt a session for memory_session_id=${memorySessionId}`);
-      }
-      sessionId = adopted.id;
-    }
+    const sessionId = this.upsertStubSession(
+      contentSessionId ?? memorySessionId, memorySessionId, project, platform, createdAtEpoch
+    );
+    logger.debug('SYNC_APPLY', 'Linked remote memory session to a local sdk_session', {
+      memorySessionId,
+      project,
+    });
 
     this.claimParkedTitle(sessionId, SyncApply.parkedTitleMemKey(memorySessionId));
     if (contentSessionId) {
@@ -918,6 +1247,7 @@ export class SyncApply {
   }
 
   private applyObservation(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, OBSERVATION_TEXT_FIELDS, OBSERVATION_JSON_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const type = fieldString(op, body, 'type');
@@ -947,6 +1277,11 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      // A revision replaces the row's file columns, so its index rows are
+      // replaced too — otherwise the previous revision's paths stay
+      // searchable and the new ones never resolve. Inside the batch tx.
+      replaceObservationFileIndex(this.db, existing.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
+      syncReplicaMediaLinks(this.db, existing.id, fieldString(op, body, 'metadata'), this.now());
       this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
@@ -981,7 +1316,11 @@ export class SyncApply {
       });
       return 'stale';
     }
+    syncReplicaMediaLinks(this.db, inserted.id, fieldString(op, body, 'metadata'), this.now());
 
+    // Pulled observations bypass storeObservations, so their paths are
+    // indexed here; inside the batch tx, atomic with the row itself.
+    replaceObservationFileIndex(this.db, inserted.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
     this.forwardObservation(inserted.id, op, body, chromaJobs);
     return 'applied';
   }
@@ -1001,6 +1340,8 @@ export class SyncApply {
   // Forwards hand Chroma the committed row's stored values, parsed as backfill
   // parses them. A revision deletes every fragment the new documents lack, so
   // any difference from backfill's documents would delete indexed content.
+  // The synchronous loader runs inside ChromaSync's row writer: an op can
+  // wait in either queue while a newer revision, remap or deletion commits.
   private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
@@ -1028,12 +1369,20 @@ export class SyncApply {
         fieldNumber(op, body, 'prompt_number') ?? 0,
         createdAtEpoch,
         platformSource,
-        replaceExisting
+        replaceExisting,
+        () => {
+          const row = this.db.query('SELECT * FROM observations WHERE id = ?').get(id) as
+            (StoredObservation & { sync_rev: string }) | undefined;
+          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+            platform_source: this.sessionPlatformSource(row.memory_session_id) },
+            replaceExisting: row.sync_rev !== op.rev };
+        }
       )));
     }
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, SUMMARY_TEXT_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
@@ -1106,7 +1455,14 @@ export class SyncApply {
         fieldNumber(op, body, 'prompt_number') ?? 0,
         createdAtEpoch,
         platformSource,
-        replaceExisting
+        replaceExisting,
+        () => {
+          const row = this.db.query('SELECT * FROM session_summaries WHERE id = ?').get(id) as
+            (StoredSummary & { sync_rev: string }) | undefined;
+          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+            platform_source: this.sessionPlatformSource(row.memory_session_id) },
+            replaceExisting: row.sync_rev !== op.rev };
+        }
       )));
     }
   }
@@ -1123,10 +1479,7 @@ export class SyncApply {
         fieldString(op, body, 'platform_source')
       );
     }
-    // No memory id on the origin yet (prompt captured before registration) —
-    // link only if a matching local session already exists; otherwise orphan
-    // (session_db_id is nullable and the set_prompt_session repair op links
-    // it once the origin registers).
+    // No memory id on the origin yet (prompt captured before registration).
     const contentSessionId = fieldString(op, body, 'content_session_id');
     if (!contentSessionId) return null;
     const platform = normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined);
@@ -1135,10 +1488,22 @@ export class SyncApply {
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?
       LIMIT 1
     `).get(DEFAULT_PLATFORM_SOURCE, platform, contentSessionId) as { id: number } | undefined;
-    return row?.id ?? null;
+    if (row) return row.id;
+    // The origin sends project 'unknown' when the prompt has no session there
+    // either: orphan it, and the set_prompt_session repair op links it once
+    // the origin registers.
+    const project = fieldString(op, body, 'project');
+    if (!project || project === 'unknown') return null;
+    // A real project means the origin's session exists but has no memory id.
+    // A session whose memory agent never started never gets one, so no repair
+    // op would come: create the content-keyed session the origin has.
+    const sessionId = this.upsertStubSession(contentSessionId, null, project, platform, createdAtEpoch);
+    this.claimParkedTitle(sessionId, SyncApply.parkedTitleContentKey(platform, contentSessionId));
+    return sessionId;
   }
 
   private applyPrompt(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, PROMPT_TEXT_FIELDS);
     const contentSessionId = fieldString(op, body, 'content_session_id');
     const promptNumber = fieldNumber(op, body, 'prompt_number');
     const promptText = fieldString(op, body, 'prompt_text');
@@ -1196,7 +1561,14 @@ export class SyncApply {
         promptText,
         promptNumber,
         createdAtEpoch,
-        fieldString(op, body, 'platform_source') ?? undefined
+        fieldString(op, body, 'platform_source') ?? undefined,
+        () => this.db.query(`
+          SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+            COALESCE(s.project, 'unknown') AS project,
+            COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+          FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
+          WHERE up.id = ?
+        `).get(normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined), id) as StoredUserPrompt | undefined
       )));
     }
   }

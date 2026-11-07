@@ -1,22 +1,16 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
 import { UI } from '../../../src/ui/viewer/constants/ui';
+import {
+  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome, htmlResponse, launchChrome,
+  readViewerTemplateHtml, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome=Bun.which('google-chrome')??Bun.which('chromium')
-  ??(existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':null);
-if(process.env.CI&&!chrome)throw Error('CI requires Chrome for viewer deletion lifecycle tests');
+failOnCiWithoutChrome('CI requires Chrome for viewer deletion lifecycle tests');
 
 for(const scenario of ['item','recreated-visible','recreated-session','late-delete-response','catalog-recreated','live-before-delete'] as const) {
-  (chrome?it:it.skip)(`viewer preserves deletion identity across pending pages: ${scenario}`,async()=>{
-    const owned=mkdtempSync(join(tmpdir(),'cm-viewer-deletion-'));
-    let child:ReturnType<typeof Bun.spawn>|undefined;
+  (chromeExecutablePath?it:it.skip)(`viewer preserves deletion identity across pending pages: ${scenario}`,async()=>{
+    let chrome:OwnedChrome|undefined;
     let server:ReturnType<typeof Bun.serve>|undefined;
-    let timer:ReturnType<typeof setTimeout>|undefined;
     let release!:()=>void;
     const gate=new Promise<void>(resolve=>{release=resolve});
     let releaseDelete!:()=>void;
@@ -28,11 +22,8 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
     let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
     let finish!:(report:unknown)=>void;
     const result=new Promise(resolve=>{finish=resolve});
-    const esbuild=createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform==='win32'?'esbuild.exe':'bin/esbuild'}`);
     try {
-      const bundle=execFileSync(esbuild,['--bundle','--loader=tsx','--platform=browser','--format=iife',
-        '--define:process.env.NODE_ENV="production"','--log-level=error'],{
-        cwd:resolve(import.meta.dir,'../../..'),encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024,input:`
+      const bundle=compileBrowserFixture(`
           import React from 'react';import {createRoot} from 'react-dom/client';
           import {App} from './src/ui/viewer/App';
           import {setStoredWelcomeDismissed} from './src/ui/viewer/components/WelcomeCard';
@@ -87,9 +78,9 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
               control:document.body.textContent.includes('CONTROL_VISIBLE'),
               next:document.body.textContent.includes('NEXT_CURSOR_CONTROL'),offsets})});
           }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})})}})();
-        `});
-      const html=readFileSync(resolve(import.meta.dir,'../../../src/ui/viewer-template.html'),'utf8')
-        .replace('src="viewer-bundle.js"','src="/fixture.js"');
+        `);
+      // The real viewer page, which loads the fixture as its own bundle.
+      const html=readViewerTemplateHtml();
       const session={content_session_id:'owned-session',platform_source:'claude',project:'alpha',
         custom_title:'Owned',started_at_epoch:1,item_count:1};
       const row={id:1,memory_session_id:'memory-owned',content_session_id:'owned-session',platform_source:'claude',
@@ -101,8 +92,8 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
       const offsets:number[]=[];
       server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
         const url=new URL(request.url);
-        if(url.pathname==='/')return new Response(html,{headers:{'Content-Type':'text/html'}});
-        if(url.pathname==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        if(url.pathname==='/')return htmlResponse(html);
+        if(url.pathname==='/viewer-bundle.js')return scriptResponse(bundle);
         if(url.pathname==='/ready'){markReady();return new Response('ready')}
         if(url.pathname==='/stream')return new Response(new ReadableStream({start(c){controller=c;send({type:'initial_load',projects:['alpha']})}}),
           {headers:{'Content-Type':'text/event-stream'}});
@@ -138,22 +129,19 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
         if(url.pathname==='/result'){finish(await request.json());return new Response('received')}
         return Response.json({});
       }});
-      child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
-        '--disable-background-timer-throttling','--disable-renderer-backgrounding',
-        '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
+      chrome=launchChrome(server.url.href,{profilePrefix:'cm-viewer-deletion-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
       // Chrome's cold start gets its own window; the page's phases start at /ready.
-      await Promise.race([ready,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('Viewer did not become ready')),30000)})]);
-      clearTimeout(timer);
-      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser page timed out'}),25000)})]);
+      await withTimeout(ready,30000,'Viewer did not become ready');
+      const received=await withTimeout(result,25000,'Browser page timed out');
       if(scenario==='catalog-recreated'){expect(received).toEqual({detailFresh:true});return;}
       // item: the deleted row was never loaded, so this tab cannot attribute it
       // to a session and the card count stays stale until the server names the
       // owning session in item_deleted.
       expect(received).toEqual({count:['recreated-session','live-before-delete'].includes(scenario)?null:'1 memory',ghost:false,recreatedGhost:scenario!=='item'&&!['recreated-session','live-before-delete'].includes(scenario),control:true,next:true,offsets:[0,UI.PAGINATION_PAGE_SIZE-1]});
     }finally{
-      release();releaseDelete();clearTimeout(timer);
-      if(child){child.kill();await child.exited;}
-      server?.stop(true);rmSync(owned,{recursive:true,force:true});
+      release();releaseDelete();
+      await chrome?.close();
+      server?.stop(true);
     }
   },80000);
 }

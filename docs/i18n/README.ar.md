@@ -217,7 +217,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[الإعدادات](https://docs.claude-mem.ai/configuration)** - متغيرات البيئة والإعدادات
 - **[التطوير](https://docs.claude-mem.ai/development)** - البناء، الاختبار، والمساهمة
-- **[فروع الإصدارات](https://docs.claude-mem.ai/branches)** - تدفق فروع Stable وcore-dev وcommunity-edge
 - **[استكشاف الأخطاء وإصلاحها](https://docs.claude-mem.ai/troubleshooting)** - المشكلات الشائعة والحلول
 
 ---
@@ -273,12 +272,6 @@ get_observations(ids=[123, 456])
 ```
 
 راجع [دليل أدوات البحث](https://docs.claude-mem.ai/usage/search-tools) لأمثلة مفصلة.
-
----
-
-## فروع الإصدارات
-
-يتم إصدار النسخ المستقرة من فرع `main` ونشرها على npm. أما `core-dev` و`community-edge` فهما فرعان يتم تشغيلهما من المصدر لإصلاحات الموثوقية المبكرة وتكاملات المجتمع. راجع **[فروع الإصدارات](https://docs.claude-mem.ai/branches)** لمعرفة تدفق الفروع وتعليمات التشغيل غير المستقر.
 
 ---
 
@@ -384,8 +377,6 @@ npm run bug-report
 4. تحديث المستندات
 5. تقديم Pull Request
 
-يتم إصدار Claude-Mem من ثلاثة فروع: `main` (المستقر)، و`core-dev`، و`community-edge`. يُنشر `main` فقط على npm؛ أما الفروع الأخرى فيتم تشغيلها من المصدر. راجع [فروع الإصدارات](https://docs.claude-mem.ai/branches) للاطلاع على الاستراتيجية وتعليمات التشغيل المحلي.
-
 راجع [دليل التطوير](https://docs.claude-mem.ai/development) لسير عمل المساهمة.
 
 ---
@@ -399,7 +390,6 @@ Claude-Mem مرخّص بموجب رخصة Apache 2.0.
 راجع ملف [LICENSE](LICENSE) للتفاصيل الكاملة. راجع [docs/license.md](docs/license.md)
 و[docs/ip-boundary.md](docs/ip-boundary.md) لمعرفة نطاق الترخيص والحدود بين المفتوح والتجاري.
 
-**ملاحظة حول Ragtime**: دليل `ragtime/` مرخّص بموجب **رخصة Apache 2.0**. راجع [ragtime/LICENSE](ragtime/LICENSE) للتفاصيل.
 
 ---
 

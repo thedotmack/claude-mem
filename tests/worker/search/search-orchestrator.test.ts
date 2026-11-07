@@ -80,6 +80,8 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
       'legacy docs',
       100,
       { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'orchestrator-project' }, { merged_into_project: 'orchestrator-project' }] }, { platform_source: 'cursor' }] },
+      expect.any(Object),
+      expect.any(Function),
     );
     expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
       project: 'orchestrator-project',
@@ -178,7 +180,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions,
         searchUserPrompts,
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 
@@ -208,7 +210,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions: mock(() => []),
         searchUserPrompts: mock(() => []),
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 
@@ -237,7 +239,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions,
         searchUserPrompts,
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 

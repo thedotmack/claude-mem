@@ -19,7 +19,7 @@ Restart T3 Code and start a new thread in your project. If Codex prompts to trus
 
 ## What gets configured
 
-The installer reads `~/.t3/userdata/settings.json`, including both `providerInstances` and legacy `providers`. An explicit instance overrides the legacy entry for its default slot. Disabled providers are skipped.
+The installer reads `~/.t3/userdata/settings.json`, including both `providerInstances` and legacy `providers`. An explicit instance overrides the legacy entry for its default slot. Disabled providers are skipped. T3 saves only what differs from its defaults, so a built-in Codex or Claude Code provider with no saved entry counts as enabled when its home exists. If its CLI is missing, it is skipped with a notice.
 
 | T3 provider | Claude-Mem installation |
 | --- | --- |
@@ -52,7 +52,7 @@ npx claude-mem t3code uninstall
 
 Status checks provider configuration, plugin enablement, marketplace registration, and runtime assets. It does not claim hook approval or successful capture: verify a new thread produces observations in the Claude-Mem viewer at `http://localhost:37777` on the server machine.
 
-Removal disables only Claude-Mem in the configured native homes, preserving other plugins and provider settings. This also disables Claude-Mem for standalone CLIs that share those homes. Restart T3 Code after removal. The main `npx claude-mem uninstall` command also performs this cleanup; memory data is preserved.
+Removal disables only Claude-Mem in the configured native homes, preserving other plugins and provider settings. This also disables Claude-Mem for standalone CLIs that share those homes. Homes T3 uses only as unsaved defaults are left on, and `t3code uninstall` names each one it leaves. Restart T3 Code after removal. The main `npx claude-mem uninstall` command also performs this cleanup; memory data is preserved.
 
 ## Troubleshooting
 

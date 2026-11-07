@@ -1,0 +1,36 @@
+---
+title: Qoder Integration
+description: Install claude-mem as a native Qoder plugin for the CLI or the IDE
+icon: terminal
+---
+
+claude-mem ships a native Qoder plugin. It loads the same memory skills and MCP search server as the Claude Code plugin, and records sessions through Qoder's lifecycle hooks.
+
+## Install in Qoder CLI
+
+```bash
+qoder plugins marketplace add thedotmack/claude-mem
+qoder plugins install claude-mem@thedotmack
+```
+
+To check a local checkout, run `qoder plugins validate .`.
+
+## Install in Qoder IDE
+
+From a built checkout, create an archive:
+
+```bash
+git archive --format=zip --output=claude-mem-qoder.zip HEAD
+```
+
+Then import it from **Extensions → Plugins → Add Plugins → Upload Plugin**.
+
+## How it works
+
+- Qoder exposes the same hook payload and output contract as Codex, so the Qoder hooks run through claude-mem's existing Codex structured-hook adapter. Qoder sessions are stored and shown under the Codex source.
+- Qoder has no Setup event. On the first Qoder session, the SessionStart launcher runs the plugin's dependency check before memory starts. If dependencies are still missing afterwards, every hook returns a harmless no-op instead of starting the worker.
+- Bun must already be installed, as described in the system requirements.
+
+## Context from other tools
+
+By default, SessionStart context only includes the current hook namespace. To include observations from every tool, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in `~/.claude-mem/settings.json`, or turn on **Include all sources at session start** in the viewer settings.

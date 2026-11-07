@@ -1,7 +1,9 @@
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { logger } from './logger.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
@@ -47,7 +49,10 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
       return false;
     }
 
-    if (hasConsecutiveDuplicateSegments(resolved)) {
+    // Start at the project folder's own name, so a doubled prefix like
+    // frontend/frontend still matches (#814) but a project checked out at
+    // ~/code/app/app does not reject every path.
+    if (hasConsecutiveDuplicateSegments(path.relative(path.dirname(normalizedRoot), resolved))) {
       return false;
     }
   }
@@ -80,7 +85,6 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
 
   const filename = targetFilename ?? getTargetFilename();
   const claudeMdPath = path.join(folderPath, filename);
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
@@ -96,8 +100,21 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // context — a Claude Code truncation can split a pair and brick the session.
   const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target. A
+  // symlink loop or an unwritable target throws, as any write failure does.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  // Random name + exclusive create: a predictable `.tmp` sibling can be
+  // shipped inside a checkout as a symlink, and a following write would then
+  // clobber whatever it points at (the rename only replaces the link itself).
+  const tempFile = `${writeTarget}.${randomUUID()}.tmp`;
+  writeFileSync(tempFile, finalContent, { flag: 'wx' });
+  try {
+    renameSync(tempFile, writeTarget);
+  } catch (error) {
+    try { unlinkSync(tempFile); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 interface ParsedObservation {
@@ -131,7 +148,9 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
       continue;
     }
 
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // The title cell is written verbatim and may itself contain `|`, so it runs
+    // up to the Read cell (`~N`, or `-` for sessions) instead of the next pipe.
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+?)\s*\|\s*(~\d+|-)\s*\|/);
     if (match) {
       const [, id, timeStr, typeEmoji, title, tokens] = match;
 
@@ -171,7 +190,8 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return '';
   }
 
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
+  // Same newest-first day order the by-file route renders; rows inside a day keep the route's order.
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString(), { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
@@ -200,8 +220,10 @@ const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
   '__pycache__'
 ]);
 
-function isExcludedUnsafeDirectory(folderPath: string): boolean {
-  const normalized = path.normalize(folderPath);
+function isExcludedUnsafeDirectory(folderPath: string, projectRoot?: string): boolean {
+  // Only directories inside the project count: a project checked out under
+  // ~/build or ~/res is not itself an unsafe directory.
+  const normalized = path.normalize(projectRoot ? path.relative(projectRoot, folderPath) : folderPath);
   const segments = normalized.split(path.sep);
   return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
 }
@@ -293,7 +315,7 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
         continue;
       }
-      if (isExcludedUnsafeDirectory(folderPath)) {
+      if (isExcludedUnsafeDirectory(folderPath, projectRoot)) {
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }

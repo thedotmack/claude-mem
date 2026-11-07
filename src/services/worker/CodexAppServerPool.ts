@@ -6,10 +6,11 @@ export function boundedInteger(value: unknown, fallback: number, max: number): n
   return Number.isSafeInteger(number) && number > 0 && number <= max ? number : fallback;
 }
 
-type Client = Pick<CodexAppServerClient, 'runTurn' | 'close'>;
+type Client = Pick<CodexAppServerClient, 'runTurn' | 'close' | 'recycle'>;
+type TurnClient = Pick<Client, 'runTurn'>;
 interface Job {
-  options: CodexAppServerTurnOptions;
-  resolve: (result: CodexAppServerTurnResult) => void;
+  signal?: AbortSignal;
+  run: (client: TurnClient, signal: AbortSignal) => Promise<void>;
   reject: (error: unknown) => void;
   cleanup: () => void;
 }
@@ -31,19 +32,25 @@ export class CodexAppServerPool {
   }
 
   runTurn(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
+    return this.withClient((client, signal) => client.runTurn({ ...options, signal }), options.signal);
+  }
+
+  /** Start an operation only after admission, keeping queued cancellation separate from execution deadlines. */
+  withClient<T>(run: (client: TurnClient, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Codex app-server pool closed'));
-    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
+    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise((resolve, reject) => {
       const abort = () => {
         const index = this.queue.indexOf(job);
         if (index < 0) return;
         this.queue.splice(index, 1);
         job.cleanup();
-        reject(options.signal!.reason);
+        reject(signal!.reason);
       };
-      const job: Job = { options, resolve, reject,
-        cleanup: () => options.signal?.removeEventListener('abort', abort) };
-      options.signal?.addEventListener('abort', abort, { once: true });
+      const job: Job = { signal, reject,
+        run: async (client, admittedSignal) => { resolve(await run(client, admittedSignal)); },
+        cleanup: () => signal?.removeEventListener('abort', abort) };
+      signal?.addEventListener('abort', abort, { once: true });
       this.queue.push(job);
       this.drain();
     });
@@ -54,18 +61,35 @@ export class CodexAppServerPool {
       const client = this.idle.shift()!;
       const job = this.queue.shift()!;
       job.cleanup();
-      const signal = job.options.signal
-        ? AbortSignal.any([job.options.signal, this.shutdown.signal]) : this.shutdown.signal;
+      const signal = job.signal
+        ? AbortSignal.any([job.signal, this.shutdown.signal]) : this.shutdown.signal;
       const work = Promise.resolve().then(() => {
         signal.throwIfAborted();
-        return client.runTurn({ ...job.options, signal });
-      }).then(job.resolve, job.reject).finally(() => {
+        return job.run(client, signal);
+      }).catch(job.reject).finally(() => {
         this.active.delete(work);
         this.idle.push(client);
         this.drain();
       });
       this.active.add(work);
     }
+  }
+
+  /**
+   * Kill idle app-server children so the next `ensureStarted()` spawns fresh
+   * processes that read the current credentials from disk. Active clients
+   * (mid-turn) are left alone and keep their child; the next auth probe
+   * recycles them if they are idle by then. While an auth cooldown holds,
+   * new starts are withheld, so a client is rarely mid-turn at probe time.
+   *
+   * Called before auth recovery probes, after a `codex login` may have
+   * written new tokens while the running app-server still holds the old ones.
+   */
+  async recycleIdle(): Promise<void> {
+    const toRecycle = [...this.idle];
+    if (toRecycle.length === 0) return;
+    logger.debug('SDK', 'Recycling idle app-server clients for credential refresh', { count: toRecycle.length });
+    await Promise.allSettled(toRecycle.map(client => client.recycle()));
   }
 
   close(): Promise<void> {

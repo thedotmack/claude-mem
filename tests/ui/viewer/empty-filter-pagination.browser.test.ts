@@ -1,15 +1,11 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
+import {
+  FIXTURE_PAGE_HTML, chromeExecutablePath, compileBrowserFixture, htmlResponse, launchChrome, scriptResponse, withTimeout,
+  type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
 for (const mode of ['more', 'exhausted', 'loading'] as const) {
-  (chrome ? it : it.skip)(`handles an empty filtered page while ${mode}`, async () => {
+  (chromeExecutablePath ? it : it.skip)(`handles an empty filtered page while ${mode}`, async () => {
     const common = { itemType: 'observation', project: 'owned-project',
       content_session_id: 'owned-session', platform_source: 'claude',
       created_at_epoch: Date.now(), created_at: new Date().toISOString(),
@@ -19,10 +15,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       { ...common, id: 2, type: 'discovery', title: 'OWNED_DISCOVERY' },
     ];
     const older = { ...common, id: 3, type: 'bugfix', title: 'OWNED_OLDER_BUGFIX' };
-    const bundle = await build({
-      write: false, bundle: true, platform: 'browser', format: 'iife',
-      define: { 'process.env.NODE_ENV': '"production"' },
-      stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+    const bundle = compileBrowserFixture(`
         import React, { useState } from 'react';
         import { createRoot } from 'react-dom/client';
         import { SessionDetailPage } from './src/ui/viewer/components/SessionDetailPage';
@@ -69,36 +62,29 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
             }) });
           } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
         })();
-      ` },
-    });
+      `);
     let resolveReport!: (report: unknown) => void;
     const result = new Promise(resolve => { resolveReport = resolve; });
     let deletes = 0; let pages = 0;
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === '/') return new Response('<style>.card{min-height:2000px}</style><div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/') return htmlResponse('<style>.card{min-height:2000px}</style>' + FIXTURE_PAGE_HTML);
+      if (path === '/fixture.js') return scriptResponse(bundle);
       if (path === '/api/observation/1' && request.method === 'DELETE') { deletes++; return Response.json({ success: true }); }
       if (path === '/older-page') { pages++; return Response.json({ items: [older], hasMore: false }); }
       if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
       return new Response('not found', { status: 404 });
     } });
-    const profile = mkdtempSync(join(tmpdir(), 'claude-mem-empty-filter-browser-'));
-    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu',
-      '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href],
-      { stdout: 'ignore', stderr: 'ignore' });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let chrome: OwnedChrome | undefined;
     try {
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-empty-filter-browser-' });
       // Leaves room for a cold Chrome start on CI, which has taken 8-11 s.
-      const report = await Promise.race([result, new Promise(resolve => {
-        timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000);
-      })]);
+      const report = await withTimeout(result, 25000, 'Browser timed out');
       expect(deletes).toBe(1);
       expect(pages).toBe(mode === 'more' ? 1 : 0);
       expect(report).toEqual({ beforeDelete: ['OWNED_LOADED_BUGFIX'], afterDelete: mode === 'more' ? ['OWNED_OLDER_BUGFIX'] : [] });
     } finally {
-      clearTimeout(timeout); child.kill(); await child.exited; server.stop(true);
-      rmSync(profile, { recursive: true, force: true });
+      await chrome?.close(); server.stop(true);
     }
   }, 40000);
 
@@ -108,11 +94,8 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
 // its first notification after the initial page started loading (and failed),
 // but before React's effect cleanup disconnects it. That stale notification must
 // not load again: the failed page has to wait for Retry.
-(chrome ? it : it.skip)('ignores a late notification from a sentinel that is no longer rendered', async () => {
-  const bundle = await build({
-    write: false, bundle: true, platform: 'browser', format: 'iife',
-    define: { 'process.env.NODE_ENV': '"production"' },
-    stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+(chromeExecutablePath ? it : it.skip)('ignores a late notification from a sentinel that is no longer rendered', async () => {
+  const bundle = compileBrowserFixture(`
       import React, { useLayoutEffect, useState } from 'react';
       import { createRoot } from 'react-dom/client';
       import { Feed } from './src/ui/viewer/components/Feed';
@@ -167,29 +150,22 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
           }) });
         } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
       })();
-    ` },
-  });
+    `);
   let resolveReport!: (report: unknown) => void;
   const result = new Promise(resolve => { resolveReport = resolve; });
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-    if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+    if (path === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+    if (path === '/fixture.js') return scriptResponse(bundle);
     if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
     return new Response('not found', { status: 404 });
   } });
-  const profile = mkdtempSync(join(tmpdir(), 'claude-mem-late-sentinel-browser-'));
-  const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu',
-    '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href],
-    { stdout: 'ignore', stderr: 'ignore' });
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let chrome: OwnedChrome | undefined;
   try {
-    const report = await Promise.race([result, new Promise(resolve => {
-      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000);
-    })]);
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-late-sentinel-browser-' });
+    const report = await withTimeout(result, 25000, 'Browser timed out');
     expect(report).toEqual({ mountSentinelRemoved: true, deliveredBeforeCleanup: true, lateLoads: 0, retry: true, liveLoads: 1 });
   } finally {
-    clearTimeout(timeout); child.kill(); await child.exited; server.stop(true);
-    rmSync(profile, { recursive: true, force: true });
+    await chrome?.close(); server.stop(true);
   }
 }, 40000);

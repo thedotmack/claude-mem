@@ -4,6 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
@@ -21,16 +22,34 @@ import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { readObserverHealth } from '../../../../shared/observer-health.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
+import { projectReadKeysFor } from '../../search/project-where-filter.js';
+
+// Chroma doc_type per content kind. Observation and summary id spaces overlap,
+// so the delete-route cleanup must be scoped by doc_type, not sqlite_id alone.
+type IndexedRowKind = Exclude<ContentKind, 'work_state'>;
+const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
+  observation: 'observation',
+  summary: 'session_summary',
+  prompt: 'user_prompt',
+};
+import { withObservationMedia } from '../../../media/feed.js';
+
+// The MCP get_observations schema advertises `number | string` ids, so array
+// elements may arrive as numeric strings; non-numeric strings stay invalid.
+const numericStringToNumber = (item: unknown): unknown =>
+  typeof item === 'string' && /^\d+$/.test(item.trim()) ? Number(item.trim()) : item;
 
 const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.map(numericStringToNumber);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(numericStringToNumber);
     } catch {
       // not JSON, fall through to comma split
     }
@@ -53,11 +72,20 @@ const stringArrayLike = z.preprocess((value) => {
   return value;
 }, z.array(z.string()));
 
+// Layer 3 of progressive disclosure: selected records by explicit id. The id
+// array is bounded because every id is a full row (narrative, facts, concepts,
+// file lists) on the way back — an unbounded list is a way to page the whole
+// table in one request. 100 matches the ceiling the adapters already advertise
+// (`pi-extension` maxItems, `recall-mcp-server` maxItems) and the server
+// `/v1/observations/batch` schema.
+const OBSERVATIONS_BATCH_MAX_IDS = 100;
+
 const observationsBatchSchema = z.object({
-  ids: integerArrayLike,
+  ids: integerArrayLike.pipe(z.array(z.number().int()).max(OBSERVATIONS_BATCH_MAX_IDS)),
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
+  projects: stringArrayLike.optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
@@ -72,6 +100,13 @@ const sdkSessionsBatchSchema = z.object({
 // caller may hold either (search/list hands back the former, a transcript or an
 // observation ref the latter). Required and non-empty on purpose — this route
 // must never be a way to page the whole table of raw payloads.
+//
+// The array is capped for the same reason: each id is a separate lookup, and
+// `limit` only trims the rows that come back (`getToolUsesByIds` applies its own
+// default when `limit` is omitted). 100 matches the observation batch ceiling
+// and the adapters' advertised `maxItems`.
+const TOOL_USES_BATCH_MAX_IDS = 100;
+
 const toolUsesBatchSchema = z.object({
   ids: z.preprocess((value) => {
     if (Array.isArray(value)) return value;
@@ -85,7 +120,7 @@ const toolUsesBatchSchema = z.object({
       return value.split(',').map((part) => part.trim()).filter(Boolean);
     }
     return value;
-  }, z.array(z.union([z.number().int(), z.string()]))),
+  }, z.array(z.union([z.number().int(), z.string()])).max(TOOL_USES_BATCH_MAX_IDS)),
   limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
   contentSessionId: z.string().optional(),
@@ -255,7 +290,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(observation);
+    // Same media projection as the paged feed and SSE (media/feed.ts).
+    res.json(withObservationMedia(observation, true));
   });
 
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
@@ -271,8 +307,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projectsParam = req.query.projects as string | undefined;
-    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const listedProjects = parseProjectList(req.query.projects);
+    const projects = listedProjects.length > 0 ? listedProjects : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
@@ -284,7 +320,7 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
+    const { ids, orderBy, limit, project, projects } = req.body as z.infer<typeof observationsBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
@@ -293,9 +329,10 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
+    const readKeys = projectReadKeysFor(store, project, projects);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, projects: readKeys, platformSource });
 
-    res.json(observations);
+    res.json(observations.map(observation => withObservationMedia(observation, true)));
   });
 
   /**
@@ -467,11 +504,32 @@ export class DataRoutes extends BaseRouteHandler {
     return null;
   }
 
+  /**
+   * Rows are committed gone — drop their fragments from the vector index too
+   * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
+   * them. Best-effort and in the background: rows are cleaned one at a time so
+   * a large session delete doesn't flood chroma-mcp, and a Chroma failure is
+   * logged per row and never blocks or undoes the delete.
+   */
+  private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
+    const chromaSync = this.dbManager.getChromaSync();
+    if (!chromaSync || rows.length === 0) return;
+    void (async () => {
+      for (const row of rows) {
+        try {
+          await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
+        } catch (error: unknown) {
+          logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
+        }
+      }
+    })();
+  }
+
   /** Production deletion surface: safety check and row delete for a single content row. */
   private deleteSyncedContent(
     req: Request,
     res: Response,
-    kind: ContentKind,
+    kind: IndexedRowKind,
     table: 'observations' | 'session_summaries' | 'user_prompts',
   ): void {
     let originLocalId: string;
@@ -500,6 +558,8 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
+
+    this.scheduleChromaRowCleanup([{ kind, id: originLocalId }]);
     emitContextInvalidation('all', `delete-${kind}`, 'removal');
 
     // Only after the delete committed: open viewer tabs drop the row live.
@@ -631,25 +691,25 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    type ChildRow = { kind: ContentKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+    type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
     const childRows: ChildRow[] = [];
 
     if (sessionRow.memory_session_id) {
       const observations = store.db.prepare(
         `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
       ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...observations.map(row => ({ kind: 'observation' as ContentKind, table: 'observations' as const, id: row.id })));
+      childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
 
       const summaries = store.db.prepare(
         `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
       ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...summaries.map(row => ({ kind: 'summary' as ContentKind, table: 'session_summaries' as const, id: row.id })));
+      childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
     }
 
     const prompts = store.db.prepare(
       `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
     ).all(sessionRow.id) as Array<{ id: string }>;
-    childRows.push(...prompts.map(row => ({ kind: 'prompt' as ContentKind, table: 'user_prompts' as const, id: row.id })));
+    childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
 
     const cloudSync = this.dbManager.getCloudSync();
 
@@ -681,6 +741,7 @@ export class DataRoutes extends BaseRouteHandler {
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
     })();
     emitContextInvalidation('all', 'delete-session', 'removal');
+    this.scheduleChromaRowCleanup(childRows);
 
     // Only after the delete committed: open viewer tabs drop the session live.
     this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
@@ -693,7 +754,16 @@ export class DataRoutes extends BaseRouteHandler {
     // #2756 — additive: sessions currently parked in waitForSlot, never a
     // breaking change to existing isProcessing/queueDepth consumers.
     const parkedSessions = getParkedSlotWaiterCount();
-    res.json({ isProcessing, queueDepth, parkedSessions });
+    // #5374 — additive: the observer health ledger's last successful store,
+    // so a silently stalled pipeline is visible while isProcessing and
+    // /api/health keep reporting green (one installation went 26 h with no
+    // saves behind an "ok" health check).
+    const lastSuccessfulStoreAt = readObserverHealth()?.lastSuccessAt ?? null;
+    // #5405 — additive: sessions the response-stall pacer abandoned, with the
+    // messages they hold, so a stuck-looking queue can be told apart from a
+    // busy one. Reporting only — nothing here resumes or discards them.
+    const abandonedStallSessions = this.sessionManager.getAbandonedStallSessions();
+    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
@@ -728,6 +798,13 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+    // An import writes arbitrary sessions, summaries, observations and
+    // prompts, so other localhost pages may not trigger it. Origin-less
+    // clients (the CLI import) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Imports from a different localhost origin are not allowed' });
+      return;
+    }
     const { sessions, summaries, observations, prompts } = req.body;
 
     const stats = {
@@ -742,6 +819,11 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const importedMemorySessionIds = new Map<string, string>();
+    const remapImportedMemorySession = <T extends { memory_session_id: string }>(row: T): T => {
+      const memorySessionId = importedMemorySessionIds.get(row.memory_session_id);
+      return memorySessionId === undefined ? row : { ...row, memory_session_id: memorySessionId };
+    };
     const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
     const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
     const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
@@ -785,6 +867,13 @@ export class DataRoutes extends BaseRouteHandler {
 
     importEachRow('sessions', sessions, (session) => {
       const result = store.importSdkSession(session);
+      if (typeof session.memory_session_id === 'string' && session.memory_session_id.trim() !== '') {
+        // An existing content session may already have a different observer id.
+        // Keep its registered identity and attach the imported children to it;
+        // register the exported id only when the local session has none yet.
+        const memorySessionId = store.ensureMemorySessionIdRegistered(result.id, session.memory_session_id);
+        importedMemorySessionIds.set(session.memory_session_id, memorySessionId);
+      }
       rememberSessionContext(session, result.id);
       if (result.imported) {
         stats.sessionsImported++;
@@ -794,7 +883,7 @@ export class DataRoutes extends BaseRouteHandler {
     });
 
     importEachRow('summaries', summaries, (summary) => {
-      const result = store.importSessionSummary(summary);
+      const result = store.importSessionSummary(remapImportedMemorySession(summary));
       if (result.imported) {
         stats.summariesImported++;
       } else {
@@ -805,10 +894,11 @@ export class DataRoutes extends BaseRouteHandler {
     const importedObservations: Array<{ id: number; obs: any }> = [];
     if (Array.isArray(observations)) {
       importEachRow('observations', observations, (obs) => {
-        const result = store.importObservation(obs);
+        const observation = remapImportedMemorySession(obs);
+        const result = store.importObservation(observation);
         if (result.imported) {
           stats.observationsImported++;
-          importedObservations.push({ id: result.id, obs });
+          importedObservations.push({ id: result.id, obs: observation });
         } else {
           stats.observationsSkipped++;
         }
@@ -856,7 +946,7 @@ export class DataRoutes extends BaseRouteHandler {
             obs.created_at_epoch,
             platformSource
           ).catch(err => {
-            logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
+            logChromaWriteFailure('CHROMA', 'Import ChromaDB sync failed', { id }, err);
           });
         };
 

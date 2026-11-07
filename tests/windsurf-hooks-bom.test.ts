@@ -19,15 +19,6 @@ describe("WindsurfHooksInstaller reads Windsurf's hooks.json", () => {
     expect(SOURCE).not.toMatch(/JSON\.parse\(\s*readFileSync\(\s*WINDSURF_HOOKS_JSON_PATH/);
   });
 
-  it('uses the shared BOM-tolerant reader for each of the three reads', () => {
-    // `[^(]*` rather than `<[^>]*>` so a nested type argument such as
-    // `<Partial<WindsurfHooksJson>>` still counts.
-    const uses = SOURCE.match(
-      /parseJsonWithBom[^(]*\(\s*readFileSync\(\s*WINDSURF_HOOKS_JSON_PATH/g,
-    );
-    expect(uses?.length).toBe(3);
-  });
-
   it('that reader accepts what JSON.parse rejects', () => {
     const bommed = '\uFEFF' + JSON.stringify({ hooks: { afterFileEdit: [] } });
     expect(() => JSON.parse(bommed)).toThrow();

@@ -2,7 +2,7 @@
  * Forward mode (Phase 12 step 5): `sync.cmem.ai` keeps answering every
  * shipped client, but each /v1/sync/* request is proxied verbatim to the
  * Supabase `cmem-sync` Edge Function. No Postgres, no auth here — the
- * upstream authenticates. Same idea as workers/sync-hub FORWARD_ORIGIN.
+ * upstream authenticates. Same idea as services/sync-hub FORWARD_ORIGIN.
  *
  * - /health stays local (Fly check).
  * - /v1/sync/ws answers 410: the legacy socket is retired. Old clients treat
@@ -11,7 +11,7 @@
  * - /internal/v1/* answers 410: Pro reads Supabase directly after its merge.
  */
 import { errorResponse, json } from "./auth";
-import type { SyncApiEnv } from "./env";
+import { formatHostForUrl, type SyncApiEnv } from "./env";
 
 const UPSTREAM_RETRY_AFTER_SECONDS = "5";
 
@@ -20,6 +20,7 @@ const FORWARDED_REQUEST_HEADERS = [
 	"X-User-Id",
 	"X-Device-Id",
 	"X-Device-Name",
+	"X-Sync-Capabilities",
 	"Content-Type",
 	"Content-Encoding",
 	"Accept",
@@ -159,7 +160,7 @@ export function startForwardProxy(env: SyncApiEnv): ForwardProxyApp {
 		fetch: (request) => handleForwardRequest(request, forwardOrigin),
 	});
 	const host = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
-	const url = `http://${host}:${server.port}`;
+	const url = `http://${formatHostForUrl(host)}:${server.port}`;
 	const stop = async (): Promise<void> => {
 		server.stop(true);
 	};

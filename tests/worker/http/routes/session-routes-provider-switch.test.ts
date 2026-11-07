@@ -19,11 +19,18 @@ import { logger } from '../../../../src/utils/logger.js';
 import * as realProviderDispatch from '../../../../src/services/worker/provider-dispatch.js';
 const realProviderDispatchSnapshot = { ...realProviderDispatch };
 
-const providerSelectionBox: { current: 'claude' | 'gemini' | 'openrouter' | 'codex' } = { current: 'claude' };
+const providerSelectionBox: {
+  current: 'claude' | 'gemini' | 'openrouter' | 'codex';
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex';
+} = { current: 'claude' };
 
 mock.module('../../../../src/services/worker/provider-dispatch.js', () => ({
   ...realProviderDispatchSnapshot,
-  selectProviderForGenerator: () => ({ provider: providerSelectionBox.current, gatewayProbeClaimId: null }),
+  selectProviderForGenerator: () => ({
+    provider: providerSelectionBox.current,
+    gatewayProbeClaimId: null,
+    fallbackFrom: providerSelectionBox.fallbackFrom ?? null,
+  }),
   getSelectedProvider: () => providerSelectionBox.current,
 }));
 
@@ -119,6 +126,8 @@ function makeRoutes(session: ActiveSession, agents: {
     getSession: mock((id: number) => (id === session.sessionDbId ? session : undefined)),
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
+    // A start refused under a quota/auth cooldown discards buffered work.
+    discardBufferedWork: mock(() => 1),
   };
   const completionHandler = {
     finalizeSession: mock(() => Promise.resolve()),
@@ -179,6 +188,7 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
   // guaranteed to run before the guard's "after" check.
   beforeEach(() => {
     providerSelectionBox.current = 'claude';
+    providerSelectionBox.fallbackFrom = undefined;
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -383,10 +393,68 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     providerSelectionBox.current = 'openrouter';
     await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
 
-    // Nothing aborted, nothing switched — the existing log-only fallback.
+    // Nothing aborted mid-response: the switch waits for the next message
+    // boundary (#4846).
     expect(originalAbortController.signal.aborted).toBe(false);
     expect(session.abortController).toBe(originalAbortController);
     expect(session.generatorPromise).toBe(originalGeneratorPromise);
+    expect(session.currentProvider).toBe('claude');
+    expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+    expect(session.providerSwitchPending).toBe(true);
+
+    // Selection went back to the running provider before the boundary.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.providerSwitchPending).toBe(false);
+  });
+
+  it('asks a running stand-in to switch back once its primary is selected again (#4846)', async () => {
+    const sessionDbId = 900004;
+    const session = makeFakeSession(sessionDbId);
+
+    // A Claude stand-in for openrouter, mid-session: its generator never ends.
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    session.fallbackFrom = 'openrouter';
+    const originalAbortController = session.abortController;
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    // Not aborted mid-reply: the switch waits for the next message boundary.
+    expect(session.providerSwitchPending).toBe(true);
+    expect(originalAbortController.signal.aborted).toBe(false);
+    expect(session.currentProvider).toBe('claude');
+    expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+
+    // The primary failed again elsewhere; dispatch selects the stand-in again.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.providerSwitchPending).toBe(false);
+  });
+
+  it('does not switch a running generator away from the provider dispatch routes around (its own probe)', async () => {
+    const sessionDbId = 900008;
+    const session = makeFakeSession(sessionDbId);
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    expect(session.currentProvider).toBe('claude');
+
+    // The primary's probe is in flight on this generator, so dispatch sends
+    // other work to the fallback meanwhile.
+    providerSelectionBox.current = 'openrouter';
+    providerSelectionBox.fallbackFrom = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    expect(session.providerSwitchPending).toBe(false);
     expect(session.currentProvider).toBe('claude');
     expect(openRouterAgent.startSession).not.toHaveBeenCalled();
   });
@@ -535,12 +603,14 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
 describe('SessionRoutes — the parked-slot race at a quota window edge (quota fallback)', () => {
   // When the primary's window elapses, several sessions parked on a Claude
   // fallback slot can each be sent back to the primary; only one wins its
-  // probe. That race is accepted, with no mitigation code. What must never
-  // happen is a loser being finalized: its buffered work has to wait for its
-  // next event, intact. Nested one level in, so this cleanup runs before the
-  // file-level singleton guards check the breaker.
+  // probe. That race is accepted, with no mitigation code. A loser is refused
+  // by the quota breaker, so it discards its buffered work like any start
+  // refused under a spent quota (observer-lifecycle.md); it must still not be
+  // finalized, so its next event starts fresh work. Nested one level in, so
+  // this cleanup runs before the file-level singleton guards check the breaker.
   beforeEach(() => {
     providerSelectionBox.current = 'claude';
+    providerSelectionBox.fallbackFrom = undefined;
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -561,7 +631,7 @@ describe('SessionRoutes — the parked-slot race at a quota window edge (quota f
     resetQuotaCooldownsForTesting();
   });
 
-  it('a parked session that loses the primary probe starts nothing and keeps its work', async () => {
+  it('a parked session that loses the primary probe starts nothing and discards its work, without finalizing', async () => {
     const sessionDbId = 900101;
     const session = makeFakeSession(sessionDbId);
     registerFakeOccupant('occupant-for-900101');
@@ -584,8 +654,10 @@ describe('SessionRoutes — the parked-slot race at a quota window edge (quota f
 
     expect(isSessionParkedForSlot(sessionDbId)).toBe(false);
     expect(geminiAgent.startSession).not.toHaveBeenCalled();
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledTimes(1);
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledWith(sessionDbId);
+    expect(session.pausedReason).toBe('quota');
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
-    expect(session.conversationHistory).toHaveLength(1);
   });
 });

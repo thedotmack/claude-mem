@@ -22,6 +22,11 @@ const fixture = String.raw`
         return;
       }
       yield { type: 'system', subtype: 'init', session_id: 'new-session' };
+      if (scenario.includes('signed-out')) {
+        // What the SDK returns when the Claude CLI has no credential.
+        yield { type: 'result', session_id: 'new-session', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' };
+        return;
+      }
       if (scenario.includes('query')) yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Partial answer' }] } };
       if (scenario.includes('throw-before')) throw new Error('network failed before result');
       if (scenario.includes('missing')) return;
@@ -31,20 +36,24 @@ const fixture = String.raw`
   } }));
   // These external boundaries are replaced so the fixture never reads host credentials or starts Claude.
   mock.module('./src/shared/EnvManager.ts', () => ({ buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH }) }));
-  mock.module('./src/shared/find-claude-executable.ts', () => ({ findClaudeExecutable: () => '/fixture/claude' }));
+  mock.module('./src/shared/find-claude-executable.ts', () => ({ findClaudeExecutable: () => '/fixture/claude', isClaudeExecutableUnspawnable: () => false }));
   const { KnowledgeAgent } = await import('./src/services/worker/knowledge/KnowledgeAgent.ts');
   const { CorpusStore } = await import('./src/services/worker/knowledge/CorpusStore.ts');
+  const { logger } = await import('./src/utils/logger.ts');
+  let sinkErrors = [];
+  logger.setErrorSink((error) => sinkErrors.push(error.message));
   const store = new CorpusStore();
   const agent = new KnowledgeAgent(store);
   const outcomes = [];
-  for (scenario of ['prime-error', 'query-error', 'prime-is-error', 'query-is-error', 'prime-subtype-error', 'query-subtype-error', 'prime-throw-before', 'query-throw-before', 'prime-missing', 'query-missing', 'prime-success', 'query-success', 'prime-success-throw-after', 'query-success-throw-after', 'query-resume-not-found']) {
+  for (scenario of ['prime-error', 'query-error', 'prime-is-error', 'query-is-error', 'prime-subtype-error', 'query-subtype-error', 'prime-throw-before', 'query-throw-before', 'prime-missing', 'query-missing', 'prime-success', 'query-success', 'prime-success-throw-after', 'query-success-throw-after', 'query-resume-not-found', 'prime-signed-out', 'query-signed-out']) {
     sdkCalls = [];
+    sinkErrors = [];
     const corpus = { version: 1, name: scenario, description: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), filter: {}, stats: { observation_count: 0, token_estimate: 0, date_range: { earliest: '', latest: '' }, type_breakdown: {} }, system_prompt: 'Answer using only the corpus', session_id: scenario.includes('query') ? 'old-session' : null, observations: [] };
     store.write(corpus);
-    let result; let error;
+    let result; let error; let errorStatus; let errorCode;
     try { result = scenario.includes('query') ? await agent.query(corpus, 'question') : await agent.prime(corpus); }
-    catch (e) { error = String(e); }
-    outcomes.push({ scenario, result, error, memorySession: corpus.session_id, diskSession: store.read(corpus.name).session_id, sdkCalls });
+    catch (e) { error = String(e); errorStatus = e.statusCode; errorCode = e.code; }
+    outcomes.push({ scenario, result, error, errorStatus, errorCode, sinkErrors, memorySession: corpus.session_id, diskSession: store.read(corpus.name).session_id, sdkCalls });
   }
   console.log(JSON.stringify(outcomes));
 `;
@@ -53,6 +62,10 @@ interface Outcome {
   scenario: string;
   result?: any;
   error?: string;
+  errorStatus?: number;
+  errorCode?: string;
+  /** The messages of the errors that reached the logger's error sink. */
+  sinkErrors: string[];
   memorySession: string | null;
   diskSession: string | null;
   /** The `resume` session id of each SDK call, in order (null for a prime). */
@@ -102,6 +115,16 @@ describe('knowledge agent SDK outcomes', () => {
     }
     for (const scenario of ['prime-error', 'query-error', 'prime-subtype-error', 'query-subtype-error']) {
       expect(outcomeFor(scenario).error, scenario).toContain('turn budget exceeded');
+    }
+  });
+
+  it('rejects a signed-out CLI with a 401 that stays out of the error sink', () => {
+    for (const scenario of ['prime-signed-out', 'query-signed-out']) {
+      const entry = outcomeFor(scenario);
+      expect(entry.errorStatus, scenario).toBe(401);
+      expect(entry.errorCode, scenario).toBe('CLAUDE_NOT_AUTHENTICATED');
+      expect(entry.error, scenario).toContain('Run /login');
+      expect(entry.sinkErrors, scenario).toEqual([]);
     }
   });
 

@@ -11,7 +11,7 @@ import {
 } from './install-paths.js';
 import { writeMcpJsonConfig, PLACEHOLDER_CONTEXT } from './McpIntegrations.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { findContextBlockRange, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
 // agy hook schema (builtin `agy-customizations/docs/hooks.md`): each top-level
@@ -32,6 +32,7 @@ interface AntigravityHookGroup {
 
 interface AntigravityNamedHook {
   enabled?: boolean;
+  SessionStart?: AntigravityHookHandler[];
   PreToolUse?: AntigravityHookGroup[];
   PostToolUse?: AntigravityHookGroup[];
   PreInvocation?: AntigravityHookHandler[];
@@ -66,11 +67,11 @@ interface AntigravitySettingsJson {
 // Antigravity CLI (`agy`) shares Gemini CLI's `~/.gemini/` config tree for
 // context (GEMINI.md) and MCP, but — contrary to an earlier assumption — it
 // does NOT read lifecycle hooks from `settings.json`. Confirmed against
-// `agy` 1.2.1 (issue #4057): the CLI loads hook definitions from a dedicated
-// `hooks.json` and fires the `PreToolUse` / `PostToolUse` / `PreInvocation` /
-// `PostInvocation` / `Stop` events (the Gemini-CLI `BeforeTool` / `AfterTool`
-// / `BeforeAgent` / `SessionStart` names do not exist in the binary, so hooks
-// written under those keys never execute).
+// `agy` 1.2.1 (issue #4057, #4911): the CLI loads hook definitions from a dedicated
+// `hooks.json` and fires lifecycle events including `SessionStart`, `PreToolUse`,
+// `PostToolUse`, `PreInvocation`, `PostInvocation`, and `Stop` (the Gemini-CLI
+// `BeforeTool` / `AfterTool` / `BeforeAgent` settings.json names do not exist
+// in the binary, so hooks written under those keys in settings.json never execute).
 const GEMINI_CONFIG_DIR = path.join(homedir(), '.gemini');
 // Legacy path — retained ONLY so uninstall can strip hooks written by prior
 // (pre-#4057) versions that mistakenly registered them here. New installs
@@ -108,22 +109,36 @@ const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
 // builtin docs/hooks.md, "Supported Event Types").
 const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']);
 
-// The 5 hook events `agy` 1.2.1 actually fires (issue #4057), mapped to
-// claude-mem's internal handlers:
-//   - PreInvocation  → context     (inject memory before the agent runs; the
-//                                    adapter emits `injectSteps` on this path)
-//   - PreToolUse     → observation (records tool intent; adapter emits
-//                                    `{"decision":"allow"}` so the call proceeds)
+// The 5 hook events claude-mem registers in `agy`, mapped to its internal handlers:
+//   - SessionStart   → context     (inject startup memory once when a session starts;
+//                                    prevents invalidating LLM prefix cache on every
+//                                    turn/invocation, issue #4911)
+//   - PreInvocation  → session-init (agy has no prompt-submit hook. Records the
+//                                    prompt on the first model call of a user turn
+//                                    only; a follow-up call after a tool step gets
+//                                    file-context for the files that step read.
+//                                    See runAntigravityPreInvocation, #5078)
 //   - PostToolUse    → observation (records the tool result)
 //   - PostInvocation → observation (records the assistant response, pulled from
 //                                    the transcript's PLANNER_RESPONSE node)
 //   - Stop           → summarize   (session/turn end → summary)
-// The old Gemini-CLI names (SessionStart/BeforeAgent/AfterAgent/BeforeTool/
-// AfterTool/Notification/PreCompress) are NOT present in the agy binary and
-// were never executed.
+// PreToolUse is not registered. A PreToolUse hook must answer with a decision,
+// and agy treats "allow" as auto-approval, so a `*`-matched observation hook
+// there skipped agy's own permission prompt for every tool and recorded each
+// call twice (#5078). Observations come from PostToolUse, as on Claude Code.
+// Note: SessionStart is the official agy lifecycle event for startup context injection
+// (builtin `agy-customizations/docs/hooks.md`). Mapping PreInvocation to context
+// injected the memory timeline into every model call, destroying prefix cache hit
+// rates (#4911). PreInvocation → session-init doesn't bring that back: it injects
+// nothing on most calls. It injects only (a) file-context after a tool step read a
+// file with history, deduped per session and file, so a file's timeline is injected
+// once until a newer observation lands, and (b) semantic context on a new user turn
+// when CLAUDE_MEM_SEMANTIC_INJECT is on (default off).
+// Legacy Gemini-CLI names (BeforeAgent/AfterAgent/BeforeTool/AfterTool/Notification/
+// PreCompress) are not present in agy.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
-  'PreInvocation': 'context',
-  'PreToolUse': 'observation',
+  'SessionStart': 'context',
+  'PreInvocation': 'session-init',
   'PostToolUse': 'observation',
   'PostInvocation': 'observation',
   'Stop': 'summarize',
@@ -135,8 +150,11 @@ const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
 // hook with exit status 1). On Windows, a space inside the path can't be
 // quoted away either, so resolve the 8.3 short path to remove the space; if 8.3
 // generation is disabled we fall back to the raw path with a warning rather
-// than blocking the install.
-function toSpaceFreePath(filePath: string): string {
+// than blocking the install. `%I`, not `%~I`: this runs at the cmd command
+// line, where `%~I` is a syntax error ("%~I was unexpected at this time"),
+// so every lookup failed and paths with spaces were never shortened.
+// Exported for tests.
+export function toSpaceFreePath(filePath: string): string {
   if (!filePath.includes(' ')) return filePath;
   if (process.platform !== 'win32') {
     console.warn(
@@ -148,7 +166,7 @@ function toSpaceFreePath(filePath: string): string {
   }
   try {
     const shortPath = execSync(
-      `for %~I in ("${filePath}") do @echo %~sI`,
+      `for %I in ("${filePath}") do @echo %~sI`,
       { shell: 'cmd.exe', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
     ).trim();
     if (shortPath && !shortPath.includes(' ')) return shortPath;
@@ -199,8 +217,8 @@ function createHookHandler(
 // Build the canonical agy hooks.json fragment for claude-mem. Top-level key is
 // the hook NAME (`claude-mem`); each event uses the shape agy expects — grouped
 // (matcher + hooks) for PreToolUse/PostToolUse, flat handler arrays for
-// PreInvocation/PostInvocation/Stop. Exported for the schema contract tests
-// (issue #4196).
+// SessionStart/PostInvocation/Stop. Exported for the schema contract tests
+// (issue #4196, #4911).
 export function buildAntigravityHooksConfig(
   bunPath: string,
   workerServicePath: string,
@@ -280,6 +298,15 @@ function mergeNamedHook(
   incoming: AntigravityNamedHook,
 ): AntigravityNamedHook {
   const merged: Record<string, unknown> = { ...(existing ?? {}) };
+
+  // Prior versions of claude-mem (#4057) mapped context to PreInvocation,
+  // which injected context on every turn and invalidated prefix caching (#4911).
+  // Drop whatever PreInvocation entry the hook has; the loop below re-adds the
+  // current session-init mapping, so a stale `context` handler never survives.
+  delete merged.PreInvocation;
+  // Prior versions also registered PreToolUse, which auto-approved every tool
+  // call (#5078).
+  delete merged.PreToolUse;
 
   for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
     const value = (incoming as Record<string, unknown>)[event];
@@ -485,15 +512,16 @@ function removeClaudeMemFromMcpConfig(mcpConfigPath: string): boolean {
   return true;
 }
 
-function removeContextTagBlock(filePath: string): boolean {
+export function removeContextTagBlock(filePath: string): boolean {
   if (!existsSync(filePath)) return false;
 
-  let content = readFileSync(filePath, 'utf-8');
-  const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
-  if (!contextRegex.test(content)) return false;
+  const content = readFileSync(filePath, 'utf-8');
+  const block = findContextBlockRange(content);
+  if (!block) return false;
 
-  content = content.replace(contextRegex, '');
-  writeFileSync(filePath, content);
+  const start = content[block.start - 1] === '\n' ? block.start - 1 : block.start;
+  const end = content[block.end] === '\n' ? block.end + 1 : block.end;
+  writeFileSync(filePath, content.slice(0, start) + content.slice(end));
   return true;
 }
 
@@ -592,11 +620,13 @@ function removeAntigravityHooksFromSettings(): void {
 }
 
 // Count the underlying handler objects in a named hook (used for the uninstall
-// summary so grouped and flat events are both counted).
+// summary so grouped and flat events are both counted). Every event on the hook
+// is counted, since uninstall removes the whole hook, including the PreToolUse
+// entry an older install left there (#5078).
 function countNamedHookHandlers(namedHook: AntigravityNamedHook): number {
   let count = 0;
 
-  for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+  for (const event of Object.keys(namedHook)) {
     const value = (namedHook as Record<string, unknown>)[event];
     if (!Array.isArray(value)) continue;
 
@@ -634,16 +664,30 @@ export function removeClaudeMemHooks(
 }
 
 // What `status` reports for a hooks.json: the events the named `claude-mem`
-// hook covers, and how many claude-mem handlers a pre-#4196 install left under
-// top-level event keys. Other tools' entries there are not counted, because
-// re-running install only migrates claude-mem's. Exported for tests (#4196).
+// hook covers, how many claude-mem handlers a pre-#4196 install left under
+// top-level event keys, and whether a stale pre-#4911 PreInvocation handler
+// remains registered. Other tools' entries there are not counted, because
+// re-running install only migrates claude-mem's. Exported for tests (#4196, #4911).
 export function describeAntigravityHooks(
   config: AntigravityHooksConfig,
-): { installedEvents: string[]; legacyHandlerCount: number } {
+): { installedEvents: string[]; legacyHandlerCount: number; hasStalePreInvocation: boolean } {
   const installedEvents: string[] = [];
+  let hasStalePreInvocation = false;
   const namedHook = config[HOOK_NAME];
   if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
+    // PreInvocation is current when it routes to session-init; only the
+    // pre-#4911 handler that routed it to `context` is stale, and that one is
+    // not the mapped event, so it isn't listed as installed.
+    const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
+    if (
+      Array.isArray(preInvocation) &&
+      preInvocation.some((h: any) => typeof h?.command === 'string' && /\bcontext\s*$/.test(h.command))
+    ) {
+      hasStalePreInvocation = true;
+    }
+
     for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+      if (event === 'PreInvocation' && hasStalePreInvocation) continue;
       const value = (namedHook as Record<string, unknown>)[event];
       if (Array.isArray(value) && value.length > 0) {
         installedEvents.push(event);
@@ -653,7 +697,7 @@ export function describeAntigravityHooks(
 
   // stripLegacyEventHooks replaces top-level keys on the copy only.
   const legacyHandlerCount = stripLegacyEventHooks({ ...config });
-  return { installedEvents, legacyHandlerCount };
+  return { installedEvents, legacyHandlerCount, hasStalePreInvocation };
 }
 
 export function checkAntigravityCliHooksStatus(): number {
@@ -676,9 +720,9 @@ export function checkAntigravityCliHooksStatus(): number {
     return 0;
   }
 
-  const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(hooksConfig);
+  const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(hooksConfig);
 
-  if (installedEvents.length === 0) {
+  if (installedEvents.length === 0 && !hasStalePreInvocation) {
     console.log('Hooks: Not installed');
     console.log('Run: claude-mem install --ide antigravity\n');
   } else {
@@ -689,6 +733,13 @@ export function checkAntigravityCliHooksStatus(): number {
       const internalEvent = ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
       console.log(`  ${event} → ${internalEvent}`);
     }
+  }
+
+  // A pre-#4911 install leaves a named PreInvocation handler that injects context
+  // on every invocation, busting prefix cache. Warn the user to migrate.
+  if (hasStalePreInvocation) {
+    console.log(`\nStale hooks: PreInvocation context handler found (pre-#4911). This invalidates LLM prefix caching on every invocation.`);
+    console.log('Re-run install to migrate: claude-mem install --ide antigravity\n');
   }
 
   // A pre-#4196 install leaves claude-mem under top-level event keys, which agy

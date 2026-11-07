@@ -48,26 +48,34 @@ function parsePort(value: unknown): number | null {
   return parsed;
 }
 
-function looksLikeOpenAICompatible(body: string): boolean {
+function looksLikeOpenAISuccess(body: string): boolean {
   try {
     const parsed = JSON.parse(body) as {
       object?: unknown;
       data?: unknown;
       choices?: unknown;
-      error?: { message?: unknown; type?: unknown };
     };
-    if (!parsed || typeof parsed !== 'object') return false;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
     if (Array.isArray(parsed.choices)) return true;
-    if (Array.isArray(parsed.data) && (parsed.object === 'list' || parsed.data.some((item) => item && typeof item === 'object'))) {
+    if (parsed.object === 'list') return true;
+    if (Array.isArray(parsed.data) && parsed.data.some((item) => item && typeof item === 'object')) {
       return true;
-    }
-    if (parsed.error && typeof parsed.error === 'object') {
-      return typeof parsed.error.message === 'string' || typeof parsed.error.type === 'string';
     }
     return false;
   } catch {
     return false;
   }
+}
+
+function parseCurlHttpResponse(stdout: string): { ok: boolean; status: number; body: string } | null {
+  const lastNewline = stdout.lastIndexOf('\n');
+  const statusText = (lastNewline === -1 ? stdout : stdout.slice(lastNewline + 1)).trim();
+  const body = lastNewline === -1 ? '' : stdout.slice(0, lastNewline);
+  const status = Number(statusText);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    return null;
+  }
+  return { ok: status >= 200 && status < 300, status, body };
 }
 
 async function canBindLoopback(port: number): Promise<boolean> {
@@ -111,7 +119,7 @@ export async function probeHostObserverPort(port: number): Promise<HostObserverP
   };
 
   const models = await fetchLoopback('/v1/models', port, { headers });
-  if (models && looksLikeOpenAICompatible(models.body)) return 'observer';
+  if (models?.ok && looksLikeOpenAISuccess(models.body)) return 'observer';
 
   const completions = await fetchLoopback('/v1/chat/completions', port, {
     method: 'POST',
@@ -122,7 +130,7 @@ export async function probeHostObserverPort(port: number): Promise<HostObserverP
       max_tokens: 1,
     }),
   });
-  if (completions && looksLikeOpenAICompatible(completions.body)) return 'observer';
+  if (completions?.ok && looksLikeOpenAISuccess(completions.body)) return 'observer';
 
   if (models || completions) return 'occupied';
   return (await canBindLoopback(port)) ? 'free' : 'occupied';
@@ -131,22 +139,25 @@ export async function probeHostObserverPort(port: number): Promise<HostObserverP
 /** Synchronous install-time probe. Does not start a shim. */
 export function probeHostObserverPortSync(port: number): HostObserverPortStatus {
   const auth = `Authorization: Bearer ${HOST_OBSERVER_DUMMY_API_KEY}`;
-  const models = spawnSync('curl', ['-sS', '-m', '1', '-H', auth, `http://127.0.0.1:${port}/v1/models`], {
+  const models = spawnSync('curl', [
+    '-sS', '-m', '1', '-w', '\n%{http_code}', '-H', auth,
+    `http://127.0.0.1:${port}/v1/models`,
+  ], {
     encoding: 'utf8',
     timeout: 2000,
   });
-  const modelsOut = (models.stdout ?? '').toString();
-  if (models.status === 0 && looksLikeOpenAICompatible(modelsOut)) return 'observer';
+  const modelsResponse = parseCurlHttpResponse((models.stdout ?? '').toString());
+  if (modelsResponse?.ok && looksLikeOpenAISuccess(modelsResponse.body)) return 'observer';
 
   const completions = spawnSync('curl', [
-    '-sS', '-m', '1', '-H', auth, '-H', 'Content-Type: application/json',
+    '-sS', '-m', '1', '-w', '\n%{http_code}', '-H', auth, '-H', 'Content-Type: application/json',
     '-d', '{"model":"host-observer-probe","messages":[{"role":"user","content":"ping"}],"max_tokens":1}',
     `http://127.0.0.1:${port}/v1/chat/completions`,
   ], { encoding: 'utf8', timeout: 2000 });
-  const completionsOut = (completions.stdout ?? '').toString();
-  if (completions.status === 0 && looksLikeOpenAICompatible(completionsOut)) return 'observer';
+  const completionsResponse = parseCurlHttpResponse((completions.stdout ?? '').toString());
+  if (completionsResponse?.ok && looksLikeOpenAISuccess(completionsResponse.body)) return 'observer';
 
-  if ((models.status === 0 && modelsOut) || (completions.status === 0 && completionsOut)) {
+  if (modelsResponse || completionsResponse) {
     return 'occupied';
   }
 

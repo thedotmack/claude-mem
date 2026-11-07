@@ -113,6 +113,11 @@ Ingest is safe to re-run. Observations are content-hash deduplicated on insert,
 so already-imported files are reported as `already-imported` and skipped — only
 new or changed files are stored.
 
+Changed prose is stored even when the file keeps the same title and
+`CLAUDE_MEM_DEDUP_ENABLED=true`. Native notes use exact content deduplication;
+the title-only merge for generated observations does not discard note revisions
+or distinct topic files sharing a title. Earlier revisions remain available.
+
 The summary line reports the outcome:
 
 ```

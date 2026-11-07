@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
+import { OpenRouterProvider, withTurnImages, buildOpenRouterRequestBody } from '../../src/services/worker/OpenRouterProvider.js';
 import { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -102,5 +102,42 @@ describe('OpenRouterProvider request guard', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.messages.length).toBeGreaterThan(0);
+  });
+});
+
+describe('withTurnImages (Phase 4 request boundary)', () => {
+  const image = { requestLabel: 'event1_image1', eventOrdinal: 1, eventKey: 'k', attachmentId: 'a', eventLabel: 'event1_image1', dataUrl: 'data:image/webp;base64,UklGRg==' };
+  const messages = [
+    { role: 'system' as const, content: 'system' },
+    { role: 'user' as const, content: 'first' },
+    { role: 'assistant' as const, content: 'reply' },
+    { role: 'user' as const, content: 'turn' },
+  ];
+
+  it('returns the same string messages when the turn has no images', () => {
+    expect(withTurnImages(messages, undefined)).toBe(messages);
+    expect(withTurnImages(messages, [])).toBe(messages);
+  });
+
+  it('changes only the final user message into text-first parts', () => {
+    const result = withTurnImages(messages, [image])!;
+    expect(result.slice(0, -1)).toEqual(messages.slice(0, -1));
+    expect(result.at(-1)).toEqual({ role: 'user', content: [
+      { type: 'text', text: 'turn' },
+      { type: 'text', text: 'Images attached to this turn: event1_image1. Each image follows a line [image LABEL]. In each <observation> informed by an image, list the label inside <attachments><attachment>LABEL</attachment></attachments>. Use only these labels.' },
+      { type: 'text', text: '[image event1_image1]' },
+      { type: 'image_url', image_url: { url: image.dataUrl } },
+    ] });
+    expect(messages.at(-1)!.content).toBe('turn');
+  });
+
+  it('refuses to attach images when the final message is not a user turn', () => {
+    expect(withTurnImages(messages.slice(0, -1), [image])).toBeNull();
+  });
+
+  it('builds a text-only body byte-identical to the string-message body', () => {
+    const input = { model: 'm', fallbackModels: [], apiUrl: 'https://openrouter.ai/api/v1/chat/completions', maxOutputTokens: 4096 };
+    expect(JSON.stringify(buildOpenRouterRequestBody({ ...input, messages: withTurnImages(messages, undefined)! })))
+      .toBe(JSON.stringify(buildOpenRouterRequestBody({ ...input, messages })));
   });
 });

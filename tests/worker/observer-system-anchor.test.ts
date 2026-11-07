@@ -35,7 +35,8 @@ const OPENROUTER_CONFIG = {
 
 const GEMINI_CONFIG = { apiKey: 'test-key', model: 'gemini-flash-latest', rateLimitingEnabled: false };
 
-let outputTokensSetting = '';
+// '' means unset; any other value (even null, [] or {}) is written to settings as-is.
+let outputTokensSetting: unknown = '';
 let spies: ReturnType<typeof spyOn>[] = [];
 
 beforeEach(() => {
@@ -43,7 +44,7 @@ beforeEach(() => {
   spies = [
     spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
-      ...(outputTokensSetting ? { CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: outputTokensSetting } : {}),
+      ...(outputTokensSetting !== '' ? { CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: outputTokensSetting } : {}),
     })),
   ];
 });
@@ -228,6 +229,40 @@ describe('CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
     for (const invalid of ['2k', '100', '9999999', '-1', '4096.5']) {
       outputTokensSetting = invalid;
       expect(resolveObserverMaxOutputTokens()).toBe(DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS);
+    }
+  });
+
+  it('reports a typed cap it ignores, once per value, instead of falling back silently', () => {
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      outputTokensSetting = '';
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).not.toHaveBeenCalled();
+      outputTokensSetting = '128';
+      resolveObserverMaxOutputTokens();
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0][1])).toContain('Ignoring CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS "128"');
+      outputTokensSetting = '3k';
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('reports a cap of the wrong JSON type (null, [], {}) instead of falling back silently', () => {
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      for (const [wrongType, shown] of [[null, 'null'], [[], '[]'], [{}, '{}']] as const) {
+        warnSpy.mockClear();
+        outputTokensSetting = wrongType;
+        expect(resolveObserverMaxOutputTokens()).toBe(DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(String(warnSpy.mock.calls[0][1])).toContain(`Ignoring CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS ${shown}`);
+      }
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 

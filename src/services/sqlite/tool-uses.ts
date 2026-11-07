@@ -11,11 +11,13 @@
 // Receipt freeze 2026-09-06: this table carries tool IDENTITY only. Dollars
 // live on OpenRouter call-time stamps / the Receipt spend log. `or_generation_id`
 // and `or_session_id` are nullable JOIN keys back to those lines — never a
-// `cost_usd` / micros column here. See reports/tool-sqlite-offload/RECEIPT-JOIN.md.
+// `cost_usd` / micros column here. See docs/receipt-join.md.
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
  * Soft cap per stored payload field. The Pro hook envelope already truncates
@@ -39,40 +41,12 @@ export const MAX_TOOL_PAYLOAD_BYTES = 64 * 1024;
  * a third — the table grows with every read instead of every tool call. The
  * other layers are gated for the same reason at a smaller scale.
  *
- * This gates only the `tool_uses` backup write. The observation generator still
- * sees these calls exactly as it does today; nothing about that path changes.
+ * The same lightweight classifier gates hook/ingest observation generation:
+ * retrieval must not create a new paid observation of its own previous output.
  * OpenClaw already drops `memory_*` before it ever reaches the worker
  * (`openclaw/src/index.ts:802`); the prefix is mirrored here so every other
  * adapter gets the same protection.
  */
-const RECURSIVE_MEMORY_TOOLS: ReadonlySet<string> = new Set([
-  'search',
-  'timeline',
-  'get_observations',
-  'get_tool_uses',
-  'session_start_context',
-  'observation_search',
-]);
-
-export function isRecursiveMemoryTool(toolName: string): boolean {
-  if (!toolName) return false;
-  if (toolName.startsWith('memory_')) return true;
-  if (!toolName.startsWith('mcp__')) return false;
-
-  // mcp__<server>__<tool>. Match the SERVER segment too: a different MCP
-  // server's generic `search` is a real tool call and belongs in the index.
-  const parts = toolName.split('__');
-  if (parts.length < 3) return false;
-  const server = parts[1].toLowerCase();
-  const tool = parts.slice(2).join('__');
-  const isClaudeMemServer = server.includes('claude-mem')
-    || server.includes('claude_mem')
-    || server.includes('mcp-search')
-    || server.includes('cmem');
-
-  return isClaudeMemServer && RECURSIVE_MEMORY_TOOLS.has(tool);
-}
-
 export interface ToolUseRow {
   id: number;
   tool_use_id: string;
@@ -331,11 +305,25 @@ function mapPlatformFilter(platformSource: string | undefined): { clause: string
 }
 
 /**
+ * Default row ceiling for `getToolUsesByIds` when the caller omits `limit`.
+ *
+ * The route caps the id array, but `tool_use_id` is only unique per
+ * `(content_session_id, tool_use_id)` — `upsertToolUse` stores the same id under
+ * a new session as a distinct row — so the id cap alone does not bound the row
+ * count. An omitted `limit` must not mean "every matching row", or a single
+ * accepted id can still page hundreds of raw payloads.
+ */
+export const TOOL_USES_BATCH_DEFAULT_ROWS = 100;
+
+/**
  * Layer-4 fetch: full tool bodies for an explicitly filtered set of ids.
  *
  * Accepts BOTH numeric `tool_uses.id` (what `queryToolUses` / the search index
  * hand back) and string `tool_use_id` (what a transcript or an observation ref
  * carries), because callers legitimately hold either one.
+ *
+ * The result is always bounded: an explicit `limit` wins, and an omitted `limit`
+ * falls back to `TOOL_USES_BATCH_DEFAULT_ROWS` rather than returning every row.
  */
 export function getToolUsesByIds(
   db: Database,
@@ -387,13 +375,13 @@ export function getToolUsesByIds(
     params.push(platform.param);
   }
 
-  const limitClause = options.limit && options.limit > 0 ? `LIMIT ${Math.floor(options.limit)}` : '';
+  const rowLimit = options.limit && options.limit > 0 ? Math.floor(options.limit) : TOOL_USES_BATCH_DEFAULT_ROWS;
 
   return db.prepare(`
     SELECT * FROM tool_uses
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at_epoch DESC
-    ${limitClause}
+    LIMIT ${rowLimit}
   `).all(...params) as ToolUseRow[];
 }
 
@@ -514,4 +502,43 @@ export function toolUsesTableExists(db: Database): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Opt-in retention for the raw tool I/O index. Deletes rows older than
+ * `retentionDays` that are linked to an observation that still exists, because
+ * that observation carries the distilled result. `observation_id` is not a
+ * foreign key, so deleting an observation leaves the link behind: a row whose
+ * observation is gone is, like a row with no `observation_id` at all, the only
+ * copy of that I/O and is never touched. `retentionDays` of 0 keeps
+ * everything. Freed pages are reused by SQLite; returning disk space to the OS
+ * is the job of VACUUM / auto_vacuum, not of this purge.
+ *
+ * Returns the number of rows removed.
+ */
+export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoch: number = Date.now()): number {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) return 0;
+  try {
+    if (!toolUsesTableExists(db)) return 0;
+    const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
+    const { changes } = db
+      .prepare(
+        `DELETE FROM tool_uses
+          WHERE observation_id IS NOT NULL
+            AND created_at_epoch < ?
+            AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
+      )
+      .run(cutoffEpoch);
+    if (changes > 0) {
+      logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
+        rows: changes,
+        retentionDays,
+      });
+    }
+    return changes;
+  } catch (error) {
+    logger.debug('DB', 'tool_uses retention purge skipped', {},
+      error instanceof Error ? error : new Error(String(error)));
+    return 0;
+  }
 }

@@ -24,7 +24,7 @@ describe('Claude Code SessionStart source', () => {
 
 interface SessionStartGroup {
   matcher?: string;
-  hooks: Array<{ command: string }>;
+  hooks: Array<{ command: string; args?: string[] }>;
 }
 
 const { hooks } = JSON.parse(readFileSync(
@@ -35,21 +35,21 @@ const { hooks } = JSON.parse(readFileSync(
 function commandsForSource(source: string): string[] {
   return hooks.SessionStart
     .filter(group => !group.matcher || new RegExp(group.matcher).test(source))
-    .flatMap(group => group.hooks.map(hook => hook.command));
+    .flatMap(group => group.hooks.map(hook => [hook.command, ...(hook.args ?? [])].join(' ')));
 }
 
 describe('Claude Code SessionStart hook matchers', () => {
   it('starts the worker on resume without running timeline injection', () => {
     const commands = commandsForSource('resume');
-    expect(commands.filter(command => command.includes('"$_P/scripts/worker-service.cjs" start'))).toHaveLength(1);
-    expect(commands.filter(command => command.includes(' hook claude-code context'))).toHaveLength(0);
+    expect(commands.filter(command => command === 'claude-mem start')).toHaveLength(1);
+    expect(commands.filter(command => command === 'claude-mem hook claude-code context')).toHaveLength(0);
   });
 
   for (const source of ['startup', 'clear', 'compact']) {
     it(`keeps timeline injection and worker startup on ${source}`, () => {
       const commands = commandsForSource(source);
-      expect(commands.filter(command => command.includes('"$_P/scripts/worker-service.cjs" start'))).toHaveLength(1);
-      expect(commands.filter(command => command.includes(' hook claude-code context'))).toHaveLength(1);
+      expect(commands.filter(command => command === 'claude-mem start')).toHaveLength(1);
+      expect(commands.filter(command => command === 'claude-mem hook claude-code context')).toHaveLength(1);
     });
   }
 });

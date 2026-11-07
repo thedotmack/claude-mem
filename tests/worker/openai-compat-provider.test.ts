@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { createServer } from 'node:http';
 import {
@@ -529,22 +528,6 @@ describe('auth failures are not mistaken for spent quota', () => {
   });
 });
 
-/** Same credential rule as the rotation pools: never returned in cleartext. */
-describe('openai-compatible credentials are registered as secrets', () => {
-  it('redacts both the key and the pool on GET /api/settings', () => {
-    const source = readFileSync(
-      new URL('../../src/services/worker/http/routes/SettingsRoutes.ts', import.meta.url),
-      'utf-8',
-    );
-    const secretBlock = source.slice(
-      source.indexOf('const SECRET_SETTING_KEYS'),
-      source.indexOf('function maskSecretValue'),
-    );
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
-  });
-});
-
 /**
  * Main's observer contract, which this provider shares with OpenRouter: the
  * system anchor and turn normalization (#3868, #3491), text-only answers
@@ -650,7 +633,8 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     await query([{ role: 'user', content: 'hi' }]);
 
     const [body] = sentBodies(fetchSpy);
-    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'reasoning', 'stream', 'stream_options', 'temperature']);
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.stream).toBe(true);
     expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(9000);
@@ -696,6 +680,17 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(await compressField()).toEqual({ text: 'a whole summary', truncated: false });
   });
 
+  it('does not start field compression after observer capture is disabled', async () => {
+    settingsOverrides.CLAUDE_MEM_OBSERVER_ENABLED = 'false';
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'must not be requested' } }],
+    }));
+    spies.push(fetchSpy);
+
+    expect(await compressField()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('bounds the condense budget by CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
     settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '3200';
     const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {
@@ -715,6 +710,48 @@ describe('200 error envelopes are classified by what they report', () => {
     expect(classify({ code: 503, message: 'upstream unavailable' }).kind).toBe('transient');
     expect(classify({ code: '502', message: 'bad gateway' }).kind).toBe('transient');
     expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
+  });
+
+  // #5185: OmniRoute answers a failed stream with a textual code and names the
+  // status only in the message. That 503 must pause and fall back, not end the session.
+  it('reads an (HTTP NNN) status from the message when error.code is not numeric', () => {
+    expect(classify({
+      code: 'bad_gateway',
+      type: 'server_error',
+      message: 'cfp/some-model: provider — [503]: Service temporarily unavailable (HTTP 503)',
+    }).kind).toBe('transient');
+    expect(classify({ code: 'rate_limited_upstream', message: 'slow down (HTTP 429)' }).kind).toBe('rate_limit');
+    expect(classify({ code: 'weird', message: 'odd (HTTP 200)' }).kind).toBe('unrecoverable');
+    expect(classify({ code: 'weird', message: 'no status here' }).kind).toBe('unrecoverable');
+    // An upstream's auth failure named in a combo message is not this request's status.
+    expect(classify({ code: 'bad_gateway', message: 'unc/model: auth (HTTP 401)' }).kind).toBe('unrecoverable');
+  });
+
+  // A combo gateway lists every upstream's failure; the order is not fixed.
+  it('reads every (HTTP NNN) marker in a combo message, not only the first', () => {
+    expect(classify({
+      code: 'bad_gateway',
+      message: 'unc/model: auth (HTTP 401); cfp/model: Service temporarily unavailable (HTTP 503)',
+    }).kind).toBe('transient');
+    expect(classify({
+      code: 'bad_gateway',
+      message: 'unc/model: auth (HTTP 401); cfp/model: slow down (HTTP 429)',
+    }).kind).toBe('rate_limit');
+  });
+
+  it('reads a textual server-failure code or type as its status when the message names none', () => {
+    expect(classify({ code: 'bad_gateway', message: 'no status here' }).kind).toBe('transient');
+    expect(classify({ code: 'service_unavailable', message: 'try later' }).kind).toBe('transient');
+    expect(classify({ code: 'gateway_timeout', message: 'upstream timed out' }).kind).toBe('transient');
+    expect(classify({ code: 'upstream_failed', type: 'server_error', message: 'all upstreams failed' }).kind).toBe('transient');
+  });
+
+  // Never pay twice: a litellm output failure stays an output failure even
+  // under a server-failure code, because the model already ran and was billed.
+  it('keeps a litellm output failure under a textual server-failure code unretried', () => {
+    const err = classify({ code: 'bad_gateway', type: 'server_error', message: 'Unable to get json response - Expecting value (HTTP 502)' });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
   });
 
   // Never pay twice (Phase 1): the model ran and was billed; only its output

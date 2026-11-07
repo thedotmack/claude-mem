@@ -1,0 +1,64 @@
+---
+title: "Notion Export"
+description: "Push each new claude-mem observation to a Notion database in real time."
+---
+
+claude-mem can copy every newly stored observation into a Notion database as it is captured. The export is off by default, runs in the background, and never slows down or breaks capture: if Notion is down or misconfigured, errors are logged and capture carries on.
+
+## Setup
+
+1. **Create an integration.** Go to [notion.so/profile/integrations](https://www.notion.so/profile/integrations), choose **New integration**, select your workspace, and copy the **Internal Integration Secret** (starts with `ntn_` or `secret_`). The integration needs *Read content*, *Update content*, and *Insert content*.
+2. **Create a database.** Any full-page or inline database works; its title column becomes the observation title.
+3. **Share the database with the integration.** Open the database, click **•••** → **Connections** → add your integration. Without this step Notion answers 404 and the export turns itself off.
+4. **Copy the database id.** It is the 32-character id in the database URL (`https://www.notion.so/<workspace>/<id>?v=...`). You can paste the whole URL; claude-mem extracts the id.
+5. **Configure claude-mem** in `~/.claude-mem/settings.json`, then restart the worker:
+
+```json
+{
+  "CLAUDE_MEM_NOTION_ENABLED": "true",
+  "CLAUDE_MEM_NOTION_TOKEN": "ntn_...",
+  "CLAUDE_MEM_NOTION_DATABASE_ID": "0123456789abcdef0123456789abcdef"
+}
+```
+
+Each setting can also be supplied as an environment variable of the same name. The token is masked by `GET /api/settings` and cannot be set through the viewer.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_NOTION_ENABLED` | `false` | Turn the export on |
+| `CLAUDE_MEM_NOTION_TOKEN` | — | Integration secret |
+| `CLAUDE_MEM_NOTION_DATABASE_ID` | — | Database id (dashed or not) or database URL |
+| `CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES` | `true` | Add any missing properties below on first run |
+
+## Database schema
+
+The database's existing title property (whatever it is named, e.g. `Name`) holds the observation title. If the title column has the same name as one of the properties below, the title wins and that property is not written. With auto-create on, the exporter adds the rest on its first run; with it off, create them yourself. Names and types must match exactly; a property that exists with a different type is skipped and logged.
+
+| Property | Type | Content |
+|----------|------|---------|
+| *(title)* | Title | Observation title |
+| `Export Key` | Text | `<source id>:<observation id>`, used for dedupe |
+| `Observation ID` | Number | claude-mem observation id on this computer |
+| `Type` | Select | `bugfix`, `feature`, `discovery`, ... |
+| `Project` | Select | Project name |
+| `Subtitle` | Text | Observation subtitle |
+| `Concepts` | Multi-select | Concept tags |
+| `Files Read` | Text | One path per line |
+| `Files Modified` | Text | One path per line |
+| `Created` | Date | When the observation was stored |
+| `Session ID` | Text | claude-mem memory session id |
+
+The page body holds the narrative as paragraphs, then a **Facts** heading with each fact as a bullet. A long body is sent 100 blocks at a time, so nothing is cut off.
+
+The source id is a random id created in `~/.claude-mem/notion-export-source-id` the first time the export runs. Observation ids are local to each computer, so the source id keeps two computers that export into the same database from overwriting each other's pages. It is not tied to any account.
+
+## How it behaves
+
+- **Written once.** Before creating a page the exporter looks for one with the same `Export Key`. If it finds one, it leaves that page as it is, so a retried or replayed observation never creates a duplicate or rewrites the first copy. Without an `Export Key` property it can only create.
+- **Non-blocking.** Observations go onto an in-memory queue (up to 1,000, about 11 minutes of backlog at Notion's rate limit; past that the oldest is dropped and each drop is logged as an error) and are sent in order by one background loop.
+- **Rate limited.** Requests are spaced at least 334 ms apart (about 3 per second, Notion's documented limit).
+- **Retries.** Rate limits (429), conflicts (409), server errors (5xx), timeouts and network failures are retried up to 5 times with exponential backoff (1s, 2s, 4s, ... capped at 60s). A 429's `Retry-After` header is honored. Other errors (such as a 400 validation error) skip that observation.
+- **Fails closed.** A 401, 403 or 404 means the token is wrong or the database is not shared; the exporter logs one error listing the observations it dropped, stops calling Notion until the settings change, and logs a warning for each observation it skips meanwhile.
+- **New observations only.** Observations captured from sessions and saved with `save_memory` are exported. Existing history is not backfilled, and bulk memory-file ingest is not exported. The queue lives in memory, so items still waiting when the worker stops are not sent.
+
+Text longer than Notion allows in a single property (200,000 characters) is cut there, with a warning. Errors are logged under the `NOTION` component in the worker log (`~/.claude-mem/logs/`). The token is never logged.

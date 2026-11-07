@@ -31,8 +31,9 @@ const fixture = String.raw`
         if (response === 'nested-ids') return json({ ids: [['obs_1_narrative']] });
         if (response === 'tool-error') return { isError: true, content: [{ type: 'text', text: 'owned lookup error' }] };
       }
-      const ids = args.ids ?? [...docs.keys()].filter(id => args.where.$and.every(condition => Object.entries(condition).every(([key, value]) => docs.get(id).metadata[key] === value)));
-      return json({ ids: ids.filter(id => docs.has(id)) });
+      const conditions = args.where ? (args.where.$and ?? [args.where]) : [];
+      const ids = (args.ids ?? [...docs.keys()].filter(id => conditions.every(condition => Object.entries(condition).every(([key, value]) => docs.get(id).metadata[key] === value)))).filter(id => docs.has(id));
+      return json({ ids, metadatas: ids.map(id => docs.get(id).metadata) });
     }
     if (tool === 'chroma_delete_documents') {
       for (const id of args.ids) { docs.delete(id); deleted.push(id); }

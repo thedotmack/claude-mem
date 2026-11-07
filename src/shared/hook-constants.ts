@@ -58,9 +58,11 @@ function isEnvFlagOn(value: string | undefined): boolean {
  *
  * When set, observation / file-context exit 0 in hookCommand before any stdin
  * or worker work, so users can turn off tool-call capture without editing the
- * shipped hooks.json. It does not stop the Windows console window: bash starts
- * the hook process before claude-mem runs (#3605). SessionStart /
- * UserPromptSubmit / Stop stay active.
+ * shipped hooks.json. The on-PATH `claude-mem` launcher (exec form, no shell,
+ * #3605) checks the same tool-hook flags before starting Bun; this check is the
+ * guard for every other entry path. SessionStart / UserPromptSubmit stay
+ * active here, and Stop is covered by its own switch
+ * (isSummarizeDisabledByEnv below), not by these flags.
  *
  * - CLAUDE_MEM_DISABLE_TOOL_HOOKS=1 — both tool hooks
  * - CLAUDE_MEM_DISABLE_OBSERVATION=1 — PostToolUse observation only
@@ -83,6 +85,32 @@ export function isToolHookDisabledByEnv(
     return true;
   }
   return false;
+}
+
+/**
+ * Opt-out gate for the Stop-hook session summary (#4734).
+ *
+ * Headless read-only runs (a `codex exec` review of a staged diff, dispatched
+ * under CLAUDE_MEM_DISABLE_OBSERVATION=1) still read session-start context but
+ * nothing they produce is worth keeping; without this switch every Stop still
+ * spools a summarize event, which costs one observer-model call and lands a
+ * `session_summaries` row describing an intermediate diff. When set, the
+ * summarize handler returns success without the summary or advisor capture,
+ * while the SessionStart / UserPromptSubmit reads keep working. The check runs
+ * in the handler, not in hookCommand's pre-stdin early-out, because Kimi routes
+ * PreCompact through the same handler and its context-marker clear must still
+ * run. Scoped to the summary on purpose: skipping the whole session-init
+ * event would also blind the context read (SessionInitResponse carries
+ * contextInjected), so that side waits until the read and write halves are
+ * separable.
+ *
+ * - CLAUDE_MEM_DISABLE_SUMMARY=1 — Stop summarize only
+ */
+export function isSummarizeDisabledByEnv(
+  event: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return event === 'summarize' && isEnvFlagOn(env.CLAUDE_MEM_DISABLE_SUMMARY);
 }
 
 /**

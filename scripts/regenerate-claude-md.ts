@@ -2,14 +2,12 @@
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
-import os from 'os';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { DB_PATH, USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
-const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 const OBSERVATION_LIMIT = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
 interface ObservationRow {
@@ -30,6 +28,7 @@ interface ObservationRow {
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 import { isDirectChild } from '../src/shared/path-utils.js';
 import { replaceTaggedContent } from '../src/utils/claude-md-utils.js';
+import { toBmpSafe } from '../src/utils/bmp-safe.js';
 
 const TYPE_ICONS: Record<string, string> = {
   'bugfix': '🔴',
@@ -252,7 +251,9 @@ function writeClaudeMdToFolderForRegenerate(folderPath: string, newContent: stri
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const finalContent = replaceTaggedContent(existingContent, newContent);
+  // #2787: the type markers and titles above can be astral emoji, and the
+  // block must stay BMP-only, as the worker's folder writer keeps it.
+  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);

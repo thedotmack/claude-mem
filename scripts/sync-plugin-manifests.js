@@ -10,8 +10,14 @@ const rootDir = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(rootDir, 'package.json');
 const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
+const qoderPluginPath = path.join(rootDir, '.qoder-plugin', 'plugin.json');
+const bundledQoderPluginPath = path.join(rootDir, 'plugin', '.qoder-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
+const claudeMarketplacePath = path.join(rootDir, '.claude-plugin', 'marketplace.json');
+const grokPluginPath = path.join(rootDir, '.grok-plugin', 'plugin.json');
+const dshPackagePath = path.join(rootDir, 'dsh', 'package.json');
+const openClawPluginPath = path.join(rootDir, 'openclaw', 'openclaw.plugin.json');
 const cursorPluginPaths = [
   path.join(rootDir, 'claude-mem-cursor', '.cursor-plugin', 'plugin.json'),
   path.join(rootDir, 'claude-mem-grok-bot', '.cursor-plugin', 'plugin.json'),
@@ -67,6 +73,22 @@ function syncClaudePlugin(plugin, pkg) {
   };
 }
 
+function syncVersionOnly(manifest, pkg) {
+  return {
+    ...manifest,
+    version: pkg.version,
+  };
+}
+
+function syncClaudeMarketplace(marketplace, pkg) {
+  return {
+    ...marketplace,
+    plugins: marketplace.plugins.map((plugin) =>
+      plugin.name === pkg.name ? { ...plugin, version: pkg.version } : plugin,
+    ),
+  };
+}
+
 function normalizeAuthorName(author) {
   if (typeof author === 'string') return author;
   if (author && typeof author === 'object' && typeof author.name === 'string') return author.name;
@@ -96,7 +118,20 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
+  for (const filePath of [
+    packageJsonPath,
+    codexPluginPath,
+    bundledCodexPluginPath,
+    qoderPluginPath,
+    bundledQoderPluginPath,
+    claudePluginPath,
+    bundledClaudePluginPath,
+    claudeMarketplacePath,
+    grokPluginPath,
+    dshPackagePath,
+    openClawPluginPath,
+    ...cursorPluginPaths,
+  ]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -106,14 +141,26 @@ function main() {
   const pkg = readJson(packageJsonPath);
   const codexPlugin = readJson(codexPluginPath);
   const bundledCodexPlugin = readJson(bundledCodexPluginPath);
+  const qoderPlugin = readJson(qoderPluginPath);
+  const bundledQoderPlugin = readJson(bundledQoderPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
+  const claudeMarketplace = readJson(claudeMarketplacePath);
+  const grokPlugin = readJson(grokPluginPath);
+  const dshPackage = readJson(dshPackagePath);
+  const openClawPlugin = readJson(openClawPluginPath);
   const cursorPlugins = cursorPluginPaths.map(readJson);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
   writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
+  writeJson(qoderPluginPath, syncCursorPlugin(qoderPlugin, pkg));
+  writeJson(bundledQoderPluginPath, syncCursorPlugin(bundledQoderPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
+  writeJson(claudeMarketplacePath, syncClaudeMarketplace(claudeMarketplace, pkg));
+  writeJson(grokPluginPath, syncVersionOnly(grokPlugin, pkg));
+  writeJson(dshPackagePath, syncVersionOnly(dshPackage, pkg));
+  writeJson(openClawPluginPath, syncVersionOnly(openClawPlugin, pkg));
   cursorPluginPaths.forEach((filePath, index) => writeJson(filePath, syncCursorPlugin(cursorPlugins[index], pkg)));
 
   console.log('✓ Synced plugin manifests from package.json');

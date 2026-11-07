@@ -272,6 +272,25 @@ describe("Observation I/O event handlers", () => {
             return;
           }
 
+          // The worker answers these routes in the MCP tool shape.
+          if (req.url?.startsWith("/api/search/observations")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ content: [{ type: "text", text: "| #12 | Fix JWT refresh |" }] }));
+            return;
+          }
+
+          if (req.url?.startsWith("/api/context/recent")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ content: [{ type: "text", text: "## Session S4: Added token rotation" }] }));
+            return;
+          }
+
+          if (req.url?.startsWith("/api/timeline/by-query")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ content: [{ type: "text", text: "Anchor #12: Fix JWT refresh" }] }));
+            return;
+          }
+
           if (req.url === "/stream") {
             res.writeHead(200, {
               "Content-Type": "text/event-stream",
@@ -524,6 +543,22 @@ describe("Observation I/O event handlers", () => {
     const result = await statusCmd.handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude_mem_status", config: {} });
     assert.ok(result.text.includes("Status: ok"));
     assert.ok(result.text.includes(`Port: ${workerPort}`));
+  });
+
+  it("search, recent and timeline commands render the worker's text result", async () => {
+    const { api, getCommand } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    const ctx = (args: string) => ({ args, channel: "telegram", isAuthorizedSender: true, commandBody: "", config: {} });
+
+    const search = await getCommand("claude-mem-search").handler(ctx("jwt"));
+    assert.ok(search.includes("| #12 | Fix JWT refresh |"), search);
+    assert.ok(!search.includes("No results found."), search);
+
+    const recent = await getCommand("claude-mem-recent").handler(ctx(""));
+    assert.ok(recent.includes("## Session S4: Added token rotation"), recent);
+
+    const timeline = await getCommand("claude-mem-timeline").handler(ctx("jwt"));
+    assert.ok(timeline.includes("Anchor #12: Fix JWT refresh"), timeline);
   });
 
   it("claude_mem_status reports unreachable when worker is down", async () => {

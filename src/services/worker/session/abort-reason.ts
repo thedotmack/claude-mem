@@ -23,6 +23,21 @@ export type NormalizedAbortReason =
   | typeof DEADLINE_EXCEEDED_CODE
   | 'none';
 
+/**
+ * A running generator that ended at its next message boundary because dispatch
+ * now selects another provider, such as the primary back after a fallback
+ * (#4846). It keeps the session's buffered work like any provider switch, and
+ * the runner resumes it on the selected provider at once.
+ */
+export const PROVIDER_SWITCH_BOUNDARY_ABORT_REASON = 'provider_switch:boundary';
+
+/**
+ * A rate limit (429) the Claude CLI wrote as the observer's reply instead of
+ * throwing (#5428). ResponseProcessor has reset the batch to pending; the
+ * runner books it like a thrown rate_limit, on the short throttle window.
+ */
+export const OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON = 'rate_limit:observer_text';
+
 /** The category of a raw abort reason: the text before the first ':'. */
 export function abortCategoryOf(reason: string | null | undefined): string {
   return (reason ?? '').split(':')[0];
@@ -35,9 +50,7 @@ export function abortCategoryOf(reason: string | null | undefined): string {
  * stored and confirmed its batch).
  */
 export const PRESERVED_ABORT_CATEGORIES: ReadonlySet<string> = new Set([
-  'quota',
   'rate_limit',
-  'auth',
   'overflow',
   'provider_switch',
   'transport',

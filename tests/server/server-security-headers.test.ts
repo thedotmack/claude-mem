@@ -56,6 +56,10 @@ describe('Server security headers (#2572)', () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`);
     expect(res.status).toBe(200);
     expect(res.headers.get('x-content-type-options')).toBeNull();
-    expect(res.headers.get('x-frame-options')).toBeNull();
+    expect(res.headers.get('referrer-policy')).toBeNull();
+    // Framing is the exception: the worker refuses it on every response but
+    // Observation TV (refuseFramingExceptObservationTv), so the viewer's
+    // delete and settings controls cannot be clickjacked.
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
   });
 });
