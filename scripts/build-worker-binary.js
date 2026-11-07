@@ -30,11 +30,13 @@ try {
     // Compile the shipped CJS graph: Bun's independent TS/ESM bundling selects
     // a different Zod graph and fails before startup on Windows. The existing
     // esbuild output is already the user-facing, verified worker distribution.
-    // The read-only context reader ships as a second embedded entrypoint under
-    // its emitted JavaScript name (see ContextReadWorkerClient.getWorker).
+    // The read-only context and work-view readers ship as extra embedded entrypoints
+    // under their emitted JavaScript names (see ContextReadWorkerClient.getWorker and
+    // WorkViewReadWorkerClient.getWorker).
     '--entry-naming', '[name].js',
     './plugin/scripts/worker-service.cjs',
     './plugin/scripts/context-read-worker.cjs',
+    './plugin/scripts/work-view-read-worker.cjs',
     '--outfile', `${outDir}/worker-service-v${version}-win-x64.exe`,
   ], { stdio: 'inherit' });
   fs.writeFileSync(`${outDir}/package.json`, JSON.stringify({

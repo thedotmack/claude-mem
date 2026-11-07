@@ -226,6 +226,9 @@ export interface ServerSemanticContextRequest {
   limit?: number;
   platformSource?: string | null;
   folderProjects?: string[];
+  // The Claude Code session id, as on /v1/sessions/start and /v1/events, so
+  // the server can leave out the asking session's own recent observations.
+  contentSessionId?: string | null;
 }
 
 export interface ServerSemanticContextResponse {
@@ -353,6 +356,7 @@ export class ServerClient {
     if (input.folderProjects && input.folderProjects.length > 0) {
       payload.folderProjects = input.folderProjects;
     }
+    if (input.contentSessionId) payload.contentSessionId = input.contentSessionId;
     return this.request<ServerSemanticContextResponse>('POST', '/v1/context/semantic', payload, options);
   }
 

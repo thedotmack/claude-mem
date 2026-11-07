@@ -680,6 +680,17 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(await compressField()).toEqual({ text: 'a whole summary', truncated: false });
   });
 
+  it('does not start field compression after observer capture is disabled', async () => {
+    settingsOverrides.CLAUDE_MEM_OBSERVER_ENABLED = 'false';
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'must not be requested' } }],
+    }));
+    spies.push(fetchSpy);
+
+    expect(await compressField()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('bounds the condense budget by CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
     settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '3200';
     const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {

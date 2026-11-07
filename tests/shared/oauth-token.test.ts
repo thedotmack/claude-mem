@@ -21,6 +21,7 @@ import {
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../src/utils/logger.js';
 
 /**
  * The implementation uses promisify(execFile), which captures execFile at
@@ -507,6 +508,97 @@ describe('resolveClaudeCredentialProfile (#4149)', () => {
  * host OS and never touches the real keychain.
  */
 describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
+  it('searches the login keychain directly when the default search list misses the item', async () => {
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    const payload = JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-login-keychain-token', expiresAt: futureExpiresAt },
+    });
+    const calls: string[][] = [];
+    const fakeExecImpl = mock(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      if (calls.length === 1) {
+        throw Object.assign(new Error('item not found in default keychain search list'), {
+          code: 44,
+          stderr: 'The specified item could not be found in the keychain.',
+        });
+      }
+      return { stdout: payload, stderr: '' };
+    }) as any;
+
+    const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-login-keychain-token');
+      expect(result.source).toBe('keychain');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(['find-generic-password', '-s', 'Claude Code-credentials', '-a', 'kirat', '-w']);
+    expect(calls[1]).toEqual([
+      ...calls[0],
+      join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
+    ]);
+  });
+
+  it('logs both attempts when the login keychain also fails after the search list misses the item', async () => {
+    const searchListStderr = 'The specified item could not be found in the keychain.';
+    const loginKeychainStderr = 'User interaction is not allowed.';
+    const loginKeychainError = Object.assign(new Error('Command failed: security find-generic-password'), {
+      code: 36, stderr: loginKeychainStderr,
+    });
+    const fakeExecImpl = mock(async (_cmd: string, args: readonly string[]) => {
+      if (args.length === 6) {
+        throw Object.assign(new Error('Command failed: security find-generic-password'), {
+          code: 44, stderr: searchListStderr,
+        });
+      }
+      throw loginKeychainError;
+    }) as any;
+    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+      expect(result.kind).toBe('absent');
+      expect(fakeExecImpl).toHaveBeenCalledTimes(2);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
+        exitCode: 36,
+        stderr: loginKeychainStderr,
+        searchListExitCode: 44,
+        searchListStderr,
+      }), loginKeychainError);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('logs the security command code, signal, and stderr when a Keychain lookup fails', async () => {
+    const stderr = 'User interaction is not allowed.';
+    const error = Object.assign(new Error('Command failed: security find-generic-password'), {
+      code: 36, signal: 'SIGTERM', stderr: Buffer.from(stderr),
+    });
+    const fakeExecImpl = mock(() => Promise.reject(error)) as any;
+    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+      expect(result.kind).toBe('absent');
+      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
+        service: 'Claude Code-credentials',
+        account: 'kirat',
+        exitCode: 36,
+        errorCode: null,
+        signal: 'SIGTERM',
+        stderr,
+      }), error);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('the default service name returns absent while a per-config-dir suffixed service name returns present ("default item empty, instance item valid")', async () => {
     const instanceServiceName = deriveMacKeychainServiceName({
       configDir: '/Users/matthewdnye/.ccs/instances/iveg50',
@@ -541,7 +633,7 @@ describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
       expect(instanceResult.expiresAt).toBe(futureExpiresAt);
     }
 
-    expect(fakeExecImpl).toHaveBeenCalledTimes(2);
+    expect(fakeExecImpl).toHaveBeenCalledTimes(3);
   });
 });
 

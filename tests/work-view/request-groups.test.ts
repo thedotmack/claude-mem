@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -81,6 +81,67 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, groupId: 'g_ffffffffffff' }, groups)).toThrow(/Unknown group/);
   expect(() => validateProgress({ ...base, preferences: [{ kind: 'vibe', preference: 'x', quote: 'y' }] }, groups)).toThrow(/kind/);
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
+});
+
+  it('a review over a cap is refused with a target well under it, so the retry does not miss again (Oct 31)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  expect(() => validateProgress({ ...base, summary: 'x'.repeat(292) }, groups))
+    .toThrow('summary is 292 characters; it must be 1–280. Bring it to about 210 characters (cut at least 82).');
+  expect(() => validateProgress({ ...base, narrative: 'x'.repeat(1347) }, groups)).toThrow(/about 900 characters \(cut at least 447\)/);
+  const milestones = Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` }));
+  expect(() => validateProgress({ ...base, milestones }, groups))
+    .toThrow('milestones has 13 items; it must have at most 12. Keep the 12 that matter most.');
+  expect(() => validateProgress({ ...base, milestones: 'none' }, groups)).toThrow('milestones must be an array of at most 12.');
+  // A verbatim quote is shortened by quoting less, so its refusal never asks for a rewrite.
+  const preferences = [{ kind: 'directive', preference: 'Short replies.', quote: 'x'.repeat(301), at: null }];
+  expect(() => validateProgress({ ...base, preferences }, groups)).toThrow('Quote a shorter part of it word for word, about 220 characters; never reword a quote.');
+});
+
+  it('an over-cap list on the retry keeps its newest entries and reports the cut (#5274)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const coerce = (fields: Record<string, unknown>) => {
+    const coercedFields = new Set<string>();
+    return { review: validateProgress({ ...base, ...fields }, groups, { coerce: true, coercedFields }) as any, coercedFields: [...coercedFields] };
+  };
+  // Dates decide, whatever order the model answered in: the newest entry comes first here and the oldest is at index 1.
+  const dayOf = (index: number) => `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00Z`;
+  const datesNewestFirst = (length: number) => Array.from({ length }, (_, index) => dayOf(index === 0 ? length : index - 1));
+
+  const milestones = datesNewestFirst(13).map(at => ({ at, text: `Done ${at}` }));
+  const keptMilestones = coerce({ milestones });
+  expect(keptMilestones.review.milestones.map((milestone: any) => milestone.at)).toEqual(milestones.filter((_, index) => index !== 1).map(milestone => milestone.at));
+  expect(keptMilestones.review.milestones[0].at).toBe(dayOf(13));
+  expect(keptMilestones.coercedFields).toEqual(['milestones']);
+
+  const preferences = datesNewestFirst(11).map(at => ({ kind: 'directive', preference: `Said ${at}`, quote: 'Short replies.', at }));
+  const keptPreferences = coerce({ preferences });
+  expect(keptPreferences.review.preferences[0].at).toBe(dayOf(11));
+  expect(keptPreferences.review.preferences).toHaveLength(10);
+  expect(keptPreferences.review.preferences.map((preference: any) => preference.at)).not.toContain(dayOf(0));
+  expect(keptPreferences.coercedFields).toEqual(['preferences']);
+
+  const regressions = datesNewestFirst(11).map(at => ({ text: `Broke ${at}`, at, fixedBy: null, evidence: [] }));
+  const changes = datesNewestFirst(13).map(at => ({ what: `Changed ${at}`, why: 'The owner asked.', at, evidence: [] }));
+  const keptOutcome = coerce({ outcome: { regressions, changes } });
+  expect(keptOutcome.review.outcome.regressions[0].at).toBe(dayOf(11));
+  expect(keptOutcome.review.outcome.changes[0].at).toBe(dayOf(13));
+  expect(keptOutcome.review.outcome.regressions.map((regression: any) => regression.at)).not.toContain(dayOf(0));
+  expect(keptOutcome.review.outcome.changes.map((change: any) => change.at)).not.toContain(dayOf(0));
+  expect(keptOutcome.coercedFields).toEqual(['outcome.regressions', 'outcome.changes']);
+
+  // Without a date on every entry, the last ones are the newest the model wrote.
+  const undated = Array.from({ length: 13 }, (_, index) => ({ at: index === 0 ? dayOf(0) : null, text: `Step ${index}` }));
+  expect(coerce({ milestones: undated }).review.milestones.map((milestone: any) => milestone.text)).toEqual(undated.slice(1).map(milestone => milestone.text));
+  });
+
+  it('every length the skill asks for is the target a refusal names', () => {
+  const skill = readFileSync(join(import.meta.dir, '../../plugin/skills/request-progress/SKILL.md'), 'utf8');
+  // The story keeps its own target (STORY_NARRATIVE_TARGET), which its refusal names.
+  const pairs = [...skill.matchAll(/about (\d+) chars and never over (\d+)/g)].map(([, about, cap]) => [Number(about), Number(cap)]).filter(([, cap]) => cap !== 12000);
+  expect(pairs.length).toBeGreaterThan(10);
+  for (const [about, cap] of pairs) expect([about, cap]).toEqual([textTarget(cap), cap]);
 });
 
   it('a review records how released work landed, with evidence and the why of each change', () => {

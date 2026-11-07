@@ -103,7 +103,7 @@ describe('fileEditHandler internal observer sessions', () => {
 
     expect(result.continue).toBe(true);
     expect(workerCallLog).toEqual([]);
-    expect(nudgeLog).toEqual(['/api/spool/nudge']);
+    expect(nudgeLog).toEqual([]);
     expect(spooledEntries()).toEqual([{
       kind: 'file_edit',
       payload: {

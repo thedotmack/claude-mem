@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
 import type { TranscriptSchema } from '../../src/services/transcripts/types.js';
 import { settleHookSpoolNudges } from '../../src/cli/spool-hook-event.js';
+import { HookSpool } from '../../src/shared/hook-spool.js';
+import * as workerUtils from '../../src/shared/worker-utils.js';
 
 const roots: string[] = [];
 const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
@@ -16,7 +18,7 @@ afterEach(async () => {
 });
 
 describe('standalone transcript observation transport', () => {
-  it('durably transfers tool results without an in-process worker context', async () => {
+  it('hands tool results to the worker live without an in-process worker context or disk spool', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cm-transcript-standalone-'));
     roots.push(root);
     process.env.CLAUDE_MEM_DATA_DIR = root;
@@ -27,15 +29,22 @@ describe('standalone transcript observation transport', () => {
         toolName: 'name', toolInput: 'input', toolResponse: 'output', toolUseId: 'id',
       } }],
     };
-    const processor = new TranscriptEventProcessor('spool');
-    await processor.processEntry({ session: 's', name: 'Read', input: { path: 'a' }, output: 'contents', id: 'local-1' }, {
-      name: 'grok-bot', path: '/unused', workspace: '/repo', agentId: 'agent-1', schema,
-    }, schema);
-    const dir = join(root, 'state', 'hook-spool');
-    const files = readdirSync(dir).filter(name => name.endsWith('.json'));
-    expect(files).toHaveLength(1);
-    const entry = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'));
-    expect(entry.kind).toBe('observation');
-    expect(entry.payload).toMatchObject({ contentSessionId: 's', platformSource: 'grok-bot', cwd: '/repo', toolName: 'Read', toolInput: { path: 'a' }, toolResponse: 'contents', toolUseId: 'local-1', agentId: 'agent-1' });
+    const handoffs: { path: string; body: any }[] = [];
+    const request = spyOn(workerUtils, 'workerHttpRequest').mockImplementation(async (path: string, init: any = {}) => {
+      handoffs.push({ path, body: JSON.parse(init.body) });
+      return new Response('{}');
+    });
+    try {
+      const processor = new TranscriptEventProcessor('spool');
+      await processor.processEntry({ session: 's', name: 'Read', input: { path: 'a' }, output: 'contents', id: 'local-1' }, {
+        name: 'grok-bot', path: '/unused', workspace: '/repo', agentId: 'agent-1', schema,
+      }, schema);
+      await settleHookSpoolNudges();
+      expect(handoffs.map(h => h.path)).toEqual(['/api/sessions/observations']);
+      expect(handoffs[0].body).toMatchObject({ contentSessionId: 's', platformSource: 'grok-bot', cwd: '/repo', tool_name: 'Read', tool_input: { path: 'a' }, tool_response: 'contents', toolUseId: 'local-1', agentId: 'agent-1' });
+      const spooled: unknown[] = [];
+      await new HookSpool().drain(entry => { spooled.push(entry); return true; });
+      expect(spooled).toEqual([]);
+    } finally { request.mockRestore(); }
   });
 });

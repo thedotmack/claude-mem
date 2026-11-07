@@ -1,56 +1,69 @@
 import { describe, it, expect } from 'bun:test';
-import {
-  buildWindowsDaemonStartCommand,
-  buildWindowsHiddenDaemonPowerShellArgs,
-  resolveWindowsPowerShellPath,
-  WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
-  windowsDaemonLaunchTimeoutMs,
-} from '../../src/services/infrastructure/ProcessManager.js';
+import { buildDetachedWorkerDaemonSpawn } from '../../src/services/infrastructure/ProcessManager.js';
 import { buildSpawnSyncInvocation } from '../../src/shared/spawn.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
 /**
- * #3521 — Windows console flash from detached / shell-string daemon spawns.
- * Contract: Windows daemon launch must go through Start-Process -WindowStyle
- * Hidden via powershell argv (never Node detached:true, never
- * execSync('powershell ...') shell string).
+ * #5240 — Windows worker daemon launch under behaviour-blocking AV.
+ *
+ * The daemon used to launch as `powershell -NoProfile -WindowStyle Hidden
+ * -EncodedCommand <base64 Start-Process>`. That command line is the
+ * fileless-malware fingerprint Kaspersky (PDM:Exploit.Win32.Generic) and
+ * BluePex killed, so the launcher's node.exe was blocked and the worker never
+ * started (#3831, #5240).
+ *
+ * The contract now: a plain detached spawnHidden on win32 as well — no shell,
+ * no base64, no powershell — with spawnHidden forcing windowsHide so the
+ * daemon gets no console window (#3521).
  */
-describe('Windows #3521 — hidden daemon spawn contract', () => {
-  it('Start-Process script keeps -WindowStyle Hidden', () => {
-    const command = buildWindowsDaemonStartCommand(
-      String.raw`C:\bun\bun.exe`,
-      String.raw`C:\plugin\worker-service.cjs`,
-    );
-    expect(command).toContain('-WindowStyle Hidden');
-    expect(command).toContain('Start-Process');
+describe('Windows #5240 — worker daemon launch contract', () => {
+  it('spawns the runtime directly on Windows, never through PowerShell', () => {
+    const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
+    const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
+
+    const plan = buildDetachedWorkerDaemonSpawn(runtimePath, scriptPath, {}, 'win32');
+
+    expect(plan.command).toBe(runtimePath);
+    // Direct argv: a spaced script path stays one argument, so the old
+    // PowerShell -ArgumentList quoting workaround (#3195) cannot recur.
+    expect(plan.args).toEqual([scriptPath, '--daemon']);
+    // Detached so the daemon outlives the hook or MCP server that launched it.
+    expect(plan.options.detached).toBe(true);
+    expect(plan.options.stdio).toBe('ignore');
   });
 
-  it('powershell argv includes -WindowStyle Hidden and -EncodedCommand (no shell string)', () => {
-    const args = buildWindowsHiddenDaemonPowerShellArgs(
-      String.raw`C:\Users\Test\.bun\bin\bun.exe`,
-      String.raw`C:\Users\Test\plugin\scripts\worker-service.cjs`,
-    );
+  it('never uses setsid on Windows even when /usr/bin/setsid exists', () => {
+    const plan = buildDetachedWorkerDaemonSpawn('bun.exe', 'worker-service.cjs', {}, 'win32', true);
 
-    expect(args[0]).toBe('-NoProfile');
-    expect(args[1]).toBe('-WindowStyle');
-    expect(args[2]).toBe('Hidden');
-    expect(args[3]).toBe('-EncodedCommand');
-    expect(args[4]).toMatch(/^[A-Za-z0-9+/=]+$/);
-
-    const decoded = Buffer.from(args[4], 'base64').toString('utf16le');
-    expect(decoded).toBe(
-      buildWindowsDaemonStartCommand(
-        String.raw`C:\Users\Test\.bun\bin\bun.exe`,
-        String.raw`C:\Users\Test\plugin\scripts\worker-service.cjs`,
-      ),
-    );
+    expect(plan.command).toBe('bun.exe');
+    expect(plan.args).toEqual(['worker-service.cjs', '--daemon']);
   });
 
-  it('resolves System32 powershell when SystemRoot is set', () => {
-    expect(
-      resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }),
-    ).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+  it('uses setsid on POSIX when it is available', () => {
+    const plan = buildDetachedWorkerDaemonSpawn(
+      '/home/me/.bun/bin/bun',
+      '/plugin/worker-service.cjs',
+      {},
+      'linux',
+      true,
+    );
+
+    expect(plan.command).toBe('/usr/bin/setsid');
+    expect(plan.args).toEqual(['/home/me/.bun/bin/bun', '/plugin/worker-service.cjs', '--daemon']);
+  });
+
+  it('falls back to launching the runtime directly when setsid is absent', () => {
+    const plan = buildDetachedWorkerDaemonSpawn(
+      '/home/me/.bun/bin/bun',
+      '/plugin/worker-service.cjs',
+      {},
+      'linux',
+      false,
+    );
+
+    expect(plan.command).toBe('/home/me/.bun/bin/bun');
+    expect(plan.args).toEqual(['/plugin/worker-service.cjs', '--daemon']);
   });
 
   it('buildSpawnSyncInvocation forces windowsHide even when options try to disable it', () => {
@@ -61,29 +74,6 @@ describe('Windows #3521 — hidden daemon spawn contract', () => {
       'win32',
     );
     expect(invocation.options.windowsHide).toBe(true);
-  });
-
-  it('Windows daemon spawnSync uses a bounded timeout (Greptile P1)', () => {
-    expect(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS).toBeGreaterThan(0);
-    expect(windowsDaemonLaunchTimeoutMs()).toBe(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS);
-  });
-
-  it('cuts the Windows launch to what is left of a hook budget, never past its own bound', () => {
-    // A synchronous PowerShell Start-Process that ignored the hook budget could
-    // push UserPromptSubmit past Claude Code's 15 s timeout.
-    expect(windowsDaemonLaunchTimeoutMs(2_500)).toBe(2_500);
-    expect(windowsDaemonLaunchTimeoutMs(60_000)).toBe(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS);
-    expect(windowsDaemonLaunchTimeoutMs(0)).toBe(1);
-  });
-
-  it('keeps the daemon cwd pinned: the encoded Start-Process carries -WorkingDirectory (#3706)', () => {
-    const args = buildWindowsHiddenDaemonPowerShellArgs(
-      String.raw`C:\bun\bun.exe`,
-      String.raw`C:\plugin\worker-service.cjs`,
-      String.raw`C:\Users\Test\.claude-mem`,
-    );
-    const decoded = Buffer.from(args[4], 'base64').toString('utf16le');
-    expect(decoded).toContain(String.raw`-WorkingDirectory 'C:\Users\Test\.claude-mem'`);
   });
 
   it('routes the hook lazy-spawn paths through spawnDetachedWorkerDaemon, never a raw detached spawn', () => {

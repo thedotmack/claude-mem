@@ -13,12 +13,12 @@ import { logger } from '../../utils/logger.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import type { UsableAgent, UsableAgentId } from '../agent-runner/detect.js';
 import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
-import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
+import { scanOwnerPrompts, scanWindowStart, type AgentScanSummary, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
 
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
 export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed';
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
 
 export interface SetupScanAgent {
   id: PromptAgentId;
@@ -42,6 +42,8 @@ export interface SetupScanAgent {
 export interface SetupScanState {
   /** Optional improvement use only; false still runs the complete hosted extraction. */
   improveProduct: boolean;
+  /** Which tools' prompts this scan sent to cmem.ai: null before the person answers, [] when nothing left this machine. */
+  uploadedAgents: PromptAgentId[] | null;
   agents: SetupScanAgent[];
   percent: number;
   phase: SetupScanPhase;
@@ -58,6 +60,8 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
+  /** Set when hosted extraction was unavailable (budget/rate limit) and setup finished locally without it. */
+  hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
 }
@@ -102,18 +106,26 @@ const AGENT_LABELS: Array<[PromptAgentId, string]> = [
   ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['opencode', 'OpenCode'],
 ];
 
+/** Absence is evidence only when every known source for this session was read. */
+function completeTranscript(summary: AgentScanSummary | undefined, sessionId: string): boolean {
+  return !!summary && summary.sessions.has(sessionId) && !summary.incompleteSessions?.has(sessionId);
+}
+
 function idleState(): SetupScanState {
   return {
+    // This preference does not start an upload; discovery still requires the person's confirmation.
     improveProduct: true,
+    uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
   };
 }
 
 export class SetupScan {
   private current: SetupScanState = idleState();
   private running: Promise<void> | null = null;
+  private pendingUpload: { ownerPrompts: OwnerPrompt[]; summary: Partial<SetupScanState>; startedAt: number } | null = null;
   private listeners = new Set<(state: SetupScanState) => void>();
   private lastNotified = 0;
   private now: () => number;
@@ -145,7 +157,11 @@ export class SetupScan {
 
   /** Starts a scan unless one is running. Resolves with the state at start. */
   start(improveProduct?: boolean): SetupScanState {
-    if (!this.running) {
+    // Waiting for the upload choice, or uploading: joining that state keeps a second scan from paying for a second upload.
+    const held = this.current.phase === 'awaiting-consent' || this.current.phase === 'uploading';
+    if (held) {
+      if (improveProduct !== undefined && this.current.phase === 'awaiting-consent') this.setImproveProduct(improveProduct);
+    } else if (!this.running) {
       if (improveProduct !== undefined) this.setImproveProduct(improveProduct);
       this.running = this.run().finally(() => { this.running = null; });
     }
@@ -191,6 +207,62 @@ export class SetupScan {
         return { ...agent, canRunSetup, cannotRunReason: canRunSetup ? null : runner.reason };
       }),
     }, true);
+  }
+
+  private finish(summary: Partial<SetupScanState>, startedAt: number): void {
+    const finishedAt = this.now();
+    this.update({
+      ...summary, phase: 'done', done: true, percent: 100,
+      finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
+    }, true);
+    logger.info('IMPORT', 'Setup prompt scan finished', { durationMs: finishedAt - startedAt });
+  }
+
+  /** The person's answer to "upload your last 30 days of prompts to cmem.ai?". Declining keeps everything local. */
+  async confirmUpload(allow: boolean, agents?: PromptAgentId[], improveProduct?: boolean): Promise<SetupScanState> {
+    const pending = this.pendingUpload;
+    if (this.current.phase !== 'awaiting-consent' || !pending) throw new Error('The setup scan is not waiting for an upload choice.');
+    this.pendingUpload = null;
+    // The sharing choice travels with the consent, so a delayed preference request can never leave a stale value.
+    if (improveProduct !== undefined) this.current = { ...this.current, improveProduct };
+    // Only the tools the person left ticked are uploaded; the rest never leave this machine.
+    const selected = agents ? pending.ownerPrompts.filter(prompt => agents.includes(prompt.agent)) : pending.ownerPrompts;
+    if (!allow || !selected.length) {
+      logger.info('IMPORT', 'Setup prompt upload declined; prompts stay on this machine');
+      this.current = { ...this.current, uploadedAgents: [] };
+      try {
+        // An empty hand-off records a finished, local-only extraction without contacting Cloud, so the reveal screen stops waiting.
+        await this.extract!([], this.current.improveProduct);
+        this.finish(pending.summary, pending.startedAt);
+      } catch (error) {
+        const finishedAt = this.now();
+        this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+      }
+      return this.state();
+    }
+    try {
+      this.update({ phase: 'uploading', percent: 99, uploadedAgents: [...new Set(selected.map(prompt => prompt.agent))] }, true);
+      await this.extract!(selected, this.current.improveProduct);
+      this.finish(pending.summary, pending.startedAt);
+    } catch (error) {
+      if ((error as { code?: string } | null)?.code === 'hosted-unavailable') {
+        // Preserve setup progress if automatic organization cannot run right now.
+        logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
+        try {
+          await this.extract!([], this.current.improveProduct);
+          // A refusal of the upload itself arrives after the request was sent; a preflight or cooldown refusal sent nothing.
+          const sent = (error as { sent?: boolean }).sent !== false;
+          if (!sent) this.current = { ...this.current, uploadedAgents: [] };
+          this.finish({ ...pending.summary, hostedNotice: 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.' }, pending.startedAt);
+          return this.state();
+        } catch { /* fall through to the failure below */ }
+      }
+      const finishedAt = this.now();
+      logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
+      const nothingSent = (error as { sent?: boolean } | null)?.sent === false;
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt, ...(nothingSent ? { uploadedAgents: [] } : {}) }, true);
+    }
+    return this.state();
   }
 
   private async run(): Promise<void> {
@@ -249,23 +321,23 @@ export class SetupScan {
 
       await runnerCheck;
       // Hook-recorded prompts count once: matched to a transcript copy, or, when
-      // the transcripts no longer hold that session, on their own. A hook row in
-      // a session the transcripts hold but did not match was not typed by the owner.
+      // the transcripts cannot be completely read for that session, on their own. A hook row in
+      // a completely read session that did not match was not typed by the owner.
       const agents = this.current.agents.map(agent => {
         const summary = result.agents.find(entry => entry.id === agent.id);
         if (!summary) return { ...agent, prompts: 0, fromMemory: 0, fromTranscripts: 0 };
         const fromMemory = memoryPrompts.filter(prompt => prompt.platformSource === summary.platformSource
           && result.ownerMemoryPromptIds.has(prompt.id)
-          && (claimedHookRowIds.has(prompt.id) || !summary.sessions.has(prompt.contentSessionId))).length;
+          && (claimedHookRowIds.has(prompt.id) || !completeTranscript(summary, prompt.contentSessionId))).length;
         const transcriptOnly = fromTranscripts.get(agent.id) ?? 0;
         return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
       });
-      const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary.sessions]));
-      // Prompts the owner typed whose transcripts are gone exist only in memory; extraction reads them too.
+      const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary]));
+      // Prompts whose transcripts are missing or incomplete can still exist in memory; extraction reads them too.
       // They get the same tag stripping and current redaction as transcript prompts: they may predate both.
       const memoryOnly: OwnerPrompt[] = memoryPrompts.flatMap(prompt => {
         const summary = result.agents.find(entry => entry.platformSource === prompt.platformSource);
-        if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || summary.sessions.has(prompt.contentSessionId)) return [];
+        if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || completeTranscript(summary, prompt.contentSessionId)) return [];
         const text = stripMemoryTags(prompt.promptText).trim();
         if (!text) return [];
         return [{ agent: summary.id, platformSource: prompt.platformSource, sessionId: prompt.contentSessionId, nativePromptId: `memory-${prompt.id}`,
@@ -273,22 +345,23 @@ export class SetupScan {
       });
       const ownerPrompts = [...result.ownerPrompts, ...memoryOnly];
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
-        || (!claimedHookRowIds.has(prompt.id) && Boolean(sessionsByPlatform.get(prompt.platformSource)?.has(prompt.contentSessionId))));
+        || (!claimedHookRowIds.has(prompt.id) && completeTranscript(sessionsByPlatform.get(prompt.platformSource), prompt.contentSessionId)));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
-      if (this.extract) {
-        // Keep the scan screen open until results are saved; its existing error slot shows Cloud failures.
-        this.update({ phase: 'uploading', percent: 99, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts }, true);
+      const summary = { agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
+      if (this.extract && !ownerPrompts.length) {
+        // Nothing to upload, so there is nothing to ask about; the extractor records an empty result without contacting Cloud.
+        this.update({ phase: 'uploading', percent: 99, ...summary }, true);
         await this.extract(ownerPrompts, this.current.improveProduct);
+      } else if (this.extract) {
+        // Prompts leave this machine only after an explicit choice. Hold them in memory and wait for confirmUpload().
+        this.pendingUpload = { ownerPrompts, summary, startedAt };
+        this.update({ phase: 'awaiting-consent', percent: 98, ...summary }, true);
+        return;
       }
-      const finishedAt = this.now();
-      this.update({
-        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts,
-        finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
-      }, true);
-      logger.info('IMPORT', 'Setup prompt scan finished', { added, durationMs: finishedAt - startedAt });
+      this.finish(summary, startedAt);
     } catch (error) {
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt scan failed', {}, error as Error);

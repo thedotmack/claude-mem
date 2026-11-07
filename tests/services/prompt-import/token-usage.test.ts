@@ -115,6 +115,21 @@ describe('token usage reader', () => {
     expect(summarizeTokenUsage(usage, null).coverage).toBe('complete');
   });
 
+  it('partial history: an unreadable agent source keeps totals provisional and omits the persona', async () => {
+    writeAgentFiles(SINCE - 5 * DAY);
+    // Discovery can see a transcript database even when the token query cannot
+    // read it. Exercise the real SQLite reader, not a mocked usage summary.
+    write('.local/share/opencode/opencode.db', 'not a SQLite database');
+    const usage = await scan();
+    expect(usage.agents.find(agent => agent.id === 'opencode')).toMatchObject({
+      detected: true, recordsTokens: true, skippedSources: 1, tokens: 0,
+    });
+    expect(summarizeTokenUsage(usage, null)).toMatchObject({
+      totalTokens: TOTAL_IN_WINDOW - OPENCODE_IN_WINDOW,
+      coverage: 'partial', persona: null,
+    });
+  });
+
   it('partial history: records begin inside the window, so the persona is omitted', async () => {
     writeAgentFiles(NOW - 3 * DAY);
     const summary = summarizeTokenUsage(await scan(), null);

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { MAX_TOOL_PAYLOAD_BYTES, truncatePayload } from '../../src/services/sqlite/tool-uses.js';
+import { MAX_TOOL_PAYLOAD_BYTES, TOOL_USES_BATCH_DEFAULT_ROWS, truncatePayload } from '../../src/services/sqlite/tool-uses.js';
 
 interface TableColumnInfo {
   name: string;
@@ -271,6 +271,32 @@ describe('SessionStore tool_uses (v51)', () => {
 
       expect(store.getToolUsesByIds([id], { project: 'claude-mem' })).toHaveLength(1);
       expect(store.getToolUsesByIds([id], { project: 'other-project' })).toHaveLength(0);
+    });
+
+    // `tool_use_id` is only unique per (content_session_id, tool_use_id), so the
+    // same opaque id may appear under many sessions. The id array cap alone does
+    // not bound the row count: one accepted id must still fetch a bounded slice.
+    it('bounds the row count when limit is omitted, even if one id spans many sessions', () => {
+      store = new SessionStore(new Database(':memory:'));
+      const spanned = TOOL_USES_BATCH_DEFAULT_ROWS + 50;
+      for (let i = 0; i < spanned; i++) {
+        store.upsertToolUse(baseInput({ contentSessionId: `session-${i}` }));
+      }
+      expect(store.queryToolUses({ limit: 500 })).toHaveLength(spanned);
+
+      const rows = store.getToolUsesByIds(['toolu_01']);
+      expect(rows).toHaveLength(TOOL_USES_BATCH_DEFAULT_ROWS);
+      expect(rows.length).toBeLessThan(spanned);
+    });
+
+    it('still honours an explicit limit over the omitted-limit default', () => {
+      store = new SessionStore(new Database(':memory:'));
+      for (let i = 0; i < TOOL_USES_BATCH_DEFAULT_ROWS + 50; i++) {
+        store.upsertToolUse(baseInput({ contentSessionId: `session-${i}` }));
+      }
+
+      expect(store.getToolUsesByIds(['toolu_01'], { limit: 3 })).toHaveLength(3);
+      expect(store.getToolUsesByIds(['toolu_01'], { limit: 150 })).toHaveLength(150);
     });
 
     it('returns [] for an empty or unusable id list', () => {

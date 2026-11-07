@@ -390,7 +390,6 @@ Zobacz plik [LICENSE](LICENSE), aby poznać pełne szczegóły. Zobacz [docs/lic
 oraz [docs/ip-boundary.md](docs/ip-boundary.md), aby poznać zakres licencjonowania i
 granicę między wersją otwartą a komercyjną.
 
-**Uwaga dotycząca Ragtime**: Katalog `ragtime/` jest licencjonowany na podstawie **Apache License 2.0**. Zobacz [ragtime/LICENSE](ragtime/LICENSE), aby poznać szczegóły.
 
 ---
 

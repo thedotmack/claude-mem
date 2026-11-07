@@ -13,7 +13,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { userInfo } from 'os';
+import { homedir, userInfo } from 'os';
 import { join } from 'path';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, expandTilde } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
@@ -229,19 +229,78 @@ export async function readMacOsKeychain(
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
     ));
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    // `security` exits non-zero when the entry doesn't exist — fail-fast as absent.
-    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: serviceName, account }, err);
-    return {
-      kind: 'absent',
-      reason: `macOS keychain lookup failed for service "${serviceName}" (account=${account}): ${err.message}`,
-    };
+    // A worker launched by Claude Code Desktop can inherit a keychain search
+    // list that omits the user's login keychain (#3406). Search that keychain
+    // explicitly before treating the credential as absent.
+    const searchListError = error;
+    const searchListDiagnostic = getSecurityCommandDiagnostic(searchListError);
+    const searchListMessage = error instanceof Error ? error.message : String(error);
+    if (!/could not be found in the keychain|item not found/i.test(`${searchListDiagnostic.stderr ?? ''}\n${searchListMessage}`)) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('OAUTH', 'macOS keychain lookup failed', {
+        service: serviceName,
+        account,
+        ...searchListDiagnostic,
+      }, err);
+      return {
+        kind: 'absent',
+        reason: `macOS keychain lookup failed for service "${serviceName}" (account=${account}): ${err.message}`,
+      };
+    }
+    const loginKeychainPath = join(homedir(), 'Library', 'Keychains', 'login.keychain-db');
+    try {
+      ({ stdout } = await execImpl(
+        'security',
+        ['find-generic-password', '-s', serviceName, '-a', account, '-w', loginKeychainPath],
+        { timeout: READ_TIMEOUT_MS, windowsHide: true },
+      ));
+      logger.info('OAUTH', 'macOS keychain lookup succeeded via explicit login keychain', {
+        service: serviceName,
+        account,
+      });
+    } catch (loginKeychainError) {
+      const err = loginKeychainError instanceof Error ? loginKeychainError : new Error(String(loginKeychainError));
+      const loginKeychainDiagnostic = getSecurityCommandDiagnostic(loginKeychainError);
+      logger.warn('OAUTH', 'macOS keychain lookup failed', {
+        service: serviceName,
+        account,
+        exitCode: loginKeychainDiagnostic.exitCode,
+        errorCode: loginKeychainDiagnostic.errorCode,
+        signal: loginKeychainDiagnostic.signal,
+        stderr: loginKeychainDiagnostic.stderr,
+        searchListExitCode: searchListDiagnostic.exitCode,
+        searchListErrorCode: searchListDiagnostic.errorCode,
+        searchListSignal: searchListDiagnostic.signal,
+        searchListStderr: searchListDiagnostic.stderr,
+      }, err);
+      return {
+        kind: 'absent',
+        reason: `macOS keychain lookup failed for service "${serviceName}" (account=${account}): ${err.message}`,
+      };
+    }
   }
   const raw = stdout.trim();
   if (!raw) {
     return { kind: 'absent', reason: `macOS keychain returned empty value for "${serviceName}"` };
   }
   return parseKeychainPayload(raw);
+}
+
+function getSecurityCommandDiagnostic(error: unknown): {
+  exitCode: number | null;
+  errorCode: string | null;
+  signal: string | null;
+  stderr: string | null;
+} {
+  const commandError = error as { code?: unknown; signal?: unknown; stderr?: unknown };
+  const stderr = typeof commandError.stderr === 'string' ? commandError.stderr
+    : Buffer.isBuffer(commandError.stderr) ? commandError.stderr.toString('utf8') : '';
+  return {
+    exitCode: typeof commandError.code === 'number' ? commandError.code : null,
+    errorCode: typeof commandError.code === 'string' ? commandError.code : null,
+    signal: typeof commandError.signal === 'string' ? commandError.signal : null,
+    stderr: stderr.trim() || null,
+  };
 }
 
 /**

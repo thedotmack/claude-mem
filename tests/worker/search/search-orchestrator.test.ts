@@ -180,7 +180,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions,
         searchUserPrompts,
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 
@@ -210,7 +210,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions: mock(() => []),
         searchUserPrompts: mock(() => []),
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 
@@ -239,7 +239,7 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
         searchSessions,
         searchUserPrompts,
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
     );
 

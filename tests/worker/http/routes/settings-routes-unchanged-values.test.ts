@@ -75,6 +75,17 @@ describe('a viewer save is judged on what it changes', () => {
     expect(saved.status()).toBe(400);
     expect(String(saved.payload.error)).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER');
   });
+
+  it('persists the observer capture hard switch from the viewer', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+
+    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_OBSERVER_ENABLED: 'false' });
+
+    expect(saved.status()).toBe(200);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_OBSERVER_ENABLED).toBe('false');
+  });
 });
 
 // GET shows environment overrides, so the viewer posts them back with every
