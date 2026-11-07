@@ -7,6 +7,32 @@ const pickAgentField = (v: unknown): string | undefined =>
   typeof v === 'string' && v.length > 0 && v.length <= MAX_AGENT_FIELD_LEN ? v : undefined;
 const pickStringField = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
+// Snake-case wins when it is a non-empty string. Grok Build sends camelCase
+// (sessionId, toolName, toolResult, lastAssistantMessage) on the same payload.
+const firstFilledString = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    if (typeof value === 'string' && value !== '') return value;
+  }
+  return undefined;
+};
+const firstDefined = (...values: unknown[]): unknown => {
+  for (const value of values) {
+    if (value != null) return value;
+  }
+  return undefined;
+};
+/** Grok Build's read tool. Only its input is given a `file_path`; Claude Code's Grep, Glob and LS carry a
+ * directory in `path`, and copying that would make every search look like a file read. */
+const GROK_BUILD_READ_TOOL = 'read_file';
+const withGrokReadPath = (toolName: string | undefined, toolInput: unknown): unknown => {
+  if (toolName !== GROK_BUILD_READ_TOOL) return toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return toolInput;
+  const record = toolInput as Record<string, unknown>;
+  if (typeof record.file_path === 'string' && record.file_path !== '') return toolInput;
+  const target = record.target_file ?? record.filePath ?? record.path;
+  if (typeof target !== 'string' || target === '') return toolInput;
+  return { ...record, file_path: target };
+};
 
 /**
  * A failed tool call arrives on PostToolUseFailure, which carries `error` and
@@ -48,37 +74,37 @@ export const claudeCodeAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('invalid_cwd');
     }
     const source = r.source;
+    const toolName = firstFilledString(r.tool_name, r.toolName);
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd,
       sessionSource: source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact'
         ? source
         : undefined,
-      prompt: r.prompt,
+      prompt: firstFilledString(r.prompt, r.userPrompt),
       submittedPrompt: normalizeSubmittedPrompt(r),
-      toolName: r.tool_name,
-      toolInput: r.tool_input,
-      toolResponse: r.tool_response ?? failedToolResponse(r),
-      toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
-      transcriptPath: r.transcript_path,
+      toolName,
+      toolInput: withGrokReadPath(toolName, firstDefined(r.tool_input, r.toolInput)),
+      toolResponse: firstDefined(r.tool_response, r.toolResponse, r.toolResult) ?? failedToolResponse(r),
+      toolUseId: firstFilledString(r.tool_use_id, r.toolUseId),
+      transcriptPath: firstFilledString(r.transcript_path, r.transcriptPath),
       agentTranscriptPath: pickStringField(r.agent_transcript_path),
       // Claude Code's Stop input carries the last assistant text so the
       // summarize handler can skip reading the transcript (#5445). An empty
       // string (a session ending mid-tool-call) is no message: leave it
       // undefined so the handler falls back to the transcript, same as codex.
-      lastAssistantMessage:
-        typeof r.last_assistant_message === 'string' && r.last_assistant_message.length > 0
-          ? r.last_assistant_message
-          : undefined,
+      // Grok Build sends lastAssistantMessage and writes no Claude transcript.
+      lastAssistantMessage: firstFilledString(r.last_assistant_message, r.lastAssistantMessage),
       // stop_hook_active is deliberately not mapped. Claude Code sets it once a
       // Stop hook has blocked the stop and Claude kept working. claude-mem's
       // Stop hook never blocks (it always exits 0 with continue: true), so the
       // flag can only come from another plugin and never marks a loop
       // claude-mem must break. Honoring it (#3168) dropped the summary and the
-      // advisor capture for every turn after such a hook fired.
+      // advisor capture for every turn after such a hook fired. Grok Build's
+      // camelCase stopHookActive is ignored for the same reason.
       reason: pickStringField(r.reason),
-      agentId: pickAgentField(r.agent_id),
-      agentType: pickAgentField(r.agent_type),
+      agentId: pickAgentField(r.agent_id) ?? pickAgentField(r.agentId),
+      agentType: pickAgentField(r.agent_type) ?? pickAgentField(r.agentType) ?? pickAgentField(r.subagentType),
     };
   },
   formatOutput(result) {

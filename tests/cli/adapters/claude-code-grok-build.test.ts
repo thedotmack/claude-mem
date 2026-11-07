@@ -71,7 +71,7 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
     expect(normalized.agentType).toBe('snake-type');
   });
 
-  it('falls through an empty snake string and copies filePath or path onto file_path', () => {
+  it('falls through an empty snake string and copies filePath or path onto file_path for read_file', () => {
     const fromFilePath = claudeCodeAdapter.normalizeInput({
       ...base,
       tool_name: '',
@@ -83,9 +83,27 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
 
     const fromPath = claudeCodeAdapter.normalizeInput({
       ...base,
+      toolName: 'read_file',
       toolInput: { path: 'from-path.ts' },
     });
     expect(fromPath.toolInput).toEqual({ path: 'from-path.ts', file_path: 'from-path.ts' });
+
+    const fromTarget = claudeCodeAdapter.normalizeInput({ ...base, toolName: 'read_file', toolInput: { target_file: 'a.ts' } });
+    expect(fromTarget.toolInput).toEqual({ target_file: 'a.ts', file_path: 'a.ts' });
+  });
+
+  it('leaves Claude Code Grep and Glob input alone: their path is a directory, not a file read', () => {
+    for (const tool_name of ['Grep', 'Glob']) {
+      const tool_input = { pattern: 'x', path: 'src' };
+      const normalized = claudeCodeAdapter.normalizeInput({ session_id: 's1', cwd: '/tmp', tool_name, tool_input });
+      expect(normalized.toolInput).toBe(tool_input);
+      expect((normalized.toolInput as Record<string, unknown>).file_path).toBeUndefined();
+    }
+  });
+
+  it('keeps a PostToolUseFailure error as the response when no camelCase result is sent', () => {
+    const normalized = claudeCodeAdapter.normalizeInput({ ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', error: 'boom', is_interrupt: true });
+    expect(normalized.toolResponse).toEqual({ error: 'boom', is_interrupt: true });
   });
 
   it('ignores stopHookActive so a blocked stop cannot drop later summaries', () => {
@@ -100,7 +118,7 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
 
   it('does not mutate the caller tool input when copying a read path', () => {
     const toolInput = { target_file: 'a.ts' };
-    const normalized = claudeCodeAdapter.normalizeInput({ ...base, toolInput });
+    const normalized = claudeCodeAdapter.normalizeInput({ ...base, toolName: 'read_file', toolInput });
     expect(toolInput).toEqual({ target_file: 'a.ts' });
     expect(normalized.toolInput).not.toBe(toolInput);
   });
