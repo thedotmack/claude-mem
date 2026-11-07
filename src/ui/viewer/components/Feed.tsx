@@ -89,8 +89,8 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
         }} />
         {items.length === 0 && !isLoading && !loadError && (
           <div className="memory-empty-state">
-            <h3>No memories to show</h3>
-            <p>Memories appear here as you work. If a filter is selected, try another project or category.</p>
+            <h3>No observations to show</h3>
+            <p>Observations appear here as you work. If a filter is selected, try another project or category.</p>
           </div>
         )}
         {isLoading && (

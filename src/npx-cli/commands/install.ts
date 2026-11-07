@@ -2,7 +2,7 @@ import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
-import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
+import { loadTelemetryConfig, resolveTelemetryConsent, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -58,7 +58,8 @@ import {
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { endSetupSession, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { isSetupId } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
@@ -659,7 +660,7 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshPro
     installerError(ErrorSeverity.ABORT, {
       component: 'all-ides',
       phase: 'ide-install',
-      cause: new Error(`All ${selectedIDEs.length} selected IDE integrations failed.`),
+      cause: new Error(`All ${selectedIDEs.length} selected agent integrations failed.`),
     }, summary);
   }
 
@@ -733,7 +734,7 @@ async function promptForIDESelection(): Promise<string[]> {
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
-    log.warn('No supported IDEs detected — pick the one(s) you plan to use.');
+    log.warn('No supported agents detected — pick the one(s) you plan to use.');
   }
 
   const options = detectedIDEs.map((ide) => {
@@ -1704,7 +1705,7 @@ export function setInstallerSignupContext(ctx: { installState?: InstallState; us
 export function buildInstallerOAuthStartBody(
   source: string,
   deviceName: string,
-  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null } = {},
+  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null; setupFlowId?: string } = {},
   teamInvite?: string,
 ): Record<string, unknown> {
   return {
@@ -1712,13 +1713,14 @@ export function buildInstallerOAuthStartBody(
     device_name: deviceName,
     ...(ctx.installState ? { install_state: ctx.installState } : {}),
     ...(ctx.usageSummary ? { usage_summary: ctx.usageSummary } : {}),
+    ...(isSetupId(ctx.setupFlowId) ? { setup_flow_id: ctx.setupFlowId } : {}),
     ...(teamInvite ? { team_invite: teamInvite } : {}),
   };
 }
 
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
 export async function startInstallerOAuthPairing(
-  opts: { source?: string; timeoutMs?: number; teamInvite?: string } = {},
+  opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
   lastStartFailure = null;
@@ -1739,7 +1741,10 @@ export async function startInstallerOAuthPairing(
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...installHeaders },
-      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), signupContext, opts.teamInvite)),
+      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), {
+        ...signupContext,
+        ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
+      }, opts.teamInvite)),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -2723,7 +2728,7 @@ function readSettingsSnapshot(): string {
 async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairing> {
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Starting CMEM Pro sign-in…');
-  const pairing = await startInstallerOAuthPairing();
+  const pairing = await startInstallerOAuthPairing({ setupFlowId: readSetupTelemetryContext()?.setup_flow_id });
   if (!pairing) {
     await captureCliEvent('installer_oauth_start_failed', {
       version,
@@ -2884,8 +2889,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const allIDEs = detectInstalledIDEs();
     const match = allIDEs.find((i) => i.id === ideId);
     if (!match) {
-      log.error(`Unknown IDE: ${options.ide}`);
-      log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
+      log.error(`Unknown agent for --ide: ${options.ide}`);
+      log.info(`Available --ide values: ${allIDEs.map((i) => i.id).join(', ')}`);
       process.exit(1);
     }
   } else if (process.stdin.isTTY) {
@@ -3067,7 +3072,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     runtime: selectedRuntime,
     setupComplete,
   })) {
-    startSetupSession();
+    startSetupSession(undefined, hasProConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
     try {
       // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
       // so existing prompts must not launch a local agent while the browser is still opening.
@@ -3267,7 +3272,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
-    `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
+    `Agents:      ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   summaryLines.push(`Account:     ${styleText('cyan', browserAccountStatus ?? accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
@@ -3388,7 +3393,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const nextSteps = [
     nextStepsHeadline,
     ``,
-    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as Claude reads, edits, and runs commands.`,
+    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as your agent reads, edits, and runs commands.`,
     `To watch them live, ${firstSuccessOpener}.`,
     ``,
     `Memory injection starts on your second session in a project.`,
@@ -3409,7 +3414,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      p.outro(styleText('yellow', 'claude-mem installed with some IDE setup failures.'));
+      p.outro(styleText('yellow', 'claude-mem installed, but setup failed for some agents.'));
     } else {
       p.outro(styleText('green', 'claude-mem installed successfully!'));
     }
@@ -3420,7 +3425,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.error('\nclaude-mem installed, but the worker did not start.');
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      console.log('\nclaude-mem installed with some IDE setup failures.');
+      console.log('\nclaude-mem installed, but setup failed for some agents.');
       process.exitCode = 1;
     } else {
       console.log('\nclaude-mem installed successfully!');

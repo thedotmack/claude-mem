@@ -1,4 +1,5 @@
 
+import os from 'os';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 
@@ -126,9 +127,30 @@ export function formatHeaderDateTime(now: Date = new Date()): string {
   );
 }
 
-export function toRelativePath(filePath: string, cwd: string): string {
-  if (path.isAbsolute(filePath)) {
-    return path.relative(cwd, filePath);
+function isInside(relative: string): boolean {
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/**
+ * How a file is labelled in context and search output: relative to the
+ * project when it lives inside it, otherwise `~/...` when it lives under the
+ * home directory. A file outside the project (`~/.ssh/config`, `~/.gemini/...`)
+ * would otherwise render as a long `../../../../../../` climb that depends on
+ * how deep the checkout is and does not say where the file is.
+ */
+export function toRelativePath(filePath: string, cwd: string, homeDir: string = os.homedir()): string {
+  if (!path.isAbsolute(filePath)) {
+    return filePath;
+  }
+  const fromCwd = path.relative(cwd, filePath);
+  if (isInside(fromCwd)) {
+    return fromCwd;
+  }
+  if (homeDir) {
+    const fromHome = path.relative(homeDir, filePath);
+    if (fromHome && isInside(fromHome)) {
+      return `~/${fromHome.split(path.sep).join('/')}`;
+    }
   }
   return filePath;
 }

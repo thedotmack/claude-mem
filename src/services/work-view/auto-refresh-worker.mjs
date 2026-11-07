@@ -1,4 +1,4 @@
-// Keeps My Work current without anyone running a skill: every ten minutes it
+// Keeps My Work current without anyone running a skill: every ten minutes (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) it
 // asks refreshNeeds() whether anything is due (ungrouped conversations, due
 // reviews, stale goals, requests not placed in a focus area) and, if so, runs one agent job.
 // Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
@@ -12,12 +12,31 @@ import { join } from 'node:path';
 import { refreshNeeds, writeJsonAtomic } from './request-groups.mjs';
 
 const TEN_MINUTES_MS = 10 * 60000;
+// setInterval stores its delay in a 32-bit signed integer and fires at once for anything larger.
+const MAX_CHECK_MS = 2 ** 31 - 1;
+
+/**
+ * How often the scheduled check runs, from CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN (minutes).
+ * Each check is a cheap read-only look at the database; an agent runs only when something is due.
+ * Empty, non-numeric or non-positive values keep the ten-minute default, anything under one minute
+ * is raised to one minute, and the result never exceeds what setInterval can hold (about 24 days).
+ * The worker reads this once at start, so a change applies after the worker restarts.
+ * @param {string | number | null | undefined} minutes
+ * @returns {number} milliseconds
+ */
+export function refreshIntervalMs(minutes) {
+  const value = typeof minutes === 'string' ? Number(minutes.trim() === '' ? NaN : minutes) : Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return TEN_MINUTES_MS;
+  return Math.min(MAX_CHECK_MS, Math.max(60000, Math.round(value * 60000)));
+}
 // After a failed run the next scheduled one waits twice as long each time, up to four hours, and a run
 // that works resets it. Oct 25: a run that failed on the same due groups was restarted every ten minutes
 // all afternoon, each time re-asking every agent from the start.
 // Four hours: the subscription plans' usage limit resets on a 5-hour window (Oct 25: "You've hit your
 // session limit · resets 2:30pm"), so the longest wait stays inside one window and a run blocked by that
 // limit is tried again in the window after it resets, never skipping one.
+// An interval set longer than four hours (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) caps the wait at one
+// interval instead: the timer only ticks once per interval, so a shorter wait would show a next check that never happens.
 const MAX_FAILURE_BACKOFF_MS = 4 * 60 * 60000;
 
 const processIsAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -74,6 +93,9 @@ export class AutoRefreshWorker {
 
   iso(epoch = this.now()) { return new Date(epoch).toISOString(); }
 
+  /** The wait after `failures` failed runs in a row: doubling from one interval, up to four hours or one interval if longer. */
+  failureWaitMs(failures) { return Math.min(this.checkMs * 2 ** (failures - 1), Math.max(MAX_FAILURE_BACKOFF_MS, this.checkMs)); }
+
   readNeeds() {
     const database = this.openDatabase();
     try { return refreshNeeds({ dir: this.dir, database, now: this.now(), localDeviceId: this.localDeviceId() }); }
@@ -118,7 +140,7 @@ export class AutoRefreshWorker {
         const failures = Number(previous?.failures ?? 0) + 1;
         const message = String(error?.message ?? error).slice(0, 500);
         const finishedAt = this.iso();
-        const wait = Math.min(this.checkMs * 2 ** (failures - 1), MAX_FAILURE_BACKOFF_MS);
+        const wait = this.failureWaitMs(failures);
         this.write({ state: 'failed', reason, startedAt, finishedAt, needs: null, result: null, error: message, nextAt: this.iso(this.now() + wait), failures });
         this.log('warn', `Work view refresh failed before starting (${reason})`, { error: message });
         return 'failed';
@@ -142,7 +164,7 @@ export class AutoRefreshWorker {
       catch (error) { outcome = { state: 'failed', agent: null, result: null, error: String(error?.message ?? error).slice(0, 500) }; }
       const finishedAt = this.iso();
       const failures = outcome.state === 'failed' ? previousFailures + 1 : 0;
-      const wait = failures ? Math.min(this.checkMs * 2 ** (failures - 1), MAX_FAILURE_BACKOFF_MS) : this.checkMs;
+      const wait = failures ? this.failureWaitMs(failures) : this.checkMs;
       this.write({
         state: outcome.state, reason, agent: outcome.agent ?? null, startedAt, finishedAt, needs,
         result: outcome.result ?? null, error: outcome.error ?? null, nextAt: this.iso(this.now() + wait),

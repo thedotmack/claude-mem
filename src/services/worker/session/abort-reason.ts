@@ -50,9 +50,7 @@ export function abortCategoryOf(reason: string | null | undefined): string {
  * stored and confirmed its batch).
  */
 export const PRESERVED_ABORT_CATEGORIES: ReadonlySet<string> = new Set([
-  'quota',
   'rate_limit',
-  'auth',
   'overflow',
   'provider_switch',
   'transport',

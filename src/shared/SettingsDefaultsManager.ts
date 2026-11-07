@@ -8,6 +8,7 @@ import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-js
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from './install-port.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -398,6 +399,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
   CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
+  CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: string;
   CLAUDE_MEM_WORK_VIEW_SHARED_STATE: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
@@ -485,7 +487,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
-    CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WORKER_PORT: String(getDefaultWorkerPort()),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_WORKER_URL: '',
     CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
@@ -698,6 +700,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: '10', // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
     CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
@@ -755,16 +758,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
     CLAUDE_MEM_REDIS_PORT: '6379',
     CLAUDE_MEM_REDIS_MODE: 'external',
-    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
+    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(getDefaultWorkerPort())}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
     // Phase 1a (cmem-sdk rename): canonical server settings keys. Hooks read
     // these first; the legacy `*_BETA_*` defaults below remain so existing
     // settings.json files still resolve correctly.
-    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Default server runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_API_KEY: '',                          // Local hook API key, populated by installer when runtime=server
     CLAUDE_MEM_SERVER_PROJECT_ID: '',                       // Default Postgres project_id used by hooks when runtime=server
-    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Legacy server-beta runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Legacy server-beta runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
     CLAUDE_MEM_DEDUP_ENABLED: 'false',                      // #3038 — opt-in; Tier-0 exact auto-merge + Tier-1 review-only candidates
@@ -782,6 +785,18 @@ export class SettingsDefaultsManager {
 
   static getAllDefaults(): SettingsDefaults {
     return { ...this.DEFAULTS };
+  }
+
+  private static defaultsForSettingsPath(settingsPath: string): SettingsDefaults {
+    const defaults = { ...this.DEFAULTS };
+    const dataDir = dirname(settingsPath);
+    const workerPort = String(getDefaultWorkerPort(dataDir));
+    const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+    defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+    defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+    defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+    defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+    return defaults;
   }
 
   static get(key: keyof SettingsDefaults): string {
@@ -843,8 +858,8 @@ export class SettingsDefaultsManager {
     options: { readOnly?: boolean } = {},
   ): SettingsDefaults {
     try {
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       if (!existsSync(settingsPath)) {
-        const defaults = this.getAllDefaults();
         if (!options.readOnly) {
           try {
             writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
@@ -1023,8 +1038,8 @@ export class SettingsDefaultsManager {
         }
       }
 
-      const result: SettingsDefaults = { ...this.DEFAULTS };
-      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+      const result: SettingsDefaults = { ...defaults };
+      for (const key of Object.keys(defaults) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
           result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
@@ -1033,7 +1048,7 @@ export class SettingsDefaultsManager {
       return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      const defaults = this.getAllDefaults();
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }

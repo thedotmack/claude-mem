@@ -1,3 +1,11 @@
+/**
+ * The `claude-mem` command.
+ *
+ * Install-side commands (install, repair, update, uninstall, prune) run here
+ * under Node and need no Bun. Runtime commands (start, stop, status, search,
+ * mcp…) are handed to the installed plugin, which runs under Bun. A bare
+ * `npx claude-mem`, or one that starts with a flag, means install.
+ */
 import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
@@ -18,7 +26,7 @@ function printHelp(): void {
   const version = readPluginVersion();
 
   console.log(`
-${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI coding assistants
+${styleText('bold', 'claude-mem')} v${version} — your coding agent remembers between sessions
 
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
@@ -80,7 +88,7 @@ ${styleText('bold', 'Claude Code Hooks')}:
   Hook error 'Executable not found in $PATH: "claude-mem"'? Run ${styleText('cyan', 'npx claude-mem install')},
   restart your terminal or IDE, then check ${styleText('cyan', 'npx claude-mem doctor')}.
 
-${styleText('bold', 'IDE Identifiers')}:
+${styleText('bold', 'Agent IDs')} (for --ide):
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,
   windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, antigravity, goose,
   roo-code, warp
