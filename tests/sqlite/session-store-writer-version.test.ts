@@ -42,6 +42,9 @@ function makeTempDir(): string {
 
 afterEach(() => {
   if (tempDir) {
+    // Failed constructor probes leave their temporary Database wrapper to GC.
+    // On Windows, SQLite keeps the test file open until that wrapper is freed.
+    Bun.gc(true);
     rmSync(tempDir, { recursive: true, force: true });
     tempDir = null;
   }

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Request, Response } from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { CloudSync } from '../../../../src/services/sync/CloudSync.js';
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
+import { resolveDeliverableBucketDir } from '../../../../src/shared/deliverables.js';
+import { useTempHookSpoolDataDir } from '../../../helpers/temp-hook-spool.js';
 
 function seedSession(db: Database, contentSessionId: string, memorySessionId: string, project: string, platformSource = 'claude') {
   db.prepare(`
@@ -33,6 +35,11 @@ function seedSession(db: Database, contentSessionId: string, memorySessionId: st
     INSERT INTO tool_uses (tool_use_id, content_session_id, session_db_id, project, platform_source, tool_name, tool_input, created_at, created_at_epoch)
     VALUES (?, ?, ?, ?, ?, 'Bash', '{"command":"cat .env"}', '2026-07-20T00:00:00.000Z', 1752969600000)
   `).run(`tool-${contentSessionId}-${platformSource}`, contentSessionId, sessionDbId, project, platformSource);
+  db.prepare(`
+    INSERT INTO committed_observation_tool_uses
+      (platform_source, content_session_id, tool_use_id, committed_at_epoch_ms)
+    VALUES (?, ?, ?, 1752969600000)
+  `).run(platformSource, contentSessionId, `tool-${contentSessionId}-${platformSource}`);
   return sessionDbId;
 }
 
@@ -43,13 +50,14 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
   let tempDir: string;
   let store: SessionStore;
   let sync: CloudSync;
+  let routes: DataRoutes;
   let handlers: Map<string, (req: Request, res: Response) => void>;
   let broadcasts: Array<Record<string, unknown>>;
   let activeSessionIds: Set<number>;
 
   function setup(cloudSync: CloudSync | null) {
     broadcasts = [];
-    const routes = new DataRoutes(
+    routes = new DataRoutes(
       {} as any,
       { getSessionStore: () => store, getCloudSync: () => cloudSync, getChromaSync: () => null } as any,
       { getSession: (sessionDbId: number) => (activeSessionIds.has(sessionDbId) ? {} : undefined) } as any,
@@ -101,6 +109,7 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
   afterEach(() => {
     sync.stop();
     db.close();
+    Bun.gc(true);
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -117,7 +126,7 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
       contentSessionId: 'content-del',
       deletedCounts: { observations: 1, summaries: 1, prompts: 1, toolUses: 1 },
     });
-    for (const table of ['observations', 'session_summaries', 'user_prompts', 'tool_uses', 'sdk_sessions']) {
+    for (const table of ['observations', 'session_summaries', 'user_prompts', 'tool_uses', 'committed_observation_tool_uses', 'sdk_sessions']) {
       expect(count(db, table)).toBe(0);
     }
     const outbox = db.prepare(`SELECT kind, deleted FROM sync_content_outbox ORDER BY id`).all() as Array<{ kind: string; deleted: number }>;
@@ -139,6 +148,171 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     expect(left).toEqual([{ platform_source: 'claude' }]);
     expect(count(db, 'observations')).toBe(1);
     expect(count(db, 'tool_uses')).toBe(1);
+    expect(count(db, 'committed_observation_tool_uses')).toBe(1);
+    expect(() => db.prepare("UPDATE tool_uses SET platform_source = 'codex' WHERE content_session_id = 'shared-id'").run())
+      .toThrow('session_deleted');
+    expect(store.upsertToolUse({
+      toolUseId: 'late-claude', contentSessionId: 'shared-id', platformSource: 'claude',
+      project: 'proj', toolName: 'Read', toolInput: '{}',
+    })).toBeNumber();
+    expect(count(db, 'tool_uses')).toBe(2);
+  });
+
+  it('prevents a delayed transcript replay from recreating a deleted session', () => {
+    seedSession(db, 'content-replay', 'memory-replay', 'proj');
+    setup(null);
+
+    expect(callDelete('claude', 'content-replay').status).toBe(200);
+    expect(() => store.createSDKSession('content-replay', 'proj', '', undefined, 'claude')).toThrow('session_deleted');
+    expect(() => db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, project, platform_source, started_at, started_at_epoch, status)
+      VALUES ('content-replay', 'proj', 'claude', '2026-07-20T00:00:00.000Z', 1752969600000, 'active')
+    `).run()).toThrow('session_deleted');
+    expect(count(db, 'sdk_sessions')).toBe(0);
+    expect(count(db, 'deleted_memory_sessions')).toBe(1);
+    expect(() => db.prepare(`
+      INSERT INTO tool_uses
+        (tool_use_id, content_session_id, project, platform_source, tool_name, tool_input, created_at, created_at_epoch)
+      VALUES ('late-tool', 'content-replay', 'proj', 'claude', 'Read', '{"secret":"late"}', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run()).toThrow('session_deleted');
+    expect(count(db, 'tool_uses')).toBe(0);
+    const otherId = store.createSDKSession('other-session', 'proj', '', undefined, 'claude');
+    expect(() => db.prepare(`UPDATE sdk_sessions SET memory_session_id = 'memory-replay' WHERE id = ?`).run(otherId))
+      .toThrow('session_deleted');
+    expect(() => db.prepare(`UPDATE sdk_sessions SET content_session_id = 'content-replay' WHERE id = ?`).run(otherId))
+      .toThrow('session_deleted');
+    expect(store.createSDKSession('content-replay', 'proj', '', undefined, 'codex')).toBeGreaterThan(0);
+  });
+
+  it('does not silently cascade a remote child inserted by another SQLite connection during DELETE', () => {
+    sync.stop();
+    db.close();
+    const uri = join(tempDir, 'race.db');
+    db = new Database(uri);
+    store = new SessionStore(db);
+    const peer = new Database(uri);
+    try {
+      seedSession(db, 'content-race', 'memory-race', 'proj');
+      setup(null);
+      const originalCheck = (routes as any).assertRowDeletable.bind(routes);
+      let peerInserted = false;
+      let peerBlocked = false;
+      let attempted = false;
+      (routes as any).assertRowDeletable = (...args: unknown[]) => {
+        if (!attempted) {
+          attempted = true;
+          try {
+            peer.prepare(`
+              INSERT INTO observations
+                (memory_session_id, project, type, title, created_at, created_at_epoch, origin_device_id, origin_local_id)
+              VALUES ('memory-race', 'proj', 'discovery', 'remote', '2026-07-20T00:00:00.000Z', 1752969600000, 'other-device', 'remote-1')
+            `).run();
+            peerInserted = true;
+          } catch (error) {
+            if (!String(error).match(/lock|busy/i)) throw error;
+            peerBlocked = true;
+          }
+        }
+        return originalCheck(...args);
+      };
+
+      const { status } = callDelete('claude', 'content-race');
+      expect(attempted).toBe(true);
+      if (peerInserted) {
+        expect(status).toBe(409);
+        expect(db.prepare("SELECT COUNT(*) AS n FROM observations WHERE origin_device_id = 'other-device'").get()).toEqual({ n: 1 });
+      } else {
+        expect(peerBlocked).toBe(true);
+        expect(status).toBe(200);
+      }
+    } finally {
+      peer.close();
+    }
+  });
+
+  it('removes a previously captured deliverable row and reports the retained bucket copy', () => {
+    const dataDir = useTempHookSpoolDataDir();
+    try {
+      seedSession(db, 'content-file', 'memory-file', 'proj');
+      const bucketDir = resolveDeliverableBucketDir('proj');
+      mkdirSync(bucketDir, { recursive: true });
+      const bucketPath = join(bucketDir, 'report-abcdef12.html');
+      writeFileSync(bucketPath, '<h1>report</h1>');
+      store.recordDeliverable({
+        project: 'proj', contentSessionId: 'content-file', platformSource: 'claude', title: 'report.html',
+        kind: 'page', sourcePath: '/repo/report.html', bucketPath, bytes: 15, sha256: 'a'.repeat(64),
+        declared: false, occurredAtEpoch: 1,
+      });
+      setup(null);
+
+      const { status, body } = callDelete('claude', 'content-file');
+      expect(status).toBe(200);
+      expect(body.deliverableReferencesRemoved).toBe(1);
+      expect(count(db, 'deliverables')).toBe(0);
+      expect(existsSync(bucketPath)).toBe(true);
+    } finally {
+      dataDir.restore();
+    }
+  });
+
+  it('keeps a shared bucket copy when its last recorded session is deleted', () => {
+    const dataDir = useTempHookSpoolDataDir();
+    try {
+      seedSession(db, 'content-file-a', 'memory-file-a', 'proj');
+      seedSession(db, 'content-file-b', 'memory-file-b', 'proj');
+      const bucketDir = resolveDeliverableBucketDir('proj');
+      mkdirSync(bucketDir, { recursive: true });
+      const bucketPath = join(bucketDir, 'shared-abcdef12.html');
+      writeFileSync(bucketPath, '<h1>shared</h1>');
+      for (const contentSessionId of ['content-file-a', 'content-file-b']) {
+        store.recordDeliverable({
+          project: 'proj', contentSessionId, platformSource: 'claude', title: 'shared.html',
+          kind: 'page', sourcePath: '/repo/shared.html', bucketPath, bytes: 15, sha256: 'a'.repeat(64),
+          declared: false, occurredAtEpoch: 1,
+        });
+      }
+      setup(null);
+
+      expect(callDelete('claude', 'content-file-a').status).toBe(200);
+      expect(count(db, 'deliverables')).toBe(1);
+      expect(existsSync(bucketPath)).toBe(true);
+      expect(callDelete('claude', 'content-file-b').status).toBe(200);
+      expect(count(db, 'deliverables')).toBe(0);
+      expect(existsSync(bucketPath)).toBe(true);
+    } finally {
+      dataDir.restore();
+    }
+  });
+
+  it('keeps a copy while another session has copied it but has not recorded its row yet', () => {
+    const dataDir = useTempHookSpoolDataDir();
+    try {
+      seedSession(db, 'content-copy-a', 'memory-copy-a', 'proj');
+      seedSession(db, 'content-copy-b', 'memory-copy-b', 'proj');
+      const bucketDir = resolveDeliverableBucketDir('proj');
+      mkdirSync(bucketDir, { recursive: true });
+      const bucketPath = join(bucketDir, 'pending-abcdef12.html');
+      writeFileSync(bucketPath, '<h1>pending</h1>');
+      store.recordDeliverable({
+        project: 'proj', contentSessionId: 'content-copy-a', platformSource: 'claude', title: 'pending.html',
+        kind: 'page', sourcePath: '/repo/pending.html', bucketPath, bytes: 16, sha256: 'a'.repeat(64),
+        declared: false, occurredAtEpoch: 1,
+      });
+      setup(null);
+
+      expect(callDelete('claude', 'content-copy-a').status).toBe(200);
+      // The other hook already has this content-addressed copy, but its API
+      // request to record the row has not reached the worker yet.
+      expect(existsSync(bucketPath)).toBe(true);
+      store.recordDeliverable({
+        project: 'proj', contentSessionId: 'content-copy-b', platformSource: 'claude', title: 'pending.html',
+        kind: 'page', sourcePath: '/repo/pending.html', bucketPath, bytes: 16, sha256: 'a'.repeat(64),
+        declared: false, occurredAtEpoch: 1,
+      });
+      expect(existsSync(bucketPath)).toBe(true);
+    } finally {
+      dataDir.restore();
+    }
   });
 
   it('refuses with 409 while the session holds rows synced from another device, deleting nothing', () => {
@@ -189,6 +363,8 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     for (const table of ['observations', 'session_summaries', 'user_prompts', 'tool_uses', 'sdk_sessions']) {
       expect(count(db, table)).toBe(1);
     }
+    expect(count(db, 'deleted_content_sessions')).toBe(0);
+    expect(count(db, 'deleted_memory_sessions')).toBe(0);
     expect(count(db, 'sync_content_outbox')).toBe(0);
     expect(broadcasts).toEqual([]);
   });

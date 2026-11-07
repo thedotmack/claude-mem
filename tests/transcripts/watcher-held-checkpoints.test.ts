@@ -1,10 +1,14 @@
-import { afterAll, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { afterAll, expect, it, mock } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import { loadWatchState } from '../../src/services/transcripts/state.js';
-import type { TranscriptCheckpointGate } from '../../src/services/transcripts/types.js';
+import type { TranscriptCheckpointGate, TranscriptSchema } from '../../src/services/transcripts/types.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionMessageBuffer } from '../../src/services/worker/SessionMessageBuffer.js';
+import { setIngestContext } from '../../src/services/worker/http/shared.js';
 
 const root = mkdtempSync(join(tmpdir(), 'cm-held-checkpoints-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -134,5 +138,84 @@ it('keeps per-line recovery points in memory and writes the state file once per 
     expect(loadWatchState(statePath).offsets[path]).toBe(statSync(path).size);
   } finally {
     watcher.stop();
+  }
+});
+
+// Live-only observer contract (AGENTS.md, docs/architecture/observer-lifecycle.md):
+// a worker restart must not cause later, unrequested inference spend. The
+// watcher holds its checkpoint while work is buffered, so after a restart it
+// re-reads lines whose observation may already have committed.
+it('a restart that re-reads a held checkpoint does not re-queue or re-spend on committed work, and fresh capture still starts', async () => {
+  const dir = mkdtempSync(join(root, 'restart-no-spend-'));
+  const path = join(dir, 'session.jsonl');
+  const statePath = join(dir, 'state.json');
+  const schema: TranscriptSchema = { name: 'restart', sessionIdPath: 'session', events: [
+    { name: 'use', match: { path: 'type', equals: 'use' }, action: 'tool_use', fields: { toolId: 'id', toolName: 'name', toolInput: 'input' } },
+    { name: 'result', match: { path: 'type', equals: 'result' }, action: 'tool_result', fields: { toolId: 'id', toolResponse: 'output' } },
+  ] };
+  const line = (record: unknown) => JSON.stringify(record) + '\n';
+  writeFileSync(path,
+    line({ session: 's', type: 'use', id: 'toolu_done', name: 'Read', input: { path: 'a' } })
+    + line({ session: 's', type: 'result', id: 'toolu_done', output: 'contents' }));
+  const watch = { name: 'restart', path, workspace: '/repo', schema };
+
+  // The real ingestObservation, feeding a real SessionMessageBuffer. Starting
+  // the generator is the only way queued work reaches the paid provider.
+  const store = new SessionStore(new Database(':memory:'));
+  let buffer = new SessionMessageBuffer();
+  const queueObservation = mock((sessionDbId: number, message: { toolUseId?: string }) =>
+    buffer.enqueue(sessionDbId, { type: 'observation', toolUseId: message.toolUseId } as any));
+  const providerStarts = mock(async () => {});
+  setIngestContext({
+    sessionManager: { queueObservation } as any,
+    dbManager: { getSessionStore: () => store } as any,
+    eventBroadcaster: { broadcastObservationQueued: () => {} } as any,
+    ensureGeneratorRunning: providerStarts,
+  });
+  // The checkpoint stays held: nothing the watcher buffered counts as stored.
+  const heldGate: TranscriptCheckpointGate = { sequence: () => 0, drainedThrough: () => false };
+
+  const first = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', heldGate);
+  let second: TranscriptWatcher | undefined;
+  try {
+    await readAll(first, path, watch, schema);
+    expect(queueObservation).toHaveBeenCalledTimes(1);
+    expect(providerStarts).toHaveBeenCalledTimes(1);
+
+    // The observer answered and its result committed with the terminal marker.
+    const session = store.db.prepare(
+      "SELECT platform_source FROM sdk_sessions WHERE content_session_id = 's'"
+    ).get() as { platform_source: string };
+    store.db.transaction(() => store.markCommittedToolUses({
+      platformSource: session.platform_source, contentSessionId: 's', toolUseIds: ['toolu_done'],
+    }))();
+
+    // The worker dies before the held checkpoint is written.
+    first.stop();
+    expect(loadWatchState(statePath).offsets[path] ?? 0).toBe(0);
+
+    // A fresh worker: the in-memory toolUseId dedup is gone, the DB is not.
+    buffer = new SessionMessageBuffer();
+    second = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', heldGate);
+    await readAll(second, path, watch, schema);
+    expect(queueObservation).toHaveBeenCalledTimes(1);
+    expect(providerStarts).toHaveBeenCalledTimes(1);
+
+    // New activity after the restart is still captured. The append can also
+    // wake the tailer's own file watch, so count by tool use: the committed
+    // one is never queued again, and the new one is queued and starts work.
+    appendFileSync(path,
+      line({ session: 's', type: 'use', id: 'toolu_new', name: 'Read', input: { path: 'b' } })
+      + line({ session: 's', type: 'result', id: 'toolu_new', output: 'fresh' }));
+    await (second as any).tailers.get(path).readNewData();
+    const queuedFor = (toolUseId: string) => queueObservation.mock.calls
+      .filter(call => (call[1] as { toolUseId?: string }).toolUseId === toolUseId).length;
+    expect(queuedFor('toolu_done')).toBe(1);
+    expect(queuedFor('toolu_new')).toBeGreaterThanOrEqual(1);
+    expect(providerStarts.mock.calls.length).toBeGreaterThan(1);
+  } finally {
+    first.stop();
+    second?.stop();
+    store.close();
   }
 });

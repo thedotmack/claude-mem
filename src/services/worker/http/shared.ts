@@ -277,6 +277,9 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message === 'session_deleted') {
+      return { ok: true, status: 'skipped', reason: 'session_deleted' };
+    }
     logger.error('INGEST', 'Observation session resolution failed', {
       contentSessionId: payload.contentSessionId,
       toolName: payload.toolName,
@@ -318,6 +321,11 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     toolResponse: payload.toolResponse,
     cwd,
   }, mediaCaptureEnabled ? () => dbManager.getMediaStore() : undefined);
+  // Explicit DELETE may commit while media conversion yields. Do not restore
+  // its raw tool-use side index or put the stale observation into RAM.
+  if (store.isSessionDeleted(platformSource, payload.contentSessionId)) {
+    return { ok: true, status: 'skipped', reason: 'session_deleted' };
+  }
   const cleanedToolInput = media.toolInput !== undefined
     ? stripMemoryTags(JSON.stringify(media.toolInput))
     : '{}';
@@ -353,6 +361,11 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
         orSessionId: typeof payload.orSessionId === 'string' ? payload.orSessionId : null,
       });
     } catch (error) {
+      // A concurrent SQLite connection can delete the session after the
+      // post-capture check. The write trigger closes that final DB race.
+      if (error instanceof Error && error.message === 'session_deleted') {
+        return { ok: true, status: 'skipped', reason: 'session_deleted' };
+      }
       logger.warn('INGEST', 'tool_uses backup write failed (observation still queued)', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
@@ -365,6 +378,25 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     // The explicit note is already stored. Its raw receipt above is useful,
     // but observing the echo would duplicate it and buy another provider call.
     return { ok: true, status: 'skipped', reason: 'explicit_memory_write' };
+  }
+
+  // Keep the raw side-index upsert above even on a replay: it may add a late
+  // tool response. A terminal result marker, unlike that pre-commit raw row,
+  // proves the observer result was stored before the worker buffer disappeared.
+  if (payload.toolUseId) {
+    try {
+      if (store.hasCommittedToolUse(platformSource, payload.contentSessionId, payload.toolUseId)) {
+        return { ok: true, status: 'skipped', reason: 'already_processed' };
+      }
+    } catch (error) {
+      // A failed lookup cannot tell a replay from new work. Fail toward no
+      // spend: a DB fault must never turn a replay into unrequested paid work.
+      logger.error('INGEST', 'Committed tool-use lookup failed; observation skipped, not queued', {
+        sessionId: sessionDbId,
+        toolName: payload.toolName,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return { ok: true, status: 'skipped', reason: 'committed_lookup_failed' };
+    }
   }
 
   // Replay recovery: a source event whose text outcome, observation rows and
@@ -467,6 +499,9 @@ export async function ingestSummarize(
   // Summarize only a session the worker knows. Creating a row here gave every
   // idle turn of a session nothing else recorded (an excluded checkout, a
   // skipped init) an empty-project row and a paid observer call (R5-1).
+  if (store.isSessionDeleted(platformSource, contentSessionId)) {
+    return { status: 'skipped', reason: 'session_deleted' };
+  }
   const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
   if (sessionDbId === null) {
     return { status: 'unknown_session' };
@@ -532,7 +567,7 @@ export interface SessionEndPayload {
 
 export interface DeliverablesIngestResult {
   status: 'accepted' | 'skipped';
-  reason?: 'project_excluded' | 'private';
+  reason?: 'project_excluded' | 'private' | 'session_deleted';
   stored: number;
   duplicates: number;
   /** Copies this worker cannot open (not a file on its disk inside the deliverables directory): logged, not recorded. */
@@ -572,6 +607,9 @@ export function ingestDeliverables(
   }
 
   const store = dbManager.getSessionStore();
+  if (store.isSessionDeleted(platformSource, contentSessionId)) {
+    return { status: 'skipped', reason: 'session_deleted', ...nothing };
+  }
   const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
   if (sessionDbId !== null) {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
@@ -624,6 +662,9 @@ export async function ingestSessionEnd(
   handoff: IngestHandoff = {},
 ): Promise<SessionIngestOutcome> {
   const store = deps.dbManager.getSessionStore();
+  if (store.isSessionDeleted(payload.platformSource, payload.contentSessionId)) {
+    return { status: 'skipped', reason: 'session_deleted' };
+  }
   const sessionDbId = store.findSessionDbIdByContentSessionId(payload.contentSessionId, payload.platformSource);
   if (sessionDbId === null) {
     return { status: 'unknown_session' };
@@ -671,7 +712,15 @@ export function ingestAdvisorCalls(
   const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : 'unknown';
 
   const store = dbManager.getSessionStore();
-  const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
+  let sessionDbId: number;
+  try {
+    sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'session_deleted') {
+      return { status: 'skipped', reason: 'session_deleted' };
+    }
+    throw error;
+  }
 
   let stored = 0;
   let duplicates = 0;
@@ -739,6 +788,9 @@ export function ingestSubagentStop(
     return { status: 'skipped', reason: 'project_excluded' };
   }
   const project = typeof payload.cwd === 'string' && payload.cwd.trim() ? getProjectContext(payload.cwd).primary : 'unknown';
+  if (dbManager.getSessionStore().isSessionDeleted(payload.platformSource, payload.contentSessionId)) {
+    return { status: 'skipped', reason: 'session_deleted' };
+  }
   const fields = agentStopFields({
     platformSource: normalizePlatformSource(payload.platformSource),
     contentSessionId: payload.contentSessionId,

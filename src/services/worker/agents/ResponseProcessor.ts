@@ -904,6 +904,20 @@ export async function processAgentResponse(
     if (parsed.summary?.skipped) {
       session.lastSummaryStored = false;
       recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
+      const skippedToolUseIds = Array.from(new Set(
+        sessionManager.getClaimedMessages(session.sessionDbId)
+          .map(message => message.toolUseId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      ));
+      // Terminal even when the reply was cut off (logged above): a restart
+      // never authorizes re-spending on work the observer already answered.
+      if (skippedToolUseIds.length > 0) {
+        dbManager.getSessionStore().markCommittedToolUses({
+          platformSource: session.platformSource,
+          contentSessionId: session.contentSessionId,
+          toolUseIds: skippedToolUseIds,
+        });
+      }
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
@@ -921,6 +935,11 @@ export async function processAgentResponse(
 
   const { observations, summary } = parsed;
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
   // Include claimed-message file evidence even for summary-only responses
@@ -988,7 +1007,14 @@ export async function processAgentResponse(
       context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      {
+        // A cut-off reply is terminal too: the lost tail is logged above, and
+        // replaying its tool uses after a restart would be unrequested spend.
+        committedToolUses: claimedToolUseIds.length > 0
+          ? { platformSource: session.platformSource, contentSessionId: session.contentSessionId, toolUseIds: claimedToolUseIds }
+          : undefined,
+      }
     );
     // Events a skipped turn of this prompt left waiting link to this turn's
     // observations even when the turn has no images of its own.
@@ -1073,11 +1099,6 @@ export async function processAgentResponse(
   // per-call join stays (content_session_id, tool_use_id).
   //
   // Never fatal: a failed link costs a back-reference, not an observation.
-  const claimedToolUseIds = Array.from(new Set(
-    claimedMessages
-      .map(message => message.toolUseId)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-  ));
   const linkObservationId = firstStoredObservationId(result);
   if (claimedToolUseIds.length > 0 && linkObservationId !== undefined) {
     try {

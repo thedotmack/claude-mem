@@ -904,7 +904,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    let sessionDbId: number;
+    try {
+      sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'session_deleted') {
+        res.json({ skipped: true, reason: 'session_deleted' });
+        return;
+      }
+      throw error;
+    }
 
     // The checkout `project` was resolved from, and how it was derived, so a
     // session that never reports an observation still leaves evidence for
