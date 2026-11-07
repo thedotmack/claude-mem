@@ -226,6 +226,7 @@ function createHarness(backlog: number, payloadChars = 200) {
         return { observationIds: [storedObservations.length], summaryId: null, createdAtEpoch: Date.now() };
       },
       linkToolUsesToObservation: () => 0,
+      markCommittedToolUses: () => {},
     }),
     getChromaSync: () => null,
     getCloudSync: () => null,

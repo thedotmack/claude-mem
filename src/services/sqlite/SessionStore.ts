@@ -2274,7 +2274,10 @@ export class SessionStore {
     `).get(normalizePlatformSource(platformSource), contentSessionId) != null;
   }
 
-  /** Call inside the result transaction; failure must roll back the result too. */
+  /**
+   * Its own transaction, which nests as a savepoint inside the result
+   * transaction: a failure there rolls back the stored result too.
+   */
   markCommittedToolUses(input: {
     platformSource: string;
     contentSessionId: string;
@@ -2288,10 +2291,12 @@ export class SessionStore {
     `);
     const platformSource = normalizePlatformSource(input.platformSource);
     const now = Date.now();
-    for (const toolUseId of new Set(input.toolUseIds)) {
-      if (!toolUseId) continue;
-      insert.run(platformSource, input.contentSessionId, toolUseId, now);
-    }
+    this.db.transaction(() => {
+      for (const toolUseId of new Set(input.toolUseIds)) {
+        if (!toolUseId) continue;
+        insert.run(platformSource, input.contentSessionId, toolUseId, now);
+      }
+    })();
   }
 
   isHookSpoolEntryConsumed(entryKey: string): boolean {

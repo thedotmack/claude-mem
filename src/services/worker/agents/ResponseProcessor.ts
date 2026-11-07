@@ -861,12 +861,11 @@ export async function processAgentResponse(
       // Terminal even when the reply was cut off (logged above): a restart
       // never authorizes re-spending on work the observer already answered.
       if (skippedToolUseIds.length > 0) {
-        const store = dbManager.getSessionStore();
-        store.db.transaction(() => store.markCommittedToolUses({
+        dbManager.getSessionStore().markCommittedToolUses({
           platformSource: session.platformSource,
           contentSessionId: session.contentSessionId,
           toolUseIds: skippedToolUseIds,
-        }))();
+        });
       }
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
