@@ -1727,7 +1727,11 @@ export function buildInstallerOAuthStartBody(
   };
 }
 
-/** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
+/**
+ * Starts an OAuth pairing. The pairing takes no email address or identity from
+ * the CLI. The only email the CLI ever sends is the optional opt-in
+ * (promptEmailOptIn), which goes to the waitlist and is never used to sign in.
+ */
 export async function startInstallerOAuthPairing(
   opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string } = {},
 ): Promise<InstallerOAuthPairing | null> {
@@ -3560,7 +3564,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai gets only your email and optional note (with the claude-mem version and OS) if you share them when an interactive terminal install asks, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,

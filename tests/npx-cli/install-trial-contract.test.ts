@@ -440,6 +440,30 @@ describe('installer trial-ready contract', () => {
     expect(callIndex).toBeLessThan(source.indexOf('oauthPairing = await requireInstallerOAuthLogin(version);'));
   });
 
+  it('keeps every privacy statement true now that setup can ask for an email', () => {
+    // The opt-in sends an email to cmem.ai, so no copy may still say the CLI
+    // contacts cmem.ai only for the sign-in link or never asks for an email.
+    const installer = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const privacyLine = installer.split('\n').find(line => line.includes('on this machine. cmem.ai'));
+    expect(privacyLine).toBeDefined();
+    expect(privacyLine).toContain('your email and optional note');
+    expect(privacyLine).toContain('numbers-only usage summary');
+    const copies = [
+      'src/npx-cli/commands/install.ts',
+      'docs/public/installation.mdx',
+      'docs/public/cmem-pro-headless.mdx',
+      'docs/public/cursor/index.mdx',
+      'docs/public/hooks-architecture.mdx',
+      'src/services/worker/onboarding-explainer.md',
+      'plugin/skills/how-it-works/SKILL.md',
+    ];
+    for (const path of copies) {
+      const text = readFileSync(join(repoRoot, path), 'utf-8');
+      expect({ path, stale: /contacted? cmem\.ai once|cmem\.ai is contacted once|does \*\*not\*\* ask for an email|no email in the CLI|No email address or identity is accepted/.test(text) })
+        .toEqual({ path, stale: false });
+    }
+  });
+
   it('stops any respawned worker after provider settings are persisted', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
     const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version, signInForCmem)');
