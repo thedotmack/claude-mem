@@ -67,6 +67,8 @@ if (resolvedViewerHtmlPath) {
 const FEED_PAGE_SIZE = 50;
 const SESSION_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 100;
+// Deep pagination stops here, matching the /v1 jobs listing's offset cap.
+const MAX_FEED_OFFSET = 10_000;
 // Reverse proxies end an upstream response that stays silent past their read
 // timeout; nginx's proxy_read_timeout defaults to 60 s. A comment every 15 s
 // keeps the stream open through that with three missed keepalives to spare.
@@ -296,14 +298,26 @@ interface Page {
   offset: number;
 }
 
-/** Reads `limit`/`offset`, or answers 400 and returns null when `limit` is outside 1..MAX_PAGE_SIZE. */
-function parsePage(req: Request, res: Response, defaultLimit: number): Page | null {
+/** Reads `limit`/`offset`, or answers 400 and returns null when `limit` is outside 1..MAX_PAGE_SIZE
+ * or `offset` exceeds MAX_FEED_OFFSET. Exported for unit tests. */
+export function parsePage(req: Request, res: Response, defaultLimit: number): Page | null {
   const limit = req.query.limit === undefined ? defaultLimit : parseNonNegativeInt(req.query.limit);
   if (limit === null || limit < 1 || limit > MAX_PAGE_SIZE) {
     res.status(400).json({ error: 'BadRequest', message: `limit must be an integer from 1 to ${MAX_PAGE_SIZE}` });
     return null;
   }
-  return { limit, offset: parseNonNegativeInt(req.query.offset) ?? 0 };
+  const offset = parseNonNegativeInt(req.query.offset) ?? 0;
+  // Same bound the /v1 jobs listing enforces (JOB_LIST_MAX_OFFSET): OFFSET is
+  // parameterized, so a runaway value is not injection — it is one request
+  // driving an arbitrarily deep Postgres skip-scan.
+  if (offset > MAX_FEED_OFFSET) {
+    res.status(400).json({
+      error: 'BadRequest',
+      message: `offset must be at most ${MAX_FEED_OFFSET}; narrow the listing with filters to reach older rows`,
+    });
+    return null;
+  }
+  return { limit, offset };
 }
 
 function parseNonNegativeInt(value: unknown): number | null {
