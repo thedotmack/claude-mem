@@ -2308,6 +2308,20 @@ function parseStoredSignup(): StoredSignup | null {
   };
 }
 
+/**
+ * settings.json is there but is not a settings document. The email save would
+ * move it aside before the overwrite question, so the opt-in leaves it alone.
+ */
+function settingsFileUnreadable(): boolean {
+  if (!existsSync(USER_SETTINGS_PATH)) return false;
+  try {
+    return readFlatSettings(USER_SETTINGS_PATH) === null;
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a parse failure is exactly the unreadable case this reports; the install's own settings writes handle the file later.
+    return true;
+  }
+}
+
 function readStoredSignup(): StoredSignup | null {
   try {
     return parseStoredSignup();
@@ -2356,6 +2370,7 @@ export async function promptEmailOptIn(version: string): Promise<void> {
   if (!isInteractive) return;
   if (process.env.CI) return;
   if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
+  if (settingsFileUnreadable()) return;
 
   const prior = readStoredSignup();
   if (prior) {
@@ -3427,11 +3442,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       : null;
   // The provider this run ended up with: an interactive run with no
   // --provider picks it at the prompt, so options.provider is unset there.
+  // A named provider wins, because host reports its transport (openrouter).
+  const summaryProvider = options.provider ?? selectedProvider;
   const accountStatus = oauthPairing
     ? 'OAuth login complete'
-    : selectedProvider === 'host'
+    : summaryProvider === 'host'
       ? 'Not required (host observer)'
-      : !providerNeedsAccount(selectedProvider)
+      : !providerNeedsAccount(summaryProvider)
         ? 'Not required (local provider)'
         : options.providerSource === 'persisted'
           ? 'Kept existing account (no login this run)'

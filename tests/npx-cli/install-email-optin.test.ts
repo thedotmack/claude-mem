@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 
@@ -125,6 +125,15 @@ describe('installer email opt-in', () => {
     expect(questions).toHaveLength(1);
     expect(received).toHaveLength(0);
     expect(stored().CLAUDE_MEM_ONLINE_SIGNUP_EMAIL).toBeUndefined();
+  });
+
+  it('leaves an unreadable settings file alone and asks nothing', async () => {
+    writeFileSync(settingsPath, '{ not json');
+    await promptEmailOptIn('1.2.3');
+
+    expect(questions).toHaveLength(0);
+    expect(received).toHaveLength(0);
+    expect(readFileSync(settingsPath, 'utf8')).toBe('{ not json');
   });
 
   it('asks nothing in CI or when the opt-in is turned off', async () => {

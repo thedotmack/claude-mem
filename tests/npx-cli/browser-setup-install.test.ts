@@ -71,6 +71,7 @@ const usage = { ...await import('../../src/npx-cli/install/usage-summary.js') };
 const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const spawner = { ...await import('../../src/services/worker-spawner.js') };
 const cliPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
+const memoryCredentials = { ...await import('../../src/npx-cli/cmem-memory-credentials.js') };
 const packageVersion = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')).version;
 mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPluginVersion: () => packageVersion }));
 
@@ -114,6 +115,11 @@ mock.module('@clack/prompts', () => ({
   log: Object.fromEntries(['info', 'success', 'warn', 'error', 'message', 'step'].map(key => [key, (value: string) => lines.push(value)])),
 }));
 mock.module('../../src/npx-cli/banner.js', () => ({ ...banner, playBanner: async () => {} }));
+// Host mode probes for an observer the user already runs; the host case only needs the settings it writes.
+mock.module('../../src/npx-cli/cmem-memory-credentials.js', () => ({
+  ...memoryCredentials,
+  buildHostObserverSettings: () => ({ CLAUDE_MEM_PROVIDER: 'openrouter' }),
+}));
 mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...spawnGate, holdSpawnLock: async () => () => {} }));
 
@@ -439,6 +445,12 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // Sign-in waited for the provider choice instead of gating the install.
     expect(questions.some(q => q.startsWith('Select Provider'))).toBe(true);
     expect(lines.join('\n')).toContain('CMEM Pro needs a claude-mem sign-in.');
+  });
+
+  it('a --provider host install says no account is needed', async () => {
+    await runInstallCommand({ provider: 'host' });
+    expect(pairingStarts).toEqual([]);
+    expect(lines.join('\n')).toContain('Not required (host observer)');
   });
 
   it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
