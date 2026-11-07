@@ -70,6 +70,26 @@ describe('SettingsDefaultsManager', () => {
     }
   });
 
+  it('ships the Grok Bot awareness push off with no agent IDs until explicitly configured', () => {
+    const defaults = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
+    };
+    expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
+
+    const optIn = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
+    };
+    writeFileSync(settingsPath, JSON.stringify(optIn));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+
+    writeFileSync(settingsPath, '{}');
+    Object.assign(process.env, optIn);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+  });
+
   describe('loadFromFile', () => {
     describe('file does not exist', () => {
       it('should create file with defaults when file does not exist', () => {
