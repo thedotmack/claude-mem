@@ -10,9 +10,11 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
 import { isMyRulesList } from '../../../work-view/my-rules.mjs';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { isMyFocusList } from '../../../work-view/my-focus.mjs';
 import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
+import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -36,7 +38,7 @@ const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
 
 const workStateWriteSchema = z.object({
   cwd: z.string().trim().min(1),
-  list: z.string().trim().min(1).max(200),
+  list: z.string().trim().min(1).max(200).refine(list => !isSharedWorkList(list), 'This list is reserved for shared My Work records'),
   fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
     .refine(
@@ -75,6 +77,13 @@ export class WorkStateRoutes extends BaseRouteHandler {
   }
 
   private handleWrite = this.wrapHandler((req: Request, res: Response): void => {
+    // These rows are the agent's canonical to-do lists, so other localhost pages
+    // may not write them. Origin-less callers (the work_state_write MCP tool,
+    // save_goals.py) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Work-state writes from a different localhost origin are not allowed' });
+      return;
+    }
     const { cwd, list, fields } = req.body as z.infer<typeof workStateWriteSchema>;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 

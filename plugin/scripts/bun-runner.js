@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, chmodSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir, tmpdir } from 'os';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -59,8 +59,21 @@ function findBun() {
     }
   }
 
+  // `where` must be the System32 binary — a bare spawn can run a planted
+  // where.exe from the current directory — and where.exe's own results include
+  // that directory, which hooks run inside as the user's project: a planted
+  // bun.exe there must never win.
+  const whereExe = join(
+    process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR || 'C:\\Windows',
+    'System32',
+    'where.exe'
+  );
+  const normalizeForCwdCompare = p => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  const cwdNorm = normalizeForCwdCompare(process.cwd());
+  const notInCwd = line => normalizeForCwdCompare(dirname(line)) !== cwdNorm;
+
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where', ['bun'], {
+    ? spawnSync(whereExe, ['bun'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
@@ -80,6 +93,7 @@ function findBun() {
       // below — re-reading the raw stdout would hand the garbled path back
       // even after the list was filtered.
       const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(notInCwd)
         .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();
@@ -156,7 +170,7 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
-// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+// Resolve a relative script path against the launch directory before the child starts in the neutral run dir (#4628)
 args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
@@ -167,41 +181,85 @@ if (!bunPath) {
   process.exit(1);
 }
 
-function collectStdin() {
+function collectStdin(input = process.stdin, options = {}) {
   return new Promise((resolve) => {
-    if (process.stdin.isTTY) {
+    if (input.isTTY) {
       resolve(null);
       return;
     }
 
     const chunks = [];
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
-    process.stdin.on('end', () => {
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    });
-    process.stdin.on('error', () => {
-      resolve(null);
-    });
-
-    setTimeout(() => {
-      process.stdin.removeAllListeners();
-      process.stdin.pause();
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    }, 5000);
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      input.removeListener('data', onData);
+      input.removeListener('end', onEnd);
+      input.removeListener('error', onError);
+      input.pause();
+      resolve(value);
+    };
+    const buffered = () => chunks.length > 0 ? Buffer.concat(chunks) : null;
+    const onData = (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // Codex can keep stdin open after delivering the complete hook object.
+      // Other commands retain their EOF framing.
+      if (options.json) {
+        const data = buffered();
+        try {
+          const value = JSON.parse(data.toString('utf8').trim());
+          if (value && typeof value === 'object' && !Array.isArray(value)) finish(data);
+        } catch {}
+      }
+    };
+    const onEnd = () => finish(buffered());
+    const onError = () => finish(null);
+    const timer = setTimeout(() => finish(buffered()), options.timeoutMs === undefined ? 5000 : options.timeoutMs);
+    input.on('data', onData);
+    input.on('end', onEnd);
+    input.on('error', onError);
   });
 }
 
-const stdinData = await collectStdin();
+const stdinData = await collectStdin(process.stdin, { json: args[1] === 'hook' });
 
 // Bun reads tsconfig.json from its working directory and prints any warnings
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a
 // neutral directory and hand it the launch directory; the hook entry point
 // (src/cli/hook-original-cwd.ts) moves back there before adapters run.
+// The neutral dir must be owner-controlled, not tmpdir(): Bun also auto-loads
+// bunfig.toml from cwd, and on a shared /tmp another local user could plant a
+// `preload` there.
+// Same rules as src/shared/expand-home.ts (this file cannot import): a
+// `~/x` CLAUDE_MEM_DATA_DIR must land under home, not as a literal `~`
+// directory inside the user's project.
+function expandHome(filePath) {
+  if (filePath === '~') return homedir();
+  if (filePath.startsWith('~/') || (IS_WINDOWS && filePath.startsWith('~\\'))) {
+    return join(homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+function neutralBunSpawnCwd() {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (!IS_WINDOWS) chmodSync(runDir, 0o700);
+    return runDir;
+  } catch (error) {
+    console.error(`[bun-runner] could not prepare ${runDir} (${error && error.message ? error.message : error}); starting Bun from the home directory`);
+    return homedir();
+  }
+}
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
-  cwd: tmpdir()
+  cwd: neutralBunSpawnCwd()
 };
 
 let spawnCmd = bunPath;

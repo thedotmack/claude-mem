@@ -5,17 +5,15 @@
  */
 
 import { styleText } from 'node:util';
-import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
-import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
+import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
 }
 
-// Host and port come from settings.json as well as env (readOnly: the CLI
-// never seeds the file), and an IPv6 host is bracketed.
+// readOnly: the CLI never seeds settings.json.
 function workerBaseUrl(): string {
-  return `http://${formatHostForUrl(getWorkerHost({ readOnly: true }))}:${getWorkerPort({ readOnly: true })}`;
+  return getWorkerBaseUrl({ readOnly: true });
 }
 
 /**
@@ -24,12 +22,7 @@ function workerBaseUrl(): string {
  */
 export async function fetchWorkerBackupApi(pathname: string, init?: RequestInit): Promise<Response> {
   try {
-    const ownerToken = loadWorkerAuthToken();
-    const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
-    if (ownerToken && !Object.keys(headers).some(name => name.toLowerCase() === 'authorization')) {
-      headers.Authorization = `Bearer ${ownerToken}`;
-    }
-    return await fetch(`${workerBaseUrl()}${pathname}`, { ...init, headers });
+    return await fetch(`${workerBaseUrl()}${pathname}`, init);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? (error as any).cause : undefined;

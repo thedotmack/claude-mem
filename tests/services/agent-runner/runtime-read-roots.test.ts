@@ -22,7 +22,9 @@ describe('Codex runtime read roots', () => {
     const native = join(root, 'node_modules', '@openai', 'codex-darwin-arm64');
     file(join(native, 'package.json'), JSON.stringify({ name: '@openai/codex' }));
     const runtime = join(native, 'vendor', 'aarch64-apple-darwin'); file(join(runtime, 'bin', 'codex'));
-    const command = join(root, 'bin', 'codex'); mkdirSync(dirname(command), { recursive: true }); symlinkSync(wrapper, command);
+    const command = join(root, 'bin', process.platform === 'win32' ? 'codex.js' : 'codex');
+    if (process.platform === 'win32') symlinkSync(dirname(wrapper), dirname(command), 'junction');
+    else { mkdirSync(dirname(command), { recursive: true }); symlinkSync(wrapper, command); }
     const roots = runtimeReadRoots(command, 'darwin', 'arm64');
     expect(roots).toEqual([dirname(command), dirname(wrapper), runtime]);
     expect(roots).not.toContain(root); expect(roots).not.toContain(join(root, 'node_modules'));

@@ -35,7 +35,7 @@ interface ExampleConfig {
 }
 
 const exampleConfig = JSON.parse(
-  readFileSync(join(import.meta.dir, '..', '..', 'transcript-watch.example.json'), 'utf8'),
+  readFileSync(join(import.meta.dir, '..', '..', 'docs', 'transcript-watch.example.json'), 'utf8'),
 ) as ExampleConfig;
 const codexSchema = exampleConfig.schemas.codex;
 

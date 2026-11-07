@@ -97,6 +97,11 @@ const CONTEXT_READ_WORKER = {
   source: 'src/services/context/context-read-worker.ts'
 };
 
+const WORK_VIEW_READ_WORKER = {
+  name: 'work-view-read-worker',
+  source: 'src/services/work-view/work-view-read-worker.ts'
+};
+
 const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
@@ -483,7 +488,18 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // Native decoder must remain external and be installed for each host.
+        // https://sharp.pixelplumbing.com/install/#bundlers
+        'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
+        // better-auth stays external in the bundles below (~3.7MB), so the
+        // worker's /api/auth/* routes (Pro sign-in) resolve it from
+        // plugin/node_modules at request time — the same pattern as sharp.
+        // Without these entries a plugin install has no better-auth at all
+        // and every auth request 500s with "Cannot find module 'better-auth'"
+        // (#5453).
+        'better-auth': packageJson.dependencies['better-auth'],
+        '@better-auth/api-key': packageJson.dependencies['@better-auth/api-key'],
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -524,12 +540,12 @@ async function buildHooks() {
       // from the bundles below — so a server needs them in the plugin's own
       // runtime closure or the lazy path dies with "Cannot find module
       // 'onnxruntime-node'".
-      // sharp is deliberately NOT declared here: it is a hard dependency of
-      // @huggingface/transformers, so it installs and hoists into
-      // plugin/node_modules with it — and declaring it directly would trip
-      // scripts/check-postinstall-allowlist.js (sharp carries an `install`
-      // script), which prepublishOnly enforces. It is still marked external in
-      // the bundles below so the trio resolves at runtime, never at build time.
+      // sharp is declared above as a direct dependency (the media decoder);
+      // @huggingface/transformers depends on it too and shares the hoisted copy
+      // in plugin/node_modules when their ranges overlap. sharp 0.35
+      // ships no install/preinstall/postinstall script, so it passes
+      // scripts/check-postinstall-allowlist.js. It is still marked external in
+      // the bundles below so it resolves at runtime, never at build time.
       optionalDependencies: {
         '@huggingface/transformers': '^4.2.0',
       },
@@ -604,6 +620,7 @@ async function buildHooks() {
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'sharp',
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
@@ -614,13 +631,15 @@ async function buildHooks() {
         // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
         // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
         // inlines that dynamic-import target into the worker bundle, dragging in the full
-        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
-        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
-        // and the route handler already wraps the import in try/catch → graceful 500).
-        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
+        // better-auth library (kysely, oauth, nanoid, …). Keeping it external strips
+        // the dead weight from worker-service.cjs. The routes DO exercise it (Pro
+        // sign-in), so plugin/package.json ships better-auth + @better-auth/api-key
+        // (see the generated manifest above) and the imports resolve from
+        // plugin/node_modules. See #2584, #5453.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
+        'better-auth/db/migration',
         '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
@@ -669,7 +688,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite', 'bun:ffi', 'cohere-ai', 'ollama', '@chroma-core/default-embed', 'onnxruntime-node',
-        'better-auth', 'better-auth/node', 'better-auth/plugins', '@better-auth/api-key',
+        'better-auth', 'better-auth/node', 'better-auth/plugins', 'better-auth/db/migration', '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
@@ -685,6 +704,30 @@ async function buildHooks() {
       }
     });
     assertBundleIntegrity(`${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`);
+
+    await build({
+      entryPoints: [WORK_VIEW_READ_WORKER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+    assertBundleIntegrity(`${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`);
 
     // Advisory only — a sudden jump usually means a heavy server-only dependency
     // (better-auth, kysely, a database driver) leaked into the worker bundle via a
@@ -729,6 +772,7 @@ async function buildHooks() {
           'better-auth',
           'better-auth/node',
           'better-auth/plugins',
+          'better-auth/db/migration',
           '@better-auth/api-key',
         ],
         define: {
@@ -929,7 +973,9 @@ async function buildHooks() {
       // plugin/node_modules instead of being inlined (keeps the bundle slim). The
       // worker and MCP server inline zod because a Codex or Claude Desktop copy of
       // the plugin may have no node_modules.
-      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
+      // processor.ts reaches ingestObservation's lazy media converter; keep
+      // the native decoder external exactly as the worker bundle does.
+      external: ['sharp', 'bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
@@ -1143,6 +1189,8 @@ async function buildHooks() {
       'plugin/scripts/bun-runner.js',
       'plugin/scripts/context-read-worker.cjs',
       'plugin/scripts/context-read-worker.cjs.map',
+      'plugin/scripts/work-view-read-worker.cjs',
+      'plugin/scripts/work-view-read-worker.cjs.map',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',

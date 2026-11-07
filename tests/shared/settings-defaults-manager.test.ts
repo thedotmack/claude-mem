@@ -1,9 +1,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from '../../src/shared/install-port.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
@@ -17,6 +18,17 @@ function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
   } finally {
     console.warn = originalWarn;
   }
+}
+
+function defaultsForSettingsPath(dataDir: string) {
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const workerPort = String(getDefaultWorkerPort(dataDir));
+  const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+  defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+  defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+  defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+  defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+  return defaults;
 }
 
 describe('SettingsDefaultsManager', () => {
@@ -66,7 +78,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(existsSync(settingsPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(JSON.parse(readFileSync(settingsPath, 'utf-8')));
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
       });
 
       it('should write valid JSON to the created file', () => {
@@ -112,7 +125,7 @@ describe('SettingsDefaultsManager', () => {
 
         expect(existsSync(join(tempDir, 'nested', 'deep'))).toBe(true);
         expect(existsSync(nestedPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(join(tempDir, 'nested', 'deep'))));
       });
 
       it('should create deeply nested directories recursively', () => {
@@ -149,7 +162,7 @@ describe('SettingsDefaultsManager', () => {
         const defaults = SettingsDefaultsManager.getAllDefaults();
 
         expect(result.CLAUDE_MEM_MODEL).toBe('partial-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(defaults.CLAUDE_MEM_WORKER_PORT);
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
         expect(result.CLAUDE_MEM_WORKER_HOST).toBe(defaults.CLAUDE_MEM_WORKER_HOST);
         expect(result.CLAUDE_MEM_LOG_LEVEL).toBe(defaults.CLAUDE_MEM_LOG_LEVEL);
       });
@@ -157,6 +170,7 @@ describe('SettingsDefaultsManager', () => {
       it('should not modify existing file when loading', () => {
         const customSettings = {
           CLAUDE_MEM_MODEL: 'do-not-change',
+          CLAUDE_MEM_WORKER_PORT: '41234',
           CUSTOM_KEY: 'should-persist', // Extra key not in defaults
         };
         writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2));
@@ -166,6 +180,16 @@ describe('SettingsDefaultsManager', () => {
 
         const afterContent = readFileSync(settingsPath, 'utf-8');
         expect(afterContent).toBe(originalContent);
+      });
+
+      it('uses the data-directory port default without rewriting a partial settings file', () => {
+        const content = JSON.stringify({ CLAUDE_MEM_MODEL: 'existing-model', CUSTOM_KEY: 'keep' });
+        writeFileSync(settingsPath, content);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
       });
 
       it('should handle all settings keys correctly', () => {
@@ -241,7 +265,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains invalid JSON', () => {
@@ -249,7 +273,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains only whitespace', () => {
@@ -257,7 +281,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains null', () => {
@@ -265,7 +289,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains array instead of object', () => {
@@ -273,7 +297,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains primitive value', () => {
@@ -281,7 +305,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
     });
 
@@ -549,6 +573,132 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
+      });
+    });
+
+    // Older installs had the dated Haiku 4.5 id written in by the default or the
+    // installer. Model policy (CLAUDE.md): the note-taker follows the newest Haiku.
+    describe('pinned Haiku note-taker migration', () => {
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('Migrated Claude model off the pinned'));
+      }
+
+      it('ships an alias, not a dated id', () => {
+        expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_MODEL).toBe('haiku');
+      });
+
+      it.each(['claude-haiku-4-5-20251001', 'claude-haiku-4-5'])('moves a saved %s to haiku once', (pinned) => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'claude',
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+          CLAUDE_MEM_MODEL: pinned,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(first.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(parsed.CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBe('subscription');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`${pinned} to haiku`);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+        expect(second.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it('keeps a model the user chose', () => {
+        for (const model of ['claude-sonnet-5', 'claude-opus-4-8', 'sonnet', 'claude-haiku-5-5']) {
+          const raw = JSON.stringify({ CLAUDE_MEM_MODEL: model });
+          writeFileSync(settingsPath, raw);
+
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe(model);
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        }
+      });
+
+      it('never touches a gateway install, which serves its own model names', () => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'gateway',
+          CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+        });
+        writeFileSync(settingsPath, raw);
+
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('never touches an install whose claude-mem .env points at a gateway', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nANTHROPIC_AUTH_TOKEN=sk-litellm\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('still moves an install whose .env has an empty ANTHROPIC_BASE_URL', () => {
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' }));
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY=sk-ant-test\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+          expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MODEL).toBe('haiku');
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('never touches a gateway .env saved with a BOM', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, '\uFEFFANTHROPIC_BASE_URL=http://127.0.0.1:4000\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('rewrites in memory only when read-only', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+
+        const value = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
       });
     });
 
@@ -924,7 +1074,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should ignore unknown keys in file', () => {
@@ -1056,15 +1206,20 @@ describe('SettingsDefaultsManager', () => {
 
   describe('get', () => {
     it('should return default value for key', () => {
-      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('claude-haiku-4-5-20251001');
-      const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
+      const expectedPort = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
+    });
+
+    it('expands a leading ~ in CLAUDE_MEM_DATA_DIR from the environment', () => {
+      process.env.CLAUDE_MEM_DATA_DIR = '~/x';
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR')).toBe(join(homedir(), 'x'));
     });
   });
 
   describe('getInt', () => {
     it('should return integer value for numeric string', () => {
-      const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
+      const expectedPort = Number(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
     });
@@ -1203,7 +1358,7 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      const expectedDefault = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      const expectedDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe(expectedDefault); 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });

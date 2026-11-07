@@ -11,30 +11,30 @@
 // Where a session's working directory comes from, highest priority first:
 //   1. the `X-Claude-Mem-Cwd` request header (Claude Code: `${CLAUDE_PROJECT_DIR}`),
 //   2. the MCP `roots/list` answer of the client (opencode answers with the project),
-//   3. the server process' own cwd.
+//   3. `PWD` only when process.cwd() is inside this plugin root (Antigravity may launch there),
+//   4. the server process' own cwd.
 //
 // Trust model for that directory: it becomes the sandbox root of smart_outline,
-// smart_unfold and smart_search (resolveWithinWorkspace). Over stdio the root is the
-// cwd the client started the server in, so the client already picks it; over HTTP
-// the client names it per request instead. Either way the client is a local process
-// of this OS user (loopback peer, loopback Host, no foreign browser Origin), so it can
-// name no directory it could not already read. The header must be an absolute path
+// smart_unfold and smart_search (resolveWithinWorkspace). Over stdio, client roots win;
+// otherwise the server launch directory or the guarded PWD fallback is used. Over HTTP
+// the client names it per request. Either way the client is a local process of this OS
+// user (loopback peer, loopback Host, no foreign browser Origin), so it can name no
+// directory it could not already read. The header must be an absolute path
 // to an existing directory, and an unusable one is refused (400) rather than
 // silently replaced by the session or process cwd.
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+
 import type { Request as ExpressRequest } from 'express';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { isLocalhost, parseBearerToken } from '../server/middleware/request-auth-helpers.js';
-import { loadWorkerAuthToken, workerAuthDisabled } from '../shared/worker-auth.js';
+import { isLocalhost } from '../server/middleware/request-auth-helpers.js';
 import { isOwnPageOrigin, type WorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 import { logger } from '../utils/logger.js';
+import { MAX_MCP_ROOTS_ATTEMPTS, MCP_ROOTS_TIMEOUT_MS, normalizeCwd, resolveMcpProjectCwd } from './mcp-project-cwd.js';
+export { cwdFromRoots, normalizeCwd } from './mcp-project-cwd.js';
 
 export const CWD_HEADER = 'x-claude-mem-cwd';
 export const MCP_HTTP_PATH = '/mcp';
@@ -57,11 +57,8 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 // standalone SSE stream cannot answer, and the SDK's default request timeout (60 s)
 // would stall that call a minute. A client that can answer is a local process on
 // loopback.
-const ROOTS_TIMEOUT_MS = 2000;
-// Each failed roots/list attempt can add ROOTS_TIMEOUT_MS to a tool call, so a client
-// that never answers costs at most 6 s in total before the session settles on the
-// process cwd (logged).
-const MAX_ROOTS_ATTEMPTS = 3;
+// Each failed roots/list attempt can add MCP_ROOTS_TIMEOUT_MS to a tool call, so a client
+// that never answers costs at most 6 s in total before the session settles on its fallback cwd.
 // Abuse protection: every session holds an MCP Server and transport in memory until
 // it is closed or swept. A local client stuck in an initialize loop would otherwise
 // grow the process for an hour. Real use is one session per open editor or agent on
@@ -74,6 +71,8 @@ export interface McpHttpOptions {
   /** 127.0.0.1, ::1 or localhost; anything else is refused. */
   host: string;
   port: number;
+  /** The MCP plugin root, used only to decide when PWD is safer than process.cwd(). */
+  pluginRoot?: string;
 }
 
 /** Resolves the project directory for one tool call from the request that carries it. */
@@ -124,36 +123,6 @@ export function headerCwd(headers: Record<string, string | string[] | undefined>
   return normalizeCwd(Array.isArray(value) ? value[0] : value);
 }
 
-/** A usable project directory from a header value or file:// URI, or null. */
-export function normalizeCwd(value: string | undefined | null): string | null {
-  if (typeof value !== 'string') return null;
-  let candidate = value.trim();
-  if (candidate.length === 0 || candidate.includes('\0')) return null;
-  if (candidate.startsWith('file://')) {
-    try {
-      candidate = fileURLToPath(candidate);
-    } catch {
-      return null;
-    }
-  }
-  if (!isAbsolute(candidate)) return null;
-  const resolved = resolve(candidate);
-  try {
-    return statSync(resolved).isDirectory() ? resolved : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The first usable directory in an MCP `roots/list` result. */
-export function cwdFromRoots(roots: ReadonlyArray<{ uri: string }> | undefined): string | null {
-  for (const root of roots ?? []) {
-    const cwd = normalizeCwd(root.uri);
-    if (cwd) return cwd;
-  }
-  return null;
-}
-
 /** Host header values we answer to (DNS rebinding protection): the loopback names, with and without the port. */
 export function allowedHosts(port: number): string[] {
   return LOOPBACK_HOSTS
@@ -161,7 +130,7 @@ export function allowedHosts(port: number): string[] {
     .flatMap((h) => [h, `${h}:${port}`]);
 }
 
-type CwdSource = 'header' | 'roots' | 'default';
+type CwdSource = 'header' | 'roots' | 'pwd' | 'default';
 
 interface Session {
   transport: StreamableHTTPServerTransport;
@@ -192,19 +161,6 @@ export interface StartMcpHttpOptions extends McpHttpOptions {
   originPolicy: WorkerOriginPolicy;
   /** Defaults to MAX_SESSIONS; tests lower it. */
   maxSessions?: number;
-}
-
-// SHA-256 both sides to a fixed 32 bytes so lengths never leak and
-// timingSafeEqual never throws on a length mismatch — same idiom as
-// safeEqualSecret in the worker HTTP middleware.
-function safeEqualSecret(presented: string, expected: string): boolean {
-  const a = createHash('sha256').update(presented, 'utf8').digest();
-  const b = createHash('sha256').update(expected, 'utf8').digest();
-  try {
-    return timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
@@ -259,12 +215,25 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   // Sessions between createSession and the SDK's onsessioninitialized, so concurrent
   // initialize requests cannot slip past the cap.
   let initializing = 0;
-  const defaultCwd = process.cwd();
+  const defaultCwdResolution = resolveMcpProjectCwd({
+    fallbackCwd: process.cwd(),
+    pwd: process.env.PWD,
+    pluginRoot: options.pluginRoot,
+  });
+  const defaultCwd = defaultCwdResolution.cwd;
+  if (defaultCwdResolution.source === 'pwd') {
+    logger.info('SYSTEM', 'MCP HTTP working directory resolved from PWD because process.cwd() is inside the plugin root');
+  }
 
   const applyHeaderCwd = (session: Session, req: IncomingMessage): void => {
-    const cwd = normalizeCwd(firstHeader(req.headers[CWD_HEADER]));
-    if (cwd) {
-      session.cwd = cwd;
+    const resolution = resolveMcpProjectCwd({
+      headerCwd: firstHeader(req.headers[CWD_HEADER]),
+      fallbackCwd: session.cwd,
+      pwd: process.env.PWD,
+      pluginRoot: options.pluginRoot,
+    });
+    if (resolution.source === 'header') {
+      session.cwd = resolution.cwd;
       session.cwdSource = 'header';
     }
   };
@@ -274,18 +243,24 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     if (!session.server.getClientCapabilities()?.roots) return;
     session.rootsAttempts++;
     try {
-      const { roots } = await session.server.listRoots(undefined, { timeout: ROOTS_TIMEOUT_MS });
-      const cwd = cwdFromRoots(roots);
+      const { roots } = await session.server.listRoots(undefined, { timeout: MCP_ROOTS_TIMEOUT_MS });
+      const resolution = resolveMcpProjectCwd({
+        roots,
+        fallbackCwd: session.cwd,
+        pwd: process.env.PWD,
+        pluginRoot: options.pluginRoot,
+      });
       session.rootsStale = false;
       // The header may have arrived while we waited for the client's answer.
-      if (cwd && (session.cwdSource as CwdSource) !== 'header') {
-        session.cwd = cwd;
-        session.cwdSource = 'roots';
+      if ((session.cwdSource as CwdSource) !== 'header' && (resolution.source === 'roots' || resolution.source === 'pwd')) {
+        session.cwd = resolution.cwd;
+        session.cwdSource = resolution.source;
+        logger.info('SYSTEM', `MCP HTTP working directory resolved from ${resolution.source}`);
       }
     } catch (error) {
-      const givingUp = session.rootsAttempts >= MAX_ROOTS_ATTEMPTS;
+      const givingUp = session.rootsAttempts >= MAX_MCP_ROOTS_ATTEMPTS;
       logger.warn('SYSTEM', givingUp
-        ? `MCP HTTP: roots/list failed ${MAX_ROOTS_ATTEMPTS} times, this session stays on ${session.cwd}`
+        ? `MCP HTTP: roots/list failed ${MAX_MCP_ROOTS_ATTEMPTS} times, this session stays on ${session.cwd}`
         : 'MCP HTTP: roots/list failed, keeping the current cwd', { cwd: session.cwd },
         error instanceof Error ? error : new Error(String(error)));
     }
@@ -299,8 +274,8 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     // Roots decide the directory only while no header ever did. They are asked again when the
     // client reports a change (notifications/roots/list_changed), before the next request runs.
     if (session.cwdSource === 'header') return;
-    if (session.cwdSource !== 'default' && !session.rootsStale) return;
-    if (session.rootsAttempts >= MAX_ROOTS_ATTEMPTS) return;
+    if (session.cwdSource === 'roots' && !session.rootsStale) return;
+    if (session.rootsAttempts >= MAX_MCP_ROOTS_ATTEMPTS) return;
     session.rootsInFlight ??= refreshRoots(session).finally(() => {
       session.rootsInFlight = undefined;
     });
@@ -310,7 +285,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   const createSession = (req: IncomingMessage): Session => {
     const session = {
       cwd: defaultCwd,
-      cwdSource: 'default' as CwdSource,
+      cwdSource: (defaultCwdResolution.source === 'pwd' ? 'pwd' : 'default') as CwdSource,
       lastSeen: Date.now(),
       rootsAttempts: 0,
       rootsStale: false,
@@ -376,25 +351,6 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       res.writeHead(404).end();
       return;
     }
-
-    // Owner-auth: loopback TCP origin is not proof of the owning OS user, and
-    // the tools below read files under a caller-chosen workspace root with the
-    // owner's permissions. Require the shared secret from
-    // <DATA_DIR>/worker-auth-token (mode 0600) — MCP clients send it as
-    // Authorization: Bearer <token> or ?token=<token>. Skipped entirely when
-    // CLAUDE_MEM_WORKER_AUTH=off; fails closed when the token cannot be read.
-    if (!workerAuthDisabled()) {
-      const expectedToken = loadWorkerAuthToken();
-      const presentedToken = parseBearerToken(firstHeader(req.headers.authorization) ?? '')
-        || (url.searchParams.get('token') ?? '').trim();
-      if (!expectedToken || !safeEqualSecret(presentedToken, expectedToken)) {
-        refuse(req, res, 401,
-          'Unauthorized: MCP HTTP requires the owner token (Authorization: Bearer <token>). See <data-dir>/worker-auth-token.',
-          {});
-        return;
-      }
-    }
-
 
     const cwdHeader = firstHeader(req.headers[CWD_HEADER]);
     if (cwdHeader !== undefined && normalizeCwd(cwdHeader) === null) {

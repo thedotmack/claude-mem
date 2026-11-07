@@ -9,9 +9,9 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "15.4.0",
+      "version": "15.11.1",
       "source": "./plugin",
-      "description": "Persistent memory system for Claude Code - context compression across sessions"
+      "description": "Persistent memory for Claude Code: the next session starts where the last one left off."
     },
     {
       "name": "claude-mem-cowork",

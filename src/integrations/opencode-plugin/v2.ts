@@ -235,7 +235,6 @@ export async function setupV2(
   if (typeof directory !== "string" || directory === "") {
     // OpenCode also calls setup() with a host registry that has no checkout.
     // Registering hooks there would send every write to the worker without a cwd.
-    console.warn("[claude-mem] OpenCode plugin skipped: context has no directory");
     return async () => {};
   }
   const ctx: CoreContext = {
@@ -367,8 +366,8 @@ export async function setupV2(
         });
         editor.add({
           name: "claude_mem_get_observations",
-          description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline.",
-          input: { type: "object", properties: { ids: { type: "array", items: { type: "integer" }, minItems: 1 } }, required: ["ids"] },
+          description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline. At most 100 ids per call; split larger selections.",
+          input: { type: "object", properties: { ids: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 100 } }, required: ["ids"] },
           execute: async (input: Record<string, unknown>) => ({ content: await core.getObservations(input.ids as number[]) }),
         });
       }),

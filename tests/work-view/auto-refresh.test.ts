@@ -5,8 +5,8 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolvePreferredRefreshAgent, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -54,6 +54,22 @@ function deferred<T>() {
 }
 
 describe('automatic refresh scheduler', () => {
+  it('allows an on-demand run while scheduled refresh is disabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      const jobs: Array<{ needs: any; reason: string }> = [];
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(database), enabled: () => false,
+        runJob: async job => { jobs.push(job); return { state: 'ok', agent: 'claude-code', result: 'done', error: null }; },
+      });
+      expect(await worker.check()).toBe('disabled');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].reason).toBe('manual');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('starts one run when something is due, never a second while it runs, and records the result', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {
@@ -95,6 +111,87 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('ok');
       expect(ran).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('repairs a run cut off by a restart at startup even with scheduled refresh off, so My Work never stays stuck on it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, reason: 'manual', startedAt: new Date(NOW - DAY).toISOString() }));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('a disabled worker must not run'); },
+      });
+      worker.start();
+      worker.close();
+      const status = worker.status();
+      expect(status).toMatchObject({ state: 'failed', reason: 'manual', error: 'The previous refresh stopped before finishing.' });
+      expect(status.failures).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('startup leaves alone a run another live worker owns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const owned = { state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() };
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify(owned));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      worker.start();
+      worker.close();
+      expect(worker.status()).toEqual(owned);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a manual refresh does not start while another live worker owns a run, or while setup runs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      let setup = true;
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), setupRunning: () => setup, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      expect(await worker.runNow({ reason: 'manual' })).toBe('setup-running');
+      setup = false;
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() }));
+      expect(await worker.runNow({ reason: 'manual' })).toBe('running');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records a failed status when opening the database prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const error = new Error('database is unavailable');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: () => { throw error; }, now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', startedAt: new Date(NOW).toISOString(),
+        finishedAt: new Date(NOW).toISOString(), needs: null, error: error.message,
+        nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records a failed status when a damaged saved ledger prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'request-groups.json'), '{ damaged json');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', needs: null,
+        error: expect.stringContaining('JSON'), nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -184,7 +281,7 @@ describe('refresh task', () => {
     expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
   });
 
-  it('every backend (read-only): the worker groups, reviews and retells from the agent\'s JSON through the validators', async () => {
+  it('the automatic review retry bounds repeated oversized output and keeps the request moving', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-inline-'));
     try {
       const database = fixtureDatabase();
@@ -192,6 +289,16 @@ describe('refresh task', () => {
       const prompts: string[] = [];
       const models: unknown[] = [];
       let reviewAnswers = 0;
+      const oversizedReview = (show: any) => ({
+        groupId: show.groupId,
+        state: 'in-progress',
+        percent: 40,
+        summary: 'x'.repeat(292),
+        reviewBasis: show.reviewBasis,
+        milestones: Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` })),
+        preferences: Array.from({ length: 11 }, (_, index) => ({ kind: 'directive', preference: `Preference ${index}`, quote: index === 10 ? 'q'.repeat(301) : `Quote ${index}`, at: null })),
+        outcome: { regressions: Array.from({ length: 11 }, (_, index) => ({ text: `Regression ${index}`, at: null, fixedBy: index === 10 ? 'x'.repeat(245) : '', evidence: [] })) },
+      });
       const ask = async (prompt: string, stepModels: unknown) => {
         prompts.push(prompt);
         models.push(stepModels);
@@ -200,25 +307,44 @@ describe('refresh task', () => {
         expect(prompt).toMatch(/You have no memory tools/);
         expect(prompt).not.toMatch(/with its MCP tools/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
-        const file = /is in (\S+\.json)/.exec(prompt)?.[1];
+        const file = /is in (.+?\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
         if (prompt.includes("Do only section 2")) {
           const supplied = prompt.split(`--- ${file} ---\n`)[1];
           expect(supplied).toBeDefined();
           const [show] = JSON.parse(supplied);
-          // The first answer forgets reviewBasis; the refusal is sent back and fixed.
-          if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' }] });
+          // The model repeats the same over-limit summary after the strict first pass rejects it.
+          if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [oversizedReview(show)] });
           expect(prompt).toMatch(/refused for these groups/);
-          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.', reviewBasis: show.reviewBasis }] });
+          expect(prompt).toMatch(/milestones has 13 items/);
+          return JSON.stringify({ reviews: [oversizedReview(show)] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed (6 oversized fields trimmed after retry), 1 requests placed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
-      expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
+      const [review] = Object.values(ledger.progress) as any[];
+      expect(review.percent).toBe(40);
+      expect(review.summary).toHaveLength(280);
+      expect(review.summary.endsWith('…')).toBe(true);
+      expect(review.milestones).toHaveLength(12);
+      expect(review.preferences).toHaveLength(10);
+      expect(review.milestones.at(-1).text).toBe('Step 12');
+      expect(review.preferences[9].quote).toBe('q'.repeat(300));
+      expect(review.outcome.regressions).toHaveLength(10);
+      expect(review.outcome.regressions[9].fixedBy).toHaveLength(200);
+      expect(review.outcome.regressions[9].fixedBy.endsWith('…')).toBe(true);
+      expect(review.coercedFields).toEqual([
+        'milestones',
+        'outcome.regressions',
+        'outcome.regressions[9].fixedBy',
+        'preferences',
+        'preferences[9].quote',
+        'summary',
+      ]);
       expect(ledger.story.narrative).toBe('One request is under way.');
       // Grouping and the focus step run on the light models; reviews and the story on the careful ones.
       // The focus step asks twice: place the request, then propose from Other (where it landed).
@@ -227,6 +353,123 @@ describe('refresh task', () => {
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /** A refresh over one new conversation whose review step answers with `answerReview(show, attempt)`. */
+  const runRefreshWithReviewAnswers = (dir: string, answerReview: (show: any, attempt: number) => unknown) => {
+    const database = fixtureDatabase();
+    const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+    let reviewAttempts = 0;
+    return task.run(async (prompt: string) => {
+      if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+      if (prompt.includes('Do only section 2')) {
+        const file = /is in (.+?\.json)/.exec(prompt)?.[1];
+        const [show] = JSON.parse(prompt.split(`--- ${file} ---\n`)[1]);
+        return JSON.stringify({ reviews: [answerReview(show, reviewAttempts++)] });
+      }
+      if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+      if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
+      throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+    }, 'gemini');
+  };
+
+  it('a review missing reviewBasis is refused once and saved when the retry supplies it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
+    try {
+      const review = (show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' });
+      const summary = await runRefreshWithReviewAnswers(dir, (show, attempt) => attempt === 0 ? review(show) : { ...review(show), reviewBasis: show.reviewBasis });
+      expect(summary).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      const [saved] = Object.values(readLedger(dir).progress) as any[];
+      expect(saved.percent).toBe(40);
+      expect(saved.coercedFields).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a retry still missing reviewBasis fails the run naming the group and saves no review', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
+    try {
+      let groupId = '';
+      const run = runRefreshWithReviewAnswers(dir, show => {
+        groupId = show.groupId;
+        return { groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'x'.repeat(292) };
+      });
+      const failure: Error = await run.then(() => { throw new Error('the run should have failed'); }, error => error);
+      expect(failure.message).toContain(`${groupId}: reviewBasis must be copied verbatim`);
+      expect(readLedger(dir).progress).toEqual({});
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('My Work refresh model settings (#5164)', () => {
+  const KEYS = Object.values(STEP_MODEL_SETTINGS);
+  /** Run with a settings file and a clean environment for the three keys, restoring both afterwards. */
+  const withSettings = async <T>(file: Record<string, string> | null, env: Record<string, string>, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-models-'));
+    const saved = Object.fromEntries(KEYS.map(key => [key, process.env[key]]));
+    try {
+      for (const key of KEYS) delete process.env[key];
+      Object.assign(process.env, env);
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      for (const key of KEYS) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('keeps the per-step table when no model is set, or only blanks are', async () => {
+    await withSettings(null, {}, dir => expect(resolveStepModels(dir)).toBe(STEP_MODELS));
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '  ' }, {}, dir => expect(resolveStepModels(dir)).toBe(STEP_MODELS));
+  });
+
+  it('puts every step of one agent on the configured model and leaves the other agents alone', async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: 'haiku' }, {}, dir => {
+      const models = resolveStepModels(dir);
+      for (const step of Object.keys(STEP_MODELS) as Array<keyof typeof STEP_MODELS>) {
+        expect(models[step]['claude-code']).toEqual({ model: 'haiku' });
+        expect(models[step].codex).toEqual(STEP_MODELS[step].codex);
+        expect(models[step].gemini).toEqual(STEP_MODELS[step].gemini);
+      }
+      // The shared table is never mutated.
+      expect(STEP_MODELS.review['claude-code']).toEqual({ model: 'sonnet' });
+    });
+  });
+
+  it("keeps each Codex step's reasoning effort when only the model is overridden", async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: 'gpt-6' }, {}, dir => {
+      const models = resolveStepModels(dir);
+      expect(models.grouping.codex).toEqual({ model: 'gpt-6', reasoningEffort: 'low' });
+      expect(models.review.codex).toEqual({ model: 'gpt-6' });
+    });
+  });
+
+  it('lets the environment override the settings file, like every other setting', async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: 'flash' }, { CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: 'flash-lite' }, dir => {
+      expect(resolveStepModels(dir).story.gemini).toEqual({ model: 'flash-lite' });
+    });
+  });
+
+  it('a refresh asks every step on the configured model, read when the run starts', async () => {
+    await withSettings(null, {}, async dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      // Written after the task is built: the run reads settings when it starts, so no worker restart is needed.
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: 'haiku' }));
+      const asked: unknown[] = [];
+      const ask = async (prompt: string, models: any) => {
+        asked.push(models['claude-code']);
+        if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      expect(asked.length).toBeGreaterThan(0);
+      for (const models of asked) expect(models).toEqual({ model: 'haiku' });
+    });
   });
 });
 
@@ -243,7 +486,7 @@ describe('Codex grouping answers', () => {
         schemas.push(schema);
         if (prompt.includes('Do only section 1')) return readFileSync(join(FIXTURES, 'grouping-answer-schema.txt'), 'utf8');
         if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
@@ -270,6 +513,8 @@ describe('Codex grouping answers', () => {
       const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^grouping \(raw answer: .+failed-answers.+-grouping-codex\.txt\): JSON Parse error/);
       expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      // A refused answer must not send the run on to another agent (#5189).
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       // Asked once more with the reason before failing; nothing was grouped.
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
@@ -290,7 +535,7 @@ describe('focus step', () => {
     runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
   }
   const reviewAll = (prompt: string) => {
-    const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+    const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
     return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
   };
 
@@ -315,7 +560,7 @@ describe('focus step', () => {
         }
         if (prompt.includes('Do only section 3')) {
           const input = focusInputFrom(prompt);
-          expect(JSON.parse(readFileSync(/also saved in (\S+\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
+          expect(JSON.parse(readFileSync(/also saved in (.+?\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
           expect(input.areas.map((area: any) => area.focusAreaId)).toEqual(['fa_cards0000001']);
           expect(input.requests[0]).toMatchObject({ conversations: 1, conversationAsks: ['Build the release cards'] });
           expect(prompt).toContain(`Place each of these 3 requests exactly once, by its "anchor": ${[key('a'), key('b'), key('c')].join(', ')}.`);
@@ -370,6 +615,7 @@ describe('focus step', () => {
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       const error = await task.run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^focus \(raw answer: .+\): Place every request asked about; missing/);
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       expect(batches).toEqual([FOCUS_BATCH, 1, 1]);
       // The first batch was saved; the story was written anyway.
       expect(readFocus(database, { localDeviceId: '' }).focusAreaIdByAnchor.size).toBe(FOCUS_BATCH);
@@ -380,6 +626,39 @@ describe('focus step', () => {
       const next = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       expect(await next.run(ask, 'codex')).toBe('1 requests placed.');
       expect(batches).toEqual([1]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a refused focus answer keeps the run on this agent even when a later crash is the error the runner sees (#5189)', async () => {
+    const dir = scratchDir('auto-refresh-refused-then-crash');
+    try {
+      const database = fixtureDatabase();
+      requests(database, dir, Array.from({ length: FOCUS_BATCH }, (_, index) => `s${index}`));
+      const writer = focusWriter(database);
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+        if (isOtherPass(prompt)) return JSON.stringify({ placements: [], proposals: [] });
+        // Every focus answer leaves requests out, so focus is refused twice.
+        if (prompt.includes('Do only section 3')) return JSON.stringify({ placements: [], proposals: [] });
+        // The story's agent call itself crashes, which on its own would let the runner try the next agent.
+        throw new Error('Claude Code stopped: socket hang up');
+      };
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
+      const error = await task.run(ask, 'claude-code').then(() => null, failure => failure as Error);
+      expect(error?.message).toBe('Claude Code stopped: socket hang up');
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an agent crash with no refused answer still lets the runner try the next agent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-crash-only-'));
+    try {
+      const ask = async () => { throw new Error('Claude Code stopped: socket hang up'); };
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const error = await task.run(ask, 'claude-code').then(() => null, failure => failure as Error);
+      expect(error?.message).toBe('Claude Code stopped: socket hang up');
+      expect((error as { answerRefused?: boolean }).answerRefused).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -423,7 +702,7 @@ describe('story repair', () => {
       let storyAttempts = 0;
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
@@ -458,7 +737,7 @@ describe('review repair', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         attempts++;
         if (attempts === 1) {
           expect(shows).toHaveLength(2);
@@ -502,7 +781,7 @@ describe('parallel reviews', () => {
         lastPrompt = prompt;
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (most === 2) bothAsked.resolve();
         await bothAsked.promise;
@@ -565,7 +844,7 @@ describe('parallel reviews', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Forty features under way.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (inFlight === lanes) lanesFull.resolve();
         await lanesFull.promise;
@@ -628,13 +907,13 @@ describe('incremental owner goals', () => {
         prompts.push(prompt);
         // The agent takes five minutes; a prompt typed meanwhile is not in this export.
         clock += 5 * 60000;
-        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const previous = JSON.parse(readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.focus_areas).toMatchObject([{ title: 'Cards', goal: 'Release cards people can read.', matches: 'fa_cards0000001' }]);
         expect(previous.asks).toMatchObject([{ title: 'Ship cards', focus_area: 'Cards' }]);
         expect(previous.rules).toEqual([{ when: '', then: 'Ship daily.', times_asked: 2, latest_at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16),
           evidence: [{ at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16), quote: 'ship it daily' }] }]);
         // The saved My Focus areas are supplied for the model's match judgment.
-        const areas = JSON.parse(readFileSync(/saved in My Focus are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const areas = JSON.parse(readFileSync(/saved in My Focus are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(areas.map((area: any) => [area.focusAreaId, area.name])).toEqual([['fa_cards0000001', 'Cards']]);
         // The stubbed answer, in the new shape: a new area beside the matched one, an ask under it and a rule.
         return JSON.stringify({ ...previous,
@@ -757,7 +1036,7 @@ describe('incremental owner goals', () => {
         const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(2, []) });
         await task.prepare!();
         let asked = 0;
-        const ask = async (prompt: string) => { asked++; return readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'); };
+        const ask = async (prompt: string) => { asked++; return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'); };
         if (expected === 2) expect(await task.run(ask, 'codex')).toBe('goals updated.');
         else await expect(task.run(ask, 'codex')).rejects.toThrow('save_goals.py exited 3: failed after writing');
         expect(asked).toBe(expected);
@@ -780,7 +1059,7 @@ describe('incremental owner goals', () => {
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
-        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const previous = JSON.parse(readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.focus_areas).toMatchObject([{ title: 'Ship cards', goal: null, matches: null }]);
         expect(previous.asks).toMatchObject([{ title: 'Never ask me twice', focus_area: null }]);
         // The stubbed answer: the old priority is an ask under a new Cards area, and the old open ask is a rule.
@@ -809,5 +1088,101 @@ describe('automatic refresh timer', () => {
       worker.close();
       expect(logs).toEqual(['Work view refresh check failed: unable to open database file']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('automatic refresh interval setting', () => {
+  it('keeps the ten-minute default when the value is empty, not a number, or not positive', () => {
+    for (const value of [undefined, null, '', '   ', 'abc', '0', '-5', NaN]) expect(refreshIntervalMs(value as any)).toBe(10 * 60000);
+  });
+
+  it('turns minutes into milliseconds, so 1440 is one day', () => {
+    expect(refreshIntervalMs('10')).toBe(10 * 60000);
+    expect(refreshIntervalMs('60')).toBe(60 * 60000);
+    expect(refreshIntervalMs(' 1440 ')).toBe(86400000);
+    expect(refreshIntervalMs(30)).toBe(30 * 60000);
+  });
+
+  it('never goes under one minute or over what setInterval can hold', () => {
+    expect(refreshIntervalMs('0.01')).toBe(60000);
+    expect(refreshIntervalMs('99999999')).toBe(2 ** 31 - 1);
+  });
+
+  it('records the next check one interval after this one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(database), now: () => NOW, checkMs: refreshIntervalMs('1440'), runJob: async () => ({ state: 'ok', agent: null, result: null, error: null }) });
+      expect(await worker.check()).toBe('idle');
+      const status = worker.status()!;
+      expect(Date.parse(status.nextAt!) - Date.parse(status.checkedAt!)).toBe(86400000);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('after a failed run with an interval longer than four hours, the next check shown is the next tick, not four hours out', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const DAY = 86400000;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, checkMs: refreshIntervalMs('1440'),
+        runJob: async () => ({ state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' }) });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(NOW + DAY).toISOString() });
+      // The wait never grows past one interval when that is longer than four hours, and a failure before
+      // the run starts (runNow) reports the same next check.
+      writeFileSync(join(dir, 'request-groups.json'), '{not json');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(NOW + DAY).toISOString() });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('My Work refresh agent preference (#5435)', () => {
+  /** Run with a settings file and a clean CLAUDE_MEM_PROVIDER environment, restoring both afterwards. */
+  const withProvider = async <T>(file: Record<string, string> | null, env: Record<string, string>, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-agent-'));
+    const saved = process.env.CLAUDE_MEM_PROVIDER;
+    try {
+      delete process.env.CLAUDE_MEM_PROVIDER;
+      Object.assign(process.env, env);
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_PROVIDER; else process.env.CLAUDE_MEM_PROVIDER = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('names the agent CLAUDE_MEM_PROVIDER names', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('gemini'));
+  });
+
+  it('a provider that names no local agent leaves the detect order in charge', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+  });
+
+  it('an unset provider keeps today\'s first choice, Claude Code', async () => {
+    await withProvider(null, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+  });
+
+  it('lets the environment override the settings file, like every other setting', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+  });
+
+  it('a refresh task built under CLAUDE_MEM_PROVIDER=codex names codex as its preferred agent', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('codex');
+    });
+    await withProvider(null, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('claude-code');
+    });
   });
 });

@@ -270,6 +270,8 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
       deps: {
         sessionManager: {
           getMessageBuffer: () => ({ getPendingCount: () => 4 }),
+          clearPendingForSession: mock(async () => 4),
+          discardBufferedWork: mock(() => 4),
           removeSessionImmediate,
         } as unknown as SessionManager,
         completionHandler: { finalizeSession } as unknown as SessionCompletionHandler,
@@ -279,7 +281,7 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
     };
   }
 
-  it('preserves buffered work for a reactive quota exit', async () => {
+  it('discards buffered work for a reactive quota exit', async () => {
     const session = makeSession();
     await runAndCatch(
       new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
@@ -291,6 +293,8 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
 
     const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
     await handleGeneratorExit(session, session.abortReason, deps);
+
+    expect(deps.sessionManager.discardBufferedWork).toHaveBeenCalledWith(session.sessionDbId);
 
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSessionImmediate).not.toHaveBeenCalled();
