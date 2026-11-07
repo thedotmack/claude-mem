@@ -72,6 +72,12 @@ const GRAMMAR_SUBDIR: Record<string, string> = {
   markdown: "tree-sitter-markdown",
 };
 
+// `--lang-name` must match the grammar's exported `tree_sitter_<name>` symbol.
+// It equals our language key except where the grammar is named differently.
+const GRAMMAR_LANG_NAME: Record<string, string> = {
+  pascal: "delphi",
+};
+
 function resolveGrammarPath(language: string): string | null {
   const pkg = GRAMMAR_PACKAGES[language];
   if (!pkg) return null;
@@ -426,6 +432,11 @@ export function _resetGrammarLibOptOut(): void {
   grammarLibOptOut.clear();
 }
 
+/** @internal — test-only: whether `language` fell back to `--grammar-path`. */
+export function _isGrammarLibOptedOut(language: string): boolean {
+  return grammarLibOptOut.has(language);
+}
+
 function newestGrammarSourceMtime(grammarPath: string): number {
   let newest = 0;
   for (const file of GRAMMAR_SOURCE_FILES) {
@@ -520,7 +531,8 @@ function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: st
 
   const libPath = ensureGrammarLib(language, grammarPath);
   if (libPath) {
-    const output = execQuery(["query", "-l", libPath, "--lang-name", language, queryFile, ...sourceFiles], sourceFiles.length);
+    const langName = GRAMMAR_LANG_NAME[language] ?? language;
+    const output = execQuery(["query", "-l", libPath, "--lang-name", langName, queryFile, ...sourceFiles], sourceFiles.length);
     if (output !== null) return parseMultiFileQueryOutput(output);
 
     // The artifact exists but will not bind — a grammar whose language function

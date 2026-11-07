@@ -3,7 +3,7 @@ import { nativeTest as test } from './native-prerequisite.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { formatFoldedView, parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
+import { formatFoldedView, parseFile, unfoldSymbol, _isGrammarLibOptedOut, _resetGrammarLibOptOut } from '../../../src/services/smart-file-read/parser.js';
 import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 
 const SOURCE = `unit Counter;
@@ -160,6 +160,14 @@ end.`;
     expect(roots.map(symbol => symbol.name)).toEqual(['TRec']);
     const reset = unfoldSymbol(source, 'R.pas', 'TRec.Reset');
     expect(reset).toContain('Count := 0;');
+  }, 120000);
+
+  test('queries through the compiled grammar library, not a per-call rebuild', () => {
+    // The grammar exports tree_sitter_delphi, so `--lang-name pascal` would not
+    // bind and every Pascal call would recompile the 6 MB parser.c (#3926).
+    _resetGrammarLibOptOut();
+    expect(parseFile(SOURCE, 'Counter.pas').symbols.map(symbol => symbol.name)).toEqual(['TCounter']);
+    expect(_isGrammarLibOptedOut('pascal')).toBe(false);
   }, 120000);
 
   test('native batched search finds a class method by qualified name', async () => {
