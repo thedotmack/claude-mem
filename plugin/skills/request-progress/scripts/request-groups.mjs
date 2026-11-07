@@ -245,13 +245,12 @@ function renameWithWindowsRetry(from, to, rename = renameSync, onWindows = IS_WI
     }
   }
 }
-function writeJsonFileAtomic(filepath, data, options = {}) {
+function writeBufferAtomic(filepath, payload, options = {}) {
   const resolved = resolveSymlinkWriteTarget(filepath);
   ensureDirectoryExists(dirname(resolved));
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join4(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8");
   let mode = options.mode;
   if (mode === void 0) {
     try {
@@ -306,6 +305,9 @@ function writeJsonFileAtomic(filepath, data, options = {}) {
     }
     throw err;
   }
+}
+function writeJsonFileAtomic(filepath, data, options = {}) {
+  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8"), options);
 }
 var IS_WINDOWS_PLATFORM, WINDOWS_RENAME_RETRY_CODES, WINDOWS_RENAME_RETRY_DELAYS_MS;
 var init_atomic_json = __esm({
@@ -1294,6 +1296,8 @@ var init_SettingsDefaultsManager = __esm({
         // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
         CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "true",
         // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+        CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: "10",
+        // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
         CLAUDE_MEM_WORK_VIEW_SHARED_STATE: "false",
         // Enable only after all local/cloud readers understand reserved My Work records.
         CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: "",

@@ -1,12 +1,14 @@
 {
   "name": "claude-mem-plugin",
-  "version": "15.11.0",
+  "version": "15.11.1",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
     "sharp": "0.35.5",
     "zod": "^4.4.3",
+    "better-auth": "^1.6.16",
+    "@better-auth/api-key": "^1.6.16",
     "tree-sitter-cli": "0.26.9",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
