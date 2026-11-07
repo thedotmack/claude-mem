@@ -27,7 +27,7 @@ const CODE_EXTENSIONS = new Set([
   ".toml",
   ".yml", ".yaml",
   ".sql",
-  ".pas", ".dpr", ".dpk", ".lpr", ".pp", ".inc",
+  ".pas", ".dpr", ".dpk", ".lpr", ".pp",
   ".md", ".mdx",
 ]);
 

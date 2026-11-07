@@ -46,7 +46,6 @@ export const LANG_MAP: Record<string, string> = {
   ".dpk": "pascal",
   ".lpr": "pascal",
   ".pp": "pascal",
-  ".inc": "pascal",
   ".md": "markdown",
   ".mdx": "markdown",
 };
