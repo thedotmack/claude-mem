@@ -41,6 +41,12 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
+  // Source + observed-session identity, carried per turn and surfaced on the
+  // rollup with last-seen semantics (see computeSessionCompressedRollup).
+  ide?: string;
+  provider?: string;
+  observed_model?: string;
+  observed_billing?: string;
   // Per-turn observation accounting (ResponseProcessor compressionProps):
   // `count` is the number of observations created in this compression turn,
   // and obs_type_* is that turn's type breakdown. Summing these across the
@@ -55,6 +61,9 @@ interface SessionCompressedRecord {
   obs_type_decision?: number;
   obs_type_refactor?: number;
   obs_type_other?: number;
+  // Closed enum from SessionRoutes.normalizeAbortReason, on aborted turns.
+  // Counted into outcomes_aborted_deadline_exceeded and top_abort_reason.
+  abort_reason?: string;
   [key: string]: unknown;
 }
 
@@ -103,6 +112,8 @@ const sessionCompressedBuckets: Map<number, SessionCompressedBucket> = new Map()
 // Time-window bucket for context_injected (hook-level, no sessionDbId). See
 // the file header for why this path stays a wall-clock rollup.
 let contextInjectedBucket: ContextInjectedBucket | null = null;
+// Closed dimensions only; at most platform × role × instruction-state buckets.
+const workStateBuckets = new Map<string, Record<string, unknown>>();
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let safetyHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -138,6 +149,7 @@ function computeSessionCompressedRollup(
   let outcomesOk = 0;
   let outcomesError = 0;
   let outcomesAborted = 0;
+  let outcomesAbortedDeadlineExceeded = 0;
   let outcomesInvalidOutput = 0;
   let observationsCreated = 0;
   let obsTypeBugfix = 0;
@@ -146,6 +158,24 @@ function computeSessionCompressedRollup(
   let obsTypeRefactor = 0;
   let obsTypeOther = 0;
   const modelFrequency: Map<string, number> = new Map();
+  // Abort-reason frequency across the session's aborted turns. outcomes_aborted
+  // already counts how many turns aborted, but not why — so an auth outage that
+  // silently stops all capture is indistinguishable from an idle timeout in the
+  // rollup. top_abort_reason names the dominant cause so the auth share of
+  // aborts is measurable (#4150).
+  const abortReasonFrequency: Map<string, number> = new Map();
+  // Last-seen non-empty string per session for the source/observed fields.
+  // `ide` is constant within a session. `provider` is NOT: it can change
+  // mid-session on provider fallback or a quota cooldown, so last-seen reports
+  // the provider that finished the session. The observed model/billing only
+  // change on a /model switch, in which case the latest value is the one we
+  // want. `hook` is deliberately NOT carried: it varies per turn
+  // (init / ingest / summarize) so a single value would misrepresent the
+  // session. Records omit observed_* when unknown; the rollup fills 'unknown'.
+  let lastIde: string | undefined;
+  let lastProvider: string | undefined;
+  let lastObservedModel: string | undefined;
+  let lastObservedBilling: string | undefined;
 
   for (const r of records) {
     if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
@@ -167,12 +197,24 @@ function computeSessionCompressedRollup(
     }
     if (r.outcome === 'ok') outcomesOk++;
     else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') outcomesAborted++;
-    else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+    else if (r.outcome === 'aborted') {
+      outcomesAborted++;
+      if (r.abort_reason === 'deadline_exceeded') outcomesAbortedDeadlineExceeded++;
+    } else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+
+    // abort_reason is a closed enum SessionRoutes already normalized; only
+    // aborted turns carry it. Count it here for top_abort_reason below.
+    if (typeof r.abort_reason === 'string' && r.abort_reason) {
+      abortReasonFrequency.set(r.abort_reason, (abortReasonFrequency.get(r.abort_reason) ?? 0) + 1);
+    }
 
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
     }
+    if (typeof r.ide === 'string' && r.ide) lastIde = r.ide;
+    if (typeof r.provider === 'string' && r.provider) lastProvider = r.provider;
+    if (typeof r.observed_model === 'string' && r.observed_model) lastObservedModel = r.observed_model;
+    if (typeof r.observed_billing === 'string' && r.observed_billing) lastObservedBilling = r.observed_billing;
     // Generation-side observation volume. r.count is observations created in
     // this turn (NOT the rollup's turn count); sum it so the rollup carries
     // observations_created alongside total_cost_usd.
@@ -206,6 +248,10 @@ function computeSessionCompressedRollup(
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
+    // Subset of outcomes_aborted: requests abandoned at the LLM deadline
+    // (CLAUDE_MEM_LLM_TIMEOUT_MS). Per-turn abort_reason does not survive the
+    // rollup, and these are the aborts a backend may still have billed.
+    outcomes_aborted_deadline_exceeded: outcomesAbortedDeadlineExceeded,
     outcomes_invalid_output: outcomesInvalidOutput,
     // Generation-side observation volume + type mix for the session. Lets
     // PostHog derive cost-per-observation (total_cost_usd / observations_created)
@@ -237,6 +283,28 @@ function computeSessionCompressedRollup(
     }
     rollup.top_model = topModel;
   }
+
+  // top_abort_reason: only present when at least one turn aborted, so a clean
+  // session carries no abort field at all (matches top_model's shape).
+  if (abortReasonFrequency.size > 0) {
+    let topAbortReason = '';
+    let topAbortCount = 0;
+    for (const [reason, freq] of abortReasonFrequency) {
+      if (freq > topAbortCount) {
+        topAbortCount = freq;
+        topAbortReason = reason;
+      }
+    }
+    rollup.top_abort_reason = topAbortReason;
+  }
+
+  // Source fields: only present if at least one record carried them (matches
+  // top_model). Observed-session fields: always present so PostHog can filter
+  // on 'unknown' explicitly rather than on a missing property.
+  if (lastIde) rollup.ide = lastIde;
+  if (lastProvider) rollup.provider = lastProvider;
+  rollup.observed_model = lastObservedModel ?? 'unknown';
+  rollup.observed_billing = lastObservedBilling ?? 'unknown';
 
   return rollup;
 }
@@ -307,12 +375,26 @@ export const telemetryBuffer = {
    * @param props  the (already-scrubbed) property bag for this occurrence.
    */
   record(
-    event: 'session_compressed' | 'context_injected',
+    event: 'session_compressed' | 'context_injected' | 'work_state_usage',
     sessionDbId: number | null,
     props: Record<string, unknown>
   ): void {
     const now = Date.now();
-    if (event === 'session_compressed') {
+    if (event === 'work_state_usage') {
+      const dimensions = {
+        platform: props.platform,
+        agent_role: props.agent_role,
+        instruction_state: props.instruction_state,
+      };
+      const key = JSON.stringify(dimensions);
+      const bucket = workStateBuckets.get(key) ?? { ...dimensions, window_start_ts: now };
+      for (const [name, value] of Object.entries(props)) {
+        if (name.endsWith('_count') && typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+          bucket[name] = Number(bucket[name] ?? 0) + value;
+        }
+      }
+      workStateBuckets.set(key, bucket);
+    } else if (event === 'session_compressed') {
       if (typeof sessionDbId !== 'number') {
         // No session key ⇒ we can't accumulate per-session. Drop rather than
         // crash or misroute. Telemetry is fire-and-forget.
@@ -400,6 +482,8 @@ export const telemetryBuffer = {
    * flush at session end (see flushSession / drainAllSessions).
    */
   flush(): void {
+    for (const bucket of workStateBuckets.values()) captureEvent('work_state_usage_rollup', bucket);
+    workStateBuckets.clear();
     if (contextInjectedBucket && contextInjectedBucket.records.length > 0) {
       const rollup = computeContextInjectedRollup(contextInjectedBucket);
       contextInjectedBucket = null;
@@ -464,6 +548,7 @@ export const telemetryBuffer = {
     }
     sessionCompressedBuckets.clear();
     contextInjectedBucket = null;
+    workStateBuckets.clear();
   },
 
   /** Test-only. Number of active per-session buckets (memory-bound assertion). */

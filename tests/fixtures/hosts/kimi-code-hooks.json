@@ -1,0 +1,43 @@
+{
+  "host": "Kimi Code CLI",
+  "source": "MoonshotAI/kimi-code packages/agent-core-v2/src/features/externalHooks: internal/matchHooks.ts (camelCase payload keys are sent snake_case), agent/agentExternalHooksService.ts (event payloads), internal/runHook.ts (commands spawn with shell: true); _base/errors/serialize.ts (ErrorPayload)",
+  "capturedAt": "2026-10-01",
+  "note": "Keys and shapes follow the cited source; values are examples. UserPromptSubmit's prompt is the message ContentPart[] (MoonshotAI/kimi-code#917).",
+  "payloads": {
+    "UserPromptSubmit": {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "session_abc",
+      "cwd": "/work/acme",
+      "client_type": "cli",
+      "prompt": [{ "type": "text", "text": "fix the login redirect" }],
+      "is_steer": false
+    },
+    "PostToolUse": {
+      "hook_event_name": "PostToolUse",
+      "session_id": "session_abc",
+      "cwd": "/work/acme",
+      "client_type": "cli",
+      "tool_name": "Bash",
+      "tool_input": { "command": "ls" },
+      "tool_call_id": "call_1",
+      "tool_output": "README.md\nsrc\n"
+    },
+    "PostToolUseFailure": {
+      "hook_event_name": "PostToolUseFailure",
+      "session_id": "session_abc",
+      "cwd": "/work/acme",
+      "client_type": "cli",
+      "tool_name": "Bash",
+      "tool_input": { "command": "false" },
+      "tool_call_id": "call_2",
+      "error": { "code": "tool_error", "message": "command exited with code 1", "retryable": false }
+    },
+    "Stop": {
+      "hook_event_name": "Stop",
+      "session_id": "session_abc",
+      "cwd": "/work/acme",
+      "client_type": "cli",
+      "stop_hook_active": false
+    }
+  }
+}

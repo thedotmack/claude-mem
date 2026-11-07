@@ -11,8 +11,9 @@ claude-mem reads these settings from its data-directory `settings.json`:
 - `CLAUDE_MEM_TELEGRAM_CHAT_ID`
 - `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES`
 - `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS`
+- `CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED`
 
-An observation sends when its single type matches any configured trigger type **or** one of its concepts matches any configured trigger concept. No trigger list means no messages.
+`CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED` defaults to `"false"`. After the user explicitly opts in, set it to `"true"` in the same data-directory `settings.json`; choosing trigger types or concepts alone does not enable observation alerts. When enabled, an observation sends when its single type matches any configured trigger type **or** one of its concepts matches any configured trigger concept. No trigger list means no messages.
 
 Messages contain the observation type, title, subtitle, project, and observation ID. They do not include the full narrative or facts, but titles and subtitles can still contain sensitive information. Make the privacy tradeoff explicit before configuration.
 
@@ -42,4 +43,4 @@ Official references: [Telegram bots introduction](https://core.telegram.org/bots
 - `getUpdates` says a webhook is active: automatic discovery cannot run while a webhook owns updates. Enter the numeric chat ID manually; do not delete a webhook without explicit permission.
 - `sendMessage` says chat not found: verify the chat ID and ensure the bot was started or added to the group.
 - Group alerts: add the bot to the group, send a message that the bot can receive, and use the negative group chat ID.
-- Test succeeds but observations do not alert: confirm the generated observation's type/concepts exactly match the configured lowercase IDs and restart the worker after settings changes.
+- Test succeeds but observations do not alert: confirm `CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED` is `"true"`, the generated observation's type/concepts exactly match the configured lowercase IDs, and restart the worker after settings changes.

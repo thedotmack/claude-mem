@@ -1,16 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt',
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -101,7 +99,7 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
 
     await provider.startSession(makeSession());
 
-    expect(provider.queriedModels).toEqual(['session-model', 'session-model', 'summary-model']);
+    expect(provider.queriedModels).toEqual(['session-model', 'summary-model']);
   });
 
   it('keeps summarize on the session model when routing is disabled', async () => {
@@ -119,6 +117,76 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
 
     await provider.startSession(makeSession());
 
-    expect(provider.queriedModels).toEqual(['session-model', 'session-model']);
+    expect(provider.queriedModels).toEqual(['session-model']);
+  });
+
+  it('reuses the persisted synthetic id when an in-memory session restarts', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: 'test-test-session-1234' }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, {
+      getMessageIterator: async function* () {},
+    } as any);
+    const session = makeSession({ memorySessionId: null });
+
+    await provider.startSession(session);
+
+    expect(session.memorySessionId).toBe('test-test-session-1234');
+    expect(updateMemorySessionId).not.toHaveBeenCalled();
+  });
+
+  for (const persistedId of ['other-test-session-1234', 'cfb67f1b-3c77-4bf9-b28b-64efe2d49864']) {
+    it(`preserves stored memories when switching from ${persistedId}`, async () => {
+      const store = new SessionStore(':memory:', { syncOpsEnabled: true });
+      try {
+        const sessionDbId = store.createSDKSession('test-session', 'test-project', 'test prompt');
+        store.updateMemorySessionId(sessionDbId, persistedId);
+        store.saveUserPrompt('test-session', 1, 'test prompt', sessionDbId);
+        const observation = {
+          type: 'discovery', title: 'A stable fact', subtitle: null, narrative: 'The same narrative',
+          facts: [], concepts: [], files_read: ['src/file.ts'], files_modified: [],
+        };
+        const first = store.storeObservation(persistedId, 'test-project', observation);
+        const before = store.db.query('SELECT * FROM observations WHERE id = ?').get(first.id);
+        const promptBefore = store.db.query('SELECT * FROM user_prompts').get();
+        const provider = new TestProvider({
+          getSessionById: (id: number) => store.getSessionById(id),
+          getSessionStore: () => store,
+        } as any, { getMessageIterator: async function* () {} } as any);
+
+        // SessionManager reloads the in-memory identity as null, including
+        // after the user selects another provider. Its database identity is
+        // still the owner of these observations, not a provider resume token.
+        const session = makeSession({ sessionDbId, memorySessionId: null });
+        await provider.startSession(session);
+
+        const redelivery = store.storeObservation(session.memorySessionId!, 'test-project', observation);
+        expect(redelivery.id).toBe(first.id);
+        expect(session.memorySessionId).toBe(persistedId);
+        expect(store.db.query('SELECT * FROM observations WHERE id = ?').get(first.id)).toEqual(before);
+        expect(store.db.query('SELECT * FROM user_prompts').get()).toEqual(promptBefore);
+        expect(store.db.query('SELECT COUNT(*) AS n FROM sync_outbox').get()).toEqual({ n: 0 });
+        expect(store.db.query('SELECT COUNT(*) AS n FROM observations').get()).toEqual({ n: 1 });
+        expect(provider.queriedModels).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  }
+
+  it('creates and persists a synthetic identity for a session without one', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: null }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, { getMessageIterator: async function* () {} } as any);
+    const session = makeSession({ memorySessionId: null });
+
+    await provider.startSession(session);
+
+    expect(session.memorySessionId).toStartWith('test-test-session-');
+    expect(updateMemorySessionId).toHaveBeenCalledTimes(1);
+    expect(updateMemorySessionId).toHaveBeenCalledWith(1, session.memorySessionId);
   });
 });

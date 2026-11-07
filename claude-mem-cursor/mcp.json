@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "claude-mem-local": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "claude-mem",
+        "mcp"
+      ]
+    },
+    "claude-mem-remote": {
+      "url": "https://cmem.ai/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CLAUDE_MEM_MCP_TOKEN}"
+      }
+    }
+  }
+}

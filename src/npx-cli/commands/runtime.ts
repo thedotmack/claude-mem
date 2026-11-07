@@ -3,16 +3,25 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { getBunPath } from '../install/setup-runtime.js';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { ensureServerEmbedder, getBunPath, hasServerEmbedder } from '../install/setup-runtime.js';
+import { npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
-function ensureInstalledOrExit(): void {
-  if (!isPluginInstalled()) {
+/**
+ * The plugin root the worker spawns from — the shared resolveWorkerScript()
+ * oracle (cache, marketplace, or dev checkout) — or exit(1) when none exists.
+ * A cache-only install the hooks run from is therefore not "not installed".
+ */
+function pluginRootOrExit(): string {
+  const resolved = resolvePluginRoot();
+  if (!resolved) {
     console.error(styleText('red', 'claude-mem is not installed.'));
     console.error(`Run: ${styleText('bold', 'npx claude-mem install')}`);
     process.exit(1);
   }
+  return resolved.root;
 }
 
 function resolveBunOrExit(): string {
@@ -26,20 +35,24 @@ function resolveBunOrExit(): string {
   return bunPath;
 }
 
-function workerServiceScriptPath(): string {
-  return join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
+function workerServiceScriptPath(pluginRoot: string): string {
+  return join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
-function serverServiceScriptPath(): string {
+function serverServiceScriptPath(pluginRoot: string): string {
   // Plan §1c line 149: prefer the renamed `server-service.cjs`, but fall
   // back to the legacy `server-beta-service.cjs` for installed plugin
   // caches that pre-date the rename (forced reinstall not required).
-  const scriptsDir = join(marketplaceDirectory(), 'plugin', 'scripts');
+  const scriptsDir = join(pluginRoot, 'scripts');
   const renamed = join(scriptsDir, 'server-service.cjs');
   if (existsSync(renamed)) {
     return renamed;
   }
   return join(scriptsDir, 'server-beta-service.cjs');
+}
+
+function packagePluginScriptPath(scriptName: string): string {
+  return join(npmPackageRootDirectory(), 'plugin', 'scripts', scriptName);
 }
 
 /**
@@ -48,10 +61,10 @@ function serverServiceScriptPath(): string {
  * host CLI bleed-through and Anthropic credentials before launch; credentials
  * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
  */
-function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun'): void {
+function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun'): void {
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
-    cwd: marketplaceDirectory(),
+    cwd,
     env: sanitizeEnv(process.env),
   });
 
@@ -66,9 +79,9 @@ function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun')
 }
 
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath();
+  const workerScript = workerServiceScriptPath(pluginRoot);
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -76,13 +89,13 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [workerScript, command, ...extraArgs]);
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], pluginRoot);
 }
 
 function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const serverScript = serverServiceScriptPath();
+  const serverScript = serverServiceScriptPath(pluginRoot);
 
   if (!existsSync(serverScript)) {
     console.error(styleText('red', `Server script not found at: ${serverScript}`));
@@ -90,11 +103,45 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [serverScript, command, ...extraArgs]);
+  spawnPlugin(bunPath, [serverScript, command, ...extraArgs], pluginRoot);
+}
+
+/**
+ * Whether the server may search by meaning: CLAUDE_MEM_SERVER_VECTOR_SEARCH is
+ * anything but 'false', read as the server reads it (vectorSearchMode).
+ */
+export function serverVectorSearchAllowed(): boolean {
+  return SettingsDefaultsManager.get('CLAUDE_MEM_SERVER_VECTOR_SEARCH').toLowerCase() !== 'false';
+}
+
+/**
+ * Start a server process, first installing the embedder the plugin install
+ * leaves out (installPluginDependencies). Without it the server still runs,
+ * searching by keyword only.
+ */
+async function spawnBunServerWithEmbedder(command: string, extraArgs: string[] = []): Promise<void> {
+  const pluginRoot = pluginRootOrExit();
+  const bunPath = resolveBunOrExit();
+  // With search by meaning off, the server never loads the embedder, so the
+  // install is skipped; the spawned server reads the same environment.
+  if (!serverVectorSearchAllowed()) {
+    spawnBunServerCommand(command, extraArgs);
+    return;
+  }
+  try {
+    if (!hasServerEmbedder(pluginRoot)) {
+      console.error('Installing the embedder for search by meaning (about 300 MB, once)...');
+    }
+    await ensureServerEmbedder(pluginRoot, bunPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(styleText('yellow', `Could not install the embedder; the server will search by keyword only.\n${message}`));
+  }
+  spawnBunServerCommand(command, extraArgs);
 }
 
 export function runServerStartCommand(): void {
-  spawnBunServerCommand('start');
+  void spawnBunServerWithEmbedder('start');
 }
 
 export function runServerStopCommand(): void {
@@ -102,7 +149,7 @@ export function runServerStopCommand(): void {
 }
 
 export function runServerRestartCommand(): void {
-  spawnBunServerCommand('restart');
+  void spawnBunServerWithEmbedder('restart');
 }
 
 export function runServerStatusCommand(): void {
@@ -113,7 +160,7 @@ export function runServerStatusCommand(): void {
 // Compose to scale generation horizontally while a single (or multiple)
 // HTTP-only server replicas serve writes/reads.
 export function runServerWorkerStartCommand(): void {
-  spawnBunServerCommand('worker', ['start']);
+  void spawnBunServerWithEmbedder('worker', ['start']);
 }
 
 export function runStartCommand(): void {
@@ -137,9 +184,9 @@ export function runServerApiKeyCommand(extraArgs: string[] = []): void {
 }
 
 export function runAdoptCommand(extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath();
+  const workerScript = workerServiceScriptPath(pluginRoot);
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -148,15 +195,66 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   }
 
   const userCwd = process.cwd();
-  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs]);
+  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs], pluginRoot);
+}
+
+export function runProjectCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('project', extraArgs);
 }
 
 export function runCleanupCommand(extraArgs: string[] = []): void {
   spawnBunWorkerCommand('cleanup', extraArgs);
 }
 
+export function runMcpCommand(): void {
+  const mcpScript = packagePluginScriptPath('mcp-server.cjs');
+  if (!existsSync(mcpScript)) {
+    console.error(styleText('red', `MCP server script not found at: ${mcpScript}`));
+    process.exit(1);
+  }
+
+  const child = spawnHidden(process.execPath, [mcpScript], {
+    stdio: 'inherit',
+    cwd: npmPackageRootDirectory(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start MCP server: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+export function runHookCommand(extraArgs: string[] = []): void {
+  const workerScript = packagePluginScriptPath('worker-service.cjs');
+  if (!existsSync(workerScript)) {
+    console.error(styleText('red', `Worker script not found at: ${workerScript}`));
+    process.exit(1);
+  }
+
+  const bunPath = resolveBunOrExit();
+  const child = spawnHidden(bunPath, [workerScript, 'hook', ...extraArgs], {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start Cursor hook forwarding: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
-  ensureInstalledOrExit();
+  pluginRootOrExit();
 
   const query = queryParts.join(' ').trim();
   if (!query) {
@@ -164,17 +262,14 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
-  const searchUrl = `http://${workerHost}:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
+  const searchUrl = buildWorkerUrl(`/api/search?query=${encodeURIComponent(query)}`);
 
   let response: Response;
   try {
     response = await fetch(searchUrl);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    const cause = error instanceof Error ? (error as any).cause : undefined;
-    if (cause?.code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
+    if (isConnectionRefusedError(error)) {
       console.error(styleText('red', 'Worker is not running.'));
       console.error(`Start it with: ${styleText('bold', 'npx claude-mem start')}`);
       process.exit(1);
@@ -202,7 +297,17 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  if (typeof data === 'object' && data !== null) {
+  // /api/search answers in the MCP tool shape: print its rendered text.
+  const content = (data as { content?: unknown } | null)?.content;
+  if (Array.isArray(content)) {
+    console.log(content
+      .filter((block): block is { type: 'text'; text: string } => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('\n\n'));
+    if ((data as { isError?: unknown }).isError === true) {
+      process.exit(1);
+    }
+  } else if (typeof data === 'object' && data !== null) {
     console.log(JSON.stringify(data, null, 2));
   } else {
     console.log(data);
@@ -210,20 +315,22 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 }
 
 export function runTranscriptWatchCommand(): void {
-  ensureInstalledOrExit();
+  const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
 
-  const transcriptWatcherPath = join(
-    marketplaceDirectory(),
-    'plugin',
-    'scripts',
-    'transcript-watcher.cjs',
-  );
+  const transcriptWatcherPath = join(pluginRoot, 'scripts', 'transcript-watcher.cjs');
 
   if (!existsSync(transcriptWatcherPath)) {
     spawnBunWorkerCommand('transcript', ['watch']);
     return;
   }
 
-  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], 'transcript watcher');
+  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], pluginRoot, 'transcript watcher');
+}
+
+// The worker script runs from the plugin root, so the directory the user ran
+// this in travels as --cwd, as it does for adopt. Another checkout is chosen
+// with --source, which resolves against this directory.
+export function runMemoryIngestCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('memory', ['ingest', '--cwd', process.cwd(), ...extraArgs]);
 }

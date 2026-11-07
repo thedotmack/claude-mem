@@ -1,9 +1,9 @@
 
 import { logger } from '../utils/logger.js';
+import type { Readable } from 'node:stream';
 
-function isStdinAvailable(): boolean {
+function isStdinAvailable(stdin: Readable & { isTTY?: boolean }): boolean {
   try {
-    const stdin = process.stdin;
 
     if (stdin.isTTY) {
       return false;
@@ -33,12 +33,21 @@ function tryParseJson(input: string): { success: true; value: unknown } | { succ
   }
 }
 
-const SAFETY_TIMEOUT_MS = 30000;
+export const SAFETY_TIMEOUT_MS = 30000;
 
-export async function readJsonFromStdin(): Promise<unknown> {
-  if (!isStdinAvailable()) {
+export interface ReadJsonFromStdinOptions {
+  safetyTimeoutMs?: number;
+  stdin?: Readable;
+}
+
+export async function readJsonFromStdin(options: ReadJsonFromStdinOptions = {}): Promise<unknown> {
+  let stdin: Readable;
+  try { stdin = options.stdin ?? process.stdin; } catch { return undefined; }
+  if (!isStdinAvailable(stdin)) {
     return undefined;
   }
+
+  const safetyTimeoutMs = options.safetyTimeoutMs ?? SAFETY_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
     let input = '';
@@ -46,9 +55,9 @@ export async function readJsonFromStdin(): Promise<unknown> {
 
     const cleanup = () => {
       try {
-        process.stdin.removeAllListeners('data');
-        process.stdin.removeAllListeners('end');
-        process.stdin.removeAllListeners('error');
+        stdin.removeListener('data', onData);
+        stdin.removeListener('end', onEnd);
+        stdin.removeListener('error', onError);
       } catch {
         // Ignore cleanup errors
       }
@@ -83,13 +92,13 @@ export async function readJsonFromStdin(): Promise<unknown> {
       if (!resolved) {
         if (!tryResolveWithJson()) {
           if (input.trim()) {
-            rejectWith(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: ${input.slice(0, 100)}...`));
+            rejectWith(new Error(`Incomplete JSON after ${safetyTimeoutMs}ms: ${input.slice(0, 100)}...`));
           } else {
             resolveWith(undefined);
           }
         }
       }
-    }, SAFETY_TIMEOUT_MS);
+    }, safetyTimeoutMs);
 
     const onData = (chunk: Buffer | string) => {
       input += chunk;
@@ -118,9 +127,10 @@ export async function readJsonFromStdin(): Promise<unknown> {
     };
 
     try {
-      process.stdin.on('data', onData);
-      process.stdin.on('end', onEnd);
-      process.stdin.on('error', onError);
+      stdin.setEncoding('utf8');
+      stdin.on('data', onData);
+      stdin.on('end', onEnd);
+      stdin.on('error', onError);
     } catch (error) {
       logger.debug('HOOK', 'Failed to attach stdin listeners', { error: error instanceof Error ? error.message : String(error) });
       resolved = true;

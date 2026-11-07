@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 
@@ -12,6 +13,19 @@ export interface ProjectWatermarks {
   summaries: number;
   prompts: number;
   pending?: PendingIdsByKind;
+  /** Rows whose remote revision must remove obsolete document fragments. */
+  fragmentReconciliation?: PendingIdsByKind;
+  /**
+   * Set once this project's title-only observations, which older versions
+   * skipped while advancing the watermark, have been requeued (#4069).
+   */
+  titleOnlyRequeued?: boolean;
+  /**
+   * Set when this project's documents went with a dropped corrupt collection
+   * (#3202). Its next backfill starts from zero and clears the flag only when
+   * it completes, so a restart mid-rebuild simply rebuilds again.
+   */
+  rebuildPending?: boolean;
 }
 
 const ZERO: ProjectWatermarks = { observations: 0, summaries: 0, prompts: 0 };
@@ -22,6 +36,13 @@ function statePath(): string {
 }
 
 let cache: Record<string, ProjectWatermarks> | null = null;
+
+/**
+ * After a failed write, skip writes for this long. The backfill writes once or
+ * twice per row, and each failed write can block for the full rename retry.
+ */
+const PERSIST_FAILURE_BACKOFF_MS = 5_000;
+let persistBlockedUntil = 0;
 
 function normalizePendingIds(ids: unknown): number[] {
   if (!Array.isArray(ids)) {
@@ -52,6 +73,21 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
     normalized.pending = pending;
   }
 
+  if (marks?.fragmentReconciliation) {
+    normalized.fragmentReconciliation = {
+      observations: normalizePendingIds(marks.fragmentReconciliation.observations),
+      summaries: normalizePendingIds(marks.fragmentReconciliation.summaries),
+    };
+  }
+
+  if (marks?.titleOnlyRequeued === true) {
+    normalized.titleOnlyRequeued = true;
+  }
+
+  if (marks?.rebuildPending === true) {
+    normalized.rebuildPending = true;
+  }
+
   return normalized;
 }
 
@@ -62,8 +98,21 @@ function load(): Record<string, ProjectWatermarks> {
     cache = {};
     return cache;
   }
-  const raw = readFileSync(path, 'utf8');
-  const parsed = JSON.parse(raw) as Record<string, Partial<ProjectWatermarks>>;
+  let parsed: Record<string, Partial<ProjectWatermarks>>;
+  try {
+    parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('checkpoint must be a project-watermark object');
+    }
+  } catch (error) {
+    // A truncated or corrupt state file must not abort the sync pipeline. Treat
+    // it as empty and rebuild from the SQLite watermarks on the next backfill.
+    logger.warn('CHROMA_SYNC', 'Unreadable chroma-sync-state.json, treating as empty', {
+      path
+    }, error instanceof Error ? error : new Error(String(error)));
+    cache = {};
+    return cache;
+  }
   const normalized: Record<string, ProjectWatermarks> = {};
   for (const [project, marks] of Object.entries(parsed)) {
     normalized[project] = normalizeProjectWatermarks(marks);
@@ -72,17 +121,34 @@ function load(): Record<string, ProjectWatermarks> {
   return cache;
 }
 
-function persist(): void {
+function persistOrThrow(): void {
   if (!cache) return;
-  const path = statePath();
-  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
-  renameSync(tmp, path);
+  writeJsonFileAtomic(statePath(), cache);
+}
+
+/**
+ * A failed write must not abort the sync pipeline. The cache keeps the
+ * change, the next persist writes it, and SQLite stays the source of truth.
+ */
+function persist(): void {
+  if (Date.now() < persistBlockedUntil) return;
+  try {
+    persistOrThrow();
+  } catch (error) {
+    persistBlockedUntil = Date.now() + PERSIST_FAILURE_BACKOFF_MS;
+    logger.warn('CHROMA_SYNC', 'Could not write chroma-sync-state.json, will retry on the next change', {
+      path: statePath()
+    }, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 export const ChromaSyncState = {
+  /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
+  resetCacheForTests(): void {
+    cache = null;
+    persistBlockedUntil = 0;
+  },
+
   exists(): boolean {
     return existsSync(statePath());
   },
@@ -94,6 +160,56 @@ export const ChromaSyncState = {
 
   getPending(project: string, kind: DocKind): number[] {
     return this.get(project).pending?.[kind] ?? [];
+  },
+
+  isTitleOnlyRequeued(project: string): boolean {
+    return this.get(project).titleOnlyRequeued === true;
+  },
+
+  markTitleOnlyRequeued(project: string): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (current.titleOnlyRequeued) return;
+    current.titleOnlyRequeued = true;
+    all[project] = current;
+    persist();
+  },
+
+  /**
+   * Flag every project with recorded progress for a rebuild from zero (#3202).
+   * Throws when the write fails: the collection is dropped only after the
+   * flags are on disk.
+   */
+  markAllForRebuild(): void {
+    const all = load();
+    for (const project of Object.keys(all)) {
+      all[project] = { ...normalizeProjectWatermarks(all[project]), rebuildPending: true };
+    }
+    persistOrThrow();
+  },
+
+  isRebuildPending(project: string): boolean {
+    return this.get(project).rebuildPending === true;
+  },
+
+  /**
+   * Zero a flagged project's progress at the start of its rebuild. This drops
+   * whatever live writes bumped since the collection was dropped, so they
+   * cannot hide older rows; the flag stays until finishRebuild.
+   */
+  resetForRebuild(project: string): void {
+    const all = load();
+    all[project] = { ...ZERO, rebuildPending: true };
+    persist();
+  },
+
+  finishRebuild(project: string): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.rebuildPending) return;
+    delete current.rebuildPending;
+    all[project] = current;
+    persist();
   },
 
   bump(project: string, kind: DocKind, id: number): void {
@@ -147,6 +263,35 @@ export const ChromaSyncState = {
 
     current.pending = current.pending ?? {};
     current.pending[kind] = merged;
+    all[project] = current;
+    persist();
+  },
+
+  /**
+   * Throws when the write fails: the caller changes a row's existing documents
+   * only after its pending entry and repair flag are on disk, so a restart
+   * mid-repair retries the row even below the watermark.
+   */
+  markFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    current.pending = current.pending ?? {};
+    current.pending[kind] = normalizePendingIds([...(current.pending[kind] ?? []), id]);
+    current.fragmentReconciliation = current.fragmentReconciliation ?? {};
+    current.fragmentReconciliation[kind] = normalizePendingIds([...(current.fragmentReconciliation[kind] ?? []), id]);
+    all[project] = current;
+    persistOrThrow();
+  },
+
+  needsFragmentReconciliation(project: string, kind: DocKind, id: number): boolean {
+    return this.get(project).fragmentReconciliation?.[kind]?.includes(id) ?? false;
+  },
+
+  clearFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.fragmentReconciliation?.[kind]?.includes(id)) return;
+    current.fragmentReconciliation[kind] = current.fragmentReconciliation[kind]!.filter(value => value !== id);
     all[project] = current;
     persist();
   },

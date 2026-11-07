@@ -5,11 +5,17 @@
 // Postgres-backed server-beta runtime uses a separate path
 // (src/server/middleware/postgres-auth.ts).
 
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { randomBytes } from 'node:crypto';
 import { Database } from 'bun:sqlite';
+import {
+  apiKeyPrefix,
+  hashApiKey,
+  hashApiKeyLegacySha256,
+  isSaltedHash,
+  verifyRawKeyAgainstStoredHash,
+} from '../auth/api-key-hash.js';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
 import type { ApiKey } from '../../core/schemas/auth.js';
-import { logger } from '../../utils/logger.js';
 
 export interface CreatedServerApiKey {
   rawKey: string;
@@ -46,87 +52,19 @@ export const DEFAULT_LOCAL_API_KEY_SCOPES: readonly string[] = Object.freeze([
   'memories:write',
 ]);
 
-// #2541 — Salted, slow, timing-safe KDF for API-key storage.
-//
-// API keys were stored as unsalted single-round SHA-256, which is offline-
-// crackable if the DB leaks. We replace this with node's built-in
-// `crypto.scryptSync` rather than argon2 — argon2 is a native dependency that
-// would break the esbuild bundle, and is not currently a project dependency.
-// scryptSync satisfies #2541's requirements:
-//   - SALTED:      per-key 16-byte random salt defeats rainbow tables.
-//   - SLOW:        scrypt is memory-hard (N=16384) so brute force is costly.
-//   - TIMING-SAFE: comparison uses constant-time crypto.timingSafeEqual.
-//
-// Stored format for new keys: `scrypt$<N>$<saltHex>$<derivedHex>`.
-const SCRYPT_SALTED_PREFIX = 'scrypt';
-const SCRYPT_COST = 16384; // N — must be a power of 2.
-const SCRYPT_KEYLEN = 64;
-const SCRYPT_SALT_BYTES = 16;
-
-// New salted hash, used for every newly-created key.
-export function hashServerApiKey(rawKey: string): string {
-  const salt = randomBytes(SCRYPT_SALT_BYTES);
-  const derived = scryptSync(rawKey, salt, SCRYPT_KEYLEN, { N: SCRYPT_COST });
-  return `${SCRYPT_SALTED_PREFIX}$${SCRYPT_COST}$${salt.toString('hex')}$${derived.toString('hex')}`;
-}
-
-// Legacy unsalted SHA-256 — retained ONLY so existing keys keep verifying and
-// for the worker-service legacy lookup path. Never used to write a new key.
-export function hashServerApiKeyLegacySha256(rawKey: string): string {
-  return createHash('sha256').update(rawKey).digest('hex');
-}
-
-function isSaltedHash(storedHash: string): boolean {
-  return storedHash.startsWith(`${SCRYPT_SALTED_PREFIX}$`);
-}
-
-function safeEqualHex(a: string, b: string): boolean {
-  // timingSafeEqual throws on length mismatch; pre-check length (lengths are
-  // not secret) then compare in constant time for equal-length inputs.
-  if (a.length !== b.length) {
-    return false;
-  }
-  try {
-    return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('HTTP', 'timing-safe hash comparison failed (malformed hex input)', {}, err);
-    return false;
-  }
-}
-
-// Timing-safe verification that detects the stored format. New keys use the
-// salted scrypt scheme; legacy keys use unsalted SHA-256. Both paths compare
-// in constant time.
-export function verifyRawKeyAgainstStoredHash(rawKey: string, storedHash: string): boolean {
-  if (isSaltedHash(storedHash)) {
-    const parts = storedHash.split('$');
-    if (parts.length !== 4) {
-      return false;
-    }
-    const [, costStr, saltHex, expectedHex] = parts;
-    const cost = Number.parseInt(costStr, 10);
-    if (!Number.isInteger(cost) || cost <= 0) {
-      return false;
-    }
-    let derivedHex: string;
-    try {
-      const salt = Buffer.from(saltHex, 'hex');
-      derivedHex = scryptSync(rawKey, salt, SCRYPT_KEYLEN, { N: cost }).toString('hex');
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('HTTP', 'scrypt derivation failed for stored API key hash (malformed salt or cost)', { cost }, err);
-      return false;
-    }
-    return safeEqualHex(derivedHex, expectedHex);
-  }
-  // Legacy unsalted SHA-256 path.
-  return safeEqualHex(hashServerApiKeyLegacySha256(rawKey), storedHash);
-}
+// #2541 — the KDF itself now lives in the shared api-key-hash module (used by
+// both the SQLite and Postgres backends). Re-exported under the historical
+// names so existing callers and tests keep their API.
+export {
+  hashApiKey as hashServerApiKey,
+  hashApiKeyLegacySha256 as hashServerApiKeyLegacySha256,
+  verifyRawKeyAgainstStoredHash,
+};
 
 // #2541 — re-hash a legacy SHA-256 key to the salted scheme. Requires the
 // plaintext key, so this runs during verify (when the raw key is presented),
 // transparently migrating legacy keys to the strong scheme on first use.
+// The sqlite prefix column is populated at create time, so only the hash moves.
 export function upgradeLegacyKeyHashIfNeeded(
   db: Database,
   record: ApiKey,
@@ -136,7 +74,7 @@ export function upgradeLegacyKeyHashIfNeeded(
     return;
   }
   ensureServerStorageSchema(db);
-  new AuthRepository(db).updateApiKeyHash(record.id, hashServerApiKey(rawKey));
+  new AuthRepository(db).updateApiKeyHash(record.id, hashApiKey(rawKey));
 }
 
 // #2560 seed — scope-migration helper. Re-issues the scope set on a key so an
@@ -164,8 +102,8 @@ export function createServerApiKey(db: Database, input: CreateServerApiKeyInput)
     name: input.name,
     teamId: input.teamId ?? null,
     projectId: input.projectId ?? null,
-    keyHash: hashServerApiKey(rawKey),
-    prefix: rawKey.slice(0, 10),
+    keyHash: hashApiKey(rawKey),
+    prefix: apiKeyPrefix(rawKey),
     scopes: input.scopes ?? [...DEFAULT_LOCAL_API_KEY_SCOPES],
     expiresAtEpoch: input.expiresAtEpoch ?? null,
     metadata: input.metadata ?? {},
@@ -195,7 +133,7 @@ export function verifyServerApiKey(
   // up by hash directly. Narrow candidates by the (non-secret) key prefix,
   // then verify the presented key against each candidate hash in constant
   // time. Local key counts are small and the prefix is highly selective.
-  const candidates = repo.listActiveApiKeysByPrefix(rawKey.slice(0, 10));
+  const candidates = repo.listActiveApiKeysByPrefix(apiKeyPrefix(rawKey));
   let record: ApiKey | null = null;
   for (const candidate of candidates) {
     if (verifyRawKeyAgainstStoredHash(rawKey, candidate.keyHash)) {

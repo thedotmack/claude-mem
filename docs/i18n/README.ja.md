@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[設定](https://docs.claude-mem.ai/configuration)** - 環境変数と設定
 - **[開発](https://docs.claude-mem.ai/development)** - ビルド、テスト、コントリビューション
-- **[リリースブランチ](https://docs.claude-mem.ai/branches)** - stable、core-dev、community-edgeブランチのフロー
 - **[トラブルシューティング](https://docs.claude-mem.ai/troubleshooting)** - よくある問題と解決策
 
 ---
@@ -271,14 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 詳細な例は[検索ツールガイド](https://docs.claude-mem.ai/usage/search-tools)を参照してください。
-
----
-
-## リリースブランチ
-
-安定版リリースは`main`から出荷され、npmに公開されます。`core-dev`と
-`community-edge`は、早期の信頼性修正やコミュニティ統合のためのソース実行ブランチです。ブランチフローと非安定版の実行手順については、**[リリースブランチ](https://docs.claude-mem.ai/branches)**
-を参照してください。
 
 ---
 
@@ -383,10 +374,6 @@ npm run bug-report
 4. ドキュメントを更新
 5. プルリクエストを提出
 
-Claude-Memは`main`(安定版)、`core-dev`、`community-edge`の3つのブランチから
-出荷されます。npmに公開されるのは`main`のみで、他はソースから実行されます。
-ブランチ戦略とローカル実行手順については[リリースブランチ](https://docs.claude-mem.ai/branches)を参照してください。
-
 コントリビューションワークフローについては[開発ガイド](https://docs.claude-mem.ai/development)を参照してください。
 
 ---
@@ -403,7 +390,6 @@ Claude-Memは Apache License 2.0 の下でライセンスされています。
 境界については[docs/license.md](docs/license.md)および[docs/ip-boundary.md](docs/ip-boundary.md)
 を参照してください。
 
-**Ragtimeに関する注記**: `ragtime/`ディレクトリは**Apache License 2.0**の下でライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
 
 ---
 

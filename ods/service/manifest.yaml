@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "3.0.0"
+service:
+  id: claude-mem
+  name: Claude-Mem
+  aliases: [cmem]
+  container_name: ods-claude-mem
+  container_uid: 1000
+  # The dashboard probes health through the gateway; the worker is not on ods-network.
+  default_host: claude-mem-gateway
+  port: 37777
+  external_port_env: ODS_CLAUDE_MEM_PORT
+  external_port_default: 37778
+  health: /api/health
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [litellm]
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: completion
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+  env_vars:
+    - key: ODS_CLAUDE_MEM_PORT
+      default: "37778"
+      description: Local memory service port, separate from a desktop Claude-Mem worker
+      format: integer
+    - key: ODS_CLAUDE_MEM_ENABLED
+      default: "false"
+      description: Enable ODS conversation capture and context recall
+    - key: ODS_CLAUDE_MEM_SCOPE
+      default: conversation
+      description: conversation isolates chats; installation shares memory across an owner's chats
+features:
+  - id: claude-mem
+    name: Persistent memory
+    description: Recall prior ODS conversations and retain completed work with Claude-Mem
+    icon: Brain
+    category: memory
+    requirements:
+      services: [claude-mem, litellm]
+      vram_gb: 0
+    priority: 70
+    launch:
+      type: service
+      service: claude-mem
+    gpu_backends: [all]

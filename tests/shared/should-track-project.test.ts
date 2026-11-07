@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
-import { normalize } from 'path';
+import { CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT, OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import { join, normalize } from 'path';
 
 // Snapshot the real module BEFORE mock.module mutates the live namespace, then
 // re-register it in afterAll. bun's mock.module is process-global and
@@ -20,6 +20,14 @@ afterAll(() => {
 
 // Import after mock so the module picks up the mocked dependency
 const { shouldTrackProject } = await import('../../src/shared/should-track-project.js');
+
+const PLUGINS_DIR_NAME = 'plugins';
+const PLUGIN_CACHE_DIR_NAME = 'cache';
+const CLAUDE_MEM_PLUGIN_OWNER = 'thedotmack';
+const CLAUDE_MEM_PLUGIN_NAME = 'claude-mem';
+const PLUGIN_VERSION_DIR_NAME = '13.12.4';
+const PLUGIN_RUNTIME_DIR_NAME = 'plugin';
+const PLUGIN_SCRIPTS_DIR_NAME = 'scripts';
 
 describe('shouldTrackProject — path normalization', () => {
   let savedInternal: string | undefined;
@@ -50,6 +58,27 @@ describe('shouldTrackProject — path normalization', () => {
 
   it('returns false when cwd matches OBSERVER_SESSIONS_DIR exactly (native separators)', () => {
     expect(shouldTrackProject(OBSERVER_SESSIONS_DIR)).toBe(false);
+  });
+
+  it('returns false when cwd is inside the installed plugin cache', () => {
+    const pluginVersionDir = join(
+      CLAUDE_CONFIG_DIR,
+      PLUGINS_DIR_NAME,
+      PLUGIN_CACHE_DIR_NAME,
+      CLAUDE_MEM_PLUGIN_OWNER,
+      CLAUDE_MEM_PLUGIN_NAME,
+      PLUGIN_VERSION_DIR_NAME,
+    );
+
+    expect(shouldTrackProject(pluginVersionDir)).toBe(false);
+    expect(shouldTrackProject(join(pluginVersionDir, PLUGIN_RUNTIME_DIR_NAME, PLUGIN_SCRIPTS_DIR_NAME))).toBe(false);
+  });
+
+  it('returns false when cwd is inside the marketplace plugin runtime', () => {
+    const marketplacePluginDir = join(MARKETPLACE_ROOT, PLUGIN_RUNTIME_DIR_NAME);
+
+    expect(shouldTrackProject(marketplacePluginDir)).toBe(false);
+    expect(shouldTrackProject(join(marketplacePluginDir, PLUGIN_SCRIPTS_DIR_NAME))).toBe(false);
   });
 
   it('returns true for an unrelated project path', () => {

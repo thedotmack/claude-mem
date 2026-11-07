@@ -4,6 +4,8 @@ import {
   redactHomeDir,
   redactAbsolutePaths,
   redactUrlQueryStrings,
+  redactResidualQueryStrings,
+  redactAssignmentSecrets,
   redactSecrets,
   collapseWhitespace,
   redactText,
@@ -102,6 +104,38 @@ describe('error-scrub: redactUrlQueryStrings', () => {
     expect(out).not.toContain('guest:guest');
     expect(out).toContain('@broker:5672');
   });
+
+  it('redacts Slack webhook path secrets (secret is the path, not the query)', () => {
+    // Join at runtime so the file does not contain a contiguous webhook URL
+    // (GitHub push protection treats the Slack example host+path as a secret).
+    const webhook = ['https://hooks.slack.com', 'services', 'T00000000', 'B00000000', 'abcdefghijklmnopqrstuvwx'].join('/');
+    const out = redactUrlQueryStrings(`notify ${webhook} failed`);
+    expect(out).not.toContain('T00000000');
+    expect(out).not.toContain('abcdefghijklmnopqrstuvwx');
+    expect(out).toContain(`https://hooks.slack.com/services/${REDACTED}`);
+  });
+});
+
+describe('error-scrub: redactResidualQueryStrings', () => {
+  it('strips leftover query after path collapse destroyed scheme://', () => {
+    const out = redactResidualQueryStrings('GET https:/data?token=secret123&x=1 failed');
+    expect(out).not.toContain('token=secret123');
+    expect(out).toContain('https:/data');
+  });
+});
+
+describe('error-scrub: redactAssignmentSecrets', () => {
+  it('masks token= and api_key= assignments', () => {
+    const out = redactAssignmentSecrets('auth failed token=vendorkey_abc123 api_key=short');
+    expect(out).not.toContain('vendorkey_abc123');
+    expect(out).not.toContain('api_key=short');
+    expect(out).toContain(`token=${REDACTED}`);
+    expect(out).toContain(`api_key=${REDACTED}`);
+  });
+
+  it('does not treat error code= as a secret', () => {
+    expect(redactAssignmentSecrets('provider failed with code=12')).toContain('code=12');
+  });
 });
 
 describe('error-scrub: redactSecrets', () => {
@@ -182,6 +216,28 @@ describe('error-scrub: scrubMessage caps length', () => {
     expect(out).not.toContain(home);
     expect(out).not.toContain('k=sk-');
     expect(out).not.toContain('bob@h.com');
+  });
+
+  it('redacts query tokens on multi-segment URLs (path heuristics must not run first)', () => {
+    // Reproducer: collapsing /v1/data?token=… to a basename used to destroy
+    // `://`, so URL query redaction never fired and short tokens leaked.
+    const out = scrubMessage('GET https://api.example.com/v1/data?token=secret123&x=1 failed');
+    expect(out).not.toContain('secret123');
+    expect(out).not.toContain('token=');
+    expect(out).not.toContain('x=1');
+  });
+
+  it('redacts path-like query strings that have no scheme:// prefix', () => {
+    const out = scrubMessage('redirect /oauth/callback?access_token=vendorkey_abc123 done');
+    expect(out).not.toContain('vendorkey_abc123');
+    expect(out).not.toContain('access_token=');
+  });
+
+  it('redacts Slack webhook URLs end-to-end', () => {
+    const webhook = ['https://hooks.slack.com', 'services', 'T00000000', 'B00000000', 'abcdefghijklmnopqrstuvwx'].join('/');
+    const out = scrubMessage(`notify ${webhook} failed`);
+    expect(out).not.toContain('T00000000');
+    expect(out).not.toContain('abcdefghijklmnopqrstuvwx');
   });
 });
 

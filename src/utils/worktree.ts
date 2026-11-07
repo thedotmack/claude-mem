@@ -1,17 +1,20 @@
 
-import { statSync, readFileSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
-  worktreeName: string | null;     
-  parentRepoPath: string | null;   
-  parentProjectName: string | null; 
+  /** Nests under a superproject like a worktree nests under its parent (#2842). */
+  isSubmodule: boolean;
+  worktreeName: string | null;
+  parentRepoPath: string | null;
+  parentProjectName: string | null;
 }
 
 const NOT_A_WORKTREE: WorktreeInfo = {
   isWorktree: false,
+  isSubmodule: false,
   worktreeName: null,
   parentRepoPath: null,
   parentProjectName: null
@@ -42,26 +45,72 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     return NOT_A_WORKTREE;
   }
 
-  const match = content.match(/^gitdir:\s*(.+)$/);
+  // A Git path may contain line terminators. Keep each capture single-path,
+  // not single-line, for regular worktrees, submodules and bare repositories.
+  const match = content.match(/^gitdir:\s*(.+)$/s);
   if (!match) {
     return NOT_A_WORKTREE;
   }
 
   const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
 
-  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (!worktreesMatch) {
-    return NOT_A_WORKTREE;
+  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/s);
+  if (worktreesMatch) {
+    const parentRepoPath = worktreesMatch[1];
+    return {
+      isWorktree: true,
+      isSubmodule: false,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
   }
 
-  const parentRepoPath = worktreesMatch[1];
-  const worktreeName = path.basename(cwd);
-  const parentProjectName = path.basename(parentRepoPath);
+  // Submodules point at `<super>/.git/modules/<name>`, which the worktrees
+  // pattern never matched — they resolved to their own leaf name, a new empty
+  // project, so context injection reported "no memory yet" (#2842).
+  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/s);
+  if (submoduleMatch) {
+    const parentRepoPath = submoduleMatch[1];
+    return {
+      isWorktree: false,
+      isSubmodule: true,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
 
-  return {
-    isWorktree: true,
-    worktreeName,
-    parentRepoPath,
-    parentProjectName
-  };
+  // A worktree of a bare repository: `<repo>.git/worktrees/<name>`, or
+  // `<project>/.bare/worktrees/<name>`. There is no `.git` directory in that
+  // path, so without this every bare-repo worktree keyed on its own folder name
+  // and the `main` worktrees of two different repositories shared one project.
+  // Git writes `commondir` into every linked worktree's gitdir, which tells a
+  // worktree apart from a gitdir that merely sits in a folder named `worktrees`.
+  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/s);
+  if (bareWorktreeMatch && existsSync(path.join(gitdirPath, 'commondir'))) {
+    const parentRepoPath = bareWorktreeMatch[1];
+    const parentProjectName = bareRepositoryProjectName(parentRepoPath);
+    if (parentProjectName) {
+      return {
+        isWorktree: true,
+        isSubmodule: false,
+        worktreeName: path.basename(cwd),
+        parentRepoPath,
+        parentProjectName
+      };
+    }
+  }
+
+  return NOT_A_WORKTREE;
+}
+
+/**
+ * The project a bare repository stands for: `app.git` is `app`, and a hidden
+ * bare directory such as `app/.bare` is named after the folder holding it.
+ */
+export function bareRepositoryProjectName(bareRepoPath: string): string | null {
+  const name = path.basename(bareRepoPath).replace(/\.git$/, '');
+  if (name && !name.startsWith('.')) return name;
+  return path.basename(path.dirname(bareRepoPath)) || null;
 }
