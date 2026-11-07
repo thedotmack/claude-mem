@@ -1090,12 +1090,21 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // `procedure TClass.Method`, outside the class range. Move the body range
   // onto the declared member so the method unfolds once, then merge interface
   // declarations with their implementations. Signatures are compared up to
-  // the first semicolon so `overload`/`virtual` directives on either side do
-  // not split a declaration from its body.
+  // the semicolon that ends the routine header, so `overload`/`virtual`
+  // directives on either side do not split a declaration from its body.
+  // Semicolons inside the parameter list separate parameter groups, so they
+  // are skipped: `Run(A: Integer; B: Integer)` and `Run(A: Integer; B: String)`
+  // are different overloads.
   if (language === "pascal") {
     const signatureKey = (signature: string): string => {
-      const end = signature.indexOf(";");
-      return end >= 0 ? signature.slice(0, end + 1) : signature;
+      let parenDepth = 0;
+      for (let index = 0; index < signature.length; index++) {
+        const character = signature[index];
+        if (character === "(") parenDepth++;
+        else if (character === ")") parenDepth = Math.max(0, parenDepth - 1);
+        else if (character === ";" && parenDepth === 0) return signature.slice(0, index + 1);
+      }
+      return signature;
     };
     for (const sym of symbols) {
       if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
@@ -1103,7 +1112,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (dot <= 0) continue;
       const ownerName = sym.name.slice(0, dot);
       const leafName = sym.name.slice(dot + 1);
-      const owner = containers.find(container => container.sym.kind === "class" && container.sym.name === ownerName);
+      // Advanced records (`record_definition`, kind "struct") carry methods too.
+      const owner = containers.find(container =>
+        (container.sym.kind === "class" || container.sym.kind === "struct") && container.sym.name === ownerName);
       if (!owner?.sym.children) continue;
       const signature = sym.signature.replace(
         new RegExp(`^((?:class\\s+)?(?:procedure|function|constructor|destructor|operator)\\s+)${ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`),

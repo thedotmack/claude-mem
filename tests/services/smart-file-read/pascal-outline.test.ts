@@ -101,6 +101,67 @@ end.`;
       .toEqual([['Ping', 'function', 4, 7]]);
   }, 120000);
 
+  test('keeps overloads that differ only in a later parameter group apart', () => {
+    const source = `unit LaterParams;
+interface
+type
+  TThing = class
+    procedure Run(A: Integer; B: Integer); overload;
+    procedure Run(A: Integer; B: String); overload;
+  end;
+procedure Walk(A: Integer; B: Integer); overload;
+procedure Walk(A: Integer; B: String); overload;
+implementation
+procedure TThing.Run(A: Integer; B: Integer);
+begin
+  WriteLn(B + 1);
+end;
+procedure TThing.Run(A: Integer; B: String);
+begin
+  WriteLn(B);
+end;
+procedure Walk(A: Integer; B: Integer);
+begin
+  WriteLn(B + 2);
+end;
+procedure Walk(A: Integer; B: String);
+begin
+  WriteLn(B + '!');
+end;
+end.`;
+    const roots = parseFile(source, 'LaterParams.pas').symbols;
+    const members = roots.find(symbol => symbol.name === 'TThing')?.children ?? [];
+    expect(members.map(symbol => [symbol.name, symbol.lineStart, symbol.lineEnd])).toEqual([
+      ['Run', 10, 13],
+      ['Run', 14, 17],
+    ]);
+    const walks = roots.filter(symbol => symbol.name === 'Walk');
+    expect(walks.map(symbol => [symbol.kind, symbol.lineStart, symbol.lineEnd])).toEqual([
+      ['function', 18, 21],
+      ['function', 22, 25],
+    ]);
+  }, 120000);
+
+  test('attaches advanced-record method bodies to the record member', () => {
+    const source = `unit Records;
+interface
+type
+  TRec = record
+    Count: Integer;
+    procedure Reset;
+  end;
+implementation
+procedure TRec.Reset;
+begin
+  Count := 0;
+end;
+end.`;
+    const roots = parseFile(source, 'R.pas').symbols;
+    expect(roots.map(symbol => symbol.name)).toEqual(['TRec']);
+    const reset = unfoldSymbol(source, 'R.pas', 'TRec.Reset');
+    expect(reset).toContain('Count := 0;');
+  }, 120000);
+
   test('native batched search finds a class method by qualified name', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-pascal-outline-'));
     try {
