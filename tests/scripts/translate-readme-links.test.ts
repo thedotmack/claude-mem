@@ -69,6 +69,18 @@ describe('rewriteRelativeLinks', () => {
     expect(rewrite(block + '\n[read](LICENSE)')).toBe(block + '\n[read](../../LICENSE)');
   });
 
+  it('keeps a deeply indented marker inside the enclosing example', () => {
+    for (const [prefix, open, literal, close] of [
+      ['', '```md', '    ```', '```'],
+      ['1. Example:', '    ~~~md', '       ~~~', '    ~~~'],
+      ['', '> ```md', '>     ```', '> ```'],
+    ]) {
+      const content = open.startsWith('>') ? '> [read](LICENSE)' : '    [read](LICENSE)';
+      const block = [prefix, '', open, literal, content, close].join('\n');
+      expect(rewrite(block + '\n[read](LICENSE)')).toBe(block + '\n[read](../../LICENSE)');
+    }
+  });
+
   it('preserves single quotes in HTML link and image attributes', () => {
     const input = "<a href='LICENSE'><img src='docs/a.png' srcset='docs/a.png 1x, docs/b.png 2x'></a>";
     expect(rewrite(input)).toBe("<a href='../../LICENSE'><img src='../a.png' srcset='../a.png 1x, ../b.png 2x'></a>");

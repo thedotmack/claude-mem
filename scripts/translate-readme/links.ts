@@ -1,4 +1,9 @@
 import * as path from 'path';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
+import { visit } from 'unist-util-visit';
+
+const markdownParser = unified().use(remarkParse);
 
 // Leaves URLs with a scheme (https:, mailto:), protocol-relative URLs, root-absolute paths and
 // in-page anchors alone: they mean the same thing from any directory.
@@ -39,20 +44,16 @@ export function rewriteRelativeLinks(markdown: string, sourceDir: string, outDir
   const to = path.resolve(outDir);
   if (from === to) return markdown;
 
-  let fence = '';
+  // Markdown containers (such as nested lists) determine how far a fence can be indented.
+  const codeLines = new Set<number>();
+  visit(markdownParser.parse(markdown), 'code', ({ position }) => {
+    if (!position) return;
+    for (let line = position.start.line; line <= position.end.line; line++) codeLines.add(line);
+  });
   return markdown
     .split('\n')
-    .map((line) => {
-      // Any indentation: a fence nested in a list item sits four or more spaces in.
-      const marker = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
-      if (fence) {
-        if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = '';
-        return line;
-      }
-      if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
-        fence = marker[1];
-        return line;
-      }
+    .map((line, index) => {
+      if (codeLines.has(index + 1)) return line;
       return line
         .replace(/(\]\()([^)\s]+)/g, (_, open, target) => open + rewriteTarget(target, from, to))
         .replace(/\b(href|src)=(["'])(.*?)\2/g, (_, attr, quote, target) => `${attr}=${quote}${rewriteTarget(target, from, to)}${quote}`)
