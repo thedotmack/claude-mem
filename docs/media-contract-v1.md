@@ -41,26 +41,134 @@ label; it never includes an arbitrary decoder exception message.
 | Bound | Frozen v1 value |
 | --- | --- |
 | Images per event | 4 |
-| Accepted source and canonical WebP | 3 MiB each |
-| Decoded pixels | 24,000,000 |
-| Either source dimension | 8192 |
-| Conversion admission | One active conversion, fail busy immediately |
-| Conversion deadline | 5 seconds total metadata and both encodes |
+| Accepted source and canonical WebP | 3 MiB each: the bound for an upload Pro accepts and for reading a stored canonical, including one stored before every copy became lossy (lossless, up to 3 MiB). Local worker: a file source up to 96 MiB is accepted (see below) |
+| Encoded canonical WebP | 1 MiB (`maxEncodedCanonicalBytes`). Each converter fits every canonical it encodes into it; see "Recipes" for the measurement |
+| Decoded pixels | 24,000,000. Local worker: decodes up to 268,402,689 (16383 x 16383) and fits the canonical to 24,000,000 |
+| Either source dimension | 8192. Local worker: fits the canonical to 8192 instead of rejecting |
+| Conversion admission | One active conversion. Pro upload route: fail busy immediately. Local worker: wait up to 20 seconds for the slot, first come first served, then fail busy |
+| Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including any shrink round |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 256 MiB converted assets, atomically reserved |
+| Initial owner quota | 256 MiB converted assets, atomically reserved. Pro enforces it (uploads past it answer 413 `quota_exceeded`); the value matches Pro's contract |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 
-Reject any source or result that cannot meet these bounds. No adaptive quality
-loop, semantic cropping, or automatic content classification is in v1.
-Recipes are explicit caller choices: `screenshot-v1` uses lossless canonical
-WebP and a near-lossless quality 90 derivative; `photo-v1` uses quality 90 for
-both variants. Alpha is preserved. Both remove metadata, auto-orient
-and produce retained canonical and inference derivatives. Store recipe and
-actual `sharp.versions` encoder version with every conversion.
+Pro rejects any source that cannot meet these bounds. An encode over its byte
+ceiling (1 MiB canonical, 256 KiB derivative) is shrunk to fit on both sides,
+never rejected; the local worker also fits a source over the dimension and
+pixel bounds (see "Where the size bounds apply"). No semantic cropping or
+automatic content classification is in v1.
+
+### Recipes
+
+Every stored copy is lossy WebP. Nothing is encoded lossless or near-lossless.
+Reason: the owner's rule of 2026-11-05/06, "screenshots never need to be
+multiple megabytes" and "never lossless".
+
+Recipes are explicit caller choices: `screenshot-v1` encodes both variants as
+lossy WebP quality 80; `photo-v1` encodes both as quality 90 (unchanged).
+There is no quality retry: a variant over its byte ceiling is shrunk with the
+same setting. The recipe name and the manifest version do not change; a
+canonical stored before this rule may be lossless and up to 3 MiB, and it is
+never re-encoded or deleted for that.
+
+Evidence for quality 80 and the 1 MiB canonical ceiling, 2026-11-06: the 29
+real screenshots from a developer's Mac (62 KiB to 4.0 MiB PNG, 626x333 to
+2880x6716), Sharp 0.35.5, one libvips thread:
+
+| Copy | Before (lossless / near-lossless 90) | Quality 90 | Quality 80 (chosen) |
+| --- | --- | --- | --- |
+| Canonical, median / largest | 170 KiB / 2031 KiB | 113 KiB / 514 KiB | 80 KiB / 406 KiB |
+| Canonical CPU, median / largest | 0.76 s / 5.29 s | 0.21 s / 0.89 s | 0.20 s / 0.85 s |
+| Derivative, median / largest | 153 KiB / 872 KiB | 74 KiB / 172 KiB | 54 KiB / 121 KiB |
+
+- Text stays readable at 1:1 in both copies at quality 80, checked by eye on
+  dark UI, a light terminal and colored monospace text. Quality 90 costs about
+  1.4 times the bytes for no readable difference.
+- The 1 MiB canonical ceiling keeps all 29 at full resolution, with about 2.5
+  times headroom over the largest (406 KiB). A 2800x23880 full-page screenshot,
+  fitted to 8192 px, is 528 KiB. 1 MiB is not "multiple megabytes".
+- Pro re-encodes the uploaded canonical at the same setting. Measured on the
+  same 29, that second quality 80 encode was at most 0.995 times the first, so
+  it fits the same ceiling; if one does not, Pro shrinks it like the local
+  worker.
+- Lossy is larger than lossless for a few small flat screenshots (a 925x927
+  Linux terminal: 35 KiB lossless, 103 KiB at quality 80). Every such case
+  measured stays far under the ceilings.
+
+Alpha is preserved. Both recipes remove metadata, auto-orient and produce
+retained canonical and inference derivatives. Store recipe and actual
+`sharp.versions` encoder version with every conversion.
+
+### Where the conversion bounds apply
+
+Pro's upload route and the local worker convert on different machines, so the
+admission and deadline rows have one value for each. Every other bound is the
+same on both. `MEDIA_LIMITS.conversionTimeoutSeconds` (5) and
+`maxConcurrentConversions` (1) stay as they are in the shared contract file.
+The local values live in the local converter
+(`LOCAL_CONVERSION_DEADLINE_MS`, `LOCAL_ADMISSION_WAIT_MS`).
+
+- Pro upload route: 5 second deadline, one active conversion, fail busy at
+  once. Reason: shared server instances and the route's 59 second budget.
+  Unchanged.
+- Local worker: 20 second deadline, one active conversion, and a caller waits
+  up to 20 seconds for the slot (first come, first served) before it fails
+  `conversion_busy`. The deadline starts when the caller gets the slot.
+  Reason: the local worker converts off the hook path (the PostToolUse hook
+  writes a spool file and returns, and the worker converts while it drains the
+  spool), so no agent waits on it. A conversion runs on about one core. On
+  2026-11-05, 27 real screenshots from a developer's 10-core Mac needed 2.1 to
+  4.3 seconds each when typical, and 5.8 seconds for the slowest (2880x6716).
+  With the 5 second deadline and fail-at-once admission, run back to back as
+  the spool drain runs them, 11 of the 27 converted: the slowest timed out,
+  and the next 15 failed busy while its native work finished. Under load
+  average 30 to 50, 11 of the 27 needed over 5 seconds even alone, and none
+  of the 27 converted. With the local bounds all 27 converted in both cases
+  (slowest 16.4 seconds under load), and all 81 converted when three callers
+  ran the 27 at once. A local conversion row's lease covers the wait, the
+  deadline and two SQLite busy waits, so cleanup never fails a live one.
+
+Both converters hold the slot until native work settles. The local converter
+gives each native step only the deadline time still left, rounded up to whole
+seconds (Sharp's unit), so a conversion that timed out holds the slot for at
+most about one more second.
+
+### Where the size bounds apply
+
+On a user's computer no image is thrown away for size when the decoder can read
+it safely. The local worker uploads only its canonical WebP to Pro, so a
+canonical that fits the canonical bounds is what Pro receives. Pro's own
+upload route still rejects a source over a bound.
+
+- File source (a Read of a local image file): up to 96 MiB. Reason: abuse
+  protection on worker memory, because the file is read whole. Screenshot PNGs
+  measured about 0.32 bytes per pixel (a 2800x23880 full-page screenshot was
+  20.4 MiB), so a screenshot at the decoder bound below is about 82 MiB.
+- Inline source (image bytes inside the tool response): still at most 4 MiB
+  of base64 for the event, because the event JSON must stay under the
+  existing 5 MB cap (the worker's JSON body limit). An inline image over that
+  is replaced by a `source_too_large` descriptor at the hook. Not changed in
+  this step.
+- Decoder: up to 268,402,689 pixels (16383 x 16383), Sharp's own default
+  `limitInputPixels`, its decompression-bomb guard. Over that the image fails
+  `pixel_limit`. Measured: fitting a 16383x16383 PNG took 0.9 seconds and
+  512 MiB of memory; a 66.9 million pixel full-page screenshot took 4.5
+  seconds and 324 MiB.
+- Canonical over 8192 on a side or over 24,000,000 pixels: resized, full
+  frame, to fit both.
+- Canonical over 1 MiB, or a derivative over 256 KiB, after its recipe's
+  encode: the longest edge is shrunk so the pixel count scales by the byte
+  overshoot, aiming 10% under the ceiling, with the recipe's setting, until
+  it fits. Every round shrinks the image, and the conversion deadline bounds
+  the rounds. Pro's converter shrinks the same way.
+- Evidence, 2026-11-05: of 29 real screenshots from a developer's Mac, the old
+  bounds rejected 2 for source size (3.3 MiB and 4.0 MiB). With the local
+  bounds all 29 convert. On 2026-11-06, at quality 80, those two keep full
+  size as 81 KiB and 202 KiB canonicals (they were 1363 KiB and 2031 KiB
+  lossless).
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a
@@ -101,7 +209,8 @@ Converter APIs copy the documented [Sharp constructor](https://sharp.pixelplumbi
 [auto orientation](https://sharp.pixelplumbing.com/api-operation/) calls:
 `sharp(bytes,{failOn:'warning',limitInputPixels:24000000})`, `metadata()`,
 `autoOrient()`, `resize({width:1536,height:1536,fit:'inside',withoutEnlargement:true})`,
-`webp(options)`, `timeout({seconds:5})`, `toBuffer({resolveWithObject:true})`.
+`webp(options)`, `timeout({seconds:5})` (local worker: the seconds left of its
+20 second deadline), `toBuffer({resolveWithObject:true})`.
 Header metadata is not decoding proof. Output removes EXIF/GPS by default;
 never call `keepMetadata()`/`withMetadata()`. Sharp timeout excludes time in
 the native worker queue, so the application deadline starts before metadata.
