@@ -826,6 +826,11 @@ export class CloudSync {
       return;
     }
     this.flushing = true;
+    // Whether this flush moved any page forward before it failed. A hub that is
+    // draining a backlog under contention (projection_busy) acks some pages
+    // and refuses the next; that is progress, not a failing hub, so the retry
+    // starts from the initial delay instead of doubling toward the maximum.
+    let progressedThisFlush = false;
     try {
       if (this.authFailure) {
         // Paused on 401/403: one cheap authenticated status GET decides
@@ -852,9 +857,11 @@ export class CloudSync {
         let progressed: boolean;
         do {
           progressed = await this.drainMutationPage();
+          progressedThisFlush ||= progressed;
           for (const kind of KINDS) {
             if (this.stopped) return;
             if (this.hubAcceptsKind(kind.kind)) progressed = await this.drainContentPage(kind) || progressed;
+            progressedThisFlush ||= progressed;
           }
           // Only one historical page may enter the outbox, and only when live
           // work has yielded. The next sweep always gives every live lane a turn.
@@ -888,6 +895,7 @@ export class CloudSync {
       }
       // Rows stay NULL — retried by the backoff timer below and on next notify().
       const retryAfterMs = err instanceof HubHttpError ? err.retryAfterMs : null;
+      if (progressedThisFlush) this.resetBackoff();
       this.recordFlushFailure(err);
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
         retryInMs: Math.max(this.nextBackoffMs, retryAfterMs ?? 0),

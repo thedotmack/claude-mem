@@ -610,6 +610,48 @@ describe('CloudSync', () => {
     expect(calls.map(c => c.parsed.ops.length)).toEqual([6, 6, 3]);
   });
 
+  it('never stamps rows on a durable 503 that carries no per-op acks', async () => {
+    seedObservation({ title: 'durable-but-unprojected' });
+    const { impl, calls } = makeFetchMock(() => new Response(JSON.stringify({
+      error: 'projection_busy', durable: true, retryable: true, head_seq: '1', projected_seq: '0',
+    }), { status: 503, headers: { 'Retry-After': '30' } }));
+    const sync = makeCloudSync(impl);
+
+    await sync.flush();
+
+    expect(calls.length).toBe(1);
+    expect(pendingCount('observations')).toBe(1);
+    sync.stop();
+  });
+
+  it('restarts the retry ladder when a flush got pages through before the hub refused one', async () => {
+    for (let i = 0; i < 3; i++) seedObservation({ title: `obs ${i}` });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 1, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    // Stand in for the armed retry timer firing, so each flush below is a retry.
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    // Retries that move nothing climb the ladder: 1s, then 2s, so 4s is next.
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    // One page acked, the next refused: the retry waits the initial 1s again.
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    expect(pendingCount('observations')).toBe(2);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
+  });
+
   it('falls back to the default content batch when the setting is out of range', async () => {
     for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
 
