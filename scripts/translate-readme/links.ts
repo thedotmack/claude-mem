@@ -43,7 +43,8 @@ export function rewriteRelativeLinks(markdown: string, sourceDir: string, outDir
   return markdown
     .split('\n')
     .map((line) => {
-      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      // Any indentation: a fence nested in a list item sits four or more spaces in.
+      const marker = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
       if (fence) {
         if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = '';
         return line;

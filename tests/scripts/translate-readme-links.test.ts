@@ -64,6 +64,11 @@ describe('rewriteRelativeLinks', () => {
     }
   });
 
+  it('leaves a fenced example nested in a list item unchanged', () => {
+    const block = ['1. Example:', '', '    ```md', '    [read](LICENSE)', '    ```'].join('\n');
+    expect(rewrite(block + '\n[read](LICENSE)')).toBe(block + '\n[read](../../LICENSE)');
+  });
+
   it('preserves single quotes in HTML link and image attributes', () => {
     const input = "<a href='LICENSE'><img src='docs/a.png' srcset='docs/a.png 1x, docs/b.png 2x'></a>";
     expect(rewrite(input)).toBe("<a href='../../LICENSE'><img src='../a.png' srcset='../a.png 1x, ../b.png 2x'></a>");
