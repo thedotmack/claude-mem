@@ -39,19 +39,23 @@ export function rewriteRelativeLinks(markdown: string, sourceDir: string, outDir
   const to = path.resolve(outDir);
   if (from === to) return markdown;
 
-  let inFence = false;
+  let fence = '';
   return markdown
     .split('\n')
     .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        inFence = !inFence;
+      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (fence) {
+        if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = '';
         return line;
       }
-      if (inFence) return line;
+      if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
+        fence = marker[1];
+        return line;
+      }
       return line
         .replace(/(\]\()([^)\s]+)/g, (_, open, target) => open + rewriteTarget(target, from, to))
-        .replace(/\b(href|src)="([^"]*)"/g, (_, attr, target) => `${attr}="${rewriteTarget(target, from, to)}"`)
-        .replace(/\bsrcset="([^"]*)"/g, (_, value) => `srcset="${rewriteSrcset(value, from, to)}"`);
+        .replace(/\b(href|src)=(["'])(.*?)\2/g, (_, attr, quote, target) => `${attr}=${quote}${rewriteTarget(target, from, to)}${quote}`)
+        .replace(/\bsrcset=(["'])(.*?)\1/g, (_, quote, value) => `srcset=${quote}${rewriteSrcset(value, from, to)}${quote}`);
     })
     .join('\n');
 }
