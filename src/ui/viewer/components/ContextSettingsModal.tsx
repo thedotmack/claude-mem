@@ -478,6 +478,16 @@ export function ContextSettingsModal({
               description="AI provider and model selection"
               defaultOpen={false}
             >
+              <div className="toggle-group" style={{ marginBottom: '16px' }}>
+                <ToggleSwitch
+                  id="observer-enabled"
+                  label="Memory capture"
+                  description="Generate new observations and session summaries with the selected AI provider. Turn this off to stop those capture calls; existing memories, search, and SessionStart context remain available."
+                  checked={formState.CLAUDE_MEM_OBSERVER_ENABLED !== 'false'}
+                  onChange={(checked) => updateSetting('CLAUDE_MEM_OBSERVER_ENABLED', checked ? 'true' : 'false')}
+                />
+              </div>
+
               <FormField
                 label="AI Provider"
                 tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), Codex (your ChatGPT subscription), or any OpenAI-compatible endpoint"

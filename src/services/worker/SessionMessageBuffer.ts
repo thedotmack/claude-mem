@@ -1,8 +1,16 @@
 import { EventEmitter } from 'events';
 import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
+import { LIVE_OBSERVER_MAX_AGE_MS, LIVE_OBSERVER_MAX_SESSION_MESSAGES, LIVE_OBSERVER_MAX_TOTAL_MESSAGES } from '../../shared/observer-work-policy.js';
 
 export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+
+/**
+ * While a drain is idle it waits in slices of at most this length, so a
+ * shouldReleaseIdleSlot check (see DrainOptions) is re-evaluated at this
+ * cadence instead of only after the full idle timeout (#5376).
+ */
+const IDLE_WAIT_SLICE_MS = 1_000;
 
 interface BufferedMessage {
   id: number;
@@ -12,12 +20,13 @@ interface BufferedMessage {
    * Set aside after its batch spent its PaidSendBudget (paid-send-budget.ts):
    * never claimed or resent again, and not counted as pending, so newer work
    * behind it keeps flowing. It stays in RAM, visible to getParkedMessages,
-   * until the session ends.
+   * until it expires or the session ends.
    */
   parked: boolean;
   /** The `x-client-request-id` of the batch's sends, so a parked message can be traced to them. */
   parkedClientAttemptId?: string;
   enqueuedAt: number;
+  bufferedAt: number;
 }
 
 export interface DrainOptions {
@@ -25,6 +34,14 @@ export interface DrainOptions {
   signal: AbortSignal;
   onIdleTimeout?: () => void;
   idleTimeoutMs?: number;
+  /**
+   * Checked each time an idle drain finishes a wait slice: return true to
+   * end the drain early through the onIdleTimeout path. The production
+   * caller passes "another session is parked waiting for a concurrency
+   * slot" — an idle generator otherwise holds its slot for the full
+   * IDLE_TIMEOUT_MS while parked sessions starve (#5376).
+   */
+  shouldReleaseIdleSlot?: () => boolean;
 }
 
 /**
@@ -38,10 +55,9 @@ export interface DrainOptions {
  * "replaying" pending rows after a crash regenerated different/duplicate
  * observations or looped forever — that was the retry storm. The Claude Code
  * transcript JSONL is the real durable source of truth, and transcript replay
- * is the recovery path. So this buffer deliberately holds work only for the
- * worker process lifetime: no 'processing' state to resurrect on restart, no
- * startup sweep, no respawn-on-pending. If the worker dies, the buffer is gone
- * and recovery is a transcript replay.
+ * can support a separately specified recovery workflow. This buffer holds
+ * only bounded live work: no processing state to resurrect on restart and
+ * no durable backlog. If the worker dies, the buffer is gone.
  *
  * confirm()/resetClaimed() exist only as in-process control flow within a
  * single live generator pass (drop a stored batch; re-yield a batch that
@@ -57,23 +73,32 @@ export class SessionMessageBuffer {
   constructor(private readonly onMutate?: () => void) {}
 
   /**
-   * Append a message. Returns the assigned id, or 0 if suppressed as a
-   * duplicate. Dedup matches the old partial UNIQUE(content_session_id,
+   * Append a message. Returns its id, or 0 for a duplicate/full buffer.
+   * Dedup matches the old partial UNIQUE(content_session_id,
    * tool_use_id) index: only observations that carry a toolUseId are deduped,
    * and only against others in the same session for this worker's lifetime.
    */
   enqueue(sessionDbId: number, message: PendingMessage, enqueuedAt = Date.now()): number {
+    this.pruneExpired();
     const toolUseId = message.toolUseId;
     if (toolUseId) {
       const seen = this.getSeen(sessionDbId);
       if (seen.has(toolUseId)) {
         return 0;
       }
-      seen.add(toolUseId);
     }
 
+    // Never build a catch-up obligation. Keep in-flight paid work intact;
+    // reject new work when this short-lived buffer is full.
+    if ((this.buffers.get(sessionDbId)?.length ?? 0) >= LIVE_OBSERVER_MAX_SESSION_MESSAGES
+      || this.totalBuffered() >= LIVE_OBSERVER_MAX_TOTAL_MESSAGES) {
+      logger.debug('QUEUE', 'Live observer buffer full; skipping event', { sessionId: sessionDbId });
+      return 0;
+    }
+    if (toolUseId) this.getSeen(sessionDbId).add(toolUseId);
+
     const id = this.nextId++;
-    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt });
+    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt, bufferedAt: Date.now() });
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;
@@ -104,6 +129,7 @@ export class SessionMessageBuffer {
       }
     }
     if (reset > 0) {
+      this.pruneExpired();
       this.onMutate?.();
       this.signal(sessionDbId);
     }
@@ -149,6 +175,47 @@ export class SessionMessageBuffer {
     return cleared;
   }
 
+  /**
+   * Drop everything buffered for a session but keep its dedup set, so neither
+   * work already stored nor work just discarded can be enqueued and sent
+   * again by a later hook or transcript replay (#5405).
+   */
+  discardKeepingDedup(sessionDbId: number): number {
+    const discarded = this.buffers.get(sessionDbId)?.length ?? 0;
+    this.buffers.delete(sessionDbId);
+    if (discarded > 0) this.onMutate?.();
+    return discarded;
+  }
+
+  /**
+   * Drop work that has not been handed to a provider yet, preserving messages
+   * claimed by the request currently in flight so its response can still join
+   * file evidence and other source metadata.
+   */
+  clearUnclaimed(sessionDbId: number): number {
+    const list = this.buffers.get(sessionDbId);
+    if (!list) return 0;
+    const kept = list.filter(message => message.claimed);
+    const removed = list.filter(message => !message.claimed);
+    const cleared = removed.length;
+    if (cleared === 0) return 0;
+
+    if (kept.length === 0) {
+      this.buffers.delete(sessionDbId);
+    } else {
+      this.buffers.set(sessionDbId, kept);
+    }
+    // Let discarded work re-enter through transcript replay without forgetting
+    // IDs already confirmed earlier in this process.
+    const seen = this.seenToolUseIds.get(sessionDbId);
+    for (const message of removed) {
+      if (message.message.toolUseId) seen?.delete(message.message.toolUseId);
+    }
+    if (seen?.size === 0) this.seenToolUseIds.delete(sessionDbId);
+    this.onMutate?.();
+    return cleared;
+  }
+
   /** Forget a session entirely (buffer, dedup set, event emitter). */
   dispose(sessionDbId: number): void {
     this.buffers.delete(sessionDbId);
@@ -159,6 +226,7 @@ export class SessionMessageBuffer {
 
   /** Messages still to be sent: parked ones are excluded, nothing will send them. */
   getPendingCount(sessionDbId: number): number {
+    this.pruneExpired();
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).length;
   }
 
@@ -169,6 +237,7 @@ export class SessionMessageBuffer {
 
   /** The lowest id of the session's messages still to be stored, or null when none are. */
   getOldestPendingId(sessionDbId: number): number | null {
+    this.pruneExpired();
     let oldest: number | null = null;
     for (const m of this.buffers.get(sessionDbId) ?? []) {
       if (!m.parked && (oldest === null || m.id < oldest)) oldest = m.id;
@@ -177,6 +246,7 @@ export class SessionMessageBuffer {
   }
 
   getTotalDepth(): number {
+    this.pruneExpired();
     let total = 0;
     for (const list of this.buffers.values()) {
       total += list.filter(m => !m.parked).length;
@@ -209,6 +279,7 @@ export class SessionMessageBuffer {
   }
 
   peekTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
+    this.pruneExpired();
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).map(m => ({
       message_type: m.message.type,
       tool_name: m.message.tool_name ?? null
@@ -229,20 +300,32 @@ export class SessionMessageBuffer {
     while (!signal.aborted) {
       const claimed = this.claimNext(sessionDbId);
       if (claimed) {
-        lastActivityTime = Date.now();
         yield {
           ...claimed.message,
           _persistentId: claimed.id,
           _originalTimestamp: claimed.enqueuedAt
         };
+        // The idle clock starts when the consumer comes back for the next
+        // message, so the time it spends answering this one does not eat
+        // into the idle window.
+        lastActivityTime = Date.now();
         continue;
       }
 
-      const received = await this.waitForMessage(sessionDbId, signal, idleTimeoutMs);
+      const received = await this.waitForMessage(sessionDbId, signal, Math.min(idleTimeoutMs, IDLE_WAIT_SLICE_MS));
       if (!received && !signal.aborted) {
         const idleDuration = Date.now() - lastActivityTime;
         if (idleDuration >= idleTimeoutMs) {
           logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+            sessionDbId,
+            idleDurationMs: idleDuration,
+            thresholdMs: idleTimeoutMs
+          });
+          onIdleTimeout?.();
+          return;
+        }
+        if (options.shouldReleaseIdleSlot?.()) {
+          logger.info('SESSION', 'Releasing idle slot early: other sessions are waiting for a slot', {
             sessionDbId,
             idleDurationMs: idleDuration,
             thresholdMs: idleTimeoutMs
@@ -258,6 +341,7 @@ export class SessionMessageBuffer {
 
   /** Claim only the immediate FIFO head, never wait or cross a rejected barrier. */
   claimNextMatching(sessionDbId: number, accepts: (message: PendingMessageWithId) => boolean): PendingMessageWithId | null {
+    this.pruneExpired();
     const next = this.buffers.get(sessionDbId)?.find(message => !message.claimed && !message.parked);
     if (!next) return null;
     const message = { ...next.message, _persistentId: next.id, _originalTimestamp: next.enqueuedAt };
@@ -268,6 +352,7 @@ export class SessionMessageBuffer {
   }
 
   private claimNext(sessionDbId: number): BufferedMessage | null {
+    this.pruneExpired();
     const list = this.buffers.get(sessionDbId);
     if (!list) return null;
     const next = list.find(m => !m.claimed && !m.parked);
@@ -275,6 +360,27 @@ export class SessionMessageBuffer {
     next.claimed = true;
     this.onMutate?.();
     return next;
+  }
+
+  private totalBuffered(): number {
+    let total = 0;
+    for (const list of this.buffers.values()) total += list.length;
+    return total;
+  }
+
+  /** Expire only unsent work. A paid request already in flight may finish. */
+  private pruneExpired(): void {
+    const cutoff = Date.now() - LIVE_OBSERVER_MAX_AGE_MS;
+    let skipped = 0;
+    for (const [sessionDbId, list] of this.buffers) {
+      const live = list.filter(message => message.claimed || message.bufferedAt > cutoff);
+      skipped += list.length - live.length;
+      if (live.length !== list.length) this.buffers.set(sessionDbId, live);
+    }
+    if (skipped > 0) {
+      logger.warn('QUEUE', 'Skipped expired live observer inputs; no replay scheduled', { skipped });
+      this.onMutate?.();
+    }
   }
 
   private waitForMessage(sessionDbId: number, signal: AbortSignal, timeoutMs: number): Promise<boolean> {

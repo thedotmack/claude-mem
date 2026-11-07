@@ -27,6 +27,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
@@ -35,7 +36,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -133,7 +134,7 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
         if (excludedFolders.has(projectFolder)) continue;
         try {
           for await (const line of readLines(source.path)) {
-            if (!line.includes('"usage"') || !line.includes('"type":"assistant"')) continue;
+            if (!line.includes('"usage"') || !/"type"\s*:\s*"assistant"/.test(line)) continue;
             const record = parseLine(line);
             const message = record?.message;
             if (record?.type !== 'assistant' || !message?.usage) continue;
@@ -154,16 +155,41 @@ const codexUsage: UsageReader = {
     for (const source of sources) {
       try {
         let previousTotal: number | null = null;
+        let ownThreadId: string | null = null;
+        let sawSessionMeta = false;
+        let awaitingForkSettings = false;
         for await (const line of readLines(source.path)) {
-          if (!line.includes('"token_count"')) continue;
+          if (!line.includes('"token_count"') && !line.includes('"session_meta"')
+            && !line.includes('"thread_settings_applied"')) continue;
           const record = parseLine(line);
+          if (record?.type === 'session_meta' && !sawSessionMeta) {
+            sawSessionMeta = true;
+            const id = record.payload?.id;
+            if (typeof id === 'string' && id) {
+              ownThreadId = id;
+              // These creator versions persist a child-owned startup snapshot
+              // before any child turn. Resume retains the original header, so
+              // an older fork's later upgrade snapshot must not erase its usage.
+              awaitingForkSettings = codexForkThreadId(record.payload) !== null;
+            }
+            continue;
+          }
+          if (awaitingForkSettings && record?.type === 'event_msg'
+            && record.payload?.type === 'thread_settings_applied'
+            && record.payload.thread_id === ownThreadId) {
+            // Copied fork history is re-timestamped when written. This
+            // snapshot ends that inherited prefix; retain its counter as the
+            // baseline, but only later increments belong to the child.
+            awaitingForkSettings = false;
+            continue;
+          }
           const info = record?.payload?.type === 'token_count' ? record.payload.info : null;
           const total = info?.total_token_usage?.total_tokens;
           if (record?.type !== 'event_msg' || typeof total !== 'number') continue;
           // The first count in a file may continue an earlier session's running total; only its own turn is new.
           const increase = previousTotal === null ? count(info.last_token_usage?.total_tokens) : Math.max(0, total - previousTotal);
           previousTotal = total;
-          tally(usage, isoToEpochMs(record.timestamp), increase, sinceEpochMs);
+          if (!awaitingForkSettings) tally(usage, isoToEpochMs(record.timestamp), increase, sinceEpochMs);
         }
       } catch (error) { skip(source, error); }
     }
@@ -175,14 +201,25 @@ const geminiCliUsage: UsageReader = {
     const seenMessages = new Set<string>();
     for (const source of sources) {
       try {
-        const { messages } = await readGeminiChat(source.path);
+        const { header, messages } = await readGeminiChat(source.path);
+        const sessionKey = typeof header.sessionId === 'string' && header.sessionId
+          ? header.sessionId : source.path.replace(/\.jsonl?$/, '');
         for (const message of messages) {
           if (message?.type !== 'gemini' || !message.tokens) continue;
-          const key = typeof message.id === 'string' && message.id ? message.id : `${source.path}\u0000${message.timestamp}`;
+          const at = isoToEpochMs(message.timestamp);
+          if (at === null) continue;
+          // A resumed session can keep both JSON and JSONL copies. Native IDs
+          // retain their global identity; legacy records use the shared session,
+          // timestamp and payload rather than the storage extension. Hashing
+          // keeps large response text out of the scan's identity set.
+          const identity = typeof message.id === 'string' && message.id
+            ? ['native', message.id]
+            : ['legacy', sessionKey, at, message.content ?? null, message.toolCalls ?? null];
+          const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
           if (seenMessages.has(key)) continue;
           seenMessages.add(key);
           const { total, input, output, thoughts, tool } = message.tokens;
-          tally(usage, isoToEpochMs(message.timestamp), typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
+          tally(usage, at, typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
         }
       } catch (error) { skip(source, error); }
     }
@@ -262,8 +299,11 @@ export function summarizeTokenUsage(
   const measured = scan.agents.filter(agent => agent.detected && agent.recordsTokens);
   const totalTokens = measured.reduce((sum, agent) => sum + agent.tokens, 0);
   const shortRetention = measured.some(agent => agent.retentionShorterThanWindow && agent.firstRecordAt !== null);
+  // Successfully read history can establish the window start, but it cannot
+  // make the totals complete when another supported source failed to read.
+  const hasReadFailures = measured.some(agent => agent.skippedSources > 0);
   const coverage: UsageCoverage = totalTokens === 0 ? 'none'
-    : !shortRetention && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
+    : !shortRetention && !hasReadFailures && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
       : 'partial';
   const hasHistory = !!economics && economics.totalObservations > 0 && economics.totalDiscoveryTokens > 0 && economics.savingsPercent > 0;
   return {

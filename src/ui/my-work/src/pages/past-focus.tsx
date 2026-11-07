@@ -6,7 +6,7 @@ import { GlareCard } from '@/components/aceternity/glare-card'
 import { Timeline } from '@/components/aceternity/timeline'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
-import { RefreshButton, RefreshStatus } from '@/components/bits'
+import { ManualRefreshButton, RefreshButton, RefreshStatus } from '@/components/bits'
 import { Quotes } from '@/components/focus-header'
 import { cn } from '@/lib/utils'
 import { plural, timesLabel } from '@/lib/words'
@@ -127,7 +127,7 @@ export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) 
             <h2 className="text-lg font-semibold tracking-tight">Past focus</h2>
             <p className="text-sm text-muted-foreground">Areas you finished, and what you asked for in earlier months.</p>
           </div>
-          {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} /> : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} />}
+          {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} /> : sourceKind === 'local' ? <div className="flex items-center justify-end gap-3"><RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} /><ManualRefreshButton ids={['R14.10']} running={refresh?.state === 'running'} /></div> : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} />}
         </div>
         <DoneAreas onOpenFocus={onOpenFocus} />
         {currentPeriod ? <MonthByMonth onOpenFocus={onOpenFocus} /> : !hasDone && (

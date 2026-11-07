@@ -114,7 +114,7 @@ afterAll(() => {
 
 function postedBody(): any {
   expect(awaitedWorkerCallLog).toHaveLength(0);
-  expect(nudgeLog).toEqual(['/api/spool/nudge']);
+  expect(nudgeLog).toEqual([]);
   const entries = spooledEntries('summarize');
   expect(entries).toHaveLength(1);
   return entries[0].payload;

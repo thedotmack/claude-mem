@@ -31,6 +31,12 @@ export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
 
 /**
+ * `code` on an auth_invalid read from an app-server exit's stderr rather than a
+ * provider reply. observer-health compares the literal to soften its warning.
+ */
+export const CODEX_AUTH_FROM_EXIT_TEXT_CODE = 'codex_auth_from_exit_text';
+
+/**
  * What one paid send ended as, for the "never pay twice" rule (xAI SDK retry
  * rules; retry.ts decides from it):
  *  - `refused_before_work`: the backend said no before doing anything (a 429,

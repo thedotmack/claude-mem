@@ -1760,6 +1760,42 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('auth:observer_org_policy');
     });
+
+    it('preserves the batch on an Anthropic verification hold without logging its account URL (#5251)', async () => {
+      const confirmClaimedMessages = mock(async () => 0);
+      const resetProcessingToPending = mock(async () => 1);
+      const mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ markProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+      const response = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=private-org-id";
+
+      await processAgentResponse(
+        response,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_verification_hold');
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'unauthenticated' })
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringContaining('account verification is required'),
+        expect.not.objectContaining({ preview: expect.stringContaining('private-org-id') })
+      );
+    });
   });
   describe('lastSummaryStored tracking (#1633)', () => {
     it('should set lastSummaryStored=true when storage returns a summaryId', async () => {

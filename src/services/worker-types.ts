@@ -99,6 +99,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Epoch ms at which the response-stall pacer spent its bounded resumes and
+   * scheduled none (#5405). Its buffered work is discarded at that moment, so
+   * nothing waits on it; cleared when any generator starts. Reported by
+   * /api/processing-status; nothing resumes on it.
+   */
+  stallResumesExhaustedAt?: number;
+  /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
    * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
@@ -136,7 +143,8 @@ export interface ActiveSession {
   paidSendBudget?: PaidSendBudget;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
-   * it, so a stale timer never restarts a session a newer generation paused.
+   * it and session teardown clears it, so a stale timer never restarts a
+   * session a newer generation paused, or one that is gone.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
   /**

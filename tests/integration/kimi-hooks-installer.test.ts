@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
@@ -91,6 +91,15 @@ describe('installKimiHooks', () => {
     expect(again.split(KIMI_MARKER_BEGIN)).toHaveLength(2);
   });
 
+  test.skipIf(process.platform === 'win32')('writes the backup owner-only, even from a readable config', () => {
+    const home = makeScratchHome();
+    writeFileSync(path.join(home, 'config.toml'), 'default_model = "kimi-code/k3"\n');
+    chmodSync(path.join(home, 'config.toml'), 0o644);
+    expect(installKimiHooks()).toBe(0);
+    const backup = readdirSync(home).find((name) => name.startsWith('config.toml.bak-'));
+    expect(statSync(path.join(home, backup!)).mode & 0o777).toBe(0o600);
+  });
+
   test('status reports installed state; uninstall removes the block', () => {
     const home = makeScratchHome();
     expect(checkKimiHooksStatus()).toBe(1); // not installed
@@ -157,4 +166,37 @@ describe('buildKimiHooksBlock', () => {
     expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init-context');
     expect(userPromptSubmitMatch![0]).not.toContain('&&');
   });
+
+  test('keeps the command a single valid TOML string when a path contains a quote', () => {
+    // A path with both an apostrophe and backslashes exercises TOML escaping and
+    // quoting at the same time: backslashes must be escaped inside a basic
+    // string, and the apostrophe must not terminate a literal string.
+    const BS = '\\\\';
+    const bunPath = `C:${BS}Users${BS}o'brien${BS}.bun${BS}bin${BS}bun.exe`;
+  const workerPath = `C:${BS}Users${BS}o'brien${BS}cli${BS}worker-service.cjs`;
+  const block = buildKimiHooksBlock(bunPath, workerPath);
+  const commandLines = block.split('\n').filter((line) => line.startsWith('command = '));
+  expect(commandLines).toHaveLength(7);
+
+  // Every emitted line must parse as TOML and decode to the exact command.
+  const decoded = commandLines.map((line) => Bun.TOML.parse(line).command as string);
+
+  const expected = [
+    'start',
+    'hook kimi session-init-context',
+    'hook kimi observation',
+    'hook kimi observation',
+    'hook kimi file-context',
+    'hook kimi summarize',
+    'hook kimi summarize',
+  ].map((suffix) => `"${bunPath}" "${workerPath}" ${suffix}`);
+
+  expect(decoded).toEqual(expected);
 });
+
+test('still uses the escape-free literal form for ordinary paths', () => {
+    const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
+    expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/w.cjs\"");
+  });
+});
+

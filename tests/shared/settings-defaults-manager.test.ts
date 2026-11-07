@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync
 import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from '../../src/shared/install-port.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
@@ -17,6 +18,17 @@ function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
   } finally {
     console.warn = originalWarn;
   }
+}
+
+function defaultsForSettingsPath(dataDir: string) {
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const workerPort = String(getDefaultWorkerPort(dataDir));
+  const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+  defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+  defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+  defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+  defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+  return defaults;
 }
 
 describe('SettingsDefaultsManager', () => {
@@ -66,7 +78,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(existsSync(settingsPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(JSON.parse(readFileSync(settingsPath, 'utf-8')));
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
       });
 
       it('should write valid JSON to the created file', () => {
@@ -112,7 +125,7 @@ describe('SettingsDefaultsManager', () => {
 
         expect(existsSync(join(tempDir, 'nested', 'deep'))).toBe(true);
         expect(existsSync(nestedPath)).toBe(true);
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(join(tempDir, 'nested', 'deep'))));
       });
 
       it('should create deeply nested directories recursively', () => {
@@ -149,7 +162,7 @@ describe('SettingsDefaultsManager', () => {
         const defaults = SettingsDefaultsManager.getAllDefaults();
 
         expect(result.CLAUDE_MEM_MODEL).toBe('partial-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(defaults.CLAUDE_MEM_WORKER_PORT);
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
         expect(result.CLAUDE_MEM_WORKER_HOST).toBe(defaults.CLAUDE_MEM_WORKER_HOST);
         expect(result.CLAUDE_MEM_LOG_LEVEL).toBe(defaults.CLAUDE_MEM_LOG_LEVEL);
       });
@@ -157,6 +170,7 @@ describe('SettingsDefaultsManager', () => {
       it('should not modify existing file when loading', () => {
         const customSettings = {
           CLAUDE_MEM_MODEL: 'do-not-change',
+          CLAUDE_MEM_WORKER_PORT: '41234',
           CUSTOM_KEY: 'should-persist', // Extra key not in defaults
         };
         writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2));
@@ -166,6 +180,16 @@ describe('SettingsDefaultsManager', () => {
 
         const afterContent = readFileSync(settingsPath, 'utf-8');
         expect(afterContent).toBe(originalContent);
+      });
+
+      it('uses the data-directory port default without rewriting a partial settings file', () => {
+        const content = JSON.stringify({ CLAUDE_MEM_MODEL: 'existing-model', CUSTOM_KEY: 'keep' });
+        writeFileSync(settingsPath, content);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
       });
 
       it('should handle all settings keys correctly', () => {
@@ -241,7 +265,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains invalid JSON', () => {
@@ -249,7 +273,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains only whitespace', () => {
@@ -257,7 +281,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains null', () => {
@@ -265,7 +289,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains array instead of object', () => {
@@ -273,7 +297,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should return defaults when file contains primitive value', () => {
@@ -281,7 +305,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
     });
 
@@ -1050,7 +1074,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(result).toEqual(defaultsForSettingsPath(tempDir));
       });
 
       it('should ignore unknown keys in file', () => {
@@ -1183,7 +1207,7 @@ describe('SettingsDefaultsManager', () => {
   describe('get', () => {
     it('should return default value for key', () => {
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
-      const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      const expectedPort = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
     });
 
@@ -1195,7 +1219,7 @@ describe('SettingsDefaultsManager', () => {
 
   describe('getInt', () => {
     it('should return integer value for numeric string', () => {
-      const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
+      const expectedPort = Number(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
     });
@@ -1334,7 +1358,7 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      const expectedDefault = String(37700 + ((process.getuid?.() ?? 77) % 100));
+      const expectedDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe(expectedDefault); 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });

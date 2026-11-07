@@ -16,6 +16,10 @@ import { logger } from '../../utils/logger.js';
  * Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token budget. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
+/** claude-mem-pro's /api/pro/intent route sets Vercel's `maxDuration = 300` for GET and POST, so no preflight answer can
+ * arrive after this. It is that provider limit, not a measured latency: the GET has no production traffic to measure yet. */
+export const INTENT_PREFLIGHT_TIMEOUT_MS = 300_000;
+
 const text = z.string().min(1).refine(value => value.trim().length > 0, 'Must contain text.');
 const minute = text.regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
 const quote = z.object({ at: minute, quote: text });
@@ -35,11 +39,30 @@ const resultSchema = z.object({
   groups: z.object({ groups: z.array(group), ignored: z.array(z.object({ conversation: text, reason: text })) }),
   cost_usd: z.number().finite().nonnegative(), model: text, dropped_quotes: z.number().int().nonnegative(),
 });
+/** Cloud turned the run down for budget or rate reasons (HTTP 429/503). Setup continues locally; retrying cannot help until `retryAfter`. */
+export class HostedUnavailableError extends Error {
+  readonly code = 'hosted-unavailable';
+  /** `sent` is true once this call began its upload; false when a preflight or cooldown stopped it first. */
+  constructor(message: string, readonly retryAfter: number, readonly sent = true) { super(message); }
+}
+/** Retry-After is either delay-seconds or an HTTP date (every form starts with the day name). Returns an epoch ms deadline,
+ * `now` when the wait has already elapsed, or null when absent or unreadable. */
+function retryDeadline(header: string | null | undefined, now: number): number | null {
+  const value = header?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return now + Number(value) * 1000;
+  if (!/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/.test(value)) return null;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(date, now) : null;
+}
+const nextUtcMidnight = (now: number) => Math.floor(now / 86_400_000) * 86_400_000 + 86_400_000;
 export type HostedIntentResult = z.infer<typeof resultSchema>;
 /** Cloud's answer plus what saving it needs, kept until the save finishes. */
 interface PendingSave { result: HostedIntentResult; keys: Array<[string, string]>; offset: number; projects: Array<[string, string | undefined]> }
 const COMPLETE_FILE = 'hosted-intent.json';
 const PENDING_FILE = 'hosted-intent-pending.json';
+const COOLDOWN_FILE = 'hosted-intent-cooldown.json';
+interface HostedCooldown { scope: string; until: number; message: string }
 export interface HostedIntentState {
   state: 'idle' | 'running' | 'ok' | 'failed';
   reason: 'setup-scan'; step: 'goals' | null; agent: null;
@@ -57,6 +80,7 @@ export interface HostedIntentOptions {
   /** This worker's sync device id, so my-focus rows replay in the same order the worker's snapshot uses. */
   localDeviceId?: () => string;
   fetch?: typeof fetch;
+  preflightTimeoutMs?: number;
   now?: () => number;
   timezoneOffsetMinutes?: () => number;
 }
@@ -130,11 +154,14 @@ function quoteIso(at: string, offset: number): string {
 
 export class HostedIntent {
   private current: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null };
+  private cooldown: HostedCooldown | null = null;
   constructor(private options: HostedIntentOptions) {}
   state(): HostedIntentState { return { ...this.current }; }
   private iso(): string { return new Date((this.options.now ?? Date.now)()).toISOString(); }
 
   async run(ownerPrompts: OwnerPrompt[], improveProduct: boolean): Promise<void> {
+    // True only between the saved-result checks (their prompts already left in an earlier run) and the upload.
+    let stoppedBeforeUpload = false;
     this.current = { state: 'running', reason: 'setup-scan', step: 'goals', agent: null, startedAt: this.iso(), finishedAt: null, error: null };
     try {
       // An empty scan has nothing to extract: finish without spending a hosted run or replacing saved work.
@@ -154,6 +181,7 @@ export class HostedIntent {
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
+      stoppedBeforeUpload = true;
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       const keys = conversationKeys(ownerPrompts);
@@ -167,17 +195,22 @@ export class HostedIntent {
       // Existing signed-in installations without an install credential retain their account-only path.
       const install = token ? readIntentCredentials(this.options.intentConfigPath)
         : await getOrCreateIntentCredentials({ origin, fetch: this.options.fetch, configPath: this.options.intentConfigPath });
+      // A sign-in or a different Cloud origin has its own admission rules.
+      // Persist only a scope hash and retry metadata, never credentials or prompts.
+      const scope = createHash('sha256').update(JSON.stringify([origin, userId || install?.install_id])).digest('hex');
+      this.checkCooldown(scope);
+      const headers = { ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) };
+      const availability = await this.checkAvailability(origin, headers, scope);
+      if (!availability || typeof availability !== 'object' || (availability as { available?: unknown }).available !== true) {
+        throw new Error('Automatic organization could not check availability. No transcripts were uploaded.');
+      }
+      stoppedBeforeUpload = false;
       // No client retry: a lost response may already have spent this install/account's subsidized run.
       const response = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip',
-          ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) }, body,
+          ...headers }, body,
       });
-      const answer = await response.json().catch(() => null);
-      if (!response.ok) {
-        const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
-        const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
-        throw new Error(`Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`);
-      }
+      const answer = await this.readResponse(response, true, scope);
       const parsed = resultSchema.safeParse(answer);
       if (!parsed.success) throw new Error(`Hosted setup returned an invalid response: ${parsed.error.message}`);
       // Keep Cloud's answer before writing anything from it, so a save that is cut off can be replayed.
@@ -190,8 +223,68 @@ export class HostedIntent {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.current = { ...this.current, state: 'failed', step: null, finishedAt: this.iso(), error: reason };
-      throw new Error(reason);
+      if (error instanceof HostedUnavailableError) throw error;
+      throw Object.assign(new Error(reason), { sent: !stoppedBeforeUpload });
     }
+  }
+
+  /** The deadline covers the response headers and body. A stall says nothing about Cloud's budget, so it sets no cooldown. */
+  private async checkAvailability(origin: string, headers: Record<string, string>, scope: string): Promise<unknown> {
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        // Reject first: aborting makes a body read in progress settle as an unreadable answer.
+        reject(new HostedUnavailableError('Automatic organization did not answer in time. No transcripts were uploaded.', (this.options.now ?? Date.now)(), false));
+        abort.abort();
+      }, this.options.preflightTimeoutMs ?? INTENT_PREFLIGHT_TIMEOUT_MS);
+    });
+    const check = async () => {
+      const preflight = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, { method: 'GET', headers, cache: 'no-store', signal: abort.signal });
+      return this.readResponse(preflight, false, scope, abort.signal);
+    };
+    try { return await Promise.race([check(), deadline]); } finally { clearTimeout(timer); }
+  }
+
+  private checkCooldown(scope: string): void {
+    const path = join(this.options.ledgerDir, COOLDOWN_FILE);
+    if (!this.cooldown && existsSync(path)) {
+      const saved = JSON.parse(readFileSync(path, 'utf8')) as HostedCooldown;
+      if (typeof saved.scope !== 'string' || !Number.isFinite(saved.until) || typeof saved.message !== 'string') {
+        throw new Error('The saved automatic-organization retry state is invalid. No transcripts were uploaded.');
+      }
+      this.cooldown = saved;
+    }
+    const now = (this.options.now ?? Date.now)();
+    if (this.cooldown?.scope === scope && now < this.cooldown.until) {
+      throw new HostedUnavailableError(`${this.cooldown.message} No prompts were uploaded.`, this.cooldown.until, false);
+    }
+    if (this.cooldown && now >= this.cooldown.until) {
+      this.cooldown = null;
+      rmSync(path, { force: true });
+    }
+  }
+
+  private async readResponse(response: Response, sent: boolean, scope: string, abandoned?: AbortSignal): Promise<unknown> {
+    // Retry-After delay starts when the response arrives, after any slow upload and before any slow body.
+    const refusedAt = (this.options.now ?? Date.now)();
+    const answer: unknown = await response.json().catch(() => null);
+    // An answer that lost the preflight deadline must not leave a cooldown behind.
+    abandoned?.throwIfAborted();
+    if (response.ok) return answer;
+    const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
+    const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
+    const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
+    if (response.status === 429 || response.status === 503) {
+      const until = retryDeadline(response.headers.get('retry-after'), refusedAt) ?? nextUtcMidnight(refusedAt);
+      if (until > refusedAt) {
+        this.cooldown = { scope, until, message };
+        mkdirSync(this.options.ledgerDir, { recursive: true });
+        writeJsonAtomic(join(this.options.ledgerDir, COOLDOWN_FILE), this.cooldown);
+      }
+      throw new HostedUnavailableError(message, until, sent);
+    }
+    throw new Error(message);
   }
 
   /** The earlier run's result once every write finished (hosted-intent.json is written last). Invalid files fail loudly. */

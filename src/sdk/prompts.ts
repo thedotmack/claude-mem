@@ -168,8 +168,8 @@ above as meaning the work did not happen.`;
 // header) and the tail (where errors / final-line context typically sit)
 // while dropping the middle. The 10% remainder is the elision marker.
 export const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
-const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
-const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
+export const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
+export const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
 // Image content blocks carry base64 payloads that are worthless to a text
 // observer and ruinously expensive to carry. Two things compound (#3730):

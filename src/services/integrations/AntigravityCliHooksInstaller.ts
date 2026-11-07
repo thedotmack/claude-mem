@@ -11,7 +11,7 @@ import {
 } from './install-paths.js';
 import { writeMcpJsonConfig, PLACEHOLDER_CONTEXT } from './McpIntegrations.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { findContextBlockRange, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
 // agy hook schema (builtin `agy-customizations/docs/hooks.md`): each top-level
@@ -512,15 +512,16 @@ function removeClaudeMemFromMcpConfig(mcpConfigPath: string): boolean {
   return true;
 }
 
-function removeContextTagBlock(filePath: string): boolean {
+export function removeContextTagBlock(filePath: string): boolean {
   if (!existsSync(filePath)) return false;
 
-  let content = readFileSync(filePath, 'utf-8');
-  const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
-  if (!contextRegex.test(content)) return false;
+  const content = readFileSync(filePath, 'utf-8');
+  const block = findContextBlockRange(content);
+  if (!block) return false;
 
-  content = content.replace(contextRegex, '');
-  writeFileSync(filePath, content);
+  const start = content[block.start - 1] === '\n' ? block.start - 1 : block.start;
+  const end = content[block.end] === '\n' ? block.end + 1 : block.end;
+  writeFileSync(filePath, content.slice(0, start) + content.slice(end));
   return true;
 }
 

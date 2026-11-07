@@ -390,7 +390,6 @@ MCP सर्वर, एंटरप्राइज़ सिस्टम, र�
 ओपन/कमर्शियल सीमा के लिए [docs/license.md](docs/license.md)
 और [docs/ip-boundary.md](docs/ip-boundary.md) देखें।
 
-**Ragtime पर नोट**: `ragtime/` डायरेक्टरी **Apache License 2.0** के तहत लाइसेंस प्राप्त है। विवरण के लिए [ragtime/LICENSE](ragtime/LICENSE) देखें।
 
 ---
 

@@ -87,6 +87,10 @@ describe('faults that clear on their own stay transient', () => {
     ['an internal server error', withInfo('Codex app-server turn failed: oops', 'internalServerError')],
     ['a dropped stream', withInfo('Codex app-server turn failed: closed', { responseStreamDisconnected: { httpStatusCode: null } })],
     ['an app-server that went away', new Error('Codex app-server exited with code null signal SIGKILL: ')],
+    // #5275: a version-mismatch recycle SIGKILLs the child. The close error
+    // quotes the lifetime stderr tail, which can still hold an earlier 401.
+    ['a recycle SIGKILL whose stderr tail quotes a stale 401',
+      new Error('Codex app-server exited with code null signal SIGKILL: authentication failed with 401 unauthorized')],
   ];
   for (const [name, error] of cases) {
     it(name, () => {

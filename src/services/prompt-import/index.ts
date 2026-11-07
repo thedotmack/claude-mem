@@ -55,6 +55,8 @@ export interface AgentScanSummary {
   typed: number;
   /** Every session the agent's transcripts hold, typed prompts or not. */
   sessions: Set<string>;
+  /** Sessions reported by a prompt source whose read did not finish. A readable copy cannot prove their missing prompts absent. */
+  incompleteSessions?: Set<string>;
 }
 
 export interface PromptScanProgress {
@@ -106,7 +108,7 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
   const agentTextSince = options.sinceEpochMs - AGENT_TEXT_LOOKBACK_MS;
   const located = readers.map(reader => ({ reader, ...reader.locate(homeDirectory) }));
   const summaries: AgentScanSummary[] = located.map(({ reader, detected }) => ({
-    id: reader.id, label: reader.label, platformSource: reader.platformSource, detected, typed: 0, sessions: new Set<string>(),
+    id: reader.id, label: reader.label, platformSource: reader.platformSource, detected, typed: 0, sessions: new Set<string>(), incompleteSessions: new Set<string>(),
   }));
   const skippedSources: PromptScanResult['skippedSources'] = [];
 
@@ -137,13 +139,21 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
   }
 
   const typedPrompts: TypedPrompt[] = [];
-  await eachSource('reading', promptSources, (reader, summary, source) => reader.readPrompts(source, {
-    prompt(prompt) {
-      if (isProjectExcluded(prompt.cwd ?? resolveProject(null), excluded)) return;
-      typedPrompts.push(prompt); summary.typed++;
-    },
-    session(sessionId) { summary.sessions.add(sessionId); },
-  }, options.sinceEpochMs));
+  await eachSource('reading', promptSources, async (reader, summary, source) => {
+    const sessions = new Set<string>();
+    try {
+      await reader.readPrompts(source, {
+        prompt(prompt) {
+          if (isProjectExcluded(prompt.cwd ?? resolveProject(null), excluded)) return;
+          typedPrompts.push(prompt); summary.typed++;
+        },
+        session(sessionId) { sessions.add(sessionId); summary.sessions.add(sessionId); },
+      }, options.sinceEpochMs);
+    } catch (error) {
+      for (const sessionId of sessions) summary.incompleteSessions!.add(sessionId);
+      throw error;
+    }
+  });
 
   const memoryPrompts = (options.memoryPrompts ?? []).filter(prompt => !isProjectExcluded(prompt.cwd ?? prompt.project ?? '', excluded));
   const fingerprints = [...typedPrompts.map(prompt => prompt.text), ...memoryPrompts.map(prompt => prompt.promptText)]

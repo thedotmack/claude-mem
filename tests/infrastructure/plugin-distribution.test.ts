@@ -679,7 +679,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Spawn-contract templating (plans/02-spawn-contract-templating.md)
+// Spawn-contract templating
 // ---------------------------------------------------------------------------
 
 const ccTrailing = (...tail: string[]) => [

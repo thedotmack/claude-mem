@@ -1,5 +1,6 @@
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import { scopedProjects } from '../../sqlite/project-read-keys.js';
+import { parseProjectList } from '../../../shared/project-list.js';
 
 /**
  * Every key a search for `project` and `projects` reads: the requested keys
@@ -13,10 +14,7 @@ export function projectReadKeysFor(
   project: unknown,
   projects: unknown
 ): string[] {
-  const listed = typeof projects === 'string'
-    ? projects.split(',')
-    : Array.isArray(projects) ? projects.filter((entry): entry is string => typeof entry === 'string') : [];
-  const requested = scopedProjects({ projects: [...(typeof project === 'string' ? [project] : []), ...listed] });
+  const requested = scopedProjects({ projects: [...(typeof project === 'string' ? [project] : []), ...parseProjectList(projects)] });
   return requested.length > 0 ? sessionStore.getProjectReadKeys(requested) : [];
 }
 

@@ -2,7 +2,7 @@ import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
-import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
+import { loadTelemetryConfig, resolveTelemetryConsent, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -58,9 +58,10 @@ import {
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { endSetupSession, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { isSetupId } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -374,6 +375,36 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'devin': {
+      return {
+        title: 'Devin: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Devin installer…');
+          const { installDevinHooks, configureDevinMcp } = await import('../../services/integrations/DevinHooksInstaller.js');
+          message('Installing Devin hooks…');
+          const { result, output } = await bufferConsole(async () => installDevinHooks());
+          if (result !== 0) {
+            recordFailure('Devin: hook installation failed', output);
+            return `Devin: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          message('Configuring Devin MCP…');
+          const { result: mcpResult, output: mcpOutput } = await bufferConsole(async () => configureDevinMcp());
+          if (mcpResult === 0) {
+            return `Devin: hooks + MCP installed ${styleText('green', 'OK')}`;
+          }
+          installerError(ErrorSeverity.WARN_CONTINUE, {
+            component: 'devin',
+            ide: 'devin',
+            phase: 'ide-install',
+            cause: new Error('Devin hooks installed, but MCP setup failed.'),
+            remediation: 'Fix the problem named above, then run `npx claude-mem devin install`.',
+            details: mcpOutput,
+          }, summary);
+          return `Devin: hooks installed; MCP setup failed — run \`npx claude-mem devin install\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
@@ -629,7 +660,7 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshPro
     installerError(ErrorSeverity.ABORT, {
       component: 'all-ides',
       phase: 'ide-install',
-      cause: new Error(`All ${selectedIDEs.length} selected IDE integrations failed.`),
+      cause: new Error(`All ${selectedIDEs.length} selected agent integrations failed.`),
     }, summary);
   }
 
@@ -703,7 +734,7 @@ async function promptForIDESelection(): Promise<string[]> {
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
-    log.warn('No supported IDEs detected — pick the one(s) you plan to use.');
+    log.warn('No supported agents detected — pick the one(s) you plan to use.');
   }
 
   const options = detectedIDEs.map((ide) => {
@@ -765,7 +796,6 @@ function copyPluginToMarketplace(): void {
     'dsh',
     'dist',
     'README.md',
-    'CHANGELOG.md',
   ];
 
   for (const entry of allowedTopLevelEntries) {
@@ -884,7 +914,7 @@ function writeMarketplaceInstallMarkers(
 /**
  * Install marketplace dependencies, strict-first.
  *
- * Phase 4 of plans/04-installer-transparency.md: the old code ALWAYS passed
+ * The old code ALWAYS passed
  * `--legacy-peer-deps`, papering over any real peer conflict unconditionally.
  * Now we run strict first and only fall back to `--legacy-peer-deps` on a
  * confirmed ERESOLVE token, announced loudly. `--ignore-scripts` is the default
@@ -1684,7 +1714,7 @@ export function setInstallerSignupContext(ctx: { installState?: InstallState; us
 export function buildInstallerOAuthStartBody(
   source: string,
   deviceName: string,
-  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null } = {},
+  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null; setupFlowId?: string } = {},
   teamInvite?: string,
 ): Record<string, unknown> {
   return {
@@ -1692,13 +1722,14 @@ export function buildInstallerOAuthStartBody(
     device_name: deviceName,
     ...(ctx.installState ? { install_state: ctx.installState } : {}),
     ...(ctx.usageSummary ? { usage_summary: ctx.usageSummary } : {}),
+    ...(isSetupId(ctx.setupFlowId) ? { setup_flow_id: ctx.setupFlowId } : {}),
     ...(teamInvite ? { team_invite: teamInvite } : {}),
   };
 }
 
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
 export async function startInstallerOAuthPairing(
-  opts: { source?: string; timeoutMs?: number; teamInvite?: string } = {},
+  opts: { source?: string; timeoutMs?: number; teamInvite?: string; setupFlowId?: string } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
   lastStartFailure = null;
@@ -1719,7 +1750,10 @@ export async function startInstallerOAuthPairing(
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...installHeaders },
-      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), signupContext, opts.teamInvite)),
+      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), {
+        ...signupContext,
+        ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
+      }, opts.teamInvite)),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -2141,7 +2175,7 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
  * Best-effort, non-blocking sign-in offer for non-interactive installs that
  * skipped login (provider needs no account). Agents run `npx claude-mem install`
  * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the login-only link is printed last for the agent to relay.
+ * completes and the agent can relay the optional login-only link.
  *
  * Never polls, never opens a browser, never prints the device code or the
  * checkout URL, and never touches exit status. Skipped under CI. Not gated on
@@ -2169,11 +2203,11 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   }
 
   // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot land after the relay instruction an agent reads last.
+  // line cannot interrupt the link and its accompanying instruction.
   await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
   log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
   log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
+  log.info('AGENT: show this link to the user so they can finish signing in. This optional link is for account sign-in only.');
 }
 
 export function noteDeviceCode(
@@ -2579,12 +2613,15 @@ export async function requireWorkerStopped(
   // (#2828). claude-mem never stops, kills or recycles it, and its manager
   // would restart it the moment it exited, so leave it running and say once
   // how to load the new version.
-  if (isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART') })) {
+  if (isWorkerAutostartDisabled({
+    CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
+  })) {
     if (phase === 'pre-overwrite') {
       installerError(ErrorSeverity.WARN_CONTINUE, {
         component: 'worker-shutdown',
         phase,
-        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally, so the installer did not stop it.'),
+        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false or CLAUDE_MEM_WORKER_URL is set: the worker is managed externally, so the installer did not stop it.'),
         remediation: 'When the install finishes, restart the worker with whatever manages it so it runs the new version.',
       }, summary);
     }
@@ -2840,7 +2877,7 @@ function readSettingsSnapshot(): string {
 async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairing> {
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Starting CMEM Pro sign-in…');
-  const pairing = await startInstallerOAuthPairing();
+  const pairing = await startInstallerOAuthPairing({ setupFlowId: readSetupTelemetryContext()?.setup_flow_id });
   if (!pairing) {
     await captureCliEvent('installer_oauth_start_failed', {
       version,
@@ -3003,8 +3040,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const allIDEs = detectInstalledIDEs();
     const match = allIDEs.find((i) => i.id === ideId);
     if (!match) {
-      log.error(`Unknown IDE: ${options.ide}`);
-      log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
+      log.error(`Unknown agent for --ide: ${options.ide}`);
+      log.info(`Available --ide values: ${allIDEs.map((i) => i.id).join(', ')}`);
       process.exit(1);
     }
   } else if (process.stdin.isTTY) {
@@ -3178,14 +3215,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
+  const setupComplete = readSetupState().status === 'complete';
   if (shouldUseBrowserSetup({
     interactive: isInteractive,
     provider: options.provider,
     noAutoStart: options.noAutoStart,
     runtime: selectedRuntime,
-    setupComplete: readSetupState().status === 'complete',
+    setupComplete,
   })) {
-    startSetupSession();
+    startSetupSession(undefined, hasProConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
     try {
       // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
       // so existing prompts must not launch a local agent while the browser is still opening.
@@ -3325,6 +3363,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // worker that is not up yet is that manager's to start, not an install failure.
   const workerManagedExternally = isWorkerAutostartDisabled({
     CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
   });
 
   await runTasks([
@@ -3394,7 +3433,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
-    `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
+    `Agents:      ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   summaryLines.push(`Account:     ${styleText('cyan', browserAccountStatus ?? accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
@@ -3515,13 +3554,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const nextSteps = [
     nextStepsHeadline,
     ``,
-    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as Claude reads, edits, and runs commands.`,
+    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as your agent reads, edits, and runs commands.`,
     `To watch them live, ${firstSuccessOpener}.`,
     ``,
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
@@ -3536,7 +3575,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      p.outro(styleText('yellow', 'claude-mem installed with some IDE setup failures.'));
+      p.outro(styleText('yellow', 'claude-mem installed, but setup failed for some agents.'));
     } else {
       p.outro(styleText('green', 'claude-mem installed successfully!'));
     }
@@ -3547,18 +3586,27 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.error('\nclaude-mem installed, but the worker did not start.');
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      console.log('\nclaude-mem installed with some IDE setup failures.');
+      console.log('\nclaude-mem installed, but setup failed for some agents.');
       process.exitCode = 1;
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
-    // Last line of a non-interactive install so an agent relaying the output
-    // sees the link after the success line. Nothing here may change the exit
-    // status or throw past the summary.
+    // Keep the optional sign-in link separate from the local setup page.
     try {
       await offerDeferredLogin(options, version);
     } catch {
       // best-effort only
+    }
+    if (shouldPrintAgentBrowserSetupHint({
+      ci: Boolean(process.env.CI),
+      alreadyInstalled,
+      setupComplete,
+      failedIdeCount: failedIDEs.length,
+      providerSource: options.providerSource,
+      runtime: selectedRuntime,
+      noAutoStart: options.noAutoStart,
+    })) {
+      log.info(AGENT_BROWSER_SETUP_HINT);
     }
   }
 

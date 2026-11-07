@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { REQUIRED_PROMPT_KEYS, validateMode } from '../../src/services/domain/mode-validation.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const projectRoot = path.resolve(import.meta.dir, '../..');
 const tempDirs: string[] = [];
@@ -129,7 +130,7 @@ describe('ModeManager user modes', () => {
     });
   });
 
-  for (const [modeId, reason] of [['../code', 'Invalid mode ID'], ['code--a--b', 'Invalid mode inheritance']]) {
+  for (const [modeId, reason] of [['../code', 'Invalid mode ID'], ['code--chill--../code', 'Invalid mode ID']]) {
     it(`logs invalid mode ID ${modeId} and falls back to bundled code`, () => {
       const result = runModeProbe(makeTempDir(), modeId);
       expect(result.mode.id).toBe('code');
@@ -138,6 +139,75 @@ describe('ModeManager user modes', () => {
       expect(loggedText(result)).toContain('falling back');
     });
   }
+
+  it('layers every override in a chained ID onto the parent, in order', () => {
+    const result = runModeProbe(makeTempDir(), 'code--chill--ko', { renderPrompts: true });
+    const chill = bundledMode('code--chill');
+    const korean = bundledMode('code--ko');
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode.id).toBe('code--chill--ko');
+    expect(result.mode.name).toBe(korean.name);
+    expect(result.mode.prompts).toEqual({ ...bundledMode().prompts, ...chill.prompts, ...korean.prompts });
+    expect(result.rendered).toHaveLength(3);
+    const [init, continuation, summary] = result.rendered;
+    for (const prompt of [init, continuation]) {
+      expect(prompt).toContain(chill.prompts.recording_focus);
+      expect(prompt).toContain(korean.prompts.footer);
+    }
+    expect(summary).toContain(korean.prompts.summary_footer);
+  });
+
+  it('gives disjoint overrides the same prompts in either order', () => {
+    const chillFirst = runModeProbe(makeTempDir(), 'code--chill--ko');
+    const languageFirst = runModeProbe(makeTempDir(), 'code--ko--chill');
+    expect(languageFirst.error).toBeUndefined();
+    expect(languageFirst.mode.id).toBe('code--ko--chill');
+    expect(languageFirst.mode.prompts).toEqual(chillFirst.mode.prompts);
+    expect(languageFirst.mode.prompts).not.toEqual(bundledMode().prompts);
+  });
+
+  it('lets a later override win a key an earlier one also sets', () => {
+    const dataDir = makeTempDir();
+    writeMode(dataDir, 'code--first', { prompts: { footer: 'First footer' } });
+    writeMode(dataDir, 'code--second', { prompts: { footer: 'Second footer' } });
+
+    expect(runModeProbe(dataDir, 'code--first--second').mode.prompts.footer).toBe('Second footer');
+    expect(runModeProbe(dataDir, 'code--second--first').mode.prompts.footer).toBe('First footer');
+  });
+
+  it('chains a user override with a bundled one', () => {
+    const dataDir = makeTempDir();
+    writeMode(dataDir, 'code--studio', { name: 'Studio', prompts: { footer: 'Studio footer' } });
+
+    const result = runModeProbe(dataDir, 'code--chill--studio');
+    expect(result.error).toBeUndefined();
+    expect(result.mode.id).toBe('code--chill--studio');
+    expect(result.mode.name).toBe('Studio');
+    expect(result.mode.prompts.recording_focus).toBe(bundledMode('code--chill').prompts.recording_focus);
+    expect(result.mode.prompts.footer).toBe('Studio footer');
+  });
+
+  it('logs the missing file and falls back to bundled code when one override in a chain is missing', () => {
+    const result = runModeProbe(makeTempDir(), 'code--chill--missing');
+    expect(result.mode.id).toBe('code');
+    expect(result.mode.prompts).toEqual(bundledMode().prompts);
+    expect(loggedText(result)).toContain('code--missing.json');
+    expect(loggedText(result)).toContain('not found');
+    expect(loggedText(result)).toContain('falling back');
+  });
+
+  it('throws with every source path when a chained override removes a required prompt', () => {
+    const dataDir = makeTempDir();
+    const overridePath = writeMode(dataDir, 'code--broken', { prompts: { summary_instruction: null } });
+
+    const result = runModeProbe(dataDir, 'code--chill--broken');
+    expect(result.mode).toBeUndefined();
+    expect(result.error).toContain(path.join(projectRoot, 'plugin/modes/code.json'));
+    expect(result.error).toContain(path.join(projectRoot, 'plugin/modes/code--chill.json'));
+    expect(result.error).toContain(overridePath);
+    expect(result.error).toContain('prompts.summary_instruction');
+  });
 
   it('ignores and logs a stale seven-key user code.json and renders complete bundled prompts', () => {
     const dataDir = makeTempDir();
@@ -284,6 +354,39 @@ describe('ModeManager user modes', () => {
     it(`throws explicitly if a prompt builder receives missing ${key}`, () => {
       const result = runModeProbe(makeTempDir(), 'code', { renderPrompts: true, missingPrompt: key });
       expect(result.error).toBe(`Mode "code" is missing prompt "${key}"`);
+    });
+  }
+});
+
+// Chill changes what gets recorded and a language mode changes the language it
+// is written in. They override different prompts, so every pairing must keep both.
+describe('chill combined with each bundled language', () => {
+  const languages = readdirSync(path.join(projectRoot, 'plugin/modes'))
+    .map(file => /^code--(.+)\.json$/.exec(file)?.[1])
+    .filter((id): id is string => id !== undefined && id !== 'chill')
+    .sort();
+
+  afterAll(() => {
+    ModeManager.getInstance().loadMode('code');
+  });
+
+  it('finds the bundled languages', () => {
+    expect(languages).toContain('ko');
+    expect(languages.length).toBeGreaterThanOrEqual(29);
+  });
+
+  for (const language of languages) {
+    it(`code--chill--${language} keeps chill's recording rules and the ${language} output language`, () => {
+      const chill = bundledMode('code--chill');
+      const localized = bundledMode(`code--${language}`);
+      const mode = ModeManager.getInstance().loadMode(`code--chill--${language}`);
+
+      expect(ModeManager.getInstance().getActiveModeId()).toBe(`code--chill--${language}`);
+      expect(mode.prompts.recording_focus).toBe(chill.prompts.recording_focus);
+      expect(mode.prompts.skip_guidance).toBe(chill.prompts.skip_guidance);
+      expect(mode.prompts.footer).toBe(localized.prompts.footer);
+      expect(mode.prompts.continuation_instruction).toBe(localized.prompts.continuation_instruction);
+      expect(mode.prompts.summary_footer).toBe(localized.prompts.summary_footer);
     });
   }
 });

@@ -1,3 +1,13 @@
+/**
+ * The worker: the small local service that stores and serves memory.
+ *
+ * Hooks send it each tool call your agent makes. It runs the observer, which
+ * turns that activity into observations and session summaries, keeps them in
+ * SQLite (with Chroma for semantic search), and serves the viewer, search and
+ * session-start context over HTTP on CLAUDE_MEM_WORKER_PORT. `main()` at the
+ * bottom is the process entry point; `ensureWorkerStarted` is how callers
+ * bring it up on demand.
+ */
 
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
@@ -6,7 +16,8 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
@@ -113,6 +124,9 @@ import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
 import {
+  handleDevinCommand
+} from './integrations/DevinHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -120,6 +134,7 @@ import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/Gr
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
+import { MemoryFeedInvalidation } from './worker/MemoryFeedInvalidation.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
@@ -144,11 +159,12 @@ import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
 import { getContextReadWorker, closeContextReadWorker } from './context/ContextReadWorkerClient.js';
 import { emitContextInvalidation } from '../shared/context-invalidation.js';
-import { SyncClient } from './sync/SyncClient.js';
+import { SyncClient, keepPullingOptions } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
 import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
+import { SharedWorkSync } from './work-view/SharedWorkSync.js';
 import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
@@ -170,6 +186,8 @@ import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { SyncRecoveryRoutes } from './worker/http/routes/SyncRecoveryRoutes.js';
+import { ViewerSyncService, ViewerActivity } from './sync/ViewerSyncService.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 import { applyPendingRestore } from './backup/restore-swap.js';
@@ -300,6 +318,7 @@ export class WorkerService implements WorkerRef {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   public sseBroadcaster: SSEBroadcaster;
+  private readonly memoryFeedInvalidation: MemoryFeedInvalidation;
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
@@ -313,11 +332,21 @@ export class WorkerService implements WorkerRef {
 
   private searchRoutes: SearchRoutes | null = null;
   private workViewRoutes: WorkViewRoutes | null = null;
+  private sharedWorkSync: SharedWorkSync | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private memoryFileWatcher: MemoryFileWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private readonly viewerActivity = new ViewerActivity(active => this.syncClient?.setViewerActive(active));
+  private readonly viewerSync = new ViewerSyncService({
+    cloud: () => this.dbManager.getCloudSync(), pull: () => this.syncClient,
+    hasViewers: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0) > 0,
+    onChange: sync => {
+      this.sseBroadcaster.broadcast({ type: 'sync_status', sync });
+      this.workViewRoutes?.publishSyncStatus(sync);
+    },
+  });
   private contextCacheService: ContextCacheService | null = null;
   private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
@@ -341,6 +370,8 @@ export class WorkerService implements WorkerRef {
     this.dbManager = new DatabaseManager();
     this.sessionManager = new SessionManager(this.dbManager);
     this.sseBroadcaster = new SSEBroadcaster();
+    this.memoryFeedInvalidation = new MemoryFeedInvalidation(this.sseBroadcaster);
+    this.memoryFeedInvalidation.start();
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
@@ -848,8 +879,25 @@ export class WorkerService implements WorkerRef {
 
       // Work View starts background refresh in its constructor. Keep every
       // read-only handle behind successful schema checks and migrations (#5127).
+      this.sharedWorkSync = new SharedWorkSync(this.dbManager.getConnection(), {
+        databasePath: DB_PATH, directory: path.join(DATA_DIR, 'work-view'),
+        deviceId: this.dbManager.getSessionStore().getLocalSyncDeviceId(),
+        notify: () => this.dbManager.getCloudSync()?.notify(),
+        enabled: settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true',
+      });
+      this.sharedWorkSync.start();
       this.workViewRoutes = new WorkViewRoutes({
-        getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+        ...(settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true' ? {
+          persistSharedCopy: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => this.sharedWorkSync!.persistCopy(requestId, entry),
+          saveSharedLedgerFile: (name: string, value: unknown) => this.sharedWorkSync!.saveFile(name, value),
+          saveSharedReview: input => this.sharedWorkSync!.saveReview(input),
+          prepareSharedOwnerAction: () => this.sharedWorkSync!.prepareOwnerAction(),
+          answerSharedSuggestion: (conversationKey, action, expectedHash) => this.sharedWorkSync!.answerSuggestion(conversationKey, action, expectedHash),
+        } : {}),
+        getSharedStatus: () => this.sharedWorkSync?.status() ?? { enabled: false },
+        getSyncStatus: () => this.viewerSync.getSnapshot(),
+        updateViewerActivity: (id, visible, sequence) => this.viewerActivity.update(id, visible, sequence),
+        getLocalDeviceId: () => this.dbManager.getSessionStore().getLocalSyncDeviceId(),
         // My Rules saves as work-state rows, so a rule change syncs like any other write.
         appendWorkStateEntry: (entry) => {
           this.dbManager.getSessionStore().appendWorkStateEntry(entry);
@@ -929,6 +977,9 @@ export class WorkerService implements WorkerRef {
           deviceId: pullDeviceId,
           deviceName: settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME,
           isSessionActive: () => this.sessionManager.getActiveSessionCount() > 0,
+          // Replica-only workers have no sessions to select the active tier.
+          // Keep their HTTP safety poll at 30s as well as disabling suspension.
+          ...keepPullingOptions(settings.CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING === 'true'),
           // Advisory WebSocket (plan Phase 4): enabled by default alongside
           // the hub URL; CLAUDE_MEM_CLOUD_SYNC_WS='false' pins HTTP-only.
           wsEnabled: settings.CLAUDE_MEM_CLOUD_SYNC_WS !== 'false',
@@ -995,8 +1046,10 @@ export class WorkerService implements WorkerRef {
       // because it reads dbManager.getCloudSync(), which exists only after
       // dbManager.initialize() above — and unconditionally, so an
       // unconfigured install answers {configured: false} instead of 404.
-      this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
+      this.server.registerRoutes(new CloudSyncRoutes(this.dbManager, this.viewerSync));
+      this.server.registerRoutes(new SyncRecoveryRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      this.viewerSync.start();
       // TeamBrain proxy for the team_* MCP tools, beside cloud sync because it
       // signs with the same credentials. Settings are read per request, so a
       // join or leave applies without a restart.
@@ -1015,8 +1068,9 @@ export class WorkerService implements WorkerRef {
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Lifecycle telemetry (person profile = anonymous install UUID). ide is
-      // this install's dominant client read from session history — a bounded
+      // Lifecycle telemetry. Profile-less: a person on this id would make every
+      // later worker event bill as identified. ide is
+      // this install's dominant client, read from session history — a bounded
       // platform enum (claude-code / cursor / ...), never user data. Props are
       // rebuilt per capture so the daily heartbeat reports the install's
       // current DB size/age/activity, not boot-time values.
@@ -1058,7 +1112,7 @@ export class WorkerService implements WorkerRef {
         previous_shutdown: this.previousShutdown,
         ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
         ...buildLifecycleProps(),
-      }, { person: true });
+      });
       telemetryBuffer.start();
 
       // One-time historical telemetry backfill (anonymized daily rollups).
@@ -1285,8 +1339,11 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.memoryFeedInvalidation.close();
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
+        this.sharedWorkSync?.close();
+        this.sharedWorkSync = null;
         this.stopPendingSessionResume();
         this.stopLogRetention();
         this.hookSpoolDrainer.stop();
@@ -1311,6 +1368,8 @@ export class WorkerService implements WorkerRef {
 
         // Stop the pull loop before the DB starts closing: stop() clears the
         // timer and makes any in-flight cycle bail before its next DB touch.
+        this.viewerActivity.close();
+        this.viewerSync.close();
         if (this.syncClient) {
           this.syncClient.stop();
           this.syncClient = null;
@@ -1651,6 +1710,16 @@ async function main() {
     process.exit(0);
   }
 
+  function explicitWorkerUrlOrExit(): string {
+    try {
+      return normalizeWorkerBaseUrl(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_URL);
+    } catch (error: unknown) {
+      if (!(error instanceof InvalidWorkerUrlError)) throw error;
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
+
   switch (command) {
     case 'upload-spool': {
       const { uploadRemoteHookSpool } = await import('../cli/spool-hook-event.js');
@@ -1702,6 +1771,13 @@ async function main() {
     }
 
     case 'restart': {
+      // A local worker here would share this client's data directory and drain
+      // the outbox that belongs to the worker at the URL, so never start one.
+      const remoteWorkerUrl = explicitWorkerUrlOrExit();
+      if (remoteWorkerUrl) {
+        console.error(`CLAUDE_MEM_WORKER_URL is set, so the worker runs at ${remoteWorkerUrl}. Restart it from whatever manages it.`);
+        process.exit(1);
+      }
       logger.info('SYSTEM', 'Restarting worker');
       // Capture the old worker's pid BEFORE shutdown so we can later prove
       // the worker answering health checks is a NEW process, not the corpse.
@@ -1814,11 +1890,12 @@ async function main() {
       // either direction (a clobbered file reporting a healthy worker as
       // down, or a stale file reporting a dead worker as up). Exit code is 0
       // on every branch, matching the historical behavior.
-      const health = await fetchWorkerHealth(port, getPlatformTimeout(3000));
+      const explicitWorkerUrl = explicitWorkerUrlOrExit();
+      const health = await fetchWorkerHealth(getPlatformTimeout(3000));
       if (health && typeof health.pid === 'number') {
         console.log('Worker is running');
         console.log(`  PID: ${health.pid}`);
-        console.log(`  Port: ${port}`);
+        console.log(explicitWorkerUrl ? `  URL: ${explicitWorkerUrl}` : `  Port: ${port}`);
         if (typeof health.version === 'string') {
           console.log(`  Version: ${health.version}`);
         }
@@ -1833,6 +1910,10 @@ async function main() {
           console.log(dependencyHint);
         }
         printQueueStatusIfBullMq(health);
+        process.exit(0);
+      }
+      if (explicitWorkerUrl) {
+        console.log(`Worker is not reachable at ${explicitWorkerUrl}`);
         process.exit(0);
       }
       if (await isPortInUse(port)) {
@@ -1913,6 +1994,13 @@ async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'devin': {
+      const devinSubcommand = process.argv[3];
+      const devinResult = await handleDevinCommand(devinSubcommand, process.argv.slice(4));
+      process.exit(devinResult);
       break;
     }
 
@@ -2207,9 +2295,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
  * pid/version/uptime — a degraded worker is still a RUNNING worker, so both
  * 200 and 503 payloads are returned as-is.
  */
-async function fetchWorkerHealth(port: number, timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
+async function fetchWorkerHealth(timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
   try {
-    const response = await fetchWithTimeout(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {}, timeoutMs);
+    const response = await fetchWithTimeout(buildWorkerUrl('/api/health'), {}, timeoutMs);
     return await response.json() as WorkerHealthSnapshot;
   } catch {
     // [ANTI-PATTERN IGNORED]: health probe — connection refused/timeout IS the "worker not running" answer, polled on every status check; logging would spam. null is the documented recovery value the callers branch on.

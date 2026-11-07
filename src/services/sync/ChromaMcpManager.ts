@@ -17,7 +17,7 @@ import { reclaimOrphanChromaDataDirWriters } from '../../shared/port-reclaim.js'
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import type { ChromaCollectionDrop } from './ChromaSync.js';
@@ -902,7 +902,11 @@ export class ChromaMcpManager {
       return isSameProcessName(currentName, normalizeProcessName(process.execPath)) || CHROMA_WRITER_RUNTIMES.has(currentName);
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
-    return currentStartToken === null || currentStartToken === lock.startToken;
+    // isSameProcessStartToken, not ===: a lock written before the UTC pin
+    // (#5311) holds a local-time token the pinned read can never reproduce.
+    // It stays live only when the two differ by a possible UTC offset; any
+    // other mismatch is a reused PID, and that lock is stale.
+    return isSameProcessStartToken(currentStartToken, lock.startToken);
   }
 
   private static readChromaStoreRecord(

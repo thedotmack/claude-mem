@@ -196,7 +196,8 @@ export class ContextCacheService {
 
   /**
    * The live route answered `keys` with a block it must not persist (it carries
-   * the asking session's prior reply). Learn the variant anyway and, when no
+   * the asking session's prior reply or uses a session-specific notice budget).
+   * Learn the variant anyway and, when no
    * fresh file is on disk, render its cached block (which has no reply) through
    * the render queue, so the hook has it to fall back on while the worker is down.
    */

@@ -127,6 +127,40 @@ poison.
 > container. The startup validator refuses to boot with this combination
 > and returns a non-zero exit code.
 
+### Viewer
+
+The server serves the viewer at `/`. Its read endpoints (`/stream`,
+`/api/projects`, `/api/observations`, `/api/summaries`, `/api/sessions`,
+`/api/processing-status`) need a `memories:read` key and return only that
+key's team, or its project for a project-bound key. A `limit` above 100
+answers 400. The `local-dev` loopback bypass is bound to no team, so it
+answers 403 here as on `/v1`; use a key. The daily log is one file for the
+whole server, so `/api/logs` and `POST /api/logs/clear` answer 404 for
+every key; read `logs/claude-mem-<date>.log` on the host instead.
+
+**The browser sends no key.** The viewer's own `fetch` and `EventSource`
+calls carry no `Authorization` header (`src/ui/viewer/constants/api.ts`,
+`src/ui/viewer/hooks/useSSE.ts`), so a browser that opens the server's `/`
+directly gets 401 on every data call and an empty page. Front the server
+with a reverse proxy that adds the header, and restrict who can reach that
+proxy: everyone behind it reads as that key's team. With Caddy, against the
+compose stack's port:
+
+```caddyfile
+viewer.example.internal {
+  reverse_proxy 127.0.0.1:37877 {
+    header_up Authorization "Bearer <memories:read key>"
+  }
+}
+```
+
+**New rows appear on reload.** The server has no in-process event bus, so
+`/stream` sends its two opening events (`initial_load`, `processing_status`)
+and then only keepalives; it carries no `data_changed` or `new_*` events.
+The feed and the session list show what existed when the page loaded or
+the stream last reconnected. Only the processing badge refreshes on its
+own, by polling `/api/processing-status`.
+
 ## Compose stack
 
 `docker-compose.yml` ships four services:

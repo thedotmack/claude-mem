@@ -8,6 +8,7 @@ import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-js
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from './install-port.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -215,6 +216,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_PROJECTS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_URL: string;
   CLAUDE_MEM_WORKER_INGEST_TOKEN: string;
   CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: string;
   CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: string;
@@ -230,6 +232,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
   CLAUDE_MEM_DELIVERABLES_ENABLED: string;        // Stop hook copies the turn's deliverables into ~/.claude-mem/deliverables/<project>/ and My Work links them
   CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_PROVIDER_BY_SOURCE: string;          // JSON object mapping a platform source to a provider, e.g. {"codex":"codex"}; empty = off, global provider for every source
+  CLAUDE_MEM_OBSERVER_ENABLED: string;
   CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: string;
   CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
@@ -345,7 +349,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
-  // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
+  // two-lane sync hub (services/sync-hub); while it is empty, sync is OFF
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
@@ -353,6 +357,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // live updates via Supabase Realtime — 'false' disables live updates (HTTP polling only)
+  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: string;    // 'true' keeps pulling with no local session (cloud viewer replica)
   // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
@@ -394,8 +399,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
   CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
+  CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: string;
+  CLAUDE_MEM_WORK_VIEW_SHARED_STATE: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -477,8 +487,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
-    CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WORKER_PORT: String(getDefaultWorkerPort()),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_URL: '',
     CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
     CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: '5242880',
     CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'auto',
@@ -508,6 +519,8 @@ export class SettingsDefaultsManager {
     // installs land here — no delivered key exists headlessly, so the settings
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_PROVIDER_BY_SOURCE: '',
+    CLAUDE_MEM_OBSERVER_ENABLED: 'true',  // 'false' disables new observation and session-summary capture calls
     CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false',
     CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
@@ -598,7 +611,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
     CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: '[]',              // JSON array of { name, regex } objects
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
-    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
+    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer, Authorization: Basic)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
@@ -657,6 +670,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Live updates (Supabase Realtime `advance` broadcasts). 'false' disables live updates — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: 'false',  // 'true' keeps pulling with no sessions running instead of suspending after an hour (the cloud viewer replica, which runs no hooks)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     CLAUDE_MEM_TEAMBRAIN_URL: '',      // TeamBrain base URL (e.g. https://cmem.ai). Empty = TeamBrain OFF
@@ -686,8 +700,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: '10', // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
+    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+    CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
+    CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
+    CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
@@ -739,16 +758,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
     CLAUDE_MEM_REDIS_PORT: '6379',
     CLAUDE_MEM_REDIS_MODE: 'external',
-    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
+    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(getDefaultWorkerPort())}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
     // Phase 1a (cmem-sdk rename): canonical server settings keys. Hooks read
     // these first; the legacy `*_BETA_*` defaults below remain so existing
     // settings.json files still resolve correctly.
-    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Default server runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_API_KEY: '',                          // Local hook API key, populated by installer when runtime=server
     CLAUDE_MEM_SERVER_PROJECT_ID: '',                       // Default Postgres project_id used by hooks when runtime=server
-    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Legacy server-beta runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Legacy server-beta runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
     CLAUDE_MEM_DEDUP_ENABLED: 'false',                      // #3038 — opt-in; Tier-0 exact auto-merge + Tier-1 review-only candidates
@@ -766,6 +785,18 @@ export class SettingsDefaultsManager {
 
   static getAllDefaults(): SettingsDefaults {
     return { ...this.DEFAULTS };
+  }
+
+  private static defaultsForSettingsPath(settingsPath: string): SettingsDefaults {
+    const defaults = { ...this.DEFAULTS };
+    const dataDir = dirname(settingsPath);
+    const workerPort = String(getDefaultWorkerPort(dataDir));
+    const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+    defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+    defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+    defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+    defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+    return defaults;
   }
 
   static get(key: keyof SettingsDefaults): string {
@@ -827,8 +858,8 @@ export class SettingsDefaultsManager {
     options: { readOnly?: boolean } = {},
   ): SettingsDefaults {
     try {
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       if (!existsSync(settingsPath)) {
-        const defaults = this.getAllDefaults();
         if (!options.readOnly) {
           try {
             writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
@@ -1007,8 +1038,8 @@ export class SettingsDefaultsManager {
         }
       }
 
-      const result: SettingsDefaults = { ...this.DEFAULTS };
-      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+      const result: SettingsDefaults = { ...defaults };
+      for (const key of Object.keys(defaults) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
           result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
@@ -1017,7 +1048,7 @@ export class SettingsDefaultsManager {
       return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      const defaults = this.getAllDefaults();
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }
