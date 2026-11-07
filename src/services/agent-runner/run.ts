@@ -6,7 +6,10 @@
  * Owner rules (Oct 22): no permission-bypass or "dangerous" flags, read-only
  * tools only, and no time limits. A run ends when the agent finishes or exits
  * with an error, never because it is slow. The next agent is tried only when
- * a run actually fails.
+ * a run actually fails. An agent that ran and answered, but whose answer
+ * claude-mem's own checks refused, is not a failed agent: the run ends there
+ * and the next scheduled run tries the same agent again (#5189: a too-long
+ * Claude review sent ~230 hidden runs to the owner's Codex account).
  *
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
  *     loaded for its memory-search MCP tools, only the task's allowed tools,
@@ -72,9 +75,15 @@ export interface AgentTask {
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
   prepare?: () => Promise<void>;
+  /** Tried first when it is logged in; the other usable agents keep detect order behind it. Absent: detect
+   * order alone decides. The My Work refresh sets this from CLAUDE_MEM_PROVIDER (#5435). */
+  preferredAgent?: UsableAgentId;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
+
+/** A task throws an error carrying `answerRefused: true` when claude-mem's own checks refused the agent's answer. */
+const isAnswerRefusal = (error: unknown) => (error as { answerRefused?: boolean } | null)?.answerRefused === true;
 
 export interface AgentRunResult {
   state: 'ok' | 'failed' | 'waiting-for-agent';
@@ -91,6 +100,8 @@ export interface AgentRunnerDependencies {
    * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
    * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
+  /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
+  platform: () => NodeJS.Platform;
 }
 
 async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
@@ -103,6 +114,7 @@ const defaultDependencies: AgentRunnerDependencies = {
   detect: () => detectUsableAgents(),
   query,
   buildEnv: defaultEnv,
+  platform: () => process.platform,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
@@ -266,7 +278,15 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
         logger.warn('WORKER', `Codex refused ${model.model} for this login; retrying on its default model`);
         result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, {}), prompt, { cwd: task.cwd, env });
       }
-      if (result.exitCode !== 0) throw failure('codex exec', result);
+      if (result.exitCode !== 0) {
+        // Recognize the actual capability refusal rather than disabling Codex
+        // on every Windows machine: elevated/MXC installations may support it.
+        if (dependencies.platform() === 'win32'
+          && /unelevated restricted-token sandbox cannot enforce split filesystem read restrictions/i.test(`${result.stderr}\n${result.stdout}`)) {
+          throw new Error('Codex refused this refresh because its Windows unelevated sandbox cannot enforce the required read restrictions. Use an administrator-provisioned elevated sandbox or a supported MXC sandbox. The existing provider fallback remains available; filesystem restrictions were preserved.');
+        }
+        throw failure('codex exec', result);
+      }
       return readFileSync(answerPath, 'utf8');
     } finally {
       rmSync(answerPath, { force: true });
@@ -304,8 +324,9 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
 }
 
 /**
- * Run the task on the first usable agent, falling through to the next only
- * when a run fails. Never throws. With no logged-in agent it returns
+ * Run the task on the first usable agent — the task's preferred agent when it names one and that agent
+ * is usable — falling through to the next only
+ * when a run fails, not when the agent's answer was refused. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
 const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
@@ -314,7 +335,10 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
-  const usable = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const detected = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const usable = task.preferredAgent
+    ? [...detected.filter(agent => agent.id === task.preferredAgent), ...detected.filter(agent => agent.id !== task.preferredAgent)]
+    : detected;
   if (!usable.length) {
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
   }
@@ -336,6 +360,10 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
       const message = describeError(error).slice(0, 500);
       logger.warn('WORKER', `Agent run (${task.reason}) failed on ${agent.id}`, { error: message });
       attempts.push({ agent: agent.id, error: message });
+      if (isAnswerRefusal(error)) {
+        logger.info('WORKER', `Agent run (${task.reason}) not handed to another agent: ${agent.id} answered, and its answer was refused`);
+        break;
+      }
     }
   }
   const last = attempts[attempts.length - 1];

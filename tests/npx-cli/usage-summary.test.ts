@@ -224,4 +224,32 @@ describe('installer output and wire body', () => {
     expect(first.usage_summary).toMatchObject({ window_days: 28, active_days: 1, observations: 3, memory_tokens: 9 });
     expect(Object.keys(JSON.parse(bodies[1])).sort()).toEqual(['device_name', 'source']);
   });
+
+  it('forwards a valid setup episode only while telemetry consent permits it', async () => {
+    const previousFetch = globalThis.fetch;
+    const previousDnt = process.env.DO_NOT_TRACK;
+    const previousTelemetry = process.env.CLAUDE_MEM_TELEMETRY;
+    const bodies: Record<string, unknown>[] = [];
+    const flow = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('', { status: 503 });
+    }) as typeof fetch;
+    try {
+      delete process.env.DO_NOT_TRACK;
+      process.env.CLAUDE_MEM_TELEMETRY = 'on';
+      await startInstallerOAuthPairing({ setupFlowId: flow });
+      process.env.DO_NOT_TRACK = '1';
+      await startInstallerOAuthPairing({ setupFlowId: flow });
+      delete process.env.DO_NOT_TRACK;
+      await startInstallerOAuthPairing({ setupFlowId: 'not-an-episode' });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousDnt === undefined) delete process.env.DO_NOT_TRACK; else process.env.DO_NOT_TRACK = previousDnt;
+      if (previousTelemetry === undefined) delete process.env.CLAUDE_MEM_TELEMETRY; else process.env.CLAUDE_MEM_TELEMETRY = previousTelemetry;
+    }
+    expect(bodies[0].setup_flow_id).toBe(flow);
+    expect(bodies[1]).not.toHaveProperty('setup_flow_id');
+    expect(bodies[2]).not.toHaveProperty('setup_flow_id');
+  });
 });

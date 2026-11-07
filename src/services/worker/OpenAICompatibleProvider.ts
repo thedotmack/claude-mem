@@ -33,6 +33,8 @@ import { recycleObserverConversation, loadSessionStartContext, openObserverGener
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
+import { freezeResponseMedia, type PreparedTurnMedia, type TurnImageRequest } from '../media/inference.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 
 import {
   processAgentResponse,
@@ -63,6 +65,12 @@ export interface ProviderQueryResult {
    * the reply off (#3868).
    */
   finishReason?: string;
+  /**
+   * The request labels of the images the accepted request actually carried.
+   * Empty when the turn had images but was sent (or resent) text-only; absent
+   * when the turn had none.
+   */
+  deliveredImageLabels?: string[];
 }
 
 /**
@@ -178,7 +186,25 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
     label?: ObserverRequestLabel,
+    /**
+     * This observation turn's image side refs. Passed only by the observation
+     * path, never by summary, wrap-up or condensation requests, and never
+     * stored in history. Providers without image support ignore it.
+     */
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult>;
+
+  /**
+   * The current observation turn's images, when this provider and its
+   * configured endpoint qualify for image input. The default sends none.
+   */
+  protected async prepareObservationMedia(
+    _session: ActiveSession,
+    _messages: PendingMessageWithId[],
+    _config: TConfig,
+  ): Promise<PreparedTurnMedia | null> {
+    return null;
+  }
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -195,6 +221,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     deadlineMs?: number,
     label?: ObserverRequestLabel,
   ): Promise<CompressedField | null> {
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      return null;
+    }
     // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
     // Without it the request keeps the LLM per-attempt default, and a longer
     // field knob would never take effect on this path (#4134).
@@ -367,7 +396,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const persistedMemorySessionId = this.dbManager.getSessionById(session.sessionDbId).memory_session_id;
       const syntheticIdPrefix = `${this.syntheticIdPrefix}-${session.contentSessionId}-`;
 
-      if (persistedMemorySessionId?.startsWith(syntheticIdPrefix)) {
+      // This is the durable database identity, not a provider resume token.
+      // Replacing it on a provider switch cascades stored memories to a new
+      // id while leaving their content hashes keyed to the old one, so exact
+      // redelivery creates duplicates. Keep the identity once registered.
+      if (persistedMemorySessionId) {
         session.memorySessionId = persistedMemorySessionId;
         logger.info('SESSION', `MEMORY_ID_REUSED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
       } else {
@@ -403,6 +436,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // generation's opening user turn, and the first observation or summary
     // request carries it (consecutive user turns merge on the wire).
     if (observesBarePrompts()) {
+      if (await this.stopIfCaptureDisabled(session)) return;
       try {
         session.lastPromptSentAt = Date.now();
         session.lastGeneratorSource = 'init';
@@ -464,9 +498,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+        if (!(await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd))) return;
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+        if (!(await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd))) return;
       }
     }
   }
@@ -513,7 +547,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (await this.stopIfCaptureDisabled(session)) return false;
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -529,7 +564,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         'budget',
         describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
       );
-      return;
+      return true;
     }
 
     // An oversized payload is condensed by a bounded model pass before the
@@ -537,7 +572,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // rather than a head/tail slice with the middle cut out (#3800). The field
     // cap scales with the model's window (#3625).
     // A newer user prompt may arrive while the payload is being condensed.
-    const responseContext = {
+    let responseContext = {
       ...snapshotResponseContext(session),
       promptNumber: message.prompt_number ?? session.lastPromptNumber,
     };
@@ -553,6 +588,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.observerContextWindowTokens,
       () => this.fieldCompressionMaxOutputTokens(),
     );
+    if (await this.stopIfCaptureDisabled(session)) return false;
 
     const obsPrompt = buildObservationPromptParts({
       id: 0,
@@ -562,7 +598,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     }, fieldMaxChars, takeObserverSchemaReminder(session));
+    // Bounded per-turn side refs: loaded here, sent with this request only,
+    // and released when the turn returns. History keeps the string turn.
+    let turnMedia = message.mediaRefs?.length ? await this.prepareObservationMedia(session, [message], config) : null;
+    if (turnMedia) {
+      responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, turnMedia.images.length > 0) };
+    }
 
+    if (await this.stopIfCaptureDisabled(session)) {
+      if (turnMedia) turnMedia.images.forEach(image => { image.dataUrl = ''; });
+      return false;
+    }
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
     session.conversationHistory.push({ role: 'user', content: turnPrompt });
@@ -573,7 +619,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.queryObserverTurn(session, config, paidSendBudgetForClaimedBatch(session), 'observation');
+    let obsResponse: ProviderQueryResult;
+    try {
+      obsResponse = await this.queryObserverTurn(
+        session, config, paidSendBudgetForClaimedBatch(session), 'observation',
+        turnMedia?.images.length ? { images: turnMedia.images, maxBodyBytes: turnMedia.maxBodyBytes } : undefined,
+      );
+    } finally {
+      // Clear the derivative bytes as soon as the request settles.
+      if (turnMedia) turnMedia.images.forEach(image => { image.dataUrl = ''; });
+    }
+    if (turnMedia && responseContext.media?.imagesDelivered) {
+      // Only images the accepted request carried can be inspected; a
+      // text-only send or resend marks none.
+      const delivered = obsResponse.deliveredImageLabels ?? [];
+      responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, delivered.length > 0, delivered) };
+    }
+    turnMedia = null;
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
@@ -600,6 +662,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
+    return true;
   }
 
   private async processSummaryMessage(
@@ -610,7 +673,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     mode: ModeConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (await this.stopIfCaptureDisabled(session)) return false;
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -657,6 +721,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
+    return true;
+  }
+
+  private async stopIfCaptureDisabled(session: ActiveSession): Promise<boolean> {
+    if (isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) return false;
+    const discarded = await this.sessionManager.clearPendingForSession(session.sessionDbId);
+    logger.info('SESSION', 'Observer capture disabled before provider send; discarding buffered work', {
+      sessionId: session.sessionDbId,
+      discarded,
+    });
+    return true;
   }
 
   /**
@@ -673,10 +748,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     paidSendBudget: PaidSendBudget | undefined,
     kind: ObserverRequestLabel['kind'],
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult> {
     try {
       return await this.query(
-        session.conversationHistory, config, undefined, undefined, paidSendBudget, generationLabel(session, kind),
+        session.conversationHistory, config, undefined, undefined, paidSendBudget, generationLabel(session, kind), turnImages,
       );
     } catch (error: unknown) {
       if (!isClassified(error) || paidSendOutcomeOf(error) !== 'output_failure') throw error;

@@ -13,7 +13,7 @@ are injected back into every new session and every spawned agent.
 | Hook | Event sent / behavior |
 |---|---|
 | `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it |
-| `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline. Runs in the background, so a slow cmem.ai never holds up the prompt |
+| `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline. Runs in the background, so a slow cmem.ai never holds up the prompt. `prompt-context` — once per session, injects memory picked with the first prompt as the query (Claude Duet, below) |
 | `PostToolUse` (all tools) | `observation` — streams the raw tool-use fragment (truncated) for server-side synthesis |
 | `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it |
 | `SubagentStop` | Marks the agent's work complete |
@@ -55,6 +55,34 @@ sessions land on `cmem_work_root`, sessions inside a project folder get
 `cmem_work_<folder>`. Optional `inject` toggles
 (`sessionStart`, `agents`, `maxChars`). Verify with
 `node scripts/cmem-hook.mjs status` (token stays masked).
+
+## Claude Duet
+
+Duet (the Claude app's main chat, task threads, channels and routines) runs
+every session in the same cloud folder, so folder naming would file them all
+under `cmem_work_root`. Each Duet prompt names its channel, so a Duet session
+files under `cmem_duet_<channel name>_<channel id>` instead (the id keeps
+channels whose names look alike apart), and every task thread in that
+channel shares it. Envelopes carry `payload.duet` (`channel_id`,
+`channel_name`, `thread_id`). A session is pinned to the first channel it sees.
+The channel is read only from what the host sends: the unescaped `<project>`
+tag of a wake envelope, or the `Project:` line inside a real
+`<session-context>` block. Text people type, tool output, assistant turns and
+compaction summaries never name a channel.
+
+- Fresh session: SessionStart can't know the channel yet, so registration and
+  injection wait for the first prompt that names it, which also serves as the
+  relevance query. Until then nothing is injected: the folder project is shared
+  by every channel.
+- Compact and resume: the channel is read from the restored transcript and
+  SessionStart re-injects immediately.
+- When cmem.ai can't be reached, the injected notice says so plainly instead of
+  claiming notes are being saved.
+
+Proxied containers: Node's built-in fetch ignores `HTTPS_PROXY`, so on Node
+≥ 22.21 / 24.5 the hook re-runs itself once with `NODE_USE_ENV_PROXY=1`
+(which honors `NO_PROXY`). The container's egress policy still has to allow
+`cmem.ai`.
 
 ## Server side
 

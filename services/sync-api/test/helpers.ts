@@ -1,4 +1,5 @@
 import { afterAll } from "bun:test";
+import type { AuthDependencies } from "../src/auth";
 import { loadEnv, type SyncApiEnv } from "../src/env";
 import { DEFAULT_SYNC_API_TIMEOUTS, startSyncApi, type SyncApiApp, type SyncApiTimeouts } from "../src/index";
 import {
@@ -84,7 +85,10 @@ export function startSidecar(): {
 	return { server, state, baseUrl: `http://127.0.0.1:${server.port}` };
 }
 
-export async function startTestApp(timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS): Promise<{
+export async function startTestApp(
+	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+	authDependencies?: AuthDependencies,
+): Promise<{
 	app: SyncApiApp;
 	sidecar: ReturnType<typeof startSidecar>;
 	env: SyncApiEnv;
@@ -99,7 +103,7 @@ export async function startTestApp(timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_
 		PORT: "0",
 		HOST: "127.0.0.1",
 	});
-	const app = await startSyncApi(env, timeouts);
+	const app = await startSyncApi(env, timeouts, authDependencies);
 	return { app, sidecar, env };
 }
 
@@ -174,8 +178,11 @@ export function uniqueUser(): string {
 
 const apps: Array<{ app: SyncApiApp; sidecar: ReturnType<typeof startSidecar> }> = [];
 
-export async function trackedApp(timeouts?: SyncApiTimeouts): Promise<ReturnType<typeof startTestApp>> {
-	const started = await startTestApp(timeouts);
+export async function trackedApp(
+	timeouts?: SyncApiTimeouts,
+	authDependencies?: AuthDependencies,
+): Promise<ReturnType<typeof startTestApp>> {
+	const started = await startTestApp(timeouts, authDependencies);
 	apps.push(started);
 	return started;
 }

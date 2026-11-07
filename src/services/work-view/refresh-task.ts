@@ -19,7 +19,7 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
@@ -54,6 +54,42 @@ const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: '
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
 export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, focus: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
+
+/** The setting that puts every step of one agent on a single model (#5164), e.g. `haiku` to keep the refresh
+ * off Sonnet on a shared Claude subscription. Empty keeps the per-step table above. */
+export const STEP_MODEL_SETTINGS = {
+  'claude-code': 'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+  codex: 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+  gemini: 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
+} as const satisfies Record<UsableAgentId, keyof SettingsDefaults>;
+
+/** The models each step runs on, read from settings at the start of every run so a change applies without a restart.
+ * An override replaces only the model: Codex keeps each step's reasoning effort. */
+export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
+  const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
+  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[UsableAgentId, keyof SettingsDefaults]>)
+    .map(([agent, key]) => [agent, String(settings[key] ?? '').trim()] as const)
+    .filter(([, model]) => model);
+  if (!overrides.length) return STEP_MODELS;
+  const withOverrides = (models: StepModels): StepModels => {
+    const result: StepModels = { ...models };
+    for (const [agent, model] of overrides) result[agent] = { ...models[agent], model };
+    return result;
+  };
+  return Object.fromEntries((Object.keys(STEP_MODELS) as Step[]).map(step => [step, withOverrides(STEP_MODELS[step])])) as Record<Step, StepModels>;
+}
+
+/** The agent the refresh tries first: the one CLAUDE_MEM_PROVIDER names (#5435). The worker builds a fresh
+ * task for every run, so reading it here applies a provider change to the next refresh. A provider that names
+ * an API endpoint instead of a local agent ('openrouter', 'openai-compatible') names no agent, and the
+ * runner's detect order decides, as before. */
+export function resolvePreferredRefreshAgent(dataDir: string): UsableAgentId | undefined {
+  const provider = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_PROVIDER ?? '').trim();
+  if (provider === 'codex') return 'codex';
+  if (provider === 'gemini') return 'gemini';
+  if (provider === 'claude') return 'claude-code';
+  return undefined;
+}
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
 const stringArray = { type: 'array', items: { type: 'string' } };
@@ -204,6 +240,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
+    // Once any answer from this agent was refused, the run's error carries `answerRefused` whatever failed first,
+    // so the runner never hands the refresh to another agent (#5189). Batches and focus can fail in any order.
+    let answerWasRefused = false;
+    const refused = (error: Error) => { answerWasRefused = true; return Object.assign(error, { answerRefused: true }); };
+    const stepModels = resolveStepModels(dataDir);
     const inlineEvidence = new Map<string, string>();
     if (agent === 'gemini' && needs.goalsStale) {
       for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
@@ -223,10 +264,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return path;
     };
     const localDeviceId = options.localDeviceId();
-    const cli = (argv: string[], input?: unknown) => {
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean } = {}) => {
       let output: any;
       const database = openDatabase();
-      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId }); }
+      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
       finally { database.close(); }
       return output;
     };
@@ -273,7 +314,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
-        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
+        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, stepModels[name], answerSchema);
         try { return await save(parseAgentJson(answer)); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
@@ -286,7 +327,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
       writeFileSync(answerPath, answer, { mode: 0o600 });
       // The path goes first: the runner keeps only the first 500 characters of an error.
-      throw new Error(`${name} (raw answer: ${answerPath}): ${refusal}`);
+      throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
     });
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
@@ -374,17 +415,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
+      const coercedReviewFields = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
+          const retryGroupIds = new Set(shows.map(show => show.groupId));
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
-          ].join('\n\n'), STEP_MODELS.review);
+          ].join('\n\n'), stepModels.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
@@ -392,13 +435,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           rejectedReviews = [];
           const recorded = new Set<string>();
           for (const review of reviews) {
-            try { cli(['record-progress'], review); recorded.add(String(review.groupId)); reviewed++; }
+            try {
+              // Keep the first pass strict so the model can correct an oversized answer itself. If that same group
+              // still exceeds a review cap on its one retry, bound generated fields and save the partial review.
+              const saved = cli(['record-progress'], review, { coerceProgress: attempt > 0 && retryGroupIds.has(String(review.groupId)) });
+              for (const field of saved?.coercedFields ?? []) coercedReviewFields.add(`${review.groupId}:${field}`);
+              recorded.add(String(review.groupId)); reviewed++;
+            }
             catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
         }
-        if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
+        if (shows.length) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
       };
       // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
       // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
@@ -416,7 +465,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
       const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-      if (reviewed) done.push(`${reviewed} requests reviewed`);
+      if (reviewed) done.push(`${reviewed} requests reviewed${coercedReviewFields.size ? ` (${coercedReviewFields.size} oversized fields trimmed after retry)` : ''}`);
 
       // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
       // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
@@ -497,6 +546,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       }
       if (focusError) throw focusError;
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
+    } catch (error) {
+      if (!answerWasRefused) throw error;
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { answerRefused: true });
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }
@@ -505,6 +557,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   return {
     reason,
     steps,
+    // The refresh runs on the agent the owner's provider setting names first (#5435).
+    preferredAgent: resolvePreferredRefreshAgent(dataDir),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {

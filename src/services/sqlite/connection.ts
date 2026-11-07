@@ -16,7 +16,7 @@ export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
  * can't land without it. Kept in this leaf module — both SessionStore and
  * SessionSearch already import from here, and they import each other.
  */
-export const LATEST_SCHEMA_VERSION = 68;
+export const LATEST_SCHEMA_VERSION = 71;
 
 export function readSchemaWriterStamp(db: Database): number {
   return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
@@ -157,4 +157,71 @@ export function openGuardedSqliteDatabase(dbPath: string): Database {
   assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION);
   applySqliteConnectionPragmas(db);
   return db;
+}
+
+/**
+ * Force a fresh handle to prove it can read the schema. A bun:sqlite open
+ * is lazy: a WAL database whose wal-index cannot be established constructs
+ * fine and only fails at the first statement that touches the file, so a
+ * caller that merely constructs the handle cannot tell a healthy open from
+ * a doomed one (#5429). The busy timeout is set first so a held lock waits
+ * the way the caller's own statements would, instead of falling through to
+ * the fallback ladder. run() rather than prepare(): the schema read must
+ * not leave a prepared statement behind on a handle whose callers account
+ * for the statements they prepare.
+ */
+function probeReaderDatabase(db: Database): Database {
+  try {
+    db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    db.run('PRAGMA schema_version');
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+/**
+ * Open a database for a reader that must never write to it: the context
+ * read worker and context generation (#5429).
+ *
+ * A read-only handle cannot create the -wal or the wal-index (-shm) of a
+ * WAL database. When they are missing, every read fails with "unable to
+ * open database file" even though the database itself is healthy and the
+ * writer in the same process is working. So:
+ *
+ * 1. Open read-only, exactly as before.
+ * 2. If that fails, a short-lived read-write open creates the -wal and the
+ *    wal-index. Hold it while retrying the read-only open, so the handle
+ *    the caller reads from is still read-only; the read-write handle is
+ *    closed before this returns.
+ *
+ * When the read-write open cannot help either (a missing or corrupt
+ * database, or a data directory this process cannot write), the original
+ * read-only error is rethrown, so callers fail the way they did before.
+ */
+export function openReaderDatabase(dbPath: string): Database {
+  let readonlyError: unknown;
+  try {
+    return probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+  } catch (error) {
+    readonlyError = error;
+  }
+
+  try {
+    const establish = new Database(dbPath, { readwrite: true, create: false });
+    try {
+      probeReaderDatabase(establish);
+      const reader = probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+      logger.warn('DB', 'Read-only open failed until a read-write open created the -wal and wal-index (#5429)', { dbPath },
+        readonlyError instanceof Error ? readonlyError : new Error(String(readonlyError)));
+      return reader;
+    } finally {
+      establish.close();
+    }
+  } catch (establishError) {
+    logger.warn('DB', 'Read-only open failed and a read-write open could not create the -wal and wal-index (#5429)', { dbPath },
+      establishError instanceof Error ? establishError : new Error(String(establishError)));
+    throw readonlyError;
+  }
 }

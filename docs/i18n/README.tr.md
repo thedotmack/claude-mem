@@ -390,7 +390,6 @@ Tüm detaylar için [LICENSE](LICENSE) dosyasına bakın. Lisanslama kapsamı ve
 açık/ticari sınır için [docs/license.md](docs/license.md) ve
 [docs/ip-boundary.md](docs/ip-boundary.md) bölümlerine bakın.
 
-**Ragtime ile ilgili not**: `ragtime/` dizini **Apache License 2.0** altında lisanslanmıştır. Detaylar için [ragtime/LICENSE](ragtime/LICENSE) bölümüne bakın.
 
 ---
 

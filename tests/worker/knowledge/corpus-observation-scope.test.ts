@@ -37,7 +37,7 @@ const fixture = String.raw`
   try {
     const builder = new CorpusBuilder(store, new SearchOrchestrator(new SessionSearch(store.db), store, new ChromaSync('scope-project')), {});
     const corpus = await builder.build('semantic', '', { project: 'scope-project', query: 'unindexed semantic request', limit: 10 }, { writeFile: false });
-    console.log(JSON.stringify({ titles: corpus.observations.map(o => o.title), calls }));
+    console.log(JSON.stringify({ titles: corpus.observations.map(o => o.title), observationIds: [first, second], calls }));
   } finally { store.close(); }
 `;
 
@@ -51,7 +51,13 @@ describe('corpus observation-only semantic selection', () => {
       if (run.exitCode !== 0) throw new Error(new TextDecoder().decode(run.stderr));
       const result = JSON.parse(new TextDecoder().decode(run.stdout).trim().split('\n').at(-1)!);
       expect(result.titles.sort()).toEqual(['Another meaning-related finding', 'One meaning-related finding']);
-      expect(result.calls.some((call: { where?: unknown }) => JSON.stringify(call.where ?? {}).includes('observation'))).toBe(true);
+      // The category reaches Chroma as a doc_type clause or, when the fallback is
+      // narrowed to the rows in scope (#5091), as exactly the observations' ids.
+      const ascending = (ids: number[] = []) => [...ids].sort((a, b) => a - b);
+      const observationIds = JSON.stringify(ascending(result.observationIds));
+      expect(result.calls.some((call: { where?: any }) =>
+        JSON.stringify(call.where ?? {}).includes('observation')
+        || JSON.stringify(ascending(call.where?.sqlite_id?.$in)) === observationIds)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

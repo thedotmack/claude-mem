@@ -174,8 +174,8 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
         execute: async (args: Record<string, unknown>): Promise<string> => core.timeline(Number(args.anchor)),
       },
       claude_mem_get_observations: {
-        description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline.",
-        args: { ids: z.array(z.number().int()).min(1).describe("Selected observation IDs") },
+        description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline. At most 100 ids per call; split larger selections.",
+        args: { ids: z.array(z.number().int()).min(1).max(100).describe("Selected observation IDs (at most 100; split larger selections)") },
         execute: async (args: Record<string, unknown>): Promise<string> => core.getObservations(args.ids as number[]),
       },
     },

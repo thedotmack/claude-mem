@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { motion } from 'motion/react'
+import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -8,14 +9,22 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
+import { presentSharedState } from '@/live/shared-state-presentation'
 import { AgentMark } from './brand'
 
-export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
-export const WorkspaceContext = createContext<Workspace>({ mode: 'home', team: false, connected: false })
-export const useWorkspace = () => useContext(WorkspaceContext)
+/**
+ * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
+ * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
+ * Each group passes its own `layoutId` so pills never jump between groups.
+ */
+export function ActivePill({ layoutId, className }: { layoutId: string; className?: string }) {
+  return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
+}
+
 
 /** Agent mark, plus the machine it ran on (§13: remote agents are already synced, say where the work happened). */
 export function AgentIcon({ agentId, withDevice = false }: { agentId: string; withDevice?: boolean }) {
@@ -45,17 +54,20 @@ export const STATE_LABEL: Record<LiveState, string> = {
 /** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
 export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
 
+/** Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. */
+export const STATE_SURFACE: Record<LiveState, string> = {
+  working: 'border-working-border bg-working text-working-foreground',
+  'needs-check': 'border-review-border bg-review text-review-foreground',
+  'your-move': 'border-attention-border bg-attention font-medium text-attention-foreground',
+  idle: 'border-idle-border bg-idle text-idle-foreground',
+  shipped: 'border-shipped-border bg-shipped text-shipped-foreground',
+}
+
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
 export function StateBadge({ state }: { state: LiveState }) {
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', {
-        'border-working-border bg-working text-working-foreground': state === 'working',
-        'border-review-border bg-review text-review-foreground': state === 'needs-check',
-        'border-attention-border bg-attention font-medium text-attention-foreground': state === 'your-move',
-        'border-idle-border bg-idle text-idle-foreground': state === 'idle',
-        'border-shipped-border bg-shipped text-shipped-foreground': state === 'shipped',
-      })}>
+      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
         <span className={cn('size-1.5 rounded-full', {
           'bg-working-foreground motion-safe:animate-pulse': state === 'working',
           'bg-review-foreground': state === 'needs-check',
@@ -163,7 +175,9 @@ export function ProductLink({ href, children, className }: { href?: string; chil
  */
 export function LiveIndicator() {
   const { mode } = useWorkspace()
-  const { sourceKind, connection } = useWorkModel()
+  const { sourceKind, sharedState } = useWorkModel()
+  const shared = sourceKind === 'sample' ? null : presentSharedState(sharedState)
+  const connection = useConnection()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
   return (
@@ -175,14 +189,26 @@ export function LiveIndicator() {
               {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
-            {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
+            {/* Keep transport and cloud freshness distinct on phones as well as wider screens. */}
             <span className="sr-only sm:not-sr-only">{demonstration ? 'Live' : connection.label}</span>
+            {!demonstration && connection.sync && (
+              <span role="status" aria-label={`${connection.sync.label}. ${connection.sync.detail}`} data-sync-state={connection.sync.state} className={cn('inline-flex items-center border-l pl-2', connection.sync.tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>
+                {connection.sync.tone === 'warning' ? <CloudAlertIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                  : connection.sync.isCurrent ? <CloudCheckIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                    : <CloudIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />}
+                <span className="sr-only sm:not-sr-only">{connection.sync.label}</span>
+              </span>
+            )}
+            {shared && <span role="status" aria-label={`${shared.label}. ${shared.detail}`} data-shared-state={shared.state} className={cn('inline-flex items-center border-l pl-2', shared.attention && 'text-attention-foreground')}>
+              {shared.attention ? <CloudAlertIcon aria-hidden="true" className="size-4 sm:hidden" /> : shared.state === 'disabled' ? <CloudOffIcon aria-hidden="true" className="size-4 sm:hidden" /> : <CloudIcon aria-hidden="true" className="size-4 sm:hidden" />}
+              <span className="sr-only sm:not-sr-only">{shared.label}</span>
+            </span>}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
           {demonstration
             ? mode === 'home' ? 'Streams from the local worker, localhost:37777 (demonstration)' : 'Checks cmem.ai for new sync changes every few seconds (demonstration)'
-            : <>{connection.detail} {connection.tooltip}</>}
+            : <>{connection.detail} {connection.tooltip} {connection.sync?.detail} {shared?.detail}</>}
         </TooltipContent>
       </Tooltip>
     </Req>
@@ -191,7 +217,8 @@ export function LiveIndicator() {
 
 /** Which machines are reporting and how fresh each one is (§13.6). This computer's freshness is the live feed's. */
 export function DeviceFreshness() {
-  const { sourceKind, devices, connection } = useWorkModel()
+  const { sourceKind, devices } = useWorkModel()
+  const connection = useConnection()
   const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
   return (
     <Req ids={['R13.8', 'R13.2']}>
@@ -240,6 +267,20 @@ export function GitHubStars() {
         <StarIcon className="size-3.5" />
         <span className="hidden sm:inline">Star</span>
         {stargazerCount !== null && <span className="tabular-nums">{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(stargazerCount)}</span>}
+      </a>
+    </Button>
+  )
+}
+
+/** Opens the My Work feedback form on GitHub (.github/ISSUE_TEMPLATE/my-work-feedback.yml). */
+const MY_WORK_FEEDBACK_URL = `${CLAUDE_MEM_REPO_URL}/issues/new?template=my-work-feedback.yml`
+
+export function FeedbackLink() {
+  return (
+    <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
+      <a href={MY_WORK_FEEDBACK_URL} target="_blank" rel="noreferrer" aria-label="Send feedback about My Work on GitHub">
+        <MessageSquareIcon className="size-3.5" />
+        <span className="hidden sm:inline">Feedback</span>
       </a>
     </Button>
   )
@@ -297,6 +338,34 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refre
   return (
     <Req ids={[...ids, 'R14.10']}>
       <span className="block w-full text-xs leading-tight text-muted-foreground sm:w-auto sm:text-right" aria-live="polite">{text}</span>
+    </Req>
+  )
+}
+
+/** Starts the local goals and progress refresh on demand. */
+export function ManualRefreshButton({ ids, running = false }: { ids: string[]; running?: boolean }) {
+  const refreshWork = useStore((state) => state.refreshWork)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [nothingNew, setNothingNew] = useState(false)
+  const start = async () => {
+    setPending(true)
+    setError(null)
+    setNothingNew(false)
+    try { setNothingNew((await refreshWork()).state === 'idle') }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPending(false) }
+  }
+  return (
+    <Req ids={ids}>
+      <div className="flex items-center gap-2">
+        {error && <span role="alert" className="text-xs text-attention-foreground">{error}</span>}
+        {nothingNew && !running && <span aria-live="polite" className="text-xs text-muted-foreground">Nothing new to refresh</span>}
+        <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={pending || running}>
+          {pending || running ? <Spinner /> : <RefreshCwIcon />}
+          Refresh now
+        </Button>
+      </div>
     </Req>
   )
 }
