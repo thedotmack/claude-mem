@@ -1,6 +1,6 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon } from 'lucide-react'
 import { GlareCard } from '@/components/aceternity/glare-card'
-import { interpolate, useI18n } from '../../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { PLAN, type SetupCheckoutView } from '../setup-data'
 import { money } from '../format'
 import { PageHeading } from './shared'

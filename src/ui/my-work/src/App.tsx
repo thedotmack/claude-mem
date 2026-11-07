@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
 import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
-import { useI18n } from '../../i18n'
+import { useI18n } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'

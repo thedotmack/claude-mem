@@ -2,7 +2,7 @@
 // many requests in it need you. On the wide rail it is a nav section; on phones and the icon-only rail, a chip row.
 // The rail's highlight is App's side-nav pill: one pill slides between focus areas, pages and Past focus.
 import { HistoryIcon, SparklesIcon } from 'lucide-react'
-import { interpolate, useI18n } from '../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { ActivePill } from '@/components/bits'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'

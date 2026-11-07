@@ -1,7 +1,7 @@
 import React, { type SVGProps, useState } from "react";
 import { motion, useMotionValueEvent, useScroll } from "motion/react";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../../../i18n";
+import { useI18n } from "@/lib/i18n";
 
 export const StickyBanner = ({
   className,

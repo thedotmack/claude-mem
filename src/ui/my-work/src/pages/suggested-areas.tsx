@@ -1,4 +1,4 @@
-import { t, useI18n, interpolate } from '../../../i18n'
+import { t, useI18n, interpolate } from '@/lib/i18n'
 // Suggested focus areas: the decision queue from My Rules (DecisionQueue / SuggestionCard), with Keep, Rename, Merge
 // and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page; a rename leaves
 // the card undecided and shows in the change bar, with Undo back to the old name. On phones an undecided card

@@ -1,4 +1,4 @@
-import { useI18n } from '../../../../i18n'
+import { useI18n } from '@/lib/i18n'
 import type { HistoryImportProgress } from '../setup-data'
 import { PageHeading } from './shared'
 

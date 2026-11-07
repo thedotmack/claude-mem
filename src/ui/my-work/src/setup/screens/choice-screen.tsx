@@ -1,7 +1,7 @@
 import { ArrowRightIcon, CheckIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { CardSpotlight } from '@/components/aceternity/card-spotlight'
-import { useI18n } from '../../../../i18n'
+import { useI18n } from '@/lib/i18n'
 import type { MemoryBranch } from '../setup-flow'
 import atHome from '../assets/at-home-modern-computer.webp'
 import onTheGo from '../assets/on-the-go-iphone-feed.webp'

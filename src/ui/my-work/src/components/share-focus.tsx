@@ -1,4 +1,4 @@
-import { interpolate, t, useI18n } from '../../../i18n'
+import { interpolate, t, useI18n } from '@/lib/i18n'
 // Sharing one focus area as a page people and agents comment on (§17): the dialog behind the area menu's Share…,
 // and the Shared mark beside the area's name. The worker signs every call to cmem.ai.
 import { useCallback, useEffect, useState } from 'react'

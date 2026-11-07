@@ -1,5 +1,5 @@
 import { displayTime } from '@/lib/display-time'
-import { t, useI18n, interpolate } from '../../../i18n'
+import { t, useI18n, interpolate } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { useMemo, useState, type ReactNode } from 'react'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, FileTextIcon, HistoryIcon, PencilIcon, PlusIcon, SparklesIcon, XIcon } from 'lucide-react'

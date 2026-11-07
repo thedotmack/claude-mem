@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { CmemMark } from '@/components/brand'
 import { SparklesCore } from '@/components/aceternity/sparkles'
-import { useI18n } from '../../../../i18n'
+import { useI18n } from '@/lib/i18n'
 import type { SetupTool } from '../setup-data'
 import chatgptMark from '../assets/agents/chatgpt.webp'
 import claudeMark from '../assets/agents/claude.webp'

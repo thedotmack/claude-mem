@@ -1,5 +1,5 @@
 import { displayTime } from '@/lib/display-time'
-import { t, useI18n, interpolate } from '../../../i18n'
+import { t, useI18n, interpolate } from '@/lib/i18n'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'

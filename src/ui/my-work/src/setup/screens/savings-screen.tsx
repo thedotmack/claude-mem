@@ -1,5 +1,5 @@
 import { ArrowRightIcon } from 'lucide-react'
-import { interpolate, useI18n } from '../../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { PLAN, type SetupUsage } from '../setup-data'
 import type { MemoryBranch } from '../setup-flow'
 import { money } from '../format'

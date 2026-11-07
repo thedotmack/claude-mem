@@ -1,4 +1,4 @@
-import { getLocale } from '../../../i18n'
+import { getLocale } from '@/lib/i18n'
 
 // Small formatting and preference helpers shared by the funnel screens.
 

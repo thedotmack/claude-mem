@@ -1,4 +1,4 @@
-import { getLocale } from '../../../i18n'
+import { getLocale } from '@/lib/i18n'
 
 /** Localize recorded display dates without changing model timestamps or their sort keys. */
 export function displayTime(value: string): string {

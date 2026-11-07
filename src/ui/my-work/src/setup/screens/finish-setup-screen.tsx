@@ -1,7 +1,7 @@
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ChevronDownIcon, CopyIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { SaveButton } from '@/components/save-button'
-import { interpolate, useI18n } from '../../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
 import { PageHeading, ToolMark } from './shared'

@@ -4,7 +4,7 @@
 // suggestion (and the only way to undo a merge), keep / done / dismiss for a decided area, the old name or goal.
 import { useState } from 'react'
 import { CheckIcon } from 'lucide-react'
-import { interpolate, useI18n } from '../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'

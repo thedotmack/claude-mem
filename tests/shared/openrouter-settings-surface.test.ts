@@ -14,7 +14,8 @@ describe('openai-compatible settings surface', () => {
 
   it('lists the provider after the claude-mem observer, never ahead of it', () => {
     const source = modalSource();
-    const observer = source.indexOf('<option value="openrouter">OpenRouter / claude-mem observer</option>');
+    // The label goes through the UI catalog (t()), so match the option by its value and its English label.
+    const observer = source.indexOf(`<option value="openrouter">{t('OpenRouter / claude-mem observer')}</option>`);
     const compat = source.indexOf('<option value="openai-compatible">');
     expect(observer).toBeGreaterThan(-1);
     expect(compat).toBeGreaterThan(observer);

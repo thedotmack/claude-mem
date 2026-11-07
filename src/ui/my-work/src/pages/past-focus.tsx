@@ -1,4 +1,4 @@
-import { t, useI18n, interpolate } from '../../../i18n'
+import { t, useI18n, interpolate } from '@/lib/i18n'
 // Past focus: areas you marked done, and what you asked for most, month by month (MonthByMonth, moved from the
 // retired goals page). A month closing archives its asks; it doesn't mean they were done.
 import { useState } from 'react'

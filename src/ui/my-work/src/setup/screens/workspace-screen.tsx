@@ -1,6 +1,6 @@
 import { ArrowRightIcon, SearchIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { interpolate, useI18n } from '../../../../i18n'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../../ui-message'
 import type { MemoryResult } from '../setup-data'
 import { prefersReducedMotion } from '../format'

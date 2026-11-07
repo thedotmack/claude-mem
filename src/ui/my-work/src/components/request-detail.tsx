@@ -1,5 +1,5 @@
 import { displayTime } from '@/lib/display-time'
-import { interpolate, t, useI18n } from '../../../i18n'
+import { interpolate, t, useI18n } from '@/lib/i18n'
 import { useEffect, useRef, useState } from 'react'
 import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-react'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
