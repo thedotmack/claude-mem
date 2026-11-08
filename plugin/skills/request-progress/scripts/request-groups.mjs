@@ -1150,8 +1150,8 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WELCOME_HINT_ENABLED: "true",
         CLAUDE_MEM_WORK_STATE_ENABLED: "true",
         // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
-        CLAUDE_MEM_AUTO_CLEAR_ENABLED: "true",
-        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. 'false' turns it off. Needs work state on
+        CLAUDE_MEM_AUTO_CLEAR_ENABLED: "false",
+        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
         CLAUDE_MEM_AUTO_CLEAR_PERCENT: "33",
         // Context window use (1-95) that starts the auto-clear
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",

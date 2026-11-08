@@ -238,7 +238,7 @@ function parseAutoClearPercent(value) {
   return percent;
 }
 function resolveAutoClearSettings(sources) {
-  const autoClearOn = String(settingValue(sources, "CLAUDE_MEM_AUTO_CLEAR_ENABLED") ?? "true").trim().toLowerCase() !== "false";
+  const autoClearOn = String(settingValue(sources, "CLAUDE_MEM_AUTO_CLEAR_ENABLED") ?? "false").trim().toLowerCase() === "true";
   const workStateOn = isWorkStateEnabled(settingValue(sources, "CLAUDE_MEM_WORK_STATE_ENABLED"));
   return {
     enabled: autoClearOn && workStateOn,

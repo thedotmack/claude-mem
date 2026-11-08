@@ -11,7 +11,7 @@ export const AUTO_CLEAR_MIN_PERCENT = 1;
 export const AUTO_CLEAR_MAX_PERCENT = 95;
 
 export interface AutoClearSettings {
-  /** Both CLAUDE_MEM_AUTO_CLEAR_ENABLED and CLAUDE_MEM_WORK_STATE_ENABLED are on. */
+  /** CLAUDE_MEM_AUTO_CLEAR_ENABLED is 'true' (it ships off) and CLAUDE_MEM_WORK_STATE_ENABLED is on. */
   enabled: boolean;
   /** Context window use, in whole percent, that starts the auto-clear. */
   percent: number;
@@ -56,7 +56,8 @@ export function parseAutoClearPercent(value: string | undefined): number {
 }
 
 export function resolveAutoClearSettings(sources: AutoClearSettingsSources): AutoClearSettings {
-  const autoClearOn = String(settingValue(sources, 'CLAUDE_MEM_AUTO_CLEAR_ENABLED') ?? 'true').trim().toLowerCase() !== 'false';
+  // Opt-in: only an explicit 'true' turns it on.
+  const autoClearOn = String(settingValue(sources, 'CLAUDE_MEM_AUTO_CLEAR_ENABLED') ?? 'false').trim().toLowerCase() === 'true';
   const workStateOn = isWorkStateEnabled(settingValue(sources, 'CLAUDE_MEM_WORK_STATE_ENABLED'));
   return {
     enabled: autoClearOn && workStateOn,

@@ -6,9 +6,10 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const WRITE = 'mcp__plugin_claude-mem_mcp-search__work_state_write'
 
-function stubs(on: any, options: { percent: number; settings?: string | null; surfaces?: string[] }) {
+function stubs(on: any, options: { percent: number; settings?: string | null; surfaces?: string[]; enabled?: boolean }) {
   const clock = mock.clock(on)
-  mock.env(on, { HOME: '/home/ada' })
+  // Auto-clear ships off; these checks turn it on the way a tester does, with the environment variable.
+  mock.env(on, options.enabled === false ? { HOME: '/home/ada' } : { HOME: '/home/ada', CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true' })
   const record = { commands: [] as string[], prompts: [] as Array<{ text: string; asUser?: boolean }>, notes: [] as string[], reads: [] as string[] }
   const state = { percent: options.percent }
   const isSettings = (path: string) => options.settings !== undefined && path.endsWith('/.claude-mem/settings.json')
@@ -151,4 +152,15 @@ test('a prompt the person typed that starts before the clear holds the clear bac
   await clock.settle()
   await clock.settle()
   expect(record.commands).toEqual([])
+})
+
+test('off by default: with nothing turned on, a session past the threshold is left alone', async ($, on) => {
+  const { clock, record } = stubs(on, { percent: 80, enabled: false })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const bash = await $.tool.call({ tool: 'Bash', command: 'ls' }) as any
+  expect(bash.context).toBeUndefined()
+  await $.turn.complete(turnDone)
+  await clock.settle()
+  expect(record.commands).toEqual([])
+  expect(record.prompts).toEqual([])
 })

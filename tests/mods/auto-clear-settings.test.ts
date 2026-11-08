@@ -11,11 +11,22 @@ import {
 } from '../../src/mods/auto-clear/settings.js';
 
 describe('auto-clear settings', () => {
-  it('ships on, at 33%, matching SettingsDefaultsManager', () => {
+  it('ships off, at 33%, matching SettingsDefaultsManager', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
-    expect(defaults.CLAUDE_MEM_AUTO_CLEAR_ENABLED).toBe('true');
+    expect(defaults.CLAUDE_MEM_AUTO_CLEAR_ENABLED).toBe('false');
     expect(defaults.CLAUDE_MEM_AUTO_CLEAR_PERCENT).toBe(String(AUTO_CLEAR_DEFAULT_PERCENT));
-    expect(resolveAutoClearSettings({ env: {}, document: null })).toEqual({ enabled: true, percent: 33 });
+    expect(resolveAutoClearSettings({ env: {}, document: null })).toEqual({ enabled: false, percent: 33 });
+    expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_PERCENT: '40' } }).enabled).toBe(false);
+  });
+
+  it('turns on only for an explicit true', () => {
+    for (const value of ['true', 'TRUE', ' True ', true]) {
+      expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: value } }).enabled).toBe(true);
+    }
+    for (const value of ['false', '', 'yes', '1', 'on']) {
+      expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: value } }).enabled).toBe(false);
+    }
+    expect(resolveAutoClearSettings({ env: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true' }, document: null }).enabled).toBe(true);
   });
 
   it('reads a flat settings.json and a nested one the way SettingsDefaultsManager does', () => {
@@ -25,9 +36,10 @@ describe('auto-clear settings', () => {
     // Nested: the env block holds the CLAUDE_MEM_* keys, and root copies are stale.
     const nested = parseSettingsJson(JSON.stringify({
       CLAUDE_MEM_AUTO_CLEAR_PERCENT: '10',
-      env: { CLAUDE_MEM_AUTO_CLEAR_PERCENT: '60', CLAUDE_MEM_MODEL: 'haiku' },
+      CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false',
+      env: { CLAUDE_MEM_AUTO_CLEAR_PERCENT: '60', CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true', CLAUDE_MEM_MODEL: 'haiku' },
     }));
-    expect(resolveAutoClearSettings({ env: {}, document: nested }).percent).toBe(60);
+    expect(resolveAutoClearSettings({ env: {}, document: nested })).toEqual({ enabled: true, percent: 60 });
   });
 
   it('lets an environment variable win over settings.json', () => {
@@ -40,8 +52,8 @@ describe('auto-clear settings', () => {
 
   it('is off when either auto-clear or work state is turned off', () => {
     expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'FALSE' } }).enabled).toBe(false);
-    expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_WORK_STATE_ENABLED: 'false' } }).enabled).toBe(false);
-    expect(resolveAutoClearSettings({ env: { CLAUDE_MEM_WORK_STATE_ENABLED: 'false' }, document: null }).enabled).toBe(false);
+    expect(resolveAutoClearSettings({ env: {}, document: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true', CLAUDE_MEM_WORK_STATE_ENABLED: 'false' } }).enabled).toBe(false);
+    expect(resolveAutoClearSettings({ env: { CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'true', CLAUDE_MEM_WORK_STATE_ENABLED: 'false' }, document: null }).enabled).toBe(false);
   });
 
   it('accepts numbers and booleans written by hand', () => {

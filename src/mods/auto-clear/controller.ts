@@ -3,6 +3,7 @@
  * context window, Claude saves its work state, then /clear runs and
  * "continue" is sent, so the work carries on in a fresh conversation that
  * starts with the open work state (SessionStart context, `clear` source).
+ * It ships off: CLAUDE_MEM_AUTO_CLEAR_ENABLED=true turns it on.
  *
  * The flow, all on the main loop (subagents are never counted):
  *  1. After a tool call, context use is at or past the threshold: a note is
