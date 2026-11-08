@@ -5,6 +5,7 @@ import type { OwnerRule, RuleChange } from '../data-rules.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
+import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
 import type { RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
@@ -21,6 +22,8 @@ export interface WorkState {
   connection: ConnectionStatus | null
   /** Requests whose recorded content changed in the last applied model; their cards show the "Just updated" dot. */
   freshlyUpdatedIds: Set<string>
+  /** What changed in the models this screen showed, newest first, one entry per request (update-queue.ts). */
+  recentChanges: RequestChange[]
   sourceKind: WorkDataSource['sourceKind'] | null
   /** A save went through but reading the model after it failed. The save stands; this says why the screen may lag. */
   refreshError: string | null
@@ -59,7 +62,7 @@ export type NavPage = 'work' | 'rules'
 /** What the main column shows: a page, or one of the focus views the rail opens. */
 export type Section = NavPage | 'suggested' | 'past-focus'
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
-export type WorkFilter = 'all' | 'needs-you' | 'shipped' | 'closed'
+export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null

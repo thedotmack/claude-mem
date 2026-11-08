@@ -4,12 +4,14 @@ import { useReducedMotion } from 'motion/react'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { AgentMark } from '@/components/brand'
 import { formatPromptDay } from '@/lib/prompt-time'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { agentToolFor, type RevealSets, type SetupExtraction, type SetupRecentPrompt, type SetupScanAgent } from '../setup-data'
 import { promptStamp } from '../setup-reveal'
 import { joinNames } from '../format'
 import { PageHeading } from './shared'
 
-const timesLabel = (times: number) => times === 1 ? 'asked once' : `asked ${times}×`
+const timesLabel = (times: number, t: (s: string) => string) =>
+  times === 1 ? t('asked once') : interpolate(t('asked {times}×'), { times })
 
 /** A landed card's title decrypts from scramble into the words read from the prompts. Reduced motion: plain text.
  *  Screen readers get only the final words (sr-only); the scrambling span is hidden from them. */
@@ -20,10 +22,11 @@ function LandedTitle({ text }: { text: string }) {
 
 /** One of the three sets. `null` items: still being extracted, so it shows placeholders until they land. */
 function RevealSet<T>({ title, items, render }: { title: string; items: T[] | null; render: (item: T) => ReactNode }) {
+  const { t } = useI18n()
   if (items && items.length === 0) return null
   return (
     <section className={items ? 'reveal-set is-landed' : 'reveal-set'} aria-labelledby={`reveal-${title}`} aria-busy={!items}>
-      <h2 id={`reveal-${title}`}>{title}</h2>
+      <h2 id={`reveal-${title}`}>{t(title)}</h2>
       <ol>
         {items ? items.map(render) : [0, 1, 2].map((index) => <li key={index} className="reveal-card is-pending" aria-hidden="true" />)}
       </ol>
@@ -33,17 +36,18 @@ function RevealSet<T>({ title, items, render }: { title: string; items: T[] | nu
 
 /** No logged-in agent yet: the prompts themselves, counted per agent and quoted as typed. The cards follow in My Work. */
 function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; recentPrompts: SetupRecentPrompt[] }) {
+  const { t } = useI18n()
   return (
     <div className="reveal-sets">
       <section className="reveal-set is-landed" aria-labelledby="reveal-prompts">
-        <h2 id="reveal-prompts">Conversations</h2>
+        <h2 id="reveal-prompts">{t('Conversations')}</h2>
         <ol>
           {agents.map((agent) => (
             <li key={agent.id} className="reveal-card">
               <span className="lead-icon" aria-hidden="true"><AgentMark tool={agentToolFor(agent.id)} /></span>
               <div>
                 <p className="title">{agent.label}</p>
-                <p className="meta">{agent.prompts.toLocaleString('en-US')} messages</p>
+                <p className="meta">{interpolate(t('{count} messages'), { count: agent.prompts.toLocaleString('en-US') })}</p>
               </div>
             </li>
           ))}
@@ -51,7 +55,7 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
       </section>
       {recentPrompts.length > 0 && (
         <section className="reveal-set is-landed" aria-labelledby="reveal-latest">
-          <h2 id="reveal-latest">Latest</h2>
+          <h2 id="reveal-latest">{t('Latest')}</h2>
           <ol>
             {recentPrompts.map((prompt) => (
               <li key={`${prompt.agent}-${prompt.at}`} className="reveal-card">
@@ -73,6 +77,7 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
 export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, onContinue }: {
   agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null; onContinue: () => void
 }) {
+  const { t, locale } = useI18n()
   // The results came only from the tools the person chose to upload.
   const withPrompts = agents.filter((agent) => agent.prompts > 0 && (!uploadedAgents || uploadedAgents.includes(agent.id)))
   const promptCount = withPrompts.reduce((sum, agent) => sum + agent.prompts, 0)
@@ -84,27 +89,39 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   if (keptLocal || (hostedNotice && !hasResults)) {
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title="Continue setup."
-          lead={hostedNotice ?? 'You skipped this step. Continue setting up Claude-Mem.'} />
+        <PageHeading id="reveal-title" title={t('Continue setup.')}
+          lead={hostedNotice ? t(hostedNotice) : t('You skipped this step. Continue setting up Claude-Mem.')} />
         <div className="actions is-centered">
-          <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
+          <button type="button" className="primary" onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></button>
         </div>
       </section>
     )
   }
+  const agentNames = withPrompts.map((agent) => agent.label)
+  const agentsJoined = locale === 'zh-CN'
+    ? (agentNames.length < 2 ? agentNames.join('') : `${agentNames.slice(0, -1).join('、')} 和 ${agentNames[agentNames.length - 1]}`)
+    : joinNames(agentNames)
+
+  const leadText = promptCount > 0
+    ? interpolate(t('From {count} messages across {agents}: what you’re working on, what you’re after, and how you like things done.'), {
+        count: promptCount.toLocaleString('en-US'),
+        agents: agentsJoined,
+      })
+    : undefined
+
   return (
     <section aria-labelledby="reveal-title">
-      <PageHeading id="reveal-title" title={hostedNotice ? 'Continue setup.' : 'Claude-Mem already knows your work.'}
-        lead={!hostedNotice && promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} messages across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
-      {hostedNotice && <p className="scan-status" role="status">{hostedNotice}</p>}
+      <PageHeading id="reveal-title" title={hostedNotice ? t('Continue setup.') : t('Claude-Mem already knows your work.')}
+        lead={hostedNotice ? undefined : leadText} />
+      {hostedNotice && <p className="scan-status" role="status">{t(hostedNotice)}</p>}
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <div className="reveal-sets">
         <RevealSet title="Work" items={reveal.work} render={(work) => (
           <li key={work.id} className="reveal-card">
             <span className="lead-icon" aria-hidden="true"><AgentMark tool={work.agent} /></span>
             <div>
               <p className="title"><LandedTitle text={work.title} /></p>
-              <p className="meta">Last active {formatPromptDay(work.lastActiveAt)}</p>
-              {work.progressPercent !== undefined && <div className="bar" role="img" aria-label={`${work.progressPercent}% done`}><span style={{ width: `${work.progressPercent}%` }} /></div>}
+              <p className="meta">{interpolate(t('Last active {time}'), { time: formatPromptDay(work.lastActiveAt) })}</p>
+              {work.progressPercent !== undefined && <div className="bar" role="img" aria-label={interpolate(t('{percent}% done'), { percent: work.progressPercent })}><span style={{ width: `${work.progressPercent}%` }} /></div>}
             </div>
           </li>
         )} />
@@ -113,7 +130,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
             <span className="lead-icon" aria-hidden="true">{goal.rank}</span>
             <div>
               <p className="title"><LandedTitle text={goal.title} /></p>
-              <p className="meta">{timesLabel(goal.timesAsked)}, last {formatPromptDay(goal.latestAt)}</p>
+              <p className="meta">{interpolate(t('{times}, last {time}'), { times: timesLabel(goal.timesAsked, t), time: formatPromptDay(goal.latestAt) })}</p>
             </div>
           </li>
         )} />
@@ -128,7 +145,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
         )} />
       </div>}
       <div className="actions is-centered">
-        <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
+        <button type="button" className="primary" onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></button>
       </div>
     </section>
   )

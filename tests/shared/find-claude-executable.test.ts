@@ -458,6 +458,43 @@ describe('findClaudeExecutable caching', () => {
     whichOutput = '/b/claude\n';
     expect(findClaudeExecutable('SDK')).toBe('/b/claude');
   });
+
+  it('honors a CLAUDE_CODE_PATH set after a discovered CLI was cached', () => {
+    installFakes();
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+
+    // The user pins a CLI in settings.json; no cache reset, no worker restart.
+    installFakes({ settingsPath: '/custom/claude' });
+    expect(findClaudeExecutable('SDK')).toBe('/custom/claude');
+  });
+
+  it('follows CLAUDE_CODE_PATH when it changes or is cleared', () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    whichOutput = '/a/claude\n';
+    fakeClis.set('/a/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    fakeClis.set('/other/claude', { version: '2.1.151', supportsDontAsk: true });
+    expect(findClaudeExecutable('SDK')).toBe('/custom/claude');
+
+    installFakes({ settingsPath: '/other/claude' });
+    expect(findClaudeExecutable('SDK')).toBe('/other/claude');
+
+    installFakes();
+    expect(findClaudeExecutable('SDK')).toBe('/a/claude');
+  });
+
+  it('keeps serving the cached CLI while CLAUDE_CODE_PATH is unchanged', () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '2.1.150', supportsDontAsk: true });
+    expect(findClaudeExecutable('SDK')).toBe('/custom/claude');
+    const probesAfterFirst = probeCalls.length;
+
+    expect(findClaudeExecutable('SDK')).toBe('/custom/claude');
+    expect(probeCalls.length).toBe(probesAfterFirst);
+  });
 });
 
 describe('findClaudeExecutable on Windows', () => {

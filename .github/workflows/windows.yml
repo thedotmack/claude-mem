@@ -14,6 +14,14 @@ on:
   push:
     branches: [main]
 
+
+# A newer push to the same branch or PR cancels the older run: its result is
+# already out of date. 174 of 224 CI push runs on main (Nov 1-7) were superseded
+# yet ran to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # Pinned to windows-2022 (VS2022 / v17). The windows-latest image moved to

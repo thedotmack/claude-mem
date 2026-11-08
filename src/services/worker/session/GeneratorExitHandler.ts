@@ -63,10 +63,19 @@ export async function handleGeneratorExit(
     return;
   }
   if (PRESERVED_ABORT_CATEGORIES.has(abortCategory)) {
+    // A claim left behind by this dead run is orphaned: no run will confirm
+    // and none is in flight, so pruning could never expire it (claimed items
+    // are exempt while a live send owns them). Releasing is the live-only
+    // move — the fragment keeps its original buffered age and a later
+    // generator (transport backoff or fresh activity) starts from pending.
+    // It gains nothing by changing its path, and unclaimed work of this
+    // buffer stays fresh for its normal expiry window.
+    const released = (await sessionManager.resetProcessingToPending?.(sessionDbId)) ?? 0;
     session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+      released,
     });
     if (resumesOnTransportBackoff) {
       sessionManager.scheduleTransportResume?.(sessionDbId);

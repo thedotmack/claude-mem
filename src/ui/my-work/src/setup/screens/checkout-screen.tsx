@@ -1,10 +1,11 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon } from 'lucide-react'
 import { GlareCard } from '@/components/aceternity/glare-card'
+import { interpolate, useI18n } from '@/lib/i18n'
 import { PLAN, type SetupCheckoutView } from '../setup-data'
 import { money } from '../format'
 import { PageHeading } from './shared'
 
-const perMonth = (cents: number) => `${money(cents)} / month`
+const perMonth = (cents: number, t: (s: string) => string) => interpolate(t('{amount} / month'), { amount: money(cents) })
 
 /** The card-and-lock picture in 06-checkout-ux-09-pass5.png. */
 function SecureCardArt() {
@@ -30,44 +31,45 @@ function SecureCardArt() {
  * then Stripe); the page moves on to Finish Setup when the terminal reports it paid. While it is open, Continue opens it again.
  */
 export function CheckoutScreen({ checkout, installerStopped, onBack, onContinue }: { checkout: SetupCheckoutView | null; installerStopped: boolean; onBack: () => void; onContinue: () => void }) {
+  const { t } = useI18n()
   const open = checkout?.state === 'requested' || checkout?.state === 'waiting'
   return (
     <section aria-labelledby="checkout-title">
-      <PageHeading id="checkout-title" title="Checkout" lead="CMEM Pro · Cloud Sync included" />
+      <PageHeading id="checkout-title" title={t('Checkout')} lead={t('CMEM Pro · Cloud Sync included')} />
       <div className="checkout-grid">
         <div className="panel is-memory checkout-receipt">
           <dl className="receipt">
-            <div><dt>CMEM Pro after trial</dt><dd>{perMonth(PLAN.monthlyCents)}</dd></div>
-            <div><dt>Cloud Sync</dt><dd><s>{perMonth(PLAN.cloudSyncCents)}</s> <strong className="free">Free</strong></dd></div>
-            <div><dt>Total after trial</dt><dd><s>{perMonth(PLAN.monthlyCents + PLAN.cloudSyncCents)}</s> <strong>{perMonth(PLAN.monthlyCents)}</strong></dd></div>
-            <div className="due"><dt>Due today</dt><dd>$0</dd></div>
+            <div><dt>{t('CMEM Pro after trial')}</dt><dd>{perMonth(PLAN.monthlyCents, t)}</dd></div>
+            <div><dt>{t('Cloud Sync')}</dt><dd><s>{perMonth(PLAN.cloudSyncCents, t)}</s> <strong className="free">{t('Free')}</strong></dd></div>
+            <div><dt>{t('Total after trial')}</dt><dd><s>{perMonth(PLAN.monthlyCents + PLAN.cloudSyncCents, t)}</s> <strong>{perMonth(PLAN.monthlyCents, t)}</strong></dd></div>
+            <div className="due"><dt>{t('Due today')}</dt><dd>$0</dd></div>
           </dl>
           <div className="checkout-notes">
-            <p>Your trial ends after 30 days or when included usage runs out, whichever comes first. Billing starts then.</p>
-            <p>Usage automatically upgrades Pro $30 → Heavy $70 → Max $100/month, plus overages.</p>
+            <p>{t('Your trial ends after 30 days or when included usage runs out, whichever comes first. Billing starts then.')}</p>
+            <p>{t('Usage automatically upgrades Pro $30 → Heavy $70 → Max $100/month, plus overages.')}</p>
           </div>
           <details className="checkout-terms">
-            <summary><ChevronDownIcon aria-hidden="true" />Trial and billing details</summary>
+            <summary><ChevronDownIcon aria-hidden="true" />{t('Trial and billing details')}</summary>
             <ul>
-              <li>A card is required. Prepaid cards are not eligible for the trial.</li>
-              <li>Upgrade price differences are prorated and charged immediately. Overages are billed at renewal.</li>
-              <li>Other AI charges still apply. Cancel in your account.</li>
+              <li>{t('A card is required. Prepaid cards are not eligible for the trial.')}</li>
+              <li>{t('Upgrade price differences are prorated and charged immediately. Overages are billed at renewal.')}</li>
+              <li>{t('Other AI charges still apply. Cancel in your account.')}</li>
             </ul>
           </details>
         </div>
         <div className="panel checkout-handoff">
           {/* setup.css sizes the glare card to the art and drops its dark foil frame for the light funnel. */}
           <div className="checkout-glare"><GlareCard className="checkout-glare-face"><SecureCardArt /></GlareCard></div>
-          <h2>Secure checkout with Stripe</h2>
-          <p>Add your card, then return to finish setup.</p>
-          {open && <p className="checkout-status" role="status">Checkout is open in your browser.</p>}
+          <h2>{t('Secure checkout with Stripe')}</h2>
+          <p>{t('Add your card, then return to finish setup.')}</p>
+          {open && <p className="checkout-status" role="status">{t('Checkout is open in your browser.')}</p>}
           {checkout?.state === 'failed' && <p className="scan-error" role="alert">{checkout.error}</p>}
         </div>
       </div>
       <div className="actions">
-        <button type="button" className="secondary" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>
+        <button type="button" className="secondary" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />{t('Back')}</button>
         {/* No installer is left to open checkout; the page's alert says how to restart. */}
-        {!installerStopped && <button type="button" className="primary" onClick={onContinue}>{open ? 'Open checkout again' : 'Continue to Finish Setup'} <ArrowRightIcon aria-hidden="true" /></button>}
+        {!installerStopped && <button type="button" className="primary" onClick={onContinue}>{open ? t('Open checkout again') : t('Continue to Finish Setup')} <ArrowRightIcon aria-hidden="true" /></button>}
       </div>
     </section>
   )

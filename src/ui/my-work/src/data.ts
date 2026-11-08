@@ -1,5 +1,7 @@
 // Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
 import type { WorkModel } from './live/work-data-source.ts'
+import type { WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
+import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -31,6 +33,8 @@ export interface Request {
   detailRevision?: string
   /** Exact card counts when the overview carries only a bounded preview. */
   detailCounts?: { workProduct: number }
+  /** The images its listed records link: the count and the newest four. Rides the compact overview; absent when it has none. */
+  media?: WorkViewRequestMedia
   title: string | null
   /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
   titleRepeatsPrompt?: boolean
@@ -45,6 +49,8 @@ export interface Request {
   /** Sortable start time. The List sorts on this, never on the display string. */
   startedAtIso?: string
   runningFor: string
+  /** Live records only: no completion is recorded, so `runningFor` counts up to now and the card keeps it ticking. */
+  runningLive?: boolean
   stage: Stage
   state: LiveState
   progress: {
@@ -64,7 +70,8 @@ export interface Request {
   terminal: string[]
   activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
-  granular: { kind: 'work' | 'memory'; text: string; at: string }[]
+  /** `media`: the record's image refs (ids and labels only); absent when it has none. */
+  granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
   conversations: { tool: string; at: string; title: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
@@ -185,10 +192,12 @@ export const SAMPLE_REQUESTS: Request[] = [
       { title: 'Spec', tasks: [{ name: 'Derive from 466 prompts', done: true }, { name: 'Decide open questions', done: true }] },
       { title: 'Wireframe', tasks: [{ name: 'Requirement ledger', done: true }, { name: 'My Work screens', done: true }, { name: 'My Rules screens', done: false }] },
     ],
+    // Six sample images (sample-media.ts): one record holds all six, a second shares the first and says more stayed on its event.
+    media: { count: SAMPLE_MEDIA_REFS.length, preview: SAMPLE_MEDIA_REFS.slice(0, 4) },
     granular: [
-      { kind: 'work', text: 'Wireframe: My Work screens done', at: '1:56 pm' },
+      { kind: 'work', text: 'Wireframe: My Work screens done', at: '1:56 pm', media: { version: 1, attachments: SAMPLE_MEDIA_REFS } },
       { kind: 'work', text: 'Wireframe: requirement ledger done', at: '1:51 pm' },
-      { kind: 'memory', text: 'Card animation redesigned: terminal output that becomes human text', at: '1:45 pm' },
+      { kind: 'memory', text: 'Card animation redesigned: terminal output that becomes human text', at: '1:45 pm', media: { version: 1, attachments: SAMPLE_MEDIA_REFS.slice(0, 1), overflow: true } },
       { kind: 'work', text: 'Spec: open questions decided', at: '1:41 pm' },
       { kind: 'memory', text: 'My Rules named, replacing “Manual”', at: '1:33 pm' },
       { kind: 'work', text: 'Spec: home and on the go section written', at: '1:28 pm' },

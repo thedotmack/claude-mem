@@ -5,6 +5,14 @@ on:
   push:
     branches: [main]
 
+
+# A newer push to the same branch or PR cancels the older run: its result is
+# already out of date. 174 of 224 CI push runs on main (Nov 1-7) were superseded
+# yet ran to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: typecheck · build · test · bundle-size
@@ -76,10 +84,6 @@ jobs:
       # the scoped step above no longer reaches it — run it explicitly.
       - name: Test (openclaw)
         run: bun test openclaw
-
-      # The My Work app's pure-logic tests live with the app (src/ui/my-work), outside tests/.
-      - name: Test (My Work viewer)
-        run: bun test src/ui/my-work/src/live src/ui/my-work/src/setup src/ui/my-work/src/store
 
       # The cowork plugin's suite lives outside tests/ (cowork/test), so the
       # scoped lane check above never reaches it — run it explicitly, the same

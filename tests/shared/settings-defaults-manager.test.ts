@@ -70,6 +70,26 @@ describe('SettingsDefaultsManager', () => {
     }
   });
 
+  it('ships the Grok Bot awareness push off with no agent IDs until explicitly configured', () => {
+    const defaults = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
+    };
+    expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
+
+    const optIn = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
+    };
+    writeFileSync(settingsPath, JSON.stringify(optIn));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+
+    writeFileSync(settingsPath, '{}');
+    Object.assign(process.env, optIn);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+  });
+
   describe('loadFromFile', () => {
     describe('file does not exist', () => {
       it('should create file with defaults when file does not exist', () => {
@@ -1011,10 +1031,146 @@ describe('SettingsDefaultsManager', () => {
       expect(warnings.filter((line) => line.includes('Migrated CLAUDE_MEM_'))).toHaveLength(2);
     });
 
+    // Image capture became on by default. Every settings.json seeded while it
+    // was off holds 'false', and a persisted value wins over DEFAULTS, so the
+    // new default would never reach those installs without this one move. A
+    // 'false' saved afterwards (the "Keep images" switch) must stay, and a
+    // file the move cannot rewrite must keep saying what the worker does.
+    describe('image capture default-on migration', () => {
+      const KEY = 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
+
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes(KEY));
+      }
+
+      it('ships capture on and inference off, in the worker and the viewer', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+        expect(defaults[KEY]).toBe('true');
+        expect(defaults.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED).toBe('false');
+        expect(VIEWER_DEFAULT_SETTINGS[KEY]).toBe('true');
+      });
+
+      it('seeds a fresh settings file with capture on', () => {
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result[KEY]).toBe('true');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe('true');
+      });
+
+      it('moves the seeded false to true once, with one log line, and leaves inference off', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          [KEY]: 'false',
+          CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value[KEY]).toBe('true');
+        expect(first.value.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED).toBe('false');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          [KEY]: 'true',
+          CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
+        });
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain('off the old false default to true:');
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value[KEY]).toBe('true');
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ [KEY]: 'false' })],
+        ['on an install that already had capture on', JSON.stringify({ [KEY]: 'true' })],
+        ['on a settings file created fresh', null],
+      ])('keeps "Keep images" off when the user turns it off %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: 'false' }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value[KEY]).toBe('false');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe('false');
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('leaves a JSON boolean false written by hand untouched', () => {
+        const raw = JSON.stringify({ [KEY]: false });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result[KEY]).toBe('false');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it('a read-only load keeps the saved false and writes nothing', () => {
+        const raw = JSON.stringify({ [KEY]: 'false' });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
+
+        expect(result[KEY]).toBe('false');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        // The worker's writable load still gets its one chance afterwards.
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath, false)[KEY]).toBe('true');
+      });
+
+      it('keeps the saved false, warning once, when the move cannot be saved', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) return;
+        const storeDir = join(tempDir, 'read-only-store');
+        mkdirSync(storeDir);
+        const storedSettings = join(storeDir, 'settings.json');
+        const raw = JSON.stringify({ [KEY]: 'false' });
+        writeFileSync(storedSettings, raw);
+        symlinkSync(storedSettings, settingsPath);
+        chmodSync(storeDir, 0o555);
+        try {
+          const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
+
+          for (const { value } of loads) expect(value[KEY]).toBe('false');
+          const failures = loads.flatMap(({ warnings }) => migrationWarnings(warnings));
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toContain('keeping the saved false');
+          expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
+        } finally {
+          chmodSync(storeDir, 0o755);
+        }
+      });
+
+      it('an environment override still wins over the moved value', () => {
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: 'false' }));
+        process.env[KEY] = 'false';
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath)[KEY]).toBe('false');
+      });
+    });
+
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
     // sign-in keys were declared, an installer-written settings.json lost
     // them on every load (the round-trip-loss gap fixed by the install-first
     // login flow plan, Phase 4).
+    // The installer's email opt-in reads these back to avoid asking twice;
+    // an undeclared key would be dropped on the next settings rewrite.
+    it('round-trips the installer email opt-in keys', () => {
+      const signup = {
+        CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: 'dev@example.com',
+        CLAUDE_MEM_ONLINE_SIGNUP_NOTE: 'onboarding a team',
+        CLAUDE_MEM_ONLINE_SIGNUP_AT: '2026-11-07T12:00:00.000Z',
+        CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'false',
+      };
+      writeFileSync(settingsPath, JSON.stringify({ env: signup }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result).toMatchObject(signup);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toMatchObject(signup);
+    });
+
     describe('CMEM Pro sign-in keys round-trip', () => {
       const proKeys = {
         CLAUDE_MEM_PRO_TRIAL_EMAIL: 'dev@example.com',

@@ -30,11 +30,11 @@
       "body": {
         "version": 1,
         "requested_model": "~deepseek/deepseek-flash-latest",
-        "resolved_model": "deepseek/deepseek-v4.1-flash",
+        "resolved_model": null,
         "supports_image_input": false,
         "reason": "inference_disabled",
         "bounds": null,
-        "qualified_at": "2026-10-03T00:06:12.630Z",
+        "qualified_at": null,
         "ttl_seconds": 3600
       }
     },

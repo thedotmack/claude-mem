@@ -29,6 +29,7 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 // readdir-dependent file order runs them after this file. Same pattern as
 // tests/context/formatters/agent-formatter.test.ts.
 import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 const realModeManagerSnapshot = { ...realModeManagerModule };
 
@@ -70,7 +71,7 @@ function makeDbManager(storeObservations = mock(() => ({
     }),
     getSessionStore: () => ({
       getPromptNumberFromUserPrompts: () => 1,
-      ensureMemorySessionIdRegistered: () => {},
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => {},
       storeObservations,
     }),
     getChromaSync: () => ({ syncObservation: mock(() => Promise.resolve()) }),

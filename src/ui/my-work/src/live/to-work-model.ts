@@ -72,7 +72,8 @@ function formatPromptStamp(epoch: number) {
   const two = (value: number) => String(value).padStart(2, '0')
   return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`
 }
-function formatDuration(milliseconds: number) {
+/** How long a request has been going, as the card shows it. Exported so the card can keep an open request's time current. */
+export function formatDuration(milliseconds: number) {
   const minutes = Math.max(0, Math.floor(milliseconds / 60000))
   if (minutes < 1) return 'Just started'
   if (minutes < 60) return `${minutes} min`
@@ -180,6 +181,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
     runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
+    // Counts up only while the request is open: not closed, and not completed by a recorded time or a lifecycle that
+    // says complete (the projection's own rule, even when the lifecycle carries no time).
+    runningLive: started && completedEpoch === null && status !== 'closed' && raw.lifecycle?.complete !== true ? true : undefined,
     stage,
     state,
     closed: status === 'closed' || undefined,
@@ -207,6 +211,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       kind: activity.kind === 'observation' ? 'memory' as const : 'work' as const,
       text: cleanText(activity.detail ? `${activity.title}: ${activity.detail}` : activity.title, 200),
       at: formatRecordTime(activity.atEpoch, now),
+      ...(activity.media ? { media: activity.media } : {}),
     })).filter((record) => record.text),
     conversations: raw.conversationKeys.map((key) => {
       const [, platform, sessionId] = parseRecordKey(key)
@@ -221,6 +226,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : 'Time not recorded', quote: cleanText(prompt.text, 400) }))
       .filter((prompt) => prompt.quote),
     workProduct: mapWorkProduct(raw.workProduct),
+    ...(raw.media ? { media: raw.media } : {}),
     followUps: [],
     story: review ? storySteps(review, now) : [],
     storyNarrative: review?.narrative?.trim() || undefined,
@@ -375,7 +381,7 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
     timesSeen: rule.timesSeen,
     latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : 'not recorded',
     // Only orders rules by strength; an unrecorded date counts as a year old rather than as recent.
-    latestDaysAgo: Number.isFinite(latest) ? Math.max(0, Math.floor((now - latest) / DAY_MS)) : 365,
+    latestDaysAgo: Number.isFinite(latest) ? Math.max(0, (now - latest) / DAY_MS) : 365,
     source,
     status: rule.status,
     replacedBy: rule.replacedBy ? { ruleId: rule.replacedBy, at: Number.isFinite(replacedAt) ? formatRecordTime(replacedAt, now) : 'a date not recorded' } : undefined,

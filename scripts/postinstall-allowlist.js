@@ -45,6 +45,7 @@ export const POSTINSTALL_ALLOWLIST = [
   '@tree-sitter-grammars/tree-sitter-yaml',
   '@tree-sitter-grammars/tree-sitter-markdown',
   '@derekstride/tree-sitter-sql',
+  'tree-sitter-delphi',
   'esbuild',
   '@biomejs/biome',
   'better-sqlite3',

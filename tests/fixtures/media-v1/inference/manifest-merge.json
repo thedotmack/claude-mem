@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "metadata.cmem_media_v1 merge rules: union by attachment id, existing order first, new refs appended in request-label order, inspection is the OR of both sides, at most 32 refs; refs that do not fit stay on the source event and set overflow:true. Other metadata keys are preserved byte-for-byte as JSON values. manifest_changed true on a native row means increment sync_rev and clear synced_at.",
+  "description": "metadata.cmem_media_v1 merge rules: union by attachment id, existing order first, new refs appended in request-label order, inspection is the OR of both sides, at most 32 refs; refs that do not fit stay on the source event and set overflow:true. Other metadata keys are preserved byte-for-byte as JSON values. manifest_changed true on a native row means increment sync_rev and clear synced_at. Capture-only links (docs/media-contract-v1.md, \"Capture-only linkage\") follow the same rules with inspection uninspected.",
   "cases": [
     {
       "name": "first_links_on_row_without_namespace",
@@ -859,6 +859,162 @@
       "expected_event_level": [
         "33333333-3333-4333-8333-333333333333"
       ],
+      "manifest_changed": true
+    },
+    {
+      "name": "capture_only_links_every_retained_image_uninspected",
+      "existing_metadata": {
+        "other_namespace": {
+          "keep": true
+        }
+      },
+      "new_refs": [
+        {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "label": "event1_image1",
+          "inspection": "uninspected"
+        },
+        {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "label": "event1_image2",
+          "inspection": "uninspected"
+        }
+      ],
+      "expected_metadata": {
+        "other_namespace": {
+          "keep": true
+        },
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "33333333-3333-4333-8333-333333333333",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            },
+            {
+              "id": "44444444-4444-4444-8444-444444444444",
+              "label": "event1_image2",
+              "inspection": "uninspected"
+            }
+          ]
+        }
+      },
+      "manifest_changed": true
+    },
+    {
+      "name": "capture_only_relink_never_downgrades_inspected",
+      "existing_metadata": {
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "33333333-3333-4333-8333-333333333333",
+              "label": "event1_image1",
+              "inspection": "inspected"
+            }
+          ]
+        }
+      },
+      "new_refs": [
+        {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "label": "event1_image1",
+          "inspection": "uninspected"
+        }
+      ],
+      "expected_metadata": {
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "33333333-3333-4333-8333-333333333333",
+              "label": "event1_image1",
+              "inspection": "inspected"
+            }
+          ]
+        }
+      },
+      "manifest_changed": false
+    },
+    {
+      "name": "capture_only_skipped_turn_links_backward_to_most_recent_observation",
+      "existing_metadata": {
+        "other_namespace": {
+          "keep": true
+        },
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            }
+          ]
+        }
+      },
+      "new_refs": [
+        {
+          "id": "55555555-5555-4555-8555-555555555555",
+          "label": "event1_image1",
+          "inspection": "uninspected"
+        }
+      ],
+      "expected_metadata": {
+        "other_namespace": {
+          "keep": true
+        },
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            },
+            {
+              "id": "55555555-5555-4555-8555-555555555555",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            }
+          ]
+        }
+      },
+      "manifest_changed": true
+    },
+    {
+      "name": "capture_only_skipped_turn_links_forward_before_turn_refs",
+      "existing_metadata": {},
+      "new_refs": [
+        {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "label": "event1_image1",
+          "inspection": "uninspected"
+        },
+        {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "label": "event1_image1",
+          "inspection": "uninspected"
+        }
+      ],
+      "expected_metadata": {
+        "cmem_media_v1": {
+          "version": 1,
+          "attachments": [
+            {
+              "id": "66666666-6666-4666-8666-666666666666",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            },
+            {
+              "id": "77777777-7777-4777-8777-777777777777",
+              "label": "event1_image1",
+              "inspection": "uninspected"
+            }
+          ]
+        }
+      },
       "manifest_changed": true
     },
     {
