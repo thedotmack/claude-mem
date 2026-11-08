@@ -305,6 +305,8 @@ describe('what the fitted block delivers (#3811 review)', () => {
     expect(preview.stats).toEqual(model.stats);
     expect(preview.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
     expect(preview.text).toContain('Terminal preview truncated');
-    expect(preview.text.endsWith(`\x1b[31m${WARNING}\x1b[0m`)).toBe(true);
+    // Above the timeline: the preview ends on its newest entry, never on the warning.
+    expect(preview.text.startsWith(`\x1b[31m${WARNING}\x1b[0m\n\n`)).toBe(true);
+    expect(preview.text.endsWith(`\x1b[31m${WARNING}\x1b[0m`)).toBe(false);
   });
 });

@@ -4,10 +4,10 @@
  * delivery limit. The same rows render two ways: terse for the agent, and a
  * readable preview for the person (forHuman).
  *
- * The agent block is the memory timeline: its header says how to read it, and
- * it ends on the newest timeline entry, with nothing after it, so later updates
- * can append timeline rows to it. How to use claude-mem's tools is not in this
- * block; it is in the MCP server's instructions (shared/memory-instructions.ts).
+ * Both renders are the memory timeline: the header says how to read it, and it
+ * ends on the newest timeline entry, with no closing lines after it, so later
+ * updates can append timeline rows to it. How to use claude-mem's tools is not
+ * in either; it is in the MCP server's instructions (shared/memory-instructions.ts).
  */
 
 import path from 'path';
@@ -50,7 +50,7 @@ import {
   type HumanTimelineEntry,
 } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
-import { renderPreviouslySection, renderTerminalFooter } from './sections/FooterRenderer.js';
+import { renderPreviouslySection } from './sections/PreviouslyRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 import {
@@ -122,13 +122,19 @@ interface AgentLeadSections {
   workStateSection: string;
 }
 
+/**
+ * The terminal preview with the offsets its truncation cuts at, in layout
+ * order: header, prior reply, timeline, then the last summary's fields.
+ */
 interface RenderedContext {
   text: string;
+  /** Where the prior reply starts; the header ends here. */
+  previousStart: number;
+  /** Where the timeline starts; the prior reply ends here. */
   timelineStart: number;
+  /** Where the timeline ends; the last summary's fields follow. */
   timelineEnd: number;
-  entries?: HumanTimelineEntry[];
-  summaryEnd: number;
-  previousEnd: number;
+  entries: HumanTimelineEntry[];
 }
 
 /** The rows both renders draw from, selected once per render pass. */
@@ -187,7 +193,11 @@ function buildAgentContextOutput(
   return output.join('\n').trimEnd();
 }
 
-/** The terminal preview, with the offsets its truncation needs (#4252). */
+/**
+ * The terminal preview, in the agent block's order: header, prior reply, then
+ * the timeline, ending on its newest entry. Returns the offsets its truncation
+ * needs (#4252).
+ */
 function buildHumanContextOutput(
   project: string,
   observations: Observation[],
@@ -200,20 +210,17 @@ function buildHumanContextOutput(
   const parts = selectContextParts(observations, summaries, config, cwd, sessionId);
   const output: string[] = [...renderHeader(project, parts.economics, config, true, headerTime)];
 
+  const previousStart = output.join('\n').length + 1;
+  output.push(...renderPreviouslySection(parts.priorMessages, true));
+
   const entries = buildHumanTimelineEntries(parts.timeline, parts.fullObservationIds, config, cwd);
   const timelineStart = output.join('\n').length + 1;
   output.push(...renderHumanTimelineEntries(entries));
   const timelineEnd = output.join('\n').length;
 
   if (parts.lastSummary) output.push(...renderSummaryFields(parts.lastSummary, true));
-  const summaryEnd = output.join('\n').length;
 
-  output.push(...renderPreviouslySection(parts.priorMessages, true));
-  const previousEnd = output.join('\n').length;
-
-  output.push(...renderTerminalFooter(parts.economics, config));
-
-  return { text: output.join('\n').trimEnd(), timelineStart, timelineEnd, entries, summaryEnd, previousEnd };
+  return { text: output.join('\n').trimEnd(), previousStart, timelineStart, timelineEnd, entries };
 }
 
 /**
@@ -296,12 +303,12 @@ function paintRed(text: string): string {
  * (including empty-state, missing-DB, and the no-memories-yet welcome hint
  * in SearchRoutes) so a multi-hour intentional pause is not silent.
  *
- * BELOW the terminal preview, not above it: the timeline runs long, so a
- * warning at the top has already scrolled off by the time the context finishes
- * printing, and the last thing rendered is the thing still on screen. The
- * agent's timeline block is the exception: it must end on its newest timeline
- * entry so later rows can be appended, so it carries the warning under its
- * header instead (buildAgentContextOutput).
+ * This helper puts it BELOW a block that has no timeline (the welcome hint),
+ * where the last thing rendered is the thing still on screen. A timeline
+ * block never has anything after its newest entry, so later rows can be
+ * appended to it: the agent block carries the warning under its header
+ * (buildAgentContextOutput) and the terminal preview above it
+ * (prependObserverHealthWarning).
  */
 export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
   return appendObserverHealthWarning(observerHealthWarning(forHuman), text);
@@ -380,35 +387,48 @@ function appendObserverHealthWarning(warning: string, text: string): string {
   return text ? `${text}\n\n${warning}` : warning;
 }
 
-/** Truncate presentation only; selection always belongs to the model budget. */
-function truncateTerminalPreview(rendered: RenderedContext | string, limit: number): string {
-  const { text, timelineStart, timelineEnd, entries, summaryEnd, previousEnd } = typeof rendered === 'string'
-    ? { text: rendered, timelineStart: 0, timelineEnd: rendered.length,
-        entries: undefined, summaryEnd: rendered.length, previousEnd: rendered.length }
-    : rendered;
-  if (text.length <= limit) return text;
+/** The warning above a terminal timeline, which must end on its newest entry. */
+function prependObserverHealthWarning(warning: string, text: string): string {
+  if (!warning) return text;
+  return text ? `${warning}\n\n${text.replace(/^\n+/, '')}` : warning;
+}
 
-  const prefixWithNotice = (omitted: boolean) => text.slice(0, timelineStart)
-    + `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context; ${omitted
+/**
+ * Truncate presentation only; selection always belongs to the model budget.
+ *
+ * The preview ends on its newest timeline entry, so that end is what is kept:
+ * complete newest-first entries first, then the last summary's fields, then as
+ * much of the prior reply (above the timeline) as still fits. The notice sits
+ * where the cut is, just above the oldest entry still shown.
+ */
+function truncateTerminalPreview(rendered: RenderedContext | string, limit: number): string {
+  const truncationNotice = (omitted: boolean) =>
+    `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context; ${omitted
       ? 'additional observations are not shown here.'
       : 'some presentation text is not shown here.'}]\n`;
-  const footer = text.slice(previousEnd);
-  const summary = text.slice(timelineEnd, summaryEnd);
-  const previous = text.slice(summaryEnd, previousEnd);
-  if (!entries) return (prefixWithNotice(false) + text.slice(timelineStart)).slice(0, limit);
+  if (typeof rendered === 'string') {
+    if (rendered.length <= limit) return rendered;
+    // No row boundaries to cut at: keep the newest end, which ends the preview.
+    const notice = truncationNotice(false);
+    return notice + rendered.slice(rendered.length - Math.max(0, limit - notice.length));
+  }
+  const { text, previousStart, timelineStart, timelineEnd, entries } = rendered;
+  if (text.length <= limit) return text;
 
-  // The footer is short and useful. Fit complete, newest-first timeline entries
-  // before spending any of the remaining display budget on the prior message.
+  const head = text.slice(0, previousStart);
+  const previous = text.slice(previousStart, timelineStart);
+  const summary = text.slice(timelineEnd);
+
   let omitted = 0;
   let timeline = renderHumanTimelineEntries(entries).join('\n');
-  const allVisiblePrefix = prefixWithNotice(false);
-  const prefix = allVisiblePrefix.length + timeline.length + footer.length <= limit
-    ? allVisiblePrefix : prefixWithNotice(true);
-  while (omitted < entries.length && prefix.length + timeline.length + footer.length > limit) {
+  const noticeWithAllEntries = truncationNotice(false);
+  const notice = head.length + noticeWithAllEntries.length + timeline.length <= limit
+    ? noticeWithAllEntries : truncationNotice(true);
+  while (omitted < entries.length && head.length + notice.length + timeline.length > limit) {
     omitted++;
     timeline = renderHumanTimelineEntries(entries.slice(omitted)).join('\n');
   }
-  const room = limit - prefix.length - timeline.length - footer.length;
+  const room = limit - head.length - notice.length - timeline.length;
   const keptSummary = summary.length <= room ? summary : '';
   const previousRoom = room - keptSummary.length;
   let keptPrevious = '';
@@ -418,7 +438,7 @@ function truncateTerminalPreview(rendered: RenderedContext | string, limit: numb
     keptPrevious = previous.slice(0, previousRoom - 1 - colors.reset.length)
       + '…' + colors.reset;
   }
-  return prefix + timeline + keptSummary + keptPrevious + footer;
+  return (head + keptPrevious + notice + timeline + keptSummary).trimEnd();
 }
 
 /**
@@ -479,7 +499,7 @@ export function fitContextForDelivery(
   if (renderPreview) {
     const warning = paintRed(healthWarning);
     const warningLength = warning ? warning.length + 2 : 0;
-    text = appendObserverHealthWarning(warning, truncateTerminalPreview(
+    text = prependObserverHealthWarning(warning, truncateTerminalPreview(
       renderPreview(selected, budget.config),
       limit - warningLength - TERMINAL_BANNER_RESERVE_CHARS
     ));
@@ -547,7 +567,7 @@ export function renderContextFromRows(
   if (observations.length === 0 && summaries.length === 0) {
     return {
       text: forHuman
-        ? appendObserverHealthWarning(healthWarningForContext(input, true), renderHumanEmptyState(project, headerTime))
+        ? prependObserverHealthWarning(healthWarningForContext(input, true), renderHumanEmptyState(project, headerTime))
         : renderAgentEmptyState(project, headerTime, [healthWarningForContext(input), workStateSection]),
       stats: null,
     };

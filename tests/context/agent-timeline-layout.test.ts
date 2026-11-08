@@ -122,9 +122,10 @@ describe('agent SessionStart block layout', () => {
       expect(text.indexOf(WORK_STATE)).toBeLessThan(text.indexOf('\n### '));
       expect(text.split('\n').at(-1)).toMatch(/ NEWEST_ROW$/);
 
-      // The terminal preview keeps the warning last, where it stays on screen.
+      // The terminal preview ends on its newest row too, so its warning goes above.
       const preview = render({}, true);
-      expect(preview.indexOf('NEWEST_ROW')).toBeLessThan(preview.indexOf("can't save memories"));
+      expect(preview.indexOf("can't save memories")).toBeLessThan(preview.indexOf('recent context'));
+      expect(preview.trimEnd().split('\n').at(-1)).toContain('NEWEST_ROW');
     } finally {
       rmSync(healthPath, { force: true });
     }
@@ -137,11 +138,19 @@ describe('agent SessionStart block layout', () => {
     expect(text).toEndWith(`${WORK_STATE}\n\nNo previous sessions found.`);
   });
 
-  it('leaves the terminal preview its own closing line', () => {
+  it('gives the terminal preview the same shape: how to read it on top, the newest row last', () => {
+    observe('OLDEST_ROW', 30);
     observe('NEWEST_ROW', 10);
     const preview = render({}, true);
-    expect(preview).toContain('NEWEST_ROW');
+    expect(preview).toContain('Legend: ');
+    expect(preview.indexOf('Legend: ')).toBeLessThan(preview.indexOf('OLDEST_ROW'));
+    expect(preview.trimEnd().split('\n').at(-1)).toContain('NEWEST_ROW');
+    // No closing line, and none of the old instruction blocks.
+    expect(preview).not.toContain('tokens of past research & decisions');
+    expect(preview).not.toContain('Column Key');
+    expect(preview).not.toContain('Context Index');
+    expect(preview).not.toContain('Trust this index');
+    // The open lists are for the agent; the person sees them in My Work.
     expect(preview).not.toContain(WORK_STATE);
-    expect(preview).toContain('tokens of past research & decisions');
   });
 });

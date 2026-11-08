@@ -37,37 +37,6 @@ export function renderHumanLegend(): string[] {
   ];
 }
 
-export function renderHumanColumnKey(): string[] {
-  return [
-    `${colors.bright}Column Key${colors.reset}`,
-    `${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`,
-    `${colors.dim}  Work: Tokens spent on work that produced this record ( research, building, deciding)${colors.reset}`,
-    ''
-  ];
-}
-
-export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
-  // Server runtime: ids are UUIDs shown as 8-char display refs, and neither
-  // get_observations nor the mem-search skill's worker tools exist there; the
-  // server's own search tool covers both drill-down and history.
-  const drilldownLines = fetchByIdSupported
-    ? [
-        `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
-        `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
-      ]
-    : [
-        `${colors.dim}  - Search: observation_search by title or topic (short refs are display-only; server runtime has no fetch by ID)${colors.reset}`,
-      ];
-  return [
-    `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
-    '',
-    `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    ...drilldownLines,
-    `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
-    ''
-  ];
-}
-
 export function renderHumanContextEconomics(
   economics: TokenEconomics,
   config: ContextConfig
@@ -169,25 +138,15 @@ export function renderHumanSummaryField(label: string, value: string | null, col
   return [`${color}${label}:${colors.reset} ${value}`, ''];
 }
 
+/** The prior session's last reply; it goes above the timeline, which ends the preview. */
 export function renderHumanPreviouslySection(priorMessages: PriorMessages): string[] {
   if (!priorMessages.assistantMessage) return [];
 
   return [
-    '',
-    '---',
-    '',
     `${colors.bright}${colors.magenta}Previously${colors.reset}`,
     '',
     `${colors.dim}A: ${priorMessages.assistantMessage}${colors.reset}`,
     ''
-  ];
-}
-
-export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
-  const workTokensK = Math.round(totalDiscoveryTokens / 1000);
-  return [
-    '',
-    `${colors.dim}Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the claude-mem skill to access memories by ID.${colors.reset}`
   ];
 }
 

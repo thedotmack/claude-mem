@@ -628,8 +628,9 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual([]);
-    expect(result.systemMessage).toStartWith('COLORED ');
-    expect(result.systemMessage).toContain('View Observations Live @');
+    // The viewer lines open the banner; the timeline ends it.
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toMatch(/\n\nCOLORED [^\n]+$/);
     expect(result.systemMessage).not.toContain(PLACEHOLDER_MARKER);
   });
 
@@ -661,7 +662,8 @@ describe('context hook reads the precomputed block', () => {
     // file headings relative to it, so that one is fetched for the new directory.
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo%2Fpackages%2Fapp&colors=true']);
     expect(result.hookSpecificOutput?.additionalContext).toContain('- release: updated about 2 hours ago');
-    expect(result.systemMessage).toStartWith('LIVE COLORED');
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
   });
 
   it('fetches only the colored render when only the model block is cached', async () => {
@@ -669,7 +671,8 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&colors=true']);
-    expect(result.systemMessage).toStartWith('LIVE COLORED');
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
   });
 });
 
@@ -867,7 +870,11 @@ describe('precomputed context end to end', () => {
       expect(result.hookContext).toBe(result.liveAgent.trim());
       expect(result.hookContext).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS);
       expect(result.hookContext).not.toContain('# Work state: your to-do lists');
-      expect(result.hookSystemMessage).toStartWith(result.liveColors.trim());
+      expect(result.hookSystemMessage).toStartWith('View Observations Live @');
+      expect(result.hookSystemMessage).toEndWith(result.liveColors.trim());
+      // The banner ends on its newest timeline row, with no closing lines.
+      expect(result.hookSystemMessage.split('\n').at(-1)).toContain('FIRST_OBSERVATION');
+      expect(result.hookSystemMessage).not.toContain('tokens of past research');
 
       // The model's block is the timeline: the header says how to read it, the
       // open work sits under that header, and the newest row ends the block so
