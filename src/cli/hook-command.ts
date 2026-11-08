@@ -1,3 +1,11 @@
+/**
+ * Entry point for every agent hook: `claude-mem hook <agent> <event>`.
+ *
+ * The agent's adapter (src/cli/adapters/) turns its event payload into one
+ * shared shape, the event's handler (src/cli/handlers/) talks to the worker,
+ * and the result goes back in the form that agent expects. A hook must never
+ * stall or break the agent's session, so every failure path exits gracefully.
+ */
 import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';

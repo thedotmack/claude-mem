@@ -33,6 +33,31 @@ interface DrainFailure {
 	projectedSeq: string;
 	httpStatus: 409 | 503;
 	retryable: boolean;
+	/**
+	 * Whole seconds until the incumbent lease expires. Set for
+	 * `projection_busy` only, the one failure whose wait the Hub knows.
+	 */
+	retryAfterSeconds?: number;
+}
+
+const PROJECTION_RETRY_AFTER_MAX_SECONDS = Math.ceil(PROJECTION_LEASE_MS / 1000);
+
+/** Whole-second Retry-After for a busy lease, clamped to (0, the lease length]. */
+function leaseRetryAfterSeconds(retryAfterMs: number | undefined): number {
+	if (retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
+		return PROJECTION_RETRY_AFTER_MAX_SECONDS;
+	}
+	return Math.min(PROJECTION_RETRY_AFTER_MAX_SECONDS, Math.max(1, Math.ceil(retryAfterMs / 1000)));
+}
+
+function clientDisconnected(projectedSeq: string): DrainFailure {
+	return {
+		ok: false,
+		error: "projection_client_disconnected",
+		projectedSeq,
+		httpStatus: 503,
+		retryable: true,
+	};
 }
 
 export type DrainResult = DrainSuccess | DrainFailure;
@@ -88,6 +113,13 @@ export interface ProjectionDrainDependencies {
 	fetchImpl?: ProjectionFetch;
 	now?: () => number;
 	maxPages?: number;
+	/**
+	 * The inbound request's signal; it aborts when the client stops waiting.
+	 * Checked only before the lease is taken and between pages, where no
+	 * upstream request can still be in flight, so a departed client never
+	 * shortens the fence around an ambiguous in-flight projection.
+	 */
+	clientSignal?: AbortSignal;
 }
 
 function projectionNow(dependencies: ProjectionDrainDependencies): number | undefined {
@@ -138,6 +170,11 @@ export async function drainProjection(
 			retryable: true,
 		};
 	}
+	if (dependencies.clientSignal?.aborted) {
+		// Nobody is waiting and nothing is leased yet: taking a lease for a
+		// departed client would only make the next push answer projection_busy.
+		return clientDisconnected(state.projected_seq);
+	}
 	const acquiredAt = projectionNow(dependencies);
 	const lease = acquiredAt === undefined
 		? await store.acquireProjectionLease(userId, targetSeq)
@@ -155,11 +192,17 @@ export async function drainProjection(
 			projectedSeq: lease.projected_seq,
 			httpStatus: 503,
 			retryable: true,
+			retryAfterSeconds: leaseRetryAfterSeconds(lease.retry_after_ms),
 		};
 	}
 
 	const token = lease.lease_token;
-	let releaseLeaseEarly = false;
+	// The lease is kept past this drain only while a sent request's outcome is
+	// unknown (set false just before each fetch). Until the first fetch nothing
+	// is in flight, so a local terminal failure (an empty or oversize page, a
+	// thrown store error, a departed client) hands the lease straight to the
+	// next push instead of answering projection_busy for the full lease.
+	let releaseLeaseEarly = true;
 	let projectedPages = 0;
 	let projectedSeq = lease.projected_seq;
 	try {
@@ -167,6 +210,12 @@ export async function drainProjection(
 			if (decimalAtLeast(projectedSeq, targetSeq)) {
 				releaseLeaseEarly = true;
 				return { ok: true, projectedSeq };
+			}
+			if (dependencies.clientSignal?.aborted) {
+				// Between pages the previous page either checkpointed or never
+				// started, so nothing upstream can still be applying. Pages already
+				// checkpointed stay; the lease goes straight to the next push.
+				return clientDisconnected(projectedSeq);
 			}
 			const pageAt = projectionNow(dependencies);
 			const page = pageAt === undefined

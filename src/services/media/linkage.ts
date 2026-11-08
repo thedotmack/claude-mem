@@ -177,6 +177,119 @@ export function writeObservationMediaLinks(
 }
 
 /**
+ * docs/media-contract-v1.md, "Capture-only linkage": when the accepted request
+ * carried none of the turn's images, every observation stored from the turn
+ * links every retained image of the turn's source events as `uninspected`.
+ * Refs come from the durable event refs (never the RAM buffer), in event order
+ * then label order, one per attachment ID. A failed or deleted conversion is
+ * not linked; a converting one is, so it shows as pending until it is ready.
+ */
+export function captureOnlyLinkWrites(
+  db: Database,
+  eventKeys: readonly string[],
+  observationIds: readonly number[],
+  insertedObservationIds: readonly number[],
+): ObservationLinkWrite[] {
+  const refsStatement = db.prepare(`SELECT r.attachment_id AS id, r.label, r.event_key AS eventKey
+    FROM media_event_refs r
+    JOIN media_events e ON e.event_key = r.event_key
+    JOIN media_attachments a ON a.id = r.attachment_id
+    WHERE r.event_key = ? AND e.state = 'retained' AND a.state IN ('converting', 'ready')
+    ORDER BY r.label`);
+  const refs: Array<MediaAttachmentRef & { eventKey: string }> = [];
+  for (const eventKey of new Set(eventKeys)) {
+    for (const row of refsStatement.all(eventKey) as Array<{ id: string; label: string; eventKey: string }>) {
+      if (refs.some(ref => ref.id === row.id)) continue;
+      refs.push({ id: row.id, label: row.label, inspection: 'uninspected', eventKey: row.eventKey });
+    }
+  }
+  if (refs.length === 0) return [];
+  const inserted = new Set(insertedObservationIds);
+  return [...new Set(observationIds)].map(observationId => ({
+    observationId,
+    insertedThisTurn: inserted.has(observationId),
+    refs: refs.map(ref => ({ ...ref })),
+  }));
+}
+
+/**
+ * docs/media-contract-v1.md, "Capture-only linkage", a turn that attributed
+ * image events and stored no observation: its events' retained images link as
+ * `uninspected` to the most recent observation already stored for the same
+ * session and prompt. With none yet, the events wait (carry_prompt_number) for
+ * the next turn of that session and prompt that stores any. Runs inside the
+ * caller's savepoint, so a failed write leaves nothing waiting.
+ */
+export function skippedTurnCaptureOnlyLinkWrites(
+  db: Database,
+  sessionDbId: number,
+  promptNumber: number,
+  eventKeys: readonly string[],
+): ObservationLinkWrite[] {
+  // storeObservations saves prompt number 0 as NULL: such a turn has no prompt to hand its images to.
+  if (eventKeys.length === 0 || !promptNumber) return [];
+  // Highest id = last stored. The join resolves the session's registered
+  // memory session id, the one its observation rows carry.
+  const latest = db.prepare(`SELECT o.id FROM observations o
+    JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+    WHERE s.id = ? AND o.prompt_number = ?
+    ORDER BY o.id DESC LIMIT 1`).get(sessionDbId, promptNumber) as { id: number } | null;
+  if (latest) return captureOnlyLinkWrites(db, eventKeys, [latest.id], []);
+  const waitStatement = db.prepare(`UPDATE media_events SET carry_prompt_number = ?
+    WHERE event_key = ? AND session_db_id = ? AND state = 'retained'`);
+  for (const eventKey of new Set(eventKeys)) waitStatement.run(promptNumber, eventKey, sessionDbId);
+  return [];
+}
+
+/**
+ * The storing-turn half of the rule above: events of this session and prompt
+ * that are waiting link to every observation this turn stored, ahead of the
+ * turn's own refs (event order, then label order), and stop waiting. A
+ * returned row of another prompt or session gets none. Returns the turn's
+ * writes unchanged when nothing waits or no stored row is of this prompt. Runs inside the caller's
+ * savepoint, so a failed write leaves the events waiting.
+ */
+export function withWaitingCaptureOnlyLinkWrites(
+  db: Database,
+  sessionDbId: number,
+  promptNumber: number,
+  observationIds: readonly number[],
+  insertedObservationIds: readonly number[],
+  turnWrites: readonly ObservationLinkWrite[],
+): ObservationLinkWrite[] {
+  if (observationIds.length === 0 || !promptNumber) return [...turnWrites];
+  const waiting = (db.prepare(`SELECT event_key FROM media_events
+    WHERE session_db_id = ? AND carry_prompt_number = ? AND state = 'retained'
+    ORDER BY created_at, rowid`).all(sessionDbId, promptNumber) as Array<{ event_key: string }>).map(row => row.event_key);
+  if (waiting.length === 0) return [...turnWrites];
+  // storeObservations can return an existing row (an exact duplicate or a
+  // title match) from another prompt or session; only this session's and
+  // prompt's rows receive the waiting images. With none, they keep waiting.
+  const ofThisPrompt = db.prepare(`SELECT 1 FROM observations o
+    JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+    WHERE o.id = ? AND s.id = ? AND o.prompt_number = ?`);
+  const targets = [...new Set(observationIds)].filter(id => ofThisPrompt.get(id, sessionDbId, promptNumber) !== null);
+  if (targets.length === 0) return [...turnWrites];
+  db.prepare('UPDATE media_events SET carry_prompt_number = NULL WHERE session_db_id = ? AND carry_prompt_number = ?')
+    .run(sessionDbId, promptNumber);
+
+  const writes = new Map<number, ObservationLinkWrite>();
+  for (const write of captureOnlyLinkWrites(db, waiting, targets, insertedObservationIds)) writes.set(write.observationId, write);
+  for (const write of turnWrites) {
+    const earlier = writes.get(write.observationId);
+    writes.set(write.observationId, earlier ? { ...earlier, refs: [...earlier.refs, ...write.refs] } : write);
+  }
+  return [...writes.values()];
+}
+
+/** True when a session and prompt has image events waiting for its next storing turn. */
+export function hasWaitingCaptureOnlyEvents(db: Database, sessionDbId: number, promptNumber: number): boolean {
+  if (!promptNumber) return false;
+  return db.prepare(`SELECT 1 FROM media_events
+    WHERE session_db_id = ? AND carry_prompt_number = ? AND state = 'retained' LIMIT 1`).get(sessionDbId, promptNumber) !== null;
+}
+
+/**
  * Record each source event's text outcome and its observation rows. A stored
  * result is never downgraded to skipped. Runs in the same transaction as the
  * observation write, before the RAM batch is confirmed.

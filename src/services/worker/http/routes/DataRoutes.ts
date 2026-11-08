@@ -641,7 +641,9 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Delete one session and everything captured in it. A session is identified
+   * Delete one session and its indexed rows. Bucket copies are retained here:
+   * another session may have copied one before its database row is recorded.
+   * A session is identified
    * by (platform_source, content_session_id): the same content id can exist
    * under two hosts. Sync-safe like the per-row deletes: every local child row
    * is tombstoned for cloud sync, and the session row is removed only after its
@@ -657,76 +659,78 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = normalizePlatformSource(rawPlatformSource);
 
     const store = this.dbManager.getSessionStore();
-    const sessionRow = store.db.prepare(`
-      SELECT id, memory_session_id
-      FROM sdk_sessions
-      WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
-    `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
+    // Claim the SQLite writer lock before reading children. Otherwise another
+    // connection can add a remote child after preflight and the session DELETE
+    // would cascade it without a sync tombstone.
+    const deleted = store.db.transaction(() => {
+      const sessionRow = store.db.prepare(`
+        SELECT id, memory_session_id
+        FROM sdk_sessions
+        WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
+      `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
 
-    if (!sessionRow) {
-      this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
-      return;
-    }
-
-    // Deleting a live session would cascade its pending work out from under
-    // the running generator.
-    if (this.sessionManager.getSession(sessionRow.id)) {
-      res.status(409).json({ error: 'session is still active; delete it after it ends' });
-      return;
-    }
-
-    // Rows synced from another device belong to that device: the FK cascade
-    // would drop them here without a tombstone. Refuse instead.
-    const remoteChildren = store.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
-        + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
-        + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
-    `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
-    if (remoteChildren.n > 0) {
-      res.status(409).json({
-        error: 'session holds memories synced from another device; delete those on that device first',
-        remoteItemCount: remoteChildren.n,
-      });
-      return;
-    }
-
-    type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
-    const childRows: ChildRow[] = [];
-
-    if (sessionRow.memory_session_id) {
-      const observations = store.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
-      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
-
-      const summaries = store.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
-      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
-    }
-
-    const prompts = store.db.prepare(
-      `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
-    ).all(sessionRow.id) as Array<{ id: string }>;
-    childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
-
-    const cloudSync = this.dbManager.getCloudSync();
-
-    // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
-    for (const row of childRows) {
-      const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
-      if (!check.ok) {
-        res.status(check.status).json({ error: check.error });
+      if (!sessionRow) {
+        this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
         return;
       }
-    }
 
-    const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
-    // One transaction for the whole session: queueDelete's own transaction
-    // nests as a savepoint, so a failure part-way rolls back every tombstone
-    // and row delete instead of leaving a half-deleted session.
-    store.db.transaction(() => {
+      // Deleting a live session would cascade its pending work out from under
+      // the running generator.
+      if (this.sessionManager.getSession(sessionRow.id)) {
+        res.status(409).json({ error: 'session is still active; delete it after it ends' });
+        return;
+      }
+
+      // Rows synced from another device belong to that device: the FK cascade
+      // would drop them here without a tombstone. Refuse instead.
+      const remoteChildren = store.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
+      `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
+      if (remoteChildren.n > 0) {
+        res.status(409).json({
+          error: 'session holds memories synced from another device; delete those on that device first',
+          remoteItemCount: remoteChildren.n,
+        });
+        return;
+      }
+
+      type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+      const childRows: ChildRow[] = [];
+
+      if (sessionRow.memory_session_id) {
+        const observations = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
+
+        const summaries = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
+      }
+
+      const prompts = store.db.prepare(
+        `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
+      ).all(sessionRow.id) as Array<{ id: string }>;
+      childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
+
+      const cloudSync = this.dbManager.getCloudSync();
+
+      // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
+      for (const row of childRows) {
+        const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
+        if (!check.ok) {
+          res.status(check.status).json({ error: check.error });
+          return;
+        }
+      }
+
+      const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
+      // queueDelete's own transaction nests as a savepoint, so a failure
+      // part-way rolls back every tombstone and row delete.
       for (const row of childRows) {
         this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
         if (row.kind === 'observation') deletedCounts.observations++;
@@ -738,14 +742,28 @@ export class DataRoutes extends BaseRouteHandler {
       deletedCounts.toolUses = store.db.prepare(
         `DELETE FROM tool_uses WHERE session_db_id = ? OR (content_session_id = ? AND platform_source = ?)`
       ).run(sessionRow.id, contentSessionId, platformSource).changes;
+      const deliverableReferencesRemoved = store.db.prepare(`
+        SELECT COUNT(*) AS n FROM deliverables
+        WHERE content_session_id = ? AND platform_source = ?
+      `).get(contentSessionId, platformSource) as { n: number };
+      store.db.prepare(`
+        DELETE FROM deliverables WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.db.prepare(`
+        DELETE FROM committed_observation_tool_uses
+        WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.markSessionDeleted(platformSource, contentSessionId, sessionRow.memory_session_id);
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
-    })();
+      return { childRows, deletedCounts, deliverableReferencesRemoved: deliverableReferencesRemoved.n };
+    }).immediate();
+    if (!deleted) return;
     emitContextInvalidation('all', 'delete-session', 'removal');
-    this.scheduleChromaRowCleanup(childRows);
+    this.scheduleChromaRowCleanup(deleted.childRows);
 
     // Only after the delete committed: open viewer tabs drop the session live.
     this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
-    res.json({ success: true, platformSource, contentSessionId, deletedCounts });
+    res.json({ success: true, platformSource, contentSessionId, deletedCounts: deleted.deletedCounts, deliverableReferencesRemoved: deleted.deliverableReferencesRemoved });
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

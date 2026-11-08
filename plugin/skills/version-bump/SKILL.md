@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing.
+description: Maintainer release workflow for the thedotmack/claude-mem repository only. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing. Does not apply to any other repository or npm package.
 ---
 
 # Version Bump & Release Workflow
@@ -9,10 +9,25 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 **CRITICAL:** Commit EVERYTHING (including build artifacts). At the end of this workflow, NOTHING should be left uncommitted or unpushed. Run `git status` at the end to verify.
 
+## Scope — check this first
+
+This workflow is for **one repository and one npm package**: `thedotmack/claude-mem`,
+published as `claude-mem`. It is not a general release recipe. Do not adapt any
+step of it to another repository or package.
+
+Before doing anything else, run:
+
+```bash
+git remote get-url origin   # must be github.com/thedotmack/claude-mem(.git)
+node -p "require('./package.json').name"   # must print claude-mem
+```
+
+If either check fails, stop and tell the user this skill does not apply here.
+
 ## Preparation
 
 1.  **Analyze**: Determine if the change is **PATCH** (bug fixes), **MINOR** (features), or **MAJOR** (breaking).
-2.  **Environment**: Identify repository owner/name from `git remote -v`.
+2.  **Environment**: The repository is `thedotmack/claude-mem`, confirmed by the scope check above.
 3.  **Paths — every file that carries the version string**:
     - `package.json` — **the npm/npx-published version** (`npx claude-mem@X.Y.Z` resolves from this)
     - `plugin/package.json` — bundled plugin runtime deps

@@ -263,6 +263,50 @@ describe('SyncApply', () => {
     expect(count('sdk_sessions')).toBe(2); // native seed + one stub
   });
 
+  it('does not reimport a deleted session through its memory id or retain its stale prompt body', () => {
+    const store = new SessionStore(db);
+    store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+    db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+    const apply = makeApply();
+    const result = apply.applyOps([
+      op(1, 'observation', '11', obsBody({ memory_session_id: 'mem-1' })),
+      op(2, 'summary', '21', sumBody({ memory_session_id: 'mem-1' })),
+      op(3, 'prompt', '31', promptBody({ content_session_id: 'sess-abc', memory_session_id: 'mem-1' })),
+    ]);
+    expect(result.skippedStale).toBe(3);
+    expect(result.quarantined).toBe(0);
+    expect(count('sdk_sessions')).toBe(0);
+    expect(count('observations')).toBe(0);
+    expect(count('session_summaries')).toBe(0);
+    expect(count('user_prompts')).toBe(0);
+    expect(count('sync_pull_quarantine')).toBe(0);
+  });
+
+  it('does not park title or prompt-link mutations for a deleted session', () => {
+    const store = new SessionStore(db);
+    store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+    db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+    const apply = makeApply();
+    const result = apply.applyOps([
+      op(1, 'mutation', 'title-content', {
+        op: 'set_title', target: { content_session_id: 'sess-abc', platform_source: 'claude' },
+        fields: { custom_title: 'old title' },
+      }),
+      op(2, 'mutation', 'title-memory', {
+        op: 'set_title', target: { memory_session_id: 'mem-1' },
+        fields: { custom_title: 'old title' },
+      }),
+      op(3, 'mutation', 'link-memory', {
+        op: 'set_prompt_session', target: { origin_device_id: REMOTE, origin_local_id: 'old-prompt' },
+        fields: { memory_session_id: 'mem-1', content_session_id: 'sess-abc', platform_source: 'claude' },
+      }),
+    ]);
+    expect(result.skippedStale).toBe(3);
+    expect(result.quarantined).toBe(0);
+    expect(count('sdk_sessions')).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'").get()).toEqual({ n: 0 });
+  });
+
   // ---------------------------------------------------------------------------
   // Idempotency
   // ---------------------------------------------------------------------------

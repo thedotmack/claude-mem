@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useI18n } from '../../i18n';
 import { API_ENDPOINTS } from '../constants/api';
 
 /**
@@ -27,6 +28,7 @@ interface UseBackupStatusResult {
  * open — so opening the section is what triggers the fetch.
  */
 export function useBackupStatus(): UseBackupStatusResult {
+  const { t } = useI18n();
   const [status, setStatus] = useState<BackupStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,5 +60,5 @@ export function useBackupStatus(): UseBackupStatusResult {
     };
   }, []);
 
-  return { status, isLoading, error };
+  return { status, isLoading, error: error ? t(error) : null };
 }

@@ -31,7 +31,7 @@ describe('install flow wiring', () => {
     // settings must not enter requireInstallerOAuthLogin: it would open a
     // browser in an agent shell and poll until the pairing expires.
     const gateStart = source.indexOf('let oauthPairing: InstallerOAuthPairing | null = null;');
-    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version);');
+    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version, signInForCmem);');
     expect(gateStart).toBeGreaterThan(-1);
     expect(gateEnd).toBeGreaterThan(gateStart);
     const gate = source.slice(gateStart, gateEnd);
@@ -49,11 +49,14 @@ describe('install flow wiring', () => {
     const summaryEnd = source.indexOf(';', summaryStart);
     const summary = source.slice(summaryStart, summaryEnd);
     expect(summary).toContain('const accountStatus = oauthPairing');
+    // A named --provider wins over what promptProvider returned: host returns its transport, openrouter.
+    expect(source).toContain('const summaryProvider = options.provider ?? selectedProvider;');
+    expect(summary).toContain("summaryProvider === 'host'");
     // Order matters: the pairing decides first, then a provider that needs no
     // account reports "not required" before the persisted branch can call a
     // local claude/host config a kept account.
     const pairingIdx = summary.indexOf('oauthPairing');
-    const noAccountIdx = summary.indexOf('!providerNeedsAccount(options.provider)');
+    const noAccountIdx = summary.indexOf('!providerNeedsAccount(summaryProvider)');
     const persistedIdx = summary.indexOf("options.providerSource === 'persisted'");
     expect(pairingIdx).toBeGreaterThan(-1);
     expect(noAccountIdx).toBeGreaterThan(pairingIdx);

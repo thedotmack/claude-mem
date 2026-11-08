@@ -86,6 +86,32 @@ describe('a viewer save is judged on what it changes', () => {
     expect(saved.status()).toBe(200);
     expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_OBSERVER_ENABLED).toBe('false');
   });
+
+  it('shows "Keep images" on by default and persists turning it off from the viewer', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+    expect(shown.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED).toBe('true');
+
+    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false' });
+
+    expect(saved.status()).toBe(200);
+    const onDisk = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(onDisk.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED).toBe('false');
+    // The switch never turns inference on.
+    expect(onDisk.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED ?? 'false').toBe('false');
+    expect(call(handlers()['GET /api/settings']).payload.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED).toBe('false');
+  });
+
+  it('does not let the viewer turn image inference on', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+
+    call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'true' });
+
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MEDIA_INFERENCE_ENABLED ?? 'false').toBe('false');
+  });
 });
 
 // GET shows environment overrides, so the viewer posts them back with every

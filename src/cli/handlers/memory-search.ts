@@ -14,6 +14,7 @@ import { expandMemoryPath, isWithinMemoryRoot, parseMemoryWatchRoots } from '../
 import { logger } from '../../utils/logger.js';
 import { formatMcpPayload } from '../../servers/mcp-text-format.js';
 import { selectRuntime } from '../../services/hooks/runtime-selector.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 const MAX_CONTEXT_CHARS = 10_000;
 const OWN_TOOLS = /(?:mcp_search|claude[_-]mem|claude_mem)/i;
@@ -159,6 +160,11 @@ export const memorySearchHandler: EventHandler = {
       params.set('limit', '8');
       params.set('type', 'observations');
       params.set('format', 'json');
+      // Keep the lookup on the calling harness's rows; the opt-out is the same
+      // cross-harness hand-off switch the other context paths honour.
+      if (input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true') {
+        params.set('platformSource', normalizePlatformSource(input.platform));
+      }
       const result = await executeWithWorkerFallback<unknown>(`/api/search?${params}`, 'GET', undefined, { timeoutMs: 3_000, workerStartupTimeoutMs: 1_000 });
       if (isWorkerFallback(result) || !result) return {};
       const r = result as { isError?: boolean; observations?: unknown[] };

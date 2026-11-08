@@ -20,6 +20,7 @@ import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { logger } from '../../utils/logger.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
@@ -79,16 +80,57 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
   return Object.fromEntries((Object.keys(STEP_MODELS) as Step[]).map(step => [step, withOverrides(STEP_MODELS[step])])) as Record<Step, StepModels>;
 }
 
-/** The agent the refresh tries first: the one CLAUDE_MEM_PROVIDER names (#5435). The worker builds a fresh
- * task for every run, so reading it here applies a provider change to the next refresh. A provider that names
- * an API endpoint instead of a local agent ('openrouter', 'openai-compatible') names no agent, and the
- * runner's detect order decides, as before. */
-export function resolvePreferredRefreshAgent(dataDir: string): UsableAgentId | undefined {
-  const provider = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_PROVIDER ?? '').trim();
-  if (provider === 'codex') return 'codex';
-  if (provider === 'gemini') return 'gemini';
-  if (provider === 'claude') return 'claude-code';
-  return undefined;
+/** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'off', 'all'] as const;
+
+export interface RefreshAgentChoice {
+  /** The only agents the refresh may run on; absent means every logged-in agent. */
+  allowedAgents?: UsableAgentId[];
+  /** Tried first when it is logged in (#5435). */
+  preferredAgent?: UsableAgentId;
+  /** A failed run is never handed to a second agent. */
+  stayOnFirstUsableAgent: boolean;
+}
+
+const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini'];
+
+/** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
+ * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
+ * `codex exec` runs to one owner's ChatGPT plan. So the refresh stays on one agent unless the owner opts in:
+ * - CLAUDE_MEM_WORK_VIEW_AGENT names an agent: only that agent runs;
+ * - `off`: no agent runs;
+ * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
+ * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
+ *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
+export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
+  const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
+  const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
+  const providerAgent: UsableAgentId | undefined = provider === 'claude' ? 'claude-code'
+    : provider === 'codex' || provider === 'gemini' ? provider : undefined;
+  const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
+  if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
+  const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
+  if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
+  if (configuredAgent) {
+    logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
+      value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
+    });
+  }
+  if (providerAgent) return { allowedAgents: [providerAgent], preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
+  return { stayOnFirstUsableAgent: true };
+}
+
+/** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
+const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
+
+/** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
+ * every run. It is never detected by a model: a detection call would spend the owner's agent quota on every
+ * automatic refresh. Empty or not a language name gives null, and the skills' own Language rule applies. */
+export function resolveTextLanguage(dataDir: string): string | null {
+  const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
+  return LANGUAGE_NAME.test(value) ? value : null;
 }
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
@@ -308,9 +350,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try { return await work(); }
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
+    /**
+     * The owner's language, when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE names one, is named in every grouping, review,
+     * focus and story question. Those run as separate agents that each see only their own input (a review batch in
+     * "amend" mode sees only its later asks), so left to the skill's rule they could each pick a different language.
+     * The goals step reads every owner prompt in one question, so it keeps the skill's own rule.
+     */
+    const textLanguage = resolveTextLanguage(dataDir);
+    const languageRule = textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      const rule = name === 'goals' ? '' : languageRule;
+      return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
+    };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -328,7 +382,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       writeFileSync(answerPath, answer, { mode: 0o600 });
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
-    });
+    };
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
       agent === 'claude-code'
@@ -417,7 +471,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       let reviewed = 0;
       const coercedReviewFields = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
-      const reviewBatch = async (groups: Array<{ groupId: string }>) => {
+      const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
@@ -426,8 +480,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+            rule,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
-          ].join('\n\n'), stepModels.review);
+          ].filter(Boolean).join('\n\n'), stepModels.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
@@ -459,7 +514,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
-          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule), { groups: batch.length })]));
         }
       };
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
@@ -557,8 +612,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   return {
     reason,
     steps,
-    // The refresh runs on the agent the owner's provider setting names first (#5435).
-    preferredAgent: resolvePreferredRefreshAgent(dataDir),
+    // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
+    ...resolveRefreshAgents(dataDir),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {

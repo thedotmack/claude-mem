@@ -139,6 +139,8 @@ export interface ProjectionLease {
 	head_seq: string;
 	projected_seq: string;
 	target_seq: string;
+	/** Busy answers only: ms until the incumbent lease expires. */
+	retry_after_ms?: number;
 }
 
 export interface ProjectionPage {
@@ -773,6 +775,7 @@ export class HubStore {
 					head_seq: user.head_seq,
 					projected_seq: user.projected_seq,
 					target_seq: target,
+					retry_after_ms: Number(BigInt(user.projection_lease_expires_at) - BigInt(nowValue)),
 				};
 			}
 			const token = crypto.randomUUID();

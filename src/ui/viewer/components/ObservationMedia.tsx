@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useI18n, interpolate } from '../../i18n';
 import type { MediaOwnerDetailsResponse, ObservationMedia, ObservationMediaRef } from '../types';
 import { useMediaStates } from '../hooks/useMediaStates';
 import { formatDate } from '../utils/formatters';
@@ -23,6 +24,18 @@ import {
 
 const LOADING: MediaDisplayState = { kind: 'loading' };
 
+function translateMediaStatus(status: string, t: (s: string) => string): string {
+  if (status.startsWith('Rejected (')) {
+    const code = status.slice('Rejected ('.length, -1);
+    return interpolate(t('Rejected ({code})'), { code });
+  }
+  if (status.startsWith('Failed (')) {
+    const code = status.slice('Failed ('.length, -1);
+    return interpolate(t('Failed ({code})'), { code });
+  }
+  return t(status);
+}
+
 interface StripViewProps {
   observationId: number;
   media: ObservationMedia;
@@ -37,21 +50,27 @@ interface StripViewProps {
  * carrying a "+N" count when more images exist. Every tile opens the gallery.
  */
 export function ObservationMediaStripView({ observationId, media, states, onOpen, onRetry, onImageError }: StripViewProps) {
+  const { t } = useI18n();
   const refs = media.attachments;
   const visible = refs.slice(0, MAX_CARD_THUMBNAILS);
   const hiddenCount = refs.length - visible.length;
+  const stripAriaLabel = interpolate(t(refs.length === 1 ? '{count} image attached' : '{count} images attached'), { count: refs.length });
+
   return (
-    <div className="media-strip" role="group" aria-label={`${refs.length} image${refs.length === 1 ? '' : 's'} attached`}>
+    <div className="media-strip" role="group" aria-label={stripAriaLabel}>
       {visible.map((ref, index) => {
         const state = states[ref.id] ?? LOADING;
         const isLastWithMore = index === visible.length - 1 && hiddenCount > 0;
         const alt = mediaAltText(ref, index, refs.length, observationId);
+        const openLabel = isLastWithMore
+          ? interpolate(t('Open {alt} and {count} more'), { alt, count: hiddenCount })
+          : interpolate(t('Open {alt}'), { alt });
         return (
           <div key={ref.id} className={`media-thumb media-thumb--${state.kind}`}>
             <button
               type="button"
               className="media-thumb-button"
-              aria-label={`Open ${alt}${isLastWithMore ? ` and ${hiddenCount} more` : ''}`}
+              aria-label={openLabel}
               onClick={event => onOpen(index, event.currentTarget)}
             >
               {state.kind === 'ready' && !mediaVariantFailed(state, 'llm') ? (
@@ -65,20 +84,21 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
                   onError={() => onImageError(ref.id, 'llm')}
                 />
               ) : (
-                <span className="media-thumb-status">{mediaVariantStatusText(state, 'llm')}</span>
+                <span className="media-thumb-status">{translateMediaStatus(mediaVariantStatusText(state, 'llm'), t)}</span>
               )}
-              {ref.inspection === 'uninspected' && <span className="media-thumb-badge">not inspected</span>}
+              {ref.inspection === 'uninspected' && <span className="media-thumb-badge">{t('not inspected')}</span>}
               {isLastWithMore && <span className="media-thumb-more">+{hiddenCount}</span>}
             </button>
             {canRetryMediaState(state) && (
-              <button type="button" className="media-thumb-retry" onClick={() => onRetry(ref.id)}>Retry</button>
+              <button type="button" className="media-thumb-retry" onClick={() => onRetry(ref.id)}>{t('Retry')}</button>
             )}
           </div>
         );
       })}
       <span className="media-strip-count">
-        {refs.length} image{refs.length === 1 ? '' : 's'}
-        {media.overflow ? ' (more on the source event)' : ''}
+        {interpolate(t(media.overflow
+          ? (refs.length === 1 ? '{count} image (more on the source event)' : '{count} images (more on the source event)')
+          : (refs.length === 1 ? '{count} image' : '{count} images')), { count: refs.length })}
       </span>
     </div>
   );
@@ -99,6 +119,7 @@ interface DialogViewProps {
 
 /** The dialog body, without portal or document effects (renderable on the server for tests). */
 export function MediaLightboxDialog({ observationId, refs, index, state, ownerDetails, onClose, onShow, onRetry, onImageError, onRequestOwnerDetails }: DialogViewProps) {
+  const { t } = useI18n();
   const ref = refs[index];
   const alt = mediaAltText(ref, index, refs.length, observationId);
   const metadata = state.kind === 'ready' ? state.metadata : null;
@@ -107,9 +128,10 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
     <div className="media-lightbox" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
       <div className="media-lightbox-header">
         <h2 id={titleId} className="media-lightbox-title">
-          Image {index + 1} of {refs.length} <span className="media-lightbox-label">{ref.label}</span>
+          {interpolate(t('Image {current} of {total}'), { current: index + 1, total: refs.length })}{' '}
+          <span className="media-lightbox-label">{ref.label}</span>
         </h2>
-        <button type="button" className="modal-close-btn media-lightbox-close" aria-label="Close image viewer" onClick={onClose}>
+        <button type="button" className="modal-close-btn media-lightbox-close" aria-label={t('Close image viewer')} onClick={onClose}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -117,7 +139,7 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
         </button>
       </div>
       <div className="media-lightbox-stage">
-        <button type="button" className="media-lightbox-nav" aria-label="Previous image" disabled={index === 0} onClick={() => onShow(index - 1)}>‹</button>
+        <button type="button" className="media-lightbox-nav" aria-label={t('Previous image')} disabled={index === 0} onClick={() => onShow(index - 1)}>‹</button>
         <div className="media-lightbox-frame" aria-live="polite">
           {metadata && !mediaVariantFailed(state, 'viewer') ? (
             <img
@@ -129,44 +151,44 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
             />
           ) : (
             <div className={`media-lightbox-status media-thumb--${state.kind}`}>
-              <span>{mediaVariantStatusText(state, 'viewer')}</span>
-              {canRetryMediaState(state) && <button type="button" className="media-thumb-retry" onClick={() => onRetry(ref.id)}>Retry</button>}
+              <span>{translateMediaStatus(mediaVariantStatusText(state, 'viewer'), t)}</span>
+              {canRetryMediaState(state) && <button type="button" className="media-thumb-retry" onClick={() => onRetry(ref.id)}>{t('Retry')}</button>}
             </div>
           )}
         </div>
-        <button type="button" className="media-lightbox-nav" aria-label="Next image" disabled={index === refs.length - 1} onClick={() => onShow(index + 1)}>›</button>
+        <button type="button" className="media-lightbox-nav" aria-label={t('Next image')} disabled={index === refs.length - 1} onClick={() => onShow(index + 1)}>›</button>
       </div>
       <dl className="media-lightbox-provenance">
-        <dt>Inspection</dt><dd>{inspectionText(ref)}</dd>
-        <dt>Status</dt><dd>{mediaStatusText(state)}</dd>
+        <dt>{t('Inspection')}</dt><dd>{t(inspectionText(ref))}</dd>
+        <dt>{t('Status')}</dt><dd>{translateMediaStatus(mediaStatusText(state), t)}</dd>
         {metadata && (
           <>
-            <dt>Recipe</dt><dd>{metadata.recipe}</dd>
+            <dt>{t('Recipe')}</dt><dd>{metadata.recipe}</dd>
             {metadata.viewer && (
               <>
-                <dt>Dimensions</dt><dd>{metadata.viewer.width} × {metadata.viewer.height}</dd>
-                <dt>Size</dt><dd>{formatMediaBytes(metadata.viewer.byteLength)} (WebP)</dd>
+                <dt>{t('Dimensions')}</dt><dd>{metadata.viewer.width} × {metadata.viewer.height}</dd>
+                <dt>{t('Size')}</dt><dd>{formatMediaBytes(metadata.viewer.byteLength)} (WebP)</dd>
               </>
             )}
-            <dt>Captured</dt><dd>{formatDate(metadata.capturedAt)}</dd>
+            <dt>{t('Captured')}</dt><dd>{formatDate(metadata.capturedAt)}</dd>
           </>
         )}
       </dl>
       {metadata && (
         <div className="media-lightbox-owner">
           {ownerDetails === null && (
-            <button type="button" className="view-mode-toggle" onClick={onRequestOwnerDetails}>Show source details</button>
+            <button type="button" className="view-mode-toggle" onClick={onRequestOwnerDetails}>{t('Show source details')}</button>
           )}
-          {ownerDetails === 'loading' && <span>Loading source details…</span>}
-          {ownerDetails === 'error' && <span>Source details unavailable</span>}
+          {ownerDetails === 'loading' && <span>{t('Loading source details…')}</span>}
+          {ownerDetails === 'error' && <span>{t('Source details unavailable')}</span>}
           {ownerDetails && typeof ownerDetails === 'object' && (
             <dl className="media-lightbox-provenance">
-              <dt>Source</dt><dd>{sourceAvailabilityText(ownerDetails)}</dd>
+              <dt>{t('Source')}</dt><dd>{t(sourceAvailabilityText(ownerDetails))}</dd>
               {ownerDetails.platform !== null && (
                 <>
-                  <dt>Platform</dt><dd>{ownerDetails.platform}</dd>
-                  <dt>Source shape</dt><dd>{ownerDetails.sourceShape}</dd>
-                  <dt>Source file</dt><dd className="media-lightbox-path">{ownerDetails.sourceLocatorPath ?? 'none (inline image)'}</dd>
+                  <dt>{t('Platform')}</dt><dd>{ownerDetails.platform}</dd>
+                  <dt>{t('Source shape')}</dt><dd>{ownerDetails.sourceShape}</dd>
+                  <dt>{t('Source file')}</dt><dd className="media-lightbox-path">{ownerDetails.sourceLocatorPath ?? t('none (inline image)')}</dd>
                 </>
               )}
             </dl>

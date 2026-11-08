@@ -197,7 +197,7 @@ async function handlePushOps(
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		const projection = await drainProjection(app.env, app.store, userId, result.head_seq);
+		const projection = await drainProjection(app.env, app.store, userId, result.head_seq, { clientSignal: request.signal });
 		if (projection.ok && decimalAtLeast(projection.projectedSeq, result.head_seq)) {
 			return json(200, { ...result, projected_seq: projection.projectedSeq });
 		}
@@ -210,13 +210,17 @@ async function handlePushOps(
 				projected_seq: projection.projectedSeq,
 			});
 		}
-		return json(projection.httpStatus, {
+		const failure = json(projection.httpStatus, {
 			error: projection.error,
 			durable: true,
 			retryable: projection.retryable,
 			head_seq: result.head_seq,
 			projected_seq: projection.projectedSeq,
 		});
+		if (projection.retryAfterSeconds !== undefined) {
+			failure.headers.set("Retry-After", String(projection.retryAfterSeconds));
+		}
+		return failure;
 	} catch (e) {
 		return mapHubError(e);
 	}

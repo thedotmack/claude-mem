@@ -21,6 +21,7 @@ import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
+import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -57,6 +58,11 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
   'CLAUDE_MEM_NOTION_TOKEN',
+  // Contact details, not credentials, but this GET answers any localhost page.
+  // The viewer never shows them, and HTTP cannot write them.
+  'CLAUDE_MEM_ONLINE_SIGNUP_EMAIL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_NOTE',
+  'CLAUDE_MEM_PRO_TRIAL_EMAIL',
 ]);
 
 function maskSecretString(value: string): string {
@@ -119,12 +125,19 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
   );
 }
 
-// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
-// the HTTP write list below, this set keeps it from being persisted via POST.
+// Spawn-binary paths and filesystem/listen redirects: file/env only. Even if
+// a key is accidentally re-added to the HTTP write list below, this set keeps
+// it from being persisted via POST. CLAUDE_MEM_DATA_DIR is where memories and
+// every secret live — an HTTP-writable redirect hands them to any caller that
+// reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
+// it remotely could re-expose the worker on a non-loopback address without
+// the Observation TV guard's token ever being written.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_HOST',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -246,10 +259,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_PROVIDER_BY_SOURCE',
       'CLAUDE_MEM_OBSERVER_ENABLED',
+      // The viewer's "Keep images" switch. Inference stays file/env only: it
+      // sends images to a paid model and has no switch.
+      'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -277,10 +292,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
       'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_AGENT',
       'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
       'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
       'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
-      'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
@@ -367,11 +382,10 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
-    if (
-      settings.CLAUDE_MEM_OBSERVER_ENABLED !== undefined
-      && !['true', 'false'].includes(settings.CLAUDE_MEM_OBSERVER_ENABLED)
-    ) {
-      return { valid: false, error: 'CLAUDE_MEM_OBSERVER_ENABLED must be "true" or "false"' };
+    for (const key of ['CLAUDE_MEM_OBSERVER_ENABLED', 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'] as const) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
+      }
     }
 
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
@@ -593,6 +607,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
     }
 
+    if (settings.CLAUDE_MEM_WORK_VIEW_AGENT !== undefined
+      && !(WORK_VIEW_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_WORK_VIEW_AGENT)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "off", or "all"' };
+    }
     if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
       && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };
