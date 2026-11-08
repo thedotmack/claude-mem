@@ -504,6 +504,8 @@ export class DataRoutes extends BaseRouteHandler {
     return null;
   }
 
+  private chromaCleanupTail: Promise<void> = Promise.resolve();
+
   /**
    * Rows are committed gone — drop their fragments from the vector index too
    * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
@@ -518,8 +520,6 @@ export class DataRoutes extends BaseRouteHandler {
    * hours. Each request still returns immediately; the cleanups themselves
    * take turns on one tail, so exactly one batch is ever in flight.
    */
-  private chromaCleanupTail: Promise<void> = Promise.resolve();
-
   private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
     const chromaSync = this.dbManager.getChromaSync();
     if (!chromaSync || rows.length === 0) return;

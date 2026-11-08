@@ -19,6 +19,7 @@ const ROW = { kind: 'observation' as const, id: '1' };
 describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
   it('serializes two scheduled cleanups: the second starts only after the first settles', async () => {
     let firstSettled = false;
+    let secondSawFirstSettled: boolean | null = null;
     let firstStarted = 0;
     let secondStarted = 0;
     const stub = {
@@ -29,6 +30,7 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
           firstSettled = true;
         } else {
           secondStarted++;
+          secondSawFirstSettled = firstSettled;
         }
       },
     };
@@ -40,15 +42,17 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
       await routes.chromaCleanupTail;
       expect(firstStarted).toBe(1);
       expect(secondStarted).toBe(1);
-      expect(firstSettled).toBe(true); // the second batch ran after the first settled
+      expect(secondSawFirstSettled).toBe(true); // the second batch started only after the first settled
     } finally {
       mock.restore();
     }
   });
 
   it('a failing batch never jams the tail for the next one', async () => {
+    const ranIds: number[] = [];
     const stub = {
       async deleteRowDocuments(kind: string, id: number) {
+        ranIds.push(id);
         if (id === 1) throw new Error('chroma down');
       },
     };
@@ -59,7 +63,7 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
       routes.scheduleChromaRowCleanup([{ ...ROW, id: '2' }]);
       await routes.chromaCleanupTail;
       expect(warn).toHaveBeenCalled(); // the failure is logged per row
-      expect(routes.chromaCleanupTail).toBeInstanceOf(Promise);
+      expect(ranIds).toEqual([1, 2]); // the next batch still ran after the failure
     } finally {
       warn.mockRestore();
       mock.restore();
