@@ -84,6 +84,6 @@ for k, l in names:
     r = R[k]
     print(f"- {l}: {r['turns_started']} turns started; errors {len(r['errors'])}; spoiled turns {sorted(map(int, r['spoiled_turns'])) or 'none'}; "
           f"turn retries {r['retried_turns'] or 'none'}; unextracted request bodies {r['unextracted_bodies']}; "
-          f"observer wait capped on turns {r.get('observer_wait_capped_turns') or 'none'}; observer quota pauses {r.get('observer_quota_pauses', 0)}"
+          f"observer quota pauses {r.get('observer_quota_pauses', 0)}"
           + (f"; observations stored {r['observations_stored']}, summaries {r.get('summaries_stored')}" if r.get('observations_stored') is not None else '')
           + (f"; provider-reported cost on {r['measured_cost_requests']} of {r['requests']} requests" if r.get('measured_cost_requests') else ''))

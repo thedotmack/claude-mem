@@ -41,6 +41,15 @@ def timeline_of(items, content_key):
     return []
 
 
+def tool_detail(tool_input):
+    """What a tool call acts on, for the live panel: its command, file path or search pattern, in full."""
+    for key in ('command', 'file_path', 'path', 'pattern', 'url', 'query'):
+        value = tool_input.get(key)
+        if isinstance(value, list): value = ' '.join(map(str, value))
+        if isinstance(value, str) and value: return value
+    return ''
+
+
 def extract_anthropic(b):
     msgs = b.get('messages', []); tool_uses = []; thinking = 0
     for m in msgs:
@@ -51,7 +60,7 @@ def extract_anthropic(b):
             if t == 'tool_use':
                 i = c.get('input') or {}
                 files = [i.get('file_path', '')] if c.get('name') == 'Read' else shell_reads(i.get('command', '')) if c.get('name') == 'Bash' else []
-                tool_uses.append(dict(id=c.get('id'), name=c.get('name'), read_files=[os.path.basename(x) for x in files if x]))
+                tool_uses.append(dict(id=c.get('id'), name=c.get('name'), read_files=[os.path.basename(x) for x in files if x], detail=tool_detail(i)))
     last = json.dumps(msgs[-1]).lower() if msgs else ''
     kind = 'summarizing request' if ('summary of the conversation' in last or 'summarize the conversation' in last) else \
            'continued from a summary' if msgs and CONTINUED in json.dumps(msgs[:3]) else None
@@ -73,7 +82,7 @@ def extract_responses(b):
             files = [x for c in cmds for x in shell_reads(c)]
         else:
             files = shell_reads(cmd) if isinstance(cmd, str) else []
-        tool_uses.append(dict(id=it.get('call_id') or it.get('id'), name=it.get('name') or it.get('type'), read_files=[os.path.basename(x) for x in files if x]))
+        tool_uses.append(dict(id=it.get('call_id') or it.get('id'), name=it.get('name') or it.get('type'), read_files=[os.path.basename(x) for x in files if x], detail=cmd if isinstance(cmd, str) else ''))
     reasoning = sum(1 for it in items if it.get('type') == 'reasoning')
     return dict(proto='responses', conversation=b.get('prompt_cache_key', ''), model=b.get('model'), tool_uses=tool_uses,
                 messages=len(items), kind=None, side_call=not b.get('tools'), thinking_blocks=reasoning, timeline=timeline_of(items, 'content'))
@@ -98,7 +107,7 @@ def extract_chat(b):
             except Exception: args = {}
             if not isinstance(args, dict): args = {}
             files = [args.get('path') or args.get('file_path') or ''] if name in CHAT_READ_TOOLS else shell_reads(args.get('command') or '') if name in CHAT_SHELL_TOOLS else []
-            tool_uses.append(dict(id=call.get('id'), name=name, read_files=[os.path.basename(x) for x in files if x]))
+            tool_uses.append(dict(id=call.get('id'), name=name, read_files=[os.path.basename(x) for x in files if x], detail=tool_detail(args)))
     # A request with no tools is an agent's side call (title, compression summary): its cost counts, its prompt size
     # is not the session's.
     return dict(proto='chat', conversation='', model=b.get('model'), tool_uses=tool_uses, messages=len(msgs),

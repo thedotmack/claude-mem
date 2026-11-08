@@ -80,6 +80,11 @@ def line_count(path):
     return sum(1 for _ in open(path)) if os.path.exists(path) else 0
 
 
+def status_count(index_path, status):
+    # index.tsv rows from tee-proxy.ts: request number, method, path, status, content type.
+    return sum(1 for row in open(index_path) if row.split('\t')[3:4] == [status]) if os.path.exists(index_path) else 0
+
+
 def stack_records(run_dir, config, args, card):
     stack = os.path.join(run_dir, 'stacks', config)
     log = open(os.path.join(stack, 'logs', 'session.log')).read()
@@ -94,10 +99,10 @@ def stack_records(run_dir, config, args, card):
         stats['total_cost_usd'] = sum((r['uncached'] * card['input'] + r['cached'] * card['cache_read'] + r['output'] * card['output']) / 1e6 for r in stats['per_turn'].values())
     calls = observer_calls(stack); done = done_times(log)
     agent_billed = stats['measured_cost_usd'] or 0
-    health = dict(errors=len(stats['errors']), spoiled_turns=sorted(map(int, stats['spoiled_turns'])), observer_wait_capped_turns=stats['observer_wait_capped_turns'],
+    health = dict(errors=len(stats['errors']), spoiled_turns=sorted(map(int, stats['spoiled_turns'])),
                   observations_stored=stats['observations_stored'], summaries_stored=stats['summaries_stored'], memory_tools_seen=stats['memory_tools_seen'],
                   timeline_blocks_at_end=(stats['timeline_end'] or {}).get('blocks'), requests=stats['requests'], requests_outside_session=stats['requests_outside_session'],
-                  rate_limit_429_attempts=sum(line_count(os.path.join(stack, d, '429s.tsv')) for d in ('tee-anthropic', 'tee-codex')),
+                  rate_limit_429s=sum(status_count(os.path.join(stack, d, 'index.tsv'), '429') for d in ('tee-anthropic', 'tee-codex')),
                   off_pin=any(os.path.exists(os.path.join(stack, d, 'OFF-PIN')) for d in ('tee-anthropic', 'tee-codex')),
                   # Codex only: answers whose provider was confirmed by lookup. Fewer than `requests` means some are unproven.
                   generation_lookups=line_count(os.path.join(stack, 'tee-codex', 'generation-lookups.tsv')))
@@ -109,7 +114,7 @@ def stack_records(run_dir, config, args, card):
     print(f"{args.agent}/{config}: turns done {max(done, default=0)}; agent billed ${agent_billed:.6f}, agent at card ${stats['total_cost_usd']:.6f} ({gap:+.2%}{' DRIFT' if abs(gap) > RECONCILE_TOLERANCE else ''}); "
           f"observer billed ${observer['billed_usd']:.6f} over {observer['calls']} calls, at card ${observer['card_usd']:.6f} (cached {observer['cached_source']}); "
           f"observations {stats['observations_stored']}, summaries {stats['summaries_stored']}; memory tools {len(stats['memory_tools_seen'])}; timeline blocks {health['timeline_blocks_at_end']}; "
-          f"cache hit {stats['cache_read'] / max(1, stats['cache_read'] + stats['uncached_input']):.1%}; off-pin {health['off_pin']}; provider lookups {health['generation_lookups']}; 429 attempts {health['rate_limit_429_attempts']}")
+          f"cache hit {stats['cache_read'] / max(1, stats['cache_read'] + stats['uncached_input']):.1%}; off-pin {health['off_pin']}; provider lookups {health['generation_lookups']}; 429s passed to the agent {health['rate_limit_429s']}")
     return records, agent_billed + observer['billed_usd']
 
 

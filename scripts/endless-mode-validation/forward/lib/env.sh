@@ -51,10 +51,6 @@ export EMV_OPENCLAW_BIN=${EMV_OPENCLAW_BIN:-$(PATH=$EMV_REAL_PATH command -v ope
 export EMV_PORT_BASE=${EMV_PORT_BASE:-38100}
 export EMV_PROMPTS=${EMV_PROMPTS:-$EMV_FORWARD_DIR/prompts200.txt}
 export EMV_BUN=${EMV_BUN:-$(PATH=$EMV_REAL_PATH command -v bun)}
-# Stop before a turn when free disk drops below this many GB. Reason: disk protection. The tee writes every
-# request body and response stream, and a full disk would corrupt the sandbox databases mid-run. 5 GB is the stop
-# our own runs used (free disk never went below 11 GB in our 200-turn, four-configuration run).
-export EMV_MIN_FREE_GB=${EMV_MIN_FREE_GB:-5}
 
 # The configurations, in a fixed order (their index sets their ports; new ones go at the end so ports never move).
 # A run with no configurations named runs EMV_DEFAULT_CONFIGS.
@@ -116,7 +112,6 @@ emv_claude_md_excludes() {
   printf '%s\n' $out | jq -R . | jq -s .
 }
 
-emv_free_gb() { df -Pk "$EMV_RUN_DIR" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}'; }
 
 # The installed release's plugin root in the `release` stack (the installer's plugin cache dir for the version
 # recorded at setup). Fails when it is missing.

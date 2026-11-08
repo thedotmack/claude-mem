@@ -34,7 +34,6 @@ emv_check_profile || exit
 python3 $EMV_FORWARD_DIR/check-prompts.py $EMV_PROMPTS >&2 || { echo "$EMV_PROMPTS refers to turns by number; reword those prompts by content" >&2; exit 2; }
 [[ $first == auto ]] && rm -f $EMV_RUN_DIR/logs/budget-stop-turn
 [[ ! -d $EMV_RUN_DIR/stacks || $first != 1 ]] || { echo "$EMV_RUN_DIR already has stacks; pick a new EMV_RUN_NAME, or set EMV_FIRST_TURN to continue" >&2; exit 2; }
-(( $(emv_free_gb) >= EMV_MIN_FREE_GB )) || { echo "under $EMV_MIN_FREE_GB GB free" >&2; exit 3; }
 
 say "run $EMV_RUN_NAME: turns $first-$turns, configs ${configs[*]}, agent $EMV_AGENT, profile $EMV_MODEL_PROFILE, model $([[ $EMV_AGENT == codex && $EMV_MODEL_PROFILE != openrouter-deepseek-flash ]] && echo $EMV_CODEX_MODEL || emv_claude_model), pin $([[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && emv_pin_provider || echo none), commit $(git -C $EMV_REPO_ROOT rev-parse --short HEAD)"
 zsh $EMV_FORWARD_DIR/lib/real-configs.sh snapshot $R/real-configs-before-$first.txt

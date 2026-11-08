@@ -1,6 +1,9 @@
 #!/usr/bin/env zsh
 # Seed the small Python project every scripted session starts from. Usage: seed-project.sh <dir>
 set -e; d=$1; rm -rf $d; mkdir -p $d; cd $d; git init -q
+# EMV_EMPTY_PROJECT=1: an app-spec benchmark instead. The project is an empty git repo; the spec reaches the agent only
+# in its opening prompt (EMV_FIRST_PROMPT_FILE), as a user would send it.
+[[ $EMV_EMPTY_PROJECT == 1 ]] && exit 0
 cat > calc.py <<'PY'
 def add(a, b):
     return a + b

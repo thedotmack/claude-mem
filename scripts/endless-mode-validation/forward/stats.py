@@ -162,9 +162,7 @@ res['compactions'] = compactions; res['errors'] = errors; res['spoiled_turns'] =
 res['unextracted_bodies'] = unextracted
 res['requests_outside_session'] = outside_session
 res['memory_tools_seen'] = sorted({t for r in recs for t in r.get('memory_tools') or []})
-# Observer health: turns whose observer wait hit session.sh's cap, and quota pauses in the worker's log. Either one
-# means fewer observations existed when Endless Mode folded, which makes its numbers worse, not better.
-res['observer_wait_capped_turns'] = sorted(int(m.group(1)) for m in re.finditer(r'turn (\d+) done; observer wait 240s', log))
+# Observer health: quota pauses in the worker's log.
 quota_pauses = 0
 for lf in glob.glob(os.path.join(S, 'data', 'logs', '*.log')):
     quota_pauses += sum(1 for l in open(lf, errors='replace') if 'paused for quota' in l)

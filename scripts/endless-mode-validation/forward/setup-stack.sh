@@ -35,17 +35,11 @@ jq -n --arg wp $EMV_WORKER_PORT --arg gp $EMV_GATEWAY_PORT --arg fmt $row_format
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: $fmt,
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: "true",
   CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: "true",
-  CLAUDE_MEM_LOG_LEVEL: "DEBUG",
-  CLAUDE_MEM_CHROMA_ENABLED: "false",
-  CLAUDE_MEM_TRANSCRIPTS_ENABLED: "false",
-  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: $tw,
-  CLAUDE_MEM_TELEGRAM_ENABLED: "false",
-  CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: "false",
-  CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: "false",
-  CLAUDE_MEM_CLOUD_SYNC_WS: "false",
-  CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "false"
+  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: $tw
 } + $observer' > $EMV_STACK/harness-settings.json
-# Written before any installer runs, so that it reads this stack's worker port and observer, never defaults. A release
+# Every other claude-mem setting stays at its shipped default (Chroma, transcripts, log level and the rest), so each
+# setup runs claude-mem as a user gets it. Written before any installer runs, so that it reads this stack's worker port
+# and observer, never defaults. A release
 # has no wire gateway, so no gateway keys. Any homedir()-relative claude-mem setting resolves into the sandbox HOME: it
 # gets the same settings.
 write_settings() {
@@ -163,7 +157,7 @@ if [[ $1 == release ]]; then
     codex) grep -q 'claude-mem' $CODEX_HOME/config.toml || { echo "release: claude-mem is not in $CODEX_HOME/config.toml" >&2; exit 1; } ;;
   esac
 fi
-# Claude Code: sandbox config dir, base URL at the gateway route (or the tee for `none`), thinking on, no plugins.
+# Claude Code: sandbox config dir, base URL at the gateway route (or the tee for `none`), no plugins.
 claude_base=$([[ $1 == none || $1 == release ]] && echo "http://127.0.0.1:$EMV_TEE_ANTHROPIC_PORT" || echo "http://127.0.0.1:$EMV_GATEWAY_PORT/r/claude-code")
 claude_env=$(jq -n --arg b $claude_base '{ANTHROPIC_BASE_URL: $b, DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"}')
 if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
@@ -174,7 +168,7 @@ fi
 # `release` keeps what its installer wrote (enabledPlugins and the rest) and gets the same env and switches on top.
 claude_settings=$CLAUDE_CONFIG_DIR/settings.json
 [[ $1 == release && -f $claude_settings ]] || print '{}' > $claude_settings
-jq --argjson env "$claude_env" --argjson excludes "$(emv_claude_md_excludes)" '. + {env: ((.env // {}) + $env), alwaysThinkingEnabled: true, claudeMdExcludes: $excludes, permissions: ((.permissions // {}) + {defaultMode: "bypassPermissions"})}' \
+jq --argjson env "$claude_env" --argjson excludes "$(emv_claude_md_excludes)" '. + {env: ((.env // {}) + $env), claudeMdExcludes: $excludes, permissions: ((.permissions // {}) + {defaultMode: "bypassPermissions"})}' \
   $claude_settings > $claude_settings.new && mv $claude_settings.new $claude_settings
 
 # What ran, for the page.

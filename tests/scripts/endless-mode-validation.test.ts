@@ -243,17 +243,11 @@ describe('forward tee-proxy: endpoint pin', () => {
     upstream.stop(true);
   });
 
-  it('retries a 429 with its waits, logs each attempt, and passes it on when they run out', async () => {
-    let calls = 0;
-    const t = pinnedTee('pin-429', () => (++calls <= 2 ? new Response('slow down', { status: 429 }) : new Response(servedBy('DeepInfra'))), { retry429DelaysMs: [1, 1] });
-    expect((await t.post('/v1/chat/completions', { model: PIN.model })).status).toBe(200);
-    expect(readFileSync(join(t.outDir, '429s.tsv'), 'utf8').trim().split('\n').length).toBe(2);
+  it('passes a 429 straight to the agent', async () => {
+    const t = pinnedTee('pin-429', () => new Response('slow down', { status: 429 }));
+    expect((await t.post('/v1/chat/completions', { model: PIN.model })).status).toBe(429);
+    expect(t.received.length).toBe(1);
     t.stop();
-    const always = pinnedTee('pin-429-out', () => new Response('slow down', { status: 429 }), { retry429DelaysMs: [1] });
-    expect((await always.post('/v1/chat/completions', { model: PIN.model })).status).toBe(429);
-    expect(always.received.length).toBe(2);
-    expect(readFileSync(join(always.outDir, '429s.tsv'), 'utf8')).toContain('gave up');
-    always.stop();
   });
 
   it('reads a provider split across chunks and a whole-JSON answer, and matches slugs to provider names', () => {

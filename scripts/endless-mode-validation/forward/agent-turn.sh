@@ -4,7 +4,7 @@
 # Prints one "rc=… secs=… error=… sid=…" line, then the first 300 characters of the reply.
 #
 # Claude Code: print mode, no plugins (capture is the gateway's). The credential goes into the agent's environment
-# only. Under the anthropic profile the claude.ai token is read again before every turn, and a turn that fails
+# only. Under the anthropic profile (only) the claude.ai token is read again before every turn, and a turn that fails
 # (non-zero exit or is_error, e.g. the token was rotated mid-turn) is resumed once in the same session with the same
 # prompt after reading the token again; the failed attempt is kept as <label>.attempt1.json and a "turn-retry:" line
 # is printed.
@@ -78,7 +78,7 @@ credentials
 resume=(); [[ $mode == resume ]] && resume=(--resume $(<$sidfile))
 run_claude $resume; rc=$?
 failed=$(failed_session $rc)
-if [[ -n $failed ]]; then
+if [[ -n $failed && $EMV_MODEL_PROFILE == anthropic ]]; then
   [[ $failed == unparsable ]] && failed=${resume[2]:-}
   mv $T/$label.json $T/$label.attempt1.json; mv $T/$label.err $T/$label.attempt1.err
   credentials

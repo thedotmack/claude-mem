@@ -32,7 +32,7 @@ YAML
         models: {providers: {"emv-openrouter": {baseUrl: $b, apiKey: "${EMV_UPSTREAM_KEY}", api: "openai-completions",
           models: [{id: $m, name: $m, reasoning: true, input: ["text"], contextWindow: 1048576,
                     cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}}]}}},
-        agents: {defaults: {model: {primary: ("emv-openrouter/" + $m)}, workspace: $w, skipBootstrap: true}}
+        agents: {defaults: {model: {primary: ("emv-openrouter/" + $m)}, workspace: $w}}
       }' > $OPENCLAW_CONFIG_PATH
       ;;
     *) echo "not a chat agent: $EMV_AGENT" >&2; return 2 ;;
@@ -56,11 +56,10 @@ emv_run_chat_turn() {
       $agent_env $EMV_HERMES_BIN chat -Q --yolo -q "$prompt" $resume < /dev/null > $raw 2> $T/$label.err; rc=$?
       ;;
     openclaw)
-      # One id for the whole session; --timeout 3600 is only a hung-turn stop (OpenClaw's own default of 600 s is
-      # shorter than the long turns seen in the 500-turn run), and a hit stop shows as an error on the turn.
+      # One id for the whole session.
       print -r -- emv-session > $sidfile
       PATH=${EMV_OPENCLAW_NODE_DIR:+$EMV_OPENCLAW_NODE_DIR:}$PATH $agent_env $EMV_OPENCLAW_BIN agent --local --agent main --session-id emv-session \
-        --timeout 3600 --json -m "$prompt" < /dev/null > $raw 2> $T/$label.err; rc=$?
+        --json -m "$prompt" < /dev/null > $raw 2> $T/$label.err; rc=$?
       ;;
   esac
   python3 $EMV_FORWARD_DIR/chat-turn-result.py $EMV_AGENT $raw $T/$label.err $T/$label.json $rc $(( $(date +%s) - start )) $sidfile

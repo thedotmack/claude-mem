@@ -11,7 +11,7 @@
 // --pin-provider=<slug> --pin-model=<model> (OpenRouter profile; both or neither): every inference POST goes upstream
 // with `provider: {order: [<slug>], allow_fallbacks: false}`, whichever agent sent it, and must name the pinned model.
 // Every answer is checked: a response from another provider or model halts this tee (see `halt` below). `session.sh`
-// stops the run when it finds the OFF-PIN file. Same flags turn on the 429 retry (RETRY_429_DELAYS_MS).
+// stops the run when it finds the OFF-PIN file.
 //
 // Usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token] [--pin-provider=<slug> --pin-model=<model>]
 import { readdirSync, appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -21,11 +21,6 @@ export type AccessTokenReader = () => string | null;
 
 export interface EndpointPin { providerSlug: string; model: string }
 
-// Retry a 429 after these waits, then pass it to the agent and log it. Reason: pinning removes OpenRouter's fallback to
-// another provider, and Endless Mode about doubles requests, so a rate limit that used to reroute now reaches the agent.
-// The waits total 122 s, which spans two of OpenRouter's one-minute rate-limit windows and stays under the 255 s idle
-// timeout of Bun.serve. Every attempt goes in 429s.tsv, so the count can be reported.
-const RETRY_429_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000];
 // Waits before asking OpenRouter which provider served a /responses answer, which names none in its stream. Reason: the
 // generation record appears some time after the answer: most within 15 s, but on 2026-11-02 two of 11 were still missing
 // after these 126 s and present 5 minutes later. So a miss here never stops a run; every id is listed in
@@ -132,12 +127,11 @@ export function readClaudeAccessToken(env: NodeJS.ProcessEnv = process.env): str
 
 export function startTee(options: {
   port: number; upstream: string; outDir: string; refreshToken?: AccessTokenReader; pin?: EndpointPin;
-  retry429DelaysMs?: number[]; generationLookupDelaysMs?: number[];
+  generationLookupDelaysMs?: number[];
   /** Sent as max_output_tokens. The provider reserves this from the context window, so a smaller value leaves more room for the prompt. */
   maxOutputTokens?: number;
 }) {
   const { upstream, outDir, refreshToken, pin } = options;
-  const retry429DelaysMs = options.retry429DelaysMs ?? RETRY_429_DELAYS_MS;
   const generationLookupDelaysMs = options.generationLookupDelaysMs ?? GENERATION_LOOKUP_DELAYS_MS;
   mkdirSync(outDir, { recursive: true });
   // Continue after the highest saved request: a continued run (EMV_FIRST_TURN) starts a new tee on the same folder, and
@@ -224,16 +218,6 @@ export function startTee(options: {
           response = await send();
         }
         appendFileSync(join(outDir, 'retries.tsv'), `${new Date().toISOString()}\t${n}\t${firstStatus}\t${token ? response.status : 'no token found'}\n`);
-      }
-      if (pin) {
-        for (let attempt = 0; response.status === 429; attempt++) {
-          const wait = retry429DelaysMs[attempt];
-          appendFileSync(join(outDir, '429s.tsv'), `${new Date().toISOString()}\t${n}\t${attempt + 1}\t${wait ?? 'gave up: passed to the agent'}\n`);
-          if (wait === undefined) { console.error(`request ${n}: still 429 after ${attempt} retries; passing it to the agent`); break; }
-          await response.arrayBuffer().catch(() => undefined);
-          await sleep(wait);
-          response = await send();
-        }
       }
       const responseHeaders = new Headers(response.headers);
       responseHeaders.delete('content-encoding');
