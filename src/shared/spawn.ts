@@ -45,14 +45,18 @@ export function isWindowsNativeExecutable(command: string): boolean {
   return WINDOWS_NATIVE_EXTENSIONS.has(extname(command).toLowerCase());
 }
 
+/** The folder Windows is installed in, from the variables Windows sets for every process, else its default place. */
+export function windowsSystemRootDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  return env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || 'C:\\Windows';
+}
+
 /**
  * Absolute path of where.exe. Spawning the bare name lets Windows run a
  * `where.exe` from the current directory (often the user's project, for hooks)
  * before PATH, which would execute untrusted code.
  */
 export function windowsWhereExecutablePath(env: NodeJS.ProcessEnv = process.env): string {
-  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || 'C:\\Windows';
-  return join(systemRoot, 'System32', 'where.exe');
+  return join(windowsSystemRootDirectory(env), 'System32', 'where.exe');
 }
 
 /**

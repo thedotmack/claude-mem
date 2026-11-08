@@ -11,6 +11,7 @@ import {
   FORBID_REAL_AUTO_UPDATE_ENV,
   autoUpdateApplyArgv,
   autoUpdateAttemptLogPath,
+  autoUpdateInstallerWorkingDirectory,
   autoUpdateLaunchDeps,
   autoUpdateWorkerProof,
   claudeMemUpdateInvocation,
@@ -92,6 +93,17 @@ const freshLogPath = (): string => path.join(runDirectory, `attempt-${++logCount
 function readyInvocation(result: ClaudeMemUpdateInvocation): CommandInvocation {
   if (result.kind !== 'ready') throw new Error(`expected an invocation, got ${JSON.stringify(result)}`);
   return result.invocation;
+}
+
+/**
+ * The folders npm looks in for the project around `directory`, nearest first:
+ * it, then each parent up to the root, each checked for a package.json or a
+ * node_modules folder (@npmcli/config loadLocalPrefix, over walk-up-path).
+ */
+function foldersNpmChecks(directory: string, pathFlavor: typeof path.posix): string[] {
+  const folders = [directory];
+  for (let parent = pathFlavor.dirname(directory); parent !== folders.at(-1); parent = pathFlavor.dirname(parent)) folders.push(parent);
+  return folders;
 }
 
 describe('the test tripwire: no test can start a real auto-update', () => {
@@ -184,7 +196,7 @@ describe('claudeMemUpdateInvocation', () => {
     });
   });
 
-  it('fails as npx-not-found on Windows when no npx is on PATH, never falling back to a bare npx.cmd that cmd.exe would look for in the data dir first', () => {
+  it('fails as npx-not-found on Windows when no npx is on PATH, never falling back to a bare npx.cmd that cmd.exe would look for in its working directory first', () => {
     expect(claudeMemUpdateInvocation(TARGET, 'win32', () => null)).toEqual({ kind: 'npx-not-found', message: 'npx was not found on PATH' });
   });
 
@@ -232,8 +244,68 @@ describe('findNpxForTheInstaller', () => {
   });
 });
 
+describe('autoUpdateInstallerWorkingDirectory', () => {
+  it.each([
+    ['POSIX', 'linux', {}, path.posix, '/home/dev'],
+    ['Windows', 'win32', { SystemRoot: 'C:\\Windows' }, path.win32, 'C:\\Users\\dev'],
+  ] as Array<[string, NodeJS.Platform, NodeJS.ProcessEnv, typeof path.posix, string]>)(
+    'on %s paths, is a root, where npm finds no project: no package.json or node_modules in it or any folder above it',
+    (_flavor, platform, env, pathFlavor, home) => {
+      // The sandbox run's layout: the data dir inside a claude-mem source checkout, in a home folder that is an npm project of its own.
+      const checkout = pathFlavor.join(home, 'src', 'claude-mem');
+      const dataDir = pathFlavor.join(checkout, '.scratch', 'claude-mem-data');
+      const projectFiles = new Set([pathFlavor.join(checkout, 'package.json'), pathFlavor.join(home, 'package.json'), pathFlavor.join(home, 'node_modules')]);
+      const holdsProject = (folder: string): boolean => ['package.json', 'node_modules'].some((name) => projectFiles.has(pathFlavor.join(folder, name)));
+      // From the supervisor's own working directory, the data dir, npm finds the checkout first.
+      expect(foldersNpmChecks(dataDir, pathFlavor).filter(holdsProject)).toEqual([checkout, home]);
+
+      const workingDirectory = autoUpdateInstallerWorkingDirectory(platform, env);
+      expect(foldersNpmChecks(workingDirectory, pathFlavor)).toEqual([workingDirectory]);
+      expect(foldersNpmChecks(workingDirectory, pathFlavor).filter(holdsProject)).toEqual([]);
+      // Every way up ends there, the data dir's and the home folder's included, so no folder is checked in fewer places.
+      expect(foldersNpmChecks(dataDir, pathFlavor).at(-1)).toBe(workingDirectory);
+      expect(foldersNpmChecks(home, pathFlavor).at(-1)).toBe(workingDirectory);
+    },
+  );
+
+  it('on Windows, is the root of the drive SystemRoot names, read as the where.exe lookup reads it, and refuses one that names no root', () => {
+    expect(autoUpdateInstallerWorkingDirectory('win32', { SystemRoot: 'D:\\WINDOWS' })).toBe('D:\\');
+    // Windows sets SystemRoot for every process; with none, Windows' default place (spawn.ts windowsSystemRootDirectory).
+    expect(autoUpdateInstallerWorkingDirectory('win32', {})).toBe('C:\\');
+    // Drive-relative: the current folder on C:, which would be the supervisor's own when it is on that drive.
+    expect(() => autoUpdateInstallerWorkingDirectory('win32', { SystemRoot: 'C:Windows' })).toThrow('SystemRoot "C:Windows" is not an absolute path');
+  });
+});
+
 describe('runAutoUpdateInstaller', () => {
   const bunScript = (source: string) => commandInvocation(process.execPath, ['-e', source]);
+
+  it('runs the installer in that root, never in the supervisor\'s working directory, even a data dir inside a claude-mem checkout', async () => {
+    // The sandbox run's supervisor (daemonWorkingDirectory): a data dir inside a source checkout whose package is claude-mem at the target version.
+    const checkout = mkdtempSync(path.join(runDirectory, 'checkout-'));
+    writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET, bin: { 'claude-mem': './dist/npx-cli/index.js' } }));
+    const dataDir = path.join(checkout, '.scratch', 'claude-mem-data');
+    mkdirSync(dataDir, { recursive: true });
+    const logPath = freshLogPath();
+    const testWorkingDirectory = process.cwd();
+    process.chdir(dataDir);
+    try {
+      expect(await runAutoUpdateInstaller(bunScript("process.stdout.write('installer-cwd=' + process.cwd() + '\\n')"), { logPath, deadlineMs: NEVER_REACHED_DEADLINE_MS }))
+        .toEqual({ kind: 'exited', exitCode: 0, signal: null });
+    } finally {
+      process.chdir(testWorkingDirectory);
+    }
+
+    const log = readFileSync(logPath, 'utf-8');
+    // Its own output line; the "running:" line before it quotes the script.
+    const installerWorkingDirectory = /^installer-cwd=(.+)$/m.exec(log)?.[1] ?? '(the installer printed no working directory)';
+    expect(installerWorkingDirectory).toBe(autoUpdateInstallerWorkingDirectory());
+    // On this machine npm finds no project there: no package.json or node_modules in it or any folder above it.
+    const projectFolders = foldersNpmChecks(installerWorkingDirectory, path)
+      .filter((folder) => existsSync(path.join(folder, 'package.json')) || existsSync(path.join(folder, 'node_modules')));
+    expect(projectFolders).toEqual([]);
+    expect(log).toContain(` in ${installerWorkingDirectory} (deadline `);
+  }, REAL_PROCESS_TEST_TIMEOUT_MS);
 
   it('gives the installer no stdin and no TTY, so it takes the non-interactive path, and appends its output to the attempt log', async () => {
     const logPath = freshLogPath();

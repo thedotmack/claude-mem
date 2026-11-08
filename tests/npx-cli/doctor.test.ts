@@ -370,6 +370,8 @@ describe('npx doctor Auto-update row', () => {
     installShape?: ClaudeMemInstallShape;
     readStateFile?: AutoUpdateDoctorSources['readStateFile'];
     readSwitches?: AutoUpdateDoctorSources['readSwitches'];
+    /** The version the install resolves to; INSTALLED unless an update moved it. */
+    installedVersion?: string;
   } = {}): AutoUpdateDoctorSources {
     const readers = switchReaders(options.readers);
     shapeReads = 0;
@@ -378,7 +380,7 @@ describe('npx doctor Auto-update row', () => {
       readSwitches: options.readSwitches ?? (() => readAutoUpdateSwitches(readers)),
       readClaudeCodeSettingsEnv: readers.readClaudeCodeSettingsEnv,
       readClaudeCodePluginState: readers.readClaudeCodePluginState,
-      installedVersion: INSTALLED,
+      installedVersion: options.installedVersion ?? INSTALLED,
       statePath: STATE_PATH,
       readStateFile: options.readStateFile ?? (() => ({
         state: { ...defaultAutoUpdateState(), ...structuredClone(options.state ?? {}) },
@@ -453,6 +455,75 @@ describe('npx doctor Auto-update row', () => {
       expect(row.status).toBe('ok');
       expect(lines(row.detail)[0]).toBe(`On: ${TARGET} waits until claude-mem has had nothing to do for 18 minutes, or has been busy for a full day (the worker's decision at [-10 min])`);
       expect(lines(row.detail)).toContain(`Claude Code's background update: on (set in ${KNOWN_MARKETPLACES}); claude-mem left it on: npx is not on the worker's PATH`);
+    });
+  });
+
+  describe('after the worker\'s apply, once its attempt has ended: how it ended, never "installing"', () => {
+    // The worker records apply before it launches the attempt (gate 9) and no other decision until its next
+    // tick; the supervisor replaces the attempt in flight with its outcome, here at [-2 min].
+    const afterApply: Partial<AutoUpdateState> = {
+      lastNetworkCheckAt: NOW - 10 * MINUTE_MS,
+      lastSeenPromotedVersion: TARGET,
+      lastDecision: recorded({ decision: 'apply', targetVersion: TARGET, previousVersion: INSTALLED, applyReason: 'quiet' }),
+      inFlightAttempt: null,
+    };
+    const ended = (result: AutoUpdateAttemptOutcome['result'], extra: Partial<AutoUpdateAttemptOutcome> = {}): AutoUpdateAttemptOutcome =>
+      outcome(result, { finishedAt: NOW - 2 * MINUTE_MS, ...extra });
+
+    it('applied: updated to the target, and when', () => {
+      const row = autoUpdateCheck(sources({ state: { ...afterApply, lastAttemptOutcome: ended('applied') }, installedVersion: TARGET }));
+      expect(row.status).toBe('ok');
+      expect(lines(row.detail)).toEqual([
+        `On: updated to ${TARGET} at [-2 min]`,
+        `Installed: ${TARGET}`,
+        `Promoted: ${TARGET}`,
+        'Last check: [-10 min]',
+        `Last update: ${INSTALLED} → ${TARGET}, applied, [-2 min]`,
+        CLAUDE_CODE_OFF_UNCHANGED,
+      ]);
+    });
+
+    it('failed: the last update to the target did not complete, with its stage, and no warning (the installed version still works)', () => {
+      const row = autoUpdateCheck(sources({ state: { ...afterApply, lastAttemptOutcome: ended('failed', { failureStage: 'installer-exit' }) } }));
+      expect(row.status).toBe('ok');
+      expect(lines(row.detail)).toEqual([
+        `On: the last update to ${TARGET} did not complete (failed at installer-exit, [-2 min])`,
+        `Installed: ${INSTALLED}`,
+        `Promoted: ${TARGET}`,
+        'Last check: [-10 min]',
+        `Last update: ${INSTALLED} → ${TARGET}, failed at installer-exit, [-2 min]`,
+        CLAUDE_CODE_OFF_UNCHANGED,
+      ]);
+    });
+
+    it('restored: did not complete, with its stage, and no warning (the previous version was put back)', () => {
+      const row = autoUpdateCheck(sources({ state: { ...afterApply, lastAttemptOutcome: ended('restored', { failureStage: 'prove-install' }) } }));
+      expect(row.status).toBe('ok');
+      expect(lines(row.detail)).toEqual([
+        `On: the last update to ${TARGET} did not complete (restored at prove-install, [-2 min])`,
+        `Installed: ${INSTALLED}`,
+        `Promoted: ${TARGET}`,
+        'Last check: [-10 min]',
+        `Last update: ${INSTALLED} → ${TARGET}, restored at prove-install, [-2 min]`,
+        CLAUDE_CODE_OFF_UNCHANGED,
+      ]);
+    });
+
+    it('restore_failed: did not complete, with its stage, under the warning, ending with the fix the outcome recorded', () => {
+      const row = autoUpdateCheck(sources({
+        state: { ...afterApply, lastAttemptOutcome: ended('restore_failed', { failureStage: 'installer-exit', fixCommand: `npx claude-mem@${INSTALLED} update`, fixCommandWhen: 'now' }) },
+      }));
+      expect(row.status).toBe('warn');
+      expect(lines(row.detail)).toEqual([
+        `claude-mem may not work: the automatic update to ${TARGET} failed`,
+        `On: the last update to ${TARGET} did not complete (restore_failed at installer-exit, [-2 min])`,
+        `Installed: ${INSTALLED}`,
+        `Promoted: ${TARGET}`,
+        'Last check: [-10 min]',
+        `Last update: ${INSTALLED} → ${TARGET}, restore_failed at installer-exit, [-2 min]`,
+        CLAUDE_CODE_OFF_UNCHANGED,
+        `Fix: run \`npx claude-mem@${INSTALLED} update\`, then restart Claude Code.`,
+      ]);
     });
   });
 

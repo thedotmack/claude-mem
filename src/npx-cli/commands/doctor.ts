@@ -615,8 +615,9 @@ export function autoUpdateDoctorSources(pluginRoot: PluginRootResolution | null)
  * The "Auto-update" row. Its first line is the takeaway; each line after it
  * is one fact:
  *  - on, or off and why, as the worker last decided it (the state file's
- *    lastDecision): doctor runs in a terminal whose environment can differ
- *    from the worker's, so it works the status out itself, with the worker
+ *    lastDecision), and once the attempt its `apply` started has ended, how
+ *    it ended: doctor runs in a terminal whose environment can differ from
+ *    the worker's, so it works the status out itself, with the worker
  *    check's own gates 1 and 2, only while the worker has recorded none, and
  *    says so;
  *  - the installed version, the promoted version last seen, the last check;
@@ -675,12 +676,19 @@ export function autoUpdateCheck(sources: AutoUpdateDoctorSources): CheckResult {
 /**
  * The status line: the worker's last recorded decision, or, while there is
  * none, what gates 1 and 2 read in doctor's own environment, said to be that.
+ * After an `apply` with no attempt in flight, it is how that attempt ended:
+ * the worker records `apply` before it launches the attempt
+ * (auto-update-check.ts gate 9) and records no other decision until its next
+ * tick, while the supervisor replaces the attempt in flight with its outcome
+ * (auto-update-apply.ts), so "installing" would outlast the install.
  * updaterOn is null when the status cannot be read.
  */
 function autoUpdateStatus(state: AutoUpdateState | null, sources: AutoUpdateDoctorSources): { line: string; updaterOn: boolean | null } {
   const recorded = state?.lastDecision ?? null;
-  if (recorded !== null) {
+  if (state !== null && recorded !== null) {
     const updaterOn = !AUTO_UPDATE_OFF_DECISIONS.has(recorded.decision);
+    const endedAttempt = recorded.decision === 'apply' && state.inFlightAttempt === null ? state.lastAttemptOutcome : null;
+    if (endedAttempt !== null) return { updaterOn, line: `On: ${describeEndedAttempt(endedAttempt, sources.formatTime)}` };
     return { updaterOn, line: `${updaterOn ? 'On' : 'Off'}: ${recorded.reason} (the worker's decision at ${sources.formatTime(recorded.decidedAt)})` };
   }
   const workedOutHere = '(worked out by doctor, because the worker has not recorded a decision yet; its environment can differ from this terminal\'s)';
@@ -696,10 +704,21 @@ function autoUpdateStatus(state: AutoUpdateState | null, sources: AutoUpdateDoct
   return { updaterOn: true, line: `On ${workedOutHere}` };
 }
 
+/** How the attempt the worker's `apply` started ended: updated to its target, or not completed, with its result and stage. */
+function describeEndedAttempt(outcome: AutoUpdateAttemptOutcome, time: (epochMs: number) => string): string {
+  if (outcome.result === 'applied') return `updated to ${outcome.targetVersion} at ${time(outcome.finishedAt)}`;
+  return `the last update to ${outcome.targetVersion} did not complete (${describeAttemptEnding(outcome, time)})`;
+}
+
 /** The last attempt: its versions, result and stage, when it ended, and whether a worker has since shown the install works. */
 function describeLastAttempt(outcome: AutoUpdateAttemptOutcome, time: (epochMs: number) => string): string {
+  return `${outcome.previousVersion} → ${outcome.targetVersion}, ${describeAttemptEnding(outcome, time)}${describeResolution(outcome, time)}`;
+}
+
+/** An attempt's result, its stage when it failed, and when it ended: "failed at installer-exit, <time>". */
+function describeAttemptEnding(outcome: AutoUpdateAttemptOutcome, time: (epochMs: number) => string): string {
   const stage = outcome.failureStage ? ` at ${outcome.failureStage}` : '';
-  return `${outcome.previousVersion} → ${outcome.targetVersion}, ${outcome.result}${stage}, ${time(outcome.finishedAt)}${describeResolution(outcome, time)}`;
+  return `${outcome.result}${stage}, ${time(outcome.finishedAt)}`;
 }
 
 /** How a failure was resolved, when it was: a worker on a version that finished starting since. */
