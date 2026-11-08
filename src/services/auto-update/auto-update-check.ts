@@ -10,7 +10,9 @@
  * through deps.launchSupervisor. One step runs between gates 3 and 4 whatever
  * the decision: once claude-mem's updater has shown it can work on this
  * machine, it turns off Claude Code's background update of the thedotmack
- * marketplace (settleClaudeCodeBackgroundUpdate).
+ * marketplace (settleClaudeCodeBackgroundUpdate). On the tick whose gate 7
+ * first shows it, that step runs again before gate 8, so an update launched
+ * then never runs beside Claude Code's updater.
  *
  * Own module, with every effect injected, for the same reason as
  * idle-exit-monitor.ts: worker-service.ts drags in a very large dependency
@@ -203,9 +205,18 @@ const CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES: ReadonlyArray<{
  */
 const FORCE_PLUGIN_AUTO_UPDATES = 'FORCE_AUTOUPDATE_PLUGINS';
 
+/**
+ * The registry gate 7 reads npm's metadata from, and the only one the
+ * supervisor's installer runs may install from (auto-update-launch.ts
+ * autoUpdateInstallerEnv): the artifact installed must come from the registry
+ * whose metadata the check verified. Written the way npm writes its own
+ * default registry, with the final slash.
+ */
+export const NPM_PUBLIC_REGISTRY_URL = 'https://registry.npmjs.org/';
+
 /** npm's metadata document for one published version of claude-mem. */
 export function npmVersionMetadataUrl(version: string): string {
-  return `https://registry.npmjs.org/claude-mem/${encodeURIComponent(version)}`;
+  return `${NPM_PUBLIC_REGISTRY_URL}claude-mem/${encodeURIComponent(version)}`;
 }
 
 export type AutoUpdateApplyReason = 'quiet' | 'busy-for-a-full-check-cycle';
@@ -657,6 +668,24 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     return logDecision(deps, { decision: 'worker-shutting-down', targetVersion: promotedVersion, previousVersion: installedVersion });
   }
 
+  // The turn-off before gate 4 waited for the proof this tick just recorded.
+  // Left for the next tick, it would come only after the update: the attempt
+  // launched below keeps every later tick at gate 3 until it ends, so the
+  // first update on an install registered before Phase 4 would run beside
+  // Claude Code's own updater. So it runs again here, before gate 8, by the same rules (npx on
+  // the worker's PATH, a file that is writable, no extraKnownMarketplaces
+  // declaration that sets Claude Code's own setting). known_marketplaces.json
+  // is read again for it: gates 5 and 7 awaited the network since gate 1 read
+  // it, and the document written back must be one read with nothing awaited
+  // since. Saved with this tick's decision below.
+  if (backgroundUpdate.waitingForUpdaterProof) {
+    const { knownMarketplaces } = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
+    settleClaudeCodeBackgroundUpdate(deps, state, now, {
+      path: knownMarketplaces.path,
+      document: knownMarketplaces.kind === 'read' ? knownMarketplaces.document : null,
+    }, claudeMemMarketplaceDeclaration);
+  }
+
   // Gate 8 — quiet, or busy for a full check cycle. When gate 4 already
   // counted this tick as busy, counting it again adds nothing.
   let applyReason: AutoUpdateApplyReason = 'quiet';
@@ -952,8 +981,9 @@ function claudeMemMarketplaceEntryDifference(knownMarketplaces: Record<string, u
  *    installPath for every install of every host, so that entry means
  *    installed and none means Claude Code uninstalled it. Entries of other
  *    scopes (a project's own install, at a version of its own) are not the
- *    npx install's and are not read: an update would replace them with the
- *    user-scope one. A missing file holds no entry.
+ *    npx install's and are not read: an update keeps them exactly as they
+ *    are (registerPlugin replaces only the user-scope entry). A missing file
+ *    holds no entry.
  *  - known_marketplaces.json (install.ts registerMarketplace, readJsonSafe):
  *    a missing file holds no entry; one that does not parse as a JSON object
  *    (empty and an array included) is unreadable: registerMarketplace stops on
@@ -1066,9 +1096,12 @@ function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePlu
  *  - npx is on the worker's PATH, looked up the way the supervisor's installer
  *    run finds it (deps.findNpxOnWorkerPath).
  *
- * Then only `thedotmack.autoUpdate` changes, from true to false, in the
- * document gate 1 read; the only await in between is gate 3's local read of an
- * interrupted attempt's install. Every other entry and
+ * Then only `thedotmack.autoUpdate` changes, from true to false, in a document
+ * read with nothing awaited since but local reads: gate 1's, written back
+ * before gate 4 with only gate 3's local read of an interrupted attempt's
+ * install in between, or, on the tick whose gate 7 records the proof while
+ * this waited for it, one read again right before gate 8, after the network
+ * reads (runAutoUpdateCheck). Every other entry and
  * field is written back as read and in the order read: JSON.parse keeps it and
  * writeJsonFileAtomic's JSON.stringify writes it, except that JavaScript puts
  * integer-like keys first. A file that is not writable, or a write that fails,
@@ -1259,7 +1292,9 @@ export function resolvePromotedReleaseUrl(configuredUrl: unknown): string {
  * reads it: from the document's settings target (settingsTarget: the root, or
  * the `env` block of a wrapped document), a JSON boolean as its string
  * (coercePersistedSettingValue), the shipped default for a missing key, and an
- * environment variable over both (applyEnvOverrides). Those defaults are
+ * environment variable over both (applyEnvOverrides), except for
+ * CLAUDE_MEM_AUTO_UPDATE, which the environment can turn off but never on over
+ * a saved off (autoUpdateSwitchFromEnvAndFile). Those defaults are
  * getAllDefaults(): loadFromFile's per-path defaults differ only in the port
  * and URL keys.
  *
@@ -1285,13 +1320,32 @@ export function readAutoUpdateSettings(settingsPath: string, env: NodeJS.Process
   const settings = {} as AutoUpdateSettings;
   for (const key of AUTO_UPDATE_SETTING_KEYS) {
     const fromEnv = env[key];
+    const fromFile = saved[key] !== undefined ? coercePersistedSettingValue(saved[key]) : defaults[key];
     // The check reads every value through settingText, so a number or null a
     // hand edit left here is read as text, never thrown on.
-    settings[key] = (fromEnv !== undefined
-      ? fromEnv
-      : saved[key] !== undefined ? coercePersistedSettingValue(saved[key]) : defaults[key]) as string;
+    settings[key] = (key === 'CLAUDE_MEM_AUTO_UPDATE'
+      ? autoUpdateSwitchFromEnvAndFile(fromEnv, fromFile)
+      : fromEnv !== undefined ? fromEnv : fromFile) as string;
   }
   return settings;
+}
+
+/**
+ * CLAUDE_MEM_AUTO_UPDATE from both places it is set: anything but on
+ * (parseAutoUpdateSwitch) in either one keeps the updater off. So the
+ * environment can turn it off, never on over a settings.json that saves it
+ * off: the worker's environment comes from whatever process started it (a
+ * project's SessionStart hook can cold-start the worker), and the updater
+ * installs code on this machine. An environment value that is on gives way
+ * to the file's value (a missing key is its shipped default, on); any other
+ * is the value read, so its reason names it. The other keys keep the
+ * settings manager's rule, the environment over the file. The worker's tick,
+ * doctor's row and the installer's registerMarketplace all read it here
+ * (auto-update-switch-readers.ts).
+ */
+function autoUpdateSwitchFromEnvAndFile(fromEnv: string | undefined, fromFile: unknown): unknown {
+  if (fromEnv === undefined) return fromFile;
+  return parseAutoUpdateSwitch(fromEnv) === 'on' ? fromFile : fromEnv;
 }
 
 /**

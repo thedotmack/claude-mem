@@ -54,11 +54,20 @@ export function registeredInstallPathsOf(entries: unknown[]): string[] {
 }
 
 /**
+ * Whether an entry of claude-mem@thedotmack is its user-scope one: the entry
+ * install.ts registerPlugin writes on every install of every host, and the
+ * only one it replaces. Claude Code writes the project- and local-scope ones
+ * (`scope` 'project' or 'local', with a projectPath).
+ */
+export function isUserScopeRegistration(entry: unknown): boolean {
+  return (entry as { scope?: unknown } | null)?.scope === 'user';
+}
+
+/**
  * The install paths of claude-mem's user-scope entries, the ones install.ts
  * registerPlugin writes on every install of every host. Entries of other
  * scopes (a project's own install) are left out.
  */
 export function readUserScopeClaudeMemInstallPaths(registryPath: string = installedPluginsPath()): string[] {
-  return registeredInstallPathsOf(readClaudeMemRegistrationEntries(registryPath)
-    .filter(entry => (entry as { scope?: unknown } | null)?.scope === 'user'));
+  return registeredInstallPathsOf(readClaudeMemRegistrationEntries(registryPath).filter(isUserScopeRegistration));
 }

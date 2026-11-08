@@ -60,7 +60,7 @@ import {
   type InterruptedAttemptInstall,
   type RunningWorkerRead,
 } from './auto-update-apply.js';
-import { fetchJsonWithTimeout, INSTALLED_VERSION_PATTERN, readNpmPublication, RELEASE_VERSION_PATTERN } from './auto-update-check.js';
+import { fetchJsonWithTimeout, INSTALLED_VERSION_PATTERN, NPM_PUBLIC_REGISTRY_URL, readNpmPublication, RELEASE_VERSION_PATTERN } from './auto-update-check.js';
 import {
   AUTO_UPDATE_INSTALLER_DEADLINE_MS,
   AUTO_UPDATE_SUPERVISOR_DEADLINE_MS,
@@ -725,6 +725,55 @@ export function autoUpdateInstallerWorkingDirectory(
   return path.win32.parse(systemRoot).root;
 }
 
+/**
+ * Every spelling of the variables that set the default registry for npx, npm
+ * and bun install:
+ *  - npm reads every variable whose name matches /^npm_config_/i into its
+ *    `env` layer, in any case, and that layer outranks every npmrc file; only
+ *    the command line outranks it (@npmcli/config lib/index.js loadEnv and
+ *    confTypes, read in npm 11.14.1; https://docs.npmjs.com/cli/v11/using-npm/config
+ *    "Environment Variables": "Config values are case-insensitive, so
+ *    NPM_CONFIG_FOO=bar will work the same").
+ *  - bun install reads BUN_CONFIG_REGISTRY, then NPM_CONFIG_REGISTRY, then
+ *    npm_config_registry, and the first one set wins over .npmrc and
+ *    bunfig.toml; only --registry outranks it (bun's docs/pm/npmrc.mdx,
+ *    "Configuration is loaded in this order", in bun-types 1.4.4;
+ *    src/install/PackageManager/PackageManagerOptions.zig at bun-v1.3.9, and
+ *    PackageManagerOptions.rs on main, read 2026-11-08).
+ * Windows env names are case-insensitive, so every spelling inherited is
+ * removed before the three below are set, as npm-install-helper.ts
+ * npmChildEnv removes an inherited allow-scripts setting.
+ */
+const REGISTRY_ENV_NAME = /^(?:npm|bun)_config_registry$/i;
+
+/** The names autoUpdateInstallerEnv sets: the two spellings bun looks for besides its own, which npm reads in any case. */
+const REGISTRY_ENV_NAMES_SET = ['npm_config_registry', 'NPM_CONFIG_REGISTRY', 'BUN_CONFIG_REGISTRY'] as const;
+
+/**
+ * The environment of every installer run, the target's and the previous
+ * version's (runAutoUpdateInstaller): the supervisor's, which the hop passed
+ * through sanitizeEnv, with two changes.
+ *  - The default registry is the one gate 7 read npm's metadata from
+ *    (auto-update-check.ts NPM_PUBLIC_REGISTRY_URL), over anything inherited:
+ *    the artifact installed must come from the registry whose metadata the
+ *    check verified, and the worker's environment can come from whatever
+ *    process started it (a project's SessionStart hook can cold-start it).
+ *    The installer passes its environment on to the npm and bun installs of
+ *    the plugin's dependencies (npm-install-helper.ts runNpmStrict,
+ *    setup-runtime.ts installPluginDependencies), so they use it too. Proxy
+ *    settings (env-sanitizer.ts ENV_PROXY_VARS) are kept as they are.
+ *  - INSTALL_RUN_BY_AUTO_UPDATE_ENV marks the run as the auto-updater's
+ *    (shared/auto-update-install-run.ts).
+ */
+export function autoUpdateInstallerEnv(supervisorEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(supervisorEnv).filter(([name]) => !REGISTRY_ENV_NAME.test(name)),
+  );
+  for (const name of REGISTRY_ENV_NAMES_SET) env[name] = NPM_PUBLIC_REGISTRY_URL;
+  env[INSTALL_RUN_BY_AUTO_UPDATE_ENV] = INSTALL_RUN_BY_AUTO_UPDATE_VALUE;
+  return env;
+}
+
 /** True for any command line that runs a claude-mem package, however it was built: what FORBID_REAL_AUTO_UPDATE_ENV refuses. */
 function invocationRunsClaudeMem(invocation: CommandInvocation): boolean {
   return [invocation.command, ...invocation.args].some((part) => part.includes('claude-mem@'));
@@ -748,8 +797,8 @@ export interface AutoUpdateInstallerOptions {
  * installer take its non-interactive path (install.ts isInteractive is
  * `process.stdin.isTTY === true`); stdout and stderr append to the attempt
  * log; its environment is the supervisor's (which the hop passed through
- * sanitizeEnv) plus INSTALL_RUN_BY_AUTO_UPDATE_ENV, which marks the run as
- * the auto-updater's (shared/auto-update-install-run.ts). Its working
+ * sanitizeEnv) with the registry gate 7 read and INSTALL_RUN_BY_AUTO_UPDATE_ENV
+ * (autoUpdateInstallerEnv). Its working
  * directory is autoUpdateInstallerWorkingDirectory, outside every npm
  * project, never the supervisor's own (the data dir).
  *
@@ -815,7 +864,7 @@ export async function runAutoUpdateInstaller(invocation: CommandInvocation, opti
       child = spawnImplementation(invocation.command, invocation.args, {
         cwd: workingDirectory,
         stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: INSTALL_RUN_BY_AUTO_UPDATE_VALUE },
+        env: autoUpdateInstallerEnv(process.env),
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
     } catch (error: unknown) {

@@ -16,6 +16,7 @@ import {
 } from '../../../src/services/auto-update/auto-update-apply.js';
 import type { NpmPublicationRead } from '../../../src/services/auto-update/auto-update-check.js';
 import { readDatabaseSchemaStamp, readInstallVersions, runAutoUpdateInstaller } from '../../../src/services/auto-update/auto-update-launch.js';
+import { registerPlugin } from '../../../src/npx-cli/commands/install.js';
 import { defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
 import { scrubProperties } from '../../../src/services/telemetry/scrub.js';
@@ -29,7 +30,9 @@ import { logger } from '../../../src/utils/logger.js';
 // installed_plugins.json, `.orphaned_at` markers and a SQLite database. The
 // three version readings are the production readers (readInstallVersions:
 // the resolver, the registration reader, the marketplace package.json), the
-// marker writer and the schema-stamp reader are the production ones too.
+// marker writer and the schema-stamp reader are the production ones too, and
+// every registration an installer run leaves is written by the installer's
+// own registerPlugin.
 // Each scripted installer changes that layout the way a real run would. Only
 // the worker is simulated: its pid, version and startup phase, judged by the
 // production proof's rule (restart-verify.ts verifyWorkerFinishedStarting,
@@ -90,6 +93,8 @@ const launchedState = (): AutoUpdateState => ({
 
 interface ScratchInstall {
   root: string;
+  /** The scratch Claude config directory (CLAUDE_CONFIG_DIR) the paths below are in. */
+  claudeConfig: string;
   cacheRoot: string;
   marketplaceRoot: string;
   installedPluginsFile: string;
@@ -101,6 +106,7 @@ function createScratchInstall(): ScratchInstall {
   const claudeConfig = path.join(root, 'claude-config');
   const install: ScratchInstall = {
     root,
+    claudeConfig,
     cacheRoot: path.join(claudeConfig, 'plugins', 'cache', 'thedotmack', 'claude-mem'),
     marketplaceRoot: path.join(claudeConfig, 'plugins', 'marketplaces', 'thedotmack'),
     installedPluginsFile: path.join(claudeConfig, 'plugins', 'installed_plugins.json'),
@@ -139,19 +145,44 @@ function writeMarketplaceCopy(install: ScratchInstall, version: string, dependen
 }
 
 /**
- * installed_plugins.json with the user-scope entry install.ts registerPlugin
- * writes, plus any entries of other scopes Claude Code added since (a
- * project's own install; registerPlugin itself writes only its own entry).
+ * installed_plugins.json as an installer run of `version` leaves it: the
+ * installer's own registerPlugin (install.ts), run on the scratch Claude
+ * config, which replaces or adds only its user-scope entry and keeps every
+ * other entry as it read it. CLAUDE_CONFIG_DIR is set only for the call,
+ * which is synchronous.
  */
-function writeRegistration(install: ScratchInstall, version: string, otherScopes: Array<{ scope: string; version: string }> = []): void {
-  const entry = (scope: string, entryVersion: string) => ({
-    scope, installPath: path.join(install.cacheRoot, entryVersion), version: entryVersion, installedAt: 'now', lastUpdated: 'now',
-    ...(scope === 'user' ? {} : { projectPath: path.join(install.root, 'some-project') }),
-  });
-  writeFileSync(install.installedPluginsFile, JSON.stringify({
-    version: 2,
-    plugins: { 'claude-mem@thedotmack': [...otherScopes.map((other) => entry(other.scope, other.version)), entry('user', version)] },
-  }));
+function writeRegistration(install: ScratchInstall, version: string): void {
+  const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = install.claudeConfig;
+  try {
+    registerPlugin(version);
+  } finally {
+    if (savedClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedClaudeConfigDir;
+  }
+}
+
+/** An entry Claude Code writes for a project's or a local install of claude-mem, at a version of its own. */
+function registrationClaudeCodeWrote(install: ScratchInstall, scope: 'project' | 'local', version: string): Record<string, unknown> {
+  return {
+    scope,
+    projectPath: path.join(install.root, `${scope}-project`),
+    installPath: path.join(install.cacheRoot, version),
+    version,
+    installedAt: '2026-10-01T08:00:00.000Z',
+    lastUpdated: '2026-10-01T08:00:00.000Z',
+    gitCommitSha: 'a3f1c2d4e5b6a7980c1d2e3f4a5b6c7d8e9f0a1b',
+  };
+}
+
+/** installed_plugins.json holding only entries Claude Code wrote itself, before any npx install registered claude-mem. */
+function writeRegistrationsClaudeCodeWrote(install: ScratchInstall, entries: Array<Record<string, unknown>>): void {
+  writeFileSync(install.installedPluginsFile, JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': entries } }));
+}
+
+/** claude-mem@thedotmack's entries in the scratch installed_plugins.json, as written. */
+function readRegistrationEntries(install: ScratchInstall): unknown[] {
+  return JSON.parse(readFileSync(install.installedPluginsFile, 'utf-8')).plugins['claude-mem@thedotmack'];
 }
 
 /** A complete install of `version`: what a finished `npx claude-mem@<version> update` leaves. */
@@ -766,6 +797,119 @@ describe('applyAutoUpdate', () => {
     expectFailureTelemetry(harness, 'prove-install', 'previous-publication-unknown');
   });
 
+  // Between its first readings and the previous version's installer, the
+  // restore awaits npm's metadata and the worker pid read. What lands in that
+  // window is read again right before the installer would start.
+  describe('what lands while the restore awaits npm and the worker pid read', () => {
+    /** The target's installer exits 0 but its worker never finishes starting: the restore path, with the previous version's installer scripted to finish. */
+    const restoreHarness = () => buildApplyHarness({
+      installers: { [TARGET]: installsCompletely(TARGET, { workerPhase: 'starting' }), [PREVIOUS]: installsCompletely(PREVIOUS) },
+    });
+
+    /** Run `land` during the restore's npm read of the previous version, then read as before. */
+    const duringTheNpmRead = (harness: ApplyHarness, land: () => void): void => {
+      const readNpmPublication = harness.deps.readNpmPublication;
+      harness.deps.readNpmPublication = async (version) => {
+        land();
+        return readNpmPublication(version);
+      };
+    };
+
+    /** A manual `npx claude-mem@15.14.0 update` that finished: every file of the newer version written, and its worker started. */
+    const newerUpdateFinishes = (harness: ApplyHarness) => (): void => {
+      writeCompleteInstall(harness.install, NEWER);
+      startWorker(harness.world, NEWER, 'ready');
+    };
+
+    it('a newer version installed meanwhile: failed as superseded, the previous version\'s installer never run, no downgrade', async () => {
+      silenceLogger();
+      const harness = restoreHarness();
+      duringTheNpmRead(harness, newerUpdateFinishes(harness));
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.publicationReads).toEqual([PREVIOUS]);
+      expect(harness.installerRuns).toEqual([TARGET]);
+      expect(harness.versions()).toEqual({ resolved: NEWER, registered: { kind: 'read', versions: [NEWER] }, marketplace: intactMarketplaceCopy(NEWER) });
+      expect(harness.world.worker).toMatchObject({ version: NEWER, phase: 'ready' });
+      const outcome = harness.stored().lastAttemptOutcome!;
+      expect(outcome).toMatchObject({ result: 'failed', failureStage: 'superseded-by-another-update' });
+      expect(outcome.message).toContain(`Read again right before ${PREVIOUS}'s installer would have started: The install resolves to ${NEWER}; installed_plugins.json registers ${NEWER}; the marketplace copy is ${NEWER}. ${NEWER} is newer than ${TARGET}: another update moved the install on while the restore waited, so ${PREVIOUS} was not reinstalled.`);
+      // The target's cache folder was stamped before the npm read; the newer version is untouched.
+      expect(harness.isOrphaned(TARGET)).toBe(true);
+      expect(harness.isOrphaned(NEWER)).toBe(false);
+      expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
+      expectFailureTelemetry(harness, 'superseded-by-another-update', 'not-attempted');
+    });
+
+    it('the same when it lands during the worker pid read, the last await before the installer', async () => {
+      silenceLogger();
+      const harness = restoreHarness();
+      const getCurrentWorkerPid = harness.deps.getCurrentWorkerPid;
+      let pidReads = 0;
+      harness.deps.getCurrentWorkerPid = async () => {
+        // The first read is before the target's installer; the second, before the previous version's.
+        if (++pidReads === 2) newerUpdateFinishes(harness)();
+        return getCurrentWorkerPid();
+      };
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(pidReads).toBe(2);
+      expect(harness.installerRuns).toEqual([TARGET]);
+      expect(harness.versions().resolved).toBe(NEWER);
+      expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'failed', failureStage: 'superseded-by-another-update' });
+    });
+
+    it('a database stamped meanwhile with a schema newer than the previous version knows: restore_failed, blocked by the schema, the previous version not reinstalled', async () => {
+      silenceLogger();
+      const harness = restoreHarness();
+      // The target's worker, still starting, claims the database for its newer schema.
+      duringTheNpmRead(harness, () => writeDatabaseStamped(harness.install, LATEST_SCHEMA_VERSION + 1));
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.installerRuns).toEqual([TARGET]);
+      const outcome = harness.stored().lastAttemptOutcome!;
+      expect(outcome).toMatchObject({
+        result: 'restore_failed',
+        failureStage: 'restore-blocked-by-schema',
+        fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND,
+        fixCommandWhen: 'once-a-release-newer-than-the-target-is-out',
+      });
+      expect(outcome.message).toContain(`Read again right before ${PREVIOUS}'s installer would have started: the database is stamped with schema v${LATEST_SCHEMA_VERSION + 1}, newer than the v${LATEST_SCHEMA_VERSION} that ${PREVIOUS} knows: it was stamped while the restore waited, so ${PREVIOUS} cannot open the database any more and was not reinstalled.`);
+      expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release newer than ${TARGET} is out.`);
+      expect(outcome.message).not.toContain(autoUpdateFixCommand(PREVIOUS));
+      expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
+      expectFailureTelemetry(harness, 'restore-blocked-by-schema', 'not-attempted');
+    });
+
+    it('a schema stamp that can no longer be read: restore_failed, nothing shows the previous version can open it, so it is not reinstalled', async () => {
+      silenceLogger();
+      const harness = restoreHarness();
+      duringTheNpmRead(harness, () => writeFileSync(harness.install.databasePath, 'not a sqlite database'));
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.installerRuns).toEqual([TARGET]);
+      const outcome = harness.stored().lastAttemptOutcome!;
+      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'schema-stamp-unreadable', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND });
+      expect(outcome.message).toContain(`Read again right before ${PREVIOUS}'s installer would have started: the database's schema stamp could not be read`);
+      expectFailureTelemetry(harness, 'schema-stamp-unreadable', 'not-attempted');
+    });
+
+    it('a stamp written meanwhile that the previous version still knows lets the restore run', async () => {
+      silenceLogger();
+      const harness = restoreHarness();
+      duringTheNpmRead(harness, () => writeDatabaseStamped(harness.install, LATEST_SCHEMA_VERSION));
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.installerRuns).toEqual([TARGET, PREVIOUS]);
+      expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'restored' });
+    });
+  });
+
   it('install moved before the installer started (registered at another version): failed, nothing run, the version not blocked', async () => {
     silenceLogger();
     const harness = buildApplyHarness({
@@ -938,10 +1082,15 @@ describe('applyAutoUpdate', () => {
     });
   });
 
-  it('a project-scope registration at another version is not the install moving: only the npx installer\'s user-scope entry counts', async () => {
+  it('a project\'s and a local registration at other versions are not the install moving, and the update keeps both exactly as Claude Code wrote them', async () => {
     silenceLogger();
+    let claudeCodeEntries: Array<Record<string, unknown>> = [];
     const harness = buildApplyHarness({
-      layout: (install) => { writeCompleteInstall(install, PREVIOUS); writeRegistration(install, PREVIOUS, [{ scope: 'project', version: '15.10.0' }]); },
+      layout: (install) => {
+        claudeCodeEntries = [registrationClaudeCodeWrote(install, 'project', '15.10.0'), registrationClaudeCodeWrote(install, 'local', '15.11.0')];
+        writeRegistrationsClaudeCodeWrote(install, claudeCodeEntries);
+        writeCompleteInstall(install, PREVIOUS);
+      },
       installers: { [TARGET]: installsCompletely(TARGET) },
     });
     expect(harness.versions().registered).toEqual({ kind: 'read', versions: [PREVIOUS] });
@@ -950,6 +1099,11 @@ describe('applyAutoUpdate', () => {
 
     expect(harness.installerRuns).toEqual([TARGET]);
     expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'applied' });
+    // The target's installer (registerPlugin) replaced only the user-scope entry, and left Claude Code's in place.
+    expect(readRegistrationEntries(harness.install)).toEqual([
+      ...claudeCodeEntries,
+      { scope: 'user', installPath: path.join(harness.install.cacheRoot, TARGET), version: TARGET, installedAt: expect.any(String), lastUpdated: expect.any(String) },
+    ]);
   });
 
   describe('deadline hit and kills', () => {

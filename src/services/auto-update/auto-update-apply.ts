@@ -34,6 +34,11 @@
  *    restore-blocked-by-schema, naming the forward fix); when the stamp cannot
  *    be read, nothing more runs (restore_failed, schema-stamp-unreadable);
  *    otherwise the previous version is restored (restored, or restore_failed).
+ *    Right before the previous version's installer starts, the readings and
+ *    the stamp are read again, and the same rules stop it: a reading moved to
+ *    a version newer than the target (failed, superseded-by-another-update),
+ *    or a stamp the previous version cannot open (restore_failed,
+ *    restore-blocked-by-schema or schema-stamp-unreadable).
  * Every failure after the switch started blocks the target. Every
  * restore_failed outcome records its fix and when to run it
  * (auto-update-state-file.ts AutoUpdateFixCommandWhen): now; once an
@@ -98,7 +103,7 @@ export type AutoUpdateApplyFailureStage =
   | 'installer-still-running'
   /** It exited 0, but the install does not resolve to the target, or no worker on it finished starting. */
   | 'prove-install'
-  /** A version newer than the target appeared while the installer ran: another updater moved the install on. */
+  /** A version newer than the target appeared while the installer ran, or before the previous version's installer started: another updater moved the install on. */
   | 'superseded-by-another-update'
   /** The database carries a schema stamp newer than the previous version knows, so it was not reinstalled. */
   | 'restore-blocked-by-schema'
@@ -529,8 +534,11 @@ type InstallChange =
   | { kind: 'switch-started' };
 
 /**
- * How the install changed while the target's installer ran. Before it ran it
- * resolved to and was registered only at the previous version (checked above);
+ * How the install changed between two readings: while the target's installer
+ * ran, and again before the previous version's installer starts
+ * (readAgainBeforeTheRestore, which acts only on a superseded result). Before
+ * the target's installer ran the install resolved to and was registered only
+ * at the previous version (checked above);
  * the marketplace copy is compared with what it held then, because an install
  * can run without one (the cache alone) or carry one of another version (a
  * Claude Code marketplace clone). All three of its readings count: the
@@ -611,7 +619,9 @@ async function recoverOnPreviousVersion(attempt: AutoUpdateApplyAttempt, failure
  * Otherwise stamp the target's cache directory so every resolver skips it,
  * then rerun the previous version's own installer, which also rewrites the
  * marketplace copy and installed_plugins.json (the marker alone cannot), and
- * prove the previous version again. That installer deletes and recopies
+ * prove the previous version again. Right before that installer starts, the
+ * install and the stamp are read again (readAgainBeforeTheRestore), since the
+ * npm read before it awaited. That installer deletes and recopies
  * cache/<previous> (install.ts copyPluginToCache), so a reinstall that also
  * fails can leave the previous version unable to start too: that outcome is
  * restore_failed, with the fix command.
@@ -635,7 +645,7 @@ async function restorePreviousVersion(
       blocksVersion: true,
     };
   }
-  if (schema.kind === 'stamped' && schema.schemaVersion > deps.supervisorSchemaVersion) {
+  if (isStampedNewerThanThePreviousVersionKnows(schema, deps)) {
     // The target is what can still open the database. Its worker stamps the
     // schema before it migrates, and the migrations can outlast the first
     // proof's wait: a worker still alive is waited for again, never started
@@ -685,6 +695,8 @@ async function restorePreviousVersion(
   // npm shows it fully published and the database does not outrun it: it can be named.
   const previousFix: AutoUpdateFix = { command: autoUpdateFixCommand(previousVersion), when: 'now' };
   const workerPidBeforeRestore = await deps.getCurrentWorkerPid();
+  const movedOnBeforeTheRestore = readAgainBeforeTheRestore(attempt, failure, afterInstall, notes, deps);
+  if (movedOnBeforeTheRestore !== null) return movedOnBeforeTheRestore;
   const restoreInstall = await deps.runInstaller(previousVersion);
   if (restoreInstall.kind === 'timed-out' && restoreInstall.installerStillRunning) {
     return {
@@ -714,6 +726,84 @@ async function restorePreviousVersion(
 }
 
 /**
+ * The install's readings and the database's schema stamp read again, right
+ * before the previous version's installer starts (restorePreviousVersion).
+ * The npm read and the worker pid read before it awaited, and a manual
+ * update, Claude Code's own updater or a worker claiming the database may
+ * have finished meanwhile; the previous version's installer would then
+ * overwrite a newer install, or put back a version that cannot open the
+ * database. Nothing is awaited between this read and the installer's start:
+ * the production runInstaller spawns before its first await
+ * (auto-update-launch.ts runAutoUpdateInstaller). The installer itself can
+ * still wait on the spawn lock after it has started, which no reading here
+ * can see past.
+ *  - A reading moved to a version newer than the target since the
+ *    supervisor's reading after the target's installer (classifyInstallChange
+ *    on the two): another update moved the install on, so nothing runs
+ *    (failed, superseded-by-another-update), as when it shows after the
+ *    target's installer.
+ *  - The stamp is newer than the previous version knows: nothing runs
+ *    (restore_failed, restore-blocked-by-schema), with the forward fix the
+ *    first read names for it; one that cannot be read now is judged as at the
+ *    first read (restore_failed, schema-stamp-unreadable).
+ * The target's cache folder was stamped before the npm read and stays
+ * stamped; the message says so. Null when the restore may run.
+ */
+function readAgainBeforeTheRestore(
+  attempt: AutoUpdateApplyAttempt,
+  failure: AttemptFailure,
+  afterInstall: InstallVersionsRead,
+  notes: string,
+  deps: AutoUpdateApplyDeps,
+): FinishedAttempt | null {
+  const { targetVersion, previousVersion } = attempt;
+  const readAgain = `Read again right before ${previousVersion}'s installer would have started:`;
+  const beforeRestore = deps.readInstallVersions();
+  const change = classifyInstallChange(afterInstall, beforeRestore, targetVersion);
+  if (change.kind === 'superseded') {
+    return {
+      outcome: failedOutcome(attempt, deps.now(), 'failed',
+        { stage: 'superseded-by-another-update', message: failure.message },
+        `${notes} ${readAgain} ${describeInstallVersions(beforeRestore)} ${change.newerVersion} is newer than ${targetVersion}: another update moved the install on while the restore waited, so ${previousVersion} was not reinstalled.`),
+      restoreResult: 'not-attempted',
+      blocksVersion: true,
+    };
+  }
+  const schema = deps.readDatabaseSchemaStamp();
+  if (schema.kind === 'unreadable') {
+    return {
+      outcome: restoreFailedOutcome(attempt, deps.now(), { stage: 'schema-stamp-unreadable', message: failure.message },
+        `${notes} ${readAgain} the database's schema stamp could not be read (${schema.message}), so nothing showed that ${previousVersion} can still open it, and it was not reinstalled. ${fixSentence(AUTO_UPDATE_FORWARD_FIX, targetVersion)}`,
+        AUTO_UPDATE_FORWARD_FIX),
+      restoreResult: 'not-attempted',
+      blocksVersion: true,
+    };
+  }
+  if (isStampedNewerThanThePreviousVersionKnows(schema, deps)) {
+    return {
+      outcome: restoreFailedOutcome(attempt, deps.now(), { stage: 'restore-blocked-by-schema', message: failure.message },
+        `${notes} ${readAgain} the database is stamped with schema v${schema.schemaVersion}, newer than the v${deps.supervisorSchemaVersion} that ${previousVersion} knows: it was stamped while the restore waited, so ${previousVersion} cannot open the database any more and was not reinstalled. ${fixSentence(AUTO_UPDATE_FORWARD_FIX, targetVersion)}`,
+        AUTO_UPDATE_FORWARD_FIX),
+      restoreResult: 'not-attempted',
+      blocksVersion: true,
+    };
+  }
+  return null;
+}
+
+/**
+ * The database is stamped with a schema newer than the previous version knows
+ * (supervisorSchemaVersion: the supervisor runs that version's code), so an
+ * older claude-mem refuses it (connection.ts assertSchemaWriterCompatible).
+ */
+function isStampedNewerThanThePreviousVersionKnows(
+  schema: DatabaseSchemaStampRead,
+  deps: Pick<AutoUpdateApplyDeps, 'supervisorSchemaVersion'>,
+): schema is Extract<DatabaseSchemaStampRead, { kind: 'stamped' }> {
+  return schema.kind === 'stamped' && schema.schemaVersion > deps.supervisorSchemaVersion;
+}
+
+/**
  * The fix a restore_failed outcome names when the target has not failed on
  * its own (its installer is still running, nothing of it was written, or the
  * supervisor itself threw), run now: the previous version's own installer
@@ -730,8 +820,7 @@ async function restorePreviousVersion(
  */
 async function supervisorFix(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps): Promise<AutoUpdateFix> {
   const schema = deps.readDatabaseSchemaStamp();
-  const previousCannotOpenTheDatabase = schema.kind === 'unreadable'
-    || (schema.kind === 'stamped' && schema.schemaVersion > deps.supervisorSchemaVersion);
+  const previousCannotOpenTheDatabase = schema.kind === 'unreadable' || isStampedNewerThanThePreviousVersionKnows(schema, deps);
   const previousCanBeNamed = !previousCannotOpenTheDatabase
     && (await deps.readNpmPublication(attempt.previousVersion)).kind === 'published';
   return { command: autoUpdateFixCommand(previousCanBeNamed ? attempt.previousVersion : attempt.targetVersion), when: 'now' };

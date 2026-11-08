@@ -58,10 +58,11 @@ top level is not read:
 ```
 
 Or set `CLAUDE_MEM_AUTO_UPDATE=false` in the environment the worker starts
-with. The environment wins over the file. Only `true` turns it on, in any case
-(`true`, `True` and `TRUE` all count), so any other value, such as `0` or
-`off`, leaves it off. The worker reads it again every hour, so no restart is
-needed.
+with. Off in either place turns it off: `CLAUDE_MEM_AUTO_UPDATE=true` in the
+environment never turns on an updater your `settings.json` saves as off. Only
+`true` turns it on, in any case (`true`, `True` and `TRUE` all count), so any
+other value, such as `0` or `off`, in either place leaves it off. The worker
+reads it again every hour, so no restart is needed.
 
 This is the reliable switch, on every machine and every host. If you manage a
 fleet, set it in each machine's `~/.claude-mem/settings.json` or environment.
@@ -232,7 +233,10 @@ its marketplace:
   `CLAUDE_MEM_WORKER_URL` is set, the server runtime, one of Claude Code's
   switches above, or a settings file that turns Claude Code's update of the
   marketplace on), the installer keeps Claude Code's setting as it was, and a
-  fresh install registers it on, so the install always has an updater.
+  fresh install registers it on, so the install always has an updater. An idle
+  exit (`CLAUDE_MEM_IDLE_EXIT_SEC`) shorter than the 5 minutes the worker waits
+  before its first check counts as "cannot run" too, because the worker can
+  stop before every check.
 - On older installs, the worker turns it off once claude-mem's updater has
   shown it works on that machine: a check has read the promoted file and npm,
   and `npx` is on the worker's PATH. Until then, Claude Code's update stays on,

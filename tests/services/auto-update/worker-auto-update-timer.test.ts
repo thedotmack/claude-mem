@@ -472,7 +472,7 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     expect(findNpx.mock.calls).toEqual([[]]);
   });
 
-  it('turns off Claude Code\'s background update in the known_marketplaces.json under CLAUDE_CONFIG_DIR once a check has proved the updater, changing nothing else, and records the time', async () => {
+  it('turns off Claude Code\'s background update in the known_marketplaces.json under CLAUDE_CONFIG_DIR in the check that proves the updater, before it launches the update, changing nothing else, and records the time', async () => {
     const workerFixture = buildWorkerFixture();
     const knownMarketplacesFile = path.join(claudeConfigDir, 'plugins', 'known_marketplaces.json');
     // Registered by an installer from before Phase 4, next to Anthropic's official marketplace.
@@ -493,20 +493,25 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     const asRegistered = JSON.stringify(registeredBeforePhase4, null, 2);
     writeFileSync(knownMarketplacesFile, asRegistered);
     try {
-      // npx found on the worker's PATH, wherever the machine running this test keeps it.
-      const deps = workerTickDeps(workerFixture.worker, { findNpxOnWorkerPath: () => '/opt/node/bin/npx' });
-
-      // The first check reads the promoted file and npm's metadata, which proves the updater; the file is left as it is.
-      expect((await runAutoUpdateCheck(deps)).decision).toBe('apply');
-      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(asRegistered);
-      expect(deps.stored().promotedFileAndNpmMetadataReadAt).toEqual(expect.any(Number));
-
-      // The next tick, not due, turns it off.
-      expect((await runAutoUpdateCheck(deps)).decision).toBe('not-due');
       const expected = structuredClone(registeredBeforePhase4);
       expected.thedotmack.autoUpdate = false;
-      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+      const turnedOff = `${JSON.stringify(expected, null, 2)}\n`;
+      let fileWhenLaunched: string | null = null;
+      // npx found on the worker's PATH, wherever the machine running this test keeps it.
+      const deps = workerTickDeps(workerFixture.worker, {
+        findNpxOnWorkerPath: () => '/opt/node/bin/npx',
+        launchSupervisor: async () => { fileWhenLaunched = readFileSync(knownMarketplacesFile, 'utf-8'); },
+      });
+
+      // The first check reads the promoted file and npm's metadata, which proves the updater, and turns it off before it launches the update.
+      expect((await runAutoUpdateCheck(deps)).decision).toBe('apply');
+      expect(fileWhenLaunched).toBe(turnedOff);
+      expect(deps.stored().promotedFileAndNpmMetadataReadAt).toEqual(expect.any(Number));
       expect(deps.stored().claudeCodeBackgroundUpdateTurnedOffAt).toEqual(expect.any(Number));
+
+      // The next tick, not due, finds nothing left to turn off.
+      expect((await runAutoUpdateCheck(deps)).decision).toBe('not-due');
+      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(turnedOff);
     } finally {
       rmSync(knownMarketplacesFile, { force: true });
     }

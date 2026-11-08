@@ -1867,29 +1867,126 @@ describe('runAutoUpdateCheck — turning off Claude Code\'s background update of
     });
   }
 
-  it('leaves it on until a check reads both the promoted file and npm\'s metadata: it says why once, records the reason, and the check that reads both lets the next tick turn it off', async () => {
+  /** Record, in `order`, each turn-off write and each launch the check makes. */
+  const recordTurnOffAndLaunchOrder = (checkHarness: CheckHarness): string[] => {
+    const order: string[] = [];
+    const write = checkHarness.deps.writeClaudeCodeKnownMarketplaces;
+    checkHarness.deps.writeClaudeCodeKnownMarketplaces = (knownMarketplaces) => { order.push('turn-off'); write(knownMarketplaces); };
+    const launch = checkHarness.deps.launchSupervisor;
+    checkHarness.deps.launchSupervisor = async (versions) => { order.push('launch'); await launch(versions); };
+    return order;
+  };
+
+  it('leaves it on until a check reads both the promoted file and npm\'s metadata: it says why once, records the reason, and the check that reads both turns it off before it launches the update', async () => {
     const spies = silenceLogger();
     let now = NOW;
     const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven());
     checkHarness.deps.now = () => now;
+    const order = recordTurnOffAndLaunchOrder(checkHarness);
 
-    // The step runs before this tick's check, which then reads both (gate 7).
+    // The step before gate 4 has no proof yet; gate 7 records it, and the step runs again before the launch:
+    // the attempt then keeps every later tick at gate 3, so a later tick would turn it off only after the update.
     expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
-    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
-    expect(checkHarness.npxLookups()).toBe(0);
+    expect(order).toEqual(['turn-off', 'launch']);
+    expect(checkHarness.knownMarketplacesWrites).toEqual([withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())]);
+    expect(checkHarness.npxLookups()).toBe(1);
+    // known_marketplaces.json is read again for it, after the network reads.
+    expect(checkHarness.pluginStateReads()).toBe(2);
     expect(checkHarness.stored()).toMatchObject({
       promotedFileAndNpmMetadataReadAt: NOW,
-      claudeCodeBackgroundUpdateTurnedOffAt: null,
-      claudeCodeBackgroundUpdateLeftOnReason: NOT_YET_PROVEN,
+      claudeCodeBackgroundUpdateTurnedOffAt: NOW,
+      claudeCodeBackgroundUpdateLeftOnReason: null,
+      lastDecision: { decision: 'apply', decidedAt: NOW },
     });
     expect(leftOnLogs(spies.info).map((call) => call[1])).toEqual([`Left Claude Code's background update on: ${NOT_YET_PROVEN}`]);
+    expect(turnedOffLogs(spies)).toHaveLength(1);
 
-    // An hour later the check is not due, and the step turns it off.
+    // An hour later there is nothing left to turn off.
     now = NOW + HOUR_MS;
     expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(1);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW, claudeCodeBackgroundUpdateLeftOnReason: null });
+  });
+
+  it('on the tick that proves the updater, writes back the file as it is after the network reads, keeping what Claude Code wrote meanwhile', async () => {
+    silenceLogger();
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven());
+    // Claude Code refreshes its official marketplace while gate 7 waits on npm.
+    const rewrittenByClaudeCode = knownMarketplacesWithBackgroundUpdateOn();
+    (rewrittenByClaudeCode['claude-plugins-official'] as Record<string, unknown>).lastUpdated = '2026-11-07T12:00:05.000Z';
+    const fetchJson = checkHarness.deps.fetchJson;
+    checkHarness.deps.fetchJson = async (url, timeoutMs) => {
+      if (url === npmVersionMetadataUrl(PROMOTED)) checkHarness.setKnownMarketplaces(rewrittenByClaudeCode);
+      return fetchJson(url, timeoutMs);
+    };
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    expect(checkHarness.knownMarketplacesWrites).toEqual([withClaudeMemBackgroundUpdateOff(rewrittenByClaudeCode)]);
+    expect(JSON.stringify(checkHarness.knownMarketplacesWrites[0])).toBe(JSON.stringify(withClaudeMemBackgroundUpdateOff(rewrittenByClaudeCode)));
+  });
+
+  // The same rules as the step before gate 4, on the tick that proves the updater.
+  const provingTickLeavesItOn: Array<[string, (checkHarness: CheckHarness) => void, string]> = [
+    ['npx is not on the worker\'s PATH', (checkHarness) => { checkHarness.deps.findNpxOnWorkerPath = () => null; }, NPX_NOT_FOUND],
+    ['the file cannot be written', (checkHarness) => {
+      checkHarness.deps.writeClaudeCodeKnownMarketplaces = () => { throw new Error(`${KNOWN_MARKETPLACES_PATH} is not writable, so it is left as it is: EACCES`); };
+    }, `Claude Code's background update of the thedotmack marketplace stays on: ${KNOWN_MARKETPLACES_PATH} is not writable, so it is left as it is: EACCES`],
+  ];
+  for (const [name, arrange, reason] of provingTickLeavesItOn) {
+    it(`on the tick that proves the updater, leaves it on and records why when ${name}, and the update still launches`, async () => {
+      silenceLogger();
+      const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven());
+      arrange(checkHarness);
+
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+      expect(checkHarness.launches).toEqual([{ targetVersion: PROMOTED, previousVersion: INSTALLED }]);
+      expect(checkHarness.stored()).toMatchObject({ promotedFileAndNpmMetadataReadAt: NOW, claudeCodeBackgroundUpdateTurnedOffAt: null, claudeCodeBackgroundUpdateLeftOnReason: reason });
+    });
+  }
+
+  const provingTickWritesNothing: Array<[string, Scenario, (checkHarness: CheckHarness) => void]> = [
+    // Claude Code reads extraKnownMarketplaces first, so its update is off already and nothing waited for proof.
+    ['a settings file declares the marketplace with autoUpdate false', backgroundUpdateOnNotYetProven({ claudeMemMarketplaceDeclarations: [{ path: USER_SETTINGS, autoUpdate: false }] }), () => {}],
+    ['Claude Code turned it off itself while the network was read', backgroundUpdateOnNotYetProven(), (checkHarness) => {
+      const fetchJson = checkHarness.deps.fetchJson;
+      checkHarness.deps.fetchJson = async (url, timeoutMs) => {
+        if (url === npmVersionMetadataUrl(PROMOTED)) checkHarness.setKnownMarketplaces(withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn()));
+        return fetchJson(url, timeoutMs);
+      };
+    }],
+  ];
+  for (const [name, scenario, arrange] of provingTickWritesNothing) {
+    it(`on the tick that proves the updater, writes nothing and leaves no reason when ${name}`, async () => {
+      silenceLogger();
+      const checkHarness = buildCheckHarness(scenario);
+      arrange(checkHarness);
+
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+      expect(checkHarness.npxLookups()).toBe(0);
+      expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: null, claudeCodeBackgroundUpdateLeftOnReason: null });
+    });
+  }
+
+  it('on the tick that proves the updater, turns it off even when the update then waits for the worker to be quiet', async () => {
+    silenceLogger();
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven({ quiet: false }));
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('deferred-busy');
     expect(checkHarness.knownMarketplacesWrites).toEqual([withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())]);
-    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW + HOUR_MS, claudeCodeBackgroundUpdateLeftOnReason: null });
-    expect(leftOnLogs(spies.info)).toHaveLength(1);
+    expect(checkHarness.launches).toEqual([]);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW, lastDecision: { decision: 'deferred-busy' } });
+  });
+
+  it('on the tick that proves the updater, writes nothing while the worker shuts down', async () => {
+    silenceLogger();
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven());
+    checkHarness.deps.isWorkerShuttingDown = () => true;
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('worker-shutting-down');
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+    expect(checkHarness.launches).toEqual([]);
   });
 
   it('says why it is left on once per boot, and again after a restart, while no check proves the updater', async () => {
@@ -2116,7 +2213,9 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
    * The installer's own registerMarketplace on a fixture's Claude config, with
    * CLAUDE_MEM_AUTO_UPDATE and any other variables as given in the
    * environment (readAutoUpdateSettings reads a setting's environment
-   * variable over settings.json). Claude Code's managed settings are read
+   * variable over settings.json, except that CLAUDE_MEM_AUTO_UPDATE off in
+   * either one is off; the test run's settings.json saves no value for it
+   * unless a test writes one). Claude Code's managed settings are read
    * from a directory in the fixture, so a managed policy on the machine
    * running the test cannot change the outcome; the fixture's own
    * managed-settings directory is used when it has one.
@@ -2146,6 +2245,34 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
 
     expect((await runAutoUpdateCheck(harnessOnFiles(files, proven).deps)).decision).toBe('apply');
     expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(asWritten(withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())));
+  });
+
+  it('on the tick that first proves the updater, turns it off in the file before the update launches', async () => {
+    silenceLogger();
+    const files = fixture(asWritten(knownMarketplacesWithBackgroundUpdateOn()));
+    const checkHarness = harnessOnFiles(files);
+    let fileWhenLaunched: string | null = null;
+    checkHarness.deps.launchSupervisor = async () => { fileWhenLaunched = readFileSync(files.knownMarketplacesFile, 'utf-8'); };
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    expect(fileWhenLaunched).toBe(asWritten(withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())));
+    expect(checkHarness.stored()).toMatchObject({ promotedFileAndNpmMetadataReadAt: NOW, claudeCodeBackgroundUpdateTurnedOffAt: NOW });
+  });
+
+  it.skipIf(permissionsCannotDenyAccess)('on the tick that first proves the updater, leaves a read-only file as it is, and the update still launches', async () => {
+    silenceLogger();
+    const contents = asWritten(knownMarketplacesWithBackgroundUpdateOn());
+    const files = fixture(contents);
+    chmodSync(files.knownMarketplacesFile, 0o444);
+    try {
+      const checkHarness = harnessOnFiles(files);
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(contents);
+      expect(checkHarness.launches).toEqual([{ targetVersion: PROMOTED, previousVersion: INSTALLED }]);
+      expect(checkHarness.stored().claudeCodeBackgroundUpdateLeftOnReason).toContain('is not writable, so it is left as it is');
+    } finally {
+      chmodSync(files.knownMarketplacesFile, 0o644);
+    }
   });
 
   it('reads a missing file as nothing to do and creates none', async () => {
@@ -2345,6 +2472,10 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
       writeFileSync(path.join(files.root, 'settings.json'), JSON.stringify({ extraKnownMarketplaces: { thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, autoUpdate: true } } }));
       return {};
     }],
+    // The worker's first check waits AUTO_UPDATE_FIRST_TICK_DELAY_MS, and a shorter idle window can stop it first on every start.
+    ['an idle exit of 60 s, shorter than the first check\'s delay', () => ({ CLAUDE_MEM_IDLE_EXIT_SEC: '60' })],
+    ['an idle exit one second shorter than the first check\'s delay', () => ({ CLAUDE_MEM_IDLE_EXIT_SEC: String(AUTO_UPDATE_FIRST_TICK_DELAY_MS / 1000 - 1) })],
+    ['an idle exit of 1 s, which the worker raises to its 60 s minimum', () => ({ CLAUDE_MEM_IDLE_EXIT_SEC: '1' })],
   ];
   for (const [name, arrange] of updaterCannotRun) {
     it(`the installer's registerMarketplace keeps Claude Code's update while claude-mem's updater cannot run, with CLAUDE_MEM_AUTO_UPDATE on: ${name}`, async () => {
@@ -2357,6 +2488,32 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
       expect(readRegistered(freshInstall).thedotmack.autoUpdate).toBe(true);
     });
   }
+
+  it('the installer\'s registerMarketplace still writes false with an idle exit no shorter than the first check\'s delay, none, or one the worker ignores', async () => {
+    silenceLogger();
+    // The first check's own delay, a longer window, the shipped '0' (never), and a value the worker ignores (it never idle-exits then).
+    for (const idleExitSec of [String(AUTO_UPDATE_FIRST_TICK_DELAY_MS / 1000), '3600', '0', 'not-a-number']) {
+      const files = fixture(asWritten({ thedotmack: claudeMemMarketplaceEntry(true) }));
+      await registerMarketplaceIn(files.root, 'true', { CLAUDE_MEM_IDLE_EXIT_SEC: idleExitSec });
+      expect({ idleExitSec, autoUpdate: readRegistered(files).thedotmack.autoUpdate }).toEqual({ idleExitSec, autoUpdate: false });
+    }
+  });
+
+  it('the installer\'s registerMarketplace reads the idle exit saved in claude-mem\'s settings.json too, as the worker does', async () => {
+    silenceLogger();
+    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
+    mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_IDLE_EXIT_SEC: '120' }));
+    const files = fixture();
+    try {
+      await registerMarketplaceIn(files.root, 'true');
+    } finally {
+      if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
+      else writeFileSync(USER_SETTINGS_PATH, savedSettings);
+    }
+    expect(readRegistered(files).thedotmack.autoUpdate).toBe(true);
+  });
 
   it('the installer\'s registerMarketplace writes false when Claude Code\'s switch is taken out of force by FORCE_AUTOUPDATE_PLUGINS=1, as the worker reads it', async () => {
     silenceLogger();
@@ -2936,6 +3093,64 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
     expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toBeNull();
   });
 
+  it('the installer\'s own registerPlugin replaces or adds only the user-scope entry, and keeps every other entry exactly as read, in its place', async () => {
+    const { registerPlugin } = await import('../../../src/npx-cli/commands/install.js');
+    const registerIn = (files: ReturnType<typeof fixture>, version: string): void => {
+      const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = files.root;
+      try {
+        registerPlugin(version);
+      } finally {
+        if (savedClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = savedClaudeConfigDir;
+      }
+    };
+    const written = (files: ReturnType<typeof fixture>) => JSON.parse(readFileSync(files.installedPluginsPath, 'utf-8'));
+    const cacheFolderOf = (files: ReturnType<typeof fixture>, version: string) => path.join(files.root, 'plugins', 'cache', 'thedotmack', 'claude-mem', version);
+    // What Claude Code writes for a project's and a local install, with fields this installer never writes.
+    const claudeCodeEntry = (scope: 'project' | 'local', version: string) => ({
+      scope,
+      projectPath: `/work/${scope}-project`,
+      installPath: path.join(CACHE_ROOT, version),
+      version,
+      installedAt: '2026-10-01T08:00:00.000Z',
+      lastUpdated: '2026-10-02T09:30:00.000Z',
+      gitCommitSha: 'a3f1c2d4e5b6a7980c1d2e3f4a5b6c7d8e9f0a1b',
+    });
+    const userEntryWritten = (files: ReturnType<typeof fixture>, version: string) => ({
+      scope: 'user', installPath: cacheFolderOf(files, version), version, installedAt: expect.any(String), lastUpdated: expect.any(String),
+    });
+    const otherPlugin = { 'other@market': [{ scope: 'user', installPath: '/elsewhere/1.0.0', version: '1.0.0' }] };
+
+    // A user-scope entry between a project's and a local one: replaced where it was.
+    const between = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { ...otherPlugin, 'claude-mem@thedotmack': [
+      claudeCodeEntry('project', '15.10.0'),
+      { scope: 'user', installPath: path.join(CACHE_ROOT, '15.10.5'), version: '15.10.5', installedAt: '2026-09-01T00:00:00.000Z', lastUpdated: '2026-09-01T00:00:00.000Z' },
+      claudeCodeEntry('local', '15.11.0'),
+    ] } }) });
+    registerIn(between, INSTALLED);
+    expect(written(between)).toEqual({ version: 2, plugins: { ...otherPlugin, 'claude-mem@thedotmack': [
+      claudeCodeEntry('project', '15.10.0'),
+      userEntryWritten(between, INSTALLED),
+      claudeCodeEntry('local', '15.11.0'),
+    ] } });
+
+    // No user-scope entry yet (only a project's own install): added after the others.
+    const projectOnly = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [claudeCodeEntry('project', '15.10.0')] } }) });
+    registerIn(projectOnly, INSTALLED);
+    expect(written(projectOnly).plugins['claude-mem@thedotmack']).toEqual([claudeCodeEntry('project', '15.10.0'), userEntryWritten(projectOnly, INSTALLED)]);
+    expect(readClaudeCodePluginState(projectOnly).registration).toEqual({ kind: 'registered', versions: [INSTALLED] });
+
+    // Two user-scope entries left by hand: one remains, where the first was.
+    const twoUserEntries = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [
+      { scope: 'user', installPath: path.join(CACHE_ROOT, '15.10.5'), version: '15.10.5' },
+      claudeCodeEntry('project', '15.10.0'),
+      { scope: 'user', installPath: path.join(CACHE_ROOT, '15.10.6'), version: '15.10.6' },
+    ] } }) });
+    registerIn(twoUserEntries, INSTALLED);
+    expect(written(twoUserEntries).plugins['claude-mem@thedotmack']).toEqual([userEntryWritten(twoUserEntries, INSTALLED), claudeCodeEntry('project', '15.10.0')]);
+  });
+
   it('reads a missing installed_plugins.json, and one without claude-mem, as not registered', () => {
     for (const installedPlugins of [undefined, JSON.stringify({ version: 2, plugins: { 'other@market': [{ installPath: '/x/1.0.0' }] } }), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [] } })]) {
       const files = fixture({ installedPlugins });
@@ -3106,11 +3321,68 @@ describe('auto-update settings', () => {
     expect(autoUpdateDisabledReason(settings)).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
   });
 
-  it('lets an environment variable win over the file in both directions, as the settings manager does', () => {
-    const savedOn = settingsFile('env-over-file-on', JSON.stringify({ CLAUDE_MEM_AUTO_UPDATE: 'true' }));
-    expect(readAutoUpdateSettings(savedOn, { CLAUDE_MEM_AUTO_UPDATE: 'false' }).CLAUDE_MEM_AUTO_UPDATE).toBe('false');
-    const savedOff = settingsFile('env-over-file-off', JSON.stringify({ CLAUDE_MEM_AUTO_UPDATE: 'false' }));
-    expect(readAutoUpdateSettings(savedOff, { CLAUDE_MEM_AUTO_UPDATE: 'true' }).CLAUDE_MEM_AUTO_UPDATE).toBe('true');
+  it('reads CLAUDE_MEM_AUTO_UPDATE off when either the file or the environment has it off: the environment never turns on a saved off', () => {
+    // [what settings.json holds (undefined: no key), the environment's value (undefined: unset), the value read]
+    const rows: Array<[unknown, string | undefined, string]> = [
+      ['true', 'false', 'false'],
+      ['false', 'true', 'false'],
+      [false, 'TRUE', 'false'],
+      ['false', undefined, 'false'],
+      [undefined, 'false', 'false'],
+      // Any value but true in either place leaves it off, named as it is.
+      ['off', 'true', 'off'],
+      ['true', 'off', 'off'],
+      // Both on, or on where the other has nothing: on.
+      ['true', 'true', 'true'],
+      [undefined, 'true', 'true'],
+      ['true', undefined, 'true'],
+      [undefined, undefined, 'true'],
+    ];
+    rows.forEach(([saved, fromEnv, expected], index) => {
+      const settingsPath = settingsFile(`env-and-file-${index}`, JSON.stringify(saved === undefined ? {} : { CLAUDE_MEM_AUTO_UPDATE: saved }));
+      const env = fromEnv === undefined ? {} : { CLAUDE_MEM_AUTO_UPDATE: fromEnv };
+      expect({ saved, fromEnv, read: readAutoUpdateSettings(settingsPath, env).CLAUDE_MEM_AUTO_UPDATE }).toEqual({ saved, fromEnv, read: expected });
+    });
+    // The other keys keep the settings manager's rule: the environment over the file.
+    const savedUrl = settingsFile('env-over-file-url', JSON.stringify({ CLAUDE_MEM_WORKER_URL: 'http://192.168.1.20:37777' }));
+    expect(readAutoUpdateSettings(savedUrl, { CLAUDE_MEM_WORKER_URL: '' }).CLAUDE_MEM_WORKER_URL).toBe('');
+  });
+
+  it('turns it off for the worker\'s tick, doctor\'s row and the installer\'s registerMarketplace alike when settings.json saves it off and the environment says true', async () => {
+    silenceLogger();
+    const { productionAutoUpdateSwitchReaders } = await import('../../../src/services/auto-update/auto-update-switch-readers.js');
+    const { autoUpdateDoctorSources } = await import('../../../src/npx-cli/commands/doctor.js');
+    const { registerMarketplace } = await import('../../../src/npx-cli/commands/install.js');
+    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
+    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
+    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    // A Claude config of its own: none of these may read the real ~/.claude, and Claude Code's managed settings are this folder's.
+    const claudeConfig = path.join(tempDir, 'claude-config-for-the-readers');
+    mkdirSync(path.join(claudeConfig, 'plugins'), { recursive: true });
+    const knownMarketplacesFile = path.join(claudeConfig, 'plugins', 'known_marketplaces.json');
+    writeFileSync(knownMarketplacesFile, JSON.stringify({ thedotmack: claudeMemMarketplaceEntry(true) }));
+    spyOn(autoUpdateCheckModule, 'claudeCodeManagedSettingsDirectory').mockReturnValue(path.join(claudeConfig, 'managed-settings'));
+    const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
+    const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_AUTO_UPDATE: 'false' }));
+    process.env.CLAUDE_CONFIG_DIR = claudeConfig;
+    process.env.CLAUDE_MEM_AUTO_UPDATE = 'true';
+    try {
+      const off = { kind: 'off', decision: { decision: 'disabled', reason: 'CLAUDE_MEM_AUTO_UPDATE=false' } };
+      // The worker's tick (worker-service.ts buildAutoUpdateCheckDeps).
+      expect(readAutoUpdateSwitches(productionAutoUpdateSwitchReaders({ env: process.env, resolvePluginRoot: () => null }))).toEqual(off);
+      // Doctor's Auto-update row.
+      expect(autoUpdateDoctorSources(null).readSwitches()).toEqual(off);
+      // The installer keeps Claude Code's own update, the only updater left.
+      registerMarketplace();
+      expect(JSON.parse(readFileSync(knownMarketplacesFile, 'utf-8')).thedotmack.autoUpdate).toBe(true);
+    } finally {
+      if (savedClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedClaudeConfigDir;
+      if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
+      else writeFileSync(USER_SETTINGS_PATH, savedSettings);
+    }
   });
 
   it('turns off from settings.json, also when written as a JSON boolean', () => {

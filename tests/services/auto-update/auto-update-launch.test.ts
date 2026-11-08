@@ -11,6 +11,7 @@ import {
   FORBID_REAL_AUTO_UPDATE_ENV,
   autoUpdateApplyArgv,
   autoUpdateAttemptLogPath,
+  autoUpdateInstallerEnv,
   autoUpdateInstallerWorkingDirectory,
   autoUpdateLaunchDeps,
   autoUpdateWorkerProof,
@@ -31,6 +32,7 @@ import {
   type AutoUpdateLaunchDeps,
   type StartedAutoUpdateProcess,
 } from '../../../src/services/auto-update/auto-update-launch.js';
+import { NPM_PUBLIC_REGISTRY_URL, npmVersionMetadataUrl } from '../../../src/services/auto-update/auto-update-check.js';
 import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, WORKER_PID_CAPTURE_TIMEOUT_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
 import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
@@ -277,6 +279,79 @@ describe('autoUpdateInstallerWorkingDirectory', () => {
   });
 });
 
+describe('autoUpdateInstallerEnv', () => {
+  /** What a worker started from a hostile project could pass down: a registry in every spelling npm and bun read, beside the user's proxy settings. */
+  const inherited: NodeJS.ProcessEnv = {
+    PATH: '/usr/local/bin:/usr/bin:/bin',
+    HOME: '/Users/someone',
+    npm_config_registry: 'https://registry.attacker.example/',
+    NPM_CONFIG_REGISTRY: 'https://registry.attacker.example/',
+    Npm_Config_Registry: 'https://registry.attacker.example/',
+    BUN_CONFIG_REGISTRY: 'https://bun.attacker.example/',
+    bun_config_registry: 'https://bun.attacker.example/',
+    HTTPS_PROXY: 'http://proxy.corp.example:3128',
+    https_proxy: 'http://proxy.corp.example:3128',
+    NO_PROXY: 'localhost,127.0.0.1',
+    npm_config_proxy: 'http://proxy.corp.example:3128',
+    npm_config_https_proxy: 'http://proxy.corp.example:3128',
+    npm_config_noproxy: 'localhost',
+    // Settings that only share the prefix are not the registry.
+    npm_config_registry_timeout: '30000',
+  };
+
+  it('sets the registry gate 7 read in every name npm and bun read, removes every inherited spelling, and keeps the proxy settings and the rest', () => {
+    const env = autoUpdateInstallerEnv(inherited);
+    expect(NPM_PUBLIC_REGISTRY_URL).toBe('https://registry.npmjs.org/');
+    expect(npmVersionMetadataUrl(TARGET).startsWith(NPM_PUBLIC_REGISTRY_URL)).toBe(true);
+    const registryNames = Object.keys(env).filter((name) => /^(?:npm|bun)_config_registry$/i.test(name)).sort();
+    expect(Object.fromEntries(registryNames.map((name) => [name, env[name]]))).toEqual({
+      BUN_CONFIG_REGISTRY: NPM_PUBLIC_REGISTRY_URL,
+      NPM_CONFIG_REGISTRY: NPM_PUBLIC_REGISTRY_URL,
+      npm_config_registry: NPM_PUBLIC_REGISTRY_URL,
+    });
+    expect(env).toMatchObject({
+      PATH: inherited.PATH,
+      HOME: inherited.HOME,
+      HTTPS_PROXY: inherited.HTTPS_PROXY,
+      https_proxy: inherited.https_proxy,
+      NO_PROXY: inherited.NO_PROXY,
+      npm_config_proxy: inherited.npm_config_proxy,
+      npm_config_https_proxy: inherited.npm_config_https_proxy,
+      npm_config_noproxy: inherited.npm_config_noproxy,
+      npm_config_registry_timeout: '30000',
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1',
+    });
+    // The supervisor's own environment is not changed.
+    expect(inherited.NPM_CONFIG_REGISTRY).toBe('https://registry.attacker.example/');
+  });
+
+  // npm itself, as npx runs it: its env layer outranks every npmrc file, so neither an inherited variable nor a
+  // user npmrc's registry line moves it. Read only (`npm config get` makes no request), with its logs, cache and
+  // update check kept out of the real home folder. npm is a .cmd shim on Windows, which this spawn cannot start.
+  const npmOnPath = Bun.which('npm');
+  it.skipIf(process.platform === 'win32' || npmOnPath === null)('is the registry real npm resolves, over an inherited variable and a user npmrc that name another', () => {
+    const npmScratch = mkdtempSync(path.join(runDirectory, 'npm-config-'));
+    const userNpmrc = path.join(npmScratch, 'user.npmrc');
+    writeFileSync(userNpmrc, 'registry=https://npmrc.attacker.example/\n');
+    const env = autoUpdateInstallerEnv({
+      ...process.env,
+      ...inherited,
+      PATH: process.env.PATH,
+      HOME: npmScratch,
+      npm_config_userconfig: userNpmrc,
+      npm_config_cache: path.join(npmScratch, 'cache'),
+      npm_config_logs_max: '0',
+      npm_config_update_notifier: 'false',
+    });
+    const resolved = execFileSync(npmOnPath!, ['config', 'get', 'registry'], { cwd: npmScratch, env, encoding: 'utf-8' }).trim();
+    expect(resolved).toBe(NPM_PUBLIC_REGISTRY_URL);
+    // The same npm reads the user npmrc's line once no registry variable is set.
+    const withoutTheVariables = Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:npm|bun)_config_registry$/i.test(name)));
+    const withoutIt = execFileSync(npmOnPath!, ['config', 'get', 'registry'], { cwd: npmScratch, env: withoutTheVariables, encoding: 'utf-8' }).trim();
+    expect(withoutIt).toBe('https://npmrc.attacker.example/');
+  }, REAL_PROCESS_TEST_TIMEOUT_MS);
+});
+
 describe('runAutoUpdateInstaller', () => {
   const bunScript = (source: string) => commandInvocation(process.execPath, ['-e', source]);
 
@@ -411,6 +486,30 @@ describe('runAutoUpdateInstaller', () => {
     const run = await runAutoUpdateInstaller(bunScript(`process.stdout.write('marker=' + process.env.${INSTALL_RUN_BY_AUTO_UPDATE_ENV} + ' path=' + Boolean(process.env.PATH))`), { logPath, deadlineMs: NEVER_REACHED_DEADLINE_MS });
     expect(run).toEqual({ kind: 'exited', exitCode: 0, signal: null });
     expect(readFileSync(logPath, 'utf-8')).toContain('marker=1 path=true');
+  }, REAL_PROCESS_TEST_TIMEOUT_MS);
+
+  it('installs from the registry gate 7 read, whatever registry the supervisor inherited', async () => {
+    const logPath = freshLogPath();
+    const inherited = { NPM_CONFIG_REGISTRY: 'https://registry.attacker.example/', BUN_CONFIG_REGISTRY: 'https://bun.attacker.example/' };
+    const saved = Object.fromEntries(Object.keys(inherited).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, inherited);
+    let run: Awaited<ReturnType<typeof runAutoUpdateInstaller>>;
+    try {
+      run = await runAutoUpdateInstaller(bunScript([
+        "const registryNames = Object.keys(process.env).filter((name) => /^(?:npm|bun)_config_registry$/i.test(name)).sort();",
+        "process.stdout.write('registries=' + JSON.stringify(Object.fromEntries(registryNames.map((name) => [name, process.env[name]]))));",
+      ].join('\n')), { logPath, deadlineMs: NEVER_REACHED_DEADLINE_MS });
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    expect(run).toEqual({ kind: 'exited', exitCode: 0, signal: null });
+    const reported = /registries=(\{.*\})/.exec(readFileSync(logPath, 'utf-8'))?.[1] ?? '{}';
+    const registries = Object.values(JSON.parse(reported) as Record<string, string>);
+    expect(registries.length).toBeGreaterThan(0);
+    expect(new Set(registries)).toEqual(new Set([NPM_PUBLIC_REGISTRY_URL]));
   }, REAL_PROCESS_TEST_TIMEOUT_MS);
 
   it('settles even when its handle on the attempt log cannot be closed, and logs that', async () => {

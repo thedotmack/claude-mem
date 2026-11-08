@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from '../../src/services/worker/idle-exit-monitor.js';
+import { IdleExitMonitor, idleExitWindowMs, MIN_IDLE_EXIT_MS, parseIdleExitMs } from '../../src/services/worker/idle-exit-monitor.js';
 
 // IdleExitMonitor lives in src/services/worker/idle-exit-monitor.ts (not
 // worker-service.ts) for the same reason as runShutdownSequence in
@@ -309,5 +309,18 @@ describe('parseIdleExitMs — CLAUDE_MEM_IDLE_EXIT_SEC parsing', () => {
   it('returns windows under the 60 s minimum as given; the worker wiring raises them', () => {
     expect(parseIdleExitMs('5')).toBe(5_000);
     expect(MIN_IDLE_EXIT_MS).toBe(60_000);
+  });
+});
+
+describe('idleExitWindowMs — the window the worker arms with, which the installer reads too', () => {
+  it('is 0 where the worker never idle-exits: absent, empty, 0, and a value it ignores', () => {
+    for (const raw of [undefined, '', '  ', '0', 'abc', '-1', '1e308']) expect(idleExitWindowMs(raw)).toBe(0);
+  });
+
+  it('raises a window under the minimum to it, and keeps one at or over it', () => {
+    expect(idleExitWindowMs('1')).toBe(MIN_IDLE_EXIT_MS);
+    expect(idleExitWindowMs('59')).toBe(MIN_IDLE_EXIT_MS);
+    expect(idleExitWindowMs('60')).toBe(60_000);
+    expect(idleExitWindowMs('600')).toBe(600_000);
   });
 });

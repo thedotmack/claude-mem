@@ -48,7 +48,7 @@ import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 import { provisionTreeSitterCliForPluginRoot } from './worker/tree-sitter-cli-provisioning.js';
-import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { IdleExitMonitor, idleExitWindowMs, parseIdleExitMs } from './worker/idle-exit-monitor.js';
 import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 import {
   AUTO_UPDATE_FIRST_TICK_DELAY_MS,
@@ -520,12 +520,12 @@ export class WorkerService implements WorkerRef {
       });
       return;
     }
-    let idleExitMs = configuredIdleExitMs;
-    if (idleExitMs < MIN_IDLE_EXIT_MS) {
+    // The same window the installer reads (idle-exit-monitor.ts idleExitWindowMs).
+    const idleExitMs = idleExitWindowMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (idleExitMs > configuredIdleExitMs) {
       logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {
         value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
       });
-      idleExitMs = MIN_IDLE_EXIT_MS;
     }
 
     this.idleExitMonitor = new IdleExitMonitor({

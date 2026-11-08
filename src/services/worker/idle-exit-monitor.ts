@@ -198,3 +198,18 @@ export function parseIdleExitMs(raw: string | undefined): number | null {
   if (!Number.isInteger(seconds) || seconds < 0 || !Number.isSafeInteger(milliseconds)) return null;
   return milliseconds;
 }
+
+/**
+ * The idle window, in milliseconds, the worker arms with for this
+ * CLAUDE_MEM_IDLE_EXIT_SEC (worker-service.ts startIdleExitMonitor): 0 when
+ * it never idle-exits (absent, empty or '0', and a value parseIdleExitMs
+ * rejects, which the worker ignores), otherwise the value raised to
+ * MIN_IDLE_EXIT_MS. The installer reads it the same way (install.ts
+ * registerMarketplace) to tell whether the worker can stop before its first
+ * auto-update check.
+ */
+export function idleExitWindowMs(raw: string | undefined): number {
+  const configuredIdleExitMs = parseIdleExitMs(raw);
+  if (configuredIdleExitMs === null || configuredIdleExitMs === 0) return 0;
+  return Math.max(configuredIdleExitMs, MIN_IDLE_EXIT_MS);
+}

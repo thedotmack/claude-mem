@@ -163,6 +163,7 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { prunePluginCacheSafely } from '../utils/prune-cache.js';
+import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
@@ -170,8 +171,9 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
-import { readAutoUpdateSettingsSwitches } from '../../services/auto-update/auto-update-check.js';
+import { AUTO_UPDATE_FIRST_TICK_DELAY_MS, readAutoUpdateSettingsSwitches } from '../../services/auto-update/auto-update-check.js';
 import { productionAutoUpdateSettingsReaders } from '../../services/auto-update/auto-update-switch-readers.js';
+import { idleExitWindowMs } from '../../services/worker/idle-exit-monitor.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -239,16 +241,38 @@ function claudeCodeBackgroundUpdateToRegister(existingEntry: unknown): unknown {
  * install with no updater at all. A file those readers cannot read stops every
  * tick there, so that updater is not running either: it reads as cannot run,
  * with a warning, and the install goes on. Claude Code's plugin records are
- * not read: this install rewrites them.
+ * not read: this install rewrites them. An idle exit that can stop the
+ * worker before its first check (idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck)
+ * reads as cannot run too.
  */
 function canClaudeMemUpdaterRun(): boolean {
   try {
-    return readAutoUpdateSettingsSwitches(productionAutoUpdateSettingsReaders({ env: process.env })).kind === 'on';
+    if (readAutoUpdateSettingsSwitches(productionAutoUpdateSettingsReaders({ env: process.env })).kind !== 'on') return false;
   } catch (error: unknown) {
     const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
     log.warn(`Could not read whether claude-mem's auto-update can run (${cause instanceof Error ? cause.message : String(cause)}), so it is read as off and Claude Code's auto-update setting for the thedotmack marketplace is kept as it is`);
     return false;
   }
+  return !idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck();
+}
+
+/**
+ * Whether the worker's opt-in idle exit can stop it before its first
+ * auto-update check on every start, so claude-mem's updater may never run
+ * here. The worker's first check waits AUTO_UPDATE_FIRST_TICK_DELAY_MS
+ * (5 minutes) after it starts, and the idle window starts once its
+ * background start-up has finished (worker-service.ts startIdleExitMonitor),
+ * so only a window shorter than that delay can end it first; a short burst
+ * of hooks or MCP calls then starts a worker that stops again before every
+ * check. The window is read the way the worker reads it: CLAUDE_MEM_IDLE_EXIT_SEC
+ * from the settings the worker loads, the environment over the file
+ * (SettingsDefaultsManager.loadFromFile; readOnly, so this read never writes
+ * the file, which changes no value of this key), then idle-exit-monitor.ts
+ * idleExitWindowMs, with its minimum.
+ */
+function idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck(): boolean {
+  const idleExitMs = idleExitWindowMs(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }).CLAUDE_MEM_IDLE_EXIT_SEC);
+  return idleExitMs !== 0 && idleExitMs < AUTO_UPDATE_FIRST_TICK_DELAY_MS;
 }
 
 /**
@@ -256,6 +280,14 @@ function canClaudeMemUpdaterRun(): boolean {
  * runInstallCommandInner registers the plugin whatever --ide selects). The
  * auto-updater reads its presence as "still installed" (auto-update-check.ts
  * readClaudeCodePluginState), which tests pin against this function.
+ *
+ * Only the user-scope entry is this installer's (claude-code-plugin-paths.ts
+ * isUserScopeRegistration): it replaces that one, where it was, or adds it
+ * when there is none. Every other entry of claude-mem@thedotmack, a project's
+ * or a local install Claude Code registered at a version of its own, is kept
+ * exactly as read and in its place, so an update, including an unattended
+ * one the auto-updater runs, never unregisters it. Any further user-scope
+ * entry is dropped, as before: an install has one.
  */
 export function registerPlugin(version: string): void {
   const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
@@ -265,16 +297,23 @@ export function registerPlugin(version: string): void {
 
   const cachePath = pluginCacheDirectory(version);
   const now = new Date().toISOString();
+  const userScopeEntry = {
+    scope: 'user',
+    installPath: cachePath,
+    version,
+    installedAt: now,
+    lastUpdated: now,
+  };
 
-  installedPlugins.plugins['claude-mem@thedotmack'] = [
-    {
-      scope: 'user',
-      installPath: cachePath,
-      version,
-      installedAt: now,
-      lastUpdated: now,
-    },
-  ];
+  const registered: unknown = installedPlugins.plugins['claude-mem@thedotmack'];
+  const entriesAsRead: unknown[] = Array.isArray(registered) ? registered : [];
+  const userScopeIndex = entriesAsRead.findIndex(isUserScopeRegistration);
+  installedPlugins.plugins['claude-mem@thedotmack'] = userScopeIndex === -1
+    ? [...entriesAsRead, userScopeEntry]
+    : entriesAsRead.flatMap((entry, index) => {
+        if (index === userScopeIndex) return [userScopeEntry];
+        return isUserScopeRegistration(entry) ? [] : [entry];
+      });
 
   writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
 }
