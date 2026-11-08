@@ -152,12 +152,13 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
     }) as never);
     const log = spyOn(console, 'log').mockImplementation(() => {});
     const previousExitCode = process.exitCode;
-    process.exitCode = undefined;
     try {
       await runDoctorCommand();
     } finally {
       doctorExitCode = process.exitCode;
-      process.exitCode = previousExitCode;
+      // Bun keeps a set exit code when it is assigned undefined, so an unset
+      // code is restored as 0 (a failing test still makes bun test exit 1).
+      process.exitCode = previousExitCode ?? 0;
       doctorOutput = log.mock.calls.flat().join('\n');
       version.mockRestore();
       exit.mockRestore();
