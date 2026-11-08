@@ -621,10 +621,13 @@ export class SessionRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     // Operator repair route: it starts generators and retries auth/transport
     // pauses that the automatic sweep leaves alone, so it is localhost-only
-    // like the other admin routes.
+    // like the other admin routes. The origin guard keeps a browser page on
+    // another local port from triggering those unpaced paid retries; the
+    // Origin-less script callers keep working.
     app.post(
       '/api/processing',
       requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
