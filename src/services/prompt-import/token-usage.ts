@@ -36,7 +36,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { claudeConfigDirectory, codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -111,10 +111,10 @@ const claudeProjectFolder = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, '-');
 
 function claudeRetentionDays(homeDirectory: string): number {
   try {
-    const days = JSON.parse(readFileSync(join(homeDirectory, '.claude', 'settings.json'), 'utf8')).cleanupPeriodDays;
+    const days = JSON.parse(readFileSync(join(claudeConfigDirectory(homeDirectory), 'settings.json'), 'utf8')).cleanupPeriodDays;
     return typeof days === 'number' ? days : 30;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn('IMPORT', 'Could not read ~/.claude/settings.json', { error: String(error) });
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn('IMPORT', 'Could not read Claude Code settings.json', { error: String(error) });
     return 30;
   }
 }
