@@ -1,7 +1,7 @@
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
+import { ingestObservation, ingestSummarize, ingestSessionEnd, logDeletedSessionSkip, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
@@ -676,6 +676,18 @@ export class SessionRoutes extends BaseRouteHandler {
     });
   });
 
+  /**
+   * The event's source time (eventOccurredAtEpochMs on init and observation
+   * bodies). A caller that sends none is a live host posting as events happen
+   * (= now), like enqueuedAtEpochMs. Null, which the transcript watcher sends
+   * for a line without a timestamp, means unknown and proves nothing.
+   */
+  private static eventOccurredAtFromBody(body: Record<string, unknown>): number | null {
+    const value = body.eventOccurredAtEpochMs;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return value === undefined ? Date.now() : null;
+  }
+
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
@@ -755,6 +767,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
       enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
       telemetryToolEpochMs: typeof req.body.telemetryToolEpochMs === 'number' ? req.body.telemetryToolEpochMs : undefined,
+      eventOccurredAtEpochMs: SessionRoutes.eventOccurredAtFromBody(req.body),
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
@@ -904,7 +917,22 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    // A prompt in a deleted session counts as new work only when its source
+    // time (the hook's clock, a transcript line's timestamp) is after the deletion.
+    const eventOccurredAtEpochMs = SessionRoutes.eventOccurredAtFromBody(req.body);
+    let sessionDbId: number;
+    try {
+      sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource, eventOccurredAtEpochMs);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'session_deleted') {
+        logDeletedSessionSkip('a user prompt', 'not_newer_than_deletion', platformSource, contentSessionId, {
+          eventOccurredAtEpochMs,
+        });
+        res.json({ skipped: true, reason: 'session_deleted' });
+        return;
+      }
+      throw error;
+    }
 
     // The checkout `project` was resolved from, and how it was derived, so a
     // session that never reports an observation still leaves evidence for

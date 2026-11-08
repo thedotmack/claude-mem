@@ -522,7 +522,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
   // Roll back everything after v65, not just the work-state steps: v68's
-  // observation_files row and the v69-v71 media schema would otherwise remain
+  // observation_files row, the v69-v72 media schema and v73's replay ledger would otherwise remain
   // the newest applied versions and the fixture would no longer be a database
   // main left at v65.
   db.run('DROP TABLE IF EXISTS observation_files');
@@ -532,7 +532,20 @@ function rollBackWorkStateSyncSteps(db: Database): void {
     'media_cloud_deletions', 'media_attachments', 'media_events']) {
     db.run(`DROP TABLE IF EXISTS ${table}`);
   }
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71)');
+  // v73: the committed tool-use ledger and the deleted-session tombstones.
+  for (const trigger of ['prevent_deleted_sdk_session_insert', 'prevent_deleted_sdk_session_update',
+    'prevent_deleted_tool_use_insert', 'prevent_deleted_tool_use_update']) {
+    db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
+  }
+  for (const table of ['committed_observation_tool_uses', 'deleted_content_sessions', 'deleted_memory_sessions']) {
+    db.run(`DROP TABLE IF EXISTS ${table}`);
+  }
+  // v74: the deletion-cutoff triggers that replaced v73's.
+  for (const trigger of ['block_pre_deletion_sdk_session_insert', 'block_deleted_sdk_session_rekey',
+    'block_pre_deletion_tool_use_insert', 'block_pre_deletion_tool_use_update']) {
+    db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
+  }
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72, 73, 74)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

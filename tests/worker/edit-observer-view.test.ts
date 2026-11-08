@@ -17,7 +17,8 @@ test('HTTP ingestion preserves raw strings while the native observer view shrink
   let calls = 0;
   setIngestContext({
     dbManager: { getSessionStore: () => ({ createSDKSession: () => 1, setSessionCwd: () => {},
-      getPromptNumberFromUserPrompts: () => 1, getUserPrompt: () => 'public fixture' }) } as any,
+      getPromptNumberFromUserPrompts: () => 1, getUserPrompt: () => 'public fixture',
+      isSessionDeleted: () => false, isBeforeSessionDeletion: () => false, hasCommittedToolUse: () => false }) } as any,
     sessionManager: { queueObservation: async (_id: number, observation: any) => { queued = observation; } } as any,
     eventBroadcaster: { broadcastObservationQueued: () => {} } as any,
     ensureGeneratorRunning: async () => {

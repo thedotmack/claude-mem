@@ -25,16 +25,21 @@
  * cmem-gateway branch keeps its own marker and runs first, untouched.
  */
 
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { readFileSync } from 'fs';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { PROVIDER_BY_SOURCE_SETTING, parseProviderBySource } from '../../shared/provider-by-source.js';
 import { isCmemGatewayUrl, setSessionProviderResolver, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
 import { cmemCapProbeAllowed } from '../../shared/cmem-cap-probe.js';
-import { scrubErrorMessage } from '../../shared/observer-health.js';
+import { scrubErrorMessage, type ObserverQuotaNoticeHold } from '../../shared/observer-health.js';
+import { hasAnthropicApiKey } from '../../shared/EnvManager.js';
+import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
-import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
+import { isOpenRouterAvailable, isOpenRouterSelected, resolveOpenRouterConfig } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
@@ -50,6 +55,7 @@ import {
   setUnservableProviderRouter,
   tryAdmitCmemGatewayProbe,
   type QuotaCooldownState,
+  type QuotaFallbackResolver,
   type QuotaProvider,
 } from '../../shared/quota-cooldown.js';
 
@@ -385,10 +391,92 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
   return routes[0];
 }
 
+function quotaProviderDisplayName(provider: string, settings: SettingsDefaults, auth?: string): string {
+  switch (provider) {
+    case 'claude': return auth === 'api-key' ? 'your Anthropic API key' : 'your Claude plan';
+    case 'openrouter': return isCmemGatewayUrl(resolveOpenRouterConfig().apiUrl) ? 'cmem.ai' : 'OpenRouter';
+    case 'gemini': return 'Gemini';
+    case 'codex': return 'Codex';
+    case 'openai-compatible': {
+      const preset = resolveOpenAICompatPreset(settings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+      return preset.id === 'custom' ? 'your OpenAI-compatible endpoint' : preset.label;
+    }
+    default: throw new Error(`Cannot name quota notice provider: ${provider}`);
+  }
+}
+
+/** Defaults are merged by the settings reader; inspect the actual choice for the opt-out hint. */
+function usesDefaultClaudeBackup(): boolean {
+  const override = process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
+  if (override !== undefined) return override.trim() === '';
+  try {
+    const document = parseJsonWithBom<Record<string, unknown>>(readFileSync(paths.settings(), 'utf8'));
+    return !String(settingsTarget(document).CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+/** Display-only snapshot: dispatch still owns every routing and admission decision. */
+const quotaNoticeResolution: QuotaFallbackResolver = (held, nowMs, activeHolds) => {
+  // Roles are per route. When CLAUDE_MEM_PROVIDER_BY_SOURCE sends sessions to
+  // different primaries, no single main/backup pair describes them all, so the
+  // notice stays role-free: it names only who is serving, and
+  // quotaServingProvider names one only when every route still has one.
+  const primaries = new Set([globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured));
+  if (primaries.size > 1) return quotaServingProvider(held, nowMs);
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const selected = settings.CLAUDE_MEM_PROVIDER;
+  const main = (['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'] as string[]).includes(selected)
+    ? selected : 'claude';
+  const backup = readQuotaFallbackProvider();
+  // Where main's runs actually go: Claude while cmem.ai's trial-expiry
+  // fallback stands, so a hold on it is a hold on the provider doing the work.
+  const routed = routedProviderFor(main as SelectableProvider);
+  const mainAuth = hasAnthropicApiKey() ? 'api-key' : 'subscription';
+  const displayName = (provider: string, auth?: string) => quotaProviderDisplayName(provider, settings, auth);
+  const retryName = (provider: string, auth?: string) => provider === 'claude' && auth !== 'api-key'
+    ? 'Claude' : displayName(provider, auth);
+  const holds: ObserverQuotaNoticeHold[] = activeHolds
+    .filter(hold => cooldownAppliesToCurrentAccount(hold) && (hold.provider === main || hold.provider === backup || hold.provider === routed))
+    .map(hold => ({
+      provider: hold.provider,
+      ...(hold.profile ? { profile: hold.profile } : {}),
+      displayName: displayName(hold.provider, hold.auth ?? mainAuth),
+      retryName: retryName(hold.provider, hold.auth ?? mainAuth),
+      role: hold.provider === main && !(main === 'claude' && hold.auth && hold.auth !== mainAuth) ? 'main' : 'backup',
+      until: hold.until,
+      ...(hold.auth ? { auth: hold.auth } : {}),
+      ...(hold.reason ? { reason: hold.reason } : {}),
+    }));
+  const selectedProvider = getSelectedProvider();
+  const standIn = selectedProvider === 'claude' && isQuotaCooldownHolding('claude', nowMs) ? claudeQuotaStandIn() : null;
+  const serving = !isQuotaCooldownHolding(selectedProvider, nowMs) || standIn
+    ? selectedProvider : undefined;
+  const servingAuth = serving === 'claude' ? standIn ?? mainAuth : undefined;
+  const servingDisplayName = serving === 'claude' && standIn === 'api-key'
+    ? 'your backup API key (ANTHROPIC_FALLBACK_API_KEY)'
+    : serving ? displayName(serving, servingAuth) : undefined;
+  return {
+    servingProvider: quotaServingProvider(held, nowMs),
+    notice: {
+      mainProvider: main,
+      mainDisplayName: displayName(main, mainAuth),
+      mainRetryName: retryName(main, mainAuth),
+      ...(backup && backup !== main ? { backupProvider: backup, backupDisplayName: displayName(backup, mainAuth) } : {}),
+      defaultClaudeBackup: usesDefaultClaudeBackup(),
+      ...(serving ? { servingProvider: serving, servingDisplayName } : {}),
+      ...(servingAuth ? { servingAuth } : {}),
+      holds,
+    },
+  };
+};
+
 // The session-start notice reads the serving provider from the mirrored
 // cooldown in observer-health.json. See setQuotaFallbackResolver for why the
 // answer is injected from here rather than imported there.
-setQuotaFallbackResolver(quotaServingProvider);
+setQuotaFallbackResolver(quotaNoticeResolution);
 setUnservableProviderRouter((provider, message, window, profile) =>
   provider === 'cmem-gateway' ? null : routeAroundUnservableProvider(provider, message, window, profile));
 setSessionProviderResolver(configuredProviderForSource);

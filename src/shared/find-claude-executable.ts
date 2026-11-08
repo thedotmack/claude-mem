@@ -59,13 +59,17 @@ export const CAPABILITY_PROBE_ARGS = ['--permission-mode', 'dontAsk', '--version
  * Successful resolutions are cached briefly: findClaudeExecutable() runs once
  * per SDK query, and each cold resolution costs one subprocess spawn per
  * installed candidate. Failures are never cached, so a user who updates their
- * CLI is picked up on the next observation without a worker restart.
+ * CLI is picked up on the next observation without a worker restart. A cached
+ * resolution only answers for the CLAUDE_CODE_PATH it was made under, so
+ * changing that setting takes effect on the next call too.
  */
 const RESOLUTION_CACHE_TTL_MS = 15 * 60_000;
 
 interface CachedResolution {
   path: string;
   version: string;
+  /** The CLAUDE_CODE_PATH setting this was resolved under ('' when discovered). */
+  configuredSetting: string;
   expiresAtMs: number;
 }
 
@@ -421,12 +425,18 @@ function updateInstructions(): string {
  * @throws {Error} when no Claude CLI compatible with claude-mem can be found
  */
 export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
-  if (cachedResolution && cachedResolution.expiresAtMs > Date.now() && _internals.existsSync(cachedResolution.path)) {
+  const settings = _internals.loadSettings();
+  const configuredSetting = settings.CLAUDE_CODE_PATH || '';
+
+  if (
+    cachedResolution &&
+    cachedResolution.configuredSetting === configuredSetting &&
+    cachedResolution.expiresAtMs > Date.now() &&
+    _internals.existsSync(cachedResolution.path)
+  ) {
     return cachedResolution.path;
   }
   cachedResolution = null;
-
-  const settings = _internals.loadSettings();
 
   // --- 1. Explicit configured path ----------------------------------------
   if (settings.CLAUDE_CODE_PATH) {
@@ -450,6 +460,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       cachedResolution = {
         path: configuredPath,
         version: probe.version,
+        configuredSetting,
         expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
       };
       return configuredPath;
@@ -560,6 +571,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     cachedResolution = {
       path: winner.path,
       version: winner.version,
+      configuredSetting,
       expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
     };
     return winner.path;

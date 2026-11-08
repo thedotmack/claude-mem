@@ -9,6 +9,7 @@ import {
   awarenessLineBody,
   formatAwarenessLine,
   grokBotAwarenessLogPath,
+  loadGrokBotAwarenessConfig,
   notifyGrokBotAwareness,
   observationMatchesAwarenessNeedle,
   type GrokBotAwarenessPushConfig,
@@ -189,6 +190,35 @@ describe('Grok Bot awareness pusher', () => {
     const body = readFileSync(logPath, 'utf8');
     expect(body.startsWith('- 2026-09-01 [awareness] bugfix — prior fact\n')).toBe(true);
     expect(body.split('\n').filter(Boolean)).toHaveLength(2);
+  });
+
+  // The pilot agent IDs belong to one person's Grok Bot seats; a fresh install must not ship them as its default.
+  it('ships off with no agent IDs, so an untouched settings.json writes nothing for the pilot agents', async () => {
+    const root = tempRoot();
+    const settingsPath = path.join(root, 'settings.json');
+    writeFileSync(settingsPath, '{}');
+    const keys = ['CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED', 'CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS'] as const;
+    const saved = keys.map(key => process.env[key]);
+    for (const key of keys) delete process.env[key];
+    try {
+      const config = loadGrokBotAwarenessConfig(settingsPath, { GROK_BOT_AGENT_DATA: root });
+      expect(config.enabled).toBe(false);
+      expect(config.agentIds).toEqual([]);
+
+      await notifyGrokBotAwareness({
+        observations: [makeObs()],
+        observationIds: [1],
+        project: 'cmem_work_lfg',
+        memorySessionId: 'mem-1',
+        agentId: LFG,
+      }, { ...config, now });
+      expect(existsSync(path.join(root, 'agents', LFG, 'memory', 'log'))).toBe(false);
+    } finally {
+      keys.forEach((key, index) => {
+        if (saved[index] === undefined) delete process.env[key];
+        else process.env[key] = saved[index];
+      });
+    }
   });
 
   it('never throws into the caller when the write path is broken', async () => {

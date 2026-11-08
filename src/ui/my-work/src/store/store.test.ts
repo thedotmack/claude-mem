@@ -99,6 +99,19 @@ describe('reading work', () => {
     stop()
   })
 
+  it('drops a recent change once its request is no longer in the model', async () => {
+    const { store } = testStore()
+    const { source, feed } = fakeSource()
+    store.getState().startWorkSource(source)
+    feed.onModel(withRequests(1))
+    feed.onModel(withRequests(2))
+    const added = LOCAL_MODEL.requests[1].id
+    assert.deepEqual(store.getState().work.recentChanges.map((change) => change.requestId), [added])
+    // The new request is folded away (say, grouped into an overall request) and nothing else changes.
+    feed.onModel(withRequests(1))
+    assert.deepEqual(store.getState().work.recentChanges, [])
+  })
+
   it('starts a manual refresh through the active source', async () => {
     const { store } = testStore()
     let refreshes = 0

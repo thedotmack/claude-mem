@@ -1,6 +1,9 @@
 # Observation media contract v1
 
-Capture and inference are independent and off by default. Phase 1 freezes these
+Capture and inference are independent. In claude-mem, capture
+(`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED`, the viewer's "Keep images" switch) is on by
+default and inference is off by default. Pro's `CMEM_MEDIA_*` operator flags are
+off unless an operator sets them. Phase 1 freezes these
 contracts and builds fixtures; it does not qualify a model or enable a provider.
 The local `src/shared/media-contract.ts` and Pro `src/lib/media/contract.ts`, and
 their golden JSON fixtures, must remain byte-identical.
@@ -38,26 +41,134 @@ label; it never includes an arbitrary decoder exception message.
 | Bound | Frozen v1 value |
 | --- | --- |
 | Images per event | 4 |
-| Accepted source and canonical WebP | 3 MiB each |
-| Decoded pixels | 24,000,000 |
-| Either source dimension | 8192 |
-| Conversion admission | One active conversion, fail busy immediately |
-| Conversion deadline | 5 seconds total metadata and both encodes |
+| Accepted source and canonical WebP | 3 MiB each: the bound for an upload Pro accepts and for reading a stored canonical, including one stored before every copy became lossy (lossless, up to 3 MiB). Local worker: a file source up to 96 MiB is accepted (see below) |
+| Encoded canonical WebP | 1 MiB (`maxEncodedCanonicalBytes`). Each converter fits every canonical it encodes into it; see "Recipes" for the measurement |
+| Decoded pixels | 24,000,000. Local worker: decodes up to 268,402,689 (16383 x 16383) and fits the canonical to 24,000,000 |
+| Either source dimension | 8192. Local worker: fits the canonical to 8192 instead of rejecting |
+| Conversion admission | One active conversion. Pro upload route: fail busy immediately. Local worker: wait up to 20 seconds for the slot, first come first served, then fail busy |
+| Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including any shrink round |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 256 MiB converted assets, atomically reserved |
+| Owner quota | 25 GiB converted assets, atomically reserved. Pro enforces it (uploads past it answer 413 `quota_exceeded`); the value matches Pro's contract |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 
-Reject any source or result that cannot meet these bounds. No adaptive quality
-loop, semantic cropping, or automatic content classification is in v1.
-Recipes are explicit caller choices: `screenshot-v1` uses lossless canonical
-WebP and a near-lossless quality 90 derivative; `photo-v1` uses quality 90 for
-both variants. Alpha is preserved. Both remove metadata, auto-orient
-and produce retained canonical and inference derivatives. Store recipe and
-actual `sharp.versions` encoder version with every conversion.
+Pro rejects any source that cannot meet these bounds. An encode over its byte
+ceiling (1 MiB canonical, 256 KiB derivative) is shrunk to fit on both sides,
+never rejected; the local worker also fits a source over the dimension and
+pixel bounds (see "Where the size bounds apply"). No semantic cropping or
+automatic content classification is in v1.
+
+### Recipes
+
+Every stored copy is lossy WebP. Nothing is encoded lossless or near-lossless.
+Reason: the owner's rule of 2026-11-05/06, "screenshots never need to be
+multiple megabytes" and "never lossless".
+
+Recipes are explicit caller choices: `screenshot-v1` encodes both variants as
+lossy WebP quality 80; `photo-v1` encodes both as quality 90 (unchanged).
+There is no quality retry: a variant over its byte ceiling is shrunk with the
+same setting. The recipe name and the manifest version do not change; a
+canonical stored before this rule may be lossless and up to 3 MiB, and it is
+never re-encoded or deleted for that.
+
+Evidence for quality 80 and the 1 MiB canonical ceiling, 2026-11-06: the 29
+real screenshots from a developer's Mac (62 KiB to 4.0 MiB PNG, 626x333 to
+2880x6716), Sharp 0.35.5, one libvips thread:
+
+| Copy | Before (lossless / near-lossless 90) | Quality 90 | Quality 80 (chosen) |
+| --- | --- | --- | --- |
+| Canonical, median / largest | 170 KiB / 2031 KiB | 113 KiB / 514 KiB | 80 KiB / 406 KiB |
+| Canonical CPU, median / largest | 0.76 s / 5.29 s | 0.21 s / 0.89 s | 0.20 s / 0.85 s |
+| Derivative, median / largest | 153 KiB / 872 KiB | 74 KiB / 172 KiB | 54 KiB / 121 KiB |
+
+- Text stays readable at 1:1 in both copies at quality 80, checked by eye on
+  dark UI, a light terminal and colored monospace text. Quality 90 costs about
+  1.4 times the bytes for no readable difference.
+- The 1 MiB canonical ceiling keeps all 29 at full resolution, with about 2.5
+  times headroom over the largest (406 KiB). A 2800x23880 full-page screenshot,
+  fitted to 8192 px, is 528 KiB. 1 MiB is not "multiple megabytes".
+- Pro re-encodes the uploaded canonical at the same setting. Measured on the
+  same 29, that second quality 80 encode was at most 0.995 times the first, so
+  it fits the same ceiling; if one does not, Pro shrinks it like the local
+  worker.
+- Lossy is larger than lossless for a few small flat screenshots (a 925x927
+  Linux terminal: 35 KiB lossless, 103 KiB at quality 80). Every such case
+  measured stays far under the ceilings.
+
+Alpha is preserved. Both recipes remove metadata, auto-orient and produce
+retained canonical and inference derivatives. Store recipe and actual
+`sharp.versions` encoder version with every conversion.
+
+### Where the conversion bounds apply
+
+Pro's upload route and the local worker convert on different machines, so the
+admission and deadline rows have one value for each. Every other bound is the
+same on both. `MEDIA_LIMITS.conversionTimeoutSeconds` (5) and
+`maxConcurrentConversions` (1) stay as they are in the shared contract file.
+The local values live in the local converter
+(`LOCAL_CONVERSION_DEADLINE_MS`, `LOCAL_ADMISSION_WAIT_MS`).
+
+- Pro upload route: 5 second deadline, one active conversion, fail busy at
+  once. Reason: shared server instances and the route's 59 second budget.
+  Unchanged.
+- Local worker: 20 second deadline, one active conversion, and a caller waits
+  up to 20 seconds for the slot (first come, first served) before it fails
+  `conversion_busy`. The deadline starts when the caller gets the slot.
+  Reason: the local worker converts off the hook path (the PostToolUse hook
+  writes a spool file and returns, and the worker converts while it drains the
+  spool), so no agent waits on it. A conversion runs on about one core. On
+  2026-11-05, 27 real screenshots from a developer's 10-core Mac needed 2.1 to
+  4.3 seconds each when typical, and 5.8 seconds for the slowest (2880x6716).
+  With the 5 second deadline and fail-at-once admission, run back to back as
+  the spool drain runs them, 11 of the 27 converted: the slowest timed out,
+  and the next 15 failed busy while its native work finished. Under load
+  average 30 to 50, 11 of the 27 needed over 5 seconds even alone, and none
+  of the 27 converted. With the local bounds all 27 converted in both cases
+  (slowest 16.4 seconds under load), and all 81 converted when three callers
+  ran the 27 at once. A local conversion row's lease covers the wait, the
+  deadline and two SQLite busy waits, so cleanup never fails a live one.
+
+Both converters hold the slot until native work settles. The local converter
+gives each native step only the deadline time still left, rounded up to whole
+seconds (Sharp's unit), so a conversion that timed out holds the slot for at
+most about one more second.
+
+### Where the size bounds apply
+
+On a user's computer no image is thrown away for size when the decoder can read
+it safely. The local worker uploads only its canonical WebP to Pro, so a
+canonical that fits the canonical bounds is what Pro receives. Pro's own
+upload route still rejects a source over a bound.
+
+- File source (a Read of a local image file): up to 96 MiB. Reason: abuse
+  protection on worker memory, because the file is read whole. Screenshot PNGs
+  measured about 0.32 bytes per pixel (a 2800x23880 full-page screenshot was
+  20.4 MiB), so a screenshot at the decoder bound below is about 82 MiB.
+- Inline source (image bytes inside the tool response): still at most 4 MiB
+  of base64 for the event, because the event JSON must stay under the
+  existing 5 MB cap (the worker's JSON body limit). An inline image over that
+  is replaced by a `source_too_large` descriptor at the hook. Not changed in
+  this step.
+- Decoder: up to 268,402,689 pixels (16383 x 16383), Sharp's own default
+  `limitInputPixels`, its decompression-bomb guard. Over that the image fails
+  `pixel_limit`. Measured: fitting a 16383x16383 PNG took 0.9 seconds and
+  512 MiB of memory; a 66.9 million pixel full-page screenshot took 4.5
+  seconds and 324 MiB.
+- Canonical over 8192 on a side or over 24,000,000 pixels: resized, full
+  frame, to fit both.
+- Canonical over 1 MiB, or a derivative over 256 KiB, after its recipe's
+  encode: the longest edge is shrunk so the pixel count scales by the byte
+  overshoot, aiming 10% under the ceiling, with the recipe's setting, until
+  it fits. Every round shrinks the image, and the conversion deadline bounds
+  the rounds. Pro's converter shrinks the same way.
+- Evidence, 2026-11-05: of 29 real screenshots from a developer's Mac, the old
+  bounds rejected 2 for source size (3.3 MiB and 4.0 MiB). With the local
+  bounds all 29 convert. On 2026-11-06, at quality 80, those two keep full
+  size as 81 KiB and 202 KiB canonicals (they were 1363 KiB and 2031 KiB
+  lossless).
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a
@@ -98,7 +209,8 @@ Converter APIs copy the documented [Sharp constructor](https://sharp.pixelplumbi
 [auto orientation](https://sharp.pixelplumbing.com/api-operation/) calls:
 `sharp(bytes,{failOn:'warning',limitInputPixels:24000000})`, `metadata()`,
 `autoOrient()`, `resize({width:1536,height:1536,fit:'inside',withoutEnlargement:true})`,
-`webp(options)`, `timeout({seconds:5})`, `toBuffer({resolveWithObject:true})`.
+`webp(options)`, `timeout({seconds:5})` (local worker: the seconds left of its
+20 second deadline), `toBuffer({resolveWithObject:true})`.
 Header metadata is not decoding proof. Output removes EXIF/GPS by default;
 never call `keepMetadata()`/`withMetadata()`. Sharp timeout excludes time in
 the native worker queue, so the application deadline starts before metadata.
@@ -257,10 +369,14 @@ Linkage rules, applied per accepted response. Fixture: `parser-outcomes.json`.
   observations that omit labels get no refs.
 - An observation that emitted only rejected refs never falls back to implicit
   association.
-- One image may link to several observations. An image that no observation
-  links stays an event-level unassigned image and remains `uninspected`.
+- One image may link to several observations. In a request that carried
+  images, an image that no observation links stays an event-level unassigned
+  image and remains `uninspected`.
 - `<skip_summary/>`, an invalid response, a text-only fallback or a request
-  that was not accepted links nothing. All of its images stay uninspected.
+  that was not accepted marks nothing `inspected`. All of its images stay
+  uninspected. Observations a text-only fallback stores get capture-only links
+  (below), and a turn that stores none hands its images on within its prompt
+  (below).
 
 Rejections are recorded only as reason codes, never as label text from model
 output. Older parsers ignore the element because field extraction skips
@@ -268,6 +384,71 @@ unknown children. In the local salvage path (no title, narrative, facts or
 concepts), the new parser strips `<attachments>` like the other schema tags
 and does not count it as schema drift. Older clients never get images because
 of capability gating, so they never get the instruction.
+
+### Capture-only linkage
+
+When capture retained an event's images and the request did not carry them,
+every observation stored from that event's turn links all of the event's
+retained images as `uninspected`.
+
+- "Did not carry them" means the accepted request carried none of the turn's
+  images: inference is off, the model does not qualify, the turn was resent
+  text-only, or no derivative could be read. When the request carried any of
+  the turn's images, the linkage rules above apply instead, and images it did
+  not carry stay event-level.
+- A turn's events are the source events frozen when the request was sent.
+  When the request recorded none, they are the source events of every message
+  in the confirmed batch.
+- An event's retained images are its refs (local `media_event_refs`, or the
+  equivalent cloud event refs) while the event is retained, in event label
+  order, one ref per attachment ID. An image whose conversion failed or that
+  was deleted is not linked.
+- The links need no model output. The request does not mention the images,
+  and `<attachments>` is not read for them.
+- The manifest rules below apply unchanged: union by ID, the 32-ref bound and
+  overflow, inspection as the OR of both sides, replica rows left unchanged,
+  and the same storage transaction. A later `inspected` link for the same ID
+  upgrades the ref.
+
+A turn that stored no observation (`<skip_summary/>`, a reply with no storable
+observation, or a batch dropped after an unusable reply) hands its images on
+within its prompt:
+
+When a turn attributed image events and stored no observation, those events'
+retained images link as `uninspected` to the most recent observation already
+stored for the same session and prompt. If there is none yet, they link to the
+observations stored by the next turn of that session and prompt that stores
+any. If the prompt never stores an observation, they stay event-level.
+
+- This applies whether or not the turn's request carried the images: with no
+  stored observation there is no model linkage to keep.
+- The turn's events are its attributed events, chosen as above.
+- The prompt is the one the turn's request was sent for (the prompt number
+  frozen with the response context). The session is the observed session
+  (local: the same `sdk_sessions` row). An observation from another prompt,
+  even in the same session, never receives these images. A turn with no
+  prompt number (local: stored as a NULL `prompt_number`) hands nothing on.
+- "Most recent" is the last observation stored for that session and prompt
+  (local: the highest `observations.id`). Only that one observation gets the
+  links. It was stored by an earlier turn, so a native row whose manifest
+  changes gets its `sync_rev` incremented, `synced_at` cleared and sync
+  notified; a replica row is left unchanged and the images stay event-level.
+- With no such observation yet, the events wait durably, surviving a worker
+  restart (local: `media_events.carry_prompt_number`). The next turn of the
+  same session and prompt that stores at least one observation links them to
+  every observation it stored, in the same storage transaction, whether or not
+  that turn has images of its own. Storage can return an existing row (an
+  exact duplicate or a title match) that belongs to another prompt or session;
+  that row gets none of them, and if no stored row belongs to the prompt, the
+  events keep waiting. Waiting images come first, in event order
+  then label order, followed by the turn's own refs. Once linked, an event no
+  longer waits.
+- An event deleted while it waits links nothing. A prompt that never stores an
+  observation leaves its waiting images event-level for good.
+
+Fixtures: `manifest-merge.json` `capture_only_links_every_retained_image_uninspected`,
+`capture_only_skipped_turn_links_backward_to_most_recent_observation` and
+`capture_only_skipped_turn_links_forward_before_turn_refs`.
 
 ### Capability qualification
 
@@ -283,7 +464,8 @@ Missing fields fail closed. Required parameters:
 
 - Local worker: `max_tokens` and `temperature`, plus `reasoning` when the typed
   reasoning effort is sent.
-- Pro hook caller: `max_tokens`.
+- Pro hook caller: `max_tokens` and `reasoning` (sent as
+  `{enabled:false}`).
 - Gateway: `max_tokens` and `temperature`, the parameters the local worker
   sends.
 
@@ -308,7 +490,9 @@ When the capability is unavailable or not qualified, visual inspection is
 deferred:
 
 - The turn is sent as today's text-only request.
-- The event's images stay retained and `uninspected`.
+- The event's images stay retained and `uninspected`, and the turn's
+  observations get capture-only links to them (a turn that stores none hands
+  them on within its prompt, see "Capture-only linkage").
 - `media_events.result_state` follows the text outcome (`stored` or `skipped`).
 
 v1 never re-calls a model automatically to inspect deferred images.
@@ -329,7 +513,7 @@ Failures return the existing gateway error envelope (`key_invalid` 401,
 `PRIVATE_HEADERS` and exactly these keys:
 
 ```json
-{"version":1,"requested_model":"<observerModel()>","resolved_model":"<concrete id or null>",
+{"version":1,"requested_model":"<server-selected observer model>","resolved_model":"<concrete id or null>",
  "supports_image_input":true,"reason":null,
  "bounds":{"max_images_per_request":4,"max_image_decoded_bytes":262144,
   "max_aggregate_image_decoded_bytes":1048576,"max_aggregate_image_data_url_bytes":1398204,
@@ -340,14 +524,24 @@ Failures return the existing gateway error envelope (`key_invalid` 401,
 `supports_image_input` is true only when all of these hold:
 
 - `CMEM_MEDIA_INFERENCE_ENABLED` is on.
-- The server-selected `observerModel()` qualifies.
+- The server-selected observer model qualifies.
 - The caller is entitled.
+
+The server-selected observer model is the saved selection that chat
+completions and the hook caller send (`activeObserverModel()`), without a
+`:floor` routing suffix. With `CMEM_MEDIA_INFERENCE_ENABLED` off the flag is
+the whole answer: `requested_model` is the environment default
+(`observerModel()`, without `:floor`), and no catalog or saved selection is
+read. When the saved selection cannot be read, the answer is
+`catalog_unavailable` with the environment default.
 
 When it is false, `bounds` is null and `reason` is one of
 `inference_disabled`, `model_not_image_capable`, `model_unresolved`,
-`missing_parameters` or `catalog_unavailable`. `ttl_seconds` is 60 for
-`catalog_unavailable` and 3600 otherwise. The response never contains a key,
-token, provider routing or price.
+`missing_parameters` or `catalog_unavailable`. `resolved_model` and
+`qualified_at` are null for `inference_disabled` and `catalog_unavailable`.
+Otherwise `qualified_at` is the time the cached catalog was fetched.
+`ttl_seconds` is 60 for `catalog_unavailable` and 3600 otherwise. The response
+never contains a key, token, provider routing or price.
 
 Clients cache the response for `ttl_seconds`, keyed by base URL. They treat a
 network error, timeout, non-2xx status, malformed body or unknown `version` as
@@ -357,8 +551,12 @@ gateway's `request_id` envelope. Fixture: `capability.json` `responses`.
 
 ### Gateway request validator
 
-These checks run in `POST /api/inference/v1/chat/completions` after
-authentication and before `req.json()`:
+These checks run only while `CMEM_MEDIA_INFERENCE_ENABLED` is on. With it
+off, the route reads the body with `req.json()` as it did before the media
+rollout, so a body over 4 MiB, a text part with extra keys (such as
+`cache_control`) and a caller-supplied image part pass unchanged. With it on,
+they run in `POST /api/inference/v1/chat/completions` after authentication, in
+place of `req.json()`:
 
 1. A `Content-Length` above 4,194,304, or a streamed body that exceeds that
    byte count, is rejected as `body_too_large`. The body is read with the
@@ -405,15 +603,17 @@ A link is `inspected` only when all of these hold:
 - The ref survived the linkage rules above.
 
 Everything else is `uninspected`: capture, deferral, text-only fallback,
-parse failure, skip, unassigned images and rejected refs.
+parse failure, skip, unassigned images, rejected refs and capture-only links.
+A capture-only link is never `inspected`.
 
-Writing to `metadata.cmem_media_v1` follows these rules. Fixture:
-`manifest-merge.json`.
+Writing to `metadata.cmem_media_v1` follows these rules, for inspected and
+capture-only links alike. Fixture: `manifest-merge.json`.
 
 - Validate the existing namespace first. An invalid namespace fails closed
   with `invalid_manifest` and is never overwritten.
 - Union by attachment `id`. Existing refs keep their order, and new refs are
-  appended in the order the observation lists them.
+  appended in the order the observation lists them (capture-only refs: event
+  order, then event label order).
 - Inspection for an `id` already present is the OR of both sides. It can be
   upgraded and never downgraded.
 - Labels may repeat across events.

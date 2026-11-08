@@ -111,6 +111,18 @@ test('a request whose work-state items were all dropped is closed, with no lifec
   assert.equal(request.closed, true)
 })
 
+test('a closed request with a start and no completion does not count up as running', () => {
+  const dropped = baseRequest.items.map((item) => ({ ...item, kind: 'work-state' as const, status: 'dropped' }))
+  const { request } = mapOne({ lifecycle: null, items: dropped, completedAtEpoch: null })
+  assert.equal(request.closed, true)
+  assert.ok(request.startedAtIso, 'the fixture has a recorded start')
+  assert.equal(request.runningLive, undefined)
+  const complete = mapOne({ lifecycle: { explicit: true, complete: true, status: 'done' }, completedAtEpoch: null }).request
+  assert.equal(complete.runningLive, undefined, 'a lifecycle that says complete has finished, even without a time')
+  const open = mapOne({ completedAtEpoch: null }).request
+  assert.equal(open.runningLive, true, 'an open request with a start and no completion still counts up')
+})
+
 const syntheticRequest = (): WorkViewHumanRequest => ({
   id: '["overall-request","g_000000000001"]', contentFingerprint: 'f', title: 'Cards', original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18) },
   scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [], agentIds: [], conversationKeys: [],
@@ -428,4 +440,21 @@ test('minimal shipped progress retains its date and survives mapping without opt
   assert.ok(model.requests[0].progress.completedAt)
   assert.deepEqual(model.requests[0].story, [])
   assert.equal(model.requests[0].progress.history, undefined)
+})
+
+test('image refs ride through: the card summary to Request.media, each record\'s refs to its granular row', () => {
+  const ref = (n: number) => ({ id: `00000000-0000-4000-8000-00000000000${n}`, label: `image-${n}`, inspection: 'uninspected' as const })
+  const at = Date.UTC(2026, 9, 21)
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(),
+    activity: [
+      { id: 'observation:2', kind: 'observation', title: 'Read the screenshot', detail: null, atEpoch: at, url: '/api/work-view/evidence/observation/2', media: { version: 1, attachments: [ref(1), ref(2)], overflow: true } },
+      { id: 'observation:1', kind: 'observation', title: 'Planned the layout', detail: null, atEpoch: at - 1000, url: '/api/work-view/evidence/observation/1' },
+    ],
+    media: { count: 2, preview: [ref(1), ref(2)] } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.media, { count: 2, preview: [ref(1), ref(2)] })
+  assert.deepEqual(request.granular[0].media, { version: 1, attachments: [ref(1), ref(2)], overflow: true })
+  assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
+  const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal('media' in plain, false, 'an image-free request gains no key')
 })

@@ -7,25 +7,84 @@
 export const MEDIA_MANIFEST_VERSION = 1 as const;
 export const MEDIA_METADATA_NAMESPACE = 'cmem_media_v1' as const;
 
+/**
+ * Frozen v1 bounds (docs/media-contract-v1.md). Each one's reason is next to it.
+ * "Abuse protection" means the bound keeps one request or one owner from using
+ * unbounded memory, CPU, storage or bandwidth. Pro's upload route rejects an
+ * image that hits any bound with its MediaError code. The local worker instead
+ * fits a canonical or derivative over its pixel, dimension or byte bound
+ * (docs/media-contract-v1.md, "Where the size bounds apply"). Nothing is
+ * truncated.
+ */
 export const MEDIA_LIMITS = Object.freeze({
+  // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
+  // observer turn at 4 derivatives (maxGatewayImageBytes).
   maxImagesPerEvent: 4,
+  // Provider maximum: Vercel Functions take request bodies up to 4.5 MB; this
+  // plus maxUploadBodyBytes' multipart overhead (3.06 MiB, 3.2 MB) fits.
   maxSourceBytes: 3 * 1024 * 1024,
+  // Same bound for the stored full-size copy: a lossless re-encode of an accepted
+  // source must still fit, and a stored copy is served back in one Vercel
+  // response, also limited to 4.5 MB.
   maxCanonicalBytes: 3 * 1024 * 1024,
+  // Owner's rule, 2026-11-05/06: no stored copy is multiple megabytes, and every
+  // copy is lossy WebP. Both converters fit each canonical they encode into this.
+  // maxCanonicalBytes stays the bound for an accepted upload and for reading a
+  // copy stored before this rule (lossless, up to 3 MiB). Measured 2026-11-06 at
+  // quality 80: the largest of 29 real screenshots is 406 KiB, and a 2800x23880
+  // full-page screenshot fitted to 8192 px is 528 KiB, so all keep full
+  // resolution with about 2 times headroom.
+  maxEncodedCanonicalBytes: 1024 * 1024,
+  // Abuse protection (decompression bombs): a decode holds about 4 bytes per
+  // pixel, so at most about 96 MB. A 6016x3384 display (20.4 million px) fits.
   maxPixels: 24_000_000,
+  // Abuse protection: bounds long thin images that pass maxPixels. An 8K
+  // display (7680 px wide) fits.
   maxDimension: 8192,
+  // Abuse protection: one conversion holds a shared instance's CPU. The upload
+  // route's 59 s maxDuration fits this plus two 20 s Storage writes.
   conversionTimeoutSeconds: 5,
+  // Abuse protection: instances serve concurrent requests, so one decode of up
+  // to about 96 MB runs at a time; others fail fast as conversion_busy and retry.
   maxConcurrentConversions: 1,
+  // Abuse protection on what a model is sent: 4 of these make the 1 MiB
+  // maxGatewayImageBytes.
   maxDerivativeBytes: 256 * 1024,
+  // Provider maximum: Anthropic downscales images whose long edge is above
+  // 1,568 px (standard tier, platform.claude.com/docs/en/build-with-claude/vision),
+  // so pixels beyond that cost tokens and add nothing.
   maxDerivativeDimension: 1536,
+  // One largest source as base64 (3 MiB x 4/3 = 4 MiB), so the local event JSON
+  // stays under its existing 5 MB cap.
   maxInlineEncodedBytes: 4 * 1024 * 1024,
+  // Abuse protection: metadata.cmem_media_v1 syncs to every device; 32 refs of
+  // about 120 bytes each stay inside maxManifestBytes.
   maxObservationRefs: 32,
+  // Abuse protection: labels are generated (event1_image1); 64 leaves room and
+  // keeps a ref small.
   maxLabelChars: 64,
+  // Abuse protection: bounds one manifest; 32 refs need about 4 KiB.
   maxManifestBytes: 8192,
+  // Abuse protection: bounds the private provenance row; its largest part is
+  // the 4096-character locator.
   maxProvenanceBytes: 8192,
+  // Operating-system maximum: PATH_MAX is 4096 on Linux (1024 on macOS).
   maxSourceLocatorChars: 4096,
+  // maxImagesPerEvent x maxDerivativeBytes: the most one observer turn can send.
   maxGatewayImageBytes: 4 * 256 * 1024,
+  // maxSourceBytes plus 64 KiB for the manifest (8 KiB at most) and multipart
+  // headers; still under Vercel's 4.5 MB request body maximum.
   maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
-  ownerQuotaBytes: 256 * 1024 * 1024,
+  // Abuse protection, sized so a paying user's images are not refused (owner,
+  // 2026-11-05: "dont throw away images, on cloud they'll be PAYING me").
+  // Measured 2026-11-05: the median converted pair (canonical plus derivative)
+  // of 27 real screenshots is 321 KiB, so 100 screenshots a day is about
+  // 11.2 GiB a year. Past the Pro plan's 100 GB, Supabase Storage costs $0.0213
+  // per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
+  // storage-size, read 2026-11-05), so a full owner (26.8 GB) costs about $0.57
+  // a month. Pro enforces it: uploads past it answer 413 quota_exceeded and the
+  // image stays on the computer.
+  ownerQuotaBytes: 25 * 1024 * 1024 * 1024,
 } as const);
 
 export const MEDIA_RECIPES = ['screenshot-v1', 'photo-v1'] as const;

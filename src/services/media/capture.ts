@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   MEDIA_LIMITS,
@@ -15,6 +15,8 @@ import { logger } from '../../utils/logger.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { readContainedFile } from './files.js';
 import { MediaStore, mediaEventKey } from './store.js';
+import { LOCAL_MAX_SOURCE_BYTES } from './converter.js';
+import { createSourceByteBudget } from './source-budget.js';
 
 interface CaptureInput {
   enabled: boolean;
@@ -110,7 +112,7 @@ function sniffSupportedImageMimeType(bytes: Buffer): 'image/png' | 'image/jpeg' 
   throw new MediaError('unsupported_format');
 }
 
-function readTrustedFileCandidate(candidate: MediaCandidate, input: CaptureInput): Buffer {
+function trustedFileTarget(candidate: MediaCandidate, input: CaptureInput): { projectRoot: string; targetPath: string } {
   const toolInput = input.toolInput as { file_path?: unknown } | null;
   if (input.toolName !== 'Read' || !toolInput || typeof toolInput.file_path !== 'string' || !input.cwd) {
     throw new MediaError('unsupported_source');
@@ -118,7 +120,41 @@ function readTrustedFileCandidate(candidate: MediaCandidate, input: CaptureInput
   const projectRoot = realpathSync(input.cwd);
   const targetPath = resolve(projectRoot, candidate.filePath!);
   if (resolve(projectRoot, toolInput.file_path) !== targetPath) throw new MediaError('unsupported_source');
-  return readContainedFile(projectRoot, targetPath, MEDIA_LIMITS.maxSourceBytes);
+  return { projectRoot, targetPath };
+}
+
+function readTrustedFileCandidate(candidate: MediaCandidate, input: CaptureInput): Buffer {
+  const { projectRoot, targetPath } = trustedFileTarget(candidate, input);
+  return readContainedFile(projectRoot, targetPath, LOCAL_MAX_SOURCE_BYTES);
+}
+
+/**
+ * File sources held by capture across the whole worker: at most one
+ * maximum-size file source (LOCAL_MAX_SOURCE_BYTES, 96 MiB), however many
+ * sessions capture at once. Abuse protection on worker memory: a capture that
+ * waits for the conversion slot would otherwise keep its whole file buffer.
+ */
+export const fileSourceBudget = createSourceByteBudget(LOCAL_MAX_SOURCE_BYTES);
+
+/**
+ * The candidate's bytes and the budget release to call when its capture ends.
+ * A file's size is reserved before the file is read, so a waiting capture
+ * holds no image bytes. Inline bytes are already in the event in memory.
+ */
+async function reserveCandidateBytes(candidate: MediaCandidate, input: CaptureInput): Promise<{ bytes: Buffer; release: () => void }> {
+  if (!candidate.filePath) return { bytes: decodeInlineCandidate(candidate), release: () => {} };
+  const { projectRoot, targetPath } = trustedFileTarget(candidate, input);
+  let size: number;
+  try { size = statSync(targetPath).size; } catch { throw new MediaError('unsupported_source'); }
+  if (!size || size > LOCAL_MAX_SOURCE_BYTES) throw new MediaError('source_too_large');
+  const release = await fileSourceBudget.reserve(size);
+  try {
+    // A file that grew past its reserved size since the stat fails loudly.
+    return { bytes: readContainedFile(projectRoot, targetPath, size), release };
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 
 function decodeInlineCandidate(candidate: MediaCandidate): Buffer {
@@ -199,7 +235,19 @@ function labelsInsideMemoryTags(scanned: { toolInput: unknown; toolResponse: unk
   return hidden;
 }
 
-export async function captureObservationMedia(input: CaptureInput, store?: MediaStore): Promise<CaptureResult> {
+export async function captureObservationMedia(
+  input: CaptureInput,
+  /**
+   * The store, or a getter called only once an event holds an image. With
+   * capture on by default, the getter keeps text-only events from touching
+   * media storage at all; a getter that throws fails that image as
+   * `storage_unavailable`, never the event.
+   */
+  store?: MediaStore | (() => MediaStore),
+): Promise<CaptureResult> {
+  let resolvedStore: MediaStore | undefined;
+  const storeForCandidate = (): MediaStore | undefined =>
+    resolvedStore ??= typeof store === 'function' ? store() : store;
   const scanned = scanMediaFields(input.toolInput, input.toolResponse, input.enabled ? 'capture' : 'disabled');
   const refs: MediaAttachmentRef[] = [];
   const failures: MediaFailureDescriptor[] = [...scanned.failures];
@@ -211,10 +259,12 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
 
   for (const candidate of scanned.candidates) {
     if (privateLabels.has(candidate.label)) continue;
+    let releaseSourceBytes = () => {};
     try {
       if (!platform || !identity || !store) throw new MediaError('unsupported_source');
+      const mediaStore = storeForCandidate()!;
       const candidateEventKey = mediaEventKey(platform, identity);
-      const prior = store.findEventSource(candidateEventKey, candidate.pointer);
+      const prior = mediaStore.findEventSource(candidateEventKey, candidate.pointer);
       if (prior) {
         // Known event: keep its key even if replay validation below throws,
         // so ingest still finds its committed result and never re-queues it
@@ -234,7 +284,9 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
         }
       }
 
-      const sourceBytes = candidateBytes(candidate, input);
+      const reserved = await reserveCandidateBytes(candidate, input);
+      releaseSourceBytes = reserved.release;
+      const sourceBytes = reserved.bytes;
       const provenance: Omit<MediaProvenance, 'attachment_id'> = {
         version: 1,
         platform,
@@ -248,7 +300,7 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
           ? { source_locator: { kind: 'local_file' as const, path: resolve(realpathSync(input.cwd), candidate.filePath) } }
           : {}),
       };
-      const ref = await store.capture({
+      const ref = await mediaStore.capture({
         sessionDbId: input.sessionDbId,
         provenance,
         label: candidate.label,
@@ -265,6 +317,8 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
       const failure: MediaFailureDescriptor = { version: 1, state: 'failed', code, inspection: 'uninspected', label: candidate.label };
       failures.push(failure);
       finalStatusesByLabel.set(candidate.label, failure);
+    } finally {
+      releaseSourceBytes();
     }
   }
 

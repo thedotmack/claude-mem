@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 import { LIVE_OBSERVER_MAX_SESSION_MESSAGES } from '../../src/shared/observer-work-policy.js';
 
 /** The largest backlog the live buffer accepts for one session. */
@@ -219,13 +220,14 @@ function createHarness(backlog: number, payloadChars = 200) {
   const dbManager = {
     getSessionById: () => ({ project: 'observer-project', memory_session_id: null }),
     getSessionStore: () => ({
-      ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
       updateMemorySessionId: () => {},
       storeObservations: (_memoryId: string, _project: string, observations: unknown[]) => {
         storedObservations.push(observations);
         return { observationIds: [storedObservations.length], summaryId: null, createdAtEpoch: Date.now() };
       },
       linkToolUsesToObservation: () => 0,
+      markCommittedToolUses: () => {},
     }),
     getChromaSync: () => null,
     getCloudSync: () => null,

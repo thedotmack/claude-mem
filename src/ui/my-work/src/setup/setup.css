@@ -49,6 +49,9 @@
 .setup-header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 24px; min-height: 100px; padding: 18px 28px; }
 .setup-header .brand { display: flex; width: 58px; height: 58px; color: #d86441; }
 .setup-header .brand svg { width: 100%; height: 100%; }
+.setup-header-actions { justify-self: end; display: flex; align-items: center; gap: 12px; }
+.setup-lang-select { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 14px; cursor: pointer; }
+.setup-lang-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .progress { list-style: none; display: flex; margin: 0; padding: 0; color: var(--muted); font-size: 16px; }
 .progress li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 160px; }
 .progress li + li::before { content: ""; position: absolute; top: 12px; right: calc(50% + 22px); width: calc(100% - 44px); height: 2px; background: var(--line); }
