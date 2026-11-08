@@ -561,6 +561,20 @@ describe("Observation I/O event handlers", () => {
     assert.ok(timeline.includes("Anchor #12: Fix JWT refresh"), timeline);
   });
 
+  it("claude-mem-search keeps a one-word numeric query and reads a trailing number as the limit", async () => {
+    const { api, getCommand } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    const ctx = (args: string) => ({ args, channel: "telegram", isAuthorizedSender: true, commandBody: "", config: {} });
+    const searched = () => receivedRequests.filter((r) => r.url.startsWith("/api/search/observations")).at(-1)!.url;
+
+    const result = await getCommand("claude-mem-search").handler(ctx("4019"));
+    assert.equal(searched(), "/api/search/observations?query=4019&limit=10");
+    assert.ok(result.startsWith('Claude-Mem Search: "4019"'), result);
+
+    await getCommand("claude-mem-search").handler(ctx("port 4019 3"));
+    assert.equal(searched(), "/api/search/observations?query=port%204019&limit=3");
+  });
+
   it("claude_mem_status reports unreachable when worker is down", async () => {
     workerServer.close();
     await new Promise((resolve) => setTimeout(resolve, 100));
