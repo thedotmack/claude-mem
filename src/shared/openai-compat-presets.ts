@@ -134,6 +134,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'sk-obs1_ key from obscurify.ai/account; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. Obscurify says prompts and responses are not stored.',
   },
   {
+    id: 'standardcompute',
+    label: 'Standard Compute (standardcompute.com)',
+    baseUrl: 'https://api.stdcmpt.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'Key from standardcompute.com/dashboard/api-keys; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. US endpoint: https://us.stdcmpt.com/v1.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
