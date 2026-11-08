@@ -953,6 +953,9 @@ export class DataRoutes extends BaseRouteHandler {
             concepts: safeParseJson(obs.concepts),
             files_read: safeParseJson(obs.files_read),
             files_modified: safeParseJson(obs.files_modified),
+            // Keep the merge target so target-scoped semantic search finds the row.
+            merged_into_project: typeof obs.merged_into_project === 'string' && obs.merged_into_project
+              ? obs.merged_into_project : null,
           };
 
           await chromaSync.syncObservation(
