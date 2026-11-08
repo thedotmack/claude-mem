@@ -1,3 +1,13 @@
+/**
+ * The worker: the small local service that stores and serves memory.
+ *
+ * Hooks send it each tool call your agent makes. It runs the observer, which
+ * turns that activity into observations and session summaries, keeps them in
+ * SQLite (with Chroma for semantic search), and serves the viewer, search and
+ * session-start context over HTTP on CLAUDE_MEM_WORKER_PORT. `main()` at the
+ * bottom is the process entry point; `ensureWorkerStarted` is how callers
+ * bring it up on demand.
+ */
 
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';

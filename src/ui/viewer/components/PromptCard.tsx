@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useI18n } from '../../i18n';
 import { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
 
@@ -18,6 +19,7 @@ const CLAMP_LINES = 8;
 const CLAMP_MIN_CHARS = 600;
 
 export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedChange }: PromptCardProps) {
+  const { t } = useI18n();
   const [localExpanded, setLocalExpanded] = useState(false);
   const expanded = controlledExpanded ?? localExpanded;
   const setExpanded = (next: boolean) => {
@@ -34,7 +36,7 @@ export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedCha
     <div className="card prompt-card">
       <div className="card-header">
         <div className="card-header-left">
-          <span className="card-type">Prompt</span>
+          <span className="card-type">{t('Prompt')}</span>
           <span className={`card-source source-${prompt.platform_source || 'claude'}`}>
             {prompt.platform_source || 'claude'}
           </span>
@@ -51,7 +53,7 @@ export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedCha
           aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? 'Show less' : 'Show more'}
+          {expanded ? t('Show less') : t('Show more')}
         </button>
       )}
       <div className="card-meta">

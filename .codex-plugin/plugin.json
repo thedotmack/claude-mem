@@ -1,7 +1,7 @@
 {
   "name": "claude-mem",
-  "version": "15.11.0",
-  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "version": "15.12.0",
+  "description": "Persistent memory for AI coding agents: the next session starts where the last one left off. Works with Claude Code, Codex, Cursor, OpenCode and more.",
   "author": {
     "name": "Alex Newman",
     "url": "https://github.com/thedotmack"
@@ -27,8 +27,8 @@
   "hooks": "./plugin/hooks/codex-hooks.json",
   "interface": {
     "displayName": "claude-mem",
-    "shortDescription": "Persistent memory and context compression across coding sessions.",
-    "longDescription": "claude-mem captures coding-session activity, compresses it into reusable observations, and injects relevant context back into future Claude Code and Codex-compatible sessions.",
+    "shortDescription": "Persistent memory: the next session starts where the last one left off.",
+    "longDescription": "While you work, an observer watches what Codex reads, edits and runs, and writes short notes called observations. The next session starts with a compact index of the ones that matter, so you stop re-explaining the codebase and re-discovering decisions.",
     "developerName": "Alex Newman",
     "category": "Productivity",
     "capabilities": [

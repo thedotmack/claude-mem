@@ -169,4 +169,29 @@ describe('ingestObservation dual-write to tool_uses', () => {
     expect(result.ok).toBe(true);
     expect(queued).toHaveLength(1);
   });
+
+  it('skips a late raw write when DELETE commits after a stale post-capture check', async () => {
+    const originalCheck = store!.isBeforeSessionDeletion.bind(store);
+    let checks = 0;
+    store!.isBeforeSessionDeletion = (platform, contentSessionId, eventOccurredAtEpochMs) => {
+      checks++;
+      const deleted = originalCheck(platform, contentSessionId, eventOccurredAtEpochMs);
+      if (checks === 2) {
+        const row = store!.db.prepare('SELECT id, memory_session_id FROM sdk_sessions WHERE content_session_id = ?')
+          .get(contentSessionId) as { id: number; memory_session_id: string };
+        store!.db.transaction(() => {
+          store!.markSessionDeleted(platform, contentSessionId, row.memory_session_id);
+          store!.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(row.id);
+        }).immediate();
+        return false; // Simulate the preflight result observed before DELETE.
+      }
+      return deleted;
+    };
+
+    const result = await ingestObservation(payload({ toolUseId: 'toolu_late_01' }));
+    expect(checks).toBeGreaterThanOrEqual(2);
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'session_deleted' });
+    expect(store!.queryToolUses({ contentSessionId: 'content-session-1' })).toHaveLength(0);
+    expect(queued).toHaveLength(0);
+  });
 });

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useI18n, interpolate } from '../../i18n';
+import { uiMessage, renderUiMessage, type UiMessage } from '../../ui-message';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'OTHER';
@@ -71,9 +73,10 @@ interface LogsDrawerProps {
 }
 
 export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
+  const { t } = useI18n();
   const [logs, setLogs] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<UiMessage | string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [height, setHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
@@ -142,12 +145,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     try {
       const response = await fetch('/api/logs');
       if (!response.ok) {
-        throw new Error(`Failed to fetch logs: ${response.statusText}`);
+        if (request === requestSeqRef.current) setError(uiMessage('Failed to fetch logs: {reason}', { reason: response.statusText }));
+        return;
       }
       const data = await response.json();
       if (request === requestSeqRef.current) setLogs(data.logs || '');
     } catch (err) {
-      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : uiMessage('Unknown error'));
     } finally {
       if (request === requestSeqRef.current) setIsLoading(false);
     }
@@ -158,7 +162,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, [logs, scrollToBottom]);
 
   const handleClearLogs = useCallback(async () => {
-    if (!confirm('Are you sure you want to clear all logs?')) {
+    if (!confirm(t('Are you sure you want to clear all logs?'))) {
       return;
     }
     const request = ++requestSeqRef.current;
@@ -170,7 +174,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     try {
       const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
-        throw new Error(`Failed to clear logs: ${response.statusText}`);
+        if (request === requestSeqRef.current) setError(uiMessage('Failed to clear logs: {reason}', { reason: response.statusText }));
+        return;
       }
       if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
@@ -186,24 +191,24 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           const data = await response.json();
           if (request === requestSeqRef.current) {
             setLogs(data.logs || '');
-            setError('Clear request timed out; its outcome is unknown. Displaying current logs.');
+            setError(uiMessage('Clear request timed out; its outcome is unknown. Displaying current logs.'));
           }
         } catch {
           if (request === requestSeqRef.current) {
-            setError('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.');
+            setError(uiMessage('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.'));
           }
         } finally {
           clearTimeout(reconciliationTimeout);
         }
       } else if (request === requestSeqRef.current) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        setError(err instanceof Error ? err.message : uiMessage('Unknown error'));
       }
     } finally {
       clearTimeout(timeout);
       clearingRef.current = false;
       if (request === requestSeqRef.current) setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -357,13 +362,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   };
 
   return (
-    <section className="console-drawer" aria-label="Memory logs" style={{ height: `${height}px` }}>
+    <section className="console-drawer" aria-label={t('Memory logs')} style={{ height: `${height}px` }}>
       <div
         className="console-resize-handle"
         onMouseDown={handleMouseDown}
         role="separator"
         tabIndex={0}
-        aria-label="Resize memory logs"
+        aria-label={t('Resize memory logs')}
         aria-orientation="horizontal"
         aria-valuemin={150}
         aria-valuemax={window.innerHeight - 100}
@@ -379,7 +384,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
       <div className="console-header">
         <div className="console-tabs">
-          <div className="console-tab active">Memory logs</div>
+          <div className="console-tab active">{t('Memory logs')}</div>
         </div>
         <div className="console-controls">
           <label className="console-auto-refresh">
@@ -388,13 +393,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />
-            Auto-refresh
+            {t('Auto-refresh')}
           </label>
           <button
             className="console-control-btn"
             onClick={fetchLogs}
             disabled={isLoading}
-            title="Refresh logs"
+            title={t('Refresh logs')}
           >
             ↻
           </button>
@@ -404,7 +409,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               wasAtBottomRef.current = true;
               scrollToBottom();
             }}
-            title="Scroll to bottom"
+            title={t('Scroll to bottom')}
           >
             ⬇
           </button>
@@ -412,14 +417,14 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             className="console-control-btn console-clear-btn"
             onClick={handleClearLogs}
             disabled={isLoading}
-            title="Clear logs"
+            title={t('Clear logs')}
           >
             🗑
           </button>
           <button
             className="console-control-btn"
             onClick={onClose}
-            title="Close console"
+            title={t('Close console')}
           >
             ✕
           </button>
@@ -429,7 +434,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       {/* Filter Bar */}
       <div className="console-filters">
         <div className="console-filter-section">
-          <span className="console-filter-label">Quick:</span>
+          <span className="console-filter-label">{t('Quick:')}</span>
           <div className="console-filter-chips">
             <button
               className={`console-filter-chip ${alignmentOnly ? 'active' : ''}`}
@@ -437,15 +442,15 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               style={{
                 '--chip-color': '#f0883e',
               } as React.CSSProperties}
-              title="Show only session alignment logs"
+              title={t('Show only session alignment logs')}
               aria-pressed={alignmentOnly}
             >
-              🔗 Alignment
+              🔗 {t('Alignment')}
             </button>
           </div>
         </div>
         <div className="console-filter-section">
-          <span className="console-filter-label">Levels:</span>
+          <span className="console-filter-label">{t('Levels:')}</span>
           <div className="console-filter-chips">
             {LOG_LEVELS.map(level => (
               <button
@@ -455,24 +460,24 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
                 style={{
                   '--chip-color': level.color,
                 } as React.CSSProperties}
-                title={level.label}
+                title={t(level.label)}
                 aria-pressed={activeLevels.has(level.key)}
               >
-                {level.icon} {level.label}
+                {level.icon} {t(level.label)}
               </button>
             ))}
             <button
               className="console-filter-action"
               onClick={() => setAllLevels(activeLevels.size !== LOG_LEVELS.length)}
-              title={activeLevels.size === LOG_LEVELS.length ? 'Select none' : 'Select all'}
-              aria-label={activeLevels.size === LOG_LEVELS.length ? 'Deselect all log levels' : 'Select all log levels'}
+              title={activeLevels.size === LOG_LEVELS.length ? t('Select none') : t('Select all')}
+              aria-label={activeLevels.size === LOG_LEVELS.length ? t('Deselect all log levels') : t('Select all log levels')}
             >
               {activeLevels.size === LOG_LEVELS.length ? '○' : '●'}
             </button>
           </div>
         </div>
         <div className="console-filter-section">
-          <span className="console-filter-label">Components:</span>
+          <span className="console-filter-label">{t('Components:')}</span>
           <div className="console-filter-chips">
             {LOG_COMPONENTS.map(comp => (
               <button
@@ -482,17 +487,17 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
                 style={{
                   '--chip-color': comp.color,
                 } as React.CSSProperties}
-                title={comp.label}
+                title={t(comp.label)}
                 aria-pressed={activeComponents.has(comp.key)}
               >
-                {comp.icon} {comp.label}
+                {comp.icon} {t(comp.label)}
               </button>
             ))}
             <button
               className="console-filter-action"
               onClick={() => setAllComponents(activeComponents.size !== LOG_COMPONENTS.length)}
-              title={activeComponents.size === LOG_COMPONENTS.length ? 'Select none' : 'Select all'}
-              aria-label={activeComponents.size === LOG_COMPONENTS.length ? 'Deselect all log components' : 'Select all log components'}
+              title={activeComponents.size === LOG_COMPONENTS.length ? t('Select none') : t('Select all')}
+              aria-label={activeComponents.size === LOG_COMPONENTS.length ? t('Deselect all log components') : t('Select all log components')}
             >
               {activeComponents.size === LOG_COMPONENTS.length ? '○' : '●'}
             </button>
@@ -502,7 +507,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
       {error && (
         <div className="console-error">
-          ⚠ {error}
+          ⚠ {renderUiMessage(error, t)}
         </div>
       )}
 

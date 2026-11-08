@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
 import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -28,6 +29,9 @@ import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelectio
 import { shownFocusAreaId } from '@/store/slices/view-slice'
 import { useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
+import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
+import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
+import { workerMediaSource } from '@/components/observation-media/worker-media-source'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
@@ -79,19 +83,37 @@ function HeaderBody({ visible, children }: { visible?: boolean; children: ReactN
 
 /** TeamBrain is a switch on the same GUI; turning it on is where the team plan is bought (§9). */
 function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolean) => void }) {
+  const { t } = useI18n()
   return (
     <Req ids={['R9.1', 'R9.4']}>
       <HoverCard openDelay={100}>
         <HoverCardTrigger asChild>
-          <Button variant={team ? 'secondary' : 'ghost'} size="sm" className={cn('px-2 text-xs', team && 'bg-accent text-accent-foreground hover:bg-accent')} onClick={() => onChange(!team)}><UsersIcon />Team</Button>
+          <Button variant={team ? 'secondary' : 'ghost'} size="sm" className={cn('px-2 text-xs', team && 'bg-accent text-accent-foreground hover:bg-accent')} onClick={() => onChange(!team)}><UsersIcon />{t('Team')}</Button>
         </HoverCardTrigger>
         <HoverCardContent className="w-64 space-y-2 text-xs">
           <p className="font-medium">TeamBrain</p>
-          <p className="text-muted-foreground">See everyone’s requests on one board, with who asked and where work collides.</p>
-          {!team && <Button size="sm" className="w-full">Start team plan</Button>}
+          <p className="text-muted-foreground">{t('See everyone’s requests on one board, with who asked and where work collides.')}</p>
+          {!team && <Button size="sm" className="w-full">{t('Start team plan')}</Button>}
         </HoverCardContent>
       </HoverCard>
     </Req>
+  )
+}
+
+function LanguageSelector() {
+  const { t, locale, setLocale } = useI18n()
+  return (
+    <div className="flex items-center">
+      <select
+        aria-label={t('Language')}
+        value={locale}
+        onChange={(e) => setLocale(e.target.value as 'en' | 'zh-CN')}
+        className="h-7 rounded-md border border-border bg-card px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+      >
+        <option value="en">English</option>
+        <option value="zh-CN">简体中文</option>
+      </select>
+    </div>
   )
 }
 
@@ -110,6 +132,7 @@ export default function App() {
 
 /** Reads the active source once and follows its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
 function WorkApp() {
+  const { t } = useI18n()
   const load = useStore((state) => state.work.load)
   const startWorkSource = useStore.use.startWorkSource()
   const retryWorkRead = useStore.use.retryWorkRead()
@@ -119,11 +142,11 @@ function WorkApp() {
     <div className="flex min-h-svh items-center justify-center p-4 text-foreground">
       <Empty className="max-w-md border bg-card/60">
         <EmptyHeader>
-          {load.state === 'loading' ? <><Spinner /><EmptyTitle>Reading local work…</EmptyTitle></> : (
+          {load.state === 'loading' ? <><Spinner /><EmptyTitle>{t('Reading local work…')}</EmptyTitle></> : (
             <>
-              <EmptyTitle>Can't read local work right now</EmptyTitle>
+              <EmptyTitle>{t("Can't read local work right now")}</EmptyTitle>
               <EmptyDescription>{load.error}</EmptyDescription>
-              <Button size="sm" variant="outline" className="mt-2 self-center" onClick={() => void retryWorkRead()}>Retry</Button>
+              <Button size="sm" variant="outline" className="mt-2 self-center" onClick={() => void retryWorkRead()}>{t('Retry')}</Button>
             </>
           )}
         </EmptyHeader>
@@ -133,6 +156,7 @@ function WorkApp() {
 }
 
 function LoadedApp() {
+  const { t } = useI18n()
   const { sourceKind, requests, focusAreas } = useWorkModel()
   // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3).
   useFocusSharesLoader(sourceKind === 'local')
@@ -152,31 +176,33 @@ function LoadedApp() {
   useEffect(() => (sample ? playSampleDemo() : undefined), [sample, playSampleDemo])
   const selected: FocusSelection = view === 'suggested' || view === 'past-focus' ? { kind: view } : view === 'work' && focusAreaId ? { kind: 'area', focusAreaId } : null
   const pageActive = (id: NavPage) => view === id && !(id === 'work' && focusAreaId)
-  const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? 'Other' : focusAreas.find((area) => area.id === focusAreaId)?.name
-  const heading = view === 'suggested' ? 'Suggested' : view === 'past-focus' ? 'Past focus' : view === 'work' && focusTitle ? focusTitle : PAGES.find((entry) => entry.id === view)!.label
+  const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? t('Other') : focusAreas.find((area) => area.id === focusAreaId)?.name
+  const heading = view === 'suggested' ? t('Suggested') : view === 'past-focus' ? t('Past focus') : view === 'work' && focusTitle ? focusTitle : t(PAGES.find((entry) => entry.id === view)!.label)
 
   return (
     <MotionConfig reducedMotion="user">
+      {/* Images come from the worker (this machine's, or the hosted one behind work.cmem.ai); sample mode draws fixtures. */}
+      <MediaSourceContext.Provider value={sample ? SAMPLE_MEDIA_SOURCE : workerMediaSource}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
             <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
               {/* Wireframe controls: not part of the product. */}
               <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
-                {sample && <Badge variant="outline" className="font-normal">Wireframe · sample data</Badge>}
+                {sample && <Badge variant="outline" className="font-normal">{t('Wireframe · sample data')}</Badge>}
                 {sample && <Req ids={['R13.1']}>
                   <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ mode: mode as 'home' | 'web', connected: mode === 'web' || workspace.connected })}>
-                    <ToggleGroupItem value="home" className="h-7 text-xs">At home<span className="hidden md:inline">· localhost:37777</span></ToggleGroupItem>
-                    <ToggleGroupItem value="web" className="h-7 text-xs">On the go<span className="hidden md:inline">· cmem.ai</span></ToggleGroupItem>
+                    <ToggleGroupItem value="home" className="h-7 text-xs">{t('At home')}<span className="hidden md:inline">{t('· localhost:37777')}</span></ToggleGroupItem>
+                    <ToggleGroupItem value="web" className="h-7 text-xs">{t('On the go')}<span className="hidden md:inline">{t('· cmem.ai')}</span></ToggleGroupItem>
                   </ToggleGroup>
                 </Req>}
                 <div className="ml-auto flex items-center gap-3">
                   <div className="flex items-center gap-1.5">
                     <Switch id="dark-mode" checked={dark} onCheckedChange={setDark} />
-                    <Label htmlFor="dark-mode" className="text-xs">Dark</Label>
+                    <Label htmlFor="dark-mode" className="text-xs">{t('Dark')}</Label>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Switch id="spec-overlay" checked={showSpec} onCheckedChange={setShowSpec} />
-                    <Label htmlFor="spec-overlay" className="text-xs">Spec IDs</Label>
+                    <Label htmlFor="spec-overlay" className="text-xs">{t('Spec IDs')}</Label>
                   </div>
                 </div>
               </StickyBanner>
@@ -195,6 +221,7 @@ function LoadedApp() {
                       <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ team })} />
                       <DeviceFreshness />
                       <LiveIndicator />
+                      <LanguageSelector />
                       <ClassicViewerLink />
                       <FeedbackLink />
                       <GitHubStars />
@@ -205,17 +232,17 @@ function LoadedApp() {
 
               <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[184px_minmax(0,1fr)] lg:gap-8">
                 <Req ids={['R16.1']} className="hidden md:block">
-                  <nav aria-label="Pages" className="sticky top-20 hidden max-h-[calc(100svh-6rem)] space-y-5 self-start overflow-y-auto md:block">
+                  <nav aria-label={t('Pages')} className="sticky top-20 hidden max-h-[calc(100svh-6rem)] space-y-5 self-start overflow-y-auto md:block">
                     <div className="hidden lg:block"><FocusRail selected={selected} onSelect={selectFocus} /></div>
                     {NAV_SECTIONS.map((section) => (
                       <div key={section} className="space-y-0.5">
-                        <p className="section-label hidden px-2 pb-1 lg:block">{section}</p>
+                        <p className="section-label hidden px-2 pb-1 lg:block">{t(section)}</p>
                         {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
-                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
+                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={t(label)} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
                             {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} />}
                             <NavTile icon={icon} active={pageActive(id)} />
-                            <span className="relative hidden lg:inline">{label}</span>
-                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> need you</span></span>}
+                            <span className="relative hidden lg:inline">{t(label)}</span>
+                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
                           </button>
                         ))}
                       </div>
@@ -235,7 +262,7 @@ function LoadedApp() {
               </div>
 
               <Req ids={['R11.1']} className="md:hidden">
-                <nav aria-label="Pages" className="relative z-30 md:hidden">
+                <nav aria-label={t('Pages')} className="relative z-30 md:hidden">
                   <Notch
                     reveal={false}
                     showSelectedValue={false}
@@ -246,15 +273,15 @@ function LoadedApp() {
                     items={PAGES.map(({ id, label, icon }) => ({
                       id,
                       currentPage: pageActive(id),
-                      options: [{ id, label }],
+                      options: [{ id, label: t(label) }],
                       onChange: () => goToPage(id),
                       label: (
                         <>
                           {pageActive(id) && <ActivePill layoutId="bottom-nav-active-pill" className="rounded-xl" />}
                           <span className={cn('relative flex flex-col items-center gap-1', pageActive(id) ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
-                            <NavTile icon={icon} active={pageActive(id)} />{label}
+                            <NavTile icon={icon} active={pageActive(id)} />{t(label)}
                           </span>
-                          {id === 'work' && yourMoveCount > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}<span className="sr-only"> need you</span></span>}
+                          {id === 'work' && yourMoveCount > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}<span className="sr-only"> {t('need you')}</span></span>}
                         </>
                       ),
                     }))}
@@ -266,6 +293,7 @@ function LoadedApp() {
             </div>
           </Req>
         </TooltipProvider>
+      </MediaSourceContext.Provider>
     </MotionConfig>
   )
 }

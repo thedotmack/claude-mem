@@ -160,8 +160,8 @@ const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
 const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
 
 // PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
-// timeline, plus the tools whose calls the memory-search handler inspects.
-const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+// timeline (read_file is Grok Build's read tool), plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^read_file$|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
 
 export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
@@ -492,6 +492,14 @@ async function buildHooks() {
         // https://sharp.pixelplumbing.com/install/#bundlers
         'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
+        // better-auth stays external in the bundles below (~3.7MB), so the
+        // worker's /api/auth/* routes (Pro sign-in) resolve it from
+        // plugin/node_modules at request time — the same pattern as sharp.
+        // Without these entries a plugin install has no better-auth at all
+        // and every auth request 500s with "Cannot find module 'better-auth'"
+        // (#5453).
+        'better-auth': packageJson.dependencies['better-auth'],
+        '@better-auth/api-key': packageJson.dependencies['@better-auth/api-key'],
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -521,6 +529,12 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
+        // Exact, not a range: tree-sitter-delphi has one maintainer and one
+        // published version, and its package.json points at a repository that
+        // does not exist (the sources match github.com/sammedhi/tree-sitter-delphi).
+        // Its C sources are compiled and loaded whenever a Pascal file is parsed,
+        // so a new version must arrive as a reviewed bump, never through a range.
+        'tree-sitter-delphi': '0.1.0',
         'shell-quote': '1.9.0',
       },
       // The server's embedder, about 300 MB, which only server mode runs. The
@@ -623,13 +637,15 @@ async function buildHooks() {
         // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
         // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
         // inlines that dynamic-import target into the worker bundle, dragging in the full
-        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
-        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
-        // and the route handler already wraps the import in try/catch → graceful 500).
-        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
+        // better-auth library (kysely, oauth, nanoid, …). Keeping it external strips
+        // the dead weight from worker-service.cjs. The routes DO exercise it (Pro
+        // sign-in), so plugin/package.json ships better-auth + @better-auth/api-key
+        // (see the generated manifest above) and the imports resolve from
+        // plugin/node_modules. See #2584, #5453.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
+        'better-auth/db/migration',
         '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
@@ -678,7 +694,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite', 'bun:ffi', 'cohere-ai', 'ollama', '@chroma-core/default-embed', 'onnxruntime-node',
-        'better-auth', 'better-auth/node', 'better-auth/plugins', '@better-auth/api-key',
+        'better-auth', 'better-auth/node', 'better-auth/plugins', 'better-auth/db/migration', '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
@@ -762,6 +778,7 @@ async function buildHooks() {
           'better-auth',
           'better-auth/node',
           'better-auth/plugins',
+          'better-auth/db/migration',
           '@better-auth/api-key',
         ],
         define: {
@@ -878,6 +895,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml',
         '@derekstride/tree-sitter-sql',
         '@tree-sitter-grammars/tree-sitter-markdown',
+        'tree-sitter-delphi',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,

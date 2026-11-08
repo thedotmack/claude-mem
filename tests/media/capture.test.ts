@@ -108,7 +108,7 @@ describe('capture at the common ingest boundary', () => {
       expect(observation.mediaEventKey).toMatch(/^[0-9a-f]{64}$/);
       const metadata = media.getMetadata(ref.id);
       expect(metadata.state).toBe('ready');
-      expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxCanonicalBytes);
+      expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxEncodedCanonicalBytes);
       expect(metadata.llm!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxDerivativeBytes);
       for (const variant of ['viewer', 'llm'] as const) {
         expect((await sharp(await media.readVariant(ref.id, variant)).metadata()).format).toBe('webp');
@@ -339,6 +339,34 @@ describe('durable identity, replay and restart', () => {
 });
 
 describe('interruption, deletion and cleanup', () => {
+  it('does not restore raw tool data or queue an observation after deletion during media conversion', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const converting = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const paused = new MediaStore(db, join(dir, 'data'), async (bytes, mimeType, recipe) => {
+      entered();
+      await blocked;
+      return convertMedia(bytes, mimeType, recipe);
+    });
+    wire(sessions, paused);
+
+    const pending = ingest(anthropic());
+    await converting;
+    const session = db.prepare(`
+      SELECT id, memory_session_id FROM sdk_sessions WHERE content_session_id = 'media-session'
+    `).get() as { id: number; memory_session_id: string };
+    db.transaction(() => {
+      sessions.markSessionDeleted('claude', 'media-session', session.memory_session_id);
+      db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(session.id);
+    }).immediate();
+    release();
+    await pending;
+
+    expect(count("SELECT COUNT(*) n FROM tool_uses WHERE content_session_id = 'media-session'")).toBe(0);
+    expect(queued).toHaveLength(0);
+  });
+
   it('an interrupted conversion is reconciled, its temporary files removed, then replay succeeds with the same ID', async () => {
     let release!: () => void;
     const hung = new MediaStore(db, join(dir, 'data'), async () => {
@@ -472,6 +500,49 @@ describe('status substitution leaves untouched text alone', () => {
     const original = { stdout: '{"media_status":{"label":"event1_image1"}}', nested: { media_status: { label: 'event1_image1' } } };
     const result = await captureObservationMedia(captureInput(original), media);
     expect(result.toolResponse).toBe(original);
+  });
+});
+
+// Capture is on by default, so ingest runs it for every tool event. The media
+// store is looked up only when an event holds an image: a text-only event never
+// touches media storage, and a store that cannot be reached fails that image,
+// never the event.
+describe('the media store is looked up only for an event that holds an image', () => {
+  function wireStoreGetter(getMediaStore: () => MediaStore) {
+    setIngestContext({
+      dbManager: { getSessionStore: () => sessions, getMediaStore } as any,
+      sessionManager: { queueObservation: async (_id: number, observation: any) => { queued.push(observation); } } as any,
+      eventBroadcaster: { broadcastObservationQueued: () => {} } as any,
+      ensureGeneratorRunning: async () => {},
+    });
+  }
+
+  it('a text-only event never asks for the store', async () => {
+    let lookups = 0;
+    wireStoreGetter(() => { lookups += 1; return media; });
+    const observation = await ingest({ stdout: 'build ok' }, { toolName: 'Bash', toolInput: { command: 'npm run build' } });
+    expect(lookups).toBe(0);
+    expect(observation.mediaRefs ?? []).toEqual([]);
+  });
+
+  it('an event with two images asks once and retains both', async () => {
+    let lookups = 0;
+    wireStoreGetter(() => { lookups += 1; return media; });
+    const observation = await ingest({ content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: otherB64 } },
+    ] });
+    expect(lookups).toBe(1);
+    expect(observation.mediaRefs).toHaveLength(2);
+  });
+
+  it('a store that cannot be reached fails the image as storage_unavailable and still queues the event', async () => {
+    wireStoreGetter(() => { throw new Error('Database not initialized'); });
+    const observation = await ingest(anthropic());
+    expect(observation.mediaRefs ?? []).toEqual([]);
+    expect(observation.tool_response).toContain('storage_unavailable');
+    noBytes(observation.tool_response);
+    expect(count('SELECT COUNT(*) AS n FROM media_attachments')).toBe(0);
   });
 });
 

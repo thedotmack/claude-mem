@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
 import { paths } from '../../src/shared/paths.js';
@@ -160,19 +161,13 @@ describe('default Anthropic-plan fallback: dispatch', () => {
     expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null });
   });
 
-  it('tells the session start that memory is on the Anthropic plan', () => {
-    const state = {
-      quotaCooldown: {
-        active: true,
-        provider: 'openrouter',
-        armedAt: 0,
-        until: Date.now() + 60_000,
-        window: 'rate_limit',
-        message: 'over capacity',
-        servingProvider: 'claude',
-      },
-    } as unknown as ObserverHealthState;
-    expect(renderObserverQuotaCooldownNotice(state)).toContain('memory is running on your Anthropic plan (Claude)');
+  it('tells the session start which backup is saving memories and why', () => {
+    pinGatewayPrimary({ CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+    recordQuotaExhausted('openrouter', 'over capacity', 'rate_limit');
+    const state = JSON.parse(readFileSync(join(paths.dataDir(), 'observer-health.json'), 'utf8')) as ObserverHealthState;
+    const notice = renderObserverQuotaCooldownNotice(state);
+    expect(notice).toContain("claude-mem is using your Claude plan to save memories because cmem.ai is busy (rate limited or over capacity).");
+    expect(notice).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off');
   });
 });
 

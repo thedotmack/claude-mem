@@ -28,7 +28,8 @@ test('suggested and owner rules keep their words, counts and scopes', () => {
   assert.deepEqual([learned.id, learned.status, learned.setBy, learned.when, learned.then, learned.timesSeen, learned.source], ['pref_0123456789ab', 'suggested', 'learned', '', 'Water the tomatoes before noon.', 3, 'request-progress'])
   assert.equal(learned.quotes[0].quote, 'they wilt if you wait')
   assert.equal(learned.quotes[0].kind, 'correction')
-  assert.equal(learned.latestDaysAgo, 3)
+  // Preserve fractional days: renderRulesFile uses the same precision for strength ordering.
+  assert.equal(learned.latestDaysAgo, 3 + 2 / 24)
   assert.ok(learned.records.some((record) => record.kind === 'Review'))
   assert.deepEqual([own.scopeId, own.setBy, own.source], ['project:garden planner', 'owner', 'you'])
   assert.ok(own.records.some((record) => record.label === 'Written in My Rules on this computer'))

@@ -1,6 +1,13 @@
 // Types for GET /api/work-view on the local worker (claude-mem 15.0.1), written from a real response
 // (.scratch/work-view-sample.json). Only the keys the mapper reads are typed; the rest are left out on purpose.
 
+/** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
+ * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
+export interface WorkViewMediaRef { id: string; label: string; inspection: 'inspected' | 'uninspected' }
+
+/** An observation's image refs, as media-contract.ts MediaManifest defines it (ids and labels only, never readiness). */
+export interface WorkViewMediaManifest { version: 1; attachments: WorkViewMediaRef[]; overflow?: boolean }
+
 export type EvidenceKind = 'work-state' | 'observation' | 'prompt' | 'summary' | 'session'
 
 export interface WorkViewSourceRef { kind: string; id: number }
@@ -26,6 +33,15 @@ export interface WorkViewActivity {
   detail: string | null
   atEpoch: number
   url: string
+  /** The observation's image refs (agent-view.mjs). Absent on image-free rows. Older workers leave it out. */
+  media?: WorkViewMediaManifest
+}
+
+/** A request's images for its card (request-projection.mjs requestMediaSummary): the number of distinct images its
+ * listed activity links and the newest few. Absent when it has none. Older workers leave it out. */
+export interface WorkViewRequestMedia {
+  count: number
+  preview: WorkViewMediaRef[]
 }
 
 export interface WorkViewWorkstream {
@@ -138,6 +154,7 @@ export interface WorkViewHumanRequest {
   progress?: WorkViewProgress | null
   /** Newest first. Older workers leave it out. */
   workProduct?: WorkViewWorkProduct[]
+  media?: WorkViewRequestMedia
   /** The conversation its my-focus placement is keyed by: its group's anchor, else its own. Older workers leave it out. */
   anchorConversationKey?: string | null
   /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */

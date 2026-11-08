@@ -3,8 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MEDIA_LIMITS, MediaError, validateMediaProvenance, type MediaAttachmentRef, type MediaErrorCode, type MediaProvenance } from '../../shared/media-contract.js';
-import { convertMedia, type ConvertedMedia } from './converter.js';
+import { convertMedia, LOCAL_ADMISSION_WAIT_MS, LOCAL_CONVERSION_DEADLINE_MS, type ConvertedMedia } from './converter.js';
 import { assertNoSymlinks, readContainedFile } from './files.js';
+import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { queueCleanupForDeletedEvent } from '../sqlite/media.js';
 import { logger } from '../../utils/logger.js';
 
@@ -12,6 +13,15 @@ export type MediaVariantName = 'viewer' | 'llm';
 export const MEDIA_CLEANUP_MAX_ATTEMPTS = 8;
 const CLEANUP_RETRY_BASE_MS = 30_000;
 const CLEANUP_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
+/**
+ * How long a 'converting' row is protected from reconcile(), which fails rows
+ * whose lease has passed (a worker that died mid-conversion). It must outlast a
+ * live capture: the converter's admission wait and deadline, plus two SQLite
+ * busy waits (the claim and the commit transactions can each wait up to
+ * SQLITE_BUSY_TIMEOUT_MS for the write lock). A longer lease only delays the
+ * cleanup of a conversion a crash abandoned.
+ */
+const CONVERSION_LEASE_MS = LOCAL_ADMISSION_WAIT_MS + LOCAL_CONVERSION_DEADLINE_MS + 2 * SQLITE_BUSY_TIMEOUT_MS;
 export function assertMediaId(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MediaError('invalid_manifest');
   return value;
@@ -135,13 +145,13 @@ export class MediaStore {
         const id = randomUUID();
         const provenance = validateMediaProvenance({ ...input.provenance, attachment_id:id });
         this.db.prepare(`INSERT INTO media_attachments(id,replay_key,provenance,recipe,state,lease_until,created_at) VALUES(?,?,?,?,'converting',?,?)`)
-          .run(id,key,JSON.stringify(provenance),provenance.recipe,now+30_000,now);
+          .run(id,key,JSON.stringify(provenance),provenance.recipe,now+CONVERSION_LEASE_MS,now);
         row = this.row(id);
       } else if (row.state === 'deleted') throw new MediaError('media_not_found');
       else if (row.state === 'converting') throw new MediaError('conversion_busy');
       else if (row.state === 'failed') {
         if (this.db.prepare('SELECT 1 FROM media_cleanup_jobs WHERE attachment_id=?').get(row.id)) throw new MediaError('media_not_ready');
-        this.db.prepare(`UPDATE media_attachments SET state='converting',failure_code=NULL,lease_until=? WHERE id=?`).run(now+30_000,row.id);
+        this.db.prepare(`UPDATE media_attachments SET state='converting',failure_code=NULL,lease_until=? WHERE id=?`).run(now+CONVERSION_LEASE_MS,row.id);
       }
       this.db.prepare('INSERT OR IGNORE INTO media_event_refs(event_key,attachment_id,label) VALUES(?,?,?)').run(eventKey,row.id,input.label);
       return {id:row.id,ready:row.state==='ready'};

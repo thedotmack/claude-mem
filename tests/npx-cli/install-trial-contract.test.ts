@@ -404,21 +404,69 @@ describe('installer trial-ready contract', () => {
     expect(source).not.toContain('CMEM_TRIAL_ACKNOWLEDGEMENT');
   });
 
-  it('requires OAuth before provider selection and contains no retired email path', () => {
+  it('signs in before provider selection only for a named account-backed provider', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
     const oauthIndex = source.indexOf('await requireInstallerOAuthLogin(version)');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version, signInForCmem)');
     expect(oauthIndex).toBeGreaterThan(-1);
     expect(providerIndex).toBeGreaterThan(oauthIndex);
+    // An interactive run with no provider named defers sign-in to the CMEM Pro pick.
+    const deferIndex = source.indexOf('} else if (isInteractive && !options.provider) {');
+    const accountGateIndex = source.indexOf('} else if (providerNeedsAccount(options.provider)) {');
+    expect(deferIndex).toBeGreaterThan(-1);
+    expect(deferIndex).toBeLessThan(accountGateIndex);
+    expect(source).toContain('if (!pairing && signIn) {');
     expect(source).not.toContain('promptBrowserLogin');
     expect(source).not.toContain('CMEM_PRO_TRIAL_START_URL');
-    expect(source).not.toContain('CLAUDE_MEM_ONLINE_OPTIN');
-    expect(source).not.toContain('Your email:');
+  });
+
+  it('asks for an optional email and note once, early, and only in an interactive terminal', () => {
+    const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const fnStart = source.indexOf('async function promptEmailOptIn(version: string)');
+    const fnEnd = source.indexOf('\n}\n', fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    const fn = source.slice(fnStart, fnEnd);
+    expect(fn).toContain('if (!isInteractive) return;');
+    expect(fn).toContain('if (process.env.CI) return;');
+    expect(fn).toContain('CLAUDE_MEM_ONLINE_OPTIN');
+    expect(fn).toContain('Your work email (press Enter to skip):');
+    expect(fn).toContain('what are you working on, or how can we help you and your team?');
+    expect(source).toContain("source: 'npx-installer',");
+    expect(source).toContain("const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';");
+    // Asked near the start: before the overwrite question and before any sign-in.
+    const callIndex = source.indexOf('await promptEmailOptIn(version);');
+    expect(callIndex).toBeGreaterThan(-1);
+    expect(callIndex).toBeLessThan(source.indexOf("message: 'Overwrite existing installation?'"));
+    expect(callIndex).toBeLessThan(source.indexOf('oauthPairing = await requireInstallerOAuthLogin(version);'));
+  });
+
+  it('keeps every privacy statement true now that setup can ask for an email', () => {
+    // The opt-in sends an email to cmem.ai, so no copy may still say the CLI
+    // contacts cmem.ai only for the sign-in link or never asks for an email.
+    const installer = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const privacyLine = installer.split('\n').find(line => line.includes('on this machine. cmem.ai'));
+    expect(privacyLine).toBeDefined();
+    expect(privacyLine).toContain('your email and optional note');
+    expect(privacyLine).toContain('numbers-only usage summary');
+    const copies = [
+      'src/npx-cli/commands/install.ts',
+      'docs/public/installation.mdx',
+      'docs/public/cmem-pro-headless.mdx',
+      'docs/public/cursor/index.mdx',
+      'docs/public/hooks-architecture.mdx',
+      'src/services/worker/onboarding-explainer.md',
+      'plugin/skills/how-it-works/SKILL.md',
+    ];
+    for (const path of copies) {
+      const text = readFileSync(join(repoRoot, path), 'utf-8');
+      expect({ path, stale: /contacted? cmem\.ai once|cmem\.ai is contacted once|does \*\*not\*\* ask for an email|no email in the CLI|No email address or identity is accepted/.test(text) })
+        .toEqual({ path, stale: false });
+    }
   });
 
   it('stops any respawned worker after provider settings are persisted', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version, signInForCmem)');
     const cutoverIndex = source.indexOf("'provider-cutover'", providerIndex);
     const workerStartIndex = source.indexOf('workerStartResult = await ensureWorkerStarted', cutoverIndex);
     expect(providerIndex).toBeGreaterThan(-1);

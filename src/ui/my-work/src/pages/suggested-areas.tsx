@@ -1,3 +1,4 @@
+import { t, useI18n, interpolate } from '@/lib/i18n'
 // Suggested focus areas: the decision queue from My Rules (DecisionQueue / SuggestionCard), with Keep, Rename, Merge
 // and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page; a rename leaves
 // the card undecided and shows in the change bar, with Undo back to the old name. On phones an undecided card
@@ -15,7 +16,6 @@ import { AreaEditDialog, FocusChangeBar, useFocusChanges, type AreaEdit } from '
 import { Quotes } from '@/components/focus-header'
 import { useIsPhone, swipeToDecide } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
-import { plural } from '@/lib/words'
 import { Req } from '@/spec/req'
 import { type FocusArea, type Request } from '@/data'
 import { useWorkModel } from '@/store'
@@ -45,16 +45,16 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
         <div className={cn('space-y-1', decision === 'dismissed' && 'line-through opacity-60')}>
           <p className="text-[15px] leading-snug font-semibold">{area.name}</p>
           {area.goal && <p className="text-sm text-foreground/85">{area.goal}</p>}
-          <p className="text-xs text-muted-foreground">{requests.length ? `${plural(requests.length, 'request')} placed in it` : 'No requests placed in it yet'}{area.asks.length ? ` · ${plural(area.asks.length, 'ask')} not started` : ''}</p>
+          <p className="text-xs text-muted-foreground">{requests.length ? interpolate(t('{count} placed in it'), { count: requests.length }) : t("No requests placed in it yet")}{area.asks.length ? interpolate(t(' · {count} not started'), { count: area.asks.length }) : ''}</p>
         </div>
 
         <ConfirmationRequest>
           <Req ids={['R11.1']}>
             <ConfirmationActions className="grid w-full grid-cols-2 gap-2 self-stretch sm:flex sm:w-auto sm:self-start">
-              <ConfirmationAction className="h-11 sm:h-9" disabled={saving} onClick={onKeep}><CheckIcon />Keep</ConfirmationAction>
-              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'rename', area })}><PencilIcon />Rename</ConfirmationAction>
-              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'merge', area })}><MergeIcon />Merge</ConfirmationAction>
-              <ConfirmationAction variant="ghost" className="h-11 sm:h-9" disabled={saving} onClick={onDismiss}><XIcon />Dismiss</ConfirmationAction>
+              <ConfirmationAction className="h-11 sm:h-9" disabled={saving} onClick={onKeep}><CheckIcon />{t("Keep")}</ConfirmationAction>
+              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'rename', area })}><PencilIcon />{t("Rename")}</ConfirmationAction>
+              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'merge', area })}><MergeIcon />{t("Merge")}</ConfirmationAction>
+              <ConfirmationAction variant="ghost" className="h-11 sm:h-9" disabled={saving} onClick={onDismiss}><XIcon />{t("Dismiss")}</ConfirmationAction>
             </ConfirmationActions>
           </Req>
         </ConfirmationRequest>
@@ -62,29 +62,29 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
           <div className="relative flex flex-wrap items-center justify-between gap-x-3">
             {/* Keeping an area is a choice of focus, so it gets the launch screen's sparkles; a merge or dismissal doesn't. */}
             {decision === 'kept' && !reduceMotion && <SparklesCore className="kept-sparkles" background="transparent" particleColor="#D86441" minSize={0.4} maxSize={1.2} particleDensity={60} speed={2} />}
-            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? `Merged into ${mergedInto ?? 'another area'}. Its requests show there now.` : 'Kept. It’s in My focus now.'}</ConfirmationTitle>
+            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? interpolate(t('Merged into {name}. Its requests show there now.'), { name: mergedInto ?? t('another area') }) : t("Kept. It’s in My focus now.")}</ConfirmationTitle>
             <div className="relative flex">
-              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>Show it</Button>
-              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>Undo</Button>
+              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>{t("Show it")}</Button>
+              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>{t("Undo")}</Button>
             </div>
           </div>
         </ConfirmationAccepted>
         <ConfirmationRejected>
           <div className="flex flex-wrap items-center justify-between gap-x-3">
-            <ConfirmationTitle className="text-sm text-muted-foreground">Dismissed. It won’t be suggested again, and its requests are sorted again.</ConfirmationTitle>
-            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>Undo</Button>
+            <ConfirmationTitle className="text-sm text-muted-foreground">{t("Dismissed. It won’t be suggested again, and its requests are sorted again.")}</ConfirmationTitle>
+            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>{t("Undo")}</Button>
           </div>
         </ConfirmationRejected>
 
         {!decision && (
           <div className="space-y-2 border-t pt-3">
-            <p className="text-xs text-muted-foreground">Why it’s suggested: {area.quotes.length === 0 && area.evidence ? area.evidence : `${SOURCE_TEXT[area.source]}.`}</p>
+            <p className="text-xs text-muted-foreground">{interpolate(t('Why it’s suggested: {reason}'), { reason: area.quotes.length === 0 && area.evidence ? area.evidence : `${t(SOURCE_TEXT[area.source])}.` })}</p>
             {first && <Quotes quotes={[first]} />}
             {more.length > 0 && (
               <Collapsible>
                 <CollapsibleContent className="pb-1"><Quotes quotes={more} /></CollapsibleContent>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground sm:min-h-8">
-                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{more.length} more {more.length === 1 ? 'quote' : 'quotes'}</span><span className="hidden group-data-[state=open]:inline">Fewer quotes</span>
+                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{interpolate(t(more.length === 1 ? '{count} more quote' : '{count} more quotes'), { count: more.length })}</span><span className="hidden group-data-[state=open]:inline">{t("Fewer quotes")}</span>
                 </CollapsibleTrigger>
               </Collapsible>
             )}
@@ -96,6 +96,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
 }
 
 export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
+  useI18n()
   const { focusAreas, requests } = useWorkModel()
   const changes = useFocusChanges()
   const isPhone = useIsPhone()
@@ -116,20 +117,20 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
       <section className="space-y-4">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <h2 className="text-base font-semibold">Suggested focus areas</h2>
+            <h2 className="text-base font-semibold">{t("Suggested focus areas")}</h2>
             {waiting > 0 && <StateBadge state="your-move" />}
-            <span className="text-xs text-muted-foreground">{suggestions.length - waiting} of {suggestions.length} decided</span>
+            <span className="text-xs text-muted-foreground">{interpolate(t('{decided} of {total} decided'), { decided: suggestions.length - waiting, total: suggestions.length })}</span>
           </div>
-          <p className="text-sm text-muted-foreground">claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.</p>
+          <p className="text-sm text-muted-foreground">{t("claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.")}</p>
         </div>
         <FocusChangeBar changes={changes} />
         {suggestions.length === 0 ? (
           <Req ids={['R12.1']}>
-            <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next refresh.</p>
+            <p className="text-sm text-muted-foreground">{t("Nothing waiting. New suggestions show up here after the next refresh.")}</p>
           </Req>
         ) : (
           <DraggableCardContainer className="space-y-3">
-            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">Swipe a card right to keep it, left to dismiss it.</p>}
+            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">{t("Swipe a card right to keep it, left to dismiss it.")}</p>}
             {suggestions.map((area) => {
               const card = <SuggestionCard area={area} requests={inArea(area)} decision={decisions[area.id]} saving={changes.saving}
                 onKeep={() => decide(area, 'kept')} onDismiss={() => decide(area, 'dismissed')} onEdit={setEdit} onUndo={() => undo(area)}

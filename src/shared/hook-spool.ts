@@ -48,6 +48,8 @@ export interface SpooledObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /** When the tool use happened at its source; see ObservationPayload.eventOccurredAtEpochMs. */
+  eventOccurredAtEpochMs?: number | null;
 }
 
 export interface SpooledSummarizePayload {
