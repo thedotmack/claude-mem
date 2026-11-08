@@ -221,6 +221,15 @@ describe('buildServerGenerationPrompt', () => {
     }
   });
 
+  it('never cuts a surrogate pair when truncating a long event payload', () => {
+    // A lone surrogate serializes as \udXXX, which the provider APIs reject (see bmp-safe.ts).
+    const prefix = '{"t":"';
+    const payload = { t: 'a'.repeat(16 * 1024 - prefix.length - 1) + '\u{1F600}tail' };
+    const { prompt } = buildServerGenerationPrompt(makeContext({ payload }));
+    expect(prompt).toContain('[...truncated]');
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(prompt)).toBe(false);
+  });
+
   it('strips <private> tags from event payload before sending', () => {
     const context = makeContext({
       payload: '<private>secret</private>visible',

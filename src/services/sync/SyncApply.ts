@@ -1161,9 +1161,9 @@ export class SyncApply {
           ELSE sdk_sessions.memory_session_id
         END
       RETURNING id
-    `).get(
+    `).all(
       contentSessionId, memorySessionId, project, platform, new Date(createdAtEpoch).toISOString(), createdAtEpoch
-    ) as { id: number };
+    )[0] as { id: number };
     return row.id;
   }
 
@@ -1320,14 +1320,14 @@ export class SyncApply {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id
-    `).get(
+    `).all(
       memorySessionId, project, fieldString(op, body, 'text'), type, fieldString(op, body, 'title'), fieldString(op, body, 'subtitle'),
       fieldString(op, body, 'facts'), fieldString(op, body, 'narrative'), fieldString(op, body, 'concepts'), fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'),
       fieldNumber(op, body, 'prompt_number'), fieldNumber(op, body, 'discovery_tokens') ?? 0, fieldString(op, body, 'content_hash'), fieldString(op, body, 'generated_by_model'),
       fieldString(op, body, 'agent_type'), fieldString(op, body, 'agent_id'), fieldString(op, body, 'metadata'), fieldString(op, body, 'merged_into_project'),
       createdAt, createdAtEpoch,
       this.now(), op.origin_device, op.origin_id, op.rev
-    ) as { id: number } | null;
+    )[0] as { id: number } | null;
 
     if (!inserted) {
       logger.debug('SYNC_APPLY', 'Remote observation content already present locally (content-hash dupe); skipped', {
@@ -1441,12 +1441,12 @@ export class SyncApply {
          created_at, created_at_epoch, synced_at, origin_device_id, origin_local_id, sync_rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
-    `).get(
+    `).all(
       memorySessionId, project, fieldString(op, body, 'request'), fieldString(op, body, 'investigated'), fieldString(op, body, 'learned'), fieldString(op, body, 'completed'),
       fieldString(op, body, 'next_steps'), fieldString(op, body, 'files_read'), fieldString(op, body, 'files_edited'), fieldString(op, body, 'notes'), fieldNumber(op, body, 'prompt_number'),
       fieldNumber(op, body, 'discovery_tokens') ?? 0, fieldString(op, body, 'merged_into_project'),
       createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev
-    ) as { id: number };
+    )[0] as { id: number };
 
     this.forwardSummary(inserted.id, op, body, chromaJobs);
     return 'applied';
@@ -1558,10 +1558,10 @@ export class SyncApply {
          synced_at, origin_device_id, origin_local_id, sync_rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING id
-    `).get(
+    `).all(
       sessionDbId, contentSessionId, promptNumber, promptText, createdAt, createdAtEpoch,
       this.now(), op.origin_device, op.origin_id, op.rev
-    ) as { id: number };
+    )[0] as { id: number };
 
     this.forwardPrompt(inserted.id, op, body, chromaJobs);
     return 'applied';
