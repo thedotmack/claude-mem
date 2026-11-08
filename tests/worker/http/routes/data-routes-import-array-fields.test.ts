@@ -82,6 +82,27 @@ describe('DataRoutes import with array-valued fields (cloud shape)', () => {
     expect(observation.concepts).toEqual(['legacy-concept']);
   });
 
+  it.each([123, true, 0, false])('indexes accepted scalar list fields from their saved strings: %s', async value => {
+    const syncObservation = mock(async () => {});
+    const handler = capturePostChain(makeRoutes(store, { syncObservation }), '/api/import');
+    const session = store.createSDKSession('scalar-content', 'scalar-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(session, 'scalar-memory');
+    const json = mock(() => {});
+    handler({ path: '/api/import', query: {}, body: { observations: [{
+      memory_session_id: 'scalar-memory', project: 'scalar-project', text: null,
+      type: 'discovery', title: 'Scalar list fixture', subtitle: null,
+      facts: value, concepts: value, narrative: null,
+      files_read: '[]', files_modified: '[]', prompt_number: 1,
+      discovery_tokens: 0, created_at: new Date(100).toISOString(), created_at_epoch: 100,
+    }] } } as any, { json, status: mock(() => ({ json })), headersSent: false } as any);
+    await Promise.resolve();
+    expect(syncObservation).toHaveBeenCalledTimes(1);
+    const saved = store.db.prepare('SELECT facts, concepts FROM observations').get() as any;
+    const observation = syncObservation.mock.calls[0][3] as any;
+    expect(observation.facts).toEqual([saved.facts]);
+    expect(observation.concepts).toEqual([saved.concepts]);
+  });
+
   it('imports observations whose facts/concepts/file lists arrive as real arrays', () => {
     const routes = makeRoutes(store);
     const handler = capturePostChain(routes, '/api/import');

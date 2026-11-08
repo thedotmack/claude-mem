@@ -1,9 +1,9 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
@@ -325,7 +325,7 @@ async function writeHooksJsonAndSetupProject(
   workspaceRoot: string,
 ): Promise<void> {
   const merged = mergeCursorHooksJson(readExistingCursorHooksJson(hooksJsonPath), hooksJson);
-  writeFileSync(hooksJsonPath, JSON.stringify(merged, null, 2));
+  writeJsonFileAtomic(hooksJsonPath, merged);
   console.log(`  Wrote hooks.json (unified CLI mode, existing hooks preserved)`);
   console.log(`  Worker service: ${workerServicePath}`);
 
@@ -382,7 +382,7 @@ description: "Claude-mem context from past sessions (auto-updated)"
 
 Use claude-mem's MCP search tools for manual memory queries.
 `;
-    writeFileSync(rulesFile, placeholderContent);
+    writeTextFileAtomic(rulesFile, placeholderContent);
     console.log(`  Created placeholder context file (will populate after first session)`);
   }
 
@@ -458,7 +458,7 @@ function removeCursorHooksFiles(
         unlinkSync(hooksJsonPath);
         console.log(`  Removed hooks.json (no hooks remaining)`);
       } else {
-        writeFileSync(hooksJsonPath, JSON.stringify(remaining, null, 2));
+        writeJsonFileAtomic(hooksJsonPath, remaining);
         console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
       }
     }

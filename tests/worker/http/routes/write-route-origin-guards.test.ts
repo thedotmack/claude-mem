@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { AdvisorRoutes } from '../../../../src/services/worker/http/routes/AdvisorRoutes.js';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
 import { DedupRoutes } from '../../../../src/services/worker/http/routes/DedupRoutes.js';
+import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import { WorkStateRoutes } from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
 
 function createMockRes(): {
@@ -355,6 +356,89 @@ describe('POST /api/advisor-calls origin guard', () => {
       expect(statusSpyNot403(statusSpy)).toBe(true);
       expect(getSessionStore).toHaveBeenCalledTimes(1);
       expect(jsonSpy).toHaveBeenCalledWith({ status: 'stored', stored: 1, duplicates: 0, privateOnly: 0 });
+    });
+  }
+});
+
+/** SessionRoutes mounts its guards in the middleware chain (not inside the
+ * handlers like the routes above), so its tests capture the whole chain off a
+ * fake app and walk it the way express would. */
+type ChainHandler = (req: any, res: any, next: () => void) => void;
+
+function captureChain(routes: { setupRoutes: (app: any) => void }, path: string): ChainHandler[] {
+  let handlers: ChainHandler[] = [];
+  const mockApp: any = {
+    get: mock(() => {}),
+    post: mock((p: string, ...hs: ChainHandler[]) => {
+      if (p === path) handlers = hs;
+    }),
+    delete: mock(() => {}),
+  };
+  routes.setupRoutes(mockApp);
+  if (handlers.length === 0) throw new Error(`route POST ${path} was not registered`);
+  return handlers;
+}
+
+function walkChain(handlers: ChainHandler[], req: Request, res: Response): void {
+  let i = 0;
+  const next = (): void => {
+    if (i < handlers.length) {
+      const handler = handlers[i++];
+      handler(req, res, next);
+    }
+  };
+  next();
+}
+
+function stubSessionManager() {
+  return {
+    getResumableSessionIds: mock(() => [] as number[]),
+    getTotalQueueDepth: mock(() => 0),
+    getActiveSessionCount: mock(() => 0),
+  } as any;
+}
+
+describe('POST /api/processing origin guard', () => {
+  const loopback = { ip: '127.0.0.1' };
+
+  it('rejects an unpaced resume from a different localhost origin before the handler runs', () => {
+    const sessionManager = stubSessionManager();
+    const routes = new SessionRoutes(sessionManager, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const handlers = captureChain(routes, '/api/processing');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    walkChain(
+      handlers,
+      {
+        body: { isProcessing: false },
+        headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+        ...loopback,
+      } as unknown as Request,
+      res as Response,
+    );
+
+    expect(statusSpy).toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith({ error: 'Session writes from a different localhost origin are not allowed' });
+    // The unpaced operator resume is the mutation this route guards: a foreign
+    // page must not reach it.
+    expect(sessionManager.getResumableSessionIds).not.toHaveBeenCalled();
+  });
+
+  for (const [label, headers] of [
+    ['an Origin-less resume', {}],
+    ['a same-port browser resume', { origin: 'http://localhost:37777', host: '127.0.0.1:37777' }],
+  ] as const) {
+    it(`allows ${label} through the guard to the handler`, () => {
+      const sessionManager = stubSessionManager();
+      const routes = new SessionRoutes(sessionManager, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+      const handlers = captureChain(routes, '/api/processing');
+
+      const { res, statusSpy, jsonSpy } = createMockRes();
+      walkChain(handlers, { body: { isProcessing: false }, headers, ...loopback } as unknown as Request, res as Response);
+
+      expect(statusSpyNot403(statusSpy)).toBe(true);
+      expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'ok' }));
+      expect(sessionManager.getResumableSessionIds).toHaveBeenCalledTimes(1);
     });
   }
 });

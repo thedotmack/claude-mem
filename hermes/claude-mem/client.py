@@ -16,13 +16,13 @@ Hermes turn nothing.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import ntpath
 import os
 import re
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -324,14 +324,14 @@ class Transport:
         if self.breaker.open():
             raise RequestFailed("breaker open")
         data = None if body is None else json.dumps(body).encode("utf-8")
-        request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("content-type", "application/json")
-        for name, value in headers.items():
-            request.add_header(name, value)
         try:
+            request = urllib.request.Request(url, data=data, method=method)
+            request.add_header("content-type", "application/json")
+            for name, value in headers.items():
+                request.add_header(name, value)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = response.read()
-        except (urllib.error.URLError, OSError, ValueError) as error:
+        except (http.client.HTTPException, OSError, ValueError) as error:
             self.breaker.fail()
             raise RequestFailed(str(error)) from error
         self.breaker.ok()
@@ -371,12 +371,14 @@ def server_query(prompt: str, max_terms: int = 12) -> str:
     """The hosted server ANDs every word of a query, so a whole prompt would
     match almost nothing: keep its distinct longer words, joined with "or".
     Private blocks never leave the machine."""
-    words = re.findall(r"\w{4,}", _strip_text(prompt).lower())
-    distinct: List[str] = []
-    for word in words:
-        if word not in distinct:
-            distinct.append(word)
-    return " or ".join(distinct[:max_terms])
+    if max_terms <= 0:
+        return ""
+    distinct = {}
+    for match in re.finditer(r"\w{4,}", _strip_text(prompt).lower()):
+        distinct[match.group()] = None
+        if len(distinct) == max_terms:
+            break
+    return " or ".join(distinct)
 
 
 class Session:
@@ -577,28 +579,33 @@ class ClaudeMemClient:
         last_turn_private = bool(session.prompts_sent and not session.last_prompt_recorded)
         try:
             if self.config.server:
-                reply = as_json(self.transport.server("POST", "/v1/sessions/start", {
-                    "projectId": self.config.project_id,
-                    "externalSessionId": session.id,
-                    "contentSessionId": session.id,
-                    "platformSource": PLATFORM_SOURCE,
-                }))
-                started = reply.get("session")
-                server_id = started.get("id") if isinstance(started, dict) else None
+                server_id = session.server_session_id
+                if not server_id:
+                    reply = as_json(self.transport.server("POST", "/v1/sessions/start", {
+                        "projectId": self.config.project_id,
+                        "externalSessionId": session.id,
+                        "contentSessionId": session.id,
+                        "platformSource": PLATFORM_SOURCE,
+                    }))
+                    started = reply.get("session")
+                    server_id = started.get("id") if isinstance(started, dict) else None
                 if not isinstance(server_id, str) or not server_id:
                     return
                 if not last_turn_private:
-                    self.transport.server("POST", "/v1/events", {
-                        "projectId": self.config.project_id,
-                        "serverSessionId": server_id,
-                        "contentSessionId": session.id,
-                        "platformSource": PLATFORM_SOURCE,
-                        "sourceType": "hook",
-                        "eventType": "assistant_message",
-                        "occurredAtEpoch": int(time.time() * 1000),
-                        "payload": {"last_assistant_message": strip_tags(last_assistant_message),
-                                    "platformSource": PLATFORM_SOURCE},
-                    })
+                    try:
+                        self.transport.server("POST", "/v1/events", {
+                            "projectId": self.config.project_id,
+                            "serverSessionId": server_id,
+                            "contentSessionId": session.id,
+                            "platformSource": PLATFORM_SOURCE,
+                            "sourceType": "hook",
+                            "eventType": "assistant_message",
+                            "occurredAtEpoch": int(time.time() * 1000),
+                            "payload": {"last_assistant_message": strip_tags(last_assistant_message),
+                                        "platformSource": PLATFORM_SOURCE},
+                        })
+                    except RequestFailed:
+                        pass  # A failed summary should not prevent the session from ending.
                 self.transport.server("POST", "/v1/sessions/" + urllib.parse.quote(server_id, safe="") + "/end", {})
             elif not last_turn_private:
                 # The worker also skips summarize for a private last prompt;

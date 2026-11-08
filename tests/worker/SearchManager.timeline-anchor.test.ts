@@ -178,6 +178,22 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     expectAnchorRendered(text, middle.id);
   });
 
+  it('(b3) a "#<id>" anchor copied from search output is the observation, not a timestamp', async () => {
+    const middle = seeded[24];
+    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
+
+    const response = await manager.timeline({
+      anchor: `#${middle.id}`,
+      depth_before: 3,
+      depth_after: 3,
+    });
+
+    expect(response.isError).not.toBe(true);
+    const text: string = response.content[0].text;
+    expect(extractObservationIds(text)).toEqual(expectedIds);
+    expectAnchorRendered(text, middle.id);
+  });
+
   it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
     const middle = seeded[24];
     const summaryResult = store.storeSummary(
