@@ -1016,9 +1016,12 @@ export async function runDoctorCommand(): Promise<void> {
   console.log('');
   if (hardFailures.length === 0) {
     console.log(styleText('green', 'All required checks passed.'));
-    process.exit(0);
+    // Windows: process.exit() while the probe fetches' sockets/abort-timers are
+    // still closing trips libuv's uv_async_send assertion (nodejs/node#56645).
+    // Set the exit code and return so Node drains pending handles first.
+    process.exitCode = 0;
   } else {
     console.log(styleText('red', `${hardFailures.length} required check(s) failed — see remediation above.`));
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
