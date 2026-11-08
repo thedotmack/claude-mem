@@ -19,6 +19,8 @@ describe('CLAUDE.md direct-child pagination', () => {
     for (const args of [['init', '-q'], ['add', 'src/direct.ts']]) {
       expect(Bun.spawnSync(['git', ...args], { cwd: project }).exitCode).toBe(0);
     }
+    const environment = { ...process.env, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' };
+    delete environment.CLAUDE_MEM_CONTEXT_OBSERVATIONS;
     const child = Bun.spawnSync([process.execPath, '-e', `
       const { SessionStore } = await import(${JSON.stringify(source('services/sqlite/SessionStore.ts'))});
       const { paths } = await import(${JSON.stringify(source('shared/paths.ts'))});
@@ -34,7 +36,7 @@ describe('CLAUDE.md direct-child pagination', () => {
         files_read: ['src/direct.ts'], files_modified: []
       }, 1, 0, 100);
       store.close(); process.exitCode = await generateClaudeMd(false);
-    `], { cwd: project, env: { ...process.env, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' } });
+    `], { cwd: project, env: environment });
     expect(child.exitCode).toBe(0);
     expect(existsSync(join(project, 'src', 'CLAUDE.md'))).toBe(false);
   }, 30_000);
