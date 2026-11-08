@@ -320,24 +320,15 @@ var init_atomic_json = __esm({
   }
 });
 
-// src/shared/settings-document-shape.ts
+// src/shared/settings-document.ts
+import { existsSync as existsSync4, renameSync as renameSync2 } from "fs";
 function classifySettingsDocument(document) {
   const env = document.env;
-  return isSettingsRecord(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_")) ? "nested" : "flat";
+  return isRecord(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_")) ? "nested" : "flat";
 }
 function settingsTarget(document) {
   return classifySettingsDocument(document) === "nested" ? document.env : document;
 }
-var isSettingsRecord;
-var init_settings_document_shape = __esm({
-  "src/shared/settings-document-shape.ts"() {
-    "use strict";
-    isSettingsRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  }
-});
-
-// src/shared/settings-document.ts
-import { existsSync as existsSync4, renameSync as renameSync2 } from "fs";
 function withoutStaleRootCopies(document) {
   if (classifySettingsDocument(document) !== "nested") return document;
   return Object.fromEntries(Object.entries(document).filter(([key]) => !key.startsWith("CLAUDE_MEM_")));
@@ -349,7 +340,7 @@ function loadDocument(path4) {
   if (!existsSync4(path4)) return { exists: false };
   try {
     const parsed = readJsonFileWithBom(path4);
-    if (!isSettingsRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
+    if (!isRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
     return { exists: true, document: parsed };
   } catch (error) {
     return { exists: true, error };
@@ -375,7 +366,7 @@ function updateSettingsDocument(path4, updates, seed = {}, mutate, options = {})
     loaded = { exists: false };
   }
   const cloned = cloneDocument(loaded.document ?? seed);
-  if (!isSettingsRecord(cloned)) return { status: "refused", error: new Error("settings seed must be an object") };
+  if (!isRecord(cloned)) return { status: "refused", error: new Error("settings seed must be an object") };
   const document = withoutStaleRootCopies(cloned);
   const target = settingsTarget(document);
   Object.assign(target, updates);
@@ -400,12 +391,12 @@ function restoreQuarantined(quarantinedTo, path4) {
     return false;
   }
 }
-var SETTINGS_FILE_MODE;
+var isRecord, SETTINGS_FILE_MODE;
 var init_settings_document = __esm({
   "src/shared/settings-document.ts"() {
     "use strict";
     init_atomic_json();
-    init_settings_document_shape();
+    isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
     SETTINGS_FILE_MODE = 384;
   }
 });
@@ -1150,10 +1141,6 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WELCOME_HINT_ENABLED: "true",
         CLAUDE_MEM_WORK_STATE_ENABLED: "true",
         // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
-        CLAUDE_MEM_AUTO_CLEAR_ENABLED: "false",
-        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
-        CLAUDE_MEM_AUTO_CLEAR_PERCENT: "33",
-        // Context window use (1-95) that starts the auto-clear
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",
         // 'false' = never block a full-file Read; the file's observation timeline is still added as context
         CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: "false",
