@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import {
@@ -12,10 +12,12 @@ import {
   AUTO_UPDATE_TICK_INTERVAL_MS,
   DEFAULT_PROMOTED_RELEASE_URL,
   AutoUpdateCheckError,
+  CLAUDE_MEM_MARKETPLACE_SOURCE,
   autoUpdateDisabledReason,
   claudeCodeManagedSettingsDirectory,
   claudeCodePluginStateDisabledReason,
   claudeCodeSwitchInForce,
+  claudeMemMarketplaceDeclarationInForce,
   fetchJsonWithTimeout,
   isWorkerQuietBySignals,
   logFailedAutoUpdateTick,
@@ -26,6 +28,7 @@ import {
   readClaudeCodeSettingsEnvBlocks,
   resolvePromotedReleaseUrl,
   runAutoUpdateCheck,
+  writeClaudeCodeKnownMarketplacesUnlessReadOnly,
   type AutoUpdateCheckDeps,
   type AutoUpdateDecision,
   type AutoUpdateDecisionName,
@@ -33,12 +36,15 @@ import {
   type AutoUpdateSettings,
   type ClaudeCodePluginState,
   type ClaudeCodeSettingsEnvBlock,
+  type ClaudeMemMarketplaceDeclaration,
   type FetchJsonResult,
   type WorkerQuietSignals,
 } from '../../../src/services/auto-update/auto-update-check.js';
 import type { InterruptedAttemptInstall } from '../../../src/services/auto-update/auto-update-apply.js';
 import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
 import { defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
+import { writeJsonFileAtomic } from '../../../src/shared/atomic-json.js';
+import { USER_SETTINGS_PATH } from '../../../src/shared/paths.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import type { PluginRootResolution } from '../../../src/shared/worker-utils.js';
 import { sanitizeEnv } from '../../../src/supervisor/env-sanitizer.js';
@@ -63,6 +69,11 @@ const PROMOTED_URL = 'https://raw.githubusercontent.com/thedotmack/claude-mem/ma
 const CLAUDE_CONFIG = path.resolve('auto-update-fixture', '.claude');
 const CACHE_ROOT = path.join(CLAUDE_CONFIG, 'plugins', 'cache', 'thedotmack', 'claude-mem');
 const MARKETPLACE = path.join(CLAUDE_CONFIG, 'plugins', 'marketplaces', 'thedotmack');
+const KNOWN_MARKETPLACES_PATH = path.join(CLAUDE_CONFIG, 'plugins', 'known_marketplaces.json');
+/** When an earlier check read both the promoted file and npm's metadata: the proof the turn-off waits for. */
+const PROVEN_AT = NOW - 25 * HOUR_MS;
+/** Where the scripted npx lookup finds npx by default. */
+const NPX_ON_WORKER_PATH = '/usr/local/bin/npx';
 /** A supervisor pid the scripted liveness probe reports as running. */
 const LIVE_SUPERVISOR_PID = 4242;
 /** One it reports as gone. */
@@ -77,13 +88,63 @@ const SHIPPED_SETTINGS: AutoUpdateSettings = {
   CLAUDE_MEM_RUNTIME: 'worker',
 };
 
-/** What Claude Code's files say on a standard install: registered at the installed version, not turned off. */
+/** claude-mem's entry in Claude Code's known_marketplaces.json, in the order install.ts registerMarketplace writes it. */
+const claudeMemMarketplaceEntry = (autoUpdate: boolean): Record<string, unknown> => ({
+  source: { source: 'github', repo: 'thedotmack/claude-mem' },
+  installLocation: MARKETPLACE,
+  lastUpdated: '2026-11-01T09:30:00.000Z',
+  autoUpdate,
+});
+
+/**
+ * What Claude Code's files say on a standard install: registered at the
+ * installed version, not turned off, and the marketplace entry the installer
+ * writes now, with Claude Code's background update off.
+ */
 const REGISTERED_PLUGIN_STATE: ClaudeCodePluginState = {
   userSettings: { kind: 'not-disabled' },
   registration: { kind: 'registered', versions: [INSTALLED] },
+  knownMarketplaces: { kind: 'read', path: KNOWN_MARKETPLACES_PATH, document: { thedotmack: claudeMemMarketplaceEntry(false) } },
 };
 
 const json = (body: unknown, status = 200): FetchJsonResult => ({ ok: status >= 200 && status < 300, status, body: status < 300 ? body : null });
+
+/** Anthropic's official marketplace, whose background update is on by default and is not claude-mem's to change. */
+const OFFICIAL_MARKETPLACE_ENTRY = {
+  source: { source: 'github', repo: 'anthropics/claude-plugins-official' },
+  installLocation: path.join(CLAUDE_CONFIG, 'plugins', 'marketplaces', 'claude-plugins-official'),
+  lastUpdated: '2026-11-07T08:00:00.000Z',
+  autoUpdate: true,
+};
+
+/**
+ * Claude Code's known_marketplaces.json on an install a pre-Phase 4 installer
+ * registered: claude-mem's entry with autoUpdate true, written in an order the
+ * installer does not use, with a field this version does not know, between
+ * Anthropic's official marketplace and one the user added.
+ */
+const knownMarketplacesWithBackgroundUpdateOn = (): Record<string, unknown> => ({
+  'claude-plugins-official': structuredClone(OFFICIAL_MARKETPLACE_ENTRY),
+  thedotmack: {
+    source: { source: 'github', repo: 'thedotmack/claude-mem' },
+    autoUpdate: true,
+    installLocation: MARKETPLACE,
+    lastUpdated: '2026-10-28T14:02:51.000Z',
+    aFieldThisVersionDoesNotKnow: { kept: ['as', 'read'] },
+  },
+  'team-tools': {
+    source: { source: 'git', url: 'https://git.example.com/team/tools.git' },
+    installLocation: path.join(CLAUDE_CONFIG, 'plugins', 'marketplaces', 'team-tools'),
+    lastUpdated: '2026-10-30T17:45:12.000Z',
+  },
+});
+
+/** What a correct turn-off writes: the document read, with only thedotmack.autoUpdate set to false. */
+function withClaudeMemBackgroundUpdateOff(knownMarketplaces: Record<string, unknown>): Record<string, unknown> {
+  const turnedOff = structuredClone(knownMarketplaces);
+  (turnedOff.thedotmack as Record<string, unknown>).autoUpdate = false;
+  return turnedOff;
+}
 
 /** The shape registry.npmjs.org/claude-mem/15.12.0 had on 2026-11-07, cut to the fields the check reads. */
 function workflowPublishedManifest(version: string): Record<string, unknown> {
@@ -116,6 +177,17 @@ interface Scenario {
   quiet?: boolean;
   /** Where a vanished attempt left the install (deps.readInterruptedAttemptInstall); on the previous version by default. An Error is thrown. */
   interruptedAttemptInstall?: InterruptedAttemptInstall | Error;
+  /**
+   * Claude Code's known_marketplaces.json as the plugin state reads it: a
+   * document, or null for no file. Wins over pluginState's. By default
+   * pluginState's, which is REGISTERED_PLUGIN_STATE's: claude-mem's entry as
+   * the installer writes it now, with autoUpdate false.
+   */
+  knownMarketplaces?: Record<string, unknown> | null;
+  /** extraKnownMarketplaces.thedotmack in Claude Code's settings files, in the order read; none by default. */
+  claudeMemMarketplaceDeclarations?: ClaudeMemMarketplaceDeclaration[];
+  /** What the npx lookup finds on the worker's PATH; NPX_ON_WORKER_PATH by default, null for none. */
+  npx?: string | null;
 }
 
 /** The readings of an install left on the previous version, as auto-update-apply.ts describeInstallVersions words them. */
@@ -134,10 +206,21 @@ interface CheckHarness {
   events: Array<{ event: string; properties: Record<string, unknown> }>;
   pluginRootLookups: () => number;
   interruptedAttemptReads: Array<{ targetVersion: string; previousVersion: string }>;
+  knownMarketplacesWrites: Array<Record<string, unknown>>;
+  /** Replace what known_marketplaces.json holds (null: no file), as Claude Code writing it would. */
+  setKnownMarketplaces: (knownMarketplaces: Record<string, unknown> | null) => void;
+  npxLookups: () => number;
 }
 
 function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
   let stored = { ...defaultAutoUpdateState(), ...structuredClone(scenario.state ?? {}) } as AutoUpdateState & Record<string, unknown>;
+  const asRead = (document: Record<string, unknown> | null): ClaudeCodePluginState['knownMarketplaces'] =>
+    ({ kind: 'read', path: KNOWN_MARKETPLACES_PATH, document: structuredClone(document) });
+  let knownMarketplacesFile: ClaudeCodePluginState['knownMarketplaces'] = scenario.knownMarketplaces !== undefined
+    ? asRead(scenario.knownMarketplaces)
+    : structuredClone((scenario.pluginState ?? REGISTERED_PLUGIN_STATE).knownMarketplaces);
+  const knownMarketplacesWrites: Array<Record<string, unknown>> = [];
+  let npxLookups = 0;
   let stateReads = 0;
   let claudeCodeSettingsReads = 0;
   let pluginStateReads = 0;
@@ -159,11 +242,24 @@ function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
     readSettings: () => ({ ...SHIPPED_SETTINGS, ...scenario.settings }) as AutoUpdateSettings,
     readClaudeCodeSettingsEnv: () => {
       claudeCodeSettingsReads++;
-      return { envBlocks: structuredClone(scenario.claudeCodeSettingsEnv ?? []), skipped: [] };
+      return {
+        envBlocks: structuredClone(scenario.claudeCodeSettingsEnv ?? []),
+        skipped: [],
+        claudeMemMarketplaceDeclarations: structuredClone(scenario.claudeMemMarketplaceDeclarations ?? []),
+      };
     },
+    // known_marketplaces.json as it is now: what the scenario started with, then what the turn-off or Claude Code wrote.
     readClaudeCodePluginState: () => {
       pluginStateReads++;
-      return structuredClone(scenario.pluginState ?? REGISTERED_PLUGIN_STATE);
+      return { ...structuredClone(scenario.pluginState ?? REGISTERED_PLUGIN_STATE), knownMarketplaces: structuredClone(knownMarketplacesFile) };
+    },
+    writeClaudeCodeKnownMarketplaces: (knownMarketplaces) => {
+      knownMarketplacesWrites.push(structuredClone(knownMarketplaces));
+      knownMarketplacesFile = asRead(knownMarketplaces);
+    },
+    findNpxOnWorkerPath: () => {
+      npxLookups++;
+      return scenario.npx === undefined ? NPX_ON_WORKER_PATH : scenario.npx;
     },
     readState: () => { stateReads++; return structuredClone(stored); },
     writeState: (state) => { stored = structuredClone(state) as typeof stored; writes.push(structuredClone(state)); },
@@ -207,6 +303,9 @@ function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
     events,
     pluginRootLookups: () => pluginRootLookups,
     interruptedAttemptReads,
+    knownMarketplacesWrites,
+    setKnownMarketplaces: (knownMarketplaces) => { knownMarketplacesFile = asRead(knownMarketplaces); },
+    npxLookups: () => npxLookups,
   };
 }
 
@@ -235,6 +334,12 @@ const userSettingsEnv = (env: Record<string, unknown>): ClaudeCodeSettingsEnvBlo
 const managedSettingsEnv = (env: Record<string, unknown>): ClaudeCodeSettingsEnvBlock =>
   ({ path: '/Library/Application Support/ClaudeCode/managed-settings.json', env });
 
+/** Claude Code's known_marketplaces.json not written, and npx not looked for. Callers check that the plugin state, which reads the file, was not read either. */
+function expectKnownMarketplacesNotWritten(checkHarness: CheckHarness): void {
+  expect(checkHarness.knownMarketplacesWrites).toHaveLength(0);
+  expect(checkHarness.npxLookups()).toBe(0);
+}
+
 /** Off by claude-mem's own settings or the worker's env: Claude Code's settings files are not even read. */
 function expectNothingTouchedAfterSettings(checkHarness: CheckHarness): void {
   expect(checkHarness.claudeCodeSettingsReads()).toBe(0);
@@ -243,6 +348,7 @@ function expectNothingTouchedAfterSettings(checkHarness: CheckHarness): void {
   expect(checkHarness.stateReads()).toBe(0);
   expect(checkHarness.writes).toHaveLength(0);
   expect(checkHarness.fetches).toHaveLength(0);
+  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 /** Off by a switch in one of Claude Code's settings files: read once, and nothing after it. */
@@ -253,6 +359,7 @@ function expectNothingTouchedAfterClaudeCodeSettings(checkHarness: CheckHarness)
   expect(checkHarness.stateReads()).toBe(0);
   expect(checkHarness.writes).toHaveLength(0);
   expect(checkHarness.fetches).toHaveLength(0);
+  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 /** Off by claude-mem's own state in Claude Code: both of Claude Code's reads ran once, and nothing after them. */
@@ -264,6 +371,7 @@ function expectNothingTouchedAfterPluginState(checkHarness: CheckHarness): void 
   expect(checkHarness.writes).toHaveLength(0);
   expect(checkHarness.fetches).toHaveLength(0);
   expect(checkHarness.launches).toHaveLength(0);
+  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 function expectVanishedSupervisorRecordedAsFailed(checkHarness: CheckHarness, messagePart: string): void {
@@ -347,15 +455,15 @@ describe('runAutoUpdateCheck — one row per gate', () => {
         expectNothingTouchedAfterClaudeCodeSettings(checkHarness);
       },
     },
-    { name: 'off: DISABLE_UPDATES=1', scenario: { env: { DISABLE_UPDATES: '1' } }, decision: 'disabled', verify: expectNothingTouchedAfterSettings },
-    { name: 'off: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1', scenario: { env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }, decision: 'disabled', verify: expectNothingTouchedAfterSettings },
+    { name: 'off: DISABLE_UPDATES=1, read after Claude Code\'s settings files too', scenario: { env: { DISABLE_UPDATES: '1' } }, decision: 'disabled', verify: expectNothingTouchedAfterClaudeCodeSettings },
+    { name: 'off: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, read after Claude Code\'s settings files too', scenario: { env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }, decision: 'disabled', verify: expectNothingTouchedAfterClaudeCodeSettings },
     {
       name: 'off: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0 (any non-empty value is on)',
       scenario: { env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' } },
       decision: 'disabled',
       verify: (checkHarness, result) => {
         expect(result).toEqual({ decision: 'disabled', reason: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set (Claude Code\'s switch for no background updates)' });
-        expectNothingTouchedAfterSettings(checkHarness);
+        expectNothingTouchedAfterClaudeCodeSettings(checkHarness);
       },
     },
     { name: 'off: CLAUDE_MEM_WORKER_AUTOSTART=false', scenario: { settings: { CLAUDE_MEM_WORKER_AUTOSTART: 'false' } }, decision: 'disabled', verify: expectNothingTouchedAfterSettings },
@@ -386,7 +494,8 @@ describe('runAutoUpdateCheck — one row per gate', () => {
       scenario: { claudeCodeSettingsEnv: [userSettingsEnv({ DISABLE_UPDATES: '0', ANTHROPIC_MODEL: 'opus' }), managedSettingsEnv({})] },
       decision: 'apply',
     },
-    // FORCE_AUTOUPDATE_PLUGINS=1 forces plugin auto-updates over DISABLE_AUTOUPDATER, read from the same places.
+    // FORCE_AUTOUPDATE_PLUGINS=1 forces plugin auto-updates over all three switches, read from the same places
+    // (the plugins/loading docs: "the whole pass is off ... unless you also set FORCE_AUTOUPDATE_PLUGINS=1").
     { name: 'on: DISABLE_AUTOUPDATER=1 with FORCE_AUTOUPDATE_PLUGINS=1, both in the env', scenario: { env: { DISABLE_AUTOUPDATER: '1', FORCE_AUTOUPDATE_PLUGINS: '1' } }, decision: 'apply' },
     {
       name: 'on: DISABLE_AUTOUPDATER=1 in the env, FORCE_AUTOUPDATE_PLUGINS=1 in Claude Code\'s user settings',
@@ -398,22 +507,16 @@ describe('runAutoUpdateCheck — one row per gate', () => {
       scenario: { env: { FORCE_AUTOUPDATE_PLUGINS: '1' }, claudeCodeSettingsEnv: [managedSettingsEnv({ DISABLE_AUTOUPDATER: '1' })] },
       decision: 'apply',
     },
+    { name: 'on: DISABLE_UPDATES=1 with FORCE_AUTOUPDATE_PLUGINS=1, both in the env', scenario: { env: { DISABLE_UPDATES: '1', FORCE_AUTOUPDATE_PLUGINS: '1' } }, decision: 'apply' },
     {
-      name: 'off: DISABLE_UPDATES=1 still turns it off with FORCE_AUTOUPDATE_PLUGINS=1, and nothing else is read',
-      scenario: { env: { DISABLE_UPDATES: '1', FORCE_AUTOUPDATE_PLUGINS: '1' } },
-      decision: 'disabled',
-      verify: (checkHarness, result) => {
-        expect(result).toEqual({ decision: 'disabled', reason: 'DISABLE_UPDATES is set (Claude Code\'s switch for no background updates)' });
-        expectNothingTouchedAfterSettings(checkHarness);
-      },
+      name: 'on: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 and DISABLE_UPDATES=1 in Claude Code\'s user settings, FORCE_AUTOUPDATE_PLUGINS=1 in the env',
+      scenario: { env: { FORCE_AUTOUPDATE_PLUGINS: '1' }, claudeCodeSettingsEnv: [userSettingsEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_UPDATES: '1' })] },
+      decision: 'apply',
     },
     {
-      name: 'off: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC still turns it off with FORCE_AUTOUPDATE_PLUGINS=1',
-      scenario: { env: { FORCE_AUTOUPDATE_PLUGINS: '1' }, claudeCodeSettingsEnv: [userSettingsEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' })] },
-      decision: 'disabled',
-      verify: (_checkHarness, result) => {
-        expect(result).toMatchObject({ reason: expect.stringContaining('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set in the env block of') });
-      },
+      name: 'on: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in the env, FORCE_AUTOUPDATE_PLUGINS=1 in Claude Code\'s managed settings',
+      scenario: { env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, claudeCodeSettingsEnv: [managedSettingsEnv({ FORCE_AUTOUPDATE_PLUGINS: '1' })] },
+      decision: 'apply',
     },
     {
       name: 'off: FORCE_AUTOUPDATE_PLUGINS=true does not force (only 1 does)',
@@ -487,6 +590,108 @@ describe('runAutoUpdateCheck — one row per gate', () => {
         expectNothingTouchedAfterPluginState(checkHarness);
       },
     },
+    {
+      name: 'off: known_marketplaces.json does not parse as a JSON object, so the installer would stop on it after rewriting the marketplace copy and the cache',
+      scenario: { pluginState: { ...REGISTERED_PLUGIN_STATE, knownMarketplaces: { kind: 'unreadable', path: KNOWN_MARKETPLACES_PATH, problem: `${KNOWN_MARKETPLACES_PATH} does not hold a JSON object` } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: `${KNOWN_MARKETPLACES_PATH} does not hold a JSON object, so an update could not register the marketplace there: it would stop on that file, or write it back without claude-mem's entry, after it had already rewritten the marketplace copy and the plugin cache`,
+        });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem\'s marketplace entry was added from a full git URL, which an update would replace with the installer\'s',
+      scenario: { knownMarketplaces: { thedotmack: { ...claudeMemMarketplaceEntry(false), source: { source: 'git', url: 'https://github.com/thedotmack/claude-mem.git' } } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: `the thedotmack entry in ${KNOWN_MARKETPLACES_PATH} has source {"source":"git","url":"https://github.com/thedotmack/claude-mem.git"}, not the one the installer writes (source {"source":"github","repo":"thedotmack/claude-mem"} at ${MARKETPLACE}), so it was added another way, and an unattended update would replace it`,
+        });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem\'s marketplace entry is pinned to a ref (owner/repo#ref)',
+      scenario: { knownMarketplaces: { thedotmack: { ...claudeMemMarketplaceEntry(true), source: { source: 'github', repo: 'thedotmack/claude-mem', ref: 'v15.11.0' } } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toMatchObject({ reason: expect.stringContaining('has source {"source":"github","repo":"thedotmack/claude-mem","ref":"v15.11.0"}, not the one the installer writes') });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem\'s marketplace entry was added from a local path, whose installLocation is that path',
+      scenario: {
+        knownMarketplaces: {
+          thedotmack: { source: { source: 'directory', path: path.resolve('claude-mem-checkout') }, installLocation: path.resolve('claude-mem-checkout'), lastUpdated: '2026-11-01T09:30:00.000Z' },
+        },
+      },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toMatchObject({ reason: expect.stringContaining(`has source ${JSON.stringify({ source: 'directory', path: path.resolve('claude-mem-checkout') })}`) });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem\'s marketplace entry has the installer\'s source but another installLocation',
+      scenario: { knownMarketplaces: { thedotmack: { ...claudeMemMarketplaceEntry(true), installLocation: path.resolve('elsewhere', 'thedotmack') } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toMatchObject({ reason: expect.stringContaining(`has installLocation ${JSON.stringify(path.resolve('elsewhere', 'thedotmack'))}, not the one the installer writes`) });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem\'s marketplace entry is not an object',
+      scenario: { knownMarketplaces: { thedotmack: 'thedotmack/claude-mem' } },
+      decision: 'disabled',
+      verify: (_checkHarness, result) => expect(result).toMatchObject({ reason: `the thedotmack entry in ${KNOWN_MARKETPLACES_PATH} is a string, not the one the installer writes (source {"source":"github","repo":"thedotmack/claude-mem"} at ${MARKETPLACE}), so it was added another way, and an unattended update would replace it` }),
+    },
+    {
+      name: 'on: claude-mem\'s marketplace entry is the installer\'s, its installLocation written with a trailing separator',
+      scenario: { knownMarketplaces: { thedotmack: { ...claudeMemMarketplaceEntry(false), installLocation: `${MARKETPLACE}${path.sep}` } } },
+      decision: 'apply',
+    },
+
+    // Gate 1: Claude Code's own background update of claude-mem's marketplace, as its settings files declare it.
+    {
+      name: 'off: extraKnownMarketplaces.thedotmack.autoUpdate is true in Claude Code\'s user settings, which outranks known_marketplaces.json',
+      scenario: { claudeMemMarketplaceDeclarations: [{ path: path.join(CLAUDE_CONFIG, 'settings.json'), autoUpdate: true }] },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: `extraKnownMarketplaces.thedotmack.autoUpdate is true in ${path.join(CLAUDE_CONFIG, 'settings.json')}: Claude Code's own background update of claude-mem's marketplace is on there, and Claude Code reads that before known_marketplaces.json, so running claude-mem's updater too would race it`,
+        });
+        expectNothingTouchedAfterClaudeCodeSettings(checkHarness);
+      },
+    },
+    {
+      name: 'off: the managed settings declare it with autoUpdate true over the user\'s false',
+      scenario: {
+        claudeMemMarketplaceDeclarations: [
+          { path: path.join(CLAUDE_CONFIG, 'settings.json'), autoUpdate: false },
+          { path: '/Library/Application Support/ClaudeCode/managed-settings.json', autoUpdate: true },
+        ],
+      },
+      decision: 'disabled',
+      verify: (_checkHarness, result) => expect(result).toMatchObject({ reason: expect.stringContaining('autoUpdate is true in /Library/Application Support/ClaudeCode/managed-settings.json') }),
+    },
+    {
+      name: 'on: the declaration in force sets no autoUpdate, replacing the user\'s true whole, so known_marketplaces.json decides',
+      scenario: {
+        claudeMemMarketplaceDeclarations: [
+          { path: path.join(CLAUDE_CONFIG, 'settings.json'), autoUpdate: true },
+          { path: '/Library/Application Support/ClaudeCode/managed-settings.json', autoUpdate: undefined },
+        ],
+      },
+      decision: 'apply',
+    },
+    { name: 'on: extraKnownMarketplaces.thedotmack.autoUpdate is false: Claude Code\'s own update is off', scenario: { claudeMemMarketplaceDeclarations: [{ path: path.join(CLAUDE_CONFIG, 'settings.json'), autoUpdate: false }] }, decision: 'apply' },
 
     // Gate 2: install shape.
     { name: 'no install', scenario: { install: null }, decision: 'no-install' },
@@ -1261,10 +1466,10 @@ describe('runAutoUpdateCheck — across ticks', () => {
 
   it('keeps the state fields this version does not know when it saves', async () => {
     silenceLogger();
-    const checkHarness = buildCheckHarness({ state: { claudeCodeBackgroundUpdateTurnedOffAt: NOW - HOUR_MS } });
+    const checkHarness = buildCheckHarness({ state: { rolloutCohort: { percent: 10, bucket: 'b' } } });
 
     expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
-    expect(checkHarness.stored().claudeCodeBackgroundUpdateTurnedOffAt).toBe(NOW - HOUR_MS);
+    expect(checkHarness.stored().rolloutCohort).toEqual({ percent: 10, bucket: 'b' });
   });
 
   it('names the stage when a tick cannot finish', async () => {
@@ -1327,12 +1532,610 @@ describe('runAutoUpdateCheck — across ticks', () => {
     const settingsFiles: ClaudeCodeSettingsEnvBlock[] = [userSettingsEnv({})];
     const checkHarness = buildCheckHarness({ quiet: false });
     checkHarness.deps.now = () => now;
-    checkHarness.deps.readClaudeCodeSettingsEnv = () => ({ envBlocks: structuredClone(settingsFiles), skipped: [] });
+    checkHarness.deps.readClaudeCodeSettingsEnv = () => ({ envBlocks: structuredClone(settingsFiles), skipped: [], claudeMemMarketplaceDeclarations: [] });
 
     expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('deferred-busy');
     settingsFiles[0].env.DISABLE_UPDATES = 1;
     now = NOW + HOUR_MS;
     expect(await runAutoUpdateCheck(checkHarness.deps)).toMatchObject({ decision: 'disabled', reason: expect.stringContaining('DISABLE_UPDATES is set in the env block of') });
+  });
+});
+
+describe('runAutoUpdateCheck — turning off Claude Code\'s background update of the thedotmack marketplace', () => {
+  /** known_marketplaces.json as an installer from before Phase 4 left it, on a machine where an earlier check proved claude-mem's updater. */
+  const backgroundUpdateOn = (scenario: Scenario = {}): Scenario => ({
+    knownMarketplaces: knownMarketplacesWithBackgroundUpdateOn(),
+    ...scenario,
+    state: { promotedFileAndNpmMetadataReadAt: PROVEN_AT, ...scenario.state },
+  });
+  /** The same, on a machine where no check has proved it yet. */
+  const backgroundUpdateOnNotYetProven = (scenario: Scenario = {}): Scenario => ({ knownMarketplaces: knownMarketplacesWithBackgroundUpdateOn(), ...scenario });
+  /** The promoted version is the installed one, so the check ends at gate 6. */
+  const upToDate: Scenario = { responses: { [PROMOTED_URL]: json({ schemaVersion: 1, promotedVersion: INSTALLED }), [npmVersionMetadataUrl(INSTALLED)]: json(workflowPublishedManifest(INSTALLED)) } };
+  const NOT_YET_PROVEN = 'claude-mem\'s updater has not yet read both the promoted file and npm\'s metadata for the promoted version on this machine, so Claude Code\'s background update of the thedotmack marketplace stays on until it has';
+  const NPX_NOT_FOUND = 'npx is not on the worker\'s PATH, so claude-mem\'s updater could not run its installer, and Claude Code\'s background update of the thedotmack marketplace stays on';
+  const USER_SETTINGS = path.join(CLAUDE_CONFIG, 'settings.json');
+  const MANAGED_SETTINGS = '/Library/Application Support/ClaudeCode/managed-settings.json';
+  const turnedOffLogs = (spies: LogSpies) => spies.info.mock.calls.filter((call) => String(call[1]).startsWith('Turned off Claude Code\'s background update'));
+  const leftOnLogs = (spy: LogSpies['info']) => spy.mock.calls.filter((call) => String(call[1]).startsWith('Left Claude Code\'s background update on'));
+  const stepFailureLogs = (spy: LogSpies['warn']) => spy.mock.calls.filter((call) => String(call[1]).startsWith('Could not turn off Claude Code\'s background update'));
+  const npmMetadataLogs = (spies: LogSpies) => spies.warn.mock.calls.filter((call) => String(call[1]).startsWith('npm\'s metadata for the promoted version did not prove claude-mem\'s updater here'));
+  const claudeMemEntryWithoutAutoUpdate = (): Record<string, unknown> => {
+    const entry = claudeMemMarketplaceEntry(false);
+    delete entry.autoUpdate;
+    return entry;
+  };
+
+  it('once a check has proved claude-mem\'s updater here, sets only thedotmack.autoUpdate from true to false, keeping every other entry and field in the order read, records the time, logs it, and the tick goes on', async () => {
+    const spies = silenceLogger();
+    const checkHarness = buildCheckHarness(backgroundUpdateOn({ state: { claudeCodeBackgroundUpdateLeftOnReason: NOT_YET_PROVEN } }));
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    const expected = withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn());
+    expect(checkHarness.knownMarketplacesWrites).toEqual([expected]);
+    // toEqual ignores key order; the serialized text does not.
+    expect(JSON.stringify(checkHarness.knownMarketplacesWrites[0])).toBe(JSON.stringify(expected));
+    // Anthropic's official marketplace keeps its own background update.
+    expect(checkHarness.knownMarketplacesWrites[0]['claude-plugins-official']).toEqual(OFFICIAL_MARKETPLACE_ENTRY);
+    // The file is read once a tick, with the rest of Claude Code's plugin state, and written from that read.
+    expect(checkHarness.pluginStateReads()).toBe(1);
+    expect(checkHarness.npxLookups()).toBe(1);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW, claudeCodeBackgroundUpdateLeftOnReason: null });
+    expect(turnedOffLogs(spies)).toHaveLength(1);
+    expect(checkHarness.launches).toEqual([{ targetVersion: PROMOTED, previousVersion: INSTALLED }]);
+  });
+
+  it('runs before the due gate: a tick that is not due turns it off too and saves the time, without the network', async () => {
+    silenceLogger();
+    const checkHarness = buildCheckHarness(backgroundUpdateOn({ state: { lastNetworkCheckAt: NOW - 23 * HOUR_MS } }));
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(1);
+    expect(checkHarness.fetches).toEqual([]);
+    expect(checkHarness.writes).toHaveLength(1);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW, lastNetworkCheckAt: NOW - 23 * HOUR_MS });
+  });
+
+  const nothingToTurnOff: Array<[string, Scenario]> = [
+    ['autoUpdate is already false, as the installer writes it now', { knownMarketplaces: { 'claude-plugins-official': structuredClone(OFFICIAL_MARKETPLACE_ENTRY), thedotmack: claudeMemMarketplaceEntry(false) } }],
+    ['the entry has no autoUpdate (off: Claude Code\'s default for a third-party marketplace)', { knownMarketplaces: { thedotmack: claudeMemEntryWithoutAutoUpdate() } }],
+    ['there is no thedotmack entry, only another marketplace with its background update on', { knownMarketplaces: { 'claude-plugins-official': structuredClone(OFFICIAL_MARKETPLACE_ENTRY) } }],
+    ['there is no known_marketplaces.json', { knownMarketplaces: null }],
+    // Claude Code reads extraKnownMarketplaces before known_marketplaces.json, so its update is off already.
+    ['extraKnownMarketplaces.thedotmack.autoUpdate is false in Claude Code\'s user settings, over true in known_marketplaces.json', {
+      knownMarketplaces: knownMarketplacesWithBackgroundUpdateOn(),
+      claudeMemMarketplaceDeclarations: [{ path: USER_SETTINGS, autoUpdate: false }],
+    }],
+    ['the managed settings declare it with autoUpdate false, replacing the user\'s true whole', {
+      knownMarketplaces: knownMarketplacesWithBackgroundUpdateOn(),
+      claudeMemMarketplaceDeclarations: [{ path: USER_SETTINGS, autoUpdate: true }, { path: MANAGED_SETTINGS, autoUpdate: false }],
+    }],
+  ];
+  for (const [name, scenario] of nothingToTurnOff) {
+    it(`writes nothing, looks for no npx, and clears a reason recorded earlier when ${name}`, async () => {
+      const spies = silenceLogger();
+      const checkHarness = buildCheckHarness({ ...scenario, state: { promotedFileAndNpmMetadataReadAt: PROVEN_AT, claudeCodeBackgroundUpdateLeftOnReason: NOT_YET_PROVEN } });
+
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+      expect(checkHarness.npxLookups()).toBe(0);
+      expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: null, claudeCodeBackgroundUpdateLeftOnReason: null });
+      expect(turnedOffLogs(spies)).toEqual([]);
+      expect(leftOnLogs(spies.info)).toEqual([]);
+      expect(stepFailureLogs(spies.warn)).toEqual([]);
+    });
+  }
+
+  it('makes no extra npm read for an install already up to date while nothing waits for proof', async () => {
+    silenceLogger();
+    // Nothing to turn off; and turned off this tick, from an earlier proof.
+    for (const scenario of [upToDate, backgroundUpdateOn(upToDate)]) {
+      const checkHarness = buildCheckHarness(scenario);
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('up-to-date');
+      expect(checkHarness.fetches.map((recordedFetch) => recordedFetch.url)).toEqual([PROMOTED_URL]);
+    }
+  });
+
+  // Every gate that turns auto-update off comes first: a user who turned
+  // claude-mem's updater off keeps Claude Code's setting as it is. Gate 3 too:
+  // while an attempt is in flight, its supervisor writes the state file.
+  const stoppedBeforeTheStep: Array<[string, Scenario, AutoUpdateDecisionName]> = [
+    ['CLAUDE_MEM_AUTO_UPDATE=false', { settings: { CLAUDE_MEM_AUTO_UPDATE: 'false' } }, 'disabled'],
+    ['CLAUDE_MEM_AUTO_UPDATE is "off" (only "true" turns it on)', { settings: { CLAUDE_MEM_AUTO_UPDATE: 'off' } }, 'disabled'],
+    ['DISABLE_AUTOUPDATER=1 is in the worker\'s env', { env: { DISABLE_AUTOUPDATER: '1' } }, 'disabled'],
+    ['DISABLE_UPDATES=1 is in the worker\'s env', { env: { DISABLE_UPDATES: '1' } }, 'disabled'],
+    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is in the worker\'s env', { env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }, 'disabled'],
+    ['DISABLE_AUTOUPDATER=1 is in the env block of Claude Code\'s user settings', { claudeCodeSettingsEnv: [userSettingsEnv({ DISABLE_AUTOUPDATER: '1' })] }, 'disabled'],
+    ['DISABLE_UPDATES=1 is in the env block of Claude Code\'s managed settings', { claudeCodeSettingsEnv: [managedSettingsEnv({ DISABLE_UPDATES: '1' })] }, 'disabled'],
+    ['extraKnownMarketplaces.thedotmack.autoUpdate is true in Claude Code\'s user settings', { claudeMemMarketplaceDeclarations: [{ path: USER_SETTINGS, autoUpdate: true }] }, 'disabled'],
+    ['CLAUDE_MEM_WORKER_AUTOSTART=false', { settings: { CLAUDE_MEM_WORKER_AUTOSTART: 'false' } }, 'disabled'],
+    ['CLAUDE_MEM_WORKER_URL is set', { settings: { CLAUDE_MEM_WORKER_URL: 'http://192.168.1.20:37777' } }, 'disabled'],
+    ['CLAUDE_MEM_RUNTIME=server', { settings: { CLAUDE_MEM_RUNTIME: 'server' } }, 'disabled'],
+    ['claude-mem is turned off in Claude Code', { pluginState: { ...REGISTERED_PLUGIN_STATE, userSettings: { kind: 'explicitly-disabled', path: USER_SETTINGS } } }, 'disabled'],
+    ['claude-mem was uninstalled from Claude Code', { pluginState: { ...REGISTERED_PLUGIN_STATE, registration: { kind: 'not-registered', path: path.join(CLAUDE_CONFIG, 'plugins', 'installed_plugins.json') } } }, 'disabled'],
+    ['Claude Code\'s user settings do not parse', { pluginState: { ...REGISTERED_PLUGIN_STATE, userSettings: { kind: 'unreadable', path: USER_SETTINGS, problem: `${USER_SETTINGS} is not valid JSON` } } }, 'disabled'],
+    ['claude-mem\'s marketplace entry was added from a git URL', { knownMarketplaces: { thedotmack: { ...claudeMemMarketplaceEntry(true), source: { source: 'git', url: 'https://github.com/thedotmack/claude-mem.git' } } } }, 'disabled'],
+    ['there is no install', { install: null }, 'no-install'],
+    ['the install is a dev checkout', { install: { root: path.resolve('claude-mem-checkout', 'plugin'), version: '15.13.0', missingDependencies: [] } }, 'not-a-standard-install'],
+    ['the installed version is unknown', { install: { root: path.join(MARKETPLACE, 'plugin'), version: null, missingDependencies: [] } }, 'unknown-installed-version'],
+    ['an attempt is in flight', { state: inFlightAttemptState(NOW - 10 * MINUTE_MS, LIVE_SUPERVISOR_PID) }, 'attempt-in-flight'],
+  ];
+  for (const [name, scenario, decision] of stoppedBeforeTheStep) {
+    it(`leaves Claude Code's background update as it is, writing nothing, while ${name}`, async () => {
+      silenceLogger();
+      const checkHarness = buildCheckHarness(backgroundUpdateOn(scenario));
+
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe(decision);
+      expectKnownMarketplacesNotWritten(checkHarness);
+      expect(checkHarness.writes).toEqual([]);
+    });
+  }
+
+  it('leaves it on until a check reads both the promoted file and npm\'s metadata: it says why once, records the reason, and the check that reads both lets the next tick turn it off', async () => {
+    const spies = silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven());
+    checkHarness.deps.now = () => now;
+
+    // The step runs before this tick's check, which then reads both (gate 7).
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+    expect(checkHarness.npxLookups()).toBe(0);
+    expect(checkHarness.stored()).toMatchObject({
+      promotedFileAndNpmMetadataReadAt: NOW,
+      claudeCodeBackgroundUpdateTurnedOffAt: null,
+      claudeCodeBackgroundUpdateLeftOnReason: NOT_YET_PROVEN,
+    });
+    expect(leftOnLogs(spies.info).map((call) => call[1])).toEqual([`Left Claude Code's background update on: ${NOT_YET_PROVEN}`]);
+
+    // An hour later the check is not due, and the step turns it off.
+    now = NOW + HOUR_MS;
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toEqual([withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())]);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW + HOUR_MS, claudeCodeBackgroundUpdateLeftOnReason: null });
+    expect(leftOnLogs(spies.info)).toHaveLength(1);
+  });
+
+  it('says why it is left on once per boot, and again after a restart, while no check proves the updater', async () => {
+    const spies = silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven({ responses: { [PROMOTED_URL]: new Error('getaddrinfo ENOTFOUND raw.githubusercontent.com') } }));
+    checkHarness.deps.now = () => now;
+
+    for (let hour = 0; hour < 3; hour++) {
+      now = NOW + hour * HOUR_MS;
+      await runAutoUpdateCheck(checkHarness.deps);
+    }
+    expect(leftOnLogs(spies.info)).toHaveLength(1);
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+    expect(checkHarness.stored().claudeCodeBackgroundUpdateLeftOnReason).toBe(NOT_YET_PROVEN);
+
+    checkHarness.deps.oncePerBootLogsWritten = new Set();
+    await runAutoUpdateCheck(checkHarness.deps);
+    expect(leftOnLogs(spies.info)).toHaveLength(2);
+  });
+
+  it('when the install is already up to date, reads npm\'s metadata for the promoted version once to prove the updater, and the next tick turns it off', async () => {
+    silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven(upToDate));
+    checkHarness.deps.now = () => now;
+
+    expect(await runAutoUpdateCheck(checkHarness.deps)).toEqual({ decision: 'up-to-date', installedVersion: INSTALLED, promotedVersion: INSTALLED });
+    expect(checkHarness.fetches).toEqual([
+      { url: PROMOTED_URL, timeoutMs: AUTO_UPDATE_FETCH_TIMEOUT_MS },
+      { url: npmVersionMetadataUrl(INSTALLED), timeoutMs: AUTO_UPDATE_FETCH_TIMEOUT_MS },
+    ]);
+    expect(checkHarness.stored()).toMatchObject({ promotedFileAndNpmMetadataReadAt: NOW, lastCheckError: null });
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+
+    now = NOW + HOUR_MS;
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(1);
+    expect(checkHarness.fetches).toHaveLength(2);
+  });
+
+  it('on a network that blocks registry.npmjs.org, leaves it on: the read fails, is the check\'s error, and the next due check reads it again', async () => {
+    const spies = silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven({
+      responses: { ...upToDate.responses, [npmVersionMetadataUrl(INSTALLED)]: new Error('getaddrinfo ENOTFOUND registry.npmjs.org') },
+    }));
+    checkHarness.deps.now = () => now;
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('up-to-date');
+    // A copy: bun's toMatchObject writes its asymmetric matchers into the object it checks, and later ticks read this state.
+    expect(structuredClone(checkHarness.stored())).toMatchObject({
+      promotedFileAndNpmMetadataReadAt: null,
+      lastCheckError: { at: NOW, message: expect.stringContaining('ENOTFOUND registry.npmjs.org') },
+      claudeCodeBackgroundUpdateLeftOnReason: NOT_YET_PROVEN,
+    });
+    expect(npmMetadataLogs(spies).map((call) => call[2])).toEqual([{ promotedVersion: INSTALLED, problem: expect.stringContaining('ENOTFOUND registry.npmjs.org') }]);
+
+    // Not due an hour later: no network, nothing written.
+    now = NOW + HOUR_MS;
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.fetches).toHaveLength(2);
+    // The next due check reads it again.
+    now = NOW + AUTO_UPDATE_CHECK_INTERVAL_MS;
+    await runAutoUpdateCheck(checkHarness.deps);
+    expect(checkHarness.fetches.map((recordedFetch) => recordedFetch.url)).toEqual([PROMOTED_URL, npmVersionMetadataUrl(INSTALLED), PROMOTED_URL, npmVersionMetadataUrl(INSTALLED)]);
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+  });
+
+  const provesNothing: Array<[string, Scenario, AutoUpdateDecisionName]> = [
+    ['the promoted file cannot be read (gate 5)', { responses: { [PROMOTED_URL]: new Error('connect ETIMEDOUT') } }, 'check-failed'],
+    ['npm does not show a newer promoted version published by the workflow (gate 7)', { responses: { [npmVersionMetadataUrl(PROMOTED)]: json({ ...workflowPublishedManifest(PROMOTED), gitHead: undefined }) } }, 'not-published-by-workflow'],
+    ['npm\'s metadata for a newer promoted version cannot be read (gate 7)', { responses: { [npmVersionMetadataUrl(PROMOTED)]: json(null, 503) } }, 'check-failed'],
+    ['the install is up to date and npm does not show the promoted version published by the workflow (gate 6)', {
+      responses: { ...upToDate.responses, [npmVersionMetadataUrl(INSTALLED)]: json({ ...workflowPublishedManifest(INSTALLED), dist: { tarball: 'x' } }) },
+    }, 'up-to-date'],
+  ];
+  for (const [name, scenario, decision] of provesNothing) {
+    it(`proves nothing, so the next tick leaves it on too, when ${name}`, async () => {
+      silenceLogger();
+      let now = NOW;
+      const checkHarness = buildCheckHarness(backgroundUpdateOnNotYetProven(scenario));
+      checkHarness.deps.now = () => now;
+
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe(decision);
+      expect(checkHarness.stored().promotedFileAndNpmMetadataReadAt).toBeNull();
+      now = NOW + HOUR_MS;
+      await runAutoUpdateCheck(checkHarness.deps);
+      expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+      expect(checkHarness.stored().claudeCodeBackgroundUpdateLeftOnReason).toBe(NOT_YET_PROVEN);
+    });
+  }
+
+  it('leaves it on while npx is not on the worker\'s PATH, says why once per boot at WARN, records the reason, and turns it off once npx is found', async () => {
+    const spies = silenceLogger();
+    let now = NOW;
+    let npx: string | null = null;
+    const checkHarness = buildCheckHarness(backgroundUpdateOn());
+    checkHarness.deps.now = () => now;
+    checkHarness.deps.findNpxOnWorkerPath = () => npx;
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    now = NOW + HOUR_MS;
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: null, claudeCodeBackgroundUpdateLeftOnReason: NPX_NOT_FOUND });
+    expect(leftOnLogs(spies.warn).map((call) => call[1])).toEqual([`Left Claude Code's background update on: ${NPX_NOT_FOUND}`]);
+    // The network reads are proven already, so no extra npm read is made for it.
+    expect(checkHarness.fetches.map((recordedFetch) => recordedFetch.url)).toEqual([PROMOTED_URL, npmVersionMetadataUrl(PROMOTED)]);
+
+    npx = 'C:\\Program Files\\nodejs\\npx.cmd';
+    now = NOW + 2 * HOUR_MS;
+    await runAutoUpdateCheck(checkHarness.deps);
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(1);
+    expect(checkHarness.stored()).toMatchObject({ claudeCodeBackgroundUpdateTurnedOffAt: NOW + 2 * HOUR_MS, claudeCodeBackgroundUpdateLeftOnReason: null });
+  });
+
+  it('logs a write that fails with its stage, at WARN once per boot and then at DEBUG, records the reason and no time, and the tick goes on', async () => {
+    const spies = silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOn());
+    checkHarness.deps.now = () => now;
+    checkHarness.deps.writeClaudeCodeKnownMarketplaces = () => { throw new Error('EACCES: permission denied, open \'known_marketplaces.json.tmp\''); };
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+    expect(checkHarness.stored()).toMatchObject({
+      claudeCodeBackgroundUpdateTurnedOffAt: null,
+      claudeCodeBackgroundUpdateLeftOnReason: 'Claude Code\'s background update of the thedotmack marketplace stays on: EACCES: permission denied, open \'known_marketplaces.json.tmp\'',
+    });
+    expect(turnedOffLogs(spies)).toEqual([]);
+    expect(stepFailureLogs(spies.warn).map((call) => call[2])).toEqual([{ stage: 'write-claude-code-known-marketplaces', problem: expect.stringContaining('EACCES') }]);
+
+    now = NOW + HOUR_MS;
+    await runAutoUpdateCheck(checkHarness.deps);
+    expect(stepFailureLogs(spies.warn)).toHaveLength(1);
+    expect(stepFailureLogs(spies.debug).map((call) => call[2])).toEqual([{ stage: 'write-claude-code-known-marketplaces', problem: expect.stringContaining('EACCES'), loggedAtWarnEarlierThisBoot: true }]);
+    expect(spies.error).not.toHaveBeenCalled();
+  });
+
+  it('turns it off again on the next tick when Claude Code writes true back', async () => {
+    silenceLogger();
+    let now = NOW;
+    const checkHarness = buildCheckHarness(backgroundUpdateOn(upToDate));
+    checkHarness.deps.now = () => now;
+
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('up-to-date');
+    expect(checkHarness.stored().claudeCodeBackgroundUpdateTurnedOffAt).toBe(NOW);
+
+    // The /plugin screen's Enable auto-update, or an installer from before Phase 4, writes true back.
+    checkHarness.setKnownMarketplaces(knownMarketplacesWithBackgroundUpdateOn());
+    now = NOW + HOUR_MS;
+    expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('not-due');
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(2);
+    expect(checkHarness.stored().claudeCodeBackgroundUpdateTurnedOffAt).toBe(NOW + HOUR_MS);
+
+    // Off now, so the next tick writes nothing.
+    now = NOW + 2 * HOUR_MS;
+    await runAutoUpdateCheck(checkHarness.deps);
+    expect(checkHarness.knownMarketplacesWrites).toHaveLength(2);
+  });
+});
+
+describe('turning off Claude Code\'s background update in a real known_marketplaces.json', () => {
+  let tempDir: string;
+  let fixtureCount = 0;
+
+  beforeAll(() => {
+    tempDir = mkdtempSync(path.join(scratchRoot, 'auto-update-known-marketplaces-'));
+  });
+
+  afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
+
+  /**
+   * A Claude config dir of its own, with claude-mem registered at INSTALLED in
+   * installed_plugins.json, no user settings, and `contents` as
+   * plugins/known_marketplaces.json (undefined: no file).
+   */
+  const fixture = (contents?: string) => {
+    const root = path.join(tempDir, `config-${++fixtureCount}`);
+    const knownMarketplacesFile = path.join(root, 'plugins', 'known_marketplaces.json');
+    const installedPluginsFile = path.join(root, 'plugins', 'installed_plugins.json');
+    mkdirSync(path.dirname(knownMarketplacesFile), { recursive: true });
+    writeFileSync(installedPluginsFile, JSON.stringify({
+      version: 2,
+      plugins: { 'claude-mem@thedotmack': [{ scope: 'user', installPath: path.join(CACHE_ROOT, INSTALLED), version: INSTALLED }] },
+    }));
+    if (contents !== undefined) writeFileSync(knownMarketplacesFile, contents);
+    return {
+      root,
+      knownMarketplacesFile,
+      pluginStateFiles: { userSettingsPath: path.join(root, 'settings.json'), installedPluginsPath: installedPluginsFile, knownMarketplacesPath: knownMarketplacesFile },
+    };
+  };
+
+  /**
+   * A check harness that reads Claude Code's plugin state and writes
+   * known_marketplaces.json with the worker's production effects
+   * (worker-service.ts buildAutoUpdateCheckDeps), on a fixture's files.
+   */
+  const harnessOnFiles = (files: ReturnType<typeof fixture>, scenario: Scenario = {}): CheckHarness => {
+    const checkHarness = buildCheckHarness(scenario);
+    checkHarness.deps.readClaudeCodePluginState = () => readClaudeCodePluginState(files.pluginStateFiles);
+    checkHarness.deps.writeClaudeCodeKnownMarketplaces = (knownMarketplaces) => writeClaudeCodeKnownMarketplacesUnlessReadOnly(files.knownMarketplacesFile, knownMarketplaces);
+    return checkHarness;
+  };
+
+  /** An earlier check proved claude-mem's updater here. */
+  const proven: Scenario = { state: { promotedFileAndNpmMetadataReadAt: PROVEN_AT } };
+
+  /** The file as the installer writes it (writeJsonFileAtomic): two-space JSON and a final newline. */
+  const asWritten = (knownMarketplaces: unknown) => `${JSON.stringify(knownMarketplaces, null, 2)}\n`;
+
+  const stepFailureWarnings = (spies: LogSpies) => spies.warn.mock.calls.filter((call) => String(call[1]).startsWith('Could not turn off Claude Code\'s background update'));
+
+  /**
+   * A path the operating system will not let this user read or write, as the
+   * Claude Code settings tests make one. Tests using it skip on Windows and as
+   * root, where a mode does not deny access, as
+   * tests/memory/memory-ingest.test.ts does for its unreadable file.
+   */
+  const permissionsCannotDenyAccess = process.platform === 'win32' || process.getuid?.() === 0;
+
+  /** The installer's own registerMarketplace on a fixture's Claude config, with CLAUDE_MEM_AUTO_UPDATE as given in the environment. */
+  const registerMarketplaceIn = async (root: string, claudeMemAutoUpdate: string) => {
+    const { registerMarketplace } = await import('../../../src/npx-cli/commands/install.js');
+    const saved = { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CLAUDE_MEM_AUTO_UPDATE: process.env.CLAUDE_MEM_AUTO_UPDATE };
+    process.env.CLAUDE_CONFIG_DIR = root;
+    process.env.CLAUDE_MEM_AUTO_UPDATE = claudeMemAutoUpdate;
+    try {
+      registerMarketplace();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  };
+  const readRegistered = (files: ReturnType<typeof fixture>) => JSON.parse(readFileSync(files.knownMarketplacesFile, 'utf-8'));
+  const fixtureMarketplaceDirectory = (files: ReturnType<typeof fixture>) => path.join(files.root, 'plugins', 'marketplaces', 'thedotmack');
+
+  it('changes only thedotmack.autoUpdate: every other entry, field and key order is written back as read', async () => {
+    silenceLogger();
+    const files = fixture(asWritten(knownMarketplacesWithBackgroundUpdateOn()));
+
+    expect((await runAutoUpdateCheck(harnessOnFiles(files, proven).deps)).decision).toBe('apply');
+    expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(asWritten(withClaudeMemBackgroundUpdateOff(knownMarketplacesWithBackgroundUpdateOn())));
+  });
+
+  it('reads a missing file as nothing to do and creates none', async () => {
+    const spies = silenceLogger();
+    const files = fixture();
+
+    expect(readClaudeCodePluginState(files.pluginStateFiles).knownMarketplaces).toEqual({ kind: 'read', path: files.knownMarketplacesFile, document: null });
+    expect((await runAutoUpdateCheck(harnessOnFiles(files, proven).deps)).decision).toBe('apply');
+    expect(existsSync(files.knownMarketplacesFile)).toBe(false);
+    expect(stepFailureWarnings(spies)).toEqual([]);
+  });
+
+  it('reads a file with a UTF-8 byte order mark, which Windows tools add (#3013)', () => {
+    const files = fixture(`\uFEFF${JSON.stringify({ thedotmack: claudeMemMarketplaceEntry(true) })}`);
+    expect(readClaudeCodePluginState(files.pluginStateFiles).knownMarketplaces)
+      .toEqual({ kind: 'read', path: files.knownMarketplacesFile, document: { thedotmack: claudeMemMarketplaceEntry(true) } });
+  });
+
+  it('keeps the updater off for a file that is not JSON or not a JSON object (empty, an array, null and text included), on which the installer cannot register the marketplace, and leaves it byte for byte', async () => {
+    silenceLogger();
+    const unusable: Array<[string, string]> = [
+      ['{"thedotmack": {"autoUpdate": true},}', 'is not valid JSON'],
+      ['', 'is not valid JSON'],
+      ['[{"thedotmack": {"autoUpdate": true}}]', 'does not hold a JSON object'],
+      ['null', 'does not hold a JSON object'],
+      ['"thedotmack"', 'does not hold a JSON object'],
+    ];
+    for (const [contents, problem] of unusable) {
+      const files = fixture(contents);
+      const named = `${files.knownMarketplacesFile} ${problem}`;
+      expect(readClaudeCodePluginState(files.pluginStateFiles).knownMarketplaces).toEqual({ kind: 'unreadable', path: files.knownMarketplacesFile, problem: expect.stringContaining(named) });
+
+      const checkHarness = harnessOnFiles(files, proven);
+      expect(await runAutoUpdateCheck(checkHarness.deps)).toEqual({
+        decision: 'disabled',
+        reason: expect.stringContaining(`${named}`),
+      });
+      expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(contents);
+      expect(checkHarness.stateReads()).toBe(0);
+      expect(checkHarness.fetches).toEqual([]);
+
+      // What an update would meet: the installer's registerMarketplace stops on
+      // the file (readJsonSafe refuses it, or the entry cannot be set on null
+      // or text), or, for an array, writes it back without the marketplace.
+      const registrationError = await registerMarketplaceIn(files.root, 'true').then(() => null, (error: unknown) => error);
+      if (registrationError === null) {
+        const writtenBack = readRegistered(files);
+        expect(Array.isArray(writtenBack) && !Object.hasOwn(writtenBack, 'thedotmack')).toBe(true);
+      } else {
+        expect(registrationError).toBeInstanceOf(Error);
+      }
+    }
+  });
+
+  it('keeps the updater off for a path that exists but cannot be read at all: a directory where the file should be', async () => {
+    silenceLogger();
+    const files = fixture();
+    mkdirSync(files.knownMarketplacesFile);
+
+    const checkHarness = harnessOnFiles(files, proven);
+    expect(await runAutoUpdateCheck(checkHarness.deps)).toEqual({
+      decision: 'disabled',
+      reason: expect.stringContaining(`${files.knownMarketplacesFile} exists but cannot be read`),
+    });
+    expect(statSync(files.knownMarketplacesFile).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(permissionsCannotDenyAccess)('keeps the updater off for a file the operating system will not let it read', async () => {
+    silenceLogger();
+    const files = fixture(asWritten(knownMarketplacesWithBackgroundUpdateOn()));
+    chmodSync(files.knownMarketplacesFile, 0o000);
+    try {
+      expect(await runAutoUpdateCheck(harnessOnFiles(files, proven).deps)).toEqual({
+        decision: 'disabled',
+        reason: expect.stringMatching(/exists but cannot be read: .*EACCES/),
+      });
+    } finally {
+      chmodSync(files.knownMarketplacesFile, 0o644);
+    }
+  });
+
+  it.skipIf(permissionsCannotDenyAccess)('leaves a read-only file as it is, logs it with its stage and records the reason, where the atomic write alone would replace it', async () => {
+    const spies = silenceLogger();
+    // The atomic write renames over a read-only file: the folder's permissions are all it needs.
+    const replacedAnyway = fixture(asWritten(knownMarketplacesWithBackgroundUpdateOn()));
+    chmodSync(replacedAnyway.knownMarketplacesFile, 0o444);
+    writeJsonFileAtomic(replacedAnyway.knownMarketplacesFile, { replaced: true });
+    expect(readRegistered(replacedAnyway)).toEqual({ replaced: true });
+
+    const contents = asWritten(knownMarketplacesWithBackgroundUpdateOn());
+    const files = fixture(contents);
+    chmodSync(files.knownMarketplacesFile, 0o444);
+    try {
+      expect(() => writeClaudeCodeKnownMarketplacesUnlessReadOnly(files.knownMarketplacesFile, {})).toThrow(`${files.knownMarketplacesFile} is not writable, so it is left as it is`);
+      const checkHarness = harnessOnFiles(files, proven);
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(contents);
+      expect(statSync(files.knownMarketplacesFile).mode & 0o777).toBe(0o444);
+      expect(stepFailureWarnings(spies).map((call) => call[2])).toEqual([{
+        stage: 'write-claude-code-known-marketplaces',
+        problem: expect.stringContaining(`${files.knownMarketplacesFile} is not writable, so it is left as it is`),
+      }]);
+      expect(structuredClone(checkHarness.stored())).toMatchObject({
+        claudeCodeBackgroundUpdateTurnedOffAt: null,
+        claudeCodeBackgroundUpdateLeftOnReason: expect.stringContaining('is not writable, so it is left as it is'),
+      });
+    } finally {
+      chmodSync(files.knownMarketplacesFile, 0o644);
+      chmodSync(replacedAnyway.knownMarketplacesFile, 0o644);
+    }
+  });
+
+  it('never rewrites an entry the user added another way, a full git URL, a #ref or a local path, and keeps the updater off', async () => {
+    silenceLogger();
+    const userAdded = [
+      { ...claudeMemMarketplaceEntry(true), source: { source: 'git', url: 'https://github.com/thedotmack/claude-mem.git' } },
+      { ...claudeMemMarketplaceEntry(false), source: { source: 'github', repo: 'thedotmack/claude-mem', ref: 'v15.11.0' } },
+      { source: { source: 'directory', path: path.resolve('claude-mem-checkout') }, installLocation: path.resolve('claude-mem-checkout'), lastUpdated: '2026-11-01T09:30:00.000Z' },
+    ];
+    for (const entry of userAdded) {
+      const contents = asWritten({ 'claude-plugins-official': OFFICIAL_MARKETPLACE_ENTRY, thedotmack: entry });
+      const files = fixture(contents);
+      const checkHarness = harnessOnFiles(files, proven);
+
+      expect(await runAutoUpdateCheck(checkHarness.deps)).toEqual({
+        decision: 'disabled',
+        reason: expect.stringContaining('so it was added another way, and an unattended update would replace it'),
+      });
+      expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(contents);
+      expect(checkHarness.launches).toEqual([]);
+    }
+  });
+
+  it('the installer\'s registerMarketplace writes autoUpdate false while claude-mem\'s own updater is on, on a fresh install and over an entry with true, and the worker reads that entry as its own with nothing to turn off', async () => {
+    silenceLogger();
+    const freshInstall = fixture();
+    const registeredBeforePhase4 = fixture(asWritten({ 'claude-plugins-official': OFFICIAL_MARKETPLACE_ENTRY, thedotmack: claudeMemMarketplaceEntry(true) }));
+    for (const files of [freshInstall, registeredBeforePhase4]) {
+      await registerMarketplaceIn(files.root, 'true');
+      const asRegistered = readFileSync(files.knownMarketplacesFile, 'utf-8');
+      expect(JSON.parse(asRegistered).thedotmack).toEqual({
+        source: { ...CLAUDE_MEM_MARKETPLACE_SOURCE },
+        installLocation: fixtureMarketplaceDirectory(files),
+        lastUpdated: expect.any(String),
+        autoUpdate: false,
+      });
+
+      const checkHarness = harnessOnFiles(files, proven);
+      checkHarness.deps.marketplaceDirectory = () => fixtureMarketplaceDirectory(files);
+      expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('apply');
+      expect(readFileSync(files.knownMarketplacesFile, 'utf-8')).toBe(asRegistered);
+      expect(checkHarness.stored().claudeCodeBackgroundUpdateTurnedOffAt).toBeNull();
+    }
+    // The installer keeps the other marketplaces it read.
+    expect(readRegistered(registeredBeforePhase4)['claude-plugins-official']).toEqual(OFFICIAL_MARKETPLACE_ENTRY);
+  });
+
+  it('the installer\'s registerMarketplace keeps the entry\'s own autoUpdate while claude-mem\'s updater is off, and records true on a fresh install, as every install did before', async () => {
+    silenceLogger();
+    const claudeMemEntryWithoutAutoUpdate = claudeMemMarketplaceEntry(false);
+    delete claudeMemEntryWithoutAutoUpdate.autoUpdate;
+    // "false", and a value the check does not recognise, which leaves the updater off too.
+    for (const claudeMemAutoUpdate of ['false', 'off']) {
+      const withTrue = fixture(asWritten({ thedotmack: claudeMemMarketplaceEntry(true) }));
+      const withFalse = fixture(asWritten({ thedotmack: claudeMemMarketplaceEntry(false) }));
+      const withoutAutoUpdate = fixture(asWritten({ thedotmack: claudeMemEntryWithoutAutoUpdate }));
+      const freshInstall = fixture();
+      for (const files of [withTrue, withFalse, withoutAutoUpdate, freshInstall]) await registerMarketplaceIn(files.root, claudeMemAutoUpdate);
+
+      expect(readRegistered(withTrue).thedotmack.autoUpdate).toBe(true);
+      expect(readRegistered(withFalse).thedotmack.autoUpdate).toBe(false);
+      expect(Object.hasOwn(readRegistered(withoutAutoUpdate).thedotmack, 'autoUpdate')).toBe(false);
+      expect(readRegistered(freshInstall).thedotmack.autoUpdate).toBe(true);
+    }
+  });
+
+  it('the installer\'s registerMarketplace reads a claude-mem settings.json the check cannot read as the updater off, warns, and keeps the entry\'s autoUpdate', async () => {
+    silenceLogger();
+    const installModule = await import('../../../src/npx-cli/commands/install.js');
+    const warned = spyOn(installModule.log, 'warn').mockImplementation(() => {});
+    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
+    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
+    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    const files = fixture(asWritten({ thedotmack: claudeMemMarketplaceEntry(true) }));
+    const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
+    mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+    writeFileSync(USER_SETTINGS_PATH, '{"CLAUDE_MEM_AUTO_UPDATE": "true",');
+    try {
+      // The environment says on, but the check stops at read-settings on this file, so its updater does not run.
+      await registerMarketplaceIn(files.root, 'true');
+    } finally {
+      if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
+      else writeFileSync(USER_SETTINGS_PATH, savedSettings);
+    }
+    expect(readRegistered(files).thedotmack.autoUpdate).toBe(true);
+    expect(warned.mock.calls.map((call) => String(call[0]))).toEqual([expect.stringContaining(`${USER_SETTINGS_PATH} exists but cannot be read as settings`)]);
   });
 });
 
@@ -1434,10 +2237,10 @@ describe('isWorkerQuietBySignals', () => {
 describe('autoUpdateDisabledReason', () => {
   it('stays off unless CLAUDE_MEM_RUNTIME is worker, read trimmed and in any case', () => {
     for (const runtime of ['server', 'server-beta', '', 'workers']) {
-      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime }, {})).toContain(`CLAUDE_MEM_RUNTIME=${JSON.stringify(runtime)}, not "worker"`);
+      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime })).toContain(`CLAUDE_MEM_RUNTIME=${JSON.stringify(runtime)}, not "worker"`);
     }
     for (const runtime of ['worker', ' WORKER ', 'Worker']) {
-      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime }, {})).toBeNull();
+      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime })).toBeNull();
     }
     // The shipped default is worker, so an install that never set it updates.
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_RUNTIME).toBe('worker');
@@ -1454,36 +2257,38 @@ describe('autoUpdateDisabledReason', () => {
     }
   });
 
-  it('leaves DISABLE_AUTOUPDATER to be read with Claude Code\'s settings files, where FORCE_AUTOUPDATE_PLUGINS can override it', () => {
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, { DISABLE_AUTOUPDATER: '1' })).toBeNull();
-    // The switches the force leaves in force are final here, with nothing else read.
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, { DISABLE_UPDATES: '1', FORCE_AUTOUPDATE_PLUGINS: '1' })).toContain('DISABLE_UPDATES is set');
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' })).toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set');
+  it('reads none of Claude Code\'s switches: each waits for Claude Code\'s settings files, where FORCE_AUTOUPDATE_PLUGINS can override it', () => {
+    // It reads claude-mem's own settings only; each switch below is read by claudeCodeSwitchInForce, after the files.
+    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS)).toBeNull();
+    for (const name of ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']) {
+      expect(claudeCodeSwitchInForce({ [name]: '1' }, [])).toBe(`${name} is set (Claude Code's switch for no background updates)`);
+      expect(claudeCodeSwitchInForce({ [name]: '1' }, [userSettingsEnv({ FORCE_AUTOUPDATE_PLUGINS: '1' })])).toBeNull();
+    }
   });
 
   it('reads CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC as on for any non-empty value, 0 and false included', () => {
     for (const value of ['1', '0', 'false', 'FALSE', 'no', ' ']) {
-      expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: value }))
+      expect(claudeCodeSwitchInForce({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: value }, []))
         .toBe('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set (Claude Code\'s switch for no background updates)');
     }
     // Only unset or empty leaves it off.
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '' })).toBeNull();
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, {})).toBeNull();
+    expect(claudeCodeSwitchInForce({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '' }, [])).toBeNull();
+    expect(claudeCodeSwitchInForce({}, [])).toBeNull();
   });
 
   it('each Claude Code switch survives the worker spawn\'s sanitizeEnv and turns auto-update off', () => {
     for (const name of ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']) {
       const workerEnv = sanitizeEnv({ [name]: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', PATH: '/usr/bin' });
       expect(workerEnv[name]).toBe('1');
-      expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, workerEnv) ?? claudeCodeSwitchInForce(workerEnv, []))
-        .toBe(`${name} is set (Claude Code's switch for no background updates)`);
+      expect(claudeCodeSwitchInForce(workerEnv, [])).toBe(`${name} is set (Claude Code's switch for no background updates)`);
     }
   });
 
-  it('FORCE_AUTOUPDATE_PLUGINS survives the worker spawn\'s sanitizeEnv too, so the worker sees the force', () => {
-    const workerEnv = sanitizeEnv({ DISABLE_AUTOUPDATER: '1', FORCE_AUTOUPDATE_PLUGINS: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', PATH: '/usr/bin' });
+  it('FORCE_AUTOUPDATE_PLUGINS survives the worker spawn\'s sanitizeEnv too, so the worker sees the force over every switch', () => {
+    const workerEnv = sanitizeEnv({
+      DISABLE_AUTOUPDATER: '1', DISABLE_UPDATES: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', FORCE_AUTOUPDATE_PLUGINS: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', PATH: '/usr/bin',
+    });
     expect(workerEnv.FORCE_AUTOUPDATE_PLUGINS).toBe('1');
-    expect(autoUpdateDisabledReason(SHIPPED_SETTINGS, workerEnv)).toBeNull();
     expect(claudeCodeSwitchInForce(workerEnv, [])).toBeNull();
   });
 
@@ -1491,16 +2296,16 @@ describe('autoUpdateDisabledReason', () => {
     const withAutoUpdate = (value: unknown): AutoUpdateSettings => ({ ...SHIPPED_SETTINGS, CLAUDE_MEM_AUTO_UPDATE: value as string });
     for (const value of ['true', ' TRUE ', 'True']) {
       expect(parseAutoUpdateSwitch(value)).toBe('on');
-      expect(autoUpdateDisabledReason(withAutoUpdate(value), {})).toBeNull();
+      expect(autoUpdateDisabledReason(withAutoUpdate(value))).toBeNull();
     }
     for (const value of ['false', ' FALSE ']) {
       expect(parseAutoUpdateSwitch(value)).toBe('off');
-      expect(autoUpdateDisabledReason(withAutoUpdate(value), {})).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
+      expect(autoUpdateDisabledReason(withAutoUpdate(value))).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
     }
     // Values meant as off, values meant as on, and JSON a hand edit can leave behind.
     for (const value of ['0', 'off', 'no', '', 'yes', '1', 0, 1, null]) {
       expect(parseAutoUpdateSwitch(value)).toBe('unrecognised');
-      expect(autoUpdateDisabledReason(withAutoUpdate(value), {})).toContain('(only "true" turns it on)');
+      expect(autoUpdateDisabledReason(withAutoUpdate(value))).toContain('(only "true" turns it on)');
     }
   });
 });
@@ -1527,17 +2332,19 @@ describe('claudeCodeSwitchInForce', () => {
       .toBe('DISABLE_AUTOUPDATER is set (Claude Code\'s switch for no background updates)');
   });
 
-  it('takes DISABLE_AUTOUPDATER, and only it, out of force while FORCE_AUTOUPDATE_PLUGINS is 1 wherever it is set', () => {
-    const disabledByTheAutoUpdater = [userSettingsEnv({ DISABLE_AUTOUPDATER: '1' }), managedSettingsEnv({ DISABLE_AUTOUPDATER: 'true' })];
+  it('takes every switch out of force while FORCE_AUTOUPDATE_PLUGINS is 1 wherever it is set, as the plugins/loading docs say', () => {
+    const everySwitchOn = [
+      userSettingsEnv({ DISABLE_AUTOUPDATER: '1', DISABLE_UPDATES: '1' }),
+      managedSettingsEnv({ DISABLE_AUTOUPDATER: 'true', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' }),
+    ];
     // 1 in the env, or in a settings file (a JSON 1 included), trimmed.
     for (const env of [{ FORCE_AUTOUPDATE_PLUGINS: '1' }, { FORCE_AUTOUPDATE_PLUGINS: ' 1 ' }]) {
-      expect(claudeCodeSwitchInForce({ ...env, DISABLE_AUTOUPDATER: '1' }, disabledByTheAutoUpdater)).toBeNull();
+      expect(claudeCodeSwitchInForce({ ...env, DISABLE_AUTOUPDATER: '1', DISABLE_UPDATES: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, everySwitchOn)).toBeNull();
     }
-    expect(claudeCodeSwitchInForce({ DISABLE_AUTOUPDATER: '1' }, [...disabledByTheAutoUpdater, managedSettingsEnv({ FORCE_AUTOUPDATE_PLUGINS: 1 })])).toBeNull();
-    // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC stay in force.
-    expect(claudeCodeSwitchInForce({ FORCE_AUTOUPDATE_PLUGINS: '1' }, [userSettingsEnv({ DISABLE_UPDATES: '1' })])).toContain('DISABLE_UPDATES is set');
-    expect(claudeCodeSwitchInForce({ FORCE_AUTOUPDATE_PLUGINS: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' }, []))
-      .toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set');
+    expect(claudeCodeSwitchInForce({ DISABLE_UPDATES: '1' }, [...everySwitchOn, managedSettingsEnv({ FORCE_AUTOUPDATE_PLUGINS: 1 })])).toBeNull();
+    // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC go out of force too, each alone.
+    expect(claudeCodeSwitchInForce({ FORCE_AUTOUPDATE_PLUGINS: '1' }, [userSettingsEnv({ DISABLE_UPDATES: '1' })])).toBeNull();
+    expect(claudeCodeSwitchInForce({ FORCE_AUTOUPDATE_PLUGINS: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' }, [])).toBeNull();
     // Only 1 forces; any other value anywhere, an empty one included, leaves DISABLE_AUTOUPDATER in force.
     for (const value of ['true', 'yes', '0', '', 'false', '2']) {
       expect(claudeCodeSwitchInForce({ FORCE_AUTOUPDATE_PLUGINS: value, DISABLE_AUTOUPDATER: '1' }, [])).toContain('DISABLE_AUTOUPDATER is set');
@@ -1597,11 +2404,12 @@ describe('Claude Code settings files', () => {
         { path: files.at('managed/managed-settings.d/20-updates.json'), env: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '0' } },
       ],
       skipped: [],
+      claudeMemMarketplaceDeclarations: [],
     });
   });
 
   it('leaves out files and a drop-in directory that do not exist', () => {
-    expect(readClaudeCodeSettingsEnvBlocks(fixture('nothing', {}))).toEqual({ envBlocks: [], skipped: [] });
+    expect(readClaudeCodeSettingsEnvBlocks(fixture('nothing', {}))).toEqual({ envBlocks: [], skipped: [], claudeMemMarketplaceDeclarations: [] });
   });
 
   it('reads an empty file, a file with no env and a null env as setting nothing', () => {
@@ -1649,6 +2457,7 @@ describe('Claude Code settings files', () => {
       expect(readClaudeCodeSettingsEnvBlocks(files)).toEqual({
         envBlocks: [{ path: files.at('managed/managed-settings.json'), env: { DISABLE_UPDATES: '1' } }],
         skipped: [{ path: files.userSettingsPath, problem: expect.stringContaining(`${files.userSettingsPath}`) }],
+        claudeMemMarketplaceDeclarations: [],
       });
       expect(readClaudeCodeSettingsEnvBlocks(files).skipped[0].problem).toContain(problem);
     }
@@ -1664,6 +2473,7 @@ describe('Claude Code settings files', () => {
       expect(readClaudeCodeSettingsEnvBlocks(readDenied)).toEqual({
         envBlocks: [{ path: readDenied.at('managed/managed-settings.json'), env: { DISABLE_UPDATES: '1' } }],
         skipped: [{ path: readDenied.userSettingsPath, problem: expect.stringContaining('EACCES') }],
+        claudeMemMarketplaceDeclarations: [],
       });
     });
   });
@@ -1691,8 +2501,74 @@ describe('Claude Code settings files', () => {
       expect(readClaudeCodeSettingsEnvBlocks(files)).toEqual({
         envBlocks: [{ path: files.at('managed/managed-settings.d/60-updates.json'), env: { DISABLE_UPDATES: '1' } }],
         skipped: [{ path: files.at('managed/managed-settings.d/50-team.json'), problem: expect.stringContaining(problem) }],
+        claudeMemMarketplaceDeclarations: [],
       });
     }
+  });
+
+  /** A settings file that declares claude-mem's marketplace under extraKnownMarketplaces, next to another marketplace. */
+  const declaringClaudeMemMarketplace = (autoUpdate?: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({
+    ...extra,
+    extraKnownMarketplaces: {
+      thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, ...(autoUpdate === undefined ? {} : { autoUpdate }) },
+      'acme-tools': { source: { source: 'github', repo: 'acme-corp/claude-plugins' }, autoUpdate: true },
+    },
+  });
+
+  it('takes extraKnownMarketplaces.thedotmack from each file that declares it, in the order Claude Code merges them, its autoUpdate only when that is a JSON boolean', () => {
+    const files = fixture('declarations', {
+      'claude-config/settings.json': declaringClaudeMemMarketplace(true),
+      'managed/managed-settings.json': declaringClaudeMemMarketplace(),
+      'managed/managed-settings.d/20-later.json': declaringClaudeMemMarketplace(false),
+      'managed/managed-settings.d/10-earlier.json': declaringClaudeMemMarketplace('true'),
+      // Other marketplaces only, an entry that is not an object, and an extraKnownMarketplaces that is not one: none declares it.
+      'managed/managed-settings.d/30-other.json': JSON.stringify({ extraKnownMarketplaces: { 'acme-tools': {} } }),
+      'managed/managed-settings.d/40-entry-text.json': JSON.stringify({ extraKnownMarketplaces: { thedotmack: 'thedotmack/claude-mem' } }),
+      'managed/managed-settings.d/50-key-array.json': JSON.stringify({ extraKnownMarketplaces: ['thedotmack'] }),
+    });
+    const read = readClaudeCodeSettingsEnvBlocks(files);
+    expect(read.claudeMemMarketplaceDeclarations).toEqual([
+      { path: files.userSettingsPath, autoUpdate: true },
+      { path: files.at('managed/managed-settings.json'), autoUpdate: undefined },
+      { path: files.at('managed/managed-settings.d/10-earlier.json'), autoUpdate: undefined },
+      { path: files.at('managed/managed-settings.d/20-later.json'), autoUpdate: false },
+    ]);
+    // The last one read is in force: managed settings over the user's, and a later drop-in over an earlier one, each whole.
+    expect(claudeMemMarketplaceDeclarationInForce(read.claudeMemMarketplaceDeclarations)).toEqual({ path: files.at('managed/managed-settings.d/20-later.json'), autoUpdate: false });
+    expect(claudeMemMarketplaceDeclarationInForce(read.claudeMemMarketplaceDeclarations.slice(0, 2))).toEqual({ path: files.at('managed/managed-settings.json'), autoUpdate: undefined });
+    expect(claudeMemMarketplaceDeclarationInForce([])).toBeNull();
+  });
+
+  it('takes the declaration of a file whose env Claude Code drops, since it reads the rest of that file, and none from a user file it runs without', () => {
+    const files = fixture('declarations-past-a-dropped-env', {
+      // A trailing comma: Claude Code runs without the whole file.
+      'claude-config/settings.json': `${declaringClaudeMemMarketplace(false)},`,
+      'managed/managed-settings.json': declaringClaudeMemMarketplace(true, { env: 'DISABLE_UPDATES=1' }),
+    });
+    expect(readClaudeCodeSettingsEnvBlocks(files)).toEqual({
+      envBlocks: [],
+      skipped: [
+        { path: files.userSettingsPath, problem: expect.stringContaining('is not valid JSON') },
+        { path: files.at('managed/managed-settings.json'), problem: expect.stringContaining('its env is string, not an object') },
+      ],
+      claudeMemMarketplaceDeclarations: [{ path: files.at('managed/managed-settings.json'), autoUpdate: true }],
+    });
+  });
+
+  it('keeps the updater off for extraKnownMarketplaces.thedotmack.autoUpdate true in a real settings file, naming it, reading nothing after it and writing nothing', async () => {
+    silenceLogger();
+    const userSettings = declaringClaudeMemMarketplace(true);
+    const files = fixture('tick-declared-on', { 'claude-config/settings.json': userSettings });
+    const checkHarness = buildCheckHarness({ knownMarketplaces: knownMarketplacesWithBackgroundUpdateOn() });
+    checkHarness.deps.readClaudeCodeSettingsEnv = () => readClaudeCodeSettingsEnvBlocks(files);
+
+    expect(await runAutoUpdateCheck(checkHarness.deps)).toEqual({
+      decision: 'disabled',
+      reason: expect.stringContaining(`extraKnownMarketplaces.thedotmack.autoUpdate is true in ${files.userSettingsPath}`),
+    });
+    expect(checkHarness.pluginStateReads()).toBe(0);
+    expect(checkHarness.knownMarketplacesWrites).toEqual([]);
+    expect(readFileSync(files.userSettingsPath, 'utf-8')).toBe(userSettings);
   });
 
   it.skipIf(readDenialCannotBeMade)('skips a managed settings file or drop-in directory the operating system denies, which Claude Code starts without', () => {
@@ -1701,6 +2577,7 @@ describe('Claude Code settings files', () => {
       expect(readClaudeCodeSettingsEnvBlocks(deniedFile)).toEqual({
         envBlocks: [],
         skipped: [{ path: deniedFile.at('managed/managed-settings.json'), problem: expect.stringContaining('EACCES') }],
+        claudeMemMarketplaceDeclarations: [],
       });
     });
     const deniedDropIns = fixture('managed-drop-ins-denied', { 'managed/managed-settings.d/10-updates.json': JSON.stringify({ env: { DISABLE_UPDATES: '1' } }) });
@@ -1708,6 +2585,7 @@ describe('Claude Code settings files', () => {
       expect(readClaudeCodeSettingsEnvBlocks(deniedDropIns)).toEqual({
         envBlocks: [],
         skipped: [{ path: deniedDropIns.at('managed/managed-settings.d'), problem: expect.stringContaining('exists but cannot be listed') }],
+        claudeMemMarketplaceDeclarations: [],
       });
     });
   });
@@ -1774,16 +2652,19 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
 
   afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
 
-  /** A Claude config dir of its own with the given user settings and installed_plugins.json (undefined: no file). */
-  const fixture = (files: { userSettings?: string; installedPlugins?: string }) => {
+  /** A Claude config dir of its own with the given user settings, installed_plugins.json and known_marketplaces.json (undefined: no file). */
+  const fixture = (files: { userSettings?: string; installedPlugins?: string; knownMarketplaces?: string }) => {
     const root = path.join(tempDir, `config-${++fixtureCount}`);
     mkdirSync(path.join(root, 'plugins'), { recursive: true });
     const userSettingsPath = path.join(root, 'settings.json');
     const installedPluginsPath = path.join(root, 'plugins', 'installed_plugins.json');
+    const knownMarketplacesPath = path.join(root, 'plugins', 'known_marketplaces.json');
     if (files.userSettings !== undefined) writeFileSync(userSettingsPath, files.userSettings);
     if (files.installedPlugins !== undefined) writeFileSync(installedPluginsPath, files.installedPlugins);
-    return { root, userSettingsPath, installedPluginsPath };
+    if (files.knownMarketplaces !== undefined) writeFileSync(knownMarketplacesPath, files.knownMarketplaces);
+    return { root, userSettingsPath, installedPluginsPath, knownMarketplacesPath };
   };
+  const marketplaceDirectoryOf = (files: ReturnType<typeof fixture>) => path.join(files.root, 'plugins', 'marketplaces', 'thedotmack');
 
   const registered = (version: string) => JSON.stringify({
     version: 2,
@@ -1803,7 +2684,7 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
     }
     const state = readClaudeCodePluginState(files);
     expect(state.registration).toEqual({ kind: 'registered', versions: [INSTALLED] });
-    expect(claudeCodePluginStateDisabledReason(state)).toBeNull();
+    expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toBeNull();
   });
 
   it('reads a missing installed_plugins.json, and one without claude-mem, as not registered', () => {
@@ -1822,7 +2703,7 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
     const projectOnly = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [projectEntry(INSTALLED)] } }) });
     const state = readClaudeCodePluginState(projectOnly);
     expect(state.registration).toEqual({ kind: 'not-registered', path: projectOnly.installedPluginsPath });
-    expect(claudeCodePluginStateDisabledReason(state)).toContain('not registered at user scope');
+    expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(projectOnly))).toContain('not registered at user scope');
   });
 
   it('reports an installed_plugins.json that does not parse (empty included) as unreadable, since registerPlugin would stop on it', () => {
@@ -1830,7 +2711,7 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
       const files = fixture({ installedPlugins });
       const state = readClaudeCodePluginState(files);
       expect(state.registration).toMatchObject({ kind: 'unreadable', path: files.installedPluginsPath, problem: expect.stringContaining('Corrupt JSON file') });
-      expect(claudeCodePluginStateDisabledReason(state)).toContain('whether claude-mem is still installed cannot be read');
+      expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toContain('whether claude-mem is still installed cannot be read');
     }
   });
 
@@ -1839,7 +2720,11 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
     expect(readClaudeCodePluginState(disabled).userSettings).toEqual({ kind: 'explicitly-disabled', path: disabled.userSettingsPath });
     for (const userSettings of [undefined, '{}', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }), JSON.stringify({ enabledPlugins: { 'other@market': false } }), '\ufeff{"enabledPlugins": {}}']) {
       const files = fixture({ userSettings, installedPlugins: registered(INSTALLED) });
-      expect(readClaudeCodePluginState(files)).toEqual({ userSettings: { kind: 'not-disabled' }, registration: { kind: 'registered', versions: [INSTALLED] } });
+      expect(readClaudeCodePluginState(files)).toEqual({
+        userSettings: { kind: 'not-disabled' },
+        registration: { kind: 'registered', versions: [INSTALLED] },
+        knownMarketplaces: { kind: 'read', path: files.knownMarketplacesPath, document: null },
+      });
     }
   });
 
@@ -1848,8 +2733,41 @@ describe('readClaudeCodePluginState (Claude Code\'s own files, read as the insta
       const files = fixture({ userSettings, installedPlugins: registered(INSTALLED) });
       const state = readClaudeCodePluginState(files);
       expect(state.userSettings).toMatchObject({ kind: 'unreadable', path: files.userSettingsPath });
-      expect(claudeCodePluginStateDisabledReason(state)).toContain('whether claude-mem is turned off in Claude Code cannot be read');
+      expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toContain('whether claude-mem is turned off in Claude Code cannot be read');
     }
+  });
+
+  it('keeps the whole known_marketplaces.json as read, and reports one that does not parse as a JSON object (empty and an array included) as unreadable, since registerMarketplace would stop on it', () => {
+    const knownMarketplaces = { 'claude-plugins-official': OFFICIAL_MARKETPLACE_ENTRY, thedotmack: claudeMemMarketplaceEntry(true) };
+    const readable = fixture({ installedPlugins: registered(INSTALLED), knownMarketplaces: JSON.stringify(knownMarketplaces) });
+    expect(readClaudeCodePluginState(readable).knownMarketplaces).toEqual({ kind: 'read', path: readable.knownMarketplacesPath, document: knownMarketplaces });
+    for (const [contents, problem] of [['{"thedotmack": {', 'is not valid JSON'], ['', 'is not valid JSON'], ['[]', 'does not hold a JSON object']]) {
+      const files = fixture({ installedPlugins: registered(INSTALLED), knownMarketplaces: contents });
+      const state = readClaudeCodePluginState(files);
+      expect(state.knownMarketplaces).toEqual({ kind: 'unreadable', path: files.knownMarketplacesPath, problem: expect.stringContaining(`${files.knownMarketplacesPath} ${problem}`) });
+      expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toContain('so an update could not register the marketplace there');
+    }
+  });
+
+  it('accepts the marketplace entry the installer\'s own registerMarketplace writes, and only that one', async () => {
+    const { registerMarketplace } = await import('../../../src/npx-cli/commands/install.js');
+    const files = fixture({ installedPlugins: registered(INSTALLED) });
+    const saved = { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CLAUDE_MEM_AUTO_UPDATE: process.env.CLAUDE_MEM_AUTO_UPDATE };
+    process.env.CLAUDE_CONFIG_DIR = files.root;
+    process.env.CLAUDE_MEM_AUTO_UPDATE = 'true';
+    try {
+      registerMarketplace();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const state = readClaudeCodePluginState(files);
+    expect(state.knownMarketplaces).toMatchObject({ kind: 'read', document: { thedotmack: { source: { ...CLAUDE_MEM_MARKETPLACE_SOURCE }, installLocation: marketplaceDirectoryOf(files) } } });
+    expect(claudeCodePluginStateDisabledReason(state, marketplaceDirectoryOf(files))).toBeNull();
+    // The same entry seen from another Claude config dir is another install location.
+    expect(claudeCodePluginStateDisabledReason(state, path.join(tempDir, 'another-config', 'plugins', 'marketplaces', 'thedotmack'))).toContain('has installLocation');
   });
 });
 
@@ -1936,7 +2854,7 @@ describe('auto-update settings', () => {
     for (const key of keys) delete process.env[key];
     process.env.CLAUDE_MEM_AUTO_UPDATE = 'false';
     const settings = readAutoUpdateSettings(path.join(tempDir, 'env', 'settings.json'));
-    expect(autoUpdateDisabledReason(settings, {})).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
+    expect(autoUpdateDisabledReason(settings)).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
   });
 
   it('lets an environment variable win over the file in both directions, as the settings manager does', () => {
@@ -1948,7 +2866,7 @@ describe('auto-update settings', () => {
 
   it('turns off from settings.json, also when written as a JSON boolean', () => {
     const settingsPath = settingsFile('boolean', JSON.stringify({ CLAUDE_MEM_AUTO_UPDATE: false }));
-    expect(autoUpdateDisabledReason(readAutoUpdateSettings(settingsPath, {}), {})).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
+    expect(autoUpdateDisabledReason(readAutoUpdateSettings(settingsPath, {}))).toBe('CLAUDE_MEM_AUTO_UPDATE=false');
   });
 
   it('reads the env block of a wrapped settings.json, where the settings manager reads it', () => {
@@ -1965,7 +2883,7 @@ describe('auto-update settings', () => {
   it('reads a JSON number without throwing, as off', () => {
     for (const numberValue of [0, 1]) {
       const settingsPath = settingsFile(`number-${numberValue}`, JSON.stringify({ CLAUDE_MEM_AUTO_UPDATE: numberValue }));
-      expect(autoUpdateDisabledReason(readAutoUpdateSettings(settingsPath, {}), {})).toBe(`CLAUDE_MEM_AUTO_UPDATE="${numberValue}" (only "true" turns it on)`);
+      expect(autoUpdateDisabledReason(readAutoUpdateSettings(settingsPath, {}))).toBe(`CLAUDE_MEM_AUTO_UPDATE="${numberValue}" (only "true" turns it on)`);
     }
   });
 

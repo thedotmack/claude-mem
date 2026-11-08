@@ -35,6 +35,9 @@ const fullState: AutoUpdateState = {
   },
   versionsThatFailedToApply: ['15.11.0'],
   lastCheckError: { at: NOW, message: 'HTTP 503' },
+  claudeCodeBackgroundUpdateTurnedOffAt: NOW - 7_200_000,
+  promotedFileAndNpmMetadataReadAt: NOW - 3_600_000,
+  claudeCodeBackgroundUpdateLeftOnReason: 'npx is not on the worker\'s PATH, so claude-mem\'s updater could not run its installer',
 };
 
 describe('auto-update state file', () => {
@@ -74,8 +77,8 @@ describe('auto-update state file', () => {
   it('keeps fields it does not know through a read and a write', () => {
     const fromALaterVersion = {
       ...fullState,
-      claudeCodeBackgroundUpdateTurnedOffAt: NOW - 60_000,
       rolloutCohort: { percent: 10, bucket: 'b' },
+      betaChannelJoinedAt: NOW - 60_000,
     };
     writeFileSync(statePath, JSON.stringify(fromALaterVersion));
 
@@ -128,7 +131,10 @@ describe('auto-update state file', () => {
       busyDeferralObservedBusyMs: -5,
       inFlightAttempt: { targetVersion: '15.12.0', previousVersion: '15.11.0', startedAt: NOW, supervisorPid: -1 },
       versionsThatFailedToApply: ['15.11.0', 42, '15.12.1'],
-      claudeCodeBackgroundUpdateTurnedOffAt: NOW,
+      claudeCodeBackgroundUpdateTurnedOffAt: 'yesterday',
+      promotedFileAndNpmMetadataReadAt: -1,
+      claudeCodeBackgroundUpdateLeftOnReason: '   ',
+      rolloutCohort: { percent: 10 },
     });
     writeFileSync(statePath, withWrongFields);
 
@@ -139,12 +145,13 @@ describe('auto-update state file', () => {
       lastSeenPromotedVersion: '15.12.0',
       // Valid entries survive: dropping one would let a failed version be tried again.
       versionsThatFailedToApply: ['15.11.0', '15.12.1'],
-      claudeCodeBackgroundUpdateTurnedOffAt: NOW,
+      // A field this version does not know survives the others being wrong.
+      rolloutCohort: { percent: 10 },
     } as AutoUpdateState);
     expect(readFileSync(statePath, 'utf-8')).toBe(withWrongFields);
     expect(loggedErrors).toHaveBeenCalledTimes(1);
     expect(loggedErrors.mock.calls[0][2]).toMatchObject({
-      invalidFields: 'lastNetworkCheckAt, busyDeferralObservedBusyMs, inFlightAttempt, versionsThatFailedToApply',
+      invalidFields: 'lastNetworkCheckAt, busyDeferralObservedBusyMs, inFlightAttempt, claudeCodeBackgroundUpdateTurnedOffAt, promotedFileAndNpmMetadataReadAt, claudeCodeBackgroundUpdateLeftOnReason, versionsThatFailedToApply',
     });
   });
 

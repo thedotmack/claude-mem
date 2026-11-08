@@ -669,6 +669,26 @@ export function claudeMemUpdateInvocation(
   return { kind: 'ready', invocation: commandInvocation(npx, ['--yes', `claude-mem@${version}`, 'update'], platform) };
 }
 
+/**
+ * Where the supervisor's installer run (claudeMemUpdateInvocation) would find
+ * npx, or null when it would find none, for the worker's check before it turns
+ * off Claude Code's background update (auto-update-check.ts
+ * settleClaudeCodeBackgroundUpdate). On Windows it is the supervisor's own
+ * lookup. Elsewhere the supervisor starts the bare name `npx`, which spawn
+ * finds on PATH, so Bun.which looks it up on the same PATH. The supervisor's
+ * environment is the worker's process.env through sanitizeEnv, which keeps
+ * PATH (env-sanitizer.ts), so that PATH is the one read, passed to Bun.which
+ * explicitly: on its own, Bun.which reads the PATH the process started with,
+ * not a later value of process.env.PATH.
+ */
+export function findNpxForTheInstaller(
+  platform: NodeJS.Platform = process.platform,
+  findWindowsCommand: (command: string) => string | null = lookupWindowsCommand,
+  findOnPath: (command: string) => string | null = (command) => Bun.which(command, { PATH: process.env.PATH }),
+): string | null {
+  return platform === 'win32' ? findWindowsCommand('npx') : findOnPath('npx');
+}
+
 /** True for any command line that runs a claude-mem package, however it was built: what FORBID_REAL_AUTO_UPDATE_ENV refuses. */
 function invocationRunsClaudeMem(invocation: CommandInvocation): boolean {
   return [invocation.command, ...invocation.args].some((part) => part.includes('claude-mem@'));

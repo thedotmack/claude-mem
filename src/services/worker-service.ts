@@ -61,18 +61,20 @@ import {
   readClaudeCodePluginState,
   readClaudeCodeSettingsEnvBlocks,
   runAutoUpdateCheck,
+  writeClaudeCodeKnownMarketplacesUnlessReadOnly,
   type AutoUpdateCheckDeps,
   type AutoUpdateOncePerBootLogKey,
 } from './auto-update/auto-update-check.js';
 import { readAutoUpdateState, writeAutoUpdateState } from './auto-update/auto-update-state.js';
 import {
   AUTO_UPDATE_APPLY_COMMAND,
+  findNpxForTheInstaller,
   launchAutoUpdateSupervisor,
   productionAutoUpdateLaunchDeps,
   runAutoUpdateApplyCli,
   workerInterruptedAttemptReader,
 } from './auto-update/auto-update-launch.js';
-import { claudeSettingsPath, installedPluginsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
+import { claudeSettingsPath, installedPluginsPath, knownMarketplacesPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -688,10 +690,15 @@ export class WorkerService implements WorkerRef {
         userSettingsPath: claudeSettingsPath(),
         managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
       }),
+      // known_marketplaces.json is the file install.ts registerMarketplace
+      // writes, read and written at the same path, with the same atomic writer.
       readClaudeCodePluginState: () => readClaudeCodePluginState({
         userSettingsPath: claudeSettingsPath(),
         installedPluginsPath: installedPluginsPath(),
+        knownMarketplacesPath: knownMarketplacesPath(),
       }),
+      writeClaudeCodeKnownMarketplaces: (knownMarketplaces) => writeClaudeCodeKnownMarketplacesUnlessReadOnly(knownMarketplacesPath(), knownMarketplaces),
+      findNpxOnWorkerPath: () => findNpxForTheInstaller(),
       readState: () => readAutoUpdateState(),
       writeState: (state) => writeAutoUpdateState(state),
       resolvePluginRoot: () => resolvePluginRoot(),

@@ -427,7 +427,7 @@ describe('WorkerService.start', () => {
 describe('WorkerService.buildAutoUpdateCheckDeps', () => {
   it('wires the production effects and reads the settings when the tick asks', () => {
     const workerFixture = buildWorkerFixture();
-    const readSettingsFiles = spyOn(autoUpdateCheck, 'readClaudeCodeSettingsEnvBlocks').mockImplementation(() => ({ envBlocks: [], skipped: [] }));
+    const readSettingsFiles = spyOn(autoUpdateCheck, 'readClaudeCodeSettingsEnvBlocks').mockImplementation(() => ({ envBlocks: [], skipped: [], claudeMemMarketplaceDeclarations: [] }));
     const deps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
     expect(deps.fetchJson).toBe(fetchJsonWithTimeout);
     expect(deps.pluginCacheRootDirectory).toBe(pluginCacheRootDirectory);
@@ -446,13 +446,70 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
       managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
     }]]);
 
-    // claude-mem's own entries in Claude Code's files, through CLAUDE_CONFIG_DIR too.
+    // claude-mem's own entries in Claude Code's files, known_marketplaces.json (the file install.ts
+    // registerMarketplace writes) included, through CLAUDE_CONFIG_DIR too.
+    const knownMarketplacesFile = path.join(claudeConfigDir, 'plugins', 'known_marketplaces.json');
     const readPluginState = spyOn(autoUpdateCheck, 'readClaudeCodePluginState');
-    expect(deps.readClaudeCodePluginState()).toEqual({ userSettings: { kind: 'not-disabled' }, registration: { kind: 'registered', versions: [INSTALLED] } });
+    expect(deps.readClaudeCodePluginState()).toEqual({
+      userSettings: { kind: 'not-disabled' },
+      registration: { kind: 'registered', versions: [INSTALLED] },
+      knownMarketplaces: { kind: 'read', path: knownMarketplacesFile, document: null },
+    });
     expect(readPluginState.mock.calls).toEqual([[{
       userSettingsPath: path.join(claudeConfigDir, 'settings.json'),
       installedPluginsPath: path.join(claudeConfigDir, 'plugins', 'installed_plugins.json'),
+      knownMarketplacesPath: knownMarketplacesFile,
     }]]);
+
+    // Written back at the same path, through the writer that leaves a read-only file alone.
+    const writeKnownMarketplaces = spyOn(autoUpdateCheck, 'writeClaudeCodeKnownMarketplacesUnlessReadOnly').mockImplementation(() => {});
+    deps.writeClaudeCodeKnownMarketplaces({ thedotmack: { autoUpdate: false } });
+    expect(writeKnownMarketplaces.mock.calls).toEqual([[knownMarketplacesFile, { thedotmack: { autoUpdate: false } }]]);
+
+    // npx looked up the way the supervisor's installer run finds it.
+    const findNpx = spyOn(autoUpdateLaunch, 'findNpxForTheInstaller').mockImplementation(() => '/opt/node/bin/npx');
+    expect(deps.findNpxOnWorkerPath()).toBe('/opt/node/bin/npx');
+    expect(findNpx.mock.calls).toEqual([[]]);
+  });
+
+  it('turns off Claude Code\'s background update in the known_marketplaces.json under CLAUDE_CONFIG_DIR once a check has proved the updater, changing nothing else, and records the time', async () => {
+    const workerFixture = buildWorkerFixture();
+    const knownMarketplacesFile = path.join(claudeConfigDir, 'plugins', 'known_marketplaces.json');
+    // Registered by an installer from before Phase 4, next to Anthropic's official marketplace.
+    const registeredBeforePhase4 = {
+      'claude-plugins-official': {
+        source: { source: 'github', repo: 'anthropics/claude-plugins-official' },
+        installLocation: path.join(claudeConfigDir, 'plugins', 'marketplaces', 'claude-plugins-official'),
+        lastUpdated: '2026-11-07T08:00:00.000Z',
+        autoUpdate: true,
+      },
+      thedotmack: {
+        source: { source: 'github', repo: 'thedotmack/claude-mem' },
+        installLocation: marketplaceDirectory(),
+        lastUpdated: '2026-11-01T09:30:00.000Z',
+        autoUpdate: true,
+      },
+    };
+    const asRegistered = JSON.stringify(registeredBeforePhase4, null, 2);
+    writeFileSync(knownMarketplacesFile, asRegistered);
+    try {
+      // npx found on the worker's PATH, wherever the machine running this test keeps it.
+      const deps = workerTickDeps(workerFixture.worker, { findNpxOnWorkerPath: () => '/opt/node/bin/npx' });
+
+      // The first check reads the promoted file and npm's metadata, which proves the updater; the file is left as it is.
+      expect((await runAutoUpdateCheck(deps)).decision).toBe('apply');
+      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(asRegistered);
+      expect(deps.stored().promotedFileAndNpmMetadataReadAt).toEqual(expect.any(Number));
+
+      // The next tick, not due, turns it off.
+      expect((await runAutoUpdateCheck(deps)).decision).toBe('not-due');
+      const expected = structuredClone(registeredBeforePhase4);
+      expected.thedotmack.autoUpdate = false;
+      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+      expect(deps.stored().claudeCodeBackgroundUpdateTurnedOffAt).toEqual(expect.any(Number));
+    } finally {
+      rmSync(knownMarketplacesFile, { force: true });
+    }
   });
 
   it('gives gate 3 the supervisor\'s readings of an interrupted attempt, told this worker\'s own version', () => {

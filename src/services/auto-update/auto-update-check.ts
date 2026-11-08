@@ -5,7 +5,10 @@
  *
  * Each tick walks the gates in runAutoUpdateCheck in order and returns the
  * first decision that applies, logged under AUTO_UPDATE. Only `apply` acts,
- * through deps.launchSupervisor.
+ * through deps.launchSupervisor. One step runs between gates 3 and 4 whatever
+ * the decision: once claude-mem's updater has shown it can work on this
+ * machine, it turns off Claude Code's background update of the thedotmack
+ * marketplace (settleClaudeCodeBackgroundUpdate).
  *
  * Own module, with every effect injected, for the same reason as
  * idle-exit-monitor.ts: worker-service.ts drags in a very large dependency
@@ -14,10 +17,10 @@
  * (WorkerQuietSignals.getNewestCapturedActivityAt).
  */
 
-import { readdirSync, readFileSync } from 'fs';
+import { accessSync, constants as fsConstants, readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { readUserScopeRegisteredCacheVersions } from '../../npx-cli/utils/prune-cache.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, coercePersistedSettingValue, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { loadDocument, settingsTarget } from '../../shared/settings-document.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
@@ -125,6 +128,25 @@ const MILLISECONDS_PER_HOUR = 60 * MILLISECONDS_PER_MINUTE;
 const CLAUDE_MEM_PLUGIN_KEY = 'claude-mem@thedotmack';
 
 /**
+ * claude-mem's marketplace key in Claude Code's known_marketplaces.json and
+ * under extraKnownMarketplaces in its settings files: the name in
+ * .claude-plugin/marketplace.json, the key install.ts registerMarketplace
+ * writes and uninstall.ts removeFromKnownMarketplaces removes.
+ */
+const CLAUDE_MEM_MARKETPLACE_KEY = 'thedotmack';
+
+/**
+ * The source install.ts registerMarketplace writes into claude-mem's entry in
+ * known_marketplaces.json, the form `claude plugin marketplace add
+ * thedotmack/claude-mem` records too. Exported so tests pin it against what
+ * registerMarketplace writes.
+ */
+export const CLAUDE_MEM_MARKETPLACE_SOURCE: Readonly<{ source: string; repo: string }> = Object.freeze({
+  source: 'github',
+  repo: 'thedotmack/claude-mem',
+});
+
+/**
  * The only CLAUDE_MEM_RUNTIME the updater runs under. A non-interactive
  * `update` writes CLAUDE_MEM_RUNTIME=worker (install.ts promptRuntime), so on
  * a server-runtime install it would switch the runtime. Read the way the hooks
@@ -152,37 +174,34 @@ const WORKER_RUNTIME = 'worker';
  * env-sanitizer.ts names it in ENV_PRESERVE; every worker spawn strips the
  * other CLAUDE_CODE_* variables. The same switches are also read from the env
  * block of Claude Code's settings files (readClaudeCodeSettingsEnvBlocks).
- * FORCE_AUTOUPDATE_PLUGINS takes the one marked overriddenByForcedPluginAutoUpdates
- * out of force (FORCE_PLUGIN_AUTO_UPDATES).
+ * FORCE_AUTOUPDATE_PLUGINS takes all three out of force (FORCE_PLUGIN_AUTO_UPDATES).
  */
 const CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES: ReadonlyArray<{
   name: string;
   isOn: (value: string | undefined) => boolean;
-  overriddenByForcedPluginAutoUpdates: boolean;
 }> = [
-  { name: 'DISABLE_AUTOUPDATER', isOn: isEnvSwitchOn, overriddenByForcedPluginAutoUpdates: true },
-  { name: 'DISABLE_UPDATES', isOn: isEnvSwitchOn, overriddenByForcedPluginAutoUpdates: false },
-  { name: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', isOn: isSetToAnyNonEmptyValue, overriddenByForcedPluginAutoUpdates: false },
+  { name: 'DISABLE_AUTOUPDATER', isOn: isEnvSwitchOn },
+  { name: 'DISABLE_UPDATES', isOn: isEnvSwitchOn },
+  { name: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', isOn: isSetToAnyNonEmptyValue },
 ];
 
 /**
- * The switches above that forced plugin auto-updates leave in force. One of
- * them on in the worker's env turns auto-update off with nothing else read.
- */
-const SWITCHES_FORCED_PLUGIN_AUTO_UPDATES_LEAVE_IN_FORCE = CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES
-  .filter((candidate) => !candidate.overriddenByForcedPluginAutoUpdates);
-
-/**
- * Claude Code's switch that brings plugin auto-updates back:
- * "`FORCE_AUTOUPDATE_PLUGINS` | Set to `1` to force plugin auto-updates even
- * when the main auto-updater is disabled via `DISABLE_AUTOUPDATER`"
- * (https://code.claude.com/docs/en/env-vars, read 2026-11-08). claude-mem's
- * updater updates a plugin, so while it is 1, DISABLE_AUTOUPDATER no longer
- * turns it off. DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
- * still do: the docs give the force over DISABLE_AUTOUPDATER only. It is read
- * from the same places as the switches: the worker's env (it has no
- * CLAUDE_CODE_ prefix, so sanitizeEnv passes it) and the env blocks of Claude
- * Code's settings files (arePluginAutoUpdatesForced).
+ * Claude Code's switch that brings plugin auto-updates back. Its two pages
+ * differ:
+ *  - https://code.claude.com/docs/en/env-vars (read 2026-11-08):
+ *    "`FORCE_AUTOUPDATE_PLUGINS` | Set to `1` to force plugin auto-updates
+ *    even when the main auto-updater is disabled via `DISABLE_AUTOUPDATER`";
+ *  - https://code.claude.com/docs/en/plugins/loading, "Which marketplaces and
+ *    plugins auto-update" (read 2026-11-08): "If you set `DISABLE_UPDATES=1`,
+ *    `DISABLE_AUTOUPDATER=1`, or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
+ *    the whole pass is off and the **Enable auto-update** toggle is hidden,
+ *    unless you also set `FORCE_AUTOUPDATE_PLUGINS=1`."
+ * The plugins page is the one about the pass that updates plugins, and
+ * claude-mem's updater updates a plugin, so it is followed: while
+ * FORCE_AUTOUPDATE_PLUGINS is 1, none of the three switches turns the updater
+ * off. It is read from the same places as the switches: the worker's env (it
+ * has no CLAUDE_CODE_ prefix, so sanitizeEnv passes it) and the env blocks of
+ * Claude Code's settings files (arePluginAutoUpdatesForced).
  */
 const FORCE_PLUGIN_AUTO_UPDATES = 'FORCE_AUTOUPDATE_PLUGINS';
 
@@ -236,16 +255,35 @@ export type AutoUpdateCheckStage =
   | 'write-state';
 
 /**
+ * Where turning off Claude Code's background update stopped
+ * (settleClaudeCodeBackgroundUpdate). It is logged with its stage and the
+ * tick goes on: claude-mem's own update never waits on Claude Code's file.
+ */
+export type ClaudeCodeBackgroundUpdateStage = 'write-claude-code-known-marketplaces';
+
+/**
+ * Why Claude Code's background update of the thedotmack marketplace is left
+ * on before anything is written (settleClaudeCodeBackgroundUpdate): no check
+ * has yet shown that claude-mem's updater reaches the promoted file and npm
+ * from this machine, or npx is not on the worker's PATH.
+ */
+export type ClaudeCodeBackgroundUpdateLeftOnWhy = 'updater-not-yet-proven' | 'npx-not-found';
+
+/**
  * What is logged at most once per boot: the decisions above, the warning for
  * an unrecognised CLAUDE_MEM_AUTO_UPDATE value, the warning for each Claude
- * Code settings path skipped (keyed by its path), and the ERROR of a tick that
- * a broken settings file stops (logFailedAutoUpdateTick).
+ * Code settings path skipped (keyed by its path), the ERROR of a tick that
+ * a broken settings file stops (logFailedAutoUpdateTick), the warning for
+ * each stage where turning off Claude Code's background update stopped
+ * (logClaudeCodeBackgroundUpdateStepFailure), and why it is left on.
  */
 export type AutoUpdateOncePerBootLogKey =
   | AutoUpdateDecisionName
   | 'unrecognised-CLAUDE_MEM_AUTO_UPDATE'
   | `skipped-claude-code-settings:${string}`
-  | `tick-failed-at-${AutoUpdateCheckStage}`;
+  | `tick-failed-at-${AutoUpdateCheckStage}`
+  | `claude-code-background-update-failed-at-${ClaudeCodeBackgroundUpdateStage}`
+  | `claude-code-background-update-left-on:${ClaudeCodeBackgroundUpdateLeftOnWhy}`;
 
 /** A tick that could not finish. The worker's timer logs it with its stage (logFailedAutoUpdateTick). */
 export class AutoUpdateCheckError extends Error {
@@ -286,16 +324,36 @@ export interface ClaudeCodeSettingsEnvBlock {
   env: Record<string, unknown>;
 }
 
+/**
+ * claude-mem's marketplace as one of Claude Code's settings files declares it
+ * under extraKnownMarketplaces, which `claude plugin marketplace add` writes
+ * and the /plugin Enable auto-update toggle updates. Read, never written: the
+ * entry belongs to the user or their admin.
+ */
+export interface ClaudeMemMarketplaceDeclaration {
+  /** The settings file that declares it, named in the disabled reason. */
+  path: string;
+  /** Its autoUpdate when that is a JSON boolean, the type Claude Code reads; undefined when it is not set. */
+  autoUpdate: boolean | undefined;
+}
+
 /** What readClaudeCodeSettingsEnvBlocks found. */
 export interface ClaudeCodeSettingsEnvRead {
   /** The env block of each settings file it read, in the order Claude Code merges them. */
   envBlocks: ClaudeCodeSettingsEnvBlock[];
   /**
    * Settings files, or the managed drop-in directory, that exist but that
-   * Claude Code runs without, so no switch in them is in force. The check
-   * warns about each once per boot. `problem` names the path and what is wrong.
+   * Claude Code runs without, and env blocks it drops, so no switch in them is
+   * in force. The check warns about each once per boot. `problem` names the
+   * path and what is wrong.
    */
   skipped: Array<{ path: string; problem: string }>;
+  /**
+   * extraKnownMarketplaces.thedotmack in each settings file read that declares
+   * it, in the same order, so the last one is the declaration in force
+   * (claudeMemMarketplaceDeclarationInForce).
+   */
+  claudeMemMarketplaceDeclarations: ClaudeMemMarketplaceDeclaration[];
 }
 
 /**
@@ -318,6 +376,15 @@ export interface ClaudeCodePluginState {
     | { kind: 'registered'; versions: string[] }
     | { kind: 'not-registered'; path: string }
     | { kind: 'unreadable'; path: string; problem: string };
+  /**
+   * Claude Code's known_marketplaces.json, which install.ts registerMarketplace
+   * reads with readJsonSafe and rewrites on every install and update. Read,
+   * the whole document is kept as parsed (null when there is no file), so the
+   * turn-off writes back exactly what was read (settleClaudeCodeBackgroundUpdate).
+   */
+  knownMarketplaces:
+    | { kind: 'read'; path: string; document: Record<string, unknown> | null }
+    | { kind: 'unreadable'; path: string; problem: string };
 }
 
 export interface AutoUpdateCheckDeps {
@@ -331,14 +398,32 @@ export interface AutoUpdateCheckDeps {
    */
   readSettings: () => AutoUpdateSettings;
   /**
-   * The env blocks of Claude Code's user and managed settings files, read on
-   * every tick (readClaudeCodeSettingsEnvBlocks). A missing file is left out;
-   * one Claude Code runs without is listed in `skipped`. Throws only for a
-   * managed settings file Claude Code refuses to start with.
+   * The env blocks of Claude Code's user and managed settings files, and the
+   * thedotmack entry each declares under extraKnownMarketplaces, read on every
+   * tick (readClaudeCodeSettingsEnvBlocks). A missing file is left out; one
+   * Claude Code runs without is listed in `skipped`. Throws only for a managed
+   * settings file Claude Code refuses to start with.
    */
   readClaudeCodeSettingsEnv: () => ClaudeCodeSettingsEnvRead;
-  /** Whether the user turned claude-mem off in Claude Code or uninstalled it there (readClaudeCodePluginState). Never throws for a bad file: it reports it. */
+  /**
+   * Whether the user turned claude-mem off in Claude Code or uninstalled it
+   * there, and its known_marketplaces.json (readClaudeCodePluginState; the
+   * worker passes the paths under CLAUDE_CONFIG_DIR). Never throws for a bad
+   * file: it reports it.
+   */
   readClaudeCodePluginState: () => ClaudeCodePluginState;
+  /**
+   * Writes the known_marketplaces.json document back atomically, unless the
+   * file is not writable (writeClaudeCodeKnownMarketplacesUnlessReadOnly).
+   * Throws when it does not write.
+   */
+  writeClaudeCodeKnownMarketplaces: (knownMarketplaces: Record<string, unknown>) => void;
+  /**
+   * Where the supervisor's installer run would find npx on the worker's PATH,
+   * or null when it would find none (auto-update-launch.ts
+   * findNpxForTheInstaller).
+   */
+  findNpxOnWorkerPath: () => string | null;
   readState: () => AutoUpdateState;
   writeState: (state: AutoUpdateState) => void;
   resolvePluginRoot: () => PluginRootResolution | null;
@@ -389,15 +474,17 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
       'CLAUDE_MEM_AUTO_UPDATE is neither "true" nor "false"; auto-update stays off (only "true" turns it on)',
       { value: settingText(settings.CLAUDE_MEM_AUTO_UPDATE) }));
   }
-  const disabledReason = autoUpdateDisabledReason(settings, deps.env);
+  const disabledReason = autoUpdateDisabledReason(settings);
   if (disabledReason !== null) return logDecision(deps, { decision: 'disabled', reason: disabledReason });
   // Claude Code reads the `env` block of a settings file "directly from the
   // file, so they take effect no matter how `claude` was launched"
   // (https://code.claude.com/docs/en/env-vars), while the worker's env holds
-  // only what the process that started it had. A file Claude Code runs
-  // without is skipped, with a warning once per boot; a managed one Claude
-  // Code refuses to start with stops the tick, for the same reason as
-  // settings.json above (readClaudeCodeSettingsEnvBlocks).
+  // only what the process that started it had. Each of Claude Code's switches
+  // waits for these files, even one set in the worker's env: a
+  // FORCE_AUTOUPDATE_PLUGINS=1 in one of them takes it out of force. A file
+  // Claude Code runs without is skipped, with a warning once per boot; a
+  // managed one Claude Code refuses to start with stops the tick, for the same
+  // reason as settings.json above (readClaudeCodeSettingsEnvBlocks).
   const claudeCodeSettings = runStage('read-claude-code-settings', () => deps.readClaudeCodeSettingsEnv());
   for (const skipped of claudeCodeSettings.skipped) {
     logOncePerBoot(deps, `skipped-claude-code-settings:${skipped.path}`, () => logger.warn('AUTO_UPDATE',
@@ -406,11 +493,22 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   }
   const claudeCodeSwitch = claudeCodeSwitchInForce(deps.env, claudeCodeSettings.envBlocks);
   if (claudeCodeSwitch !== null) return logDecision(deps, { decision: 'disabled', reason: claudeCodeSwitch });
+  // Claude Code's own background update of the thedotmack marketplace, turned
+  // on by the user or their admin where it outranks known_marketplaces.json:
+  // both updaters would race, so claude-mem's stays off.
+  const claudeMemMarketplaceDeclaration = claudeMemMarketplaceDeclarationInForce(claudeCodeSettings.claudeMemMarketplaceDeclarations);
+  if (claudeMemMarketplaceDeclaration?.autoUpdate === true) {
+    return logDecision(deps, {
+      decision: 'disabled',
+      reason: `extraKnownMarketplaces.${CLAUDE_MEM_MARKETPLACE_KEY}.autoUpdate is true in ${claudeMemMarketplaceDeclaration.path}: Claude Code's own background update of claude-mem's marketplace is on there, and Claude Code reads that before known_marketplaces.json, so running claude-mem's updater too would race it`,
+    });
+  }
   // The user's own choices in Claude Code, which `update` would undo: it turns
-  // the plugin back on and registers it again. A file it would stop on keeps
-  // the updater off too, so an update never starts that cannot finish.
+  // the plugin back on, registers it again, and rewrites claude-mem's
+  // marketplace entry. A file it would stop on keeps the updater off too, so
+  // an update never starts that cannot finish.
   const pluginState = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
-  const pluginStateReason = claudeCodePluginStateDisabledReason(pluginState);
+  const pluginStateReason = claudeCodePluginStateDisabledReason(pluginState, deps.marketplaceDirectory());
   if (pluginStateReason !== null) return logDecision(deps, { decision: 'disabled', reason: pluginStateReason });
 
   // Gate 2 — install shape. A dev checkout or an env-override root is left alone.
@@ -478,6 +576,22 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     }
   }
 
+  // Claude Code's background update of the thedotmack marketplace goes off
+  // here, once claude-mem's updater has shown it can work on this machine.
+  // Past every gate that turns auto-update off, so a user who turned
+  // claude-mem's updater off keeps Claude Code's setting as it is. Past gate
+  // 3, because while an attempt is in flight its supervisor writes the state
+  // file, and a save here could undo its claim. Before the due gate, so it
+  // runs on every tick, and a value Claude Code writes back is turned off
+  // again on the next one. Before any network read, so the document gate 1
+  // read is written back with nothing awaited since but gate 3's local read
+  // of an interrupted attempt's install.
+  const backgroundUpdate = settleClaudeCodeBackgroundUpdate(deps, state, now, {
+    path: pluginState.knownMarketplaces.path,
+    document: pluginState.knownMarketplaces.kind === 'read' ? pluginState.knownMarketplaces.document : null,
+  }, claudeMemMarketplaceDeclaration);
+  if (backgroundUpdate.stateChanged) saveState();
+
   // Gate 4 — due. While a busy deferral is pending, every tick looks again,
   // but the network is only touched once the worker is quiet or the deferral
   // has seen a full cycle of busy time; the fetch below then confirms the
@@ -532,9 +646,12 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   const promotedVersion = promoted.promotedVersion;
   state.lastSeenPromotedVersion = promotedVersion;
 
-  // Gate 6 — forward only.
+  // Gate 6 — forward only. An install that is up to date never reaches gate
+  // 7, so while the turn-off waits for proof, npm's metadata for the promoted
+  // version is read here instead, once per check.
   if (compareVersionsDescending(promotedVersion, installedVersion) >= 0) {
     clearBusyDeferral(state);
+    if (backgroundUpdate.waitingForUpdaterProof) await readNpmMetadataForTheTurnOff(deps, state, promotedVersion, now);
     saveState();
     return logDecision(deps, { decision: 'up-to-date', installedVersion, promotedVersion });
   }
@@ -559,6 +676,11 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     saveState();
     return logDecision(deps, { decision: 'not-published-by-workflow', promotedVersion, missing: publication.missing });
   }
+  // This check read both the promoted file and npm's metadata for the
+  // promoted version: the proof the turn-off waits for. Saved with the rest
+  // of this tick's state below; a worker shutting down saves nothing, and the
+  // next boot's check reads both again.
+  state.promotedFileAndNpmMetadataReadAt = now;
 
   // The worker may have begun shutting down while the fetches above were
   // awaited: the timer only reads the flag when a tick starts, and a
@@ -614,20 +736,18 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
 }
 
 /**
- * Why auto-update is off by claude-mem's settings or by a switch in the
- * worker's own env that FORCE_AUTOUPDATE_PLUGINS leaves in force, or null.
- * Either needs nothing else read. DISABLE_AUTOUPDATER waits for
- * claudeCodeSwitchInForce, which reads it after Claude Code's settings files:
- * FORCE_AUTOUPDATE_PLUGINS set in one of them takes it out of force.
+ * Why auto-update is off by claude-mem's own settings, or null. That needs
+ * nothing else read. Claude Code's switches, even one set in the worker's own
+ * env, wait for claudeCodeSwitchInForce, which reads them after Claude Code's
+ * settings files: FORCE_AUTOUPDATE_PLUGINS set in one of them takes them out
+ * of force.
  */
-export function autoUpdateDisabledReason(settings: AutoUpdateSettings, env: NodeJS.ProcessEnv): string | null {
+export function autoUpdateDisabledReason(settings: AutoUpdateSettings): string | null {
   const autoUpdateSwitch = parseAutoUpdateSwitch(settings.CLAUDE_MEM_AUTO_UPDATE);
   if (autoUpdateSwitch === 'off') return 'CLAUDE_MEM_AUTO_UPDATE=false';
   if (autoUpdateSwitch === 'unrecognised') {
     return `CLAUDE_MEM_AUTO_UPDATE=${JSON.stringify(settingText(settings.CLAUDE_MEM_AUTO_UPDATE))} (only "true" turns it on)`;
   }
-  const envSwitch = claudeCodeSwitchSetIn((name) => env[name], SWITCHES_FORCED_PLUGIN_AUTO_UPDATES_LEAVE_IN_FORCE);
-  if (envSwitch !== null) return `${envSwitch} is set (Claude Code's switch for no background updates)`;
   if (isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: settingText(settings.CLAUDE_MEM_WORKER_AUTOSTART) })) {
     return 'CLAUDE_MEM_WORKER_AUTOSTART=false (an outside process manager would fight the installer\'s restart)';
   }
@@ -641,11 +761,18 @@ export function autoUpdateDisabledReason(settings: AutoUpdateSettings, env: Node
 
 /**
  * Why Claude Code's own files keep the updater off, or null. `update` runs
- * install.ts enablePluginInClaudeSettings and registerPlugin, which read those
- * files with readJsonSafe and stop on one that does not parse.
+ * install.ts registerMarketplace, registerPlugin and
+ * enablePluginInClaudeSettings, which read those files with readJsonSafe and
+ * stop on one that does not parse. registerMarketplace runs after the
+ * installer has already rewritten the marketplace copy and the plugin cache,
+ * so an update that stops there leaves the install half-written; and in a
+ * known_marketplaces.json that holds JSON but no object, it cannot register
+ * the marketplace either (null or text stops it, an array is written back
+ * without the entry). `marketplaceInstallLocation` is the installLocation
+ * registerMarketplace writes (paths.ts marketplaceDirectory).
  */
-export function claudeCodePluginStateDisabledReason(pluginState: ClaudeCodePluginState): string | null {
-  const { userSettings, registration } = pluginState;
+export function claudeCodePluginStateDisabledReason(pluginState: ClaudeCodePluginState, marketplaceInstallLocation: string): string | null {
+  const { userSettings, registration, knownMarketplaces } = pluginState;
   if (userSettings.kind === 'explicitly-disabled') {
     return `claude-mem is turned off in Claude Code (enabledPlugins["${CLAUDE_MEM_PLUGIN_KEY}"] is false in ${userSettings.path}); an update would turn it back on`;
   }
@@ -657,6 +784,59 @@ export function claudeCodePluginStateDisabledReason(pluginState: ClaudeCodePlugi
   }
   if (registration.kind === 'unreadable') {
     return `${registration.problem}, so whether claude-mem is still installed cannot be read, and an update would stop on that file`;
+  }
+  if (knownMarketplaces.kind === 'unreadable') {
+    return `${knownMarketplaces.problem}, so an update could not register the marketplace there: it would stop on that file, or write it back without claude-mem's entry, after it had already rewritten the marketplace copy and the plugin cache`;
+  }
+  const entryDifference = knownMarketplaces.document === null
+    ? null
+    : claudeMemMarketplaceEntryDifference(knownMarketplaces.document, marketplaceInstallLocation);
+  if (entryDifference !== null) {
+    return `the ${CLAUDE_MEM_MARKETPLACE_KEY} entry in ${knownMarketplaces.path} ${entryDifference}, not the one the installer writes (source ${JSON.stringify(CLAUDE_MEM_MARKETPLACE_SOURCE)} at ${marketplaceInstallLocation}), so it was added another way, and an unattended update would replace it`;
+  }
+  return null;
+}
+
+/**
+ * How claude-mem's entry in known_marketplaces.json differs from the one
+ * install.ts registerMarketplace writes, or null when it does not differ or
+ * there is none (registerMarketplace adds one). registerMarketplace replaces
+ * the whole entry with CLAUDE_MEM_MARKETPLACE_SOURCE at marketplaceDirectory(),
+ * so it would rewrite the entry of a user who added the marketplace another
+ * way: `owner/repo#ref` (a `github` source with a `ref`), a git URL (a `git`
+ * source) or a local path (a `directory` source, whose "`installLocation` in
+ * `known_marketplaces.json` is the path you gave")
+ * (https://code.claude.com/docs/en/plugins/cli-reference "plugin marketplace
+ * add", https://code.claude.com/docs/en/plugins/loading, read 2026-11-08).
+ *
+ * The rewrite would not stick either. `claude plugin marketplace add` "writes
+ * the marketplace to `extraKnownMarketplaces` in your user settings as well as
+ * to disk", and after a session starts "Claude Code checks the declared
+ * marketplaces in the background: ... A declared marketplace whose source
+ * changed in settings: Claude Code re-fetches it from the new source and shows
+ * `Plugins changed. Run /reload-plugins to activate.`" (plugins/loading, read
+ * 2026-11-08). The declaration would still name the user's source while the
+ * entry named claude-mem's, so Claude Code would fetch the user's source over
+ * it again, and every update would redo the rewrite. Such an entry keeps the
+ * updater off; the user's own `npx claude-mem update` still rewrites it, as
+ * it always has.
+ *
+ * The source must be exactly CLAUDE_MEM_MARKETPLACE_SOURCE, with no other
+ * field: registerMarketplace would drop any. installLocation is compared as a
+ * resolved path, so a trailing separator is not a difference.
+ */
+function claudeMemMarketplaceEntryDifference(knownMarketplaces: Record<string, unknown>, marketplaceInstallLocation: string): string | null {
+  const entry = knownMarketplaces[CLAUDE_MEM_MARKETPLACE_KEY];
+  if (entry === undefined) return null;
+  if (!isPlainObject(entry)) return `is ${describeJsonKind(entry)}`;
+  const { source, installLocation } = entry;
+  const sourceIsTheInstallers = isPlainObject(source)
+    && Object.keys(source).length === Object.keys(CLAUDE_MEM_MARKETPLACE_SOURCE).length
+    && source.source === CLAUDE_MEM_MARKETPLACE_SOURCE.source
+    && source.repo === CLAUDE_MEM_MARKETPLACE_SOURCE.repo;
+  if (!sourceIsTheInstallers) return `has source ${JSON.stringify(source)}`;
+  if (typeof installLocation !== 'string' || path.resolve(installLocation) !== path.resolve(marketplaceInstallLocation)) {
+    return `has installLocation ${JSON.stringify(installLocation)}`;
   }
   return null;
 }
@@ -678,33 +858,77 @@ export function claudeCodePluginStateDisabledReason(pluginState: ClaudeCodePlugi
  *    scopes (a project's own install, at a version of its own) are not the
  *    npx install's and are not read: an update would replace them with the
  *    user-scope one. A missing file holds no entry.
+ *  - known_marketplaces.json (install.ts registerMarketplace, readJsonSafe):
+ *    a missing file holds no entry; one that does not parse as a JSON object
+ *    (empty and an array included) is unreadable: registerMarketplace stops on
+ *    it, or, for an array, writes it back without claude-mem's entry. The
+ *    whole document is kept as read.
  */
-export function readClaudeCodePluginState(files: { userSettingsPath: string; installedPluginsPath: string }): ClaudeCodePluginState {
+export function readClaudeCodePluginState(files: { userSettingsPath: string; installedPluginsPath: string; knownMarketplacesPath: string }): ClaudeCodePluginState {
   return {
     userSettings: readClaudeCodeUserSettingsToggle(files.userSettingsPath),
     registration: readClaudeCodeRegistration(files.installedPluginsPath),
+    knownMarketplaces: readClaudeCodeKnownMarketplaces(files.knownMarketplacesPath),
   };
 }
 
 function readClaudeCodeUserSettingsToggle(userSettingsPath: string): ClaudeCodePluginState['userSettings'] {
+  const read = readJsonObjectFile(userSettingsPath, { emptyFileIsAnEmptyObject: false });
+  if (read.kind === 'missing') return { kind: 'not-disabled' };
+  if (read.kind === 'unusable') return { kind: 'unreadable', path: userSettingsPath, problem: read.problem };
+  const enabledPlugins = read.document.enabledPlugins;
+  return isPlainObject(enabledPlugins) && enabledPlugins[CLAUDE_MEM_PLUGIN_KEY] === false
+    ? { kind: 'explicitly-disabled', path: userSettingsPath }
+    : { kind: 'not-disabled' };
+}
+
+function readClaudeCodeKnownMarketplaces(knownMarketplacesPath: string): ClaudeCodePluginState['knownMarketplaces'] {
+  const read = readJsonObjectFile(knownMarketplacesPath, { emptyFileIsAnEmptyObject: false });
+  if (read.kind === 'unusable') return { kind: 'unreadable', path: knownMarketplacesPath, problem: read.problem };
+  return { kind: 'read', path: knownMarketplacesPath, document: read.kind === 'object' ? read.document : null };
+}
+
+/** One JSON file that must hold an object, read by readJsonObjectFile. */
+type JsonObjectFileRead =
+  | { kind: 'missing' }
+  | { kind: 'object'; document: Record<string, unknown> }
+  /** `problem` names the file and what is wrong; `cause` is the read or parse error, when there was one. */
+  | { kind: 'unusable'; problemKind: ClaudeCodeSettingsFileProblemKind; problem: string; cause?: unknown };
+
+/**
+ * The one reader of a JSON file that must hold an object, for Claude Code's
+ * settings files and its plugin records. A missing file is `missing`; one that
+ * exists but cannot be read, is not valid JSON or is not a JSON object (an
+ * array included) is `unusable`, its problem worded the same way for every
+ * file. A UTF-8 byte order mark is stripped, as readJsonSafe strips it
+ * (#3013). An empty file (nothing but whitespace or a byte order mark) reads
+ * as `{}` when `emptyFileIsAnEmptyObject`, the way Claude Code reads an empty
+ * settings file, and is not valid JSON otherwise, the way install.ts reads
+ * every file it rewrites (readJsonSafe refuses it).
+ */
+function readJsonObjectFile(filePath: string, options: { emptyFileIsAnEmptyObject: boolean }): JsonObjectFileRead {
   let raw: string;
   try {
-    raw = readFileSync(userSettingsPath, 'utf-8');
+    raw = readFileSync(filePath, 'utf-8');
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'not-disabled' };
-    return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} exists but cannot be read: ${errorMessageOf(error)}` };
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { kind: 'missing' };
+    return {
+      kind: 'unusable',
+      problemKind: isReadDeniedByTheOperatingSystem(code) ? 'read-denied' : 'read-failed',
+      problem: `${filePath} exists but cannot be read: ${errorMessageOf(error)}`,
+      cause: error,
+    };
   }
+  if (options.emptyFileIsAnEmptyObject && raw.trim() === '') return { kind: 'object', document: {} };
   let parsed: unknown;
   try {
     parsed = parseJsonWithBom(raw);
   } catch (error: unknown) {
-    return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} is not valid JSON: ${errorMessageOf(error)}` };
+    return { kind: 'unusable', problemKind: 'not-a-json-object', problem: `${filePath} is not valid JSON: ${errorMessageOf(error)}`, cause: error };
   }
-  if (!isPlainObject(parsed)) return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} does not hold a JSON object` };
-  const enabledPlugins = parsed.enabledPlugins;
-  return isPlainObject(enabledPlugins) && enabledPlugins[CLAUDE_MEM_PLUGIN_KEY] === false
-    ? { kind: 'explicitly-disabled', path: userSettingsPath }
-    : { kind: 'not-disabled' };
+  if (!isPlainObject(parsed)) return { kind: 'unusable', problemKind: 'not-a-json-object', problem: `${filePath} does not hold a JSON object` };
+  return { kind: 'object', document: parsed };
 }
 
 function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePluginState['registration'] {
@@ -718,11 +942,164 @@ function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePlu
 }
 
 /**
+ * Turn off Claude Code's background update of the thedotmack marketplace,
+ * once claude-mem's own updater has shown it can work on this machine.
+ * Installers before Phase 4 registered the marketplace with autoUpdate set to
+ * true (install.ts registerMarketplace now writes false while claude-mem's
+ * updater is on). Claude Code's background update then installs main's version
+ * at a session start as soon as a version bump lands there, before the owner
+ * promotes it, so claude-mem's updater always reads "up to date", never runs
+ * the installer, and the flag would never flip on those installs.
+ *
+ * Nothing to do, and any reason recorded earlier is cleared, when Claude
+ * Code's own setting already has it off (the extraKnownMarketplaces
+ * declaration in force says autoUpdate false; one that says true kept the
+ * updater off at gate 1), or when there is no file, no thedotmack entry, or an
+ * autoUpdate that is anything but true.
+ *
+ * Otherwise Claude Code's update is the install's only working updater until
+ * claude-mem's has shown it can work here: on a network that blocks
+ * registry.npmjs.org (gate 7 reads it directly), or for a worker whose PATH
+ * has no npx, turning it off would leave the install with none. So it stays
+ * on, logged once per boot, with the reason in the state file for the doctor
+ * row (claudeCodeBackgroundUpdateLeftOnReason), until
+ *  - a check has read both the promoted file and npm's metadata for the
+ *    promoted version, shown published by the workflow
+ *    (promotedFileAndNpmMetadataReadAt: set at gate 7, or by the one read
+ *    gate 6 makes for it while this waits, waitingForUpdaterProof); and
+ *  - npx is on the worker's PATH, looked up the way the supervisor's installer
+ *    run finds it (deps.findNpxOnWorkerPath).
+ *
+ * Then only `thedotmack.autoUpdate` changes, from true to false, in the
+ * document gate 1 read; the only await in between is gate 3's local read of an
+ * interrupted attempt's install. Every other entry and
+ * field is written back as read and in the order read: JSON.parse keeps it and
+ * writeJsonFileAtomic's JSON.stringify writes it, except that JavaScript puts
+ * integer-like keys first. A file that is not writable, or a write that fails,
+ * is logged with its stage, recorded as the reason, and left as it was; the
+ * next tick tries again.
+ */
+function settleClaudeCodeBackgroundUpdate(
+  deps: AutoUpdateCheckDeps,
+  state: AutoUpdateState,
+  now: number,
+  knownMarketplaces: { path: string; document: Record<string, unknown> | null },
+  declarationInForce: ClaudeMemMarketplaceDeclaration | null,
+): { stateChanged: boolean; waitingForUpdaterProof: boolean } {
+  const reasonBefore = state.claudeCodeBackgroundUpdateLeftOnReason;
+  const settled = (leftOnReason: string | null, waitingForUpdaterProof: boolean) => {
+    state.claudeCodeBackgroundUpdateLeftOnReason = leftOnReason;
+    return { stateChanged: leftOnReason !== reasonBefore, waitingForUpdaterProof };
+  };
+  const document = knownMarketplaces.document;
+  const claudeMemEntry = declarationInForce?.autoUpdate === false || document === null
+    ? null
+    : claudeMemEntryWithBackgroundUpdateOn(document);
+  if (document === null || claudeMemEntry === null) return settled(null, false);
+
+  if (state.promotedFileAndNpmMetadataReadAt === null) {
+    const reason = `claude-mem's updater has not yet read both the promoted file and npm's metadata for the promoted version on this machine, so Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace stays on until it has`;
+    logOncePerBoot(deps, 'claude-code-background-update-left-on:updater-not-yet-proven', () => logger.info('AUTO_UPDATE',
+      `Left Claude Code's background update on: ${reason}`, { knownMarketplaces: knownMarketplaces.path }));
+    return settled(reason, true);
+  }
+  if (deps.findNpxOnWorkerPath() === null) {
+    const reason = `npx is not on the worker's PATH, so claude-mem's updater could not run its installer, and Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace stays on`;
+    logOncePerBoot(deps, 'claude-code-background-update-left-on:npx-not-found', () => logger.warn('AUTO_UPDATE',
+      `Left Claude Code's background update on: ${reason}`, { knownMarketplaces: knownMarketplaces.path, workerPath: deps.env.PATH }));
+    return settled(reason, false);
+  }
+
+  claudeMemEntry.autoUpdate = false;
+  try {
+    deps.writeClaudeCodeKnownMarketplaces(document);
+  } catch (error: unknown) {
+    logClaudeCodeBackgroundUpdateStepFailure(deps, 'write-claude-code-known-marketplaces', error);
+    return settled(`Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace stays on: ${errorMessageOf(error)}`, false);
+  }
+  logger.info('AUTO_UPDATE',
+    `Turned off Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace (autoUpdate true → false in its known_marketplaces.json): claude-mem installs the release the owner promotes, and Claude Code's update would install main at a random time into the same cache folders`,
+    { marketplace: CLAUDE_MEM_MARKETPLACE_KEY, knownMarketplaces: knownMarketplaces.path });
+  state.claudeCodeBackgroundUpdateTurnedOffAt = now;
+  state.claudeCodeBackgroundUpdateLeftOnReason = null;
+  return { stateChanged: true, waitingForUpdaterProof: false };
+}
+
+/** claude-mem's marketplace entry when it has Claude Code's background update on (autoUpdate === true), or null. */
+function claudeMemEntryWithBackgroundUpdateOn(knownMarketplaces: Record<string, unknown>): Record<string, unknown> | null {
+  const claudeMemEntry = knownMarketplaces[CLAUDE_MEM_MARKETPLACE_KEY];
+  return isPlainObject(claudeMemEntry) && claudeMemEntry.autoUpdate === true ? claudeMemEntry : null;
+}
+
+/**
+ * The one read gate 6 makes while the turn-off waits for proof
+ * (settleClaudeCodeBackgroundUpdate): npm's metadata for the promoted version,
+ * which an install that is already up to date never reaches gate 7 to read.
+ * Shown published by the workflow, it is the proof
+ * (promotedFileAndNpmMetadataReadAt). Anything else is logged and leaves the
+ * turn-off waiting; a read that failed is also this check's error, so the
+ * doctor row shows why (lastCheckError). The decision stays up-to-date, and
+ * the next due check reads it again.
+ */
+async function readNpmMetadataForTheTurnOff(deps: AutoUpdateCheckDeps, state: AutoUpdateState, promotedVersion: string, now: number): Promise<void> {
+  const publication = await readNpmPublication(deps, promotedVersion);
+  if (publication.kind === 'published') {
+    state.promotedFileAndNpmMetadataReadAt = now;
+    return;
+  }
+  if (publication.kind === 'failed') state.lastCheckError = { at: now, message: publication.message };
+  logger.warn('AUTO_UPDATE',
+    `npm's metadata for the promoted version did not prove claude-mem's updater here, so Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace stays on; the next due check reads it again`,
+    {
+      promotedVersion,
+      problem: publication.kind === 'failed' ? publication.message : `not published by the workflow (missing ${publication.missing.join(', ')})`,
+    });
+}
+
+/**
+ * Log a turn-off that stopped, with its stage. A file that cannot be written
+ * usually stays that way until someone fixes it, and the step runs on every
+ * tick, so the first failure at each stage in a boot is a WARN and each later
+ * one a DEBUG: the rule logFailedAutoUpdateTick applies to a broken settings
+ * file.
+ */
+function logClaudeCodeBackgroundUpdateStepFailure(deps: AutoUpdateCheckDeps, stage: ClaudeCodeBackgroundUpdateStage, error: unknown): void {
+  const cause = error instanceof Error ? error : new Error(String(error));
+  const message = `Could not turn off Claude Code's background update of the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace; its known_marketplaces.json is left as it was, and the next tick tries again`;
+  const details = { stage, problem: cause.message };
+  const warnedKey: AutoUpdateOncePerBootLogKey = `claude-code-background-update-failed-at-${stage}`;
+  if (deps.oncePerBootLogsWritten.has(warnedKey)) {
+    logger.debug('AUTO_UPDATE', message, { ...details, loggedAtWarnEarlierThisBoot: true }, cause);
+    return;
+  }
+  deps.oncePerBootLogsWritten.add(warnedKey);
+  logger.warn('AUTO_UPDATE', message, details, cause);
+}
+
+/**
+ * The production writeClaudeCodeKnownMarketplaces: the document written back
+ * the way install.ts registerMarketplace writes the file (writeJsonFileAtomic),
+ * unless the file is not writable. writeJsonFileAtomic renames a new file over
+ * the old one, which only the folder's permissions allow or refuse, and gives
+ * the new file the old one's mode, so on its own it would replace a file the
+ * user made read-only. One this process may not write, or one that is gone,
+ * throws, naming it, and is left as it is.
+ */
+export function writeClaudeCodeKnownMarketplacesUnlessReadOnly(knownMarketplacesFilePath: string, knownMarketplaces: Record<string, unknown>): void {
+  try {
+    accessSync(knownMarketplacesFilePath, fsConstants.W_OK);
+  } catch (error: unknown) {
+    throw new Error(`${knownMarketplacesFilePath} is not writable, so it is left as it is: ${errorMessageOf(error)}`, { cause: error });
+  }
+  writeJsonFileAtomic(knownMarketplacesFilePath, knownMarketplaces);
+}
+
+/**
  * The first of Claude Code's switches in force, as a disabled reason, or
  * null. The worker's env is read first, then the env block of each settings
- * file in order, and a switch on in any of them counts, except
- * DISABLE_AUTOUPDATER while plugin auto-updates are forced
- * (arePluginAutoUpdatesForced, over the same places).
+ * file in order, and a switch on in any of them counts, unless plugin
+ * auto-updates are forced (arePluginAutoUpdatesForced, over the same places),
+ * which takes every one of them out of force (FORCE_PLUGIN_AUTO_UPDATES).
  */
 export function claudeCodeSwitchInForce(env: NodeJS.ProcessEnv, settingsFileEnvBlocks: ClaudeCodeSettingsEnvBlock[]): string | null {
   const places: Array<{ valueOf: (name: string) => string | undefined; whereSet: string }> = [
@@ -732,11 +1109,9 @@ export function claudeCodeSwitchInForce(env: NodeJS.ProcessEnv, settingsFileEnvB
       whereSet: ` in the env block of ${block.path}`,
     })),
   ];
-  const switchesInForce = arePluginAutoUpdatesForced(places.map((place) => place.valueOf(FORCE_PLUGIN_AUTO_UPDATES)))
-    ? SWITCHES_FORCED_PLUGIN_AUTO_UPDATES_LEAVE_IN_FORCE
-    : CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES;
+  if (arePluginAutoUpdatesForced(places.map((place) => place.valueOf(FORCE_PLUGIN_AUTO_UPDATES)))) return null;
   for (const place of places) {
-    const switchOn = claudeCodeSwitchSetIn(place.valueOf, switchesInForce);
+    const switchOn = claudeCodeSwitchSetIn(place.valueOf);
     if (switchOn !== null) return `${switchOn} is set${place.whereSet} (Claude Code's switch for no background updates)`;
   }
   return null;
@@ -826,7 +1201,7 @@ export function readAutoUpdateSettings(settingsPath: string, env: NodeJS.Process
 /**
  * Whether a settings.json that loadDocument could not parse is empty: nothing
  * but whitespace or a byte order mark, which reads as an empty document, the
- * way readClaudeCodeSettingsFileEnv reads an empty Claude Code settings file.
+ * way readClaudeCodeSettingsFile reads an empty Claude Code settings file.
  * The file is read again only on that error path. A file that cannot be read
  * now throws the caller's "exists but cannot be read as settings" error, with
  * this read's cause.
@@ -861,7 +1236,9 @@ export function claudeCodeManagedSettingsDirectory(platform: NodeJS.Platform = p
  * [managed-settings.d/] directory in alphabetical order ... Claude Code ignores
  * hidden files and files that don't end in `.json`"
  * (https://code.claude.com/docs/en/managed-settings). A switch in any of them
- * turns auto-update off, so the files are read one by one, not merged.
+ * turns auto-update off, so the files are read one by one, not merged. From
+ * the same files, in the same order, it takes the thedotmack entry each
+ * declares under extraKnownMarketplaces (claudeMemMarketplaceDeclarationIn).
  *
  * A missing file or drop-in directory is left out, and an empty file holds no
  * switch (Claude Code reads an empty managed settings file as `{}`). One that
@@ -878,19 +1255,28 @@ export function claudeCodeManagedSettingsDirectory(platform: NodeJS.Platform = p
  *    every session starts without that source's policies", and "For any other
  *    read failure ... every session exits at startup"; and a value that fails
  *    validation is dropped. So a read the operating system denied (the drop-in
- *    directory's included) and an env that is not an object are skipped, and
- *    anything else throws: a switch in it could not be seen.
+ *    directory's included) is skipped, and anything else throws: a switch in
+ *    it could not be seen.
+ * An env that is not an object is a broken value in either scope: it is
+ * dropped, listed in `skipped`, and the rest of the file is still read.
  * Each skipped path is listed in `skipped`, for the check to warn about.
  */
 export function readClaudeCodeSettingsEnvBlocks(files: { userSettingsPath: string; managedSettingsDirectory: string }): ClaudeCodeSettingsEnvRead {
-  const read: ClaudeCodeSettingsEnvRead = { envBlocks: [], skipped: [] };
+  const read: ClaudeCodeSettingsEnvRead = { envBlocks: [], skipped: [], claudeMemMarketplaceDeclarations: [] };
   const addFile = (filePath: string, scope: ClaudeCodeSettingsScope): void => {
+    let settingsFile: ClaudeCodeSettingsFileRead | null;
     try {
-      const block = readClaudeCodeSettingsFileEnv(filePath);
-      if (block !== null) read.envBlocks.push(block);
+      settingsFile = readClaudeCodeSettingsFile(filePath);
     } catch (error: unknown) {
       if (!(error instanceof UnusableClaudeCodeSettingsFile) || !claudeCodeRunsWithout(scope, error.problemKind)) throw error;
       read.skipped.push({ path: filePath, problem: error.message });
+      return;
+    }
+    if (settingsFile === null) return;
+    if (settingsFile.env.kind === 'block') read.envBlocks.push({ path: filePath, env: settingsFile.env.block });
+    else read.skipped.push({ path: filePath, problem: settingsFile.env.problem });
+    if (settingsFile.claudeMemMarketplaceDeclaration !== null) {
+      read.claudeMemMarketplaceDeclarations.push(settingsFile.claudeMemMarketplaceDeclaration);
     }
   };
   addFile(files.userSettingsPath, 'user');
@@ -913,11 +1299,45 @@ export function readClaudeCodeSettingsEnvBlocks(files: { userSettingsPath: strin
   return read;
 }
 
+/**
+ * The extraKnownMarketplaces declaration of claude-mem's marketplace that
+ * Claude Code uses, or null when no file read declares one. Its rule for
+ * whether a marketplace auto-updates "follows the first of these that is set:
+ * 1. `autoUpdate` on its `extraKnownMarketplaces` entry in a settings file
+ * 2. `autoUpdate` on its `known_marketplaces.json` entry, which the Enable
+ * auto-update toggle under /plugin Marketplaces writes. When a settings file
+ * also declares the marketplace under `extraKnownMarketplaces`, the toggle
+ * writes `autoUpdate` to that settings entry as well 3. The default: ... off
+ * for every other marketplace", and "When you run `claude plugin marketplace
+ * add`, Claude Code writes the marketplace to `extraKnownMarketplaces` in your
+ * user settings as well as to disk" (https://code.claude.com/docs/en/plugins/loading,
+ * "Which marketplaces and plugins auto-update" and "Check which stage a plugin
+ * reached", read 2026-11-08).
+ *
+ * Which entry counts: "When more than one settings file defines a marketplace
+ * entry under the same name, Claude Code uses the entry from the
+ * highest-precedence file whole" (https://code.claude.com/docs/en/settings-reference
+ * `extraKnownMarketplaces`), and between managed files "a later entry with the
+ * same name replaces the earlier one whole" (managed-settings). The files are
+ * read user settings first, then managed settings in merge order, so the last
+ * declaration read is the one in force, autoUpdate set or not. Project and
+ * local settings belong to one repository each, and the worker reads neither.
+ *
+ * The check reads its autoUpdate and never writes it:
+ *  - true: Claude Code's own updater is on by the user's or their admin's
+ *    choice, and both would race, so claude-mem's stays off (gate 1);
+ *  - false: Claude Code's is off already, so there is nothing to turn off;
+ *  - not set: known_marketplaces.json decides (settleClaudeCodeBackgroundUpdate).
+ */
+export function claudeMemMarketplaceDeclarationInForce(declarations: ReadonlyArray<ClaudeMemMarketplaceDeclaration>): ClaudeMemMarketplaceDeclaration | null {
+  return declarations.length === 0 ? null : declarations[declarations.length - 1];
+}
+
 /** Which of Claude Code's settings a file is: the user's own, or managed (the file-based policy). */
 type ClaudeCodeSettingsScope = 'user' | 'managed';
 
-/** What is wrong with a Claude Code settings file that exists, in the cases Claude Code's docs tell apart. */
-type ClaudeCodeSettingsFileProblemKind = 'read-denied' | 'read-failed' | 'not-a-json-object' | 'env-not-an-object';
+/** What is wrong with a JSON file that exists, in the cases Claude Code's settings docs tell apart. */
+type ClaudeCodeSettingsFileProblemKind = 'read-denied' | 'read-failed' | 'not-a-json-object';
 
 /** A Claude Code settings file that exists but cannot be used. Its message names the file and the problem. */
 class UnusableClaudeCodeSettingsFile extends Error {
@@ -933,7 +1353,7 @@ class UnusableClaudeCodeSettingsFile extends Error {
  * quotes the docs for each case).
  */
 function claudeCodeRunsWithout(scope: ClaudeCodeSettingsScope, problemKind: ClaudeCodeSettingsFileProblemKind): boolean {
-  return scope === 'user' || problemKind === 'read-denied' || problemKind === 'env-not-an-object';
+  return scope === 'user' || problemKind === 'read-denied';
 }
 
 /** EACCES and EPERM: the operating system denied the read, "for example on a root-only file". */
@@ -941,35 +1361,45 @@ function isReadDeniedByTheOperatingSystem(code: string | undefined): boolean {
   return code === 'EACCES' || code === 'EPERM';
 }
 
+/** What one of Claude Code's settings files holds for the check. */
+interface ClaudeCodeSettingsFileRead {
+  /** Its env block, or why Claude Code drops it: an env that is not an object. */
+  env: { kind: 'block'; block: Record<string, unknown> } | { kind: 'dropped'; problem: string };
+  claudeMemMarketplaceDeclaration: ClaudeMemMarketplaceDeclaration | null;
+}
+
 /**
- * One settings file's env block, or null when the file does not exist.
- * Throws UnusableClaudeCodeSettingsFile for one that exists but cannot be used.
+ * One settings file, or null when it does not exist. Throws
+ * UnusableClaudeCodeSettingsFile for one that exists but cannot be read or
+ * does not hold a JSON object (readJsonObjectFile; an empty file reads as `{}`).
  */
-function readClaudeCodeSettingsFileEnv(filePath: string): ClaudeCodeSettingsEnvBlock | null {
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, 'utf-8');
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return null;
-    throw new UnusableClaudeCodeSettingsFile(isReadDeniedByTheOperatingSystem(code) ? 'read-denied' : 'read-failed',
-      `${filePath} exists but cannot be read: ${errorMessageOf(error)}`, { cause: error });
-  }
-  if (raw.trim() === '') return { path: filePath, env: {} };
-  let parsed: unknown;
-  try {
-    parsed = parseJsonWithBom(raw);
-  } catch (error: unknown) {
-    throw new UnusableClaudeCodeSettingsFile('not-a-json-object', `${filePath} is not valid JSON: ${errorMessageOf(error)}`, { cause: error });
-  }
-  if (!isPlainObject(parsed)) throw new UnusableClaudeCodeSettingsFile('not-a-json-object', `${filePath} does not hold a JSON object`);
-  const env = parsed.env;
-  // A null env sets nothing, as a null policy key does in managed settings.
-  if (env === undefined || env === null) return { path: filePath, env: {} };
-  if (!isPlainObject(env)) {
-    throw new UnusableClaudeCodeSettingsFile('env-not-an-object', `${filePath}: its env is ${Array.isArray(env) ? 'an array' : typeof env}, not an object`);
-  }
-  return { path: filePath, env };
+function readClaudeCodeSettingsFile(filePath: string): ClaudeCodeSettingsFileRead | null {
+  const read = readJsonObjectFile(filePath, { emptyFileIsAnEmptyObject: true });
+  if (read.kind === 'missing') return null;
+  if (read.kind === 'unusable') throw new UnusableClaudeCodeSettingsFile(read.problemKind, read.problem, { cause: read.cause });
+  const env = read.document.env;
+  return {
+    // A null env sets nothing, as a null policy key does in managed settings.
+    env: env === undefined || env === null
+      ? { kind: 'block', block: {} }
+      : isPlainObject(env)
+        ? { kind: 'block', block: env }
+        : { kind: 'dropped', problem: `${filePath}: its env is ${Array.isArray(env) ? 'an array' : typeof env}, not an object` },
+    claudeMemMarketplaceDeclaration: claudeMemMarketplaceDeclarationIn(filePath, read.document),
+  };
+}
+
+/**
+ * The file's extraKnownMarketplaces.thedotmack entry, or null when it declares
+ * none. An extraKnownMarketplaces or an entry that is not an object is a
+ * broken value Claude Code drops, so it declares nothing; an autoUpdate that
+ * is not a JSON boolean, the type Claude Code reads, is not set.
+ */
+function claudeMemMarketplaceDeclarationIn(filePath: string, settings: Record<string, unknown>): ClaudeMemMarketplaceDeclaration | null {
+  const declaredMarketplaces = settings.extraKnownMarketplaces;
+  const entry = isPlainObject(declaredMarketplaces) ? declaredMarketplaces[CLAUDE_MEM_MARKETPLACE_KEY] : undefined;
+  if (!isPlainObject(entry)) return null;
+  return { path: filePath, autoUpdate: typeof entry.autoUpdate === 'boolean' ? entry.autoUpdate : undefined };
 }
 
 /**
@@ -1389,12 +1819,9 @@ function settingText(value: unknown): string {
   return String(value ?? '').trim();
 }
 
-/** The first of these Claude Code switches that is on, reading each value through `valueOf`, or null. */
-function claudeCodeSwitchSetIn(
-  valueOf: (name: string) => string | undefined,
-  switches: typeof CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES,
-): string | null {
-  for (const { name, isOn } of switches) {
+/** The first of Claude Code's switches that is on, reading each value through `valueOf`, or null. */
+function claudeCodeSwitchSetIn(valueOf: (name: string) => string | undefined): string | null {
+  for (const { name, isOn } of CLAUDE_CODE_NO_BACKGROUND_UPDATE_SWITCHES) {
     if (isOn(valueOf(name))) return name;
   }
   return null;

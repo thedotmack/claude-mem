@@ -70,6 +70,28 @@ export interface AutoUpdateState {
   /** Never retried automatically; a newer promoted version is tried normally. */
   versionsThatFailedToApply: string[];
   lastCheckError: { at: number; message: string } | null;
+  /**
+   * Epoch ms of the last tick that turned off Claude Code's background update
+   * of the thedotmack marketplace (autoUpdate true → false in Claude Code's
+   * known_marketplaces.json, auto-update-check.ts
+   * settleClaudeCodeBackgroundUpdate); null until a tick has.
+   */
+  claudeCodeBackgroundUpdateTurnedOffAt: number | null;
+  /**
+   * Epoch ms of the last check that read both the promoted file and npm's
+   * metadata for the promoted version, shown published by the workflow: proof
+   * that claude-mem's updater reaches both from this machine. Claude Code's
+   * background update is turned off only once this is set. null until a check
+   * has.
+   */
+  promotedFileAndNpmMetadataReadAt: number | null;
+  /**
+   * Why the last tick that found Claude Code's background update of the
+   * thedotmack marketplace on left it on (claude-mem's updater not yet shown
+   * to work here, no npx on the worker's PATH, or a write that failed), for
+   * the doctor row; null when nothing is left on.
+   */
+  claudeCodeBackgroundUpdateLeftOnReason: string | null;
 }
 
 export const AUTO_UPDATE_STATE_FILENAME = 'auto-update-state.json';
@@ -89,6 +111,9 @@ export function defaultAutoUpdateState(): AutoUpdateState {
     lastAttemptOutcome: null,
     versionsThatFailedToApply: [],
     lastCheckError: null,
+    claudeCodeBackgroundUpdateTurnedOffAt: null,
+    promotedFileAndNpmMetadataReadAt: null,
+    claudeCodeBackgroundUpdateLeftOnReason: null,
   };
 }
 
@@ -162,6 +187,9 @@ export function validateAutoUpdateState(parsed: unknown): { state: AutoUpdateSta
   take('inFlightAttempt', (value) => value === null || isInFlightAttempt(value));
   take('lastAttemptOutcome', (value) => value === null || isAttemptOutcome(value));
   take('lastCheckError', (value) => value === null || (isPlainObject(value) && isNonNegativeMilliseconds(value.at) && typeof value.message === 'string'));
+  take('claudeCodeBackgroundUpdateTurnedOffAt', (value) => value === null || isNonNegativeMilliseconds(value));
+  take('promotedFileAndNpmMetadataReadAt', (value) => value === null || isNonNegativeMilliseconds(value));
+  take('claudeCodeBackgroundUpdateLeftOnReason', (value) => value === null || isNonEmptyString(value));
 
   // Entries are filtered, not the list reset: dropping a valid entry would let
   // a version that already failed be tried again.

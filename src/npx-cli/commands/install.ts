@@ -170,6 +170,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
+import { parseAutoUpdateSwitch, readAutoUpdateSettings } from '../../services/auto-update/auto-update-check.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -177,7 +178,14 @@ import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
 import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
 
-function registerMarketplace(): void {
+/**
+ * Records the thedotmack marketplace in Claude Code's known_marketplaces.json
+ * on every install and update. Exported, as registerPlugin is, so tests pin
+ * what it writes (tests/services/auto-update/auto-update-check.test.ts). The
+ * auto-updater leaves an entry this would not write as it is
+ * (auto-update-check.ts claudeMemMarketplaceEntryDifference).
+ */
+export function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
 
   knownMarketplaces['thedotmack'] = {
@@ -187,11 +195,48 @@ function registerMarketplace(): void {
     },
     installLocation: marketplaceDirectory(),
     lastUpdated: new Date().toISOString(),
-    autoUpdate: true,
+    autoUpdate: claudeCodeBackgroundUpdateToRegister(knownMarketplaces['thedotmack']),
   };
 
   ensureDirectoryExists(pluginsDirectory());
   writeJsonFileAtomic(knownMarketplacesPath(), knownMarketplaces);
+}
+
+/**
+ * The autoUpdate registerMarketplace records for Claude Code's background
+ * update of the thedotmack marketplace.
+ *  - claude-mem's own updater on: false. claude-mem updates itself to the
+ *    release the owner promotes (src/services/auto-update/), while Claude
+ *    Code's background update pulls main at a random time and writes the same
+ *    cache folders. With both on, the two updaters race, and main stays a
+ *    release channel the owner does not control. Installs registered before
+ *    this get it turned off by the worker once its updater has shown it works
+ *    there (auto-update-check.ts settleClaudeCodeBackgroundUpdate).
+ *  - otherwise the existing entry's autoUpdate is kept, unset included, so a
+ *    user who turned claude-mem's updater off keeps Claude Code's, the only
+ *    updater left; with no entry, true, what every install recorded before.
+ */
+function claudeCodeBackgroundUpdateToRegister(existingEntry: unknown): unknown {
+  if (isClaudeMemAutoUpdateOn()) return false;
+  const isEntry = typeof existingEntry === 'object' && existingEntry !== null && !Array.isArray(existingEntry);
+  return isEntry ? (existingEntry as Record<string, unknown>).autoUpdate : true;
+}
+
+/**
+ * Whether claude-mem's own updater is on, read the way the worker's check
+ * reads it: CLAUDE_MEM_AUTO_UPDATE from the environment over settings.json,
+ * and only "true" is on (auto-update-check.ts readAutoUpdateSettings,
+ * parseAutoUpdateSwitch). A settings.json the check cannot read stops every
+ * tick before it decides anything, so that updater is not running: it reads
+ * as off here, with a warning, and the install goes on.
+ */
+function isClaudeMemAutoUpdateOn(): boolean {
+  try {
+    return parseAutoUpdateSwitch(readAutoUpdateSettings(USER_SETTINGS_PATH).CLAUDE_MEM_AUTO_UPDATE) === 'on';
+  } catch (error: unknown) {
+    log.warn(`Could not read CLAUDE_MEM_AUTO_UPDATE (${error instanceof Error ? error.message : String(error)}), so claude-mem's auto-update is read as off and Claude Code's auto-update setting for the thedotmack marketplace is kept as it is`);
+    return false;
+  }
 }
 
 /**

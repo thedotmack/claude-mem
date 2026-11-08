@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test';
 import { execFileSync } from 'child_process';
 import { EventEmitter } from 'events';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import type { AutoUpdateApplyDeps } from '../../../src/services/auto-update/auto-update-apply.js';
 import {
@@ -14,6 +14,7 @@ import {
   autoUpdateLaunchDeps,
   autoUpdateWorkerProof,
   claudeMemUpdateInvocation,
+  findNpxForTheInstaller,
   type ClaudeMemUpdateInvocation,
   launchAutoUpdateSupervisor,
   parseAutoUpdateApplyArguments,
@@ -190,6 +191,45 @@ describe('claudeMemUpdateInvocation', () => {
 
   it('refuses anything that is not a claude-mem version', () => {
     expect(() => claudeMemUpdateInvocation('latest', 'linux')).toThrow('not a claude-mem version');
+  });
+});
+
+describe('findNpxForTheInstaller', () => {
+  it('on Windows, is the lookup the installer run uses, so the worker finds npx exactly where the supervisor would', () => {
+    const lookups: string[] = [];
+    const findWindowsCommand = (command: string) => { lookups.push(command); return 'C:\\Program Files\\nodejs\\npx.cmd'; };
+    const neverOnPath = () => { throw new Error('Bun.which is not the Windows lookup'); };
+    expect(findNpxForTheInstaller('win32', findWindowsCommand, neverOnPath)).toBe('C:\\Program Files\\nodejs\\npx.cmd');
+    expect(lookups).toEqual(['npx']);
+    // None found there is none for the installer either (claudeMemUpdateInvocation: npx-not-found).
+    expect(findNpxForTheInstaller('win32', () => null, neverOnPath)).toBeNull();
+    expect(claudeMemUpdateInvocation(TARGET, 'win32', () => null).kind).toBe('npx-not-found');
+  });
+
+  it('elsewhere, looks the bare name the installer run starts up on PATH', () => {
+    const lookups: string[] = [];
+    const neverWindows = () => { throw new Error('the Windows lookup is for Windows only'); };
+    expect(findNpxForTheInstaller('linux', neverWindows, (command) => { lookups.push(command); return '/usr/bin/npx'; })).toBe('/usr/bin/npx');
+    expect(findNpxForTheInstaller('darwin', neverWindows, () => null)).toBeNull();
+    expect(lookups).toEqual(['npx']);
+    // The command it stands for: the bare `npx`.
+    expect(readyInvocation(claudeMemUpdateInvocation(TARGET, 'linux')).command).toBe('npx');
+  });
+
+  it.skipIf(process.platform === 'win32')('reads the worker\'s own PATH by default, through Bun.which', () => {
+    const binDirectory = mkdtempSync(path.join(runDirectory, 'npx-on-path-'));
+    const npxShim = path.join(binDirectory, 'npx');
+    writeFileSync(npxShim, '#!/bin/sh\nexit 0\n');
+    chmodSync(npxShim, 0o755);
+    const savedPath = process.env.PATH;
+    try {
+      process.env.PATH = binDirectory;
+      expect(findNpxForTheInstaller()).toBe(npxShim);
+      process.env.PATH = path.join(binDirectory, 'nothing-here');
+      expect(findNpxForTheInstaller()).toBeNull();
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 });
 
