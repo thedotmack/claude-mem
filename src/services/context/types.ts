@@ -22,10 +22,15 @@ export interface ContextInput {
    */
   includePriorMessage?: boolean;
   /**
-   * Characters delivered beside this block (the work-state section), taken off
-   * the 10K delivery limit so the combined output still fits it.
+   * Characters delivered beside this block (hook notices, the TeamBrain brief),
+   * taken off the 10K delivery limit so the combined output still fits it.
    */
   reserveChars?: number;
+  /**
+   * The open work-state lists (WorkStateRenderer), placed in the agent block
+   * under its header and above the timeline, and measured with it.
+   */
+  workStateSection?: string;
   /**
    * Render the header time as a placeholder that `fillContextPlaceholders`
    * fills at read time, so the block can be cached (shared/context-cache.ts).

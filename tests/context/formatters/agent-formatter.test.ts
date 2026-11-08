@@ -52,7 +52,6 @@ import {
   renderAgentSummaryItem,
   renderAgentSummaryField,
   renderAgentPreviouslySection,
-  renderAgentFooter,
   renderAgentEmptyState,
 } from '../../../src/services/context/formatters/AgentFormatter.js';
 
@@ -423,46 +422,15 @@ describe('AgentFormatter', () => {
       expect(result).toHaveLength(0);
     });
 
-    it('should include separator', () => {
+    it('opens with its heading, since it sits above the timeline rather than after it', () => {
       const priorMessages: PriorMessages = {
         assistantMessage: 'Some message',
       };
 
       const result = renderAgentPreviouslySection(priorMessages);
-      const joined = result.join('\n');
 
-      expect(joined).toContain('---');
-    });
-  });
-
-  describe('renderAgentFooter', () => {
-    it('should include work token amount in k', () => {
-      const result = renderAgentFooter(10000, 500);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('10k');
-    });
-
-    it('should mention mem-search skill', () => {
-      const result = renderAgentFooter(5000, 100);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('mem-search skill');
-    });
-
-    it('should round work tokens to nearest thousand', () => {
-      const result = renderAgentFooter(15500, 100);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('16k');
-    });
-
-    it('should point at observation_search, not get_observations, when fetch-by-id is unsupported', () => {
-      const joined = renderAgentFooter(5000, 100, false).join('\n');
-
-      expect(joined).toContain('observation_search');
-      expect(joined).not.toContain('get_observations');
-      expect(joined).not.toContain('mem-search skill');
+      expect(result[0]).toBe('**Previously**');
+      expect(result).not.toContain('---');
     });
   });
 
@@ -485,6 +453,12 @@ describe('AgentFormatter', () => {
       const result = renderAgentEmptyState('');
 
       expect(result).toContain('# [] recent context,');
+    });
+
+    it('puts lead sections under the header and keeps the empty timeline last', () => {
+      const result = renderAgentEmptyState('my-project', 'NOW', ['WARNING', '', 'OPEN WORK']);
+
+      expect(result).toBe('# [my-project] recent context, NOW\nMode: Code Development (code)\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
     });
   });
 });

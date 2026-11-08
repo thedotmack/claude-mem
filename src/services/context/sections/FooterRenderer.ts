@@ -14,21 +14,17 @@ export function renderPreviouslySection(
   return Agent.renderAgentPreviouslySection(priorMessages);
 }
 
-export function renderFooter(
+/**
+ * The terminal preview's closing line. The agent block has none: it ends on
+ * its newest timeline entry, so later timeline rows can be appended to it, and
+ * its Fetch and Stats lines at the top already say how to reach past work.
+ */
+export function renderTerminalFooter(
   economics: TokenEconomics,
   config: ContextConfig,
-  forHuman: boolean
 ): string[] {
   if (!shouldShowContextEconomics(config) || economics.totalDiscoveryTokens <= 0 || economics.savings <= 0) {
     return [];
   }
-
-  if (forHuman) {
-    return Human.renderHumanFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
-  }
-  return Agent.renderAgentFooter(
-    economics.totalDiscoveryTokens,
-    economics.totalReadTokens,
-    config.fetchByIdSupported !== false,
-  );
+  return Human.renderHumanFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
 }

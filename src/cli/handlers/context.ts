@@ -23,7 +23,6 @@ import { clipUtf16 } from '../../shared/relayed-text.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { providersMappedBySource } from '../../shared/provider-by-source.js';
-import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
   hasShownProFallbackNotice,
@@ -31,7 +30,7 @@ import {
   proFallbackNotice,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
-import { resolveRuntimeContext, selectRuntime, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
@@ -130,6 +129,7 @@ export function composeSessionStartSystemMessage(
  * the brief is cut to the room `otherChars` leaves, or, with too little room
  * to be useful, replaced by one line saying it was left out. A block with no
  * room even for that line is logged, since nothing more can be added to it.
+ * `otherChars` is everything else in the block, wherever the brief sits in it.
  */
 export function fitTeamBriefSection(section: string, otherChars: number, limit: number = CONTEXT_OUTPUT_LIMIT): string {
   if (!section) return '';
@@ -150,22 +150,24 @@ export function fitTeamBriefSection(section: string, otherChars: number, limit: 
 }
 
 /**
- * Cached bodies can predate the current instruction reserve, and the OAuth
- * and gateway notices are added only in this process. Measure the final model
- * field here as well. Never truncate opaque rendered entries: an old worker
- * or irreducible body falls back to an explicit omission notice. TeamBrain
+ * The model-bound SessionStart field: the notices, the TeamBrain brief, then
+ * the memory body last. The body is the timeline and ends on its newest entry,
+ * so nothing is added after it: a later update can append timeline rows.
+ *
+ * Cached bodies can predate the current reserve, and the OAuth and gateway
+ * notices are added only in this process. Measure the final model field here
+ * as well. Never truncate opaque rendered entries: an old worker or
+ * irreducible body falls back to an explicit omission notice. TeamBrain
  * retains its existing fit/omission policy.
  */
 export function composeSessionStartContext(
   body: string,
   notices: string,
-  instructions: string,
   teamSection: string,
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string {
   const join = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
-  const fixed = join(notices, instructions);
-  const room = Math.max(0, limit - fixed.length - (fixed ? 2 : 0));
+  const room = Math.max(0, limit - notices.length - (notices ? 2 : 0));
   if (body.length > room) {
     // Older workers may ignore reserveChars; irreducible renderer output may
     // also exceed its limit. Never cut a rendered entry, code fence, or newest
@@ -174,8 +176,8 @@ export function composeSessionStartContext(
     body = omitted.length <= room ? omitted : '';
     logger.warn('HOOK', 'SessionStart body omitted because it exceeds the available field budget', { room });
   }
-  const fittedTeam = fitTeamBriefSection(teamSection, join(notices, body, instructions).length, limit);
-  return join(notices, body, fittedTeam, instructions);
+  const fittedTeam = fitTeamBriefSection(teamSection, join(notices, body).length, limit);
+  return join(notices, fittedTeam, body);
 }
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
@@ -253,7 +255,6 @@ export const contextHandler: EventHandler = {
     // hookEventName is not the event that fired.
     const hookEventName = input.hookEventName === 'PostCompaction' ? 'PostCompaction' : 'SessionStart';
     const emptyResult: HookResult = {
-      workStateTelemetry: 'measure',
       hookSpecificOutput: { hookEventName, additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
@@ -269,7 +270,6 @@ export const contextHandler: EventHandler = {
     // A fresh timeline would change its prompt prefix and invalidate the cache.
     // Also guard direct calls from older hook registrations that include resume.
     if (input.platform === 'claude-code' && input.sessionSource === 'resume') {
-      delete emptyResult.workStateTelemetry;
       return emptyResult;
     }
 
@@ -280,16 +280,15 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
-      emptyResult.workStateTelemetry = 'excluded';
       return emptyResult;
     }
 
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    // How to use claude-mem's tools is in the MCP server's instructions
+    // (shared/memory-instructions.ts), not in this block: it is the timeline.
     const settings = loadFromFileOnce();
-    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : memoryInstructionsForRuntime(selectRuntime());
-    emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
 
     const notices: string[] = [];
 
@@ -421,7 +420,7 @@ export const contextHandler: EventHandler = {
       const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
       // A notice or settings change can outgrow the reserve of an older cache.
       // Re-render whole entries instead of cutting an opaque cached string.
-      if (!colors && [noticeText, filled, memoryInstructions].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
+      if (!colors && [noticeText, filled].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
       return filled;
     };
     const cachedModelContext = showLastMessage ? null : readCachedRender(false);
@@ -443,7 +442,6 @@ export const contextHandler: EventHandler = {
       }
     }
     if (isWorkerFallback(contextResult)) {
-      emptyResult.workStateTelemetry = 'unknown';
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
@@ -457,7 +455,6 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-      emptyResult.workStateTelemetry = 'unknown';
       return emptyResult;
     }
 
@@ -481,9 +478,7 @@ export const contextHandler: EventHandler = {
     // fallback notice. Waiting until all reads finish keeps failed attempts
     // retryable. A lost claim merely leaves a little unused render budget.
     if (showFallbackNotice && !markProFallbackNoticeShown()) notices.shift();
-    additionalContext = composeSessionStartContext(
-      additionalContext, notices.join('\n\n'), memoryInstructions, teamSection,
-    );
+    additionalContext = composeSessionStartContext(additionalContext, notices.join('\n\n'), teamSection);
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
@@ -518,7 +513,6 @@ export const contextHandler: EventHandler = {
     );
 
     return {
-      workStateTelemetry: 'measure',
       hookSpecificOutput: {
         hookEventName,
         additionalContext

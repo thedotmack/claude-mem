@@ -15,7 +15,6 @@ import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constan
 import {
   installHookStderrBuffer,
   emitModelContext,
-  waitForModelContext,
   emitDiagnostic,
   exitGraceful,
   resetHookIoState,
@@ -32,7 +31,6 @@ import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { settleHookSpoolNudges } from './spool-hook-event.js';
 import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
-import { spoolWorkStateInstruction, workStateModelText } from './work-state-telemetry.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { isObserverCaptureEnabled } from '../shared/observer-capture.js';
 
@@ -82,12 +80,7 @@ async function executeHookPipeline(
   const result = await handler.execute(input);
 
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
-  const { workStateTelemetry, ...modelResult } = result;
-  const output = emitModelContext(adapter, modelResult);
-  await waitForModelContext();
-  if (workStateTelemetry) {
-    spoolWorkStateInstruction(input, workStateModelText(output), workStateTelemetry === 'measure' ? undefined : workStateTelemetry);
-  }
+  emitModelContext(adapter, result);
   const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
   // A write hook spooled its event and started a nudge to the worker; let it
   // land (≤ 250 ms) so the drain starts now — process.exit would kill it.

@@ -550,11 +550,12 @@ export class SearchRoutes extends BaseRouteHandler {
     // session that asked: a block that may carry either is served live only.
     const cacheable = !request.includePriorMessage && observerHealthWarning(false) === '';
 
-    // The agent's open to-do lists and working state lead every answer this
-    // route gives a session, the welcome hint included; memory is fitted to
-    // what that leaves of the 10K delivery limit. The terminal preview is for
-    // the human and goes without it, and so does a session whose host turned
-    // work state off (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
+    // The agent's open to-do lists and working state go in every answer this
+    // route gives a session, the welcome hint included: in the memory block
+    // under its header and above the timeline, measured with it, and ahead of
+    // the welcome hint. The terminal preview is for the human and goes without
+    // them, and so does a session whose host turned work state off
+    // (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
     const settings = this.getCachedSettings();
     const workStateEnabled = isWorkStateEnabled(
       process.env.CLAUDE_MEM_WORK_STATE_ENABLED ?? settings.CLAUDE_MEM_WORK_STATE_ENABLED,
@@ -602,17 +603,16 @@ export class SearchRoutes extends BaseRouteHandler {
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
-      // Beside the work-state section: room for what the hook appends after
-      // this body once the install is in a team (the TeamBrain brief). Env
-      // first, as the hook reads it.
-      reserveChars: (request.reserveChars ?? 0) + (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+      workStateSection,
+      // Room for what the hook adds ahead of this body once the install is in
+      // a team (the TeamBrain brief). Env first, as the hook reads it.
+      reserveChars: (request.reserveChars ?? 0) + teamBriefReserveChars({
         CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
-        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
       }),
       timePlaceholders: true,
       includePriorMessage: request.includePriorMessage,
     }, forHuman, { execution: this.contextReader ? 'worker' : 'inline', reader: this.contextReader ?? undefined });
-    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable, ...(contextResult.readKeys ? { readKeys: contextResult.readKeys } : {}) };
+    return { body: contextResult.text, stats: contextResult.stats, cacheable, ...(contextResult.readKeys ? { readKeys: contextResult.readKeys } : {}) };
   }
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

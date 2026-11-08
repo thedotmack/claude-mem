@@ -3,6 +3,11 @@
  * observations and summaries that matter for this project, fitted to the
  * delivery limit. The same rows render two ways: terse for the agent, and a
  * readable preview for the person (forHuman).
+ *
+ * The agent block is the memory timeline: its header says how to read it, and
+ * it ends on the newest timeline entry, with nothing after it, so later updates
+ * can append timeline rows to it. How to use claude-mem's tools is not in this
+ * block; it is in the MCP server's instructions (shared/memory-instructions.ts).
  */
 
 import path from 'path';
@@ -16,7 +21,15 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS, openReaderDatabase } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
-import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import type {
+  ContextInput,
+  ContextConfig,
+  Observation,
+  SessionSummary,
+  PriorMessages,
+  TimelineItem,
+  TokenEconomics,
+} from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
@@ -37,7 +50,7 @@ import {
   type HumanTimelineEntry,
 } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
-import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
+import { renderPreviouslySection, renderTerminalFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 import {
@@ -101,8 +114,12 @@ function initializeDatabase(): Database | null {
   }
 }
 
-function renderEmptyState(project: string, forHuman: boolean, headerTime: string): string {
-  return forHuman ? renderHumanEmptyState(project, headerTime) : renderAgentEmptyState(project, headerTime);
+/** What the agent block carries between its header and its timeline. */
+interface AgentLeadSections {
+  /** The observer/sync health warning, or `''` when healthy or opted out. */
+  healthWarning: string;
+  /** The open work-state lists, or `''` (ContextInput.workStateSection). */
+  workStateSection: string;
 }
 
 interface RenderedContext {
@@ -114,45 +131,87 @@ interface RenderedContext {
   previousEnd: number;
 }
 
-function buildContextOutput(
+/** The rows both renders draw from, selected once per render pass. */
+interface ContextParts {
+  economics: TokenEconomics;
+  timeline: TimelineItem[];
+  fullObservationIds: Set<Observation['id']>;
+  /** The last session's summary when its fields are shown, else null. */
+  lastSummary: SessionSummary | null;
+  priorMessages: PriorMessages;
+}
+
+function selectContextParts(
+  observations: Observation[],
+  summaries: SessionSummary[],
+  config: ContextConfig,
+  cwd: string,
+  sessionId: string | undefined,
+): ContextParts {
+  const displaySummaries = summaries.slice(0, config.sessionCount);
+  const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
+  return {
+    economics: calculateTokenEconomics(observations),
+    timeline: buildTimeline(observations, summariesForTimeline),
+    fullObservationIds: getFullObservationIds(observations, config.fullObservationCount),
+    lastSummary: shouldShowSummary(config, summaries[0], observations[0]) ? summaries[0] : null,
+    priorMessages: getPriorSessionMessages(observations, config, sessionId, cwd),
+  };
+}
+
+/**
+ * The block the model reads. The header (how to read the timeline) is on top,
+ * then the lead sections, then the timeline. It ends on the newest timeline
+ * entry with no footer, so a later update can append rows to the timeline. The
+ * last summary's fields are that newest entry's details: the summary row is
+ * shown only when it is newer than every observation.
+ */
+function buildAgentContextOutput(
   project: string,
   observations: Observation[],
   summaries: SessionSummary[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  forHuman: boolean,
-  headerTime: string
+  headerTime: string,
+  leads: AgentLeadSections,
+): string {
+  const parts = selectContextParts(observations, summaries, config, cwd, sessionId);
+  const output: string[] = [...renderHeader(project, parts.economics, config, false, headerTime)];
+  for (const section of [leads.healthWarning, leads.workStateSection]) {
+    if (section) output.push(section, '');
+  }
+  output.push(...renderPreviouslySection(parts.priorMessages, false));
+  output.push(...renderAgentTimeline(parts.timeline, parts.fullObservationIds, config));
+  if (parts.lastSummary) output.push(...renderSummaryFields(parts.lastSummary, false));
+  return output.join('\n').trimEnd();
+}
+
+/** The terminal preview, with the offsets its truncation needs (#4252). */
+function buildHumanContextOutput(
+  project: string,
+  observations: Observation[],
+  summaries: SessionSummary[],
+  config: ContextConfig,
+  cwd: string,
+  sessionId: string | undefined,
+  headerTime: string,
 ): RenderedContext {
-  const output: string[] = [];
+  const parts = selectContextParts(observations, summaries, config, cwd, sessionId);
+  const output: string[] = [...renderHeader(project, parts.economics, config, true, headerTime)];
 
-  const economics = calculateTokenEconomics(observations);
-
-  output.push(...renderHeader(project, economics, config, forHuman, headerTime));
-
-  const displaySummaries = summaries.slice(0, config.sessionCount);
-  const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
-  const timeline = buildTimeline(observations, summariesForTimeline);
-  const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
-
-  const entries = forHuman ? buildHumanTimelineEntries(timeline, fullObservationIds, config, cwd) : undefined;
+  const entries = buildHumanTimelineEntries(parts.timeline, parts.fullObservationIds, config, cwd);
   const timelineStart = output.join('\n').length + 1;
-  output.push(...(entries ? renderHumanTimelineEntries(entries) : renderAgentTimeline(timeline, fullObservationIds, config)));
+  output.push(...renderHumanTimelineEntries(entries));
   const timelineEnd = output.join('\n').length;
 
-  const mostRecentSummary = summaries[0];
-  const mostRecentObservation = observations[0];
-
-  if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
-    output.push(...renderSummaryFields(mostRecentSummary, forHuman));
-  }
+  if (parts.lastSummary) output.push(...renderSummaryFields(parts.lastSummary, true));
   const summaryEnd = output.join('\n').length;
 
-  const priorMessages = getPriorSessionMessages(observations, config, sessionId, cwd);
-  output.push(...renderPreviouslySection(priorMessages, forHuman));
+  output.push(...renderPreviouslySection(parts.priorMessages, true));
   const previousEnd = output.join('\n').length;
 
-  output.push(...renderFooter(economics, config, forHuman));
+  output.push(...renderTerminalFooter(parts.economics, config));
 
   return { text: output.join('\n').trimEnd(), timelineStart, timelineEnd, entries, summaryEnd, previousEnd };
 }
@@ -237,10 +296,12 @@ function paintRed(text: string): string {
  * (including empty-state, missing-DB, and the no-memories-yet welcome hint
  * in SearchRoutes) so a multi-hour intentional pause is not silent.
  *
- * BELOW the context, not above it: the timeline runs long, so a warning at the
- * top has already scrolled off by the time the context finishes printing. The
- * last thing rendered is the thing still on screen — and for the model, the
- * closest thing to its first reply.
+ * BELOW the terminal preview, not above it: the timeline runs long, so a
+ * warning at the top has already scrolled off by the time the context finishes
+ * printing, and the last thing rendered is the thing still on screen. The
+ * agent's timeline block is the exception: it must end on its newest timeline
+ * entry so later rows can be appended, so it carries the warning under its
+ * header instead (buildAgentContextOutput).
  */
 export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
   return appendObserverHealthWarning(observerHealthWarning(forHuman), text);
@@ -367,11 +428,13 @@ function truncateTerminalPreview(rendered: RenderedContext | string, limit: numb
  * a database: the caller's only remaining job is to fetch rows. Two things have
  * to happen together here, and neither is safe on its own.
  *
- * The health warning is rendered INSIDE the measured block. Appending it to the
- * fitted result spends characters the fitter never counted, so an unhealthy
- * observer could push a block just fitted to 9,998 back over the limit — and
- * over the limit the whole block is replaced by the preview stub #3802 exists
- * to avoid, which is exactly when an outage warning most needs to arrive.
+ * The health warning is rendered INSIDE the measured block: `renderBlock` is
+ * handed it and places it (under the header, so the block still ends on its
+ * timeline). Adding it to the fitted result spends characters the fitter never
+ * counted, so an unhealthy observer could push a block just fitted to 9,998
+ * back over the limit — and over the limit the whole block is replaced by the
+ * preview stub #3802 exists to avoid, which is exactly when an outage warning
+ * most needs to arrive.
  *
  * The stats describe what was DELIVERED, not what was queried.
  * `ContextInjectStats` already promises this ("computed from the same
@@ -389,7 +452,7 @@ export function fitContextForDelivery(
   summaries: SessionSummary[],
   config: ContextConfig,
   healthWarning: string,
-  renderBlock: (items: Observation[], cfg: ContextConfig) => string,
+  renderBlock: (items: Observation[], cfg: ContextConfig, healthWarning: string) => string,
   limit: number,
   full: boolean,
   renderPreview?: (items: Observation[], cfg: ContextConfig) => RenderedContext | string
@@ -397,7 +460,7 @@ export function fitContextForDelivery(
   const budget = fitContextToBudget(
     observations,
     config,
-    (items, cfg) => appendObserverHealthWarning(healthWarning, renderBlock(items, cfg)),
+    (items, cfg) => renderBlock(items, cfg, healthWarning),
     limit
   );
 
@@ -479,9 +542,15 @@ export function renderContextFromRows(
   // carries a placeholder instead, and the fitter keeps room for it to grow.
   const headerTime = input?.timePlaceholders ? CONTEXT_HEADER_TIME_PLACEHOLDER : formatHeaderDateTime();
   const headerTimeReserveChars = input?.timePlaceholders ? HEADER_TIME_EXPANSION_RESERVE_CHARS : 0;
+  const workStateSection = input?.workStateSection ?? '';
 
   if (observations.length === 0 && summaries.length === 0) {
-    return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman, headerTime)), stats: null };
+    return {
+      text: forHuman
+        ? appendObserverHealthWarning(healthWarningForContext(input, true), renderHumanEmptyState(project, headerTime))
+        : renderAgentEmptyState(project, headerTime, [healthWarningForContext(input), workStateSection]),
+      stats: null,
+    };
   }
 
   // `--full` is an explicit human request for everything; only the block that
@@ -493,14 +562,14 @@ export function renderContextFromRows(
     // The model's form: selection is fitted on the model render, and the
     // terminal preview paints this same warning red after truncating (#4252).
     healthWarningForContext(input),
-    (items, cfg) =>
-      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false, headerTime).text,
+    (items, cfg, healthWarning) =>
+      buildAgentContextOutput(project, items, summaries, cfg, cwd, input?.session_id, headerTime, { healthWarning, workStateSection }),
     input?.full
       ? Number.POSITIVE_INFINITY
       : CONTEXT_OUTPUT_LIMIT - (input?.reserveChars ?? 0) - headerTimeReserveChars,
     Boolean(input?.full),
     forHuman ? (items, cfg) =>
-      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true, headerTime) : undefined
+      buildHumanContextOutput(project, items, summaries, cfg, cwd, input?.session_id, headerTime) : undefined
   );
 }
 
@@ -601,7 +670,8 @@ export async function generateContextWithStats(
   const scope = resolveContextScope(input, options.config);
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: healthWarningForContext(input, forHuman), stats: null };
+    const workStateSection = forHuman ? '' : input?.workStateSection ?? '';
+    return { text: [healthWarningForContext(input, forHuman), workStateSection].filter(Boolean).join('\n\n'), stats: null };
   }
 
   try {
