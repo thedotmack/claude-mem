@@ -169,6 +169,7 @@ import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/inst
 import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
+import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -193,7 +194,13 @@ function registerMarketplace(): void {
   writeJsonFileAtomic(knownMarketplacesPath(), knownMarketplaces);
 }
 
-function registerPlugin(version: string): void {
+/**
+ * Every install writes this entry, for every host (the task list in
+ * runInstallCommandInner registers the plugin whatever --ide selects). The
+ * auto-updater reads its presence as "still installed" (auto-update-check.ts
+ * readClaudeCodePluginState), which tests pin against this function.
+ */
+export function registerPlugin(version: string): void {
   const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
 
   if (!installedPlugins.version) installedPlugins.version = 2;
@@ -2190,6 +2197,9 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   if (isInteractive) return;
   if (providerNeedsAccount(options.provider)) return;
   if (process.env.CI) return;
+  // Nobody reads an auto-update run's output, and each offer starts a cmem.ai
+  // pairing (shared/auto-update-install-run.ts).
+  if (isInstallRunByAutoUpdate()) return;
 
   const pairing = await startInstallerOAuthPairing({
     source: 'npx-installer-deferred',
@@ -2938,12 +2948,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     const err = error instanceof Error ? error : new Error(String(error));
     if (err instanceof InstallAbortError) {
       // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
-      await captureCliEvent('install_failed', {
+      await captureInstallFailed({
         error_category: err.category.id,
         interactive: isInteractive,
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
-      }, { person: true });
+      });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
@@ -3636,7 +3646,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // After promptTelemetryOptIn so a just-made consent choice is honored.
   // ide/provider/runtime_mode/install_method are installer enums, the
   // *_version values are tool version strings — never user data.
-  await captureCliEvent('install_completed', {
+  await captureInstallCompleted({
     ide: selectedIDEs.join(','),
     provider: selectedProvider,
     provider_source: options.providerSource ?? 'prompt',
@@ -3649,7 +3659,29 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     bun_version: installedBunVersion,
     uv_version: installedUvVersion,
     claude_code_version: detectClaudeCodeVersion(),
-  }, { person: true });
+  });
+}
+
+/**
+ * The install funnel's last event. An installer run the auto-updater started
+ * sends none: it is not a person installing, and the supervisor's
+ * auto_update_applied / auto_update_failed events report it
+ * (shared/auto-update-install-run.ts).
+ */
+export async function captureInstallCompleted(properties: Record<string, unknown>): Promise<void> {
+  if (isInstallRunByAutoUpdate()) return;
+  await captureCliEvent('install_completed', properties, { person: true });
+}
+
+/**
+ * The install funnel's event for an aborted install. Skipped for an installer
+ * run the auto-updater started, as install_completed is: the supervisor's
+ * auto_update_failed reports that run, with the stage it failed at
+ * (shared/auto-update-install-run.ts).
+ */
+export async function captureInstallFailed(properties: Record<string, unknown>): Promise<void> {
+  if (isInstallRunByAutoUpdate()) return;
+  await captureCliEvent('install_failed', properties, { person: true });
 }
 
 async function runRepairCommandInner(summary: InstallSummary): Promise<void> {

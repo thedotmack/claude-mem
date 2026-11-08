@@ -3,22 +3,23 @@
  *
  * The worker's "one attempt at a time" gate (auto-update-check.ts) stops
  * waiting on an attempt older than AUTO_UPDATE_SUPERVISOR_DEADLINE_MS once its
- * supervisor is gone, and on any attempt older than one check cycle
+ * recorded supervisor is gone, and on any attempt older than one check cycle
  * (AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS), so an attempt whose supervisor
  * vanished can never hold updates back forever.
  * AUTO_UPDATE_INSTALLER_DEADLINE_MS is the kill deadline for one installer run,
- * for the supervisor that runs the installer.
+ * and AUTO_UPDATE_WORKER_STARTUP_CEILING_MS the longest the supervisor waits
+ * for a worker to finish starting (auto-update-launch.ts).
  *
- * Both are backstops, not tuning values. Every step the installer runs already
- * stops itself at its own budget, so each deadline is the sum of the budgets
- * of the steps it covers: never short enough to cut a slow but working update
- * off, always finite so a hang still ends.
+ * All are backstops, not tuning values. Every step they cover already stops
+ * itself at its own budget, so each deadline is the sum of the budgets of the
+ * steps it covers: never short enough to cut a slow but working update off,
+ * always finite so a hang still ends.
  */
 
 import { DEFAULT_INSTALL_TIMEOUT_MS, INSTALL_TIMEOUT_MS } from '../../npx-cli/install/setup-runtime.js';
-import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { HOOK_TIMEOUTS, readWedgedWorkerUptimeSeconds } from '../../shared/hook-constants.js';
 import { SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
-import { getPlatformTimeout } from '../infrastructure/ProcessManager.js';
+import { getPlatformTimeout, WORKER_BOOT_BIND_DEADLINE_MS } from '../infrastructure/ProcessManager.js';
 
 /**
  * Steps of `npx --yes claude-mem@<version> update` that can each take the
@@ -61,13 +62,83 @@ const INSTALLER_WORKER_STOP_BUDGET_MS = 10_000;
  */
 const INSTALLER_WORKER_STOPS_ON_THE_UPDATE_PATH = 2;
 
+/** Unit conversion: the wedged-worker grace is configured in seconds. */
+const MILLISECONDS_PER_SECOND = 1000;
+
 /**
- * The `restart` CLI's budget for proving that a worker came back on the
- * expected version: verifyRestartedWorker(port, oldPid, version,
- * getPlatformTimeout(30000)) in worker-service.ts. An auto-update proves each
- * install with the same call and budget.
+ * The longest the supervisor waits for a worker to finish starting before it
+ * counts the install as not proven (auto-update-launch.ts autoUpdateWorkerProof).
+ * The worker reports its startup on GET /api/ready (server/init-phase.ts:
+ * starting, db_ready, routes_ready, then ready, or failed with a message), and
+ * the proof waits while it is still starting and stops at once on failed. A
+ * start that runs database migrations can also go silent for a while: they run
+ * synchronously and hold the worker's event loop. Neither is a failure until
+ * one of the worker's own startup bounds has passed:
+ *  1. WORKER_BOOT_BIND_DEADLINE_MS: a worker that has not bound its port 60 s
+ *     after it started exits (worker-service.ts boot watchdog);
+ *  2. readWedgedWorkerUptimeSeconds(): from its bind (when it writes its PID
+ *     file) a launcher's port reclaim treats a silent worker as "booting or
+ *     migrating", never wedged, until it has been up this long: 300 s unless
+ *     CLAUDE_MEM_WEDGED_WORKER_UPTIME_S sets it (port-reclaim.ts
+ *     reclaimWedgedOwnedWorker).
+ * So a worker this codebase still counts as starting has been up at most
+ * their sum: 60 s + 300 s = 6 min with the defaults. The proof starts once the installer
+ * (or ensureWorkerStarted) has started the worker, so waiting that long from
+ * the proof's start covers the worker's whole start. The restart CLI's 30 s
+ * budget is not used: on the owner's Mac, three of four worker starts on
+ * 2026-11-04 and -05 spent 13.7 s to 15.8 s in "Initializing database
+ * manager" alone, with no migration to run (worker log), so a start that
+ * migrates a large database can pass 30 s while healthy. Neither bound scales
+ * on Windows, so this does not either.
  */
-const RESTART_PROOF_BASE_MS = 30_000;
+export function autoUpdateWorkerStartupCeilingMs(env: NodeJS.ProcessEnv = process.env): number {
+  return WORKER_BOOT_BIND_DEADLINE_MS + readWedgedWorkerUptimeSeconds(env) * MILLISECONDS_PER_SECOND;
+}
+
+export const AUTO_UPDATE_WORKER_STARTUP_CEILING_MS = autoUpdateWorkerStartupCeilingMs();
+
+/**
+ * After the installer deadline's tree-kill, how long the supervisor waits for
+ * the installer's own process to exit before it treats it as still running:
+ * the 1 s the supervisor's shutdown waits for SIGKILLed processes to be gone
+ * (supervisor/shutdown.ts, waitForExit(survivors, 1000)). SIGKILL cannot be
+ * caught, so only a kill that did not land outlives it.
+ */
+export const INSTALLER_EXIT_AFTER_KILL_WAIT_MS = 1_000;
+
+/**
+ * connection.ts SQLITE_BUSY_TIMEOUT_MS, the longest one SQLite statement waits
+ * for a lock. Copied, not imported: connection.ts loads bun:sqlite, and the
+ * worker's check (which imports this module) stays free of database code.
+ * tests/services/auto-update/auto-update-deadlines.test.ts pins the copy.
+ */
+const SQLITE_BUSY_TIMEOUT_COPY_MS = 5_000;
+
+/**
+ * Reading the database's schema stamp without writing to it
+ * (auto-update-launch.ts readDatabaseSchemaStamp: connection.ts
+ * openReaderDatabase, then readSchemaWriterStamp) runs at most four statements
+ * that can each wait out the busy timeout: the read-only probe; when that
+ * fails, the read-write probe and a second read-only probe; then the stamp.
+ */
+const SCHEMA_STAMP_READ_BUSY_WAITS = 4;
+
+/**
+ * The `restart` CLI's budget for reading the running worker's pid before it
+ * restarts it: getCurrentWorkerPid(port, 2000) in worker-service.ts. The
+ * supervisor reads it the same way before each installer run, so the proof
+ * after it can require a new pid.
+ */
+export const WORKER_PID_CAPTURE_TIMEOUT_MS = 2_000;
+
+/**
+ * Bounds each background fetch, so a hung connection cannot hold a tick open.
+ * It only bounds the tick and is not a tuning value: measured 0.26 s for
+ * raw.githubusercontent.com and 0.55 s for registry.npmjs.org (2026-11-06).
+ * It lives here, not in auto-update-check.ts (which re-exports it), because
+ * the supervisor deadline below counts one such fetch.
+ */
+export const AUTO_UPDATE_FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * The longest one `npx --yes claude-mem@<version> update` can run while every
@@ -94,13 +165,41 @@ export function autoUpdateInstallerDeadlineMs(installTimeoutMs: number = INSTALL
 const INSTALL_AND_PROVE_RUNS_ON_THE_LONGEST_PATH = 2;
 
 /**
- * The longest one supervisor run can take. Its longest path is a failed
- * switch: install the target and prove it, then reinstall the previous
- * version and prove that. Every other path runs fewer steps. With the
- * defaults: 2 × (34 min 25 s + 30 s) = 69 min 50 s (71 min 50 s on Windows).
+ * Before each proof the supervisor reads whether a worker runs and, when none
+ * does, starts one (auto-update-apply.ts startWorkerIfNoneRuns). The read is
+ * one GET /api/health under WORKER_PID_CAPTURE_TIMEOUT_MS, then the PID file,
+ * which waits for nothing. The start (worker-spawner.ts ensureWorkerStarted)
+ * is counted the way autoUpdateInstallerDeadlineMs counts the installer's own
+ * start: its readiness wait, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT),
+ * the one wait in it that is not a short probe.
  */
-export function autoUpdateSupervisorDeadlineMs(installerDeadlineMs: number = autoUpdateInstallerDeadlineMs()): number {
-  return INSTALL_AND_PROVE_RUNS_ON_THE_LONGEST_PATH * (installerDeadlineMs + getPlatformTimeout(RESTART_PROOF_BASE_MS));
+function workerStartBeforeProofBudgetMs(): number {
+  return WORKER_PID_CAPTURE_TIMEOUT_MS + getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT);
+}
+
+/**
+ * The longest one supervisor run can take (auto-update-apply.ts). Its longest
+ * path is a failed switch: read the worker's pid, install the target (killed
+ * at its deadline, then the wait for its exit), start a worker when none runs
+ * and wait for it; then read the database's schema stamp, check on npm that
+ * the previous version is fully published (one fetch), read the pid again,
+ * reinstall the previous version the same way, start a worker when none runs
+ * and wait for it. The check before the first installer reads files only and
+ * waits for nothing. Every other path runs fewer or shorter steps: one blocked
+ * by the database's schema waits for the target's worker twice but runs one
+ * installer. With the defaults:
+ * 2 × (2 s + 34 min 25 s + 1 s + 2 s + 30 s + 6 min) + 4 × 5 s + 10 s = 82 min 30 s
+ * (84 min 30 s on Windows).
+ */
+export function autoUpdateSupervisorDeadlineMs(
+  installerDeadlineMs: number = autoUpdateInstallerDeadlineMs(),
+  workerStartupCeilingMs: number = AUTO_UPDATE_WORKER_STARTUP_CEILING_MS,
+): number {
+  return INSTALL_AND_PROVE_RUNS_ON_THE_LONGEST_PATH
+    * (WORKER_PID_CAPTURE_TIMEOUT_MS + installerDeadlineMs + INSTALLER_EXIT_AFTER_KILL_WAIT_MS
+      + workerStartBeforeProofBudgetMs() + workerStartupCeilingMs)
+    + SCHEMA_STAMP_READ_BUSY_WAITS * SQLITE_BUSY_TIMEOUT_COPY_MS
+    + AUTO_UPDATE_FETCH_TIMEOUT_MS;
 }
 
 export const AUTO_UPDATE_INSTALLER_DEADLINE_MS = autoUpdateInstallerDeadlineMs();

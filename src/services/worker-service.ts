@@ -58,13 +58,21 @@ import {
   isWorkerQuietBySignals,
   logFailedAutoUpdateTick,
   readAutoUpdateSettings,
+  readClaudeCodePluginState,
   readClaudeCodeSettingsEnvBlocks,
   runAutoUpdateCheck,
   type AutoUpdateCheckDeps,
   type AutoUpdateOncePerBootLogKey,
 } from './auto-update/auto-update-check.js';
 import { readAutoUpdateState, writeAutoUpdateState } from './auto-update/auto-update-state.js';
-import { claudeSettingsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
+import {
+  AUTO_UPDATE_APPLY_COMMAND,
+  launchAutoUpdateSupervisor,
+  productionAutoUpdateLaunchDeps,
+  runAutoUpdateApplyCli,
+  workerInterruptedAttemptReader,
+} from './auto-update/auto-update-launch.js';
+import { claudeSettingsPath, installedPluginsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -84,13 +92,6 @@ export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 /** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
 export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
 
-// The bind must happen within this window. server.listen() is the first ref'd
-// handle in the boot path, so a stall before it lets the event loop empty and
-// the process exit 0 with no trace. A ref'd watchdog holds the loop open and
-// exits loudly if the bind never lands. 60s clears the slowest healthy Windows
-// cold boot with margin (the spawner's own readiness wait is 30s).
-const BOOT_BIND_DEADLINE_MS = 60_000;
-
 import {
   writePidFile,
   readPidFile,
@@ -101,7 +102,8 @@ import {
   verifyWorkerPidFileOwnership,
   spawnDaemon,
   touchPidFile,
-  pinDaemonWorkingDirectory
+  pinDaemonWorkingDirectory,
+  WORKER_BOOT_BIND_DEADLINE_MS
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
@@ -686,6 +688,10 @@ export class WorkerService implements WorkerRef {
         userSettingsPath: claudeSettingsPath(),
         managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
       }),
+      readClaudeCodePluginState: () => readClaudeCodePluginState({
+        userSettingsPath: claudeSettingsPath(),
+        installedPluginsPath: installedPluginsPath(),
+      }),
       readState: () => readAutoUpdateState(),
       writeState: (state) => writeAutoUpdateState(state),
       resolvePluginRoot: () => resolvePluginRoot(),
@@ -705,11 +711,15 @@ export class WorkerService implements WorkerRef {
         getRunningBackgroundJobs: () => this.runningBackgroundJobNames(),
       }, Date.now()),
       isProcessAlive: isPidAlive,
+      // This worker's own baked version: the fix rule trusts this code's
+      // newest schema only when it is the previous version's.
+      readInterruptedAttemptInstall: workerInterruptedAttemptReader({ workerVersion: packageVersion }),
       isWorkerShuttingDown: () => this.isShuttingDown,
-      // Decide only: report what would be applied. Nothing is installed yet.
-      launchSupervisor: async ({ targetVersion, previousVersion }) => {
-        logger.info('AUTO_UPDATE', `would apply ${previousVersion} → ${targetVersion}`, { previousVersion, targetVersion });
-      },
+      // The installer runs outside the worker: a detached hop starts the
+      // supervisor from this worker's own script and exits, so no restart or
+      // recycle of this worker can reach it (auto-update-launch.ts).
+      launchSupervisor: async (versions) => launchAutoUpdateSupervisor(versions, productionAutoUpdateLaunchDeps({ scriptPath: __filename })),
+      captureEvent: (event, properties) => captureEvent(event, properties),
       oncePerBootLogsWritten,
     };
   }
@@ -911,10 +921,10 @@ export class WorkerService implements WorkerRef {
       logger.failure('SYSTEM', 'Worker boot timed out before binding port — exiting', {
         host,
         port,
-        deadlineMs: BOOT_BIND_DEADLINE_MS,
+        deadlineMs: WORKER_BOOT_BIND_DEADLINE_MS,
       });
       process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
-    }, BOOT_BIND_DEADLINE_MS);
+    }, WORKER_BOOT_BIND_DEADLINE_MS);
 
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.
@@ -2096,6 +2106,16 @@ async function main() {
       }
       console.log('Worker is not running');
       process.exit(0);
+      break;
+    }
+
+    case AUTO_UPDATE_APPLY_COMMAND: {
+      // The auto-updater's own processes, never a user command: with
+      // --detached-hop the hop, which starts the supervisor and exits; without
+      // it the supervisor, which runs the installer (auto-update-launch.ts).
+      // The flags are parsed there; the exit code tells the worker whether the
+      // hop started the supervisor.
+      process.exit(await runAutoUpdateApplyCli(commandArgs, { scriptPath: __filename, port }));
       break;
     }
 

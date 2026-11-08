@@ -16,14 +16,16 @@
 
 import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
+import { readUserScopeRegisteredCacheVersions } from '../../npx-cli/utils/prune-cache.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, coercePersistedSettingValue, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { loadDocument, settingsTarget } from '../../shared/settings-document.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { compareVersionsDescending, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS } from './auto-update-deadlines.js';
-import type { AutoUpdateAttemptResult, AutoUpdateInFlightAttempt, AutoUpdateState } from './auto-update-state.js';
+import type { InterruptedAttemptInstall } from './auto-update-apply.js';
+import { AUTO_UPDATE_FETCH_TIMEOUT_MS, AUTO_UPDATE_SUPERVISOR_DEADLINE_MS } from './auto-update-deadlines.js';
+import type { AutoUpdateAttemptOutcome, AutoUpdateInFlightAttempt, AutoUpdateState } from './auto-update-state.js';
 
 /**
  * The owner's release switch on main. It lives here, not in the settings
@@ -62,12 +64,10 @@ export const AUTO_UPDATE_BUSY_DEFERRAL_LIMIT_MS = AUTO_UPDATE_CHECK_INTERVAL_MS;
  */
 export const AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS = AUTO_UPDATE_CHECK_INTERVAL_MS;
 
-/**
- * Bounds each background fetch, so a hung connection cannot hold a tick open.
- * It only bounds the tick and is not a tuning value: measured 0.26 s for
- * raw.githubusercontent.com and 0.55 s for registry.npmjs.org (2026-11-06).
- */
-export const AUTO_UPDATE_FETCH_TIMEOUT_MS = 10_000;
+// AUTO_UPDATE_FETCH_TIMEOUT_MS bounds each background fetch; its reason is
+// next to its definition in auto-update-deadlines.ts, which counts one fetch
+// in the supervisor deadline.
+export { AUTO_UPDATE_FETCH_TIMEOUT_MS };
 
 /**
  * "Quiet" needs this long without session activity, user prompts or captured
@@ -97,11 +97,17 @@ export const AUTO_UPDATE_TICK_INTERVAL_MS = 60 * 60 * 1000;
 /** The only promoted-file format this client reads; any other must be ignored, never misread. */
 const PROMOTED_RELEASE_SCHEMA_VERSION = 1;
 
-/** An exact release, the only form of promotedVersion (tests/infrastructure/promoted-release.test.ts pins it). */
-const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+/**
+ * An exact release, the only form of promotedVersion (tests/infrastructure/promoted-release.test.ts pins it),
+ * so the only form of a target version the supervisor accepts (auto-update-launch.ts).
+ */
+export const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 
-/** An installed version compareVersionsDescending can rank: a release, optionally with a prerelease tag. */
-const INSTALLED_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+/**
+ * An installed version compareVersionsDescending can rank: a release, optionally with a prerelease tag.
+ * The only form of a previous version the supervisor accepts (auto-update-launch.ts).
+ */
+export const INSTALLED_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 /** The predicate type npm records for provenance from the publish workflow (.github/workflows/npm-publish.yml). */
 const SLSA_PROVENANCE_V1_PREDICATE_TYPE = 'https://slsa.dev/provenance/v1';
@@ -114,6 +120,17 @@ const MILLISECONDS_PER_MINUTE = 60_000;
 
 /** Unit conversion, so the vanished-supervisor message states the live-pid ceiling in hours. */
 const MILLISECONDS_PER_HOUR = 60 * MILLISECONDS_PER_MINUTE;
+
+/** claude-mem's key in Claude Code's enabledPlugins and installed_plugins.json (install.ts registerPlugin, enablePluginInClaudeSettings). */
+const CLAUDE_MEM_PLUGIN_KEY = 'claude-mem@thedotmack';
+
+/**
+ * The only CLAUDE_MEM_RUNTIME the updater runs under. A non-interactive
+ * `update` writes CLAUDE_MEM_RUNTIME=worker (install.ts promptRuntime), so on
+ * a server-runtime install it would switch the runtime. Read the way the hooks
+ * read it (services/hooks/runtime-selector.ts): trimmed, any case.
+ */
+const WORKER_RUNTIME = 'worker';
 
 /**
  * Claude Code's documented switches for no background updates, each read the
@@ -209,7 +226,14 @@ const DECISIONS_LOGGED_ONCE_PER_BOOT: ReadonlySet<AutoUpdateDecisionName> = new 
 ]);
 
 /** Where a tick failed outside the network checks, which report `check-failed` instead. */
-export type AutoUpdateCheckStage = 'read-settings' | 'read-claude-code-settings' | 'resolve-plugin-root' | 'read-state' | 'write-state';
+export type AutoUpdateCheckStage =
+  | 'read-settings'
+  | 'read-claude-code-settings'
+  | 'read-claude-code-plugin-state'
+  | 'resolve-plugin-root'
+  | 'read-state'
+  | 'read-interrupted-attempt-install'
+  | 'write-state';
 
 /**
  * What is logged at most once per boot: the decisions above, the warning for
@@ -240,14 +264,19 @@ export interface FetchJsonResult {
 
 /** The settings one tick reads. */
 export type AutoUpdateSettings = Pick<SettingsDefaults,
-  'CLAUDE_MEM_AUTO_UPDATE' | 'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL' | 'CLAUDE_MEM_WORKER_AUTOSTART' | 'CLAUDE_MEM_WORKER_URL'>;
+  | 'CLAUDE_MEM_AUTO_UPDATE'
+  | 'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL'
+  | 'CLAUDE_MEM_WORKER_AUTOSTART'
+  | 'CLAUDE_MEM_WORKER_URL'
+  | 'CLAUDE_MEM_RUNTIME'>;
 
-/** The four keys readAutoUpdateSettings reads, in the order AutoUpdateSettings lists them. */
+/** The keys readAutoUpdateSettings reads, in the order AutoUpdateSettings lists them. */
 const AUTO_UPDATE_SETTING_KEYS: ReadonlyArray<keyof AutoUpdateSettings> = [
   'CLAUDE_MEM_AUTO_UPDATE',
   'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL',
   'CLAUDE_MEM_WORKER_AUTOSTART',
   'CLAUDE_MEM_WORKER_URL',
+  'CLAUDE_MEM_RUNTIME',
 ];
 
 /** The `env` block of one of Claude Code's settings files. */
@@ -269,6 +298,28 @@ export interface ClaudeCodeSettingsEnvRead {
   skipped: Array<{ path: string; problem: string }>;
 }
 
+/**
+ * What Claude Code's own files say about claude-mem, read the way the
+ * installer reads them (readClaudeCodePluginState): `update` would undo a
+ * user's choice made there, or stop on a file it cannot read.
+ */
+export interface ClaudeCodePluginState {
+  /** enabledPlugins['claude-mem@thedotmack'] in Claude Code's user settings (install.ts enablePluginInClaudeSettings sets it to true). */
+  userSettings:
+    | { kind: 'explicitly-disabled'; path: string }
+    | { kind: 'not-disabled' }
+    | { kind: 'unreadable'; path: string; problem: string };
+  /**
+   * claude-mem@thedotmack's user-scope entry in Claude Code's
+   * installed_plugins.json, the one install.ts registerPlugin writes on every
+   * install, for every host. Entries of other scopes are not read.
+   */
+  registration:
+    | { kind: 'registered'; versions: string[] }
+    | { kind: 'not-registered'; path: string }
+    | { kind: 'unreadable'; path: string; problem: string };
+}
+
 export interface AutoUpdateCheckDeps {
   now: () => number;
   /** Read for Claude Code's switches; claude-mem's own settings come through readSettings. */
@@ -286,6 +337,8 @@ export interface AutoUpdateCheckDeps {
    * managed settings file Claude Code refuses to start with.
    */
   readClaudeCodeSettingsEnv: () => ClaudeCodeSettingsEnvRead;
+  /** Whether the user turned claude-mem off in Claude Code or uninstalled it there (readClaudeCodePluginState). Never throws for a bad file: it reports it. */
+  readClaudeCodePluginState: () => ClaudeCodePluginState;
   readState: () => AutoUpdateState;
   writeState: (state: AutoUpdateState) => void;
   resolvePluginRoot: () => PluginRootResolution | null;
@@ -297,9 +350,23 @@ export interface AutoUpdateCheckDeps {
   isWorkerQuiet: () => boolean;
   /** Whether a process with this pid is running (the worker passes process-registry.ts isPidAlive). */
   isProcessAlive: (pid: number) => boolean;
+  /**
+   * Gate 3, for an attempt whose supervisor vanished while the install does
+   * not resolve to its target: where the attempt left the install, read and
+   * judged the way the supervisor reads and judges it, with the fix command
+   * its rule names (auto-update-apply.ts readInterruptedAttemptInstall).
+   * Injected, as the database read is: its readers load the database code and
+   * the installer's helpers, which this module stays free of.
+   */
+  readInterruptedAttemptInstall: (attempt: { targetVersion: string; previousVersion: string }) => Promise<InterruptedAttemptInstall>;
   /** True once the worker has begun shutting down. Read again right before a launch. */
   isWorkerShuttingDown: () => boolean;
   launchSupervisor: (attempt: { targetVersion: string; previousVersion: string }) => Promise<void>;
+  /**
+   * telemetry.ts captureEvent (consent-gated, never throws), for the outcomes
+   * the worker records itself: the supervisor's own events never come for them.
+   */
+  captureEvent: (event: string, properties: Record<string, unknown>) => void;
   /** One set for the life of the worker process, so some logs appear once per boot, not every tick. */
   oncePerBootLogsWritten: Set<AutoUpdateOncePerBootLogKey>;
 }
@@ -339,6 +406,12 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   }
   const claudeCodeSwitch = claudeCodeSwitchInForce(deps.env, claudeCodeSettings.envBlocks);
   if (claudeCodeSwitch !== null) return logDecision(deps, { decision: 'disabled', reason: claudeCodeSwitch });
+  // The user's own choices in Claude Code, which `update` would undo: it turns
+  // the plugin back on and registers it again. A file it would stop on keeps
+  // the updater off too, so an update never starts that cannot finish.
+  const pluginState = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
+  const pluginStateReason = claudeCodePluginStateDisabledReason(pluginState);
+  if (pluginStateReason !== null) return logDecision(deps, { decision: 'disabled', reason: pluginStateReason });
 
   // Gate 2 — install shape. A dev checkout or an env-override root is left alone.
   const resolvedPluginRoot = runStage('resolve-plugin-root', () => deps.resolvePluginRoot());
@@ -370,8 +443,8 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   const attempt = state.inFlightAttempt;
   if (attempt !== null) {
     const attemptAgeMs = absoluteMillisecondsBetween(now, attempt.startedAt);
-    const vanishedBecause = whyTheSupervisorCountsAsVanished(attempt, attemptAgeMs, deps);
-    if (vanishedBecause === null) {
+    const ended = whyTheAttemptIsNoLongerInFlight(attempt, attemptAgeMs, deps);
+    if (ended === null) {
       return logDecision(deps, {
         decision: 'attempt-in-flight',
         targetVersion: attempt.targetVersion,
@@ -380,20 +453,28 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
         supervisorPid: attempt.supervisorPid,
       });
     }
-    const recordedResult = recordVanishedSupervisor(state, attempt, installedVersion, now, vanishedBecause);
+    const outcome = ended.kind === 'never-started'
+      ? recordNeverStartedSupervisor(state, attempt, installedVersion, now, ended.why)
+      : await recordVanishedSupervisor(state, attempt, installedVersion, now, ended.why, deps);
     saveState();
-    const vanishedDetails = {
+    // After the save: a save that fails leaves the attempt in flight, and the
+    // tick that records it sends its event once.
+    captureWorkerRecordedOutcome(deps, outcome);
+    const endedDetails = {
       targetVersion: attempt.targetVersion,
       previousVersion: attempt.previousVersion,
       startedAt: new Date(attempt.startedAt).toISOString(),
       supervisorPid: attempt.supervisorPid,
       installedVersion,
-      vanishedBecause,
+      why: ended.why,
+      outcomeMessage: outcome.message,
     };
-    if (recordedResult === 'applied') {
-      logger.info('AUTO_UPDATE', 'Auto-update attempt never recorded an outcome, but the install reports its target version; recorded it as applied', vanishedDetails);
+    if (outcome.result === 'applied') {
+      logger.info('AUTO_UPDATE', 'Auto-update attempt never recorded an outcome, but the install reports its target version; recorded it as applied', endedDetails);
+    } else if (outcome.result === 'restore_failed') {
+      logger.error('AUTO_UPDATE', `Auto-update attempt never recorded an outcome and left part of its target in place; recorded it as restore_failed (${outcome.failureStage})`, endedDetails);
     } else {
-      logger.warn('AUTO_UPDATE', 'Auto-update attempt never recorded an outcome; recorded it as failed (supervisor-vanished)', vanishedDetails);
+      logger.warn('AUTO_UPDATE', `Auto-update attempt never recorded an outcome; recorded it as failed (${outcome.failureStage})`, endedDetails);
     }
   }
 
@@ -521,8 +602,11 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
       failureStage: 'launch-supervisor',
       message,
     };
-    // Logged before the save, so a failing save cannot hide why the launch failed.
+    // Logged and reported before the save, so a failing save cannot hide why
+    // the launch failed. Nothing retries this launch until the next due check,
+    // so its event is sent once either way.
     const launchFailed = logDecision(deps, { decision: 'launch-failed', targetVersion: promotedVersion, previousVersion: installedVersion, message });
+    captureWorkerRecordedOutcome(deps, state.lastAttemptOutcome);
     saveState();
     return launchFailed;
   }
@@ -548,7 +632,89 @@ export function autoUpdateDisabledReason(settings: AutoUpdateSettings, env: Node
     return 'CLAUDE_MEM_WORKER_AUTOSTART=false (an outside process manager would fight the installer\'s restart)';
   }
   if (settingText(settings.CLAUDE_MEM_WORKER_URL) !== '') return 'CLAUDE_MEM_WORKER_URL is set (the worker belongs to another machine)';
+  const runtime = settingText(settings.CLAUDE_MEM_RUNTIME).toLowerCase();
+  if (runtime !== WORKER_RUNTIME) {
+    return `CLAUDE_MEM_RUNTIME=${JSON.stringify(settingText(settings.CLAUDE_MEM_RUNTIME))}, not "${WORKER_RUNTIME}" (an unattended update writes CLAUDE_MEM_RUNTIME=${WORKER_RUNTIME}, which would switch this install's runtime)`;
+  }
   return null;
+}
+
+/**
+ * Why Claude Code's own files keep the updater off, or null. `update` runs
+ * install.ts enablePluginInClaudeSettings and registerPlugin, which read those
+ * files with readJsonSafe and stop on one that does not parse.
+ */
+export function claudeCodePluginStateDisabledReason(pluginState: ClaudeCodePluginState): string | null {
+  const { userSettings, registration } = pluginState;
+  if (userSettings.kind === 'explicitly-disabled') {
+    return `claude-mem is turned off in Claude Code (enabledPlugins["${CLAUDE_MEM_PLUGIN_KEY}"] is false in ${userSettings.path}); an update would turn it back on`;
+  }
+  if (userSettings.kind === 'unreadable') {
+    return `${userSettings.problem}, so whether claude-mem is turned off in Claude Code cannot be read, and an update would stop on that file`;
+  }
+  if (registration.kind === 'not-registered') {
+    return `claude-mem is not registered at user scope in ${registration.path} (it was uninstalled from Claude Code, or installed there only for a project); an update would register it again`;
+  }
+  if (registration.kind === 'unreadable') {
+    return `${registration.problem}, so whether claude-mem is still installed cannot be read, and an update would stop on that file`;
+  }
+  return null;
+}
+
+/**
+ * The production readClaudeCodePluginState: Claude Code's user settings and
+ * installed_plugins.json, each read as the installer reads it.
+ *  - User settings (install.ts enablePluginInClaudeSettings, readJsonSafe): a
+ *    missing file is not a choice; `false` under enabledPlugins is the user
+ *    turning claude-mem off. A file that does not parse as a JSON object
+ *    (empty included, which JSON.parse refuses) is unreadable: the installer
+ *    stops on it. This differs from the env-block read above, which follows
+ *    Claude Code, because here what matters is what the installer would do.
+ *  - installed_plugins.json (install.ts registerPlugin): read with
+ *    prune-cache.ts readUserScopeRegisteredCacheVersions, which reads it with
+ *    readJsonSafe too. registerPlugin writes one user-scope entry with an
+ *    installPath for every install of every host, so that entry means
+ *    installed and none means Claude Code uninstalled it. Entries of other
+ *    scopes (a project's own install, at a version of its own) are not the
+ *    npx install's and are not read: an update would replace them with the
+ *    user-scope one. A missing file holds no entry.
+ */
+export function readClaudeCodePluginState(files: { userSettingsPath: string; installedPluginsPath: string }): ClaudeCodePluginState {
+  return {
+    userSettings: readClaudeCodeUserSettingsToggle(files.userSettingsPath),
+    registration: readClaudeCodeRegistration(files.installedPluginsPath),
+  };
+}
+
+function readClaudeCodeUserSettingsToggle(userSettingsPath: string): ClaudeCodePluginState['userSettings'] {
+  let raw: string;
+  try {
+    raw = readFileSync(userSettingsPath, 'utf-8');
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'not-disabled' };
+    return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} exists but cannot be read: ${errorMessageOf(error)}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseJsonWithBom(raw);
+  } catch (error: unknown) {
+    return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} is not valid JSON: ${errorMessageOf(error)}` };
+  }
+  if (!isPlainObject(parsed)) return { kind: 'unreadable', path: userSettingsPath, problem: `${userSettingsPath} does not hold a JSON object` };
+  const enabledPlugins = parsed.enabledPlugins;
+  return isPlainObject(enabledPlugins) && enabledPlugins[CLAUDE_MEM_PLUGIN_KEY] === false
+    ? { kind: 'explicitly-disabled', path: userSettingsPath }
+    : { kind: 'not-disabled' };
+}
+
+function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePluginState['registration'] {
+  let versions: string[];
+  try {
+    versions = readUserScopeRegisteredCacheVersions(installedPluginsPath);
+  } catch (error: unknown) {
+    return { kind: 'unreadable', path: installedPluginsPath, problem: errorMessageOf(error) };
+  }
+  return versions.length > 0 ? { kind: 'registered', versions } : { kind: 'not-registered', path: installedPluginsPath };
 }
 
 /**
@@ -617,7 +783,7 @@ export function resolvePromotedReleaseUrl(configuredUrl: unknown): string {
 }
 
 /**
- * The production readSettings. It reads the check's four keys from the parsed
+ * The production readSettings. It reads the check's keys from the parsed
  * settings.json itself, each the way SettingsDefaultsManager.loadFromFile
  * reads it: from the document's settings target (settingsTarget: the root, or
  * the `env` block of a wrapped document), a JSON boolean as its string
@@ -924,12 +1090,18 @@ async function readPromotedRelease(deps: AutoUpdateCheckDeps, settings: AutoUpda
   return { kind: 'promoted', promotedVersion };
 }
 
-type NpmPublicationRead =
+export type NpmPublicationRead =
   | { kind: 'published' }
   | { kind: 'not-published'; missing: string[] }
   | { kind: 'failed'; message: string };
 
-async function readNpmPublication(deps: AutoUpdateCheckDeps, version: string): Promise<NpmPublicationRead> {
+/**
+ * Gate 7's reading of npm's metadata for one version: published by the
+ * workflow (gitHead and SLSA provenance), not, or unknown because the read
+ * failed. The supervisor applies the same test to the previous version before
+ * it reinstalls it (auto-update-apply.ts).
+ */
+export async function readNpmPublication(deps: Pick<AutoUpdateCheckDeps, 'fetchJson'>, version: string): Promise<NpmPublicationRead> {
   const url = npmVersionMetadataUrl(version);
   let response: FetchJsonResult;
   try {
@@ -954,66 +1126,145 @@ async function readNpmPublication(deps: AutoUpdateCheckDeps, version: string): P
   return missing.length === 0 ? { kind: 'published' } : { kind: 'not-published', missing };
 }
 
+/** How an attempt that recorded no outcome ended, as gate 3 reads it. */
+type EndedAttempt =
+  /** No supervisor ever recorded its pid: nothing ran. */
+  | { kind: 'never-started'; why: string }
+  /** Its supervisor recorded its pid and is gone, or has been alive past the live-pid ceiling. */
+  | { kind: 'vanished'; why: string };
+
 /**
- * Why an attempt past its supervisor deadline is no longer in flight, or null
- * while it still is (see gate 3). The pid is probed only past the deadline.
+ * How an attempt past its supervisor deadline ended, or null while it is still
+ * in flight (see gate 3). The pid is probed only past the deadline.
  */
-function whyTheSupervisorCountsAsVanished(
+function whyTheAttemptIsNoLongerInFlight(
   attempt: AutoUpdateInFlightAttempt,
   attemptAgeMs: number,
   deps: Pick<AutoUpdateCheckDeps, 'isProcessAlive'>,
-): string | null {
+): EndedAttempt | null {
   if (attemptAgeMs <= AUTO_UPDATE_SUPERVISOR_DEADLINE_MS) return null;
   const deadlineMinutes = Math.round(AUTO_UPDATE_SUPERVISOR_DEADLINE_MS / MILLISECONDS_PER_MINUTE);
   if (attempt.supervisorPid === null) {
-    return `recorded neither a supervisor pid nor an outcome within the ${deadlineMinutes}-minute supervisor deadline`;
+    return { kind: 'never-started', why: `recorded neither a supervisor pid nor an outcome within the ${deadlineMinutes}-minute supervisor deadline` };
   }
   if (!deps.isProcessAlive(attempt.supervisorPid)) {
-    return `recorded no outcome within the ${deadlineMinutes}-minute supervisor deadline, and its supervisor is no longer running`;
+    return { kind: 'vanished', why: `recorded no outcome within the ${deadlineMinutes}-minute supervisor deadline, and its supervisor is no longer running` };
   }
   if (attemptAgeMs <= AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS) return null;
   const ceilingHours = Math.round(AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS / MILLISECONDS_PER_HOUR);
-  return `recorded no outcome in ${ceilingHours} hours; a pid still alive that long is treated as another process that reused it`;
+  return { kind: 'vanished', why: `recorded no outcome in ${ceilingHours} hours; a pid still alive that long is treated as another process that reused it` };
+}
+
+function describeEndedAttempt(attempt: AutoUpdateInFlightAttempt, installedVersion: string, why: string): string {
+  return `The attempt that started at ${new Date(attempt.startedAt).toISOString()} `
+    + `(supervisor pid ${attempt.supervisorPid ?? 'not recorded'}) ${why}. The install reports ${installedVersion}.`;
 }
 
 /**
- * Close an attempt that is no longer in flight but recorded no outcome. When
- * the install already reports the target version, the update applied and only
- * its outcome was lost, so it is recorded as applied and the version is not
- * blocked. Otherwise it failed, and the version is never retried.
+ * Close an attempt whose supervisor never claimed it. The supervisor records
+ * its pid before it runs anything (auto-update-apply.ts claimInFlightAttempt),
+ * so without one nothing was installed: the attempt failed, and the version is
+ * not blocked, so the next due check tries it again.
  */
-function recordVanishedSupervisor(
+function recordNeverStartedSupervisor(
   state: AutoUpdateState,
   attempt: AutoUpdateInFlightAttempt,
   installedVersion: string,
   now: number,
-  vanishedBecause: string,
-): AutoUpdateAttemptResult {
-  const whatHappened = `The attempt that started at ${new Date(attempt.startedAt).toISOString()} `
-    + `(supervisor pid ${attempt.supervisorPid ?? 'not recorded'}) ${vanishedBecause}. The install reports ${installedVersion}.`;
+  why: string,
+): AutoUpdateAttemptOutcome {
   state.inFlightAttempt = null;
-  if (installedVersion === attempt.targetVersion) {
-    state.lastAttemptOutcome = {
-      result: 'applied',
-      targetVersion: attempt.targetVersion,
-      previousVersion: attempt.previousVersion,
-      finishedAt: now,
-      message: `${whatHappened} That is the target version, so the update applied.`,
-    };
-    return 'applied';
-  }
   state.lastAttemptOutcome = {
     result: 'failed',
     targetVersion: attempt.targetVersion,
     previousVersion: attempt.previousVersion,
     finishedAt: now,
-    failureStage: 'supervisor-vanished',
-    message: whatHappened,
+    failureStage: 'supervisor-never-started',
+    message: `${describeEndedAttempt(attempt, installedVersion, why)} Its supervisor never started, so nothing was installed; the version is tried again at the next due check.`,
   };
+  return state.lastAttemptOutcome;
+}
+
+/**
+ * Close an attempt whose supervisor vanished without recording an outcome.
+ * When the install already reports the target version, the update applied and
+ * only its outcome was lost, so it is recorded as applied and the version is
+ * not blocked. Otherwise it failed, and the version is never retried; where
+ * the attempt left the install is read the supervisor's way
+ * (deps.readInterruptedAttemptInstall). A reboot can kill the supervisor and
+ * its installer after the target is registered, and then no supervisor
+ * repairs it and nothing tells the user: an install left with part of the
+ * target in place is recorded as restore_failed, naming the fix command the
+ * supervisor's rule names, so the notice and the doctor row show it. Every
+ * outcome keeps the stage, so the doctor row and telemetry show how it ended.
+ */
+async function recordVanishedSupervisor(
+  state: AutoUpdateState,
+  attempt: AutoUpdateInFlightAttempt,
+  installedVersion: string,
+  now: number,
+  why: string,
+  deps: Pick<AutoUpdateCheckDeps, 'readInterruptedAttemptInstall'>,
+): Promise<AutoUpdateAttemptOutcome> {
+  const whatHappened = describeEndedAttempt(attempt, installedVersion, why);
+  const versions = { targetVersion: attempt.targetVersion, previousVersion: attempt.previousVersion };
+  if (installedVersion === attempt.targetVersion) {
+    state.inFlightAttempt = null;
+    state.lastAttemptOutcome = {
+      result: 'applied',
+      ...versions,
+      finishedAt: now,
+      failureStage: 'supervisor-vanished',
+      message: `${whatHappened} That is the target version, so the update applied.`,
+    };
+    return state.lastAttemptOutcome;
+  }
+  const leftAt = await runAsyncStage('read-interrupted-attempt-install', () => deps.readInterruptedAttemptInstall(versions));
+  state.inFlightAttempt = null;
+  if (leftAt.kind === 'half-switched') {
+    state.lastAttemptOutcome = {
+      result: 'restore_failed',
+      ...versions,
+      finishedAt: now,
+      failureStage: 'supervisor-vanished',
+      message: `${whatHappened} ${leftAt.where} Part of ${attempt.targetVersion} is in place, and nothing restored ${attempt.previousVersion} or proved ${attempt.targetVersion}. Run: ${leftAt.fixCommand}`,
+    };
+  } else {
+    const movedOn = leftAt.kind === 'moved-past-target'
+      ? ` ${leftAt.newerVersion} is newer than ${attempt.targetVersion}: another update moved the install on.`
+      : '';
+    state.lastAttemptOutcome = {
+      result: 'failed',
+      ...versions,
+      finishedAt: now,
+      failureStage: 'supervisor-vanished',
+      message: `${whatHappened} ${leftAt.where}${movedOn}`,
+    };
+  }
   if (!state.versionsThatFailedToApply.includes(attempt.targetVersion)) {
     state.versionsThatFailedToApply.push(attempt.targetVersion);
   }
-  return 'failed';
+  return state.lastAttemptOutcome;
+}
+
+/**
+ * The supervisor's own events (auto-update-apply.ts sendOutcomeTelemetry) for
+ * an outcome the worker recorded: auto_update_applied or auto_update_failed,
+ * with the stage. restore_result is 'unknown' when a supervisor ran and
+ * vanished, and 'not-attempted' when none ran (a launch that failed, a
+ * supervisor that never started).
+ */
+function captureWorkerRecordedOutcome(deps: Pick<AutoUpdateCheckDeps, 'captureEvent'>, outcome: AutoUpdateAttemptOutcome): void {
+  const versions = { from_version: outcome.previousVersion, to_version: outcome.targetVersion };
+  if (outcome.result === 'applied') {
+    deps.captureEvent('auto_update_applied', { ...versions, failure_stage: outcome.failureStage });
+    return;
+  }
+  deps.captureEvent('auto_update_failed', {
+    ...versions,
+    failure_stage: outcome.failureStage,
+    restore_result: outcome.failureStage === 'supervisor-vanished' ? 'unknown' : 'not-attempted',
+  });
 }
 
 /**
@@ -1200,6 +1451,15 @@ function errorMessageOf(error: unknown): string {
 function runStage<T>(stage: AutoUpdateCheckStage, run: () => T): T {
   try {
     return run();
+  } catch (error: unknown) {
+    throw new AutoUpdateCheckError(stage, error);
+  }
+}
+
+/** runStage for a step that awaits. */
+async function runAsyncStage<T>(stage: AutoUpdateCheckStage, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
   } catch (error: unknown) {
     throw new AutoUpdateCheckError(stage, error);
   }

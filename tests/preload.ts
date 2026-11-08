@@ -24,6 +24,19 @@ if (!process.env.CLAUDE_MEM_DATA_DIR) {
 // holds the high-volume events for the daily file (src/services/telemetry/daily-volume.ts).
 process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
 
+/**
+ * Auto-update tripwire: no test may start a real auto-update — a hop, a
+ * supervisor, or `npx claude-mem@<version> update` against the real ~/.claude
+ * install (CLAUDE_CONFIG_DIR is not isolated here the way the data dir is).
+ * While this is set, every production effect that could start one refuses
+ * before it acts (FORBID_REAL_AUTO_UPDATE_ENV in
+ * src/services/auto-update/auto-update-launch.ts), and every process a test
+ * starts inherits it. Set unconditionally, so a shell that exports it empty
+ * cannot turn it off. It is not a setting: tests of the shipped defaults see
+ * CLAUDE_MEM_AUTO_UPDATE as shipped.
+ */
+process.env.CLAUDE_MEM_FORBID_REAL_AUTO_UPDATE = '1';
+
 // The cmem cap probe (src/shared/cmem-cap-probe.ts) is a file in the data dir.
 // One test's allowance_exhausted must not withhold gateway sends in the next.
 // Subprocesses spawned by tests load this preload outside the test runner,

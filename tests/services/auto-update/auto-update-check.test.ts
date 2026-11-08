@@ -14,6 +14,7 @@ import {
   AutoUpdateCheckError,
   autoUpdateDisabledReason,
   claudeCodeManagedSettingsDirectory,
+  claudeCodePluginStateDisabledReason,
   claudeCodeSwitchInForce,
   fetchJsonWithTimeout,
   isWorkerQuietBySignals,
@@ -21,6 +22,7 @@ import {
   npmVersionMetadataUrl,
   parseAutoUpdateSwitch,
   readAutoUpdateSettings,
+  readClaudeCodePluginState,
   readClaudeCodeSettingsEnvBlocks,
   resolvePromotedReleaseUrl,
   runAutoUpdateCheck,
@@ -29,10 +31,12 @@ import {
   type AutoUpdateDecisionName,
   type AutoUpdateOncePerBootLogKey,
   type AutoUpdateSettings,
+  type ClaudeCodePluginState,
   type ClaudeCodeSettingsEnvBlock,
   type FetchJsonResult,
   type WorkerQuietSignals,
 } from '../../../src/services/auto-update/auto-update-check.js';
+import type { InterruptedAttemptInstall } from '../../../src/services/auto-update/auto-update-apply.js';
 import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
 import { defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
@@ -70,6 +74,13 @@ const SHIPPED_SETTINGS: AutoUpdateSettings = {
   CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',
   CLAUDE_MEM_WORKER_AUTOSTART: 'true',
   CLAUDE_MEM_WORKER_URL: '',
+  CLAUDE_MEM_RUNTIME: 'worker',
+};
+
+/** What Claude Code's files say on a standard install: registered at the installed version, not turned off. */
+const REGISTERED_PLUGIN_STATE: ClaudeCodePluginState = {
+  userSettings: { kind: 'not-disabled' },
+  registration: { kind: 'registered', versions: [INSTALLED] },
 };
 
 const json = (body: unknown, status = 200): FetchJsonResult => ({ ok: status >= 200 && status < 300, status, body: status < 300 ? body : null });
@@ -96,12 +107,19 @@ interface Scenario {
   env?: NodeJS.ProcessEnv;
   /** The env blocks of Claude Code's settings files; none by default. */
   claudeCodeSettingsEnv?: ClaudeCodeSettingsEnvBlock[];
+  /** What Claude Code's user settings and installed_plugins.json say about claude-mem; REGISTERED_PLUGIN_STATE by default. */
+  pluginState?: ClaudeCodePluginState;
   install?: PluginRootResolution | null;
   state?: Partial<AutoUpdateState> & Record<string, unknown>;
   /** Overrides by URL; defaults: the promoted file names PROMOTED and npm shows it fully published. */
   responses?: Record<string, FetchJsonResult | Error>;
   quiet?: boolean;
+  /** Where a vanished attempt left the install (deps.readInterruptedAttemptInstall); on the previous version by default. An Error is thrown. */
+  interruptedAttemptInstall?: InterruptedAttemptInstall | Error;
 }
+
+/** The readings of an install left on the previous version, as auto-update-apply.ts describeInstallVersions words them. */
+const ON_PREVIOUS_VERSION_WHERE = `The install resolves to ${INSTALLED}; installed_plugins.json registers ${INSTALLED}; the marketplace copy is ${INSTALLED}.`;
 
 interface CheckHarness {
   deps: AutoUpdateCheckDeps;
@@ -109,21 +127,27 @@ interface CheckHarness {
   writes: AutoUpdateState[];
   stateReads: () => number;
   claudeCodeSettingsReads: () => number;
+  pluginStateReads: () => number;
   fetches: Array<{ url: string; timeoutMs: number }>;
   launches: Array<{ targetVersion: string; previousVersion: string }>;
   livenessProbes: number[];
+  events: Array<{ event: string; properties: Record<string, unknown> }>;
   pluginRootLookups: () => number;
+  interruptedAttemptReads: Array<{ targetVersion: string; previousVersion: string }>;
 }
 
 function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
   let stored = { ...defaultAutoUpdateState(), ...structuredClone(scenario.state ?? {}) } as AutoUpdateState & Record<string, unknown>;
   let stateReads = 0;
   let claudeCodeSettingsReads = 0;
+  let pluginStateReads = 0;
   let pluginRootLookups = 0;
   const writes: AutoUpdateState[] = [];
   const fetches: Array<{ url: string; timeoutMs: number }> = [];
   const launches: Array<{ targetVersion: string; previousVersion: string }> = [];
   const livenessProbes: number[] = [];
+  const events: Array<{ event: string; properties: Record<string, unknown> }> = [];
+  const interruptedAttemptReads: Array<{ targetVersion: string; previousVersion: string }> = [];
   const responses: Record<string, FetchJsonResult | Error> = {
     [PROMOTED_URL]: json({ schemaVersion: 1, promotedVersion: PROMOTED }),
     [npmVersionMetadataUrl(PROMOTED)]: json(workflowPublishedManifest(PROMOTED)),
@@ -136,6 +160,10 @@ function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
     readClaudeCodeSettingsEnv: () => {
       claudeCodeSettingsReads++;
       return { envBlocks: structuredClone(scenario.claudeCodeSettingsEnv ?? []), skipped: [] };
+    },
+    readClaudeCodePluginState: () => {
+      pluginStateReads++;
+      return structuredClone(scenario.pluginState ?? REGISTERED_PLUGIN_STATE);
     },
     readState: () => { stateReads++; return structuredClone(stored); },
     writeState: (state) => { stored = structuredClone(state) as typeof stored; writes.push(structuredClone(state)); },
@@ -155,8 +183,15 @@ function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
     },
     isWorkerQuiet: () => scenario.quiet ?? true,
     isProcessAlive: (pid) => { livenessProbes.push(pid); return pid === LIVE_SUPERVISOR_PID; },
+    readInterruptedAttemptInstall: async (attempt) => {
+      interruptedAttemptReads.push(attempt);
+      const left = scenario.interruptedAttemptInstall ?? { kind: 'on-previous-version', where: ON_PREVIOUS_VERSION_WHERE };
+      if (left instanceof Error) throw left;
+      return structuredClone(left);
+    },
     isWorkerShuttingDown: () => false,
     launchSupervisor: async (attempt) => { launches.push(attempt); },
+    captureEvent: (event, properties) => { events.push({ event, properties }); },
     oncePerBootLogsWritten: new Set<AutoUpdateOncePerBootLogKey>(),
   };
   return {
@@ -165,10 +200,13 @@ function buildCheckHarness(scenario: Scenario = {}): CheckHarness {
     writes,
     stateReads: () => stateReads,
     claudeCodeSettingsReads: () => claudeCodeSettingsReads,
+    pluginStateReads: () => pluginStateReads,
     fetches,
     launches,
     livenessProbes,
+    events,
     pluginRootLookups: () => pluginRootLookups,
+    interruptedAttemptReads,
   };
 }
 
@@ -200,6 +238,7 @@ const managedSettingsEnv = (env: Record<string, unknown>): ClaudeCodeSettingsEnv
 /** Off by claude-mem's own settings or the worker's env: Claude Code's settings files are not even read. */
 function expectNothingTouchedAfterSettings(checkHarness: CheckHarness): void {
   expect(checkHarness.claudeCodeSettingsReads()).toBe(0);
+  expect(checkHarness.pluginStateReads()).toBe(0);
   expect(checkHarness.pluginRootLookups()).toBe(0);
   expect(checkHarness.stateReads()).toBe(0);
   expect(checkHarness.writes).toHaveLength(0);
@@ -209,10 +248,22 @@ function expectNothingTouchedAfterSettings(checkHarness: CheckHarness): void {
 /** Off by a switch in one of Claude Code's settings files: read once, and nothing after it. */
 function expectNothingTouchedAfterClaudeCodeSettings(checkHarness: CheckHarness): void {
   expect(checkHarness.claudeCodeSettingsReads()).toBe(1);
+  expect(checkHarness.pluginStateReads()).toBe(0);
   expect(checkHarness.pluginRootLookups()).toBe(0);
   expect(checkHarness.stateReads()).toBe(0);
   expect(checkHarness.writes).toHaveLength(0);
   expect(checkHarness.fetches).toHaveLength(0);
+}
+
+/** Off by claude-mem's own state in Claude Code: both of Claude Code's reads ran once, and nothing after them. */
+function expectNothingTouchedAfterPluginState(checkHarness: CheckHarness): void {
+  expect(checkHarness.claudeCodeSettingsReads()).toBe(1);
+  expect(checkHarness.pluginStateReads()).toBe(1);
+  expect(checkHarness.pluginRootLookups()).toBe(0);
+  expect(checkHarness.stateReads()).toBe(0);
+  expect(checkHarness.writes).toHaveLength(0);
+  expect(checkHarness.fetches).toHaveLength(0);
+  expect(checkHarness.launches).toHaveLength(0);
 }
 
 function expectVanishedSupervisorRecordedAsFailed(checkHarness: CheckHarness, messagePart: string): void {
@@ -228,6 +279,30 @@ function expectVanishedSupervisorRecordedAsFailed(checkHarness: CheckHarness, me
   });
   // Never retried automatically: the next check in the same tick refuses it.
   expect(state.versionsThatFailedToApply).toEqual([PROMOTED]);
+  // The supervisor's own event never comes, so the worker sends it.
+  expect(checkHarness.events).toEqual([{
+    event: 'auto_update_failed',
+    properties: { from_version: INSTALLED, to_version: PROMOTED, failure_stage: 'supervisor-vanished', restore_result: 'unknown' },
+  }]);
+}
+
+function expectNeverStartedSupervisorRecordedAsFailed(checkHarness: CheckHarness): void {
+  const state = checkHarness.stored();
+  expect(state.inFlightAttempt).toBeNull();
+  expect(state.lastAttemptOutcome).toMatchObject({
+    result: 'failed',
+    targetVersion: PROMOTED,
+    previousVersion: INSTALLED,
+    finishedAt: NOW,
+    failureStage: 'supervisor-never-started',
+    message: expect.stringContaining('recorded neither a supervisor pid nor an outcome'),
+  });
+  // Nothing ran, so the version is not blocked.
+  expect(state.versionsThatFailedToApply).toEqual([]);
+  expect(checkHarness.events).toEqual([{
+    event: 'auto_update_failed',
+    properties: { from_version: INSTALLED, to_version: PROMOTED, failure_stage: 'supervisor-never-started', restore_result: 'not-attempted' },
+  }]);
 }
 
 function expectCheckError(checkHarness: CheckHarness, messagePart: string): void {
@@ -355,6 +430,64 @@ describe('runAutoUpdateCheck — one row per gate', () => {
       verify: (_checkHarness, result) => expect(result).toMatchObject({ reason: expect.stringContaining(`DISABLE_AUTOUPDATER is set in the env block of ${path.join(CLAUDE_CONFIG, 'settings.json')}`) }),
     },
 
+    // Gate 1: the user's own choices in claude-mem's settings and in Claude Code, which an unattended update would undo.
+    {
+      name: 'off: CLAUDE_MEM_RUNTIME=server (an update writes CLAUDE_MEM_RUNTIME=worker)',
+      scenario: { settings: { CLAUDE_MEM_RUNTIME: 'server' } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: 'CLAUDE_MEM_RUNTIME="server", not "worker" (an unattended update writes CLAUDE_MEM_RUNTIME=worker, which would switch this install\'s runtime)',
+        });
+        expectNothingTouchedAfterSettings(checkHarness);
+      },
+    },
+    { name: 'off: CLAUDE_MEM_RUNTIME=server-beta (the legacy server value)', scenario: { settings: { CLAUDE_MEM_RUNTIME: 'server-beta' } }, decision: 'disabled', verify: expectNothingTouchedAfterSettings },
+    { name: 'on: CLAUDE_MEM_RUNTIME=" Worker " (read like the hooks read it)', scenario: { settings: { CLAUDE_MEM_RUNTIME: ' Worker ' } }, decision: 'apply' },
+    {
+      name: 'off: claude-mem turned off in Claude Code (enabledPlugins false), read after Claude Code\'s env switches and before anything else',
+      scenario: { pluginState: { ...REGISTERED_PLUGIN_STATE, userSettings: { kind: 'explicitly-disabled', path: path.join(CLAUDE_CONFIG, 'settings.json') } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: `claude-mem is turned off in Claude Code (enabledPlugins["claude-mem@thedotmack"] is false in ${path.join(CLAUDE_CONFIG, 'settings.json')}); an update would turn it back on`,
+        });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: Claude Code\'s user settings do not parse, so the installer would stop on them',
+      scenario: { pluginState: { ...REGISTERED_PLUGIN_STATE, userSettings: { kind: 'unreadable', path: path.join(CLAUDE_CONFIG, 'settings.json'), problem: `${path.join(CLAUDE_CONFIG, 'settings.json')} is not valid JSON: JSON Parse error` } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toMatchObject({ reason: expect.stringContaining('so whether claude-mem is turned off in Claude Code cannot be read, and an update would stop on that file') });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: claude-mem is not registered at user scope in installed_plugins.json (uninstalled from Claude Code, or installed only for a project)',
+      scenario: { pluginState: { ...REGISTERED_PLUGIN_STATE, registration: { kind: 'not-registered', path: path.join(CLAUDE_CONFIG, 'plugins', 'installed_plugins.json') } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toEqual({
+          decision: 'disabled',
+          reason: `claude-mem is not registered at user scope in ${path.join(CLAUDE_CONFIG, 'plugins', 'installed_plugins.json')} (it was uninstalled from Claude Code, or installed there only for a project); an update would register it again`,
+        });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+    {
+      name: 'off: installed_plugins.json does not parse, so the installer would stop on it',
+      scenario: { pluginState: { ...REGISTERED_PLUGIN_STATE, registration: { kind: 'unreadable', path: path.join(CLAUDE_CONFIG, 'plugins', 'installed_plugins.json'), problem: 'Corrupt JSON file, refusing to overwrite: installed_plugins.json' } } },
+      decision: 'disabled',
+      verify: (checkHarness, result) => {
+        expect(result).toMatchObject({ reason: 'Corrupt JSON file, refusing to overwrite: installed_plugins.json, so whether claude-mem is still installed cannot be read, and an update would stop on that file' });
+        expectNothingTouchedAfterPluginState(checkHarness);
+      },
+    },
+
     // Gate 2: install shape.
     { name: 'no install', scenario: { install: null }, decision: 'no-install' },
     {
@@ -412,6 +545,7 @@ describe('runAutoUpdateCheck — one row per gate', () => {
         expect(checkHarness.livenessProbes).toEqual([LIVE_SUPERVISOR_PID]);
         expect(checkHarness.writes).toHaveLength(0);
         expect(checkHarness.stored().versionsThatFailedToApply).toEqual([]);
+        expect(checkHarness.events).toEqual([]);
       },
     },
     {
@@ -420,10 +554,23 @@ describe('runAutoUpdateCheck — one row per gate', () => {
       decision: 'attempt-in-flight',
     },
     {
-      name: 'vanished: one millisecond past the supervisor deadline with no pid recorded',
-      scenario: { state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - 1, null) },
-      decision: 'previously-failed',
-      verify: (checkHarness) => expectVanishedSupervisorRecordedAsFailed(checkHarness, 'recorded neither a supervisor pid nor an outcome'),
+      name: 'never started: one millisecond past the supervisor deadline with no pid recorded, the version not blocked',
+      // The worker checked the network when it launched the attempt, so the next try waits for the next due check.
+      scenario: { state: { ...inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - 1, null), lastNetworkCheckAt: NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - 1 } },
+      decision: 'not-due',
+      verify: (checkHarness) => {
+        expect(checkHarness.livenessProbes).toEqual([]);
+        expectNeverStartedSupervisorRecordedAsFailed(checkHarness);
+      },
+    },
+    {
+      name: 'never started: once due, the same version is tried again in the same tick',
+      scenario: { state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - MINUTE_MS, null) },
+      decision: 'apply',
+      verify: (checkHarness) => {
+        expectNeverStartedSupervisorRecordedAsFailed(checkHarness);
+        expect(checkHarness.launches).toEqual([{ targetVersion: PROMOTED, previousVersion: INSTALLED }]);
+      },
     },
     {
       name: 'vanished: past the deadline, and its supervisor is no longer running',
@@ -461,9 +608,70 @@ describe('runAutoUpdateCheck — one row per gate', () => {
           targetVersion: PROMOTED,
           previousVersion: INSTALLED,
           finishedAt: NOW,
+          failureStage: 'supervisor-vanished',
           message: expect.stringContaining(`The install reports ${PROMOTED}`),
         });
         expect(state.versionsThatFailedToApply).toEqual([]);
+        expect(checkHarness.events).toEqual([{
+          event: 'auto_update_applied',
+          properties: { from_version: INSTALLED, to_version: PROMOTED, failure_stage: 'supervisor-vanished' },
+        }]);
+        // Applied needs no reading of where the attempt left the install.
+        expect(checkHarness.interruptedAttemptReads).toEqual([]);
+      },
+    },
+    {
+      name: 'vanished, and the install still all at the previous version: failed, saying where the install is',
+      scenario: { state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - MINUTE_MS, DEAD_SUPERVISOR_PID) },
+      decision: 'previously-failed',
+      verify: (checkHarness) => {
+        expect(checkHarness.interruptedAttemptReads).toEqual([{ targetVersion: PROMOTED, previousVersion: INSTALLED }]);
+        expectVanishedSupervisorRecordedAsFailed(checkHarness, `its supervisor is no longer running. The install reports ${INSTALLED}. ${ON_PREVIOUS_VERSION_WHERE}`);
+      },
+    },
+    {
+      name: 'vanished after a reboot cut off the installer with the target registered: restore_failed, naming the fix the supervisor\'s rule names',
+      scenario: {
+        state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - MINUTE_MS, DEAD_SUPERVISOR_PID),
+        interruptedAttemptInstall: {
+          kind: 'half-switched',
+          where: `The install resolves to ${INSTALLED}; installed_plugins.json registers ${PROMOTED}; the marketplace copy is ${PROMOTED}.`,
+          fixCommand: `npx claude-mem@${INSTALLED} update`,
+        },
+      },
+      decision: 'previously-failed',
+      verify: (checkHarness) => {
+        const state = checkHarness.stored();
+        expect(state.inFlightAttempt).toBeNull();
+        expect(state.lastAttemptOutcome).toEqual({
+          result: 'restore_failed',
+          targetVersion: PROMOTED,
+          previousVersion: INSTALLED,
+          finishedAt: NOW,
+          failureStage: 'supervisor-vanished',
+          message: expect.stringContaining(`installed_plugins.json registers ${PROMOTED}; the marketplace copy is ${PROMOTED}. Part of ${PROMOTED} is in place, and nothing restored ${INSTALLED} or proved ${PROMOTED}. Run: npx claude-mem@${INSTALLED} update`),
+        });
+        expect(state.versionsThatFailedToApply).toEqual([PROMOTED]);
+        expect(checkHarness.events).toEqual([{
+          event: 'auto_update_failed',
+          properties: { from_version: INSTALLED, to_version: PROMOTED, failure_stage: 'supervisor-vanished', restore_result: 'unknown' },
+        }]);
+      },
+    },
+    {
+      name: 'vanished, with another update already past the target: failed, with nothing to fix',
+      scenario: {
+        install: { root: path.join(CACHE_ROOT, '15.13.0'), version: '15.13.0', missingDependencies: [] },
+        state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - MINUTE_MS, DEAD_SUPERVISOR_PID),
+        interruptedAttemptInstall: { kind: 'moved-past-target', where: 'The install resolves to 15.13.0; installed_plugins.json registers 15.13.0; the marketplace copy is 15.13.0.', newerVersion: '15.13.0' },
+      },
+      decision: 'up-to-date',
+      verify: (checkHarness) => {
+        expect(checkHarness.stored().lastAttemptOutcome).toMatchObject({
+          result: 'failed',
+          failureStage: 'supervisor-vanished',
+          message: expect.stringContaining(`15.13.0 is newer than ${PROMOTED}: another update moved the install on.`),
+        });
       },
     },
 
@@ -1035,6 +1243,11 @@ describe('runAutoUpdateCheck — across ticks', () => {
     });
     // It never ran, so the version is not blocked.
     expect(state.versionsThatFailedToApply).toEqual([]);
+    // No supervisor will report it, so the worker does.
+    expect(checkHarness.events).toEqual([{
+      event: 'auto_update_failed',
+      properties: { from_version: INSTALLED, to_version: PROMOTED, failure_stage: 'launch-supervisor', restore_result: 'not-attempted' },
+    }]);
     expect(spies.error.mock.calls.map((call) => call[1])).toEqual(['Auto-update decision: launch-failed']);
     expect(spies.error.mock.calls[0][2]).toMatchObject({ targetVersion: PROMOTED, previousVersion: INSTALLED, message: expect.stringContaining('spawn EAGAIN') });
 
@@ -1069,6 +1282,20 @@ describe('runAutoUpdateCheck — across ticks', () => {
       await expect(runAutoUpdateCheck(checkHarness.deps)).rejects.toMatchObject({ name: 'AutoUpdateCheckError', stage });
       expect(checkHarness.launches).toEqual([]);
     }
+  });
+
+  it('a vanished attempt whose install cannot be read stays in flight, with the stage named, for the next tick to record', async () => {
+    silenceLogger();
+    const checkHarness = buildCheckHarness({
+      state: inFlightAttemptState(NOW - AUTO_UPDATE_SUPERVISOR_DEADLINE_MS - MINUTE_MS, DEAD_SUPERVISOR_PID),
+      interruptedAttemptInstall: new Error('EACCES: installed_plugins.json'),
+    });
+
+    await expect(runAutoUpdateCheck(checkHarness.deps)).rejects.toMatchObject({ name: 'AutoUpdateCheckError', stage: 'read-interrupted-attempt-install' });
+    expect(checkHarness.writes).toEqual([]);
+    expect(checkHarness.stored().inFlightAttempt).toMatchObject({ targetVersion: PROMOTED, supervisorPid: DEAD_SUPERVISOR_PID });
+    expect(checkHarness.events).toEqual([]);
+    expect(checkHarness.launches).toEqual([]);
   });
 
   it('does nothing else when the settings cannot be read', async () => {
@@ -1205,6 +1432,17 @@ describe('isWorkerQuietBySignals', () => {
 });
 
 describe('autoUpdateDisabledReason', () => {
+  it('stays off unless CLAUDE_MEM_RUNTIME is worker, read trimmed and in any case', () => {
+    for (const runtime of ['server', 'server-beta', '', 'workers']) {
+      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime }, {})).toContain(`CLAUDE_MEM_RUNTIME=${JSON.stringify(runtime)}, not "worker"`);
+    }
+    for (const runtime of ['worker', ' WORKER ', 'Worker']) {
+      expect(autoUpdateDisabledReason({ ...SHIPPED_SETTINGS, CLAUDE_MEM_RUNTIME: runtime }, {})).toBeNull();
+    }
+    // The shipped default is worker, so an install that never set it updates.
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_RUNTIME).toBe('worker');
+  });
+
   it('reads DISABLE_AUTOUPDATER and DISABLE_UPDATES the way claude-mem reads Claude Code\'s other env flags', () => {
     for (const name of ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES']) {
       for (const value of ['1', 'true', 'yes', ' TRUE ']) {
@@ -1523,6 +1761,95 @@ describe('Claude Code settings files', () => {
     const noSwitch = buildCheckHarness();
     noSwitch.deps.readClaudeCodeSettingsEnv = () => readClaudeCodeSettingsEnvBlocks(fixture('tick-none', { 'claude-config/settings.json': JSON.stringify({ env: { DISABLE_AUTOUPDATER: '0' } }) }));
     expect((await runAutoUpdateCheck(noSwitch.deps)).decision).toBe('apply');
+  });
+});
+
+describe('readClaudeCodePluginState (Claude Code\'s own files, read as the installer reads them)', () => {
+  let tempDir: string;
+  let fixtureCount = 0;
+
+  beforeAll(() => {
+    tempDir = mkdtempSync(path.join(scratchRoot, 'auto-update-plugin-state-'));
+  });
+
+  afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
+
+  /** A Claude config dir of its own with the given user settings and installed_plugins.json (undefined: no file). */
+  const fixture = (files: { userSettings?: string; installedPlugins?: string }) => {
+    const root = path.join(tempDir, `config-${++fixtureCount}`);
+    mkdirSync(path.join(root, 'plugins'), { recursive: true });
+    const userSettingsPath = path.join(root, 'settings.json');
+    const installedPluginsPath = path.join(root, 'plugins', 'installed_plugins.json');
+    if (files.userSettings !== undefined) writeFileSync(userSettingsPath, files.userSettings);
+    if (files.installedPlugins !== undefined) writeFileSync(installedPluginsPath, files.installedPlugins);
+    return { root, userSettingsPath, installedPluginsPath };
+  };
+
+  const registered = (version: string) => JSON.stringify({
+    version: 2,
+    plugins: { 'claude-mem@thedotmack': [{ scope: 'user', installPath: path.join(CACHE_ROOT, version), version }] },
+  });
+
+  it('reads the entry the installer\'s own registerPlugin writes as registered, for every host it installs', async () => {
+    const { registerPlugin } = await import('../../../src/npx-cli/commands/install.js');
+    const files = fixture({});
+    const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = files.root;
+    try {
+      registerPlugin(INSTALLED);
+    } finally {
+      if (savedClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedClaudeConfigDir;
+    }
+    const state = readClaudeCodePluginState(files);
+    expect(state.registration).toEqual({ kind: 'registered', versions: [INSTALLED] });
+    expect(claudeCodePluginStateDisabledReason(state)).toBeNull();
+  });
+
+  it('reads a missing installed_plugins.json, and one without claude-mem, as not registered', () => {
+    for (const installedPlugins of [undefined, JSON.stringify({ version: 2, plugins: { 'other@market': [{ installPath: '/x/1.0.0' }] } }), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [] } })]) {
+      const files = fixture({ installedPlugins });
+      expect(readClaudeCodePluginState(files).registration).toEqual({ kind: 'not-registered', path: files.installedPluginsPath });
+    }
+  });
+
+  it('reads only the user-scope entry the npx installer writes: a project\'s own entry at another version is ignored, and alone is not the npx install', () => {
+    const projectEntry = (version: string) => ({ scope: 'project', projectPath: '/work/some-project', installPath: path.join(CACHE_ROOT, version), version });
+    const userEntry = { scope: 'user', installPath: path.join(CACHE_ROOT, INSTALLED), version: INSTALLED };
+    const both = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [projectEntry('15.10.0'), userEntry] } }) });
+    expect(readClaudeCodePluginState(both).registration).toEqual({ kind: 'registered', versions: [INSTALLED] });
+
+    const projectOnly = fixture({ installedPlugins: JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [projectEntry(INSTALLED)] } }) });
+    const state = readClaudeCodePluginState(projectOnly);
+    expect(state.registration).toEqual({ kind: 'not-registered', path: projectOnly.installedPluginsPath });
+    expect(claudeCodePluginStateDisabledReason(state)).toContain('not registered at user scope');
+  });
+
+  it('reports an installed_plugins.json that does not parse (empty included) as unreadable, since registerPlugin would stop on it', () => {
+    for (const installedPlugins of ['{"plugins": {', '']) {
+      const files = fixture({ installedPlugins });
+      const state = readClaudeCodePluginState(files);
+      expect(state.registration).toMatchObject({ kind: 'unreadable', path: files.installedPluginsPath, problem: expect.stringContaining('Corrupt JSON file') });
+      expect(claudeCodePluginStateDisabledReason(state)).toContain('whether claude-mem is still installed cannot be read');
+    }
+  });
+
+  it('reads enabledPlugins false for claude-mem in the user settings as turned off, and anything else as not', () => {
+    const disabled = fixture({ userSettings: JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }), installedPlugins: registered(INSTALLED) });
+    expect(readClaudeCodePluginState(disabled).userSettings).toEqual({ kind: 'explicitly-disabled', path: disabled.userSettingsPath });
+    for (const userSettings of [undefined, '{}', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }), JSON.stringify({ enabledPlugins: { 'other@market': false } }), '\ufeff{"enabledPlugins": {}}']) {
+      const files = fixture({ userSettings, installedPlugins: registered(INSTALLED) });
+      expect(readClaudeCodePluginState(files)).toEqual({ userSettings: { kind: 'not-disabled' }, registration: { kind: 'registered', versions: [INSTALLED] } });
+    }
+  });
+
+  it('reports user settings that do not parse as a JSON object (empty included) as unreadable, since enablePluginInClaudeSettings would stop on them', () => {
+    for (const userSettings of ['{"enabledPlugins": {', '', '[]']) {
+      const files = fixture({ userSettings, installedPlugins: registered(INSTALLED) });
+      const state = readClaudeCodePluginState(files);
+      expect(state.userSettings).toMatchObject({ kind: 'unreadable', path: files.userSettingsPath });
+      expect(claudeCodePluginStateDisabledReason(state)).toContain('whether claude-mem is turned off in Claude Code cannot be read');
+    }
   });
 });
 

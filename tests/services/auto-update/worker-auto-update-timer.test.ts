@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { WorkerService } from '../../../src/services/worker-service.js';
 import { CorpusRoutes } from '../../../src/services/worker/http/routes/CorpusRoutes.js';
@@ -22,8 +22,11 @@ import {
   type AutoUpdateSettings,
   type FetchJsonResult,
 } from '../../../src/services/auto-update/auto-update-check.js';
-import { defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
-import { claudeSettingsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../../../src/npx-cli/utils/paths.js';
+import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
+import { FORBID_REAL_AUTO_UPDATE_ENV } from '../../../src/services/auto-update/auto-update-launch.js';
+import * as autoUpdateLaunch from '../../../src/services/auto-update/auto-update-launch.js';
+import * as spawnModule from '../../../src/shared/spawn.js';
+import { claudeSettingsPath, installedPluginsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../../../src/npx-cli/utils/paths.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import { SessionManager } from '../../../src/services/worker/SessionManager.js';
@@ -50,6 +53,7 @@ const SHIPPED_SETTINGS: AutoUpdateSettings = {
   CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',
   CLAUDE_MEM_WORKER_AUTOSTART: 'true',
   CLAUDE_MEM_WORKER_URL: '',
+  CLAUDE_MEM_RUNTIME: 'worker',
 };
 
 // Project-local scratch (gitignored), never the system temp folder, as in
@@ -64,6 +68,12 @@ beforeAll(() => {
   claudeConfigDir = mkdtempSync(path.join(scratchRoot, 'auto-update-worker-claude-config-'));
   savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+  // claude-mem installed in that Claude config, the way the installer registers it (install.ts registerPlugin).
+  mkdirSync(path.dirname(installedPluginsPath()), { recursive: true });
+  writeFileSync(installedPluginsPath(), JSON.stringify({
+    version: 2,
+    plugins: { 'claude-mem@thedotmack': [{ scope: 'user', installPath: path.join(pluginCacheRootDirectory(), INSTALLED), version: INSTALLED }] },
+  }));
 });
 
 afterAll(() => {
@@ -167,12 +177,15 @@ const readTestClaudeCodeSettingsEnv = () => readClaudeCodeSettingsEnvBlocks({
  * the test's CLAUDE_CONFIG_DIR and its managed settings from a directory
  * there that does not exist, so a managed policy on the machine running the
  * test cannot change the outcome. The quiet signals and the liveness probe
- * stay the worker's.
+ * stay the worker's. The launch is recorded here: the worker's own launcher
+ * refuses under the test tripwire (tests/preload.ts), which the
+ * buildAutoUpdateCheckDeps tests below prove.
  */
 function workerTickDeps(worker: any, overrides: Partial<AutoUpdateCheckDeps> = {}): AutoUpdateCheckDeps & { stored: () => AutoUpdateState } {
   let stored = defaultAutoUpdateState();
   const deps: AutoUpdateCheckDeps = {
     ...(worker.buildAutoUpdateCheckDeps(new Set()) as AutoUpdateCheckDeps),
+    launchSupervisor: async () => {},
     readClaudeCodeSettingsEnv: readTestClaudeCodeSettingsEnv,
     readSettings: () => SHIPPED_SETTINGS,
     resolvePluginRoot: () => ({ root: path.join(pluginCacheRootDirectory(), INSTALLED), version: INSTALLED, missingDependencies: [] }),
@@ -253,7 +266,7 @@ describe('WorkerService.startAutoUpdateTimer', () => {
     expect(workerFixture.error).toHaveBeenCalledTimes(2);
   });
 
-  it('skips a Claude Code user settings file it cannot parse, warns once per boot naming it, and runs the rest of the tick', async () => {
+  it('skips a Claude Code user settings file it cannot parse for its switches, warns once per boot naming it, and stays off because the installer would stop on it', async () => {
     const workerFixture = buildWorkerFixture();
     // Claude Code's user settings, found through CLAUDE_CONFIG_DIR, with a trailing comma: Claude Code runs without it.
     writeFileSync(claudeSettingsPath(), '{"env": {"DISABLE_AUTOUPDATER": "1"},}');
@@ -278,9 +291,14 @@ describe('WorkerService.startAutoUpdateTimer', () => {
     expect(skippedWarnings()).toHaveLength(1);
     expect(skippedWarnings()[0][1]).toContain(claudeSettingsPath());
     expect(skippedWarnings()[0][2]).toEqual({ path: claudeSettingsPath(), problem: expect.stringContaining('is not valid JSON') });
-    // Its DISABLE_AUTOUPDATER is not in force: both ticks went on to the install-shape gate.
-    expect(pluginRootLookups).toHaveBeenCalledTimes(2);
-    expect(decisionLines(workerFixture.info, 'no-install')).toHaveLength(1);
+    // Its DISABLE_AUTOUPDATER is not in force. The file still keeps the updater
+    // off: an update would stop on it (install.ts enablePluginInClaudeSettings
+    // refuses to overwrite a corrupt file), so neither tick reaches the install.
+    const disabledLines = decisionLines(workerFixture.info, 'disabled');
+    expect(disabledLines).toHaveLength(1);
+    expect(disabledLines[0][2]).toEqual({ reason: expect.stringContaining(`${claudeSettingsPath()} is not valid JSON`) });
+    expect(String((disabledLines[0][2] as { reason: string }).reason)).not.toContain('DISABLE_AUTOUPDATER');
+    expect(pluginRootLookups).not.toHaveBeenCalled();
   });
 
   describe('an unreadable settings.json', () => {
@@ -427,6 +445,32 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
       userSettingsPath: path.join(claudeConfigDir, 'settings.json'),
       managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
     }]]);
+
+    // claude-mem's own entries in Claude Code's files, through CLAUDE_CONFIG_DIR too.
+    const readPluginState = spyOn(autoUpdateCheck, 'readClaudeCodePluginState');
+    expect(deps.readClaudeCodePluginState()).toEqual({ userSettings: { kind: 'not-disabled' }, registration: { kind: 'registered', versions: [INSTALLED] } });
+    expect(readPluginState.mock.calls).toEqual([[{
+      userSettingsPath: path.join(claudeConfigDir, 'settings.json'),
+      installedPluginsPath: path.join(claudeConfigDir, 'plugins', 'installed_plugins.json'),
+    }]]);
+  });
+
+  it('gives gate 3 the supervisor\'s readings of an interrupted attempt, told this worker\'s own version', () => {
+    const workerFixture = buildWorkerFixture();
+    // Stubbed, so nothing reads the real install.
+    const reader = async () => ({ kind: 'on-previous-version' as const, where: 'stub' });
+    const readerFactory = spyOn(autoUpdateLaunch, 'workerInterruptedAttemptReader').mockImplementation(() => reader);
+    const deps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
+    expect(readerFactory.mock.calls).toEqual([[{ workerVersion: expect.any(String) }]]);
+    expect(deps.readInterruptedAttemptInstall).toBe(reader);
+  });
+
+  it('sends the outcomes the worker records itself through telemetry\'s captureEvent', () => {
+    const workerFixture = buildWorkerFixture();
+    const captured = spyOn(telemetry, 'captureEvent').mockImplementation(() => {});
+    const deps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
+    deps.captureEvent('auto_update_failed', { failure_stage: 'supervisor-never-started' });
+    expect(captured.mock.calls).toEqual([['auto_update_failed', { failure_stage: 'supervisor-never-started' }]]);
   });
 
   it('reads "quiet" from session activity, the newest prompt or tool use, queued work, open requests and background work, never the last-request time', () => {
@@ -477,12 +521,35 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     expect(deps.isWorkerShuttingDown()).toBe(true);
   });
 
-  it('only reports what it would apply: nothing is installed in this phase', async () => {
+  it('launches through the real launcher, which the test tripwire stops before it writes the state or starts a process', async () => {
     const workerFixture = buildWorkerFixture();
+    const stateBefore = existsSync(autoUpdateStatePath()) ? readFileSync(autoUpdateStatePath(), 'utf-8') : null;
+    const startedProcesses = spyOn(spawnModule, 'spawnHidden');
     const deps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
-    await deps.launchSupervisor({ targetVersion: '15.12.0', previousVersion: '15.11.0' });
-    expect(workerFixture.info.mock.calls.map((call) => call[1])).toEqual(['would apply 15.11.0 → 15.12.0']);
+
+    expect(process.env[FORBID_REAL_AUTO_UPDATE_ENV]).toBe('1');
+    await expect(deps.launchSupervisor({ targetVersion: '15.12.0', previousVersion: '15.11.0' }))
+      .rejects.toThrow(`Refusing to launch an auto-update supervisor: ${FORBID_REAL_AUTO_UPDATE_ENV} is set`);
+    expect(startedProcesses).not.toHaveBeenCalled();
+    expect(existsSync(autoUpdateStatePath()) ? readFileSync(autoUpdateStatePath(), 'utf-8') : null).toBe(stateBefore);
     expect(workerFixture.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('a full tick that reaches gate 9 with the worker\'s own launcher ends launch-failed under the tripwire, the version not blocked', async () => {
+    const workerFixture = buildWorkerFixture();
+    const startedProcesses = spyOn(spawnModule, 'spawnHidden');
+    const deps = workerTickDeps(workerFixture.worker, {
+      launchSupervisor: (workerFixture.worker.buildAutoUpdateCheckDeps(new Set()) as AutoUpdateCheckDeps).launchSupervisor,
+    });
+
+    const decision = await runAutoUpdateCheck(deps);
+
+    expect(decision).toMatchObject({ decision: 'launch-failed', targetVersion: PROMOTED, previousVersion: INSTALLED });
+    expect((decision as { message: string }).message).toContain(FORBID_REAL_AUTO_UPDATE_ENV);
+    expect(deps.stored().inFlightAttempt).toBeNull();
+    expect(deps.stored().lastAttemptOutcome).toMatchObject({ result: 'failed', failureStage: 'launch-supervisor' });
+    expect(deps.stored().versionsThatFailedToApply).toEqual([]);
+    expect(startedProcesses).not.toHaveBeenCalled();
   });
 
   it('reads busy on the first tick after a worker restart when a prompt came 6 minutes ago', async () => {

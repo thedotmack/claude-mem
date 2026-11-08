@@ -29,7 +29,12 @@ const ATTEMPT_RESULTS: ReadonlySet<string> = new Set<AutoUpdateAttemptResult>(['
 export interface AutoUpdateInFlightAttempt {
   targetVersion: string;
   previousVersion: string;
-  /** Epoch ms when the worker launched the attempt. */
+  /**
+   * Epoch ms when the worker launched the attempt. It is also the attempt's
+   * identity: the worker passes it to the supervisor (--attempt-started-at),
+   * and the supervisor writes only while the attempt in flight has it
+   * (auto-update-apply.ts).
+   */
   startedAt: number;
   /** The supervisor's pid, null until the supervisor records it. */
   supervisorPid: number | null;

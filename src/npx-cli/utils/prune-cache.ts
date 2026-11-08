@@ -239,9 +239,33 @@ export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
  * Throws on a corrupt registry, before anything is deleted.
  */
 export function readRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
+  return cacheVersionsOf(readClaudeMemRegistrations(registryPath));
+}
+
+/**
+ * The cache version directories of the one registration the npx installer
+ * writes, and every `npx claude-mem update` replaces (install.ts
+ * registerPlugin): claude-mem@thedotmack's user-scope entries. Claude Code can
+ * also hold project- or local-scope entries for claude-mem, each at a version
+ * of its own, which no npx run writes; the auto-updater reads only this one,
+ * so another scope's version never reads as the install having moved
+ * (auto-update-check.ts, auto-update-launch.ts readInstallVersions). Throws on
+ * a corrupt registry, as readRegisteredCacheVersions does.
+ */
+export function readUserScopeRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
+  return cacheVersionsOf(readClaudeMemRegistrations(registryPath)
+    .filter(entry => (entry as { scope?: unknown } | null)?.scope === 'user'));
+}
+
+/** claude-mem@thedotmack's entries in installed_plugins.json, every scope; readJsonSafe throws on a corrupt file. */
+function readClaudeMemRegistrations(registryPath: string): unknown[] {
   const registry = readJsonSafe<{ plugins?: Record<string, unknown> } | null>(registryPath, {});
   const entries = registry?.plugins?.['claude-mem@thedotmack'];
-  if (!Array.isArray(entries)) return [];
+  return Array.isArray(entries) ? entries : [];
+}
+
+/** The basename of each entry's `installPath`: its cache version directory. */
+function cacheVersionsOf(entries: unknown[]): string[] {
   return entries
     .map(entry => (entry as { installPath?: unknown } | null)?.installPath)
     .filter((installPath): installPath is string => typeof installPath === 'string' && installPath.length > 0)
