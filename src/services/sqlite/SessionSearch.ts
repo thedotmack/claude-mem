@@ -376,14 +376,15 @@ export class SessionSearch {
       const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
+          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
         conditions.push(`(${fileConditions.join(' OR ')})`);
         files.forEach(file => {
-          const literal = file.replace(/[\\%_]/g, '\\$&');
+          // Compare equivalent separators before escaping literal LIKE characters.
+          const literal = file.replace(/\\/g, '/').replace(/[\\%_]/g, '\\$&');
           params.push(`%${literal}%`, `%${literal}%`);
         });
       }

@@ -132,6 +132,16 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
 }
 
 /**
+ * Whether the SessionStart section shows this list. Goals lists (owner-goals
+ * and its past months), My Rules and My Focus show in My Work; their quotes
+ * would fill this section. Approved rules reach agents through
+ * ~/.claude-mem/MY-RULES.md instead. Shared My Work records never show.
+ */
+export function isSessionStartWorkStateList(listName: string): boolean {
+  return !isOwnerGoalsList(listName) && !isMyRulesList(listName) && !isMyFocusList(listName) && !isSharedWorkList(listName);
+}
+
+/**
  * The SessionStart section: what is still open, cut to `characterLimit`, or
  * `''` when nothing is. The rule for using work state is not repeated here: it
  * is in the MCP server's instructions (shared/memory-instructions.ts).
@@ -141,9 +151,7 @@ export function buildWorkStateContextSection(
   nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
-  // Goals lists (owner-goals and its past months), My Rules and My Focus show in My Work; their quotes would fill this section.
-  // Approved rules reach agents through ~/.claude-mem/MY-RULES.md instead.
-  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name) && !isMyRulesList(entry.list_name) && !isMyFocusList(entry.list_name)), nowEpoch);
+  const openLines = renderWorkStateLines(entries.filter(entry => isSessionStartWorkStateList(entry.list_name)), nowEpoch);
   if (openLines.length === 0) return '';
   return fitWorkStateLines(WORK_STATE_SECTION_HEADING, openLines, characterLimit);
 }

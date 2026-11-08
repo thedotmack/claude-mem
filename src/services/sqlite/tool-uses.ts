@@ -202,7 +202,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
   const toolInput = input.toolInput != null ? truncatePayload(input.toolInput) : null;
   const toolResponse = input.toolResponse != null ? truncatePayload(input.toolResponse) : null;
 
-  const row = db.prepare(`
+  const row = (db.prepare(`
     INSERT INTO tool_uses (
       tool_use_id, content_session_id, memory_session_id, session_db_id, project,
       platform_source, tool_name, tool_input, tool_response, cwd, prompt_number,
@@ -227,7 +227,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
       or_session_id     = COALESCE(excluded.or_session_id, tool_uses.or_session_id),
       content_hash      = excluded.content_hash
     RETURNING id
-  `).get(
+  `).all(
     input.toolUseId,
     input.contentSessionId,
     input.memorySessionId ?? null,
@@ -246,7 +246,7 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
     contentHash,
     createdAt,
     createdAtEpoch
-  ) as { id: number } | null;
+  ) as { id: number }[])[0] ?? null;
 
   return row ? row.id : null;
 }

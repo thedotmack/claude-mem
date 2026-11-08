@@ -99,9 +99,11 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `popnow` | `https://api.popnow.ai/v1` | yes |
 | `runcrate` | `https://api.runcrate.ai/v1` | yes |
 | `cheapaimodel` | `https://api.cheapaimodel.ai/v1` | yes |
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
+| `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -346,6 +348,24 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
 }
 ```
 
+## PopNow
+
+[PopNow](https://popnow.ai/api) serves chat models from DeepSeek, Moonshot, Google,
+OpenAI and other vendors behind one OpenAI-compatible API key, billed per token in
+USD. Model ids end in a task suffix, such as `deepseek/v4-flash/chat` (the preset's
+default) or `moonshot/kimi-k3/chat`, and are passed verbatim. The chat model list
+is at `https://api.popnow.ai/v1/models` (it needs the key), and keys come from
+[popnow.ai/api/console/keys](https://popnow.ai/api/console/keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "popnow",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your PopNow key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/v4-flash/chat"
+}
+```
+
 ## Runcrate
 
 [Runcrate](https://www.runcrate.ai) is a GPU cloud that also serves open
@@ -401,6 +421,27 @@ Key" on [your account page](https://obscurify.ai/account).
   "CLAUDE_MEM_PROVIDER": "openai-compatible",
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "obscurify-ai",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Obscurify.ai key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
+}
+```
+
+## Standard Compute
+
+[Standard Compute](https://standardcompute.com) is an OpenAI-compatible API
+gateway that routes requests across open and frontier models behind one key.
+Model ids are vendor-prefixed, such as `deepseek/deepseek-v4-flash` (the
+preset's default) or `z-ai/glm-5.3`, and are passed verbatim. The model list is
+public at `https://api.stdcmpt.com/v1/models`, and keys come from the
+[Standard Compute dashboard](https://standardcompute.com/dashboard/api-keys). For the US
+endpoint, set `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to
+`https://us.stdcmpt.com/v1`. Setup notes are in
+[the Standard Compute docs](https://docs.standardcompute.com).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "standardcompute",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Standard Compute key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
 }
 ```
