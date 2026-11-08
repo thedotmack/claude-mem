@@ -796,8 +796,9 @@ export class SearchManager {
 
   private parseNumericAnchor(anchor: unknown): number | null {
     if (typeof anchor === 'number') return anchor;
-    if (typeof anchor === 'string' && /^\d+$/.test(anchor.trim())) {
-      return Number(anchor.trim());
+    // Search output names observations "#123" (sessions "#S5", accepted below).
+    if (typeof anchor === 'string' && /^#?\d+$/.test(anchor.trim())) {
+      return Number(anchor.trim().replace(/^#/, ''));
     }
     return null;
   }
