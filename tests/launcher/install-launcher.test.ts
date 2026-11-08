@@ -589,6 +589,35 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
   });
 
+  it('verifies the signature strictly after re-signing (#5247)', () => {
+    const invocations: string[][] = [];
+    const signer = createAdhocCodesigner((args) => {
+      invocations.push([...args]);
+      return args[0] === '--verify'
+        ? { status: 1, stderr: 'invalid page hash' }
+        : { status: 0, stderr: '' };
+    });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 1, stderr: 'invalid page hash' });
+    expect(invocations).toEqual([
+      ['--remove-signature', '/tmp/claude-mem'],
+      ['--force', '--sign', '-', '/tmp/claude-mem'],
+      ['--verify', '--strict', '/tmp/claude-mem'],
+    ]);
+  });
+
+  it('does not place a launcher whose signing fails even when its protocol probe would pass (#5247)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host,
+      runCompile: fakeCompile(),
+      runCodesign: () => ({ status: 1, stderr: 'invalid page hash' }),
+      invocationContext: 'npx-installer',
+    })).toThrow('invalid page hash');
+    expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
+  });
+
   it('clears the old signature before re-signing, and reports only the sign step (#4947)', () => {
     const invocations: string[][] = [];
     const signer = createAdhocCodesigner((codesignArguments) => {
@@ -604,6 +633,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(invocations).toEqual([
       ['--remove-signature', '/tmp/claude-mem'],
       ['--force', '--sign', '-', '/tmp/claude-mem'],
+      ['--verify', '--strict', '/tmp/claude-mem'],
     ]);
   });
 
@@ -673,10 +703,8 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
       runCompile: compileCrashingLauncher, runCodesign: failingCodesign, invocationContext: 'npx-installer',
     }));
 
-    // The protocol message still says what the probe saw ...
-    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
-    // ... and the actionable half names the signing failure, last stderr line only.
-    expect(message).toContain('codesign --force --sign - failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
+    expect(message).toContain('launcher signing or strict verification failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
+    expect(message).not.toContain('compiled launcher printed protocol');
     expect(message).not.toContain('warning: first line');
   });
 
@@ -705,24 +733,22 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(message).not.toContain('codesign');
   });
 
-  it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
+  it('keeps an existing launcher when replacement signing fails (#5247)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
+    const binaryPath = resolveLauncherBinaryPath(host);
+    writeFakeLauncher(binaryPath, '1');
+    const original = readFileSync(binaryPath);
     const compile = fakeCompile();
     const failingCodesign: LauncherCodesignRunner = () => ({ status: 1, stderr: 'fake codesign failure\n' });
     const logger = recordingLogger();
 
-    const ensureResult = ensureLauncherOnPath({
+    expect(() => ensureLauncherOnPath({
       pluginRoot, resolveBunPath: () => '/fake/bun', logger, host,
       runCompile: compile, runCodesign: failingCodesign, invocationContext: 'npx-installer',
-    });
-
-    expect(ensureResult.status).toBe('installed');
-    expect(logger.lines.some((line) => line.startsWith('warn:')
-      && line.includes('codesign --force --sign - failed (exit 1): fake codesign failure')
-      && line.includes('may not start on macOS'))).toBe(true);
-    expect(spawnSync(resolveLauncherBinaryPath(host), ['--version'], { encoding: 'utf-8' }).stdout.trim())
-      .toBe(String(LAUNCHER_PROTOCOL));
+    })).toThrow('launcher signing or strict verification failed');
+    expect(readFileSync(binaryPath)).toEqual(original);
+    expect(readdirSync(path.dirname(binaryPath))).toEqual(['claude-mem']);
   });
 
   it('only signs on darwin', () => {
