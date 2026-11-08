@@ -208,7 +208,7 @@ export class ServerViewerRoutes implements RouteHandler {
       const page = parsePage(req, res, FEED_PAGE_SIZE);
       if (!page) return;
       const rows = await queryFeed(pool, scope, req, page, { summaries: false });
-      res.json(toPage(rows, page.limit, toViewerObservation));
+      res.json(toFeedPage(rows, page, toViewerObservation));
     }));
 
     app.get('/api/summaries', read, this.handle(async (req, res) => {
@@ -217,7 +217,7 @@ export class ServerViewerRoutes implements RouteHandler {
       const page = parsePage(req, res, FEED_PAGE_SIZE);
       if (!page) return;
       const rows = await queryFeed(pool, scope, req, page, { summaries: true });
-      res.json(toPage(rows, page.limit, toViewerSummary));
+      res.json(toFeedPage(rows, page, toViewerSummary));
     }));
 
     app.get('/api/sessions', read, this.handle(async (req, res) => {
@@ -226,8 +226,8 @@ export class ServerViewerRoutes implements RouteHandler {
       const page = parsePage(req, res, SESSION_PAGE_SIZE);
       if (!page) return;
       const rows = await querySessions(pool, scope, req, page);
-      const { items, hasMore } = toPage(rows, page.limit, toViewerSession);
-      res.json({ sessions: items, hasMore });
+      const { items, ...paging } = toFeedPage(rows, page, toViewerSession);
+      res.json({ sessions: items, ...paging });
     }));
 
     app.get('/api/processing-status', read, this.handle(async (req, res) => {
@@ -293,7 +293,7 @@ export class ServerViewerRoutes implements RouteHandler {
   }
 }
 
-interface Page {
+export interface Page {
   limit: number;
   offset: number;
 }
@@ -334,6 +334,27 @@ function queryString(req: Request, name: string): string | null {
 /** Fetches one extra row so the caller can report hasMore without a COUNT. */
 function toPage<Row, Item>(rows: Row[], limit: number, map: (row: Row) => Item): { items: Item[]; hasMore: boolean } {
   return { items: rows.slice(0, limit).map(map), hasMore: rows.length > limit };
+}
+
+interface FeedPage<Item> {
+  items: Item[];
+  hasMore: boolean;
+  offsetCapReached?: true;
+  maxOffset?: number;
+}
+
+/**
+ * toPage, but a full page whose next offset would pass MAX_FEED_OFFSET says
+ * so (`offsetCapReached`) instead of `hasMore`: parsePage rejects that next
+ * request, so a viewer that kept paging would end on an error it cannot
+ * retry. Exported for unit tests.
+ */
+export function toFeedPage<Row, Item>(rows: Row[], page: Page, map: (row: Row) => Item): FeedPage<Item> {
+  const result = toPage(rows, page.limit, map);
+  if (result.hasMore && page.offset + page.limit > MAX_FEED_OFFSET) {
+    return { items: result.items, hasMore: false, offsetCapReached: true, maxOffset: MAX_FEED_OFFSET };
+  }
+  return result;
 }
 
 function scopeClause(scope: ViewerScope, params: SqlParams, alias: string): string {

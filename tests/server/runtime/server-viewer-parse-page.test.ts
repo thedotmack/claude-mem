@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { Request, Response } from 'express';
-import { parsePage } from '../../../src/server/runtime/ServerViewerRoutes.js';
+import { parsePage, toFeedPage } from '../../../src/server/runtime/ServerViewerRoutes.js';
 
 function createMockRes(): { res: Response; statusSpy: ReturnType<typeof mock>; jsonSpy: ReturnType<typeof mock> } {
   const jsonSpy = mock(() => {});
@@ -34,5 +34,28 @@ describe('ServerViewerRoutes parsePage offset bound', () => {
     const { res, statusSpy } = createMockRes();
     expect(parsePage({ query: { limit: '101' } } as unknown as Request, res, 50)).toBeNull();
     expect(statusSpy).toHaveBeenCalledWith(400);
+  });
+});
+
+// A full page whose next offset would pass the cap must stop the viewer
+// loudly instead of inviting a request parsePage answers with 400.
+describe('ServerViewerRoutes toFeedPage offset cap', () => {
+  const rows = (count: number) => Array.from({ length: count }, (_, id) => ({ id }));
+
+  it('reports the cap on the last page parsePage allows', () => {
+    const page = toFeedPage(rows(51), { limit: 50, offset: 10_000 }, row => row);
+    expect(page.items).toHaveLength(50);
+    expect(page).toMatchObject({ hasMore: false, offsetCapReached: true, maxOffset: 10_000 });
+  });
+
+  it('keeps paging while the next offset is still allowed', () => {
+    const page = toFeedPage(rows(51), { limit: 50, offset: 9_950 }, row => row);
+    expect(page.hasMore).toBe(true);
+    expect(page.offsetCapReached).toBeUndefined();
+  });
+
+  it('does not report the cap when the rows simply ran out', () => {
+    const page = toFeedPage(rows(20), { limit: 50, offset: 10_000 }, row => row);
+    expect(page).toEqual({ items: rows(20), hasMore: false });
   });
 });
