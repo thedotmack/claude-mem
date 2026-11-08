@@ -335,7 +335,7 @@ export class SearchManager {
 
     const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
     const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
-    if (dateStart || dateEnd) {
+    if ((dateStart != null && dateStart !== '') || (dateEnd != null && dateEnd !== '')) {
       normalized.dateRange = {
         start: dateStart,
         end: dateEnd
