@@ -18,7 +18,6 @@ import {
   type ClaudeMemUpdateInvocation,
   launchAutoUpdateSupervisor,
   parseAutoUpdateApplyArguments,
-  previousVersionSchemaKnownToCode,
   productionAutoUpdateApplyCommandDeps,
   productionAutoUpdateApplyDeps,
   productionAutoUpdateLaunchDeps,
@@ -31,7 +30,7 @@ import {
   type AutoUpdateLaunchDeps,
   type StartedAutoUpdateProcess,
 } from '../../../src/services/auto-update/auto-update-launch.js';
-import { WORKER_PID_CAPTURE_TIMEOUT_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
+import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, WORKER_PID_CAPTURE_TIMEOUT_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
 import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
 import type { PidInfo } from '../../../src/supervisor/process-registry.js';
@@ -421,6 +420,7 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
       now: () => STARTED_AT,
       readState: () => structuredClone(stored),
       writeState: (state) => { events.push('write-state'); stored = structuredClone(state); },
+      supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS,
       startHop: async (hopAttempt) => { events.push(`start-hop ${JSON.stringify(hopAttempt)}`); return startHop(hopAttempt); },
       hopExitBudgetMs: NEVER_REACHED_DEADLINE_MS,
       killProcessTree: async (pid) => { killed.push(pid); },
@@ -435,7 +435,8 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
     const harness = launchHarness(async () => fakeHop(Promise.resolve({ exitCode: 0, signal: null })));
     await launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
     expect(harness.events).toEqual(['write-state', `start-hop ${JSON.stringify(attempt)}`]);
-    expect(harness.stored().inFlightAttempt).toEqual({ ...attempt, supervisorPid: null });
+    // The deadline is recorded so the SessionStart launcher, which cannot compute it, can tell an interrupted attempt.
+    expect(harness.stored().inFlightAttempt).toStrictEqual({ ...attempt, supervisorPid: null, supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS });
     expect(harness.stored().lastSeenPromotedVersion).toBe(TARGET);
   });
 
@@ -486,6 +487,10 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
 
   it('gives the hop the budget of a bundle-loading probe: 5 s, 10 s on Windows', () => {
     expect(AUTO_UPDATE_HOP_EXIT_BUDGET_MS).toBe(getPlatformTimeout(WORKER_BOOT_PROBE_TIMEOUT_MS));
+  });
+
+  it('records the supervisor deadline gate 3 uses, as this worker computes it', () => {
+    expect(autoUpdateLaunchDeps({ scriptPath: '/never/run/worker-service.cjs' }).supervisorDeadlineMs).toBe(AUTO_UPDATE_SUPERVISOR_DEADLINE_MS);
   });
 });
 
@@ -579,15 +584,6 @@ describe('readRunningWorker', () => {
   it('none runs when nothing answers and the PID file names no live worker, or a worker meant for another port', async () => {
     expect(await readRunningWorker(PORT, { getCurrentWorkerPid: async () => null, readOwnedWorker: () => null })).toEqual({ kind: 'none' });
     expect(await readRunningWorker(PORT, { getCurrentWorkerPid: async () => null, readOwnedWorker: () => pidFileWorker(4300, PORT + 1) })).toEqual({ kind: 'none' });
-  });
-});
-
-describe('previousVersionSchemaKnownToCode (gate 3\'s fix rule, in the worker)', () => {
-  it('is this code\'s newest schema only when this code is the previous version\'s, and unknown otherwise', () => {
-    expect(previousVersionSchemaKnownToCode(PREVIOUS, PREVIOUS)).toBe(LATEST_SCHEMA_VERSION);
-    expect(previousVersionSchemaKnownToCode(PREVIOUS, PREVIOUS, 74)).toBe(74);
-    // A worker Pi or DSH started from a marketplace copy already at the target runs the target's code.
-    expect(previousVersionSchemaKnownToCode(TARGET, PREVIOUS)).toBeNull();
   });
 });
 

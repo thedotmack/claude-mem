@@ -1,155 +1,88 @@
 /**
  * The auto-updater's memory between ticks and between processes: the worker's
  * daily check (auto-update-check.ts) and the supervisor that applies an update
- * both read and write it.
+ * both read and write it, and a worker that has finished starting marks what
+ * its start proves fixed (resolveAutoUpdateFailuresOnWorkerReady).
  *
  * It lives in DATA_DIR, never in the plugin folder, which every update
- * replaces. Reading never writes:
- *  - a missing file reads as the defaults;
- *  - a file that does not parse, or is not a JSON object, is logged at ERROR
- *    and read as the defaults in memory;
- *  - a known field with the wrong type is logged at ERROR and read as its
- *    default;
- *  - a field this version does not know (one a later version added) is kept
- *    on the object read, so writing that object back keeps it.
- * The next normal save replaces whatever was wrong. Nothing wrong is ever
- * silently trusted.
+ * replaces. Its shape, and the readings the SessionStart launcher shares, are
+ * in auto-update-state-file.ts, which this module re-exports. Here a read logs
+ * at ERROR what was wrong with the file (a file that does not parse, or is not
+ * a JSON object, reads as the defaults; a known field with the wrong type
+ * reads as its default; a field this version does not know is kept), and the
+ * next normal save replaces whatever was wrong.
  */
 
-import { readFileSync } from 'fs';
 import { join } from 'path';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import {
+  AUTO_UPDATE_STATE_FILENAME,
+  markAutoUpdateFailuresResolvedByReadyWorker,
+  readAutoUpdateStateFile,
+  type AutoUpdateFailuresResolved,
+  type AutoUpdateState,
+} from './auto-update-state-file.js';
 
-export type AutoUpdateAttemptResult = 'applied' | 'failed' | 'restored' | 'restore_failed';
-
-const ATTEMPT_RESULTS: ReadonlySet<string> = new Set<AutoUpdateAttemptResult>(['applied', 'failed', 'restored', 'restore_failed']);
-
-export interface AutoUpdateInFlightAttempt {
-  targetVersion: string;
-  previousVersion: string;
-  /**
-   * Epoch ms when the worker launched the attempt. It is also the attempt's
-   * identity: the worker passes it to the supervisor (--attempt-started-at),
-   * and the supervisor writes only while the attempt in flight has it
-   * (auto-update-apply.ts).
-   */
-  startedAt: number;
-  /** The supervisor's pid, null until the supervisor records it. */
-  supervisorPid: number | null;
-}
-
-export interface AutoUpdateAttemptOutcome {
-  result: AutoUpdateAttemptResult;
-  targetVersion: string;
-  previousVersion: string;
-  /** Epoch ms. */
-  finishedAt: number;
-  failureStage?: string;
-  message?: string;
-}
-
-export interface AutoUpdateState {
-  /** Epoch ms of the last promoted-file fetch, success or failure. */
-  lastNetworkCheckAt: number | null;
-  lastSeenPromotedVersion: string | null;
-  /** Epoch ms of the first tick that wanted to apply but found the worker busy; null while no update is deferred. */
-  busyDeferralStartedAt: number | null;
-  /**
-   * Busy time observed during the current deferral, in ms: each tick that
-   * finds the worker busy adds the time since the previous busy tick, at most
-   * one tick interval (recordBusyObservation in auto-update-check.ts). Only
-   * read while busyDeferralStartedAt is set.
-   */
-  busyDeferralObservedBusyMs: number;
-  /** Epoch ms of the last tick that found the worker busy during the current deferral. */
-  busyDeferralLastBusyObservationAt: number | null;
-  inFlightAttempt: AutoUpdateInFlightAttempt | null;
-  lastAttemptOutcome: AutoUpdateAttemptOutcome | null;
-  /** Never retried automatically; a newer promoted version is tried normally. */
-  versionsThatFailedToApply: string[];
-  lastCheckError: { at: number; message: string } | null;
-  /**
-   * Epoch ms of the last tick that turned off Claude Code's background update
-   * of the thedotmack marketplace (autoUpdate true → false in Claude Code's
-   * known_marketplaces.json, auto-update-check.ts
-   * settleClaudeCodeBackgroundUpdate); null until a tick has.
-   */
-  claudeCodeBackgroundUpdateTurnedOffAt: number | null;
-  /**
-   * Epoch ms of the last check that read both the promoted file and npm's
-   * metadata for the promoted version, shown published by the workflow: proof
-   * that claude-mem's updater reaches both from this machine. Claude Code's
-   * background update is turned off only once this is set. null until a check
-   * has.
-   */
-  promotedFileAndNpmMetadataReadAt: number | null;
-  /**
-   * Why the last tick that found Claude Code's background update of the
-   * thedotmack marketplace on left it on (claude-mem's updater not yet shown
-   * to work here, no npx on the worker's PATH, or a write that failed), for
-   * the doctor row; null when nothing is left on.
-   */
-  claudeCodeBackgroundUpdateLeftOnReason: string | null;
-}
-
-export const AUTO_UPDATE_STATE_FILENAME = 'auto-update-state.json';
+export {
+  AUTO_UPDATE_CHECK_INTERVAL_MS,
+  AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS,
+  AUTO_UPDATE_FORWARD_FIX,
+  AUTO_UPDATE_FORWARD_FIX_COMMAND,
+  AUTO_UPDATE_STATE_FILENAME,
+  autoUpdateBrokenInstall,
+  autoUpdateFixCommand,
+  autoUpdateFixInstruction,
+  autoUpdateFixOfOutcome,
+  defaultAutoUpdateState,
+  describeAutoUpdateBrokenInstall,
+  describeAutoUpdateStateFileProblem,
+  interruptedAttemptFix,
+  isUnresolvedRestoreFailure,
+  markAutoUpdateFailuresResolvedByReadyWorker,
+  readAutoUpdateStateFile,
+  readInFlightAttempt,
+  targetVersionOf,
+  validateAutoUpdateState,
+  type AutoUpdateAttemptOutcome,
+  type AutoUpdateAttemptResult,
+  type AutoUpdateBrokenInstall,
+  type AutoUpdateDecisionRecord,
+  type AutoUpdateFailuresResolved,
+  type AutoUpdateFix,
+  type AutoUpdateFixCommandWhen,
+  type AutoUpdateInFlightAttempt,
+  type AutoUpdateState,
+  type AutoUpdateStateFileProblem,
+  type AutoUpdateStateFileRead,
+  type InFlightAttemptReading,
+} from './auto-update-state-file.js';
 
 export function autoUpdateStatePath(dataDir: string = DATA_DIR): string {
   return join(dataDir, AUTO_UPDATE_STATE_FILENAME);
 }
 
-export function defaultAutoUpdateState(): AutoUpdateState {
-  return {
-    lastNetworkCheckAt: null,
-    lastSeenPromotedVersion: null,
-    busyDeferralStartedAt: null,
-    busyDeferralObservedBusyMs: 0,
-    busyDeferralLastBusyObservationAt: null,
-    inFlightAttempt: null,
-    lastAttemptOutcome: null,
-    versionsThatFailedToApply: [],
-    lastCheckError: null,
-    claudeCodeBackgroundUpdateTurnedOffAt: null,
-    promotedFileAndNpmMetadataReadAt: null,
-    claudeCodeBackgroundUpdateLeftOnReason: null,
-  };
-}
-
 /**
- * Read the state without writing anything (see the header for what each kind
- * of bad file reads as). The object returned also carries the fields this
- * version does not know, so the caller's next save keeps them.
+ * Read the state without writing anything (auto-update-state-file.ts
+ * readAutoUpdateStateFile), logging at ERROR what was wrong with the file.
+ * The object returned also carries the fields this version does not know, so
+ * the caller's next save keeps them.
  *
  * A read error other than a missing file (permissions, a directory in the
  * way) throws: guessing would forget an attempt in flight or a version that
  * failed, so the caller must not go on without the file.
  */
 export function readAutoUpdateState(statePath: string = autoUpdateStatePath()): AutoUpdateState {
-  let raw: string;
-  try {
-    raw = readFileSync(statePath, 'utf-8');
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultAutoUpdateState();
-    throw error;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = parseJsonWithBom(raw);
-  } catch (error: unknown) {
+  const { state, problem } = readAutoUpdateStateFile(statePath);
+  if (problem?.kind === 'not-json') {
     logger.error('AUTO_UPDATE', 'Auto-update state file is not valid JSON; reading it as the defaults until the next save replaces it', {
       statePath,
-    }, error instanceof Error ? error : new Error(String(error)));
-    return defaultAutoUpdateState();
-  }
-
-  const { state, invalidFields } = validateAutoUpdateState(parsed);
-  if (invalidFields.length > 0) {
+    }, problem.error instanceof Error ? problem.error : new Error(String(problem.error)));
+  } else if (problem?.kind === 'invalid-fields') {
     logger.error('AUTO_UPDATE', 'Auto-update state file has invalid fields; reading them as the defaults until the next save replaces them', {
       statePath,
-      invalidFields: invalidFields.join(', '),
+      invalidFields: problem.invalidFields.join(', '),
     });
   }
   return state;
@@ -160,83 +93,23 @@ export function writeAutoUpdateState(state: AutoUpdateState, statePath: string =
 }
 
 /**
- * Keep every known field that has the declared shape, default the rest, and
- * keep every field this version does not know as it was. A known field that
- * is absent takes its default quietly (a file from an older version); one
- * that is present but wrong is reported in invalidFields.
+ * The worker's step once it has finished starting: mark resolved what its
+ * start proves fixed (auto-update-state-file.ts
+ * markAutoUpdateFailuresResolvedByReadyWorker says what and when), and save
+ * the state with writeJsonFileAtomic only when something was marked. A
+ * missing state file is left missing. Throws when the file cannot be read or
+ * written; the worker logs that and goes on.
  */
-export function validateAutoUpdateState(parsed: unknown): { state: AutoUpdateState; invalidFields: string[] } {
-  if (!isPlainObject(parsed)) return { state: defaultAutoUpdateState(), invalidFields: ['(whole file: not a JSON object)'] };
-
-  // Spread, not assignment, copies the unknown fields: it defines each one as
-  // an own property, so even a key named __proto__ stays plain data.
-  const state: AutoUpdateState = { ...parsed, ...defaultAutoUpdateState() };
-  const invalidFields: string[] = [];
-  const take = <K extends keyof AutoUpdateState>(key: K, isValid: (value: unknown) => boolean): void => {
-    const value = parsed[key];
-    if (value === undefined) return;
-    if (isValid(value)) state[key] = value as AutoUpdateState[K];
-    else invalidFields.push(key);
-  };
-
-  take('lastNetworkCheckAt', (value) => value === null || isNonNegativeMilliseconds(value));
-  take('lastSeenPromotedVersion', (value) => value === null || isNonEmptyString(value));
-  take('busyDeferralStartedAt', (value) => value === null || isNonNegativeMilliseconds(value));
-  take('busyDeferralObservedBusyMs', isNonNegativeMilliseconds);
-  take('busyDeferralLastBusyObservationAt', (value) => value === null || isNonNegativeMilliseconds(value));
-  take('inFlightAttempt', (value) => value === null || isInFlightAttempt(value));
-  take('lastAttemptOutcome', (value) => value === null || isAttemptOutcome(value));
-  take('lastCheckError', (value) => value === null || (isPlainObject(value) && isNonNegativeMilliseconds(value.at) && typeof value.message === 'string'));
-  take('claudeCodeBackgroundUpdateTurnedOffAt', (value) => value === null || isNonNegativeMilliseconds(value));
-  take('promotedFileAndNpmMetadataReadAt', (value) => value === null || isNonNegativeMilliseconds(value));
-  take('claudeCodeBackgroundUpdateLeftOnReason', (value) => value === null || isNonEmptyString(value));
-
-  // Entries are filtered, not the list reset: dropping a valid entry would let
-  // a version that already failed be tried again.
-  const failed = parsed.versionsThatFailedToApply;
-  if (failed !== undefined) {
-    if (Array.isArray(failed)) {
-      state.versionsThatFailedToApply = failed.filter(isNonEmptyString);
-      if (state.versionsThatFailedToApply.length !== failed.length) invalidFields.push('versionsThatFailedToApply');
-    } else {
-      invalidFields.push('versionsThatFailedToApply');
-    }
-  }
-
-  return { state, invalidFields };
-}
-
-function isInFlightAttempt(value: unknown): boolean {
-  return isPlainObject(value)
-    && isNonEmptyString(value.targetVersion)
-    && isNonEmptyString(value.previousVersion)
-    && isNonNegativeMilliseconds(value.startedAt)
-    && (value.supervisorPid === null || isPid(value.supervisorPid));
-}
-
-function isAttemptOutcome(value: unknown): boolean {
-  return isPlainObject(value)
-    && typeof value.result === 'string' && ATTEMPT_RESULTS.has(value.result)
-    && isNonEmptyString(value.targetVersion)
-    && isNonEmptyString(value.previousVersion)
-    && isNonNegativeMilliseconds(value.finishedAt)
-    && (value.failureStage === undefined || typeof value.failureStage === 'string')
-    && (value.message === undefined || typeof value.message === 'string');
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** An epoch-ms instant or a duration in ms: both are finite and never negative. */
-function isNonNegativeMilliseconds(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isPid(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
+export function resolveAutoUpdateFailuresOnWorkerReady(options: {
+  now: number;
+  workerVersion: string;
+  resolvedVersion: string | null;
+  isProcessAlive: (pid: number) => boolean;
+  statePath?: string;
+}): AutoUpdateFailuresResolved {
+  const statePath = options.statePath ?? autoUpdateStatePath();
+  const state = readAutoUpdateState(statePath);
+  const resolved = markAutoUpdateFailuresResolvedByReadyWorker(state, options);
+  if (resolved.outcome !== null || resolved.interruptedAttempt !== null) writeAutoUpdateState(state, statePath);
+  return resolved;
 }

@@ -4,7 +4,9 @@
  * whether now is a good moment.
  *
  * Each tick walks the gates in runAutoUpdateCheck in order and returns the
- * first decision that applies, logged under AUTO_UPDATE. Only `apply` acts,
+ * first decision that applies, logged under AUTO_UPDATE; gates 1 and 2 run in
+ * readAutoUpdateSwitches, which doctor's Auto-update row also calls, so the
+ * two give the same reason for auto-update being off. Only `apply` acts,
  * through deps.launchSupervisor. One step runs between gates 3 and 4 whatever
  * the decision: once claude-mem's updater has shown it can work on this
  * machine, it turns off Claude Code's background update of the thedotmack
@@ -28,7 +30,14 @@ import { compareVersionsDescending, type PluginRootResolution } from '../../shar
 import { logger } from '../../utils/logger.js';
 import type { InterruptedAttemptInstall } from './auto-update-apply.js';
 import { AUTO_UPDATE_FETCH_TIMEOUT_MS, AUTO_UPDATE_SUPERVISOR_DEADLINE_MS } from './auto-update-deadlines.js';
-import type { AutoUpdateAttemptOutcome, AutoUpdateInFlightAttempt, AutoUpdateState } from './auto-update-state.js';
+import {
+  AUTO_UPDATE_CHECK_INTERVAL_MS,
+  AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS,
+  interruptedAttemptFix,
+  type AutoUpdateAttemptOutcome,
+  type AutoUpdateInFlightAttempt,
+  type AutoUpdateState,
+} from './auto-update-state-file.js';
 
 /**
  * The owner's release switch on main. It lives here, not in the settings
@@ -41,13 +50,12 @@ import type { AutoUpdateAttemptOutcome, AutoUpdateInFlightAttempt, AutoUpdateSta
  */
 export const DEFAULT_PROMOTED_RELEASE_URL = 'https://raw.githubusercontent.com/thedotmack/claude-mem/main/releases/promoted-release.json';
 
-/**
- * One network check a day. Releases land on about 17 of every 30 days (28
- * releases on 17 days in the 30 days to 2026-11-06), so one check a day picks
- * up each release day's promoted version. A failed fetch counts as a check, so
- * a broken network never turns into hourly retries.
- */
-export const AUTO_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// AUTO_UPDATE_CHECK_INTERVAL_MS (one network check a day) and
+// AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS (how long a live supervisor pid keeps
+// an attempt in flight past its deadline) have their reasons next to their
+// definitions in auto-update-state-file.ts, where the SessionStart launcher
+// can read the ceiling without this module.
+export { AUTO_UPDATE_CHECK_INTERVAL_MS, AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS };
 
 /**
  * A machine that is never quiet still updates: once a deferral has seen one
@@ -56,16 +64,6 @@ export const AUTO_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * a weekend does not count as two days of busy time.
  */
 export const AUTO_UPDATE_BUSY_DEFERRAL_LIMIT_MS = AUTO_UPDATE_CHECK_INTERVAL_MS;
-
-/**
- * How long an attempt stays in flight past the supervisor deadline while its
- * recorded supervisor pid is alive: one check cycle. A laptop that sleeps
- * during an install wakes past the wall-clock deadline with its supervisor
- * still running, and recording that supervisor as vanished would block its
- * version for good. Past a full day a live pid is treated as reused by another
- * process, so updates are never blocked longer than a day.
- */
-export const AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS = AUTO_UPDATE_CHECK_INTERVAL_MS;
 
 // AUTO_UPDATE_FETCH_TIMEOUT_MS bounds each background fetch; its reason is
 // next to its definition in auto-update-deadlines.ts, which counts one fetch
@@ -275,11 +273,14 @@ export type ClaudeCodeBackgroundUpdateLeftOnWhy = 'updater-not-yet-proven' | 'np
  * Code settings path skipped (keyed by its path), the ERROR of a tick that
  * a broken settings file stops (logFailedAutoUpdateTick), the warning for
  * each stage where turning off Claude Code's background update stopped
- * (logClaudeCodeBackgroundUpdateStepFailure), and why it is left on.
+ * (logClaudeCodeBackgroundUpdateStepFailure), why it is left on, and the
+ * warning for an off decision the state file could not take
+ * (recordOffDecision).
  */
 export type AutoUpdateOncePerBootLogKey =
   | AutoUpdateDecisionName
   | 'unrecognised-CLAUDE_MEM_AUTO_UPDATE'
+  | 'record-off-decision-failed'
   | `skipped-claude-code-settings:${string}`
   | `tick-failed-at-${AutoUpdateCheckStage}`
   | `claude-code-background-update-failed-at-${ClaudeCodeBackgroundUpdateStage}`
@@ -438,10 +439,10 @@ export interface AutoUpdateCheckDeps {
   /**
    * Gate 3, for an attempt whose supervisor vanished while the install does
    * not resolve to its target: where the attempt left the install, read and
-   * judged the way the supervisor reads and judges it, with the fix command
-   * its rule names (auto-update-apply.ts readInterruptedAttemptInstall).
-   * Injected, as the database read is: its readers load the database code and
-   * the installer's helpers, which this module stays free of.
+   * judged the way the supervisor reads and judges it
+   * (auto-update-apply.ts readInterruptedAttemptInstall). Injected, as the
+   * database read is: its readers load the installer's helpers, which this
+   * module stays free of.
    */
   readInterruptedAttemptInstall: (attempt: { targetVersion: string; previousVersion: string }) => Promise<InterruptedAttemptInstall>;
   /** True once the worker has begun shutting down. Read again right before a launch. */
@@ -458,77 +459,49 @@ export interface AutoUpdateCheckDeps {
 
 /**
  * One check. The gates run in the order below; each returns a named decision
- * and logs it.
+ * and logs it. The decision is also recorded in the state file
+ * (AutoUpdateState.lastDecision), for doctor, on every tick with no attempt in
+ * flight: while one is in flight its supervisor writes the file, and a save
+ * here could undo its claim. Two decisions are not recorded: attempt-in-flight
+ * for that reason, and worker-shutting-down, which saves nothing so the next
+ * boot checks again.
  */
 export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<AutoUpdateDecision> {
   const now = deps.now();
 
-  // Settings first. A settings.json that exists but cannot be read stops the
-  // tick here: read as the defaults, it would turn the updater back on for a
-  // user who saved CLAUDE_MEM_AUTO_UPDATE=false.
-  const settings = runStage('read-settings', () => deps.readSettings());
-
-  // Gate 1 — off switches. Nothing else is read, written or fetched while one is on.
-  if (parseAutoUpdateSwitch(settings.CLAUDE_MEM_AUTO_UPDATE) === 'unrecognised') {
-    logOncePerBoot(deps, 'unrecognised-CLAUDE_MEM_AUTO_UPDATE', () => logger.warn('AUTO_UPDATE',
-      'CLAUDE_MEM_AUTO_UPDATE is neither "true" nor "false"; auto-update stays off (only "true" turns it on)',
-      { value: settingText(settings.CLAUDE_MEM_AUTO_UPDATE) }));
+  // Gates 1 and 2, the same reading doctor's row makes. What they read is
+  // logged here as they read it: an unrecognised CLAUDE_MEM_AUTO_UPDATE, and
+  // each Claude Code settings file skipped, once per boot.
+  const switches = readAutoUpdateSwitches(deps, {
+    settingsRead: (settings) => {
+      if (parseAutoUpdateSwitch(settings.CLAUDE_MEM_AUTO_UPDATE) !== 'unrecognised') return;
+      logOncePerBoot(deps, 'unrecognised-CLAUDE_MEM_AUTO_UPDATE', () => logger.warn('AUTO_UPDATE',
+        'CLAUDE_MEM_AUTO_UPDATE is neither "true" nor "false"; auto-update stays off (only "true" turns it on)',
+        { value: settingText(settings.CLAUDE_MEM_AUTO_UPDATE) }));
+    },
+    claudeCodeSettingsRead: (claudeCodeSettings) => {
+      for (const skipped of claudeCodeSettings.skipped) {
+        logOncePerBoot(deps, `skipped-claude-code-settings:${skipped.path}`, () => logger.warn('AUTO_UPDATE',
+          `Skipped the Claude Code settings at ${skipped.path}: Claude Code runs without them too, so no switch in them is in force`,
+          { path: skipped.path, problem: skipped.problem }));
+      }
+    },
+  });
+  if (switches.kind === 'off') {
+    recordOffDecision(deps, switches.decision, now);
+    return logDecision(deps, switches.decision);
   }
-  const disabledReason = autoUpdateDisabledReason(settings);
-  if (disabledReason !== null) return logDecision(deps, { decision: 'disabled', reason: disabledReason });
-  // Claude Code reads the `env` block of a settings file "directly from the
-  // file, so they take effect no matter how `claude` was launched"
-  // (https://code.claude.com/docs/en/env-vars), while the worker's env holds
-  // only what the process that started it had. Each of Claude Code's switches
-  // waits for these files, even one set in the worker's env: a
-  // FORCE_AUTOUPDATE_PLUGINS=1 in one of them takes it out of force. A file
-  // Claude Code runs without is skipped, with a warning once per boot; a
-  // managed one Claude Code refuses to start with stops the tick, for the same
-  // reason as settings.json above (readClaudeCodeSettingsEnvBlocks).
-  const claudeCodeSettings = runStage('read-claude-code-settings', () => deps.readClaudeCodeSettingsEnv());
-  for (const skipped of claudeCodeSettings.skipped) {
-    logOncePerBoot(deps, `skipped-claude-code-settings:${skipped.path}`, () => logger.warn('AUTO_UPDATE',
-      `Skipped the Claude Code settings at ${skipped.path}: Claude Code runs without them too, so no switch in them is in force`,
-      { path: skipped.path, problem: skipped.problem }));
-  }
-  const claudeCodeSwitch = claudeCodeSwitchInForce(deps.env, claudeCodeSettings.envBlocks);
-  if (claudeCodeSwitch !== null) return logDecision(deps, { decision: 'disabled', reason: claudeCodeSwitch });
-  // Claude Code's own background update of the thedotmack marketplace, turned
-  // on by the user or their admin where it outranks known_marketplaces.json:
-  // both updaters would race, so claude-mem's stays off.
-  const claudeMemMarketplaceDeclaration = claudeMemMarketplaceDeclarationInForce(claudeCodeSettings.claudeMemMarketplaceDeclarations);
-  if (claudeMemMarketplaceDeclaration?.autoUpdate === true) {
-    return logDecision(deps, {
-      decision: 'disabled',
-      reason: `extraKnownMarketplaces.${CLAUDE_MEM_MARKETPLACE_KEY}.autoUpdate is true in ${claudeMemMarketplaceDeclaration.path}: Claude Code's own background update of claude-mem's marketplace is on there, and Claude Code reads that before known_marketplaces.json, so running claude-mem's updater too would race it`,
-    });
-  }
-  // The user's own choices in Claude Code, which `update` would undo: it turns
-  // the plugin back on, registers it again, and rewrites claude-mem's
-  // marketplace entry. A file it would stop on keeps the updater off too, so
-  // an update never starts that cannot finish.
-  const pluginState = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
-  const pluginStateReason = claudeCodePluginStateDisabledReason(pluginState, deps.marketplaceDirectory());
-  if (pluginStateReason !== null) return logDecision(deps, { decision: 'disabled', reason: pluginStateReason });
-
-  // Gate 2 — install shape. A dev checkout or an env-override root is left alone.
-  const resolvedPluginRoot = runStage('resolve-plugin-root', () => deps.resolvePluginRoot());
-  if (resolvedPluginRoot === null) return logDecision(deps, { decision: 'no-install' });
-  if (!isStandardInstallRoot(resolvedPluginRoot.root, deps)) {
-    return logDecision(deps, { decision: 'not-a-standard-install', root: resolvedPluginRoot.root });
-  }
-  // An unknown version is never read as "update needed".
-  if (resolvedPluginRoot.version === null || !INSTALLED_VERSION_PATTERN.test(resolvedPluginRoot.version)) {
-    return logDecision(deps, {
-      decision: 'unknown-installed-version',
-      root: resolvedPluginRoot.root,
-      installedVersion: resolvedPluginRoot.version,
-    });
-  }
-  const installedVersion = resolvedPluginRoot.version;
+  const { settings, pluginState, claudeMemMarketplaceDeclaration, installedVersion } = switches;
 
   const state = runStage('read-state', () => deps.readState());
   const saveState = (): void => runStage('write-state', () => deps.writeState(state));
+  // A decision past gate 3: recorded for doctor, saved with the rest of this
+  // tick's state, then logged.
+  const decide = <D extends AutoUpdateDecision>(decision: D): D => {
+    recordDecision(state, decision, now);
+    saveState();
+    return logDecision(deps, decision);
+  };
 
   // Gate 3 — one attempt at a time. Within the supervisor deadline an attempt
   // is in flight whatever its pid says: the supervisor records its pid only
@@ -598,7 +571,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   // version is still the promoted one, so a pulled-back release is never applied.
   if (state.busyDeferralStartedAt === null) {
     if (state.lastNetworkCheckAt !== null && absoluteMillisecondsBetween(now, state.lastNetworkCheckAt) < AUTO_UPDATE_CHECK_INTERVAL_MS) {
-      return logDecision(deps, { decision: 'not-due', lastNetworkCheckAt: state.lastNetworkCheckAt });
+      return decide({ decision: 'not-due', lastNetworkCheckAt: state.lastNetworkCheckAt });
     }
   } else {
     // A deferral for a version the install already has is over: the user, or
@@ -607,14 +580,12 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     if (deferredVersion !== null && RELEASE_VERSION_PATTERN.test(deferredVersion)
       && compareVersionsDescending(deferredVersion, installedVersion) >= 0) {
       clearBusyDeferral(state);
-      saveState();
-      return logDecision(deps, { decision: 'up-to-date', installedVersion, promotedVersion: deferredVersion });
+      return decide({ decision: 'up-to-date', installedVersion, promotedVersion: deferredVersion });
     }
     if (!observeWorkerQuiet(deps)) {
       const busySince = recordBusyObservation(state, now);
       if (state.busyDeferralObservedBusyMs < AUTO_UPDATE_BUSY_DEFERRAL_LIMIT_MS) {
-        saveState();
-        return logDecision(deps, {
+        return decide({
           decision: 'deferred-busy',
           promotedVersion: state.lastSeenPromotedVersion,
           busySince,
@@ -630,8 +601,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   if (promoted.kind === 'failed') {
     state.lastCheckError = { at: now, message: promoted.message };
     clearBusyDeferral(state);
-    saveState();
-    return logDecision(deps, { decision: 'check-failed', stage: 'fetch-promoted-release', message: promoted.message });
+    return decide({ decision: 'check-failed', stage: 'fetch-promoted-release', message: promoted.message });
   }
   if (promoted.kind === 'unknown-schema') {
     // Also the check's error, so the doctor row can show that this install no
@@ -639,8 +609,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     // proxy's own JSON page.
     state.lastCheckError = { at: now, message: promoted.message };
     clearBusyDeferral(state);
-    saveState();
-    return logDecision(deps, { decision: 'unknown-schema', schemaVersion: promoted.schemaVersion ?? null });
+    return decide({ decision: 'unknown-schema', schemaVersion: promoted.schemaVersion ?? null });
   }
   state.lastCheckError = null;
   const promotedVersion = promoted.promotedVersion;
@@ -652,13 +621,11 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   if (compareVersionsDescending(promotedVersion, installedVersion) >= 0) {
     clearBusyDeferral(state);
     if (backgroundUpdate.waitingForUpdaterProof) await readNpmMetadataForTheTurnOff(deps, state, promotedVersion, now);
-    saveState();
-    return logDecision(deps, { decision: 'up-to-date', installedVersion, promotedVersion });
+    return decide({ decision: 'up-to-date', installedVersion, promotedVersion });
   }
   if (state.versionsThatFailedToApply.includes(promotedVersion)) {
     clearBusyDeferral(state);
-    saveState();
-    return logDecision(deps, { decision: 'previously-failed', installedVersion, promotedVersion });
+    return decide({ decision: 'previously-failed', installedVersion, promotedVersion });
   }
 
   // Gate 7 — fully published: npm's metadata for the version carries the
@@ -668,13 +635,11 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   if (publication.kind === 'failed') {
     state.lastCheckError = { at: now, message: publication.message };
     clearBusyDeferral(state);
-    saveState();
-    return logDecision(deps, { decision: 'check-failed', stage: 'fetch-npm-metadata', message: publication.message });
+    return decide({ decision: 'check-failed', stage: 'fetch-npm-metadata', message: publication.message });
   }
   if (publication.kind === 'not-published') {
     clearBusyDeferral(state);
-    saveState();
-    return logDecision(deps, { decision: 'not-published-by-workflow', promotedVersion, missing: publication.missing });
+    return decide({ decision: 'not-published-by-workflow', promotedVersion, missing: publication.missing });
   }
   // This check read both the promoted file and npm's metadata for the
   // promoted version: the proof the turn-off waits for. Saved with the rest
@@ -698,16 +663,15 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   if (!observeWorkerQuiet(deps)) {
     const busySince = recordBusyObservation(state, now);
     if (state.busyDeferralObservedBusyMs < AUTO_UPDATE_BUSY_DEFERRAL_LIMIT_MS) {
-      saveState();
-      return logDecision(deps, { decision: 'deferred-busy', promotedVersion, busySince, observedBusyMs: state.busyDeferralObservedBusyMs });
+      return decide({ decision: 'deferred-busy', promotedVersion, busySince, observedBusyMs: state.busyDeferralObservedBusyMs });
     }
     applyReason = 'busy-for-a-full-check-cycle';
   }
 
-  // Gate 9 — apply.
+  // Gate 9 — apply. Recorded and saved before the launch, which reads the
+  // state again to write the attempt in flight.
   clearBusyDeferral(state);
-  saveState();
-  const decision = logDecision(deps, { decision: 'apply', targetVersion: promotedVersion, previousVersion: installedVersion, applyReason });
+  const decision = decide({ decision: 'apply', targetVersion: promotedVersion, previousVersion: installedVersion, applyReason });
   try {
     await deps.launchSupervisor({ targetVersion: promotedVersion, previousVersion: installedVersion });
   } catch (error: unknown) {
@@ -727,12 +691,144 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     // Logged and reported before the save, so a failing save cannot hide why
     // the launch failed. Nothing retries this launch until the next due check,
     // so its event is sent once either way.
-    const launchFailed = logDecision(deps, { decision: 'launch-failed', targetVersion: promotedVersion, previousVersion: installedVersion, message });
+    const launchFailedDecision: AutoUpdateDecision = { decision: 'launch-failed', targetVersion: promotedVersion, previousVersion: installedVersion, message };
+    recordDecision(state, launchFailedDecision, now);
+    const launchFailed = logDecision(deps, launchFailedDecision);
     captureWorkerRecordedOutcome(deps, state.lastAttemptOutcome);
     saveState();
     return launchFailed;
   }
   return decision;
+}
+
+/** What gates 1 and 2 read. The check's deps carry these, and doctor's row passes the same production readers. */
+export type AutoUpdateSwitchReaders = Pick<AutoUpdateCheckDeps,
+  | 'env'
+  | 'readSettings'
+  | 'readClaudeCodeSettingsEnv'
+  | 'readClaudeCodePluginState'
+  | 'resolvePluginRoot'
+  | 'pluginCacheRootDirectory'
+  | 'marketplaceDirectory'>;
+
+/** A decision gates 1 and 2 end a tick with: auto-update is off, or there is no install it may update. */
+export type AutoUpdateOffDecision = Extract<AutoUpdateDecision, { decision: 'disabled' | 'no-install' | 'not-a-standard-install' | 'unknown-installed-version' }>;
+
+/** Gates 1 and 2 as readAutoUpdateSwitches read them: the first decision that keeps auto-update off, or what the later gates need. */
+export type AutoUpdateSwitchesRead =
+  | { kind: 'off'; decision: AutoUpdateOffDecision }
+  | {
+      kind: 'on';
+      settings: AutoUpdateSettings;
+      /** The extraKnownMarketplaces declaration of the thedotmack marketplace in force, read and never written. */
+      claudeMemMarketplaceDeclaration: ClaudeMemMarketplaceDeclaration | null;
+      pluginState: ClaudeCodePluginState;
+      installedVersion: string;
+    };
+
+/** Told what gates 1 and 2 read, the moment each is read, so the check logs it in its place; doctor passes none. */
+export interface AutoUpdateSwitchObserver {
+  settingsRead?: (settings: AutoUpdateSettings) => void;
+  claudeCodeSettingsRead?: (claudeCodeSettings: ClaudeCodeSettingsEnvRead) => void;
+}
+
+/**
+ * Gates 1 and 2: whether auto-update is off, and why, read in the order the
+ * check reads it. The worker's tick (runAutoUpdateCheck) and doctor's row
+ * (doctor.ts autoUpdateCheck) both call this, so for the same settings, files
+ * and environment they give the same reason. Reads only local files, writes
+ * nothing and logs nothing; a read that fails throws AutoUpdateCheckError
+ * with its stage.
+ */
+export function readAutoUpdateSwitches(readers: AutoUpdateSwitchReaders, observer: AutoUpdateSwitchObserver = {}): AutoUpdateSwitchesRead {
+  const off = (decision: AutoUpdateOffDecision): AutoUpdateSwitchesRead => ({ kind: 'off', decision });
+
+  // Gate 1 — off switches, the settings first. Nothing else is read, written
+  // or fetched while one is on, but the decision itself (recordOffDecision).
+  const settingsSwitches = readAutoUpdateSettingsSwitches(readers, observer);
+  if (settingsSwitches.kind === 'off') return off({ decision: 'disabled', reason: settingsSwitches.reason });
+  const { settings, claudeMemMarketplaceDeclaration } = settingsSwitches;
+  // The user's own choices in Claude Code, which `update` would undo: it turns
+  // the plugin back on, registers it again, and rewrites claude-mem's
+  // marketplace entry. A file it would stop on keeps the updater off too, so
+  // an update never starts that cannot finish.
+  const pluginState = runStage('read-claude-code-plugin-state', () => readers.readClaudeCodePluginState());
+  const pluginStateReason = claudeCodePluginStateDisabledReason(pluginState, readers.marketplaceDirectory());
+  if (pluginStateReason !== null) return off({ decision: 'disabled', reason: pluginStateReason });
+
+  // Gate 2 — install shape. A dev checkout or an env-override root is left alone.
+  const resolvedPluginRoot = runStage('resolve-plugin-root', () => readers.resolvePluginRoot());
+  if (resolvedPluginRoot === null) return off({ decision: 'no-install' });
+  if (!isStandardInstallRoot(resolvedPluginRoot.root, readers)) {
+    return off({ decision: 'not-a-standard-install', root: resolvedPluginRoot.root });
+  }
+  // An unknown version is never read as "update needed".
+  if (resolvedPluginRoot.version === null || !INSTALLED_VERSION_PATTERN.test(resolvedPluginRoot.version)) {
+    return off({
+      decision: 'unknown-installed-version',
+      root: resolvedPluginRoot.root,
+      installedVersion: resolvedPluginRoot.version,
+    });
+  }
+  return { kind: 'on', settings, claudeMemMarketplaceDeclaration, pluginState, installedVersion: resolvedPluginRoot.version };
+}
+
+/** What gate 1's switches in settings and the environment read, before Claude Code's plugin records. */
+export type AutoUpdateSettingsSwitchesRead =
+  | { kind: 'off'; reason: string }
+  | {
+      kind: 'on';
+      settings: AutoUpdateSettings;
+      /** The extraKnownMarketplaces declaration of the thedotmack marketplace in force, read and never written. */
+      claudeMemMarketplaceDeclaration: ClaudeMemMarketplaceDeclaration | null;
+    };
+
+/**
+ * Gate 1's switches in settings and the environment, in the order the check
+ * reads them: claude-mem's own settings (autoUpdateDisabledReason), Claude
+ * Code's "no background updates" switches (claudeCodeSwitchInForce), and an
+ * extraKnownMarketplaces declaration that turns Claude Code's own update of
+ * claude-mem's marketplace on. readAutoUpdateSwitches runs it first, and the
+ * installer's registerMarketplace runs it alone (install.ts), with the same
+ * readers, to decide whether claude-mem's updater can take over from Claude
+ * Code's. Reads only local files, writes nothing and logs nothing; a read that
+ * fails throws AutoUpdateCheckError with its stage.
+ */
+export function readAutoUpdateSettingsSwitches(
+  readers: Pick<AutoUpdateSwitchReaders, 'env' | 'readSettings' | 'readClaudeCodeSettingsEnv'>,
+  observer: AutoUpdateSwitchObserver = {},
+): AutoUpdateSettingsSwitchesRead {
+  // Settings first. A settings.json that exists but cannot be read stops the
+  // tick here: read as the defaults, it would turn the updater back on for a
+  // user who saved CLAUDE_MEM_AUTO_UPDATE=false.
+  const settings = runStage('read-settings', () => readers.readSettings());
+  observer.settingsRead?.(settings);
+  const disabledReason = autoUpdateDisabledReason(settings);
+  if (disabledReason !== null) return { kind: 'off', reason: disabledReason };
+  // Claude Code reads the `env` block of a settings file "directly from the
+  // file, so they take effect no matter how `claude` was launched"
+  // (https://code.claude.com/docs/en/env-vars), while the worker's env holds
+  // only what the process that started it had. Each of Claude Code's switches
+  // waits for these files, even one set in the worker's env: a
+  // FORCE_AUTOUPDATE_PLUGINS=1 in one of them takes it out of force. A file
+  // Claude Code runs without is skipped, with a warning once per boot; a
+  // managed one Claude Code refuses to start with stops the tick, for the same
+  // reason as settings.json above (readClaudeCodeSettingsEnvBlocks).
+  const claudeCodeSettings = runStage('read-claude-code-settings', () => readers.readClaudeCodeSettingsEnv());
+  observer.claudeCodeSettingsRead?.(claudeCodeSettings);
+  const claudeCodeSwitch = claudeCodeSwitchInForce(readers.env, claudeCodeSettings.envBlocks);
+  if (claudeCodeSwitch !== null) return { kind: 'off', reason: claudeCodeSwitch };
+  // Claude Code's own background update of the thedotmack marketplace, turned
+  // on by the user or their admin where it outranks known_marketplaces.json:
+  // both updaters would race, so claude-mem's stays off.
+  const claudeMemMarketplaceDeclaration = claudeMemMarketplaceDeclarationInForce(claudeCodeSettings.claudeMemMarketplaceDeclarations);
+  if (claudeMemMarketplaceDeclaration?.autoUpdate === true) {
+    return {
+      kind: 'off',
+      reason: `extraKnownMarketplaces.${CLAUDE_MEM_MARKETPLACE_KEY}.autoUpdate is true in ${claudeMemMarketplaceDeclaration.path}: Claude Code's own background update of claude-mem's marketplace is on there, and Claude Code reads that before known_marketplaces.json, so running claude-mem's updater too would race it`,
+    };
+  }
+  return { kind: 'on', settings, claudeMemMarketplaceDeclaration };
 }
 
 /**
@@ -1333,6 +1429,43 @@ export function claudeMemMarketplaceDeclarationInForce(declarations: ReadonlyArr
   return declarations.length === 0 ? null : declarations[declarations.length - 1];
 }
 
+/** Claude Code's background update of the thedotmack marketplace as Claude Code itself decides it (claudeCodeBackgroundUpdateSetting). */
+export type ClaudeCodeBackgroundUpdateSetting =
+  /** `setIn` names where: an extraKnownMarketplaces entry in a settings file, or known_marketplaces.json. */
+  | { kind: 'set'; on: boolean; setIn: string }
+  /** Nothing sets it, so it is off: `why` says which default applies. */
+  | { kind: 'off-by-default'; why: string }
+  | { kind: 'unreadable'; problem: string };
+
+/**
+ * Whether Claude Code's own background update of the thedotmack marketplace
+ * is on now, by Claude Code's rule (claudeMemMarketplaceDeclarationInForce
+ * quotes it): the autoUpdate of the extraKnownMarketplaces declaration in
+ * force, else the autoUpdate of the entry in known_marketplaces.json, else
+ * Claude Code's default, which is off for every marketplace but its own
+ * official one. A marketplace with neither an entry nor a declaration is not
+ * registered, so nothing updates it. Read from what the check's readers read
+ * (readClaudeCodeSettingsEnvBlocks, readClaudeCodePluginState), for the doctor
+ * row; an autoUpdate that is not a JSON boolean is not set, as Claude Code
+ * reads it.
+ */
+export function claudeCodeBackgroundUpdateSetting(
+  declarations: ReadonlyArray<ClaudeMemMarketplaceDeclaration>,
+  knownMarketplaces: ClaudeCodePluginState['knownMarketplaces'],
+): ClaudeCodeBackgroundUpdateSetting {
+  const declaration = claudeMemMarketplaceDeclarationInForce(declarations);
+  if (declaration?.autoUpdate !== undefined) {
+    return { kind: 'set', on: declaration.autoUpdate, setIn: `extraKnownMarketplaces in ${declaration.path}` };
+  }
+  if (knownMarketplaces.kind === 'unreadable') return { kind: 'unreadable', problem: knownMarketplaces.problem };
+  const entry = knownMarketplaces.document?.[CLAUDE_MEM_MARKETPLACE_KEY];
+  if (isPlainObject(entry) && typeof entry.autoUpdate === 'boolean') return { kind: 'set', on: entry.autoUpdate, setIn: knownMarketplaces.path };
+  if (isPlainObject(entry) || declaration !== null) {
+    return { kind: 'off-by-default', why: 'nothing sets it, and Claude Code\'s default for a marketplace it does not ship is off' };
+  }
+  return { kind: 'off-by-default', why: `the ${CLAUDE_MEM_MARKETPLACE_KEY} marketplace is not registered in ${knownMarketplaces.path}` };
+}
+
 /** Which of Claude Code's settings a file is: the user's own, or managed (the file-based policy). */
 type ClaudeCodeSettingsScope = 'user' | 'managed';
 
@@ -1624,9 +1757,16 @@ function recordNeverStartedSupervisor(
  * (deps.readInterruptedAttemptInstall). A reboot can kill the supervisor and
  * its installer after the target is registered, and then no supervisor
  * repairs it and nothing tells the user: an install left with part of the
- * target in place is recorded as restore_failed, naming the fix command the
- * supervisor's rule names, so the notice and the doctor row show it. Every
- * outcome keeps the stage, so the doctor row and telemetry show how it ended.
+ * target in place is recorded as restore_failed, naming the target's own
+ * installer as the fix, to run now (auto-update-state-file.ts
+ * interruptedAttemptFix says why the target, in the message and as
+ * fixCommand), so the notice and the doctor row show it. Every outcome keeps
+ * the stage, so the doctor row and telemetry show how it ended. A worker that
+ * finished starting on the version the install resolves to after the attempt
+ * was cut off marked it resolved (auto-update-state-file.ts
+ * markAutoUpdateFailuresResolvedByReadyWorker); a failure recorded for it now
+ * keeps that mark, so the person whose install works does not see the warning
+ * come back.
  */
 async function recordVanishedSupervisor(
   state: AutoUpdateState,
@@ -1651,13 +1791,23 @@ async function recordVanishedSupervisor(
   }
   const leftAt = await runAsyncStage('read-interrupted-attempt-install', () => deps.readInterruptedAttemptInstall(versions));
   state.inFlightAttempt = null;
+  const resolution = attempt.resolvedAt === undefined
+    ? {}
+    : {
+        resolvedAt: attempt.resolvedAt,
+        ...(attempt.resolvedWithWorkerVersion === undefined ? {} : { resolvedWithWorkerVersion: attempt.resolvedWithWorkerVersion }),
+      };
   if (leftAt.kind === 'half-switched') {
+    const fix = interruptedAttemptFix(attempt);
     state.lastAttemptOutcome = {
       result: 'restore_failed',
       ...versions,
       finishedAt: now,
       failureStage: 'supervisor-vanished',
-      message: `${whatHappened} ${leftAt.where} Part of ${attempt.targetVersion} is in place, and nothing restored ${attempt.previousVersion} or proved ${attempt.targetVersion}. Run: ${leftAt.fixCommand}`,
+      message: `${whatHappened} ${leftAt.where} Part of ${attempt.targetVersion} is in place, and nothing restored ${attempt.previousVersion} or proved ${attempt.targetVersion}. Run: ${fix.command}`,
+      fixCommand: fix.command,
+      fixCommandWhen: fix.when,
+      ...resolution,
     };
   } else {
     const movedOn = leftAt.kind === 'moved-past-target'
@@ -1669,6 +1819,7 @@ async function recordVanishedSupervisor(
       finishedAt: now,
       failureStage: 'supervisor-vanished',
       message: `${whatHappened} ${leftAt.where}${movedOn}`,
+      ...resolution,
     };
   }
   if (!state.versionsThatFailedToApply.includes(attempt.targetVersion)) {
@@ -1779,6 +1930,83 @@ export function logFailedAutoUpdateTick(error: unknown, oncePerBootLogsWritten: 
     oncePerBootLogsWritten.add(errorLoggedKey);
   }
   logger.error('AUTO_UPDATE', message, { stage }, cause);
+}
+
+/** The decisions that mean auto-update is off on this install (gates 1 and 2); every other one means it is on. */
+export const AUTO_UPDATE_OFF_DECISIONS: ReadonlySet<string> = new Set<AutoUpdateDecisionName>([
+  'disabled',
+  'no-install',
+  'not-a-standard-install',
+  'unknown-installed-version',
+]);
+
+/** Unit conversion, so the deferral's reason states the quiet window in minutes. */
+const QUIET_WINDOW_MINUTES = Math.round(AUTO_UPDATE_QUIET_WINDOW_MS / MILLISECONDS_PER_MINUTE);
+
+/**
+ * A decision in plain words, as the doctor row shows the worker's last one.
+ * Times are left out: the row shows when it was decided, and when the last
+ * check ran, on lines of their own.
+ */
+export function describeAutoUpdateDecision(decision: AutoUpdateDecision): string {
+  switch (decision.decision) {
+    case 'disabled': return decision.reason;
+    case 'no-install': return 'no claude-mem install was found';
+    case 'not-a-standard-install':
+      return `${decision.root} is not in Claude Code's plugin cache or marketplace folder (a source checkout or an override), so it is left alone`;
+    case 'unknown-installed-version':
+      return `the version installed at ${decision.root} (${decision.installedVersion ?? 'none recorded'}) is not one claude-mem can compare`;
+    case 'attempt-in-flight': return `updating ${decision.previousVersion} → ${decision.targetVersion}`;
+    case 'not-due': return 'checked less than a day ago, so the next check waits';
+    case 'check-failed':
+      return decision.stage === 'fetch-promoted-release'
+        ? 'the last check could not read the promoted release file'
+        : 'the last check could not read npm\'s record of the promoted release';
+    case 'unknown-schema': return 'the promoted release file is in a format this version does not read, so nothing is installed';
+    case 'up-to-date': return `up to date: ${decision.installedVersion} is installed, and the promoted release is ${decision.promotedVersion}`;
+    case 'previously-failed': return `${decision.promotedVersion} is promoted, but it failed here before, so it waits for the next promoted release`;
+    case 'not-published-by-workflow':
+      return `${decision.promotedVersion} is promoted, but npm does not show it published by claude-mem's release workflow (missing ${decision.missing.join(', ')}), so it is skipped`;
+    case 'deferred-busy':
+      return `${decision.promotedVersion ?? 'the promoted release'} waits until claude-mem has had nothing to do for ${QUIET_WINDOW_MINUTES} minutes, or has been busy for a full day`;
+    case 'worker-shutting-down': return `the worker was shutting down, so ${decision.targetVersion} waits for its next start`;
+    case 'apply': return `installing ${decision.targetVersion} (from ${decision.previousVersion})`;
+    case 'launch-failed': return `${decision.targetVersion} could not be started (${decision.message}); the next daily check tries again`;
+  }
+}
+
+function recordDecision(state: AutoUpdateState, decision: AutoUpdateDecision, now: number): void {
+  state.lastDecision = { decision: decision.decision, reason: describeAutoUpdateDecision(decision), decidedAt: now };
+}
+
+/**
+ * Record an off decision (gates 1 and 2) for doctor, which runs in a terminal
+ * whose environment can differ from the worker's, so only the worker can say
+ * that it is off. An off tick reads the state file only for this, and writes
+ * it only while no attempt is in flight (its supervisor writes the file then).
+ * A file that cannot be read or written does not change the decision: doctor
+ * works the status out itself until a tick records one. That is logged with
+ * the rule logClaudeCodeBackgroundUpdateStepFailure applies: a broken file
+ * stays broken and the tick runs every hour, so the first failure in a boot is
+ * a WARN and each later one a DEBUG.
+ */
+function recordOffDecision(deps: AutoUpdateCheckDeps, decision: AutoUpdateOffDecision, now: number): void {
+  try {
+    const state = deps.readState();
+    if (state.inFlightAttempt !== null) return;
+    recordDecision(state, decision, now);
+    deps.writeState(state);
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    const message = 'Could not record the off decision in the auto-update state file; doctor works the status out itself until a tick can';
+    const details = { decision: decision.decision, problem: cause.message };
+    if (deps.oncePerBootLogsWritten.has('record-off-decision-failed')) {
+      logger.debug('AUTO_UPDATE', message, { ...details, loggedAtWarnEarlierThisBoot: true }, cause);
+      return;
+    }
+    deps.oncePerBootLogsWritten.add('record-off-decision-failed');
+    logger.warn('AUTO_UPDATE', message, details, cause);
+  }
 }
 
 function logDecision<D extends AutoUpdateDecision>(deps: AutoUpdateCheckDeps, decision: D): D {

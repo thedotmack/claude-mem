@@ -62,6 +62,7 @@ import {
 import { fetchJsonWithTimeout, INSTALLED_VERSION_PATTERN, readNpmPublication, RELEASE_VERSION_PATTERN } from './auto-update-check.js';
 import {
   AUTO_UPDATE_INSTALLER_DEADLINE_MS,
+  AUTO_UPDATE_SUPERVISOR_DEADLINE_MS,
   AUTO_UPDATE_WORKER_STARTUP_CEILING_MS,
   INSTALLER_EXIT_AFTER_KILL_WAIT_MS,
   WORKER_PID_CAPTURE_TIMEOUT_MS,
@@ -273,6 +274,8 @@ export interface AutoUpdateLaunchDeps {
   now: () => number;
   readState: () => AutoUpdateState;
   writeState: (state: AutoUpdateState) => void;
+  /** AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, recorded with the attempt (AutoUpdateInFlightAttempt.supervisorDeadlineMs says why). */
+  supervisorDeadlineMs: number;
   /** Start `<runtime> <worker script> auto-update-apply ... --detached-hop` (startDetachedAutoUpdateProcess). */
   startHop: (attempt: AutoUpdateApplyAttempt) => Promise<StartedAutoUpdateProcess>;
   hopExitBudgetMs: number;
@@ -283,9 +286,9 @@ export interface AutoUpdateLaunchDeps {
 
 /**
  * The worker's launchSupervisor (auto-update-check.ts gate 9). Writes the
- * attempt in flight with no supervisor yet, starts the hop and waits for it to
- * exit 0. Throws on anything else, which gate 9 records as launch-failed
- * without blocking the version.
+ * attempt in flight with no supervisor yet and the deadline it may run for,
+ * starts the hop and waits for it to exit 0. Throws on anything else, which
+ * gate 9 records as launch-failed without blocking the version.
  */
 export async function launchAutoUpdateSupervisor(
   versions: { targetVersion: string; previousVersion: string },
@@ -298,6 +301,7 @@ export async function launchAutoUpdateSupervisor(
     previousVersion: attempt.previousVersion,
     startedAt: attempt.startedAt,
     supervisorPid: null,
+    supervisorDeadlineMs: deps.supervisorDeadlineMs,
   };
   deps.writeState(state);
 
@@ -354,6 +358,7 @@ export function autoUpdateLaunchDeps(options: { scriptPath: string }): AutoUpdat
     now: Date.now,
     readState: () => readAutoUpdateState(),
     writeState: (state) => writeAutoUpdateState(state),
+    supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS,
     startHop: (attempt) => startDetachedAutoUpdateProcess(
       process.execPath,
       autoUpdateApplyArgv(options.scriptPath, attempt, { detachedHop: true }),
@@ -496,27 +501,12 @@ export function productionAutoUpdateApplyDeps(options: { port: number; logPath: 
 /**
  * Gate 3's readInterruptedAttemptInstall (auto-update-check.ts) for the
  * worker that runs the check: the supervisor's own readers on the real
- * install, which only read. The rule for the fix command needs the newest
- * schema the previous version knows, and this worker's code knows it only
- * when it runs that version, as a worker the resolver started does while the
- * resolver still picks the previous version; a worker on any other version
- * (one Pi or DSH started from the marketplace copy) passes null, and a
- * stamped database then gets the forward fix.
+ * install, which only read. Gate 3 names the fix itself, the target's own
+ * installer (auto-update-state-file.ts interruptedAttemptFix), so nothing
+ * here reads the database or npm.
  */
-export function workerInterruptedAttemptReader(
-  options: { workerVersion: string },
-): (attempt: { targetVersion: string; previousVersion: string }) => Promise<InterruptedAttemptInstall> {
-  return (attempt) => readInterruptedAttemptInstall(attempt, {
-    readInstallVersions: () => readInstallVersions(),
-    readDatabaseSchemaStamp: () => readDatabaseSchemaStamp(),
-    previousVersionSchemaVersion: previousVersionSchemaKnownToCode(options.workerVersion, attempt.previousVersion),
-    readNpmPublication: (version) => readNpmPublication({ fetchJson: fetchJsonWithTimeout }, version),
-  });
-}
-
-/** The newest schema `previousVersion` knows, as far as code of `runningVersion` can tell: its own when it is that version, else not known (null). */
-export function previousVersionSchemaKnownToCode(runningVersion: string, previousVersion: string, codeSchemaVersion: number = LATEST_SCHEMA_VERSION): number | null {
-  return runningVersion === previousVersion ? codeSchemaVersion : null;
+export function workerInterruptedAttemptReader(): (attempt: { targetVersion: string; previousVersion: string }) => Promise<InterruptedAttemptInstall> {
+  return (attempt) => readInterruptedAttemptInstall(attempt, { readInstallVersions: () => readInstallVersions() });
 }
 
 /**

@@ -34,7 +34,13 @@
  *    restore-blocked-by-schema, naming the forward fix); when the stamp cannot
  *    be read, nothing more runs (restore_failed, schema-stamp-unreadable);
  *    otherwise the previous version is restored (restored, or restore_failed).
- * Every failure after the switch started blocks the target.
+ * Every failure after the switch started blocks the target. Every
+ * restore_failed outcome records its fix and when to run it
+ * (auto-update-state-file.ts AutoUpdateFixCommandWhen): now; once an
+ * installer still running has finished; or, when the target failed on its
+ * own and the previous version cannot be put back, the forward fix once a
+ * release newer than the target is out (supervisorFix,
+ * restorePreviousVersion).
  *
  * Before each proof that a worker finished starting, a worker is started on
  * the version the install resolves to when no worker process runs, and never
@@ -54,7 +60,19 @@ import path from 'path';
 import { compareVersionsDescending } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { INSTALLED_VERSION_PATTERN, type NpmPublicationRead } from './auto-update-check.js';
+import { ORPHANED_MARKER_FILENAME } from './auto-update-install-shape.js';
+import {
+  AUTO_UPDATE_FORWARD_FIX,
+  AUTO_UPDATE_FORWARD_FIX_COMMAND,
+  autoUpdateFixCommand,
+  type AutoUpdateFix,
+} from './auto-update-state-file.js';
 import type { AutoUpdateAttemptOutcome, AutoUpdateState } from './auto-update-state.js';
+
+// The fix commands live with the state file's shape, and the marker with the
+// install-shape check, so the SessionStart launcher can use them without this
+// module; re-exported for its callers.
+export { AUTO_UPDATE_FORWARD_FIX_COMMAND, ORPHANED_MARKER_FILENAME, autoUpdateFixCommand };
 
 /** One attempt, as the worker launched it (auto-update-launch.ts launchAutoUpdateSupervisor). */
 export interface AutoUpdateApplyAttempt {
@@ -236,21 +254,6 @@ export type AutoUpdateApplyResult =
       recorded: 'recorded' | 'left-to-another-attempt';
     };
 
-/** The one command that puts an install back on `version`, named in a restore_failed outcome when that version can still run (fixCommandForFailedRestore). */
-export function autoUpdateFixCommand(version: string): string {
-  return `npx claude-mem@${version} update`;
-}
-
-/**
- * The fix that moves an install forward instead, for a restore_failed outcome
- * whose previous version cannot be named: npm does not show it fully
- * published, or the database is stamped with a schema it cannot open.
- */
-export const AUTO_UPDATE_FORWARD_FIX_COMMAND = 'npx claude-mem@latest update';
-
-/** Claude Code's marker for a superseded cache version, which every resolver skips (worker-utils.ts cacheWorkerScriptCandidates). */
-export const ORPHANED_MARKER_FILENAME = '.orphaned_at';
-
 /**
  * The production stampOrphaned: writes the epoch-ms marker Claude Code writes,
  * only into a directory that exists and only when it is not there yet. Never
@@ -383,10 +386,11 @@ async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: Aut
   if (install.kind === 'timed-out' && install.installerStillRunning) {
     // Nothing read now is settled while it runs, and a second installer would
     // write the same files: stop here.
+    const fix: AutoUpdateFix = { ...await supervisorFix(attempt, deps), when: 'once-the-running-update-has-finished' };
     return {
-      outcome: failedOutcome(attempt, deps.now(), 'restore_failed',
+      outcome: restoreFailedOutcome(attempt, deps.now(),
         { stage: 'installer-still-running', message: describeInstallerStillRunning(install, targetVersion) },
-        `No other installer was started and nothing was stamped. Once it has exited, run: ${await supervisorFixCommand(attempt, deps)}`),
+        `No other installer was started and nothing was stamped. ${fixSentence(fix, targetVersion)}`, fix),
       restoreResult: 'not-attempted',
       blocksVersion: true,
     };
@@ -589,9 +593,10 @@ async function recoverOnPreviousVersion(attempt: AutoUpdateApplyAttempt, failure
       blocksVersion: false,
     };
   }
+  const fix = await supervisorFix(attempt, deps);
   return {
-    outcome: failedOutcome(attempt, deps.now(), 'restore_failed', failure,
-      `${nothingSwitched}, but ${proven.why}. ${retried} Run: ${await supervisorFixCommand(attempt, deps)}`),
+    outcome: restoreFailedOutcome(attempt, deps.now(), failure,
+      `${nothingSwitched}, but ${proven.why}. ${retried} ${fixSentence(fix, targetVersion)}`, fix),
     restoreResult: 'previous-worker-unproven',
     blocksVersion: false,
   };
@@ -623,8 +628,9 @@ async function restorePreviousVersion(
   const schema = deps.readDatabaseSchemaStamp();
   if (schema.kind === 'unreadable') {
     return {
-      outcome: failedOutcome(attempt, deps.now(), 'restore_failed', { stage: 'schema-stamp-unreadable', message: failure.message },
-        `${where} The database's schema stamp could not be read (${schema.message}), so nothing showed that ${previousVersion} can still open it: ${previousVersion} was not reinstalled and ${targetVersion}'s cache folder was not stamped. Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`),
+      outcome: restoreFailedOutcome(attempt, deps.now(), { stage: 'schema-stamp-unreadable', message: failure.message },
+        `${where} The database's schema stamp could not be read (${schema.message}), so nothing showed that ${previousVersion} can still open it: ${previousVersion} was not reinstalled and ${targetVersion}'s cache folder was not stamped. ${fixSentence(AUTO_UPDATE_FORWARD_FIX, targetVersion)}`,
+        AUTO_UPDATE_FORWARD_FIX),
       restoreResult: 'not-attempted',
       blocksVersion: true,
     };
@@ -650,8 +656,9 @@ async function restorePreviousVersion(
       };
     }
     return {
-      outcome: failedOutcome(attempt, deps.now(), 'restore_failed', { stage: 'restore-blocked-by-schema', message: failure.message },
-        `${where} ${blockedBySchema} Waited again for a worker on ${targetVersion}, but ${proven.why}. Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release that fixes ${targetVersion} is out.`),
+      outcome: restoreFailedOutcome(attempt, deps.now(), { stage: 'restore-blocked-by-schema', message: failure.message },
+        `${where} ${blockedBySchema} Waited again for a worker on ${targetVersion}, but ${proven.why}. ${fixSentence(AUTO_UPDATE_FORWARD_FIX, targetVersion)}`,
+        AUTO_UPDATE_FORWARD_FIX),
       restoreResult: 'not-attempted',
       blocksVersion: true,
     };
@@ -660,42 +667,43 @@ async function restorePreviousVersion(
   const targetDirectory = deps.pluginCacheDirectory(targetVersion);
   const stamp = deps.stampOrphaned(targetDirectory, deps.now());
   const notes = `${where} ${describeStamp(stamp, targetDirectory)}`;
-  const restoreFailed = (restoreResult: AutoUpdateRestoreResult, why: string, fixCommand: string): FinishedAttempt => ({
-    outcome: failedOutcome(attempt, deps.now(), 'restore_failed', failure,
-      `${notes} Could not restore ${previousVersion}: ${why}. Run: ${fixCommand}`),
+  const restoreFailed = (restoreResult: AutoUpdateRestoreResult, why: string, fix: AutoUpdateFix): FinishedAttempt => ({
+    outcome: restoreFailedOutcome(attempt, deps.now(), failure,
+      `${notes} Could not restore ${previousVersion}: ${why}. ${fixSentence(fix, targetVersion)}`, fix),
     restoreResult,
     blocksVersion: true,
   });
 
   const publication = await deps.readNpmPublication(previousVersion);
   if (publication.kind === 'not-published') {
-    return restoreFailed('previous-not-published', `npm does not show it published by the workflow (missing: ${publication.missing.join(', ')}), so its installer was not run`, AUTO_UPDATE_FORWARD_FIX_COMMAND);
+    return restoreFailed('previous-not-published', `npm does not show it published by the workflow (missing: ${publication.missing.join(', ')}), so its installer was not run`, AUTO_UPDATE_FORWARD_FIX);
   }
   if (publication.kind === 'failed') {
-    return restoreFailed('previous-publication-unknown', `its npm metadata could not be read (${publication.message}), so its installer was not run`, AUTO_UPDATE_FORWARD_FIX_COMMAND);
+    return restoreFailed('previous-publication-unknown', `its npm metadata could not be read (${publication.message}), so its installer was not run`, AUTO_UPDATE_FORWARD_FIX);
   }
 
   // npm shows it fully published and the database does not outrun it: it can be named.
-  const previousFixCommand = autoUpdateFixCommand(previousVersion);
+  const previousFix: AutoUpdateFix = { command: autoUpdateFixCommand(previousVersion), when: 'now' };
   const workerPidBeforeRestore = await deps.getCurrentWorkerPid();
   const restoreInstall = await deps.runInstaller(previousVersion);
   if (restoreInstall.kind === 'timed-out' && restoreInstall.installerStillRunning) {
     return {
-      outcome: failedOutcome(attempt, deps.now(), 'restore_failed', { stage: 'installer-still-running', message: failure.message },
-        `${notes} Could not restore ${previousVersion}: ${describeInstallerStillRunning(restoreInstall, previousVersion)}, so no other installer was started. Once it has exited, run: ${previousFixCommand}`),
+      outcome: restoreFailedOutcome(attempt, deps.now(), { stage: 'installer-still-running', message: failure.message },
+        `${notes} Could not restore ${previousVersion}: ${describeInstallerStillRunning(restoreInstall, previousVersion)}, so no other installer was started. ${fixSentence({ ...previousFix, when: 'once-the-running-update-has-finished' }, targetVersion)}`,
+        { ...previousFix, when: 'once-the-running-update-has-finished' }),
       restoreResult: 'restore-installer-failed',
       blocksVersion: true,
     };
   }
   const restoreInstallFailure = installerFailure(restoreInstall, previousVersion);
   if (restoreInstall.kind === 'spawn-failed' || restoreInstall.kind === 'npx-not-found') {
-    return restoreFailed('restore-installer-failed', restoreInstallFailure!.message, previousFixCommand);
+    return restoreFailed('restore-installer-failed', restoreInstallFailure!.message, previousFix);
   }
   const proven = await proveInstalledVersion(previousVersion, workerPidBeforeRestore, deps);
   if (!proven.proven) {
     return restoreInstallFailure !== null
-      ? restoreFailed('restore-installer-failed', `${restoreInstallFailure.message}, and ${proven.why}`, previousFixCommand)
-      : restoreFailed('restore-unproven', `its installer exited 0, but ${proven.why}`, previousFixCommand);
+      ? restoreFailed('restore-installer-failed', `${restoreInstallFailure.message}, and ${proven.why}`, previousFix)
+      : restoreFailed('restore-unproven', `its installer exited 0, but ${proven.why}`, previousFix);
   }
   return {
     outcome: failedOutcome(attempt, deps.now(), 'restored', failure,
@@ -705,39 +713,35 @@ async function restorePreviousVersion(
   };
 }
 
-/** What the fix-command rule reads (fixCommandForFailedRestore). */
-export interface FixCommandReadings {
-  readDatabaseSchemaStamp: () => DatabaseSchemaStampRead;
-  /** The newest schema the previous version knows; null when the code running this is not the previous version's, so it is not known. */
-  previousVersionSchemaVersion: number | null;
-  /** Gate 7's test (auto-update-check.ts readNpmPublication). */
-  readNpmPublication: (version: string) => Promise<NpmPublicationRead>;
-}
-
 /**
- * The fix a restore_failed outcome names when it has not already shown that
- * the previous version can run again: the previous version's own installer
- * only when the database's schema stamp is not newer than that version knows
- * (or there is no database) and npm shows that version fully published;
- * otherwise the forward fix. The supervisor and gate 3
- * (readInterruptedAttemptInstall) name it by this one rule.
+ * The fix a restore_failed outcome names when the target has not failed on
+ * its own (its installer is still running, nothing of it was written, or the
+ * supervisor itself threw), run now: the previous version's own installer
+ * when the database's schema stamp is not newer than that version knows (the
+ * supervisor runs that version's code, so it knows: supervisorSchemaVersion),
+ * or there is no database, and npm shows that version fully published;
+ * otherwise the target's own installer. The worker promoted the target and
+ * npm showed it fully published before the attempt started, while `latest`
+ * is set by every publish before the owner promotes it (npm-publish.yml runs
+ * a plain `npm publish`), so it can be a release the owner holds or pulled
+ * back. Where the target did fail on its own and the previous version cannot
+ * be put back, restorePreviousVersion names the forward fix instead, for once
+ * a newer release is out (AUTO_UPDATE_FORWARD_FIX).
  */
-async function fixCommandForFailedRestore(previousVersion: string, readings: FixCommandReadings): Promise<string> {
-  const schema = readings.readDatabaseSchemaStamp();
-  const previousCannotOpenTheDatabase = schema.kind === 'unreadable' || (schema.kind === 'stamped'
-    && (readings.previousVersionSchemaVersion === null || schema.schemaVersion > readings.previousVersionSchemaVersion));
-  if (previousCannotOpenTheDatabase) return AUTO_UPDATE_FORWARD_FIX_COMMAND;
-  const publication = await readings.readNpmPublication(previousVersion);
-  return publication.kind === 'published' ? autoUpdateFixCommand(previousVersion) : AUTO_UPDATE_FORWARD_FIX_COMMAND;
+async function supervisorFix(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps): Promise<AutoUpdateFix> {
+  const schema = deps.readDatabaseSchemaStamp();
+  const previousCannotOpenTheDatabase = schema.kind === 'unreadable'
+    || (schema.kind === 'stamped' && schema.schemaVersion > deps.supervisorSchemaVersion);
+  const previousCanBeNamed = !previousCannotOpenTheDatabase
+    && (await deps.readNpmPublication(attempt.previousVersion)).kind === 'published';
+  return { command: autoUpdateFixCommand(previousCanBeNamed ? attempt.previousVersion : attempt.targetVersion), when: 'now' };
 }
 
-/** The supervisor's fix command: it runs the previous version's code, so it knows that version's newest schema. */
-function supervisorFixCommand(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps): Promise<string> {
-  return fixCommandForFailedRestore(attempt.previousVersion, {
-    readDatabaseSchemaStamp: deps.readDatabaseSchemaStamp,
-    previousVersionSchemaVersion: deps.supervisorSchemaVersion,
-    readNpmPublication: deps.readNpmPublication,
-  });
+/** The fix as the outcome's message ends with it: the command, and when the fix may run. */
+function fixSentence(fix: AutoUpdateFix, targetVersion: string): string {
+  if (fix.when === 'once-the-running-update-has-finished') return `Once it has exited, run: ${fix.command}`;
+  if (fix.when === 'once-a-release-newer-than-the-target-is-out') return `Run: ${fix.command} once a release newer than ${targetVersion} is out.`;
+  return `Run: ${fix.command}`;
 }
 
 /** Where an attempt that recorded no outcome left the install, by the supervisor's readings and rules (readInterruptedAttemptInstall). */
@@ -746,10 +750,10 @@ export type InterruptedAttemptInstall =
   | { kind: 'on-previous-version'; where: string }
   /** A version newer than the target is in place: another update moved the install on, so nothing of this attempt is left to fix. */
   | { kind: 'moved-past-target'; where: string; newerVersion: string }
-  /** Anything else: part of the target is in place and nothing proved the install works, so `fixCommand` is what puts it right. */
-  | { kind: 'half-switched'; where: string; fixCommand: string };
+  /** Anything else: part of the target is in place and nothing proved the install works. */
+  | { kind: 'half-switched'; where: string };
 
-export interface InterruptedAttemptReadingDeps extends FixCommandReadings {
+export interface InterruptedAttemptReadingDeps {
   readInstallVersions: () => InstallVersionsRead;
 }
 
@@ -758,13 +762,14 @@ export interface InterruptedAttemptReadingDeps extends FixCommandReadings {
  * vanished without an outcome and whose install does not resolve to the
  * target: a reboot can kill the supervisor and its installer after the target
  * is registered, and nothing else would tell the user. The readings are the
- * supervisor's own (readInstallVersions), and the fix is named by its own rule
- * (fixCommandForFailedRestore). There is no reading from before the installer
- * to compare with, so the marketplace copy counts as holding part of the
- * target when it is damaged (some of its readings missing, or the two
- * versions apart) or intact at the target: the installer writes no other
- * version there, so a copy intact at another version (a Claude Code clone) was
- * not this attempt's doing.
+ * supervisor's own (readInstallVersions); gate 3 names the fix for a
+ * half-switched install, the target's own installer
+ * (auto-update-state-file.ts interruptedAttemptFix). There is no reading from
+ * before the installer to compare with, so the marketplace copy counts as
+ * holding part of the target when it is damaged (some of its readings
+ * missing, or the two versions apart) or intact at the target: the installer
+ * writes no other version there, so a copy intact at another version (a
+ * Claude Code clone) was not this attempt's doing.
  */
 export async function readInterruptedAttemptInstall(
   attempt: { targetVersion: string; previousVersion: string },
@@ -785,7 +790,7 @@ export async function readInterruptedAttemptInstall(
   if (resolvesAndIsRegisteredOnlyAt(read, attempt.previousVersion) && marketplaceHoldsNoneOfTheTarget) {
     return { kind: 'on-previous-version', where };
   }
-  return { kind: 'half-switched', where, fixCommand: await fixCommandForFailedRestore(attempt.previousVersion, deps) };
+  return { kind: 'half-switched', where };
 }
 
 /** The resolver picks `version`, and the npx installer's registration in installed_plugins.json names that version and no other. */
@@ -832,7 +837,37 @@ function describeStamp(stamp: OrphanedMarkerResult, targetDirectory: string): st
   return `Could not write ${marker} (${stamp.message}), so resolvers may still pick it.`;
 }
 
+/** A failed or restored outcome. A restore_failed one goes through restoreFailedOutcome, which also records its fix command. */
 function failedOutcome(
+  attempt: AutoUpdateApplyAttempt,
+  finishedAt: number,
+  result: Extract<AutoUpdateAttemptOutcome['result'], 'failed' | 'restored'>,
+  failure: AttemptFailure,
+  whatHappenedNext: string,
+): AutoUpdateAttemptOutcome {
+  return outcomeAfterFailure(attempt, finishedAt, result, failure, whatHappenedNext);
+}
+
+/**
+ * A restore_failed outcome, with its fix: the command its message names and
+ * when to run it, chosen by the rule at the call site, recorded on their own
+ * so the doctor row and the SessionStart notice never parse the message.
+ */
+function restoreFailedOutcome(
+  attempt: AutoUpdateApplyAttempt,
+  finishedAt: number,
+  failure: AttemptFailure,
+  whatHappenedNext: string,
+  fix: AutoUpdateFix,
+): AutoUpdateAttemptOutcome {
+  return {
+    ...outcomeAfterFailure(attempt, finishedAt, 'restore_failed', failure, whatHappenedNext),
+    fixCommand: fix.command,
+    fixCommandWhen: fix.when,
+  };
+}
+
+function outcomeAfterFailure(
   attempt: AutoUpdateApplyAttempt,
   finishedAt: number,
   result: Exclude<AutoUpdateAttemptOutcome['result'], 'applied'>,
@@ -871,16 +906,16 @@ async function outcomeAfterUnexpectedError(attempt: AutoUpdateApplyAttempt, deps
   if (leftOnPreviousVersion) {
     return { outcome: failedOutcome(attempt, deps.now(), 'failed', failure, whereTheInstallIs), restoreResult: 'unknown', blocksVersion: true };
   }
-  let fixCommand: string;
+  let fix: AutoUpdateFix;
   try {
-    fixCommand = await supervisorFixCommand(attempt, deps);
+    fix = await supervisorFix(attempt, deps);
   } catch (fixError: unknown) {
-    logger.error('AUTO_UPDATE', 'Could not check whether the previous version can be named as the fix; naming the forward fix', describeAttempt(attempt),
+    logger.error('AUTO_UPDATE', 'Could not check whether the previous version can be named as the fix; naming the target\'s installer', describeAttempt(attempt),
       fixError instanceof Error ? fixError : new Error(String(fixError)));
-    fixCommand = AUTO_UPDATE_FORWARD_FIX_COMMAND;
+    fix = { command: autoUpdateFixCommand(attempt.targetVersion), when: 'now' };
   }
   return {
-    outcome: failedOutcome(attempt, deps.now(), 'restore_failed', failure, `${whereTheInstallIs} Nothing restored ${attempt.previousVersion}. Run: ${fixCommand}`),
+    outcome: restoreFailedOutcome(attempt, deps.now(), failure, `${whereTheInstallIs} Nothing restored ${attempt.previousVersion}. ${fixSentence(fix, attempt.targetVersion)}`, fix),
     restoreResult: 'unknown',
     blocksVersion: true,
   };

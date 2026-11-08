@@ -512,13 +512,13 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     }
   });
 
-  it('gives gate 3 the supervisor\'s readings of an interrupted attempt, told this worker\'s own version', () => {
+  it('gives gate 3 the supervisor\'s readings of an interrupted attempt', () => {
     const workerFixture = buildWorkerFixture();
     // Stubbed, so nothing reads the real install.
     const reader = async () => ({ kind: 'on-previous-version' as const, where: 'stub' });
     const readerFactory = spyOn(autoUpdateLaunch, 'workerInterruptedAttemptReader').mockImplementation(() => reader);
     const deps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
-    expect(readerFactory.mock.calls).toEqual([[{ workerVersion: expect.any(String) }]]);
+    expect(readerFactory.mock.calls).toEqual([[]]);
     expect(deps.readInterruptedAttemptInstall).toBe(reader);
   });
 

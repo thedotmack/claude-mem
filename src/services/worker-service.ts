@@ -53,19 +53,16 @@ import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 import {
   AUTO_UPDATE_FIRST_TICK_DELAY_MS,
   AUTO_UPDATE_TICK_INTERVAL_MS,
-  claudeCodeManagedSettingsDirectory,
   fetchJsonWithTimeout,
   isWorkerQuietBySignals,
   logFailedAutoUpdateTick,
-  readAutoUpdateSettings,
-  readClaudeCodePluginState,
-  readClaudeCodeSettingsEnvBlocks,
   runAutoUpdateCheck,
   writeClaudeCodeKnownMarketplacesUnlessReadOnly,
   type AutoUpdateCheckDeps,
   type AutoUpdateOncePerBootLogKey,
 } from './auto-update/auto-update-check.js';
-import { readAutoUpdateState, writeAutoUpdateState } from './auto-update/auto-update-state.js';
+import { readAutoUpdateState, resolveAutoUpdateFailuresOnWorkerReady, writeAutoUpdateState } from './auto-update/auto-update-state.js';
+import { productionAutoUpdateSwitchReaders } from './auto-update/auto-update-switch-readers.js';
 import {
   AUTO_UPDATE_APPLY_COMMAND,
   findNpxForTheInstaller,
@@ -74,7 +71,7 @@ import {
   runAutoUpdateApplyCli,
   workerInterruptedAttemptReader,
 } from './auto-update/auto-update-launch.js';
-import { claudeSettingsPath, installedPluginsPath, knownMarketplacesPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
+import { knownMarketplacesPath } from '../npx-cli/utils/paths.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -684,26 +681,14 @@ export class WorkerService implements WorkerRef {
   private buildAutoUpdateCheckDeps(oncePerBootLogsWritten: Set<AutoUpdateOncePerBootLogKey>): AutoUpdateCheckDeps {
     return {
       now: Date.now,
-      env: process.env,
-      readSettings: () => readAutoUpdateSettings(USER_SETTINGS_PATH),
-      readClaudeCodeSettingsEnv: () => readClaudeCodeSettingsEnvBlocks({
-        userSettingsPath: claudeSettingsPath(),
-        managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
-      }),
-      // known_marketplaces.json is the file install.ts registerMarketplace
-      // writes, read and written at the same path, with the same atomic writer.
-      readClaudeCodePluginState: () => readClaudeCodePluginState({
-        userSettingsPath: claudeSettingsPath(),
-        installedPluginsPath: installedPluginsPath(),
-        knownMarketplacesPath: knownMarketplacesPath(),
-      }),
+      // Gates 1 and 2 read the files doctor's Auto-update row reads, with the same readers.
+      ...productionAutoUpdateSwitchReaders({ env: process.env, resolvePluginRoot: () => resolvePluginRoot() }),
+      // known_marketplaces.json is written back at the path it is read from,
+      // with the atomic writer install.ts registerMarketplace uses.
       writeClaudeCodeKnownMarketplaces: (knownMarketplaces) => writeClaudeCodeKnownMarketplacesUnlessReadOnly(knownMarketplacesPath(), knownMarketplaces),
       findNpxOnWorkerPath: () => findNpxForTheInstaller(),
       readState: () => readAutoUpdateState(),
       writeState: (state) => writeAutoUpdateState(state),
-      resolvePluginRoot: () => resolvePluginRoot(),
-      pluginCacheRootDirectory,
-      marketplaceDirectory,
       fetchJson: fetchJsonWithTimeout,
       // isWorkerQuietBySignals explains which signals count and why.
       isWorkerQuiet: () => isWorkerQuietBySignals({
@@ -718,9 +703,7 @@ export class WorkerService implements WorkerRef {
         getRunningBackgroundJobs: () => this.runningBackgroundJobNames(),
       }, Date.now()),
       isProcessAlive: isPidAlive,
-      // This worker's own baked version: the fix rule trusts this code's
-      // newest schema only when it is the previous version's.
-      readInterruptedAttemptInstall: workerInterruptedAttemptReader({ workerVersion: packageVersion }),
+      readInterruptedAttemptInstall: workerInterruptedAttemptReader(),
       isWorkerShuttingDown: () => this.isShuttingDown,
       // The installer runs outside the worker: a detached hop starts the
       // supervisor from this worker's own script and exits, so no restart or
@@ -776,6 +759,45 @@ export class WorkerService implements WorkerRef {
     if (this.corpusRoutes.corpusBuildsRunning() > 0) running.push('corpus-build');
     if (this.sessionManager.getSessionWrapupsInFlight() > 0) running.push('telegram-session-wrapup');
     return running;
+  }
+
+  /**
+   * Run once initialization has completed, the moment GET /api/ready reports
+   * ready: a worker that finished starting on the version the install
+   * resolves to proves the install works, however it was fixed (the fix
+   * command, Claude Code's /plugin update, `npx claude-mem repair`, an older
+   * installer, or this worker on the previous version coming up after the
+   * supervisor gave up). So an unresolved restore_failed outcome, and an
+   * attempt cut off without an outcome, are marked resolved with the time and
+   * this worker's version, and the SessionStart notice and the doctor warning
+   * stop. Nothing is marked while an attempt's supervisor may still be
+   * working (auto-update-state-file.ts markAutoUpdateFailuresResolvedByReadyWorker
+   * says when). A state file that cannot be read or written is logged and
+   * never fails the worker's start.
+   */
+  private resolveAutoUpdateFailuresNowThatThisWorkerIsReady(): void {
+    try {
+      const resolved = resolveAutoUpdateFailuresOnWorkerReady({
+        now: Date.now(),
+        workerVersion: packageVersion,
+        resolvedVersion: resolvePluginRoot()?.version ?? null,
+        isProcessAlive: isPidAlive,
+      });
+      if (resolved.outcome !== null) {
+        logger.info('AUTO_UPDATE', `This worker on ${packageVersion} finished starting, so the failed automatic update to ${resolved.outcome.targetVersion} no longer needs a fix`, {
+          failureStage: resolved.outcome.failureStage,
+        });
+      }
+      if (resolved.interruptedAttempt !== null) {
+        logger.info('AUTO_UPDATE', `This worker on ${packageVersion} finished starting, so the interrupted automatic update to ${resolved.interruptedAttempt.targetVersion} no longer needs a fix`, {
+          attemptStartedAt: new Date(resolved.interruptedAttempt.startedAt).toISOString(),
+        });
+      }
+    } catch (error: unknown) {
+      logger.warn('AUTO_UPDATE', 'Could not mark auto-update failures resolved after this worker finished starting; the notice and doctor may still show them until the next start', {
+        workerVersion: packageVersion,
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private stopAutoUpdateTimer(): void {
@@ -1254,6 +1276,7 @@ export class WorkerService implements WorkerRef {
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+      this.resolveAutoUpdateFailuresNowThatThisWorkerIsReady();
 
       // Lifecycle telemetry. Profile-less: a person on this id would make every
       // later worker event bill as identified. ide is

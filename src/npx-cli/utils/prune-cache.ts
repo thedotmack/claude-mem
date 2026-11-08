@@ -10,7 +10,7 @@ import {
   type WorkerScriptCandidate,
 } from '../../shared/worker-utils.js';
 import { readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
-import { readJsonSafe } from '../../utils/json-utils.js';
+import { readClaudeMemRegistrationEntries, readUserScopeClaudeMemInstallPaths, registeredInstallPathsOf } from '../../shared/claude-code-plugin-paths.js';
 
 /**
  * Versions of the plugin cache to keep: the newly installed one (N) and the
@@ -239,7 +239,7 @@ export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
  * Throws on a corrupt registry, before anything is deleted.
  */
 export function readRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
-  return cacheVersionsOf(readClaudeMemRegistrations(registryPath));
+  return registeredInstallPathsOf(readClaudeMemRegistrationEntries(registryPath)).map(installPath => basename(installPath));
 }
 
 /**
@@ -253,23 +253,7 @@ export function readRegisteredCacheVersions(registryPath: string = installedPlug
  * a corrupt registry, as readRegisteredCacheVersions does.
  */
 export function readUserScopeRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
-  return cacheVersionsOf(readClaudeMemRegistrations(registryPath)
-    .filter(entry => (entry as { scope?: unknown } | null)?.scope === 'user'));
-}
-
-/** claude-mem@thedotmack's entries in installed_plugins.json, every scope; readJsonSafe throws on a corrupt file. */
-function readClaudeMemRegistrations(registryPath: string): unknown[] {
-  const registry = readJsonSafe<{ plugins?: Record<string, unknown> } | null>(registryPath, {});
-  const entries = registry?.plugins?.['claude-mem@thedotmack'];
-  return Array.isArray(entries) ? entries : [];
-}
-
-/** The basename of each entry's `installPath`: its cache version directory. */
-function cacheVersionsOf(entries: unknown[]): string[] {
-  return entries
-    .map(entry => (entry as { installPath?: unknown } | null)?.installPath)
-    .filter((installPath): installPath is string => typeof installPath === 'string' && installPath.length > 0)
-    .map(installPath => basename(installPath));
+  return readUserScopeClaudeMemInstallPaths(registryPath).map(installPath => basename(installPath));
 }
 
 export interface PruneProtection {

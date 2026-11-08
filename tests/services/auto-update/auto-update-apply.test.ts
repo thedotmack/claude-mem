@@ -526,6 +526,8 @@ describe('applyAutoUpdate', () => {
       failureStage: 'prove-install',
       message: expect.stringContaining('no worker on 15.13.0 finished starting within the startup ceiling'),
     });
+    // Only restore_failed names a fix: a restored install works.
+    expect(harness.stored().lastAttemptOutcome!.fixCommand).toBeUndefined();
     expectFailureTelemetry(harness, 'prove-install', 'restored');
   });
 
@@ -568,10 +570,11 @@ describe('applyAutoUpdate', () => {
     expect(harness.killedWorkers).toEqual([]);
     expect(harness.proofs.at(-1)).toEqual({ oldPid: null, version: TARGET });
     const outcome = harness.stored().lastAttemptOutcome!;
-    expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema' });
+    // Only a release newer than the target can fix it: the condition is recorded with the command, as the message states it.
+    expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND, fixCommandWhen: 'once-a-release-newer-than-the-target-is-out' });
     expect(outcome.message).toContain(`The database is stamped with schema v${LATEST_SCHEMA_VERSION + 1}, newer than the v${LATEST_SCHEMA_VERSION} that 15.12.0 knows, so 15.12.0 cannot open the database any more`);
     expect(outcome.message).toContain('Waited again for a worker on 15.13.0, but the worker on 15.13.0 reported that its startup failed (pid 7002: SQLITE_CORRUPT during migrations).');
-    expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release that fixes 15.13.0 is out.`);
+    expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release newer than 15.13.0 is out.`);
     expect(outcome.message).not.toContain(autoUpdateFixCommand(PREVIOUS));
     expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
     expectFailureTelemetry(harness, 'restore-blocked-by-schema', 'not-attempted');
@@ -627,9 +630,9 @@ describe('applyAutoUpdate', () => {
       expect(harness.workerStarts()).toBe(0);
       expect(harness.killedWorkers).toEqual([]);
       const outcome = harness.stored().lastAttemptOutcome!;
-      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema' });
+      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND, fixCommandWhen: 'once-a-release-newer-than-the-target-is-out' });
       expect(outcome.message).toContain('the worker on 15.13.0 reported that its startup failed');
-      expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release that fixes 15.13.0 is out.`);
+      expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND} once a release newer than 15.13.0 is out.`);
       expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
     });
 
@@ -643,7 +646,7 @@ describe('applyAutoUpdate', () => {
       expect(harness.killedWorkers).toEqual([]);
       expect(harness.world.worker).toMatchObject({ pid: OLD_WORKER_PID + 1, version: TARGET, answers: false });
       const outcome = harness.stored().lastAttemptOutcome!;
-      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema' });
+      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'restore-blocked-by-schema', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND });
       expect(outcome.message).toContain('a worker process (pid 7002) was running but not answering, so none was started or stopped, and no worker on 15.13.0 finished starting within the startup ceiling');
       expect(outcome.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`);
     });
@@ -700,6 +703,7 @@ describe('applyAutoUpdate', () => {
       result: 'restore_failed',
       failureStage: 'schema-stamp-unreadable',
       message: expect.stringContaining(`could not be read`),
+      fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND,
     });
     expect(harness.stored().lastAttemptOutcome!.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`);
   });
@@ -720,6 +724,7 @@ describe('applyAutoUpdate', () => {
       result: 'restore_failed',
       failureStage: 'prove-install',
       message: expect.stringMatching(new RegExp(`Could not restore ${PREVIOUS}: the installer for ${PREVIOUS} exited with code 1, and the install resolves to ${TARGET}, not ${PREVIOUS}\\. Run: npx claude-mem@${PREVIOUS} update$`)),
+      fixCommand: autoUpdateFixCommand(PREVIOUS),
     });
     expect(harness.stored().inFlightAttempt).toBeNull();
     expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
@@ -739,7 +744,7 @@ describe('applyAutoUpdate', () => {
     // The stamp still lands first, so every resolver skips the target's cache folder.
     expect(harness.isOrphaned(TARGET)).toBe(true);
     const outcome = harness.stored().lastAttemptOutcome!;
-    expect(outcome).toMatchObject({ result: 'restore_failed' });
+    expect(outcome).toMatchObject({ result: 'restore_failed', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND });
     expect(outcome.message).toContain(`npm does not show it published by the workflow (missing: gitHead, SLSA provenance), so its installer was not run. Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`);
     expect(outcome.message).not.toContain(autoUpdateFixCommand(PREVIOUS));
     expectFailureTelemetry(harness, 'prove-install', 'previous-not-published');
@@ -757,6 +762,7 @@ describe('applyAutoUpdate', () => {
     expect(harness.installerRuns).toEqual([TARGET]);
     expect(harness.stored().lastAttemptOutcome!.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`);
     expect(harness.stored().lastAttemptOutcome!.message).not.toContain(autoUpdateFixCommand(PREVIOUS));
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'restore_failed', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND });
     expectFailureTelemetry(harness, 'prove-install', 'previous-publication-unknown');
   });
 
@@ -1009,7 +1015,8 @@ describe('applyAutoUpdate', () => {
       expect(harness.isOrphaned(TARGET)).toBe(false);
       expect(harness.proofs).toEqual([]);
       const outcome = harness.stored().lastAttemptOutcome!;
-      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'installer-still-running' });
+      // The fix may run only once the installer still running has finished: recorded with the command, as the message states it.
+      expect(outcome).toMatchObject({ result: 'restore_failed', failureStage: 'installer-still-running', fixCommand: autoUpdateFixCommand(PREVIOUS), fixCommandWhen: 'once-the-running-update-has-finished' });
       expect(outcome.message).toContain('killing its process tree failed (taskkill failed for PID 4321 (exit 1): Access is denied.), but its process (pid 4321) was still running after it');
       expect(outcome.message).toContain(`Once it has exited, run: ${autoUpdateFixCommand(PREVIOUS)}`);
       expectFailureTelemetry(harness, 'installer-still-running', 'not-attempted');
@@ -1031,6 +1038,8 @@ describe('applyAutoUpdate', () => {
         result: 'restore_failed',
         failureStage: 'installer-still-running',
         message: expect.stringContaining('its process tree was killed, but its process (pid 4322) was still running after it, so no other installer was started. Once it has exited, run: npx claude-mem@15.12.0 update'),
+        fixCommand: autoUpdateFixCommand(PREVIOUS),
+        fixCommandWhen: 'once-the-running-update-has-finished',
       });
       expectFailureTelemetry(harness, 'installer-still-running', 'restore-installer-failed');
     });
@@ -1070,10 +1079,12 @@ describe('applyAutoUpdate', () => {
       result: 'restore_failed',
       failureStage: 'supervisor-exception',
       message: expect.stringContaining(`The install resolves to ${TARGET}; installed_plugins.json registers ${TARGET}; the marketplace copy is ${TARGET}. Nothing restored ${PREVIOUS}. Run: npx claude-mem@${PREVIOUS} update`),
+      fixCommand: autoUpdateFixCommand(PREVIOUS),
+      fixCommandWhen: 'now',
     });
   });
 
-  it('an exception after the target stamped its newer schema names the forward fix, never the previous version', async () => {
+  it('an exception after the target stamped its newer schema names the target\'s own installer, to run now: never the previous version, nor latest', async () => {
     silenceLogger();
     const harness = buildApplyHarness({
       installers: {
@@ -1087,8 +1098,11 @@ describe('applyAutoUpdate', () => {
 
     await applyAutoUpdate(attempt, harness.deps);
 
-    expect(harness.stored().lastAttemptOutcome!.message).toContain(`Run: ${AUTO_UPDATE_FORWARD_FIX_COMMAND}`);
+    // The target was promoted and shown fully published before the attempt; latest may be a release the owner holds.
+    expect(harness.stored().lastAttemptOutcome!.message).toContain(`Run: ${autoUpdateFixCommand(TARGET)}`);
     expect(harness.stored().lastAttemptOutcome!.message).not.toContain(autoUpdateFixCommand(PREVIOUS));
+    expect(harness.stored().lastAttemptOutcome!.message).not.toContain(AUTO_UPDATE_FORWARD_FIX_COMMAND);
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({ fixCommand: autoUpdateFixCommand(TARGET), fixCommandWhen: 'now' });
   });
 
   it('spawn failure: an installer that cannot start fails at installer-spawn and leaves the previous version running', async () => {
@@ -1151,9 +1165,31 @@ describe('applyAutoUpdate', () => {
       result: 'restore_failed',
       failureStage: 'installer-exit',
       message: expect.stringContaining(`but after starting a worker (dead), no worker on ${PREVIOUS} finished starting within the startup ceiling (360 s, last /api/ready phase: null). Nothing of ${TARGET} was written, so it is tried again at the next due check. Run: npx claude-mem@${PREVIOUS} update`),
+      fixCommand: autoUpdateFixCommand(PREVIOUS),
+      fixCommandWhen: 'now',
     });
     expect(harness.stored().versionsThatFailedToApply).toEqual([]);
     expectFailureTelemetry(harness, 'installer-exit', 'previous-worker-unproven');
+  });
+
+  it('the same, with a previous version npm does not show fully published: the target\'s own installer, to run now, never latest', async () => {
+    silenceLogger();
+    const harness = buildApplyHarness({
+      installers: { [TARGET]: stopsTheWorkerThenExits(1) },
+      workerWillNotStart: true,
+      publication: { kind: 'not-published', missing: ['gitHead', 'SLSA provenance'] },
+    });
+
+    await applyAutoUpdate(attempt, harness.deps);
+
+    // Nothing of the target was written, and the worker promoted it and npm showed it fully published before the attempt.
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({
+      result: 'restore_failed',
+      message: expect.stringContaining(`Nothing of ${TARGET} was written, so it is tried again at the next due check. Run: npx claude-mem@${TARGET} update`),
+      fixCommand: autoUpdateFixCommand(TARGET),
+      fixCommandWhen: 'now',
+    });
+    expect(harness.stored().lastAttemptOutcome!.message).not.toContain(AUTO_UPDATE_FORWARD_FIX_COMMAND);
   });
 
   describe('the final write', () => {
@@ -1262,16 +1298,9 @@ describe('applyAutoUpdate', () => {
 describe('readInterruptedAttemptInstall', () => {
   const versions = { targetVersion: TARGET, previousVersion: PREVIOUS };
 
-  function readingDeps(install: ScratchInstall, overrides: Partial<InterruptedAttemptReadingDeps> = {}) {
-    const publicationReads: string[] = [];
-    const deps: InterruptedAttemptReadingDeps = {
-      readInstallVersions: () => readScratchInstallVersions(install),
-      readDatabaseSchemaStamp: () => readDatabaseSchemaStamp(install.databasePath),
-      previousVersionSchemaVersion: LATEST_SCHEMA_VERSION,
-      readNpmPublication: async (version) => { publicationReads.push(version); return { kind: 'published' }; },
-      ...overrides,
-    };
-    return { deps, publicationReads };
+  /** The supervisor's own reading of the scratch install; gate 3 names the fix itself, so nothing else is read. */
+  function readingDeps(install: ScratchInstall): { deps: InterruptedAttemptReadingDeps } {
+    return { deps: { readInstallVersions: () => readScratchInstallVersions(install) } };
   }
 
   /** Cut off after "Registering plugin", before "Setting up runtime": the target registered, its folders without dependencies. */
@@ -1284,47 +1313,14 @@ describe('readInterruptedAttemptInstall', () => {
     return install;
   }
 
-  it('the target registered but not resolvable: half-switched, naming the previous version once npm shows it published', async () => {
+  it('the target registered but not resolvable: half-switched, with where the install is', async () => {
     const install = cutOffAfterRegistering();
     expect(readScratchInstallVersions(install).resolved).toBe(PREVIOUS);
-    const { deps, publicationReads } = readingDeps(install);
 
-    expect(await readInterruptedAttemptInstall(versions, deps)).toEqual({
+    expect(await readInterruptedAttemptInstall(versions, readingDeps(install).deps)).toEqual({
       kind: 'half-switched',
       where: `The install resolves to ${PREVIOUS}; installed_plugins.json registers ${TARGET}; the marketplace copy is ${TARGET}.`,
-      fixCommand: autoUpdateFixCommand(PREVIOUS),
     });
-    expect(publicationReads).toEqual([PREVIOUS]);
-  });
-
-  it('names the forward fix by the supervisor\'s rule: a schema the previous version cannot open, one this code cannot judge, or a previous version npm does not show published', async () => {
-    const install = cutOffAfterRegistering();
-    const forward = { kind: 'half-switched', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND };
-
-    writeDatabaseStamped(install, LATEST_SCHEMA_VERSION + 1);
-    const newerSchema = readingDeps(install);
-    expect(await readInterruptedAttemptInstall(versions, newerSchema.deps)).toMatchObject(forward);
-    expect(newerSchema.publicationReads).toEqual([]);
-
-    // The reading worker runs another version than the previous one, so it does not know that version's newest schema.
-    writeDatabaseStamped(install, LATEST_SCHEMA_VERSION);
-    expect(await readInterruptedAttemptInstall(versions, readingDeps(install, { previousVersionSchemaVersion: null }).deps)).toMatchObject(forward);
-    expect(await readInterruptedAttemptInstall(versions, readingDeps(install).deps)).toMatchObject({ fixCommand: autoUpdateFixCommand(PREVIOUS) });
-
-    expect(await readInterruptedAttemptInstall(versions, readingDeps(install, {
-      readNpmPublication: async () => ({ kind: 'not-published', missing: ['SLSA provenance'] }),
-    }).deps)).toMatchObject(forward);
-
-    // A file of its own: behind the writes above, SQLite would still read the stamp from their WAL frames.
-    const unreadable = cutOffAfterRegistering();
-    writeFileSync(unreadable.databasePath, 'not a sqlite database');
-    expect(await readInterruptedAttemptInstall(versions, readingDeps(unreadable).deps)).toMatchObject(forward);
-  });
-
-  it('no database yet: nothing the previous version could refuse, so it is named even when the reading worker cannot judge schemas', async () => {
-    const install = cutOffAfterRegistering();
-    expect(await readInterruptedAttemptInstall(versions, readingDeps(install, { previousVersionSchemaVersion: null }).deps))
-      .toMatchObject({ kind: 'half-switched', fixCommand: autoUpdateFixCommand(PREVIOUS) });
   });
 
   it('a marketplace copy cut off partway through, with everything else at the previous version: half-switched', async () => {
@@ -1338,7 +1334,7 @@ describe('readInterruptedAttemptInstall', () => {
     });
   });
 
-  it('everything at the previous version, with no marketplace copy or one intact at another older version (a Claude Code clone): on the previous version, with no npm read', async () => {
+  it('everything at the previous version, with no marketplace copy or one intact at another older version (a Claude Code clone): on the previous version', async () => {
     const layouts: Array<(install: ScratchInstall) => void> = [
       (install) => writeCompleteInstall(install, PREVIOUS),
       cacheOnlyLayout(PREVIOUS),
@@ -1347,9 +1343,7 @@ describe('readInterruptedAttemptInstall', () => {
     for (const layout of layouts) {
       const install = createScratchInstall();
       layout(install);
-      const { deps, publicationReads } = readingDeps(install);
-      expect(await readInterruptedAttemptInstall(versions, deps)).toMatchObject({ kind: 'on-previous-version' });
-      expect(publicationReads).toEqual([]);
+      expect(await readInterruptedAttemptInstall(versions, readingDeps(install).deps)).toMatchObject({ kind: 'on-previous-version' });
     }
   });
 
