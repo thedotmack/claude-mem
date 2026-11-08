@@ -19,5 +19,5 @@ Your memory lives in ~/.claude-mem on this machine: the SQLite database, vector 
 What leaves the machine:
 
 - What the observer reads goes to the model you chose to run it: your Claude plan unless you picked another provider (Codex, OpenRouter, Gemini, or the claude-mem observer on CMEM Pro).
-- During install, cmem.ai is contacted once to create the sign-in link, with a numbers-only usage summary (observation counts and token totals; no prompts, paths, or project names). Nothing else goes to cmem.ai unless you sign in and turn on something that uses it (cloud sync, CMEM Pro's hosted observer, a provider that runs through your cmem.ai account) or choose to upload your prompts during browser setup.
+- During install, cmem.ai gets only your email and optional note if you share them when the installer asks (it's optional and asked once), and a numbers-only usage summary (observation counts and token totals; no prompts, paths, or project names) when setup creates a sign-in link. Nothing else goes to cmem.ai unless you sign in and turn on something that uses it (cloud sync, CMEM Pro's hosted observer, a provider that runs through your cmem.ai account) or choose to upload your prompts during browser setup.
 - Anonymous usage analytics (telemetry) are on by default. Turn them off with `npx claude-mem telemetry disable`, or set `DO_NOT_TRACK=1`.

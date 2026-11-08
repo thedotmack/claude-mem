@@ -70,6 +70,33 @@ afterEach(() => {
 });
 
 describe('drainHookSpool', () => {
+  it('retires delayed metadata entries after explicit session deletion', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    const sessionDbId = store.createSDKSession('deleted-session', 'project', '', undefined, 'claude');
+    store.markSessionDeleted('claude', 'deleted-session');
+    store.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(sessionDbId);
+    spool.enqueue('advisor_calls', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', cwd: '/repo',
+      calls: [{ toolUseId: 'srvtoolu_deleted_1', advice: 'old advice', occurredAtEpoch: 1 }],
+    });
+    spool.enqueue('session_end', { contentSessionId: 'deleted-session', platformSource: 'claude' });
+    const bucketDir = resolveDeliverableBucketDir('repo');
+    mkdirSync(bucketDir, { recursive: true });
+    const bucketPath = join(bucketDir, 'old-abcdef12.html');
+    writeFileSync(bucketPath, '<h1>old</h1>');
+    spool.enqueue('deliverables', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', cwd: '/repo', project: 'repo',
+      files: [{ sourcePath: '/repo/old.html', bucketPath, title: 'old.html', kind: 'page', bytes: 12, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 }],
+      errors: [],
+    });
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 3, retained: 0, quarantined: 0, expired: 0 });
+    expect(store.findSessionDbIdByContentSessionId('deleted-session', 'claude')).toBeNull();
+    expect(sessionManager.requestSessionWrapup).not.toHaveBeenCalled();
+    expect(store.getAdvisorCalls(0, 10).items).toEqual([]);
+    expect(store.getDeliverable(1)).toBeNull();
+  });
+
   it('discards legacy inference while still delivering metadata', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     const spies = {

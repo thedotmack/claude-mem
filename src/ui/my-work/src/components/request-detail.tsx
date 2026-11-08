@@ -1,3 +1,5 @@
+import { displayTime } from '@/lib/display-time'
+import { interpolate, t, useI18n } from '@/lib/i18n'
 import { useEffect, useRef, useState } from 'react'
 import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-react'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
@@ -21,6 +23,8 @@ import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBa
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
+import { ObsMediaStrip } from './observation-media/ObsMedia'
+import { requestImages } from './observation-media/request-images'
 
 const RECENT_RECORDS = 5
 
@@ -39,7 +43,7 @@ function Disclosure({ label, children }: { label: string; children: React.ReactN
     <Collapsible className="group/disclosure">
       <CollapsibleTrigger className="flex min-h-11 w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground md:min-h-9">
         <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]/disclosure:rotate-180 motion-reduce:transition-none" />
-        {label}
+        {t(label)}
       </CollapsibleTrigger>
       <CollapsibleContent className="pt-2">{children}</CollapsibleContent>
     </Collapsible>
@@ -54,12 +58,18 @@ function Records({ records }: { records: Request['granular'] }) {
           <div className="flex items-center gap-2">
             <QueueItemIndicator completed={record.kind === 'memory'} />
             <QueueItemContent className="text-xs">{record.text}</QueueItemContent>
-            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{record.kind === 'memory' ? 'memory' : 'work'} · {record.at}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{record.kind === 'memory' ? t("memory") : t("work")} · {displayTime(record.at)}</span>
           </div>
+          {record.media && <div className="mt-1.5 pl-6"><ObsMediaStrip media={record.media} title={record.text} /></div>}
         </QueueItem>
       ))}
     </QueueList>
   )
+}
+
+/** The drawer is a Radix modal whose Escape closes it; while the image viewer inside it is open, Escape closes only the viewer. */
+function keepDrawerOpenForGallery(event: KeyboardEvent) {
+  if (event.target instanceof Element && event.target.closest('.obs-media-gallery')) event.preventDefault()
 }
 
 type CheckNotice = { tone: 'saved' | 'problem'; message: string }
@@ -115,7 +125,7 @@ function CheckAction({ request }: { request: Request }) {
     return next.tone !== 'problem'
   }
   const noticeLine = notice && (
-    <p role="status" className={cn('w-full text-xs', notice.tone === 'problem' ? 'font-medium text-foreground' : 'text-muted-foreground')}>{notice.message}</p>
+    <p role="status" className={cn('w-full text-xs', notice.tone === 'problem' ? 'font-medium text-foreground' : 'text-muted-foreground')}>{t(notice.message)}</p>
   )
   if (request.review?.available === false) return (
     <p role="status" className="rounded-xl border p-4 text-sm text-muted-foreground">{request.review.message ?? 'This review is unavailable until the shared state is complete. Nothing was changed.'}</p>
@@ -132,8 +142,8 @@ function CheckAction({ request }: { request: Request }) {
     return (
       <Req ids={['R6.2', 'R13.7']}>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-review-border bg-review p-4 text-sm text-review-foreground">
-          <span>Done. Check it, then mark this version checked.</span>
-          <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />Mark checked</SaveButton>
+          <span>{t("Done. Check it, then mark this version checked.")}</span>
+          <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />{t("Mark checked")}</SaveButton>
           {noticeLine}
         </div>
       </Req>
@@ -141,13 +151,13 @@ function CheckAction({ request }: { request: Request }) {
   }
   if (!request.checkedAt) return noticeLine
   const savedWhere = request.review?.mode === 'shared'
-    ? request.review.pending ? 'Saved here; waiting to sync to your other viewers.' : 'Saved as a shared review decision.'
-    : sourceKind === 'cloud' ? 'Saved in your cloud viewer only. My Work sharing is off.' : sourceKind !== 'sample' ? 'Saved on this machine only.' : mode === 'web' ? `Saved from the web · syncing to ${devices.length} machines (demonstration)` : 'Saved on this machine (demonstration)'
+    ? request.review.pending ? t('Saved here; waiting to sync to your other viewers.') : t('Saved as a shared review decision.')
+    : sourceKind === 'cloud' ? t('Saved in your cloud viewer only. My Work sharing is off.') : sourceKind !== 'sample' ? t('Saved on this machine only.') : mode === 'web' ? interpolate(t('Saved from the web · syncing to {count} machines (demonstration)'), { count: devices.length }) : t('Saved on this machine (demonstration)')
   return (
     <Req ids={['R6.2', 'R13.7']}>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-surface p-4 text-sm">
-        <span role="status">{notice?.tone === 'saved' ? notice.message : `Checked ${request.checkedAt}.`} Shipping is still your call. {notice?.tone !== 'saved' && <span className="text-muted-foreground">{savedWhere}</span>}</span>
-        <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />Undo</SaveButton>
+        <span role="status">{interpolate(t('{checked} Shipping is still your call. '), { checked: notice?.tone === 'saved' ? t(notice.message) : interpolate(t('Checked {checkedAt}.'), { checkedAt: request.checkedAt }) })}{notice?.tone !== 'saved' && <span className="text-muted-foreground">{savedWhere}</span>}</span>
+        <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />{t("Undo")}</SaveButton>
         {notice?.tone === 'problem' && noticeLine}
       </div>
     </Req>
@@ -204,10 +214,10 @@ function MoveTo({ request }: { request: Request }) {
     <Req ids={['R16.6']}>
       <div className="space-y-1">
         <Select value="" onValueChange={move} disabled={changes.saving}>
-          <SelectTrigger aria-label="Move to another focus area" size="sm" className="h-11 text-xs md:h-8"><SelectValue placeholder={changes.saving ? 'Moving…' : 'Move to…'} /></SelectTrigger>
+          <SelectTrigger aria-label={t("Move to another focus area")} size="sm" className="h-11 text-xs md:h-8"><SelectValue placeholder={changes.saving ? t("Moving…") : t("Move to…")} /></SelectTrigger>
           <SelectContent>
-            {targets.map((area) => <SelectItem key={area.id} value={area.id}>{area.name}{area.status === 'suggested' ? ' · suggested' : ''}</SelectItem>)}
-            {current !== OTHER_FOCUS_AREA_ID && <SelectItem value={OTHER_FOCUS_AREA_ID}>Other</SelectItem>}
+            {targets.map((area) => <SelectItem key={area.id} value={area.id}>{area.name}{area.status === 'suggested' ? t(" · suggested") : ''}</SelectItem>)}
+            {current !== OTHER_FOCUS_AREA_ID && <SelectItem value={OTHER_FOCUS_AREA_ID}>{t("Other")}</SelectItem>}
           </SelectContent>
         </Select>
         <FocusChangeBar changes={changes} />
@@ -218,6 +228,7 @@ function MoveTo({ request }: { request: Request }) {
 
 /** The request page (§3): whose move and what's next first, then outcome, then the layers underneath, collapsed. */
 export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  useI18n()
   const readDetail = useStore((state) => state.loadRequestDetail)
   const [retry, setRetry] = useState(0)
   const [detail, setDetail] = useState<{ key: string; request?: Request; error?: string } | null>(null)
@@ -248,11 +259,11 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
       <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
         <SheetHeader className="gap-3 border-b p-5 md:p-6">
-          <SheetTitle className="pr-8 text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? 'Untitled request'}</SheetTitle>
-          <SheetDescription>{request.summary ?? request.resolvesTo?.summary ?? 'Request details'}</SheetDescription>
+          <SheetTitle className="pr-8 text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? t('Untitled request')}</SheetTitle>
+          <SheetDescription>{request.summary ?? request.resolvesTo?.summary ?? t('Request details')}</SheetDescription>
         </SheetHeader>
         <div className="space-y-3 p-5 md:p-6" aria-live="polite">
-          {current?.error ? <><p role="alert" className="text-sm text-muted-foreground">{current.error}</p><Button variant="outline" onClick={() => setRetry((value) => value + 1)}>Try again</Button></> : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner className="size-4" />Loading request detail…</p>}
+          {current?.error ? <><p role="alert" className="text-sm text-muted-foreground">{t(current.error)}</p><Button variant="outline" onClick={() => setRetry((value) => value + 1)}>{t('Try again')}</Button></> : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner className="size-4" />{t('Loading request detail…')}</p>}
         </div>
       </SheetContent>
     </Sheet>
@@ -260,12 +271,14 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
 }
 
 function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Request; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  useI18n()
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
+  const images = requestImages(request)
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+      <SheetContent onEscapeKeyDown={keepDrawerOpenForGallery} className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
         <Req ids={['R3.6', 'R3.2']}>
           <SheetHeader className="gap-3 border-b p-5 md:p-6">
             <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /></div>
@@ -286,13 +299,15 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
               <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
               {/* Sample fixtures change in memory; live requests save as my-focus rows. */}
               <MoveTo request={request} />
-              <span>Asked by {request.askedBy} · started {request.startedAt} · {request.runningFor} · {request.stage}</span>
+              <span>{interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: displayTime(request.startedAt), duration: request.runningFor, stage: t(request.stage) })}</span>
             </div>
           </div>
 
+          {images && <ObsMediaStrip media={images} title={title} />}
+
           <Req ids={['R5.10', 'R5.12']}>
-            <Section title="Deliverables">
-              {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">Nothing attached yet.</p> : (
+            <Section title={t("Deliverables")}>
+              {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">{t("Nothing attached yet.")}</p> : (
                 <div className="-mx-3 flex flex-col">
                   {request.workProduct.map((product, index) => {
                     const Icon = PRODUCT_ICON[product.kind]
@@ -300,9 +315,9 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
                       <ProductLink key={`${index}-${product.label}`} href={product.href} className={cn('flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm', product.href && 'hover:bg-surface')}>
                         <Icon className="size-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0"><span className="block truncate">{product.label}</span>
-                          {product.availability === 'origin-only' && <span className="block text-xs text-muted-foreground">Local file — check the original computer</span>}
+                          {product.availability === 'origin-only' && <span className="block text-xs text-muted-foreground">{t('Local file — check the original computer')}</span>}
                         </span>
-                        <Badge variant="outline" className="ml-auto shrink-0 font-normal">{product.kind}</Badge>
+                        <Badge variant="outline" className="ml-auto shrink-0 font-normal">{t(product.kind)}</Badge>
                       </ProductLink>
                     )
                   })}
@@ -313,11 +328,11 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
 
           {request.workstreams.length > 0 && (
             <Req ids={['R3.4']}>
-              <Section title="Workstreams">
+              <Section title={t("Workstreams")}>
                 <div className="divide-y divide-border/70">
                   {request.workstreams.map((stream, index) => (
                     <Task key={`${index}-${stream.title}`} defaultOpen={false} className="py-0.5">
-                      <TaskTrigger title={`${stream.title} · ${stream.tasks.filter((task) => task.done).length} of ${stream.tasks.length} done`} />
+                      <TaskTrigger title={interpolate(t('{title} · {done} of {total} done'), { title: stream.title, done: stream.tasks.filter((task) => task.done).length, total: stream.tasks.length })} />
                       <TaskContent className="pb-3">
                         {stream.tasks.map((task, index) => <TaskItem key={`${index}-${task.name}`} className={task.done ? 'line-through' : ''}>{task.name}</TaskItem>)}
                       </TaskContent>
@@ -331,7 +346,7 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
           {(request.story.length > 0 || request.storyNarrative) && (
             <Req ids={['R7.2', 'R3.2']}>
               <ChainOfThought defaultOpen={false}>
-                <ChainOfThoughtHeader>Build story</ChainOfThoughtHeader>
+                <ChainOfThoughtHeader>{t("Build story")}</ChainOfThoughtHeader>
                 <ChainOfThoughtContent>
                   {request.storyNarrative && <p className="text-sm text-muted-foreground">{request.storyNarrative}</p>}
                   {request.story.map((step, index) => <ChainOfThoughtStep key={`${index}:${step.label}`} label={step.label} description={step.description} status={step.status} />)}
@@ -341,21 +356,21 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
           )}
 
           <Req ids={['R3.5']}>
-            <Section title="Latest records">
-              {recent.length === 0 ? <p className="text-sm text-muted-foreground">No records yet.</p> : <Records records={recent} />}
-              {earlier.length > 0 && <Disclosure label={`${earlier.length} earlier record${earlier.length === 1 ? '' : 's'}`}><Records records={earlier} /></Disclosure>}
+            <Section title={t("Latest records")}>
+              {recent.length === 0 ? <p className="text-sm text-muted-foreground">{t("No records yet.")}</p> : <Records records={recent} />}
+              {earlier.length > 0 && <Disclosure label={interpolate(t(earlier.length === 1 ? '{count} earlier record' : '{count} earlier records'), { count: earlier.length })}><Records records={earlier} /></Disclosure>}
             </Section>
           </Req>
 
           <Req ids={['R2.5', 'R2.2', 'R5.11']}>
             <Disclosure label={`Where this came from · ${request.conversations.length || 1} conversation${request.conversations.length > 1 ? 's' : ''}${request.evidence.length ? `, ${request.evidence.length} sources` : ''}`}>
               <div className="space-y-2.5 pb-2">
-                {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">One conversation so far.</p>}
+                {request.conversations.length === 0 && request.prompts.length === 0 && <p className="text-sm text-muted-foreground">{t("One conversation so far.")}</p>}
                 {request.conversations.map((conversation, index) => (
-                  <p key={`${index}-${conversation.at}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {conversation.at}</span> — {conversation.title}</p>
+                  <p key={`${index}-${displayTime(conversation.at)}`} className="text-sm"><span className="text-muted-foreground">{conversation.tool} · {displayTime(conversation.at)}</span> — {conversation.title}</p>
                 ))}
                 {request.prompts.map((prompt, index) => (
-                  <blockquote key={`${index}-${prompt.at}`} className="border-l-2 pl-3 text-sm text-muted-foreground">“{prompt.quote}” <span className="text-[11px]">{prompt.at}</span></blockquote>
+                  <blockquote key={`${index}-${displayTime(prompt.at)}`} className="border-l-2 pl-3 text-sm text-muted-foreground">“{prompt.quote}” <span className="text-[11px]">{displayTime(prompt.at)}</span></blockquote>
                 ))}
                 {request.evidence.map((source) => (
                   <ProductLink key={source.href === '#' ? source.title : source.href} href={source.href} className="flex min-h-9 items-center gap-2 text-xs text-muted-foreground"><FileTextIcon className="size-3.5" />{source.title}</ProductLink>

@@ -1012,6 +1012,11 @@ export class SyncApply {
 
   private applyRowOp(op: SyncOp, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const body = this.parseBody(op);
+    if (op.kind !== 'work_state' && this.isDeletedSessionIdentity(
+      fieldString(op, body, 'memory_session_id'),
+      fieldString(op, body, 'content_session_id'),
+      fieldString(op, body, 'platform_source'),
+    )) return 'stale';
     switch (op.kind) {
       case 'observation':
         return this.applyObservation(op, body, chromaJobs);
@@ -1024,6 +1029,21 @@ export class SyncApply {
       default:
         throw invalidOp(op, `unknown row kind`);
     }
+  }
+
+  private isDeletedSessionIdentity(
+    memorySessionId: string | null,
+    contentSessionId: string | null,
+    platformSource: string | null,
+  ): boolean {
+    if (memorySessionId && this.db.prepare(`
+      SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?
+    `).get(memorySessionId)) return true;
+    if (contentSessionId && this.db.prepare(`
+      SELECT 1 FROM deleted_content_sessions
+      WHERE platform_source = ? AND content_session_id = ?
+    `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId)) return true;
+    return false;
   }
 
   /**
@@ -1619,6 +1639,7 @@ export class SyncApply {
     // apply-vs-park. SELECTs in our transaction are authoritative.
     const memorySessionId = fieldString(op, target, 'memory_session_id');
     if (memorySessionId) {
+      if (this.isDeletedSessionIdentity(memorySessionId, null, null)) return 'stale';
       const session = this.db.prepare(
         'SELECT id FROM sdk_sessions WHERE memory_session_id = ?'
       ).get(memorySessionId) as { id: number } | undefined;
@@ -1637,6 +1658,7 @@ export class SyncApply {
       throw invalidOp(op, 'set_title target requires memory_session_id or content_session_id');
     }
     const platform = normalizePlatformSource(fieldString(op, target, 'platform_source') ?? undefined);
+    if (this.isDeletedSessionIdentity(null, contentSessionId, platform)) return 'stale';
 
     // (1) Direct match on the session identity.
     const direct = this.db.prepare(`
@@ -1681,6 +1703,11 @@ export class SyncApply {
     if (!targetDevice || !targetLocalId || !memorySessionId) {
       throw invalidOp(op, 'set_prompt_session requires target.origin_device_id, target.origin_local_id, fields.memory_session_id');
     }
+    if (this.isDeletedSessionIdentity(
+      memorySessionId,
+      fields ? fieldString(op, fields, 'content_session_id') : null,
+      fields ? fieldString(op, fields, 'platform_source') : null,
+    )) return 'stale';
 
     // Origin identity match: a row that originated HERE is a native row
     // (origin columns NULL, origin_local_id is its rowid); anywhere else it

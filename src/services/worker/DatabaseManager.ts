@@ -83,7 +83,9 @@ export class DatabaseManager {
     this.mediaReplicaResolver = new MediaCloudReplicaResolver(this.mediaStore, mediaCloudClient);
     if (mediaCloudClient) {
       this.mediaCloudSync = new MediaCloudSync(this.db, this.mediaStore, mediaCloudClient, {
-        uploadsEnabled: mediaCloudUploadsEnabled(settings),
+        // Read fresh each drain (every 30 s): the "Keep images" switch saves
+        // to settings.json and must take effect without a restart.
+        uploadsEnabled: () => mediaCloudUploadsEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)),
       });
       this.mediaCloudSync.start();
     }

@@ -134,8 +134,8 @@ function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean
 export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
 
 /**
- * A per-request deadline whose shipped default was raised after installs had
- * seeded the old one. Every settings.json seeded while 30000 was the default
+ * A shipped default that changed after installs had seeded the old one: two
+ * per-request deadlines (below) and the image capture switch. Every settings.json seeded while 30000 was the default
  * holds it on disk, and persisted values win over DEFAULTS, so a raise could
  * never reach those installs. The move rewrites the exact string the seeders
  * wrote; any other value, including a hand-written number, is a deliberate
@@ -148,19 +148,34 @@ export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
  * request, one that is too short discards work that may be paid for, and any
  * other value (or the env var) keeps a short one.
  */
-interface RaisedDeadlineDefault {
-  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS';
+interface ChangedShippedDefault {
+  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS' | 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
   /** The exact string the seeders wrote while it was the default. */
   legacy: string;
   /** Names this key's marker, so each move gets its own one chance. */
   markerTag: string;
+  /** Printed after both values in the log line ('ms' for deadlines). */
+  unit: string;
+  /**
+   * Use the new default only once settings.json holds it. A read-only load or
+   * a failed rewrite then keeps the old value, so the file always says what
+   * the worker does. Required for a switch a user must be able to keep off
+   * by editing the file, such as image capture.
+   */
+  applyOnlyWhenSaved: boolean;
 }
 
-const RAISED_DEADLINE_DEFAULTS: readonly RaisedDeadlineDefault[] = [
+const CHANGED_SHIPPED_DEFAULTS: readonly ChangedShippedDefault[] = [
   // Seeded from #4125 (13.25.2) until #4278.
-  { key: 'CLAUDE_MEM_LLM_TIMEOUT_MS', legacy: '30000', markerTag: 'llm-timeout-migrated-v1' },
+  { key: 'CLAUDE_MEM_LLM_TIMEOUT_MS', legacy: '30000', markerTag: 'llm-timeout-migrated-v1', unit: 'ms', applyOnlyWhenSaved: false },
   // Seeded from #4136 until the field pass got the same deadline.
-  { key: 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', legacy: '30000', markerTag: 'field-optimize-timeout-migrated-v1' },
+  { key: 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', legacy: '30000', markerTag: 'field-optimize-timeout-migrated-v1', unit: 'ms', applyOnlyWhenSaved: false },
+  // Seeded 'false' from #4341 (image capture, off) until capture became on by
+  // default. No viewer switch existed before then, so a saved 'false' is almost
+  // always the seeded value. A 'false' typed by hand reads the same and moves
+  // too; typing it changed nothing while 'false' was the default. After this
+  // one move, a 'false' saved by the "Keep images" switch or by hand stays.
+  { key: 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED', legacy: 'false', markerTag: 'media-capture-default-on-v1', unit: '', applyOnlyWhenSaved: true },
 ];
 
 // Present ⇔ this settings file has had its one chance at the move for that key.
@@ -169,11 +184,11 @@ const RAISED_DEADLINE_DEFAULTS: readonly RaisedDeadlineDefault[] = [
 // holds a value the move leaves alone: after a saved rewrite, or when there was
 // nothing to move. It is never written after a failed rewrite, so a read-only
 // settings.json keeps getting the new default in memory.
-function raisedDefaultMarkerPath(settingsPath: string, raised: RaisedDeadlineDefault): string {
+function raisedDefaultMarkerPath(settingsPath: string, raised: ChangedShippedDefault): string {
   return join(dirname(settingsPath), `.${basename(settingsPath)}.${raised.markerTag}`);
 }
 
-function markRaisedDefaultDone(settingsPath: string, raised: RaisedDeadlineDefault): void {
+function markRaisedDefaultDone(settingsPath: string, raised: ChangedShippedDefault): void {
   try {
     writeFileSync(raisedDefaultMarkerPath(settingsPath, raised), new Date().toISOString(), {
       encoding: 'utf-8',
@@ -384,6 +399,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_TRIAL_AT: string;
   CLAUDE_MEM_PRO_TRIAL_STATE: string;
   CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  // The installer's optional email opt-in (install.ts promptEmailOptIn).
+  // Declared so loadFromFile round-trips them: a dropped email would re-ask
+  // and POST the waitlist again.
+  CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_NOTE: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_AT: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_SENT: string;
   CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_PRO_FALLBACK_AT: string;
   // The gateway's own words for the rejection that set CLAUDE_MEM_PRO_FALLBACK_AT,
@@ -403,9 +425,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_SHARED_STATE: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_AGENT: string;
   CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -521,7 +545,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_PROVIDER_BY_SOURCE: '',
     CLAUDE_MEM_OBSERVER_ENABLED: 'true',  // 'false' disables new observation and session-summary capture calls
-    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false',
+    // Image capture is on: the viewer's "Keep images" switch turns it off.
+    // No total local cap, by the owner's call (2026-11-05): each image is
+    // bounded (MEDIA_LIMITS in media-contract.ts: 3 MiB canonical, 256 KiB
+    // model copy), an event keeps at most 4, and the local database and
+    // transcripts have no total cap either. Images stay until their event is
+    // deleted. Installs seeded with 'false' move once (CHANGED_SHIPPED_DEFAULTS).
+    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'true',
+    // Stays off: sending images to the observer model is separate and paid.
     CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
     CLAUDE_MEM_CODEX_PATH: 'codex',
@@ -691,6 +722,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
     CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
     CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
+    // Installer email opt-in: empty until someone shares an email.
+    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_SENT: '',  // 'true' once the waitlist accepted it, 'false' to retry next install
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
     CLAUDE_MEM_PRO_FALLBACK_MESSAGE: '', // The gateway's message for that rejection ('' = plan-neutral notice copy)
@@ -704,9 +740,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+    CLAUDE_MEM_WORK_VIEW_AGENT: '', // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini pick one; off runs none; all falls through every logged-in agent (#5189)
     CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
     CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+    CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. Never detected by a model; empty lets the skills pick the owner's language
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
@@ -719,9 +757,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: '{}', // JSON project-to-Telegram-route map; entries may carry bot-token overrides.
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
-    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
-    // Pilot agents: LFG + Orifice. Empty list = no writes.
-    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+    // Opt-in agent IDs. Empty list = no writes.
+    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
     // Optional brainbeat webhook: awareness-trigger matches are POSTed here
@@ -864,7 +902,7 @@ export class SettingsDefaultsManager {
           try {
             writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
             // A fresh file already holds the raised deadlines: nothing to move.
-            for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
+            for (const raised of CHANGED_SHIPPED_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
             // stderr, never stdout: this fires on the first boot in a fresh data
             // dir, and CLI commands like `start` promise machine-readable JSON
             // on stdout to the hook framework.
@@ -998,12 +1036,16 @@ export class SettingsDefaultsManager {
         }
       }
 
-      for (const raised of RAISED_DEADLINE_DEFAULTS) {
+      for (const raised of CHANGED_SHIPPED_DEFAULTS) {
         if (existsSync(raisedDefaultMarkerPath(settingsPath, raised))) continue;
         if (flatSettings[raised.key] !== raised.legacy) {
           if (!options.readOnly) markRaisedDefaultDone(settingsPath, raised);
           continue;
         }
+        // A read-only load never writes, so a key that must be saved first
+        // keeps its old value until a writable load (the worker's) moves it.
+        if (options.readOnly && raised.applyOnlyWhenSaved) continue;
+        const beforeMove = flatSettings;
         flatSettings = {
           ...flatSettings,
           [raised.key]: this.DEFAULTS[raised.key],
@@ -1019,17 +1061,21 @@ export class SettingsDefaultsManager {
             markRaisedDefaultDone(settingsPath, raised);
             // stderr, never stdout — same JSON-on-stdout contract as above.
             console.warn(
-              `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
+              `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}${raised.unit} default to ${this.DEFAULTS[raised.key]}${raised.unit}:`,
               settingsPath,
             );
           } catch (error: unknown) {
-            // Continue with the in-memory migration even if the write fails; with
-            // no marker, the next load tries the rewrite again.
+            // Deadlines continue with the in-memory move even if the write
+            // fails; a key that must be saved first keeps the file's value.
+            // With no marker, the next load tries the rewrite again.
+            if (raised.applyOnlyWhenSaved) flatSettings = beforeMove;
             const reported = `${raised.key}\0${settingsPath}`;
             if (!raisedDefaultFailuresReported.has(reported)) {
               raisedDefaultFailuresReported.add(reported);
               console.warn(
-                `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
+                raised.applyOnlyWhenSaved
+                  ? `[SETTINGS] Failed to migrate ${raised.key}; keeping the saved ${raised.legacy} (reported once per process):`
+                  : `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
                 settingsPath,
                 error instanceof Error ? error.message : String(error),
               );

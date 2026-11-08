@@ -42,6 +42,8 @@ function spoolObservation(input: NormalizedHookInput, platformSource: string): H
     agentId: input.agentId,
     agentType: input.agentType,
     toolUseId: input.toolUseId,
+    // The hook's own clock: this tool use is happening now.
+    eventOccurredAtEpochMs: Date.now(),
   });
   return { continue: true, suppressOutput: true };
 }

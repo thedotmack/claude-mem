@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-15.11.1-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-15.12.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%5E20.19%20%7C%7C%20%3E%3D22.12-brightgreen.svg" alt="Node">
@@ -142,7 +142,7 @@ npx claude-mem install
 
 The installer finds the agents on your machine and asks which ones to set up. Then just start working: observations stream in from your first prompt, and your second session in a project opens with memory from the first. (Copilot CLI, Goose, Roo Code and Warp get memory search only, so their sessions don't add to it.)
 
-The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link — no card required). Signing in provisions a memory key for your account and unlocks the **claude-mem observer** with a **30 Day Free Trial**: memory runs off-plan, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider — the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
+The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link, no card required to sign in). Choosing the **claude-mem observer** then starts its **30 Day Free Trial** on a checkout page that asks for a payment method; once it completes, the installer saves your memory key. With the observer, memory runs off-plan, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider: the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
 
 Prefer to skip the sign-in? Pass an explicit `--provider` flag, set `CLAUDE_MEM_ONLINE_OPTIN=false`, or run in CI/non-interactive shells — the installer completes without any account interaction.
 
@@ -207,7 +207,7 @@ The full list of `--ide` values is in `npx claude-mem --help`.
 
 Grok Bot has no host hooks, so we watch the chat log files. Default is CMEM Pro, the hosted memory. Local observer is opt-in: `--provider host`. Installing this plugin does not install Cursor.
 
-**Awareness push pilot (LFG + Orifice):** needle observations (`decision`, `bugfix`, `security_alert`, `sensitive`) are appended as dated `- YYYY-MM-DD [awareness] …` lines into that bot's `memory/log/YYYY-MM.md`. Grok Bot already re-reads the log from disk. This does not write `profile.md`, user-memory, or project memory. Disable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
+**Opt-in awareness push:** needle observations (`decision`, `bugfix`, `security_alert`, `sensitive`) are appended as dated `- YYYY-MM-DD [awareness] …` lines into that bot's `memory/log/YYYY-MM.md`. Grok Bot already re-reads the log from disk. This does not write `profile.md`, user-memory, or project memory. Enable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=true` and set `CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS` to your agent UUIDs (empty by default).
 
 #### 🦞 OpenClaw Gateway
 
@@ -227,7 +227,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 👥 **Share with your team, if you want.** TeamBrain is an optional shared workspace beside My Work, with real team work lists, member attribution and linked findings. Each person chooses what to share; personal requests and review notes stay separate. [Set up a team](https://cmem.ai/teambrain/start).
 - 💻 **Search from Claude Desktop.** Search your memory from Claude Desktop conversations.
 - 🔒 **Keep secrets out.** Wrap anything in `<private>` tags and it never gets stored.
-- 🖼️ **Screenshots (opt-in, off by default).** Keep converted copies of tool screenshots under `~/.claude-mem/media-v1/`, upload them to cmem.ai only when cloud sync is on, and send them to the observer model only when image inference is separately enabled ([details](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in)).
+- 🖼️ **Screenshots, kept by default.** Keep converted copies of tool screenshots under `~/.claude-mem/media-v1/` and show them in My Work, upload them to cmem.ai only when Cloud Sync is on, and send them to the observer model only when image inference is separately enabled. Turn it off with the "Keep images" switch in Settings ([details](https://docs.claude-mem.ai/configuration#screenshots-and-images)).
 - ⚙️ **Choose what gets injected.** Fine-grained settings for what context a new session starts with.
 - 🤖 **Nothing to remember to do.** It runs on its own once installed.
 - 🔗 **Point back to past work.** Every observation has an ID you can cite through the worker API or open in the web viewer.

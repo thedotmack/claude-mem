@@ -6,6 +6,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // A generator used to open with a request carrying only the user's prompt
 // (<user_request>) and the observer's instructions. With no tool call to
@@ -137,7 +138,7 @@ describe('a bare user prompt does not cost an observer call', () => {
     dbManager = {
       getSessionStore: () => ({
         storeObservations: mock(() => ({ observationIds: [1], summaryId: 1, createdAtEpoch: Date.now() })),
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         updateMemorySessionId: mock(() => {}),
         getSessionById: mock(() => ({ memory_session_id: 'mem-session-1' })),
       }),

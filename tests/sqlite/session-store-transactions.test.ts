@@ -92,6 +92,54 @@ describe('SessionStore.storeObservations', () => {
     expect(result.summaryId).not.toBeNull();
   });
 
+  it('commits tool-use identity with a summary-only or empty result', () => {
+    const summarySession = session('mem-summary-terminal');
+    const emptySession = session('mem-empty-terminal');
+    const identity = (contentSessionId: string, toolUseId: string) => ({
+      platformSource: 'claude', contentSessionId, toolUseIds: [toolUseId],
+    });
+    store.storeObservations(summarySession, 'project', [], summary(), undefined, 0, undefined, undefined, {
+      committedToolUses: identity('content-mem-summary-terminal', 'toolu_summary'),
+    });
+    store.storeObservations(emptySession, 'project', [], null, undefined, 0, undefined, undefined, {
+      committedToolUses: identity('content-mem-empty-terminal', 'toolu_empty'),
+    });
+    expect(store.hasCommittedToolUse('claude', 'content-mem-summary-terminal', 'toolu_summary')).toBe(true);
+    expect(store.hasCommittedToolUse('claude', 'content-mem-empty-terminal', 'toolu_empty')).toBe(true);
+    expect(store.hasCommittedToolUse('codex', 'content-mem-empty-terminal', 'toolu_empty')).toBe(false);
+  });
+
+  it('rolls back observations when a terminal marker cannot be written', () => {
+    const memorySessionId = session('mem-marker-rollback');
+    store.db.run(`
+      CREATE TRIGGER reject_terminal_marker BEFORE INSERT ON committed_observation_tool_uses
+      BEGIN SELECT RAISE(ABORT, 'marker write failed'); END
+    `);
+    expect(() => store.storeObservations(memorySessionId, 'project', [obs()], null,
+      undefined, 0, undefined, undefined, {
+        committedToolUses: {
+          platformSource: 'claude', contentSessionId: 'content-mem-marker-rollback',
+          toolUseIds: ['toolu_rollback'],
+        },
+      })).toThrow('marker write failed');
+    expect((store.db.prepare('SELECT COUNT(*) AS n FROM observations WHERE memory_session_id = ?')
+      .get(memorySessionId) as { n: number }).n).toBe(0);
+    expect(store.hasCommittedToolUse('claude', 'content-mem-marker-rollback', 'toolu_rollback')).toBe(false);
+  });
+
+  it('recreates the terminal ledger when opening a prior schema', () => {
+    const db = store.db;
+    db.run('DROP TABLE committed_observation_tool_uses');
+    db.run('DELETE FROM schema_versions WHERE version = 73');
+    db.run('PRAGMA user_version = 72');
+    store = new SessionStore(db);
+    store.markCommittedToolUses({
+      platformSource: 'claude', contentSessionId: 'prior-session', toolUseIds: ['toolu_prior'],
+    });
+    expect(store.hasCommittedToolUse('claude', 'prior-session', 'toolu_prior')).toBe(true);
+    expect(db.prepare('SELECT version FROM schema_versions WHERE version = 73').get()).toEqual({ version: 73 });
+  });
+
   it('applies promptNumber to every observation in the batch', () => {
     store.storeObservations(
       session('mem-prompt'),

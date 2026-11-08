@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * claude-mem-cowork — thin HTTP hook shim for Cowork (Claude app cloud sessions).
+ * cmem-pro (CMEM Pro for the Claude app) — thin HTTP hook shim for Claude app
+ * cloud sessions.
  *
- * Local claude-mem runs a worker service on the user's machine. Cowork containers
- * are ephemeral, so this shim replaces the worker with HTTPS calls to cmem.ai:
+ * Local claude-mem runs a worker service on the user's machine. Claude app cloud
+ * containers are ephemeral, so this shim replaces the worker with HTTPS calls to cmem.ai:
  *
  *   capture  →  POST {base}/api/hooks/ingest      (raw hook payloads; Pro worker/observer runs server-side)
  *   inject   →  GET  {base}/api/hooks/context     (compiled context block)
@@ -28,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'claude-mem-cowork/0.1.6';
+const PLUGIN_HEADER = 'cmem-pro/0.2.0';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
@@ -572,7 +573,7 @@ async function mcpSearch(query, limit, project) {
     const init = await mcpRpc('initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
-      clientInfo: { name: 'claude-mem-cowork', version: '0.1.0' }
+      clientInfo: { name: 'cmem-pro', version: '0.2.0' }
     }, 1);
     if (!init.ok) return null;
     await mcpRpc('notifications/initialized', {}, undefined).catch?.(() => {});
@@ -624,14 +625,14 @@ function contextBlock(text, cwd) {
 
 // ---------- event handlers ----------
 
-// When the hooks can't reach cmem.ai, a connected Claude-Mem connector usually
+// When the hooks can't reach cmem.ai, a connected memory connector usually
 // still can (it goes through the host's own connector path, not this
 // container's network). Point the session at it so recall keeps working, and
 // so durable notes land there when the connector offers a save tool.
 function connectorFallback(project) {
   return [
     '',
-    'Recall still works through the Claude-Mem connector if it is connected here (its memory_search, timeline and get_observations tools).',
+    'Recall still works through the cmem.ai memory connector if it is connected here: the "cmem" connector on the CMEM Pro plugin\'s Connectors tab, or the Claude-Mem connector (its memory_search, timeline and get_observations tools).',
     `Before relying on earlier context, search there: try project ${project} first, then without a project filter.`,
     'If that connector offers save_memory, save durable decisions and handoffs there (project: ' + project + '), since this session\'s hooks cannot.'
   ];
@@ -745,7 +746,11 @@ async function onSessionInit(input) {
   });
 }
 
-const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem)/;
+// Memory reads are never captured (feedback-loop guard): the Claude memory tool,
+// a connector named cmem*, the Claude-Mem connector — mcp__Claude-Mem__* in the
+// Claude app, mcp__claude_ai_Claude-Mem__* when Claude Code loads it — and this
+// plugin's own cmem.ai connector (.mcp.json), mcp__plugin_cmem-pro_cmem__*.
+const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem|mcp__(claude_ai_)?claude-mem__|mcp__plugin_cmem-pro_)/i;
 
 // ---------- image capture (media contract v1; gated by CFG.capture.media) ----------
 // Recognized native image blocks are pulled out of the RAW tool response before
@@ -968,7 +973,7 @@ function mediaUploadForm(image, toolUseId) {
 
 // One bounded code per failure; never ids, labels, paths or bytes.
 function logMediaFailure(code) {
-  try { process.stderr.write(`claude-mem-cowork: media upload failed (${code})\n`); } catch { /* never break the hook */ }
+  try { process.stderr.write(`cmem-pro: media upload failed (${code})\n`); } catch { /* never break the hook */ }
 }
 
 async function uploadImage(image, toolUseId, deadline) {

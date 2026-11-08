@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useI18n } from '../../i18n';
 import { Feed } from './Feed';
 import { CategoryFilter } from './CategoryFilter';
 import { FeedItem } from '../types';
@@ -25,6 +26,7 @@ interface SessionDetailPageProps {
 export function SessionDetailPage({
   tabs, session, title, items, isLoading, hasMore, loadError, onLoadMore, onDeleted, onBack,
 }: SessionDetailPageProps) {
+  const { t } = useI18n();
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
   const currentSessionKey = sessionKey(session);
 
@@ -56,7 +58,7 @@ export function SessionDetailPage({
       {tabs}
       <div className="session-detail-header">
         <button className="session-detail-back" onClick={onBack}>
-          ← Back to sessions
+          ← {t('Back to sessions')}
         </button>
         <div className="session-detail-title-group">
           {title && <span className="session-detail-title">{title}</span>}

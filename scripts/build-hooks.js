@@ -160,8 +160,8 @@ const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
 const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
 
 // PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
-// timeline, plus the tools whose calls the memory-search handler inspects.
-const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+// timeline (read_file is Grok Build's read tool), plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^read_file$|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
 
 export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
@@ -529,6 +529,12 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
+        // Exact, not a range: tree-sitter-delphi has one maintainer and one
+        // published version, and its package.json points at a repository that
+        // does not exist (the sources match github.com/sammedhi/tree-sitter-delphi).
+        // Its C sources are compiled and loaded whenever a Pascal file is parsed,
+        // so a new version must arrive as a reviewed bump, never through a range.
+        'tree-sitter-delphi': '0.1.0',
         'shell-quote': '1.9.0',
       },
       // The server's embedder, about 300 MB, which only server mode runs. The
@@ -889,6 +895,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml',
         '@derekstride/tree-sitter-sql',
         '@tree-sitter-grammars/tree-sitter-markdown',
+        'tree-sitter-delphi',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,

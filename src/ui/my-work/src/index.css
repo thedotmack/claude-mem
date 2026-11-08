@@ -331,6 +331,28 @@
 .split-flap-gap { min-width: 0.4em; border-color: transparent; background: transparent !important; }
 .split-flap-gap::after { display: none; }
 
+/*
+ * Live motion on My Work (components/live-motion.tsx). A card whose record just changed glows once in the accent
+ * color, so the eye lands on it. A working request's progress bar carries a slow light sweep: work is moving.
+ * Both stop under reduced motion (the rule below).
+ */
+@keyframes just-updated-glow {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 55%, transparent); }
+  35% { box-shadow: 0 0 0 6px color-mix(in oklab, var(--primary) 22%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.just-updated { animation: just-updated-glow 1.6s ease-out 2; }
+@keyframes progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+.progress-sweep [data-slot=progress-indicator] { position: relative; overflow: hidden; transition: transform 900ms cubic-bezier(0.22, 1, 0.36, 1); }
+.progress-sweep [data-slot=progress-indicator]::after {
+  content: ''; position: absolute; inset-block: 0; left: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, white 55%, transparent), transparent);
+  animation: progress-sweep 2.4s ease-in-out infinite;
+}
+
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
@@ -339,4 +361,172 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ── observation images (components/observation-media/ObsMedia.tsx) ─────
+   Ported from thedotmack/claude-mem-pro PR #265 at 3dd60b18,
+   src/components/timeline-viewer/cards.css (the "observation images" block).
+   Selectors lose the `.tcv` viewer root and use the obs-media- prefix. Pro's
+   theme tokens (deleted with its timeline viewer; read from 3dd60b18
+   tokens.css) map onto My Work's own variables, so light and dark follow
+   the app theme:
+     --ink-1 → --foreground       --ink-2 → --muted-foreground
+     --ink-3 → --muted-foreground 70% on --card
+     --line-1 → --border          --paper → --card     --canvas → --muted
+     --accent → --ring (focus)    --accent-soft → --accent (soft tint)
+     --font-mono → system mono    --font-sans → inherit
+   The backdrop is a fixed dark scrim: Pro mixed --ink-1, which turns light
+   in dark themes. Its z-index (80) sits above the request drawer (z-50). */
+.obs-media-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  flex: none;
+}
+.obs-media { display: flex; flex-direction: column; gap: 6px; max-width: 700px; }
+.obs-media-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.obs-media-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--foreground);
+  font-weight: 500;
+}
+.obs-media-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+.obs-media-thumb,
+.obs-media-more {
+  position: relative;
+  width: 88px;
+  height: 64px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.obs-media-thumb:focus-visible,
+.obs-media-more:focus-visible,
+.obs-media-gallery button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.obs-media-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.obs-media-thumb[data-state="deleted"],
+.obs-media-thumb[data-state="rejected"],
+.obs-media-thumb[data-state="failed"],
+.obs-media-thumb[data-state="unavailable"] { border-style: dashed; }
+.obs-media-state { display: flex; align-items: center; justify-content: center; height: 100%; padding: 4px; text-align: center; }
+.obs-media-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted-foreground) 70%, var(--card));
+  box-shadow: 0 0 0 2px var(--card);
+}
+.obs-media-gallerybackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(20 16 12 / 0.55);
+}
+.obs-media-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(960px, 100%);
+  max-height: calc(100dvh - 32px);
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  overflow: auto;
+}
+.obs-media-galleryhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.obs-media-galleryhead h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.obs-media-galleryhead h2 span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; color: var(--muted-foreground); }
+.obs-media-galleryclose,
+.obs-media-gallerynav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+  flex: none;
+}
+.obs-media-galleryframe {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 160px;
+  border-radius: 10px;
+  background: var(--muted);
+}
+.obs-media-galleryframe img {
+  max-width: calc(100% - 96px);
+  max-height: calc(100dvh - 260px);
+  object-fit: contain;
+  display: block;
+}
+.obs-media-gallerystate { margin: 0; padding: 24px; font-size: 13px; color: var(--muted-foreground); text-align: center; }
+.obs-media-gallerystate p { margin: 0; }
+.obs-media-galleryretry {
+  margin-top: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.obs-media-gallerydetails {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 12px;
+}
+.obs-media-gallerydetails div { display: flex; gap: 6px; min-width: 0; }
+.obs-media-gallerydetails dt { color: color-mix(in srgb, var(--muted-foreground) 70%, var(--card)); flex: none; }
+.obs-media-gallerydetails dd { margin: 0; color: var(--foreground); overflow-wrap: anywhere; }
+.obs-media-galleryhint { margin: 0; font-size: 11px; color: color-mix(in srgb, var(--muted-foreground) 70%, var(--card)); }
+@media (max-width: 640px) {
+  .obs-media-gallerybackdrop { padding: 16px; align-items: stretch; }
+  .obs-media-gallery { max-height: none; height: 100%; }
+  .obs-media-galleryframe img { max-width: 100%; max-height: 60dvh; }
+  .obs-media-gallerynav { position: absolute; bottom: 8px; }
+  .obs-media-gallerynav.is-prev { left: 8px; }
+  .obs-media-gallerynav.is-next { right: 8px; }
+  .obs-media-galleryhint { display: none; }
 }

@@ -48,7 +48,7 @@ async function flushAsyncHandler(): Promise<void> {
 function makeRoutes(findSessionDbIdByContentSessionId: ReturnType<typeof mock>, requestSessionWrapup: ReturnType<typeof mock>): SessionRoutes {
   return new SessionRoutes(
     { requestSessionWrapup } as any,
-    { getSessionStore: () => ({ findSessionDbIdByContentSessionId }) } as any,
+    { getSessionStore: () => ({ findSessionDbIdByContentSessionId, isSessionDeleted: () => false }) } as any,
     {} as any,
     {} as any,
     {} as any,

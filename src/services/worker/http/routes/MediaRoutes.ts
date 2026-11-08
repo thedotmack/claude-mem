@@ -1,6 +1,6 @@
 import type express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import { MediaError, isMediaErrorCode, type MediaErrorCode } from '../../../../shared/media-contract.js';
+import { MEDIA_LIMITS, MediaError, isMediaErrorCode, type MediaErrorCode } from '../../../../shared/media-contract.js';
 import { assertMediaId, type MediaMetadata, type MediaStore } from '../../../media/store.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isOwnPageOrigin } from '../middleware.js';
@@ -54,6 +54,38 @@ export function isTrustedMediaRead(req: Request): boolean {
   return true;
 }
 
+/**
+ * Readiness in the four states PR #265's gallery shows (Pro's
+ * `/api/observation-media/status` answers the same shape). Converting and
+ * still-downloading replicas are `pending`; a failed conversion is `rejected`;
+ * a deleted or unknown id is `deleted`.
+ */
+export type MediaStatusState = 'ready' | 'pending' | 'deleted' | 'rejected';
+
+function statusOf(state: MediaMetadata['state']): MediaStatusState {
+  switch (state) {
+    case 'ready': return 'ready';
+    case 'converting':
+    case 'unresolved_replica': return 'pending';
+    case 'failed': return 'rejected';
+    case 'deleted': return 'deleted';
+  }
+}
+
+/**
+ * Ids per status call. Reason: one observation holds at most this many refs
+ * (MEDIA_LIMITS.maxObservationRefs), the same cap as Pro's status route, so one
+ * call covers any one strip.
+ */
+export const MEDIA_STATUS_MAX_IDS = MEDIA_LIMITS.maxObservationRefs;
+
+function statusIds(value: unknown): string[] {
+  if (typeof value !== 'string' || value === '') throw new MediaError('invalid_manifest');
+  const ids = [...new Set(value.split(','))];
+  if (ids.length > MEDIA_STATUS_MAX_IDS) throw new MediaError('invalid_manifest');
+  return ids.map(id => assertMediaId(id));
+}
+
 /** The generic metadata body: no locator, object key, provenance or event identity. */
 function safeMetadata(metadata: MediaMetadata): MediaMetadata {
   const variant = (value: MediaMetadata['viewer']): MediaMetadata['viewer'] => value && ({
@@ -89,6 +121,8 @@ export class MediaRoutes extends BaseRouteHandler {
   ) { super(); }
 
   setupRoutes(app: express.Application): void {
+    // Registered before /api/media/:id, which would otherwise claim "status".
+    app.get('/api/media/status', this.guard, this.getStatus);
     app.get('/api/media/:id', this.guard, this.getMetadata);
     // Registered before the variant route, which would otherwise claim it.
     app.get('/api/media/:id/details', this.guard, this.getOwnerDetails);
@@ -116,6 +150,39 @@ export class MediaRoutes extends BaseRouteHandler {
     const metadata = this.getStore().getMetadata(id);
     if (metadata.id !== id || metadata.state === 'deleted') throw new MediaError('media_not_found');
     sendJsonWithoutCacheValidators(res, 200, safeMetadata(metadata));
+  });
+
+  /**
+   * Batch readiness for one gallery strip: `?ids=<uuid>,<uuid>` (at most
+   * MEDIA_STATUS_MAX_IDS) answers `{ attachments: [{ id, state }] }`. Reason it
+   * exists: My Work's first paint can hold dozens of cards with four
+   * thumbnails each, and one GET /api/media/:id per image would queue that many
+   * requests before any image shows. Like that route, it first resolves
+   * second-device replicas, so a hosted viewer's thumbnails become ready.
+   */
+  private getStatus = this.wrapHandler(async (req, res): Promise<void> => {
+    const ids = statusIds(req.query.ids);
+    await Promise.all(ids.map(async id => {
+      try {
+        await this.resolveReplica(id);
+      } catch (error) {
+        // The replica stays a placeholder and reads as pending; the gallery
+        // rechecks on its bounded schedule. Only the bounded code is logged.
+        const code = error instanceof MediaError ? error.code : 'storage_unavailable';
+        if (code !== 'media_not_ready') logger.warn('HTTP', 'Media replica resolution failed', { code });
+      }
+    }));
+    const store = this.getStore();
+    const attachments = ids.map(id => {
+      try {
+        const metadata = store.getMetadata(id);
+        return { id, state: metadata.id === id ? statusOf(metadata.state) : 'deleted' };
+      } catch (error) {
+        if (error instanceof MediaError && error.code === 'media_not_found') return { id, state: 'deleted' as const };
+        throw error;
+      }
+    });
+    sendJsonWithoutCacheValidators(res, 200, { attachments });
   });
 
   /**

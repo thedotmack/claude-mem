@@ -1,7 +1,7 @@
 // The active source's model: fixtures in sample mode, real records otherwise (spec §12). Every page reads it from
 // here; live requests change only through their data source, never in the browser.
 import { SAMPLE_REQUESTS, SaveRefusedError, assertConsistentRequest, type Request } from '../../data.ts'
-import { freshlyUpdatedRequestIds } from '../../live/update-queue.ts'
+import { freshlyUpdatedRequestIds, mergeRecentChanges, requestChanges } from '../../live/update-queue.ts'
 import type { WorkDataSource, WorkModel } from '../../live/work-data-source.ts'
 import type { SliceCreator } from '../create-store.ts'
 import type { WorkSlice } from '../store-types.ts'
@@ -24,11 +24,18 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
   const showModel = (model: WorkModel) => {
     const previous = get().work.load
     const changedIds = previous.state === 'loaded' ? new Set(freshlyUpdatedRequestIds(previous.model.requests, model.requests)) : new Set<string>()
+    const changes = previous.state === 'loaded' ? requestChanges(previous.model.requests, model.requests, Date.now()) : []
+    // A state move is an update too, even where the source carries no fingerprint (the sample).
+    for (const change of changes) changedIds.add(change.requestId)
     modelsShown++
     set((state) => {
       state.work.load = { state: 'loaded', model }
       state.work.connection = model.connection
       if (changedIds.size > 0) state.work.freshlyUpdatedIds = changedIds
+      // A change whose request left the model (grouped into an overall request, or removed) would open nothing.
+      const present = new Set(model.requests.map((request) => request.id))
+      const kept = mergeRecentChanges(state.work.recentChanges, changes).filter((change) => present.has(change.requestId))
+      if (kept.length !== state.work.recentChanges.length || changes.length > 0) state.work.recentChanges = kept
     })
     if (changedIds.size > 0) {
       clearTimeout(freshTimer)
@@ -97,7 +104,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
   }
 
   return {
-    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), sourceKind: null, refreshError: null },
+    work: { load: { state: 'loading' }, connection: null, freshlyUpdatedIds: new Set(), recentChanges: [], sourceKind: null, refreshError: null },
 
     startWorkSource: (nextSource) => {
       const thisSession = ++session

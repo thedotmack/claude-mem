@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHumanRequests, humanRequestTitle, isHumanActionRequest, requestText } from '../../../src/services/work-view/request-projection.mjs';
+import { buildHumanRequests, humanRequestTitle, isHumanActionRequest, REQUEST_MEDIA_PREVIEW_LIMIT, requestText } from '../../../src/services/work-view/request-projection.mjs';
 
 const session = { id: 7, platform_source: 'codex', content_session_id: 'native-seven', user_prompt: 'Build a live tracker of my work.', started_at_epoch: 1 };
 const prompts = [
@@ -164,4 +164,31 @@ test('cached object titles require exact original source identity', () => {
   assert.equal(buildHumanRequests(view, records, { titleCache: cache }).humanRequests[0].title, 'Track live work');
   cache[original.id].sourceId = 999;
   assert.notEqual(buildHumanRequests(view, records, { titleCache: cache }).humanRequests[0].title, 'Track live work');
+});
+
+const imageRef = (n) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, label: `image-${n}`, inspection: 'uninspected' });
+const imageActivity = (id, atEpoch, refs) => ({ id: `observation:${id}`, kind: 'observation', atEpoch, requestKey: 'prompt-one',
+  ...(refs ? { media: { version: 1, attachments: refs.map(imageRef) } } : {}) });
+
+test('a request summarizes the images its observations link: the count and the four newest', () => {
+  const actor = agent('a', [item(1, { request: { key: 'prompt-one' }, sourceRefs: [{ kind: 'work-state', id: 1 }] })]);
+  // Six images across three observations, plus one image-free observation.
+  actor.activity = [imageActivity(2, 2, [1, 2]), imageActivity(3, 3, [3, 4]), imageActivity(4, 4), imageActivity(5, 5, [5, 6])];
+  const request = buildHumanRequests({ agents: [actor] }, { sessions: [session], prompts }).humanRequests[0];
+  assert.equal(REQUEST_MEDIA_PREVIEW_LIMIT, 4);
+  assert.equal(request.media.count, 6);
+  assert.equal(request.media.preview.length, 4);
+  // Newest observation first, each observation's refs in their recorded order.
+  assert.deepEqual(request.media.preview.map((ref) => ref.label), ['image-5', 'image-6', 'image-3', 'image-4']);
+  // Full refs stay on each activity row for the drawer.
+  assert.deepEqual(request.activity.find((entry) => entry.id === 'observation:3').media.attachments.map((ref) => ref.label), ['image-3', 'image-4']);
+});
+
+test('an image several observations link counts once, and an image-free request gains no media key', () => {
+  const actor = agent('a', [item(1, { request: { key: 'prompt-one' }, sourceRefs: [{ kind: 'work-state', id: 1 }] })]);
+  // One turn's implicit association links the same images to every observation it stored.
+  actor.activity = [imageActivity(2, 2, [1, 2]), imageActivity(3, 3, [1, 2])];
+  assert.equal(buildHumanRequests({ agents: [actor] }, { sessions: [session], prompts }).humanRequests[0].media.count, 2);
+  actor.activity = [imageActivity(2, 2), imageActivity(3, 3)];
+  assert.equal(Object.hasOwn(buildHumanRequests({ agents: [actor] }, { sessions: [session], prompts }).humanRequests[0], 'media'), false);
 });

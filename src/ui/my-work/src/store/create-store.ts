@@ -24,7 +24,7 @@ const PREFERENCES_VERSION = 1
 type Preferences = Pick<ViewState, 'listView' | 'filter' | 'sort'>
 
 const LIST_VIEWS: readonly ViewState['listView'][] = ['cards', 'list', 'agents', 'team']
-const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'shipped', 'closed']
+const FILTERS: readonly ViewState['filter'][] = ['all', 'needs-you', 'working', 'shipped', 'closed']
 const SORTS: readonly ViewState['sort'][] = ['attention', 'started', 'progress']
 
 /** Saved preferences are read back field by field; a value this version doesn't know is left at its default. */

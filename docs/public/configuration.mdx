@@ -166,13 +166,15 @@ My Work can generate readable card wording using the configured OpenRouter or Op
 
 ### My Work Refresh Models
 
-The My Work refresh (goals, grouping, review, focus and story steps) runs on whichever agent CLI is available: Claude Code, Codex or Gemini. By default the light steps (grouping, focus) use a small model and the others a stronger one: `haiku`/`sonnet` on Claude Code, `flash-lite`/`flash` on Gemini, and Codex's CLI default for the careful steps. On Claude Code the refresh runs on your Claude subscription, so set a model here to cap it, for example `haiku`. Each setting puts every step of that agent on one model and is read at the start of every refresh.
+The My Work refresh (goals, grouping, review, focus and story steps) runs on one agent CLI: Claude Code, Codex or Gemini (see `CLAUDE_MEM_WORK_VIEW_AGENT` below for which one). By default the light steps (grouping, focus) use a small model and the others a stronger one: `haiku`/`sonnet` on Claude Code, `flash-lite`/`flash` on Gemini, and Codex's CLI default for the careful steps. On Claude Code the refresh runs on your Claude subscription, so set a model here to cap it, for example `haiku`. Each setting puts every step of that agent on one model and is read at the start of every refresh.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_AGENT` | empty | Which agent runs the My Work refresh. Empty uses the agent `CLAUDE_MEM_PROVIDER` names (`claude` → Claude Code, `codex` → Codex, `gemini` → Gemini) and only that one, so a failed run never moves to another agent's quota. A provider that is an API endpoint (`openrouter`, `openai-compatible`, `cmem`) uses the first logged-in agent and only that one. Set `claude-code`, `codex` or `gemini` to pick the agent, `off` to run no agent, or `all` to let a failed run fall through to every other logged-in agent. |
 | `CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL` | empty | Model for every refresh step on Claude Code. Use an alias such as `haiku` or `sonnet`. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_CODEX_MODEL` | empty | Model id for every refresh step on Codex. Each step keeps its reasoning effort. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
+| `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty lets each step use the language most of your prompts are in. It is never detected by a model, so it costs nothing. |
 
 ### Quota Fallback Settings
 
@@ -267,6 +269,7 @@ If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, 
 | `CLAUDE_MEM_LOG_RETENTION_DAYS` | `30` | How many days of daily worker logs (`~/.claude-mem/logs/claude-mem-YYYY-MM-DD.log`, named by UTC date) to keep. The worker deletes older ones 5 minutes after it starts and then once a day; hooks and the MCP server never do. Today's and yesterday's files are always kept, and so is any file written to within the window. Other files in the folder, such as `runner-errors.log`, are never touched. `0` keeps every log forever, as before. `30` and `"30"` both work. Anything that is not a whole number of days (empty, negative, `abc`) also keeps everything. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_MEM_CHROMA_UVX_PATH`  | _(empty — search uv's install folders, then PATH)_ | The `uvx` that launches chroma-mcp, as the full path to the binary (on Windows, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts\uvx.exe`) or its folder. Set it when `pip install uv` put `uvx` outside uv's usual folders, or when another tool's `uvx` comes first on PATH. An environment variable of the same name overrides `settings.json`. File/env only — not writable via the viewer HTTP API. Restart the worker after changing it. |
+| `CLAUDE_MEM_ONLINE_OPTIN`     | _(unset — ask)_                 | Environment variable only. `false` skips the installer's optional email question. It is also skipped without a terminal (agent-run installs), when `CI` is set, and once an email is saved (`CLAUDE_MEM_ONLINE_SIGNUP_EMAIL` in `settings.json`). |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
 | `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns", "inherit?"}`. Optional `inherit` selects which additional project keys remain readable; `[]` isolates the environment from derived keys. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
@@ -346,16 +349,25 @@ Review candidates via `GET /api/dedup/candidates?project=<name>` (add `&status=p
 unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/resolve` and a body of
 `{"status": "distinct"}` or `{"status": "dismissed"}`. A later scan keeps the verdict.
 
-### Screenshots and Images (opt-in)
+### Screenshots and Images
 
-claude-mem can keep the screenshots and images that tools return (browser
-screenshots, a `Read` of an image file inside the project) and, separately,
-let the observer model look at them. Both switches are **off by default** and
-independent: turning on capture does not send any image to a model.
+claude-mem keeps the screenshots and images that tools return (browser
+screenshots, a `Read` of an image file inside the project) and shows them on
+the request they belong to in My Work, both on this computer and at
+work.cmem.ai. Keeping images is **on by default**. Letting the observer model
+look at them is a separate switch that is **off by default**: keeping images
+never sends one to a model.
+
+To stop keeping images, turn off **Keep images** under **Images** in the
+memory viewer's Settings (`/viewer` on your worker's port), or set
+`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` to `false`. Images already kept stay until
+their event is deleted. An install whose `settings.json` still holds the old
+`false` default is moved to `true` once, on the first worker start after the
+update; a `false` you set after that is kept.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `false` | Convert and retain images from tool results |
+| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `true` | Convert and retain images from tool results, and show them in My Work (the **Keep images** switch) |
 | `CLAUDE_MEM_MEDIA_INFERENCE_ENABLED` | `false` | Send retained images to the observer model when the endpoint qualifies |
 
 **What is stored.** Only PNG, JPEG and WebP images, at most four per tool
@@ -374,15 +386,19 @@ source details in the image viewer and never appears in feeds, logs or sync.
 readable only by your user. The worker serves them only to the viewer page on
 the same loopback port; other origins, LAN clients and proxies are refused.
 
-**How long it is kept.** An image lives as long as an observation or its
-source tool event still references it. Deleting an observation, a session or
-a project removes the references at once; the files are removed by a
-background cleanup within about 30 seconds (retried with backoff if the disk
-refuses). Images are never kept for analytics.
+**How long it is kept.** Images are kept on this computer until their event
+is deleted: an image lives as long as an observation or its source tool event
+still references it. There is no total size cap and no age limit; each image
+is at most about 3.25&nbsp;MiB on disk and an event keeps at most four.
+Deleting an observation, a session or a project removes the references at
+once; the files are removed by a background cleanup within about 30 seconds
+(retried with backoff if the disk refuses). Images are never kept for
+analytics.
 
 **Cloud upload.** When capture is on *and* [Cloud Sync](cloud-sync) is
 configured, each converted image is uploaded privately to your cmem.ai account
-so your other devices can show it; they download it on first view. Deleting
+so your other devices and My Work at work.cmem.ai can show it; they download
+it on first view. Deleting
 it locally also deletes the cloud copy. Observation text syncs without the
 image bytes.
 
