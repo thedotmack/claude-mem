@@ -256,19 +256,33 @@ function truncate(v, cap) {
 // POST nor the retry spool ever holds raw credentials. All patterns are
 // single-pass linear regexes over capped input (FIELD_CAP/PROMPT_CAP).
 const REDACTED = '[cmem-redacted]';
+// Prefix shapes start with (?<=\\[nrt]|\b), the worker's perplexity_key start
+// (src/utils/redaction.ts): clean() redacts JSON.stringify()'d values, where a
+// newline right before a key arrives as `\n`. The `n` is a word character, so
+// a bare `\b` could not match there and the key went out verbatim.
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM key blocks
   /\b(?:Bearer|Basic|Token)[ \t]+[A-Za-z0-9._~+/=-]{16,512}\b/gi,                // auth scheme credentials
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,            // JWTs
-  /\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                                         // OpenAI/Anthropic-style keys
-  /\b[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                                 // Stripe-style keys
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,                                             // GitHub tokens
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,                                           // GitHub fine-grained PATs
-  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,                                               // GitLab PATs
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,                                           // Slack tokens
-  /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g,               // AWS access key ids
-  /\bAIza[0-9A-Za-z_-]{35}\b/g,                                                  // Google API keys
-  /\bnpm_[A-Za-z0-9]{36}\b/g                                                     // npm tokens
+  /(?<=\\[nrt]|\b)eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, // JWTs
+  /(?<=\\[nrt]|\b)sk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                           // OpenAI/Anthropic-style keys
+  /(?<=\\[nrt]|\b)[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                   // Stripe-style keys
+  /(?<=\\[nrt]|\b)gh[pousr]_[A-Za-z0-9]{20,}\b/g,                               // GitHub tokens
+  /(?<=\\[nrt]|\b)github_pat_[A-Za-z0-9_]{20,}\b/g,                             // GitHub fine-grained PATs
+  /(?<=\\[nrt]|\b)glpat-[A-Za-z0-9_-]{20,}\b/g,                                 // GitLab PATs
+  /(?<=\\[nrt]|\b)xox[baprs]-[A-Za-z0-9-]{10,}\b/g,                             // Slack tokens
+  /(?<=\\[nrt]|\b)(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g, // AWS access key ids
+  /(?<=\\[nrt]|\b)AIza[0-9A-Za-z_-]{35}\b/g,                                    // Google API keys
+  /(?<=\\[nrt]|\b)npm_[A-Za-z0-9]{36}\b/g,                                      // npm tokens
+  // Vendor provider keys, matching the worker's redaction set
+  // (src/utils/redaction.ts): NVIDIA NIM, Runcrate, Groq, xAI and Perplexity
+  // all issue prefixed keys that no pattern above claims, so a key pasted as
+  // bare prose reached the ingest verbatim. The (?!\w) tail is the same
+  // "the token ends here" check the worker uses (\b cannot follow a `-`).
+  /(?<=\\[nrt]|\b)nvapi-[A-Za-z0-9_-]{32,}(?!\w)/g,                             // NVIDIA NIM keys
+  /(?<=\\[nrt]|\b)rc_live_[A-Za-z0-9_-]{24,}(?!\w)/g,                           // Runcrate keys
+  /(?<=\\[nrt]|\b)gsk_[A-Za-z0-9]{52}(?!\w)/g,                                  // Groq keys
+  /(?<=\\[nrt]|\b)xai-[A-Za-z0-9_]{80}(?!\w)/g,                                 // xAI keys
+  /(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)/g                                  // Perplexity keys
 ];
 // `password: …` / `api_key=…` style assignments — keep the key, redact the
 // ENTIRE value through the line or record delimiter (quote, backtick, comma,

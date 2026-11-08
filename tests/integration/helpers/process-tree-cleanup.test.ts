@@ -77,24 +77,25 @@ describe('ghost fixture descendant cleanup', () => {
     expect(() => takeSnapshot(20, '100', rows)).toThrow('fixture root identity');
   });
 
-  it('does not kill an older child under a matching but reused parent PID', () => {
+  it('excludes an older child and its subtree under a matching but reused parent PID', () => {
     const rows = [
       { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000.000000' },
       { pid: 21, ppid: 20, name: 'old-python.exe', startToken: '20261006200000.000000' },
       { pid: 22, ppid: 20, name: 'new-uv.exe', startToken: '20261006210100.000000' },
+      // Even a newer process below the impossible edge is not our descendant.
+      { pid: 23, ppid: 21, name: 'old-python-child.exe', startToken: '20261006210200.000000' },
     ];
     const killed: number[] = [];
     const discovered = reapOwnedLiveTree(
       20, rows[0]!.startToken, pid => { killed.push(pid); }, () => true, rows
     );
     expect(discovered).toEqual([
-      { pid: 21, name: 'old-python.exe', startToken: null },
       { pid: 22, name: 'new-uv.exe', startToken: '20261006210100.000000' },
     ]);
     expect(killed).toEqual([22, 20]);
-    expect(survivingProcesses(discovered!, pid => pid === 21, () => null)).toEqual([
-      { pid: 21, name: 'old-python.exe', startToken: null },
-    ]);
+    expect(survivingProcesses(discovered!, pid => pid === 21 || pid === 23, () => null)).toEqual([]);
+    // The recycle gate omits expectedRootToken; it must exclude the same branch.
+    expect(snapshotDescendants(20, undefined, rows)).toEqual(discovered!);
   });
 
   it('accepts the exact CIM token format for a chronological Windows chain', () => {
@@ -111,12 +112,13 @@ describe('ghost fixture descendant cleanup', () => {
     expect(killed).toEqual([22, 21, 20]);
   });
 
-  it('checks every link so a stale intermediate PID cannot certify a grandchild', () => {
+  it.each(['100', '300'])('retains possible orphans from an earlier intermediate PID owner (%s)', childToken => {
     const rows = [
       { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '100' },
       { pid: 21, ppid: 20, name: 'uv.exe', startToken: '500' },
-      // Later than the fixture, but earlier than the alleged intermediate.
-      { pid: 22, ppid: 21, name: 'old-python.exe', startToken: '300' },
+      // The fixture's earlier uv could have spawned this child, then exited
+      // before the new uv reused pid 21. It can still be a real orphan.
+      { pid: 22, ppid: 21, name: 'old-python.exe', startToken: childToken },
       { pid: 23, ppid: 22, name: 'old-python-child.exe', startToken: '400' },
     ];
     const killed: number[] = [];
@@ -127,6 +129,99 @@ describe('ghost fixture descendant cleanup', () => {
       { pid: 23, name: 'old-python-child.exe', startToken: null },
     ]);
     expect(killed).toEqual([21, 20]);
+    expect(survivingProcesses(discovered!, pid => pid === 22 || pid === 23, () => null)).toEqual([
+      { pid: 22, name: 'old-python.exe', startToken: null },
+      { pid: 23, name: 'old-python-child.exe', startToken: null },
+    ]);
+  });
+
+  it('excludes a stale intermediate branch only when it predates the fixture root', () => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '100' },
+      { pid: 21, ppid: 20, name: 'uv.exe', startToken: '500' },
+      { pid: 22, ppid: 21, name: 'old-python.exe', startToken: '50' },
+      { pid: 23, ppid: 22, name: 'old-python-child.exe', startToken: '600' },
+    ];
+    const discovered = snapshotDescendants(20, '100', rows);
+    expect(discovered).toEqual([{ pid: 21, name: 'uv.exe', startToken: '500' }]);
+    expect(survivingProcesses(discovered, pid => pid === 22 || pid === 23, () => null)).toEqual([]);
+  });
+
+  it.each(['150', null, 'malformed'])('retains possible fixture orphans below an unrelated branch (%s)', orphanToken => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '100' },
+      { pid: 21, ppid: 20, name: 'old-unrelated.exe', startToken: '50' },
+      // A later unrelated process reused the PID of a fixture-owned process
+      // that had spawned pid 23. Do not prune the whole branch at pid 21.
+      { pid: 22, ppid: 21, name: 'new-unrelated.exe', startToken: '200' },
+      { pid: 23, ppid: 22, name: 'python-orphan.exe', startToken: orphanToken },
+      { pid: 24, ppid: 23, name: 'python-child.exe', startToken: '300' },
+    ];
+    const discovered = snapshotDescendants(20, '100', rows);
+    expect(discovered).toEqual([
+      { pid: 23, name: 'python-orphan.exe', startToken: null },
+      { pid: 24, name: 'python-child.exe', startToken: null },
+    ]);
+    const killed: number[] = [];
+    reapSnapshottedDescendants(discovered, () => true, pid => { killed.push(pid); });
+    expect(killed).toEqual([]);
+    expect(survivingProcesses(discovered, () => true, () => null)).toEqual(discovered);
+  });
+
+  it.each([
+    '20261006210000.000001',
+    '9007199254740993',
+    'utc:Tue Oct  6 21:00:00 2026',
+  ])('accepts equal creation times (%s)', token => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: token },
+      { pid: 21, ppid: 20, name: 'python.exe', startToken: token },
+    ];
+    expect(snapshotDescendants(20, token, rows)).toEqual([
+      { pid: 21, name: 'python.exe', startToken: token },
+    ]);
+  });
+
+  it.each([
+    ['20261006210000.000002', '20261006210000.000001'],
+    ['9007199254740993', '9007199254740992'],
+    ['utc:Tue Oct  6 21:00:01 2026', 'utc:Tue Oct  6 21:00:00 2026'],
+  ])('excludes a child strictly older than its parent (%s > %s)', (parentToken, childToken) => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: parentToken },
+      { pid: 21, ppid: 20, name: 'python.exe', startToken: childToken },
+    ];
+    expect(snapshotDescendants(20, parentToken, rows)).toEqual([]);
+  });
+
+  it.each([
+    [null, '100'],
+    ['100', null],
+    ['', '100'],
+    ['100', ''],
+    ['malformed', '100'],
+    ['100', 'malformed'],
+    ['20261006210000.invalid', '20261006210000.000001'],
+    ['20261006210000.000001', '20261006210000.invalid'],
+    ['malformed', 'utc:Tue Oct  6 21:00:00 2026'],
+    ['utc:Tue Oct  6 21:00:00 2026', 'malformed'],
+    ['utc:Tue Oct  6 21:00:00 2026', '100'],
+    ['100', 'utc:Tue Oct  6 21:00:00 2026'],
+  ])('retains unknown chronology without kill authority (%s, %s)', (parentToken, childToken) => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: parentToken },
+      { pid: 21, ppid: 20, name: 'python.exe', startToken: childToken },
+      { pid: 22, ppid: 21, name: 'python-child.exe', startToken: '300' },
+    ];
+    const discovered = snapshotDescendants(20, undefined, rows);
+    expect(discovered).toEqual([
+      { pid: 21, name: 'python.exe', startToken: null },
+      { pid: 22, name: 'python-child.exe', startToken: null },
+    ]);
+    const killed: number[] = [];
+    reapSnapshottedDescendants(discovered, () => true, pid => { killed.push(pid); });
+    expect(killed).toEqual([]);
+    expect(survivingProcesses(discovered, () => true, () => null)).toEqual(discovered);
   });
 
   it('does not certify descendants below a parent with an unknown creation time', () => {

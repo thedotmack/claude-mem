@@ -173,6 +173,16 @@ describe('readServerKeyRotationState: only the retry marker resumes a rotation',
     })).toEqual({ pendingRevocationKeyId: null, currentApiKey: 'cmem_beta', currentProjectId: 'proj-beta' });
     expect(readServerKeyRotationState(null)).toEqual({ pendingRevocationKeyId: null, currentApiKey: null, currentProjectId: null });
   });
+
+  it('falls back to the legacy key when the canonical one is blank, as hooks do (runtime-selector)', () => {
+    // A settings file seeded from SettingsDefaultsManager carries the canonical keys as "".
+    expect(readServerKeyRotationState({
+      CLAUDE_MEM_SERVER_API_KEY: '',
+      CLAUDE_MEM_SERVER_PROJECT_ID: '  ',
+      CLAUDE_MEM_SERVER_BETA_API_KEY: ' cmem_legacy ',
+      CLAUDE_MEM_SERVER_BETA_PROJECT_ID: 'proj-legacy',
+    })).toEqual({ pendingRevocationKeyId: null, currentApiKey: 'cmem_legacy', currentProjectId: 'proj-legacy' });
+  });
 });
 
 // The installer writes this key into ~/.claude-mem/settings.json and every hook

@@ -149,7 +149,9 @@ export function claimFileContextInjection(
   try {
     const now = Date.now();
     pruneExpiredRows(db, sessionId, now);
-    return db.query(CLAIM_GATE_SQL).get(sessionId, resolvedPath, newestObservationEpoch, now) != null;
+    // `.all()`, not `.get()`: on system SQLite 3.37 (macOS 12) `.get()` on an
+    // upsert with RETURNING throws "SQL logic error" (#5497).
+    return db.query(CLAIM_GATE_SQL).all(sessionId, resolvedPath, newestObservationEpoch, now).length > 0;
   } catch (err) {
     logger.debug('HOOK', 'file-context gate claim failed, injecting without dedupe', {
       error: describeError(err),
