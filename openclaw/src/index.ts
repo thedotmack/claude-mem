@@ -195,6 +195,8 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; 
 const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
+// Stamped on every session post so OpenClaw memory is not stored as Claude Code's.
+const PLATFORM_SOURCE = "openclaw";
 
 const EMOJI_POOL = [
   "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
@@ -772,6 +774,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       project: projectName,
       prompt: promptText,
+      platformSource: PLATFORM_SOURCE,
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -852,6 +855,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_input: toolInput,
       tool_response: toolResponseText,
       cwd: workspaceDir,
+      platformSource: PLATFORM_SOURCE,
     }, api.logger);
   });
 
@@ -879,6 +883,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
+      platformSource: PLATFORM_SOURCE,
     }, api.logger);
   });
 
@@ -1015,7 +1020,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
       const pieces = raw.split(/\s+/);
       const maybeLimit = pieces[pieces.length - 1];
-      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      // A lone number is the query (a PR number, port or year), not a limit, as in /claude-mem-timeline.
+      const hasTrailingLimit = pieces.length >= 2 && /^\d+$/.test(maybeLimit);
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 

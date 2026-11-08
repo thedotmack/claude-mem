@@ -146,6 +146,55 @@ check('slash-containing URI password fully redacted', !in2e.includes('pa/ss'), i
 check('at-sign-containing URI password fully redacted', !in2e.includes('pa@ss') && !in2e.includes(']@ss@'), in2e);
 check('URI host survives userinfo redaction', in2e.includes('db.internal/app'), in2e);
 check('Cookie header value redacted', !out2e.includes('opaque-session-secret-value'), out2e);
+// Bare vendor provider keys (the prefixed shapes the worker's redaction
+// covers): none of them is named api_key=/token:, so KEYVALUE_RE cannot catch
+// them — only the vendor shapes can.
+const nvapiKey = 'nvapi-' + 'Aa1'.repeat(11);
+const groqKey = 'gsk_' + 'A'.repeat(52);
+const runcrateKey = 'rc_live_' + 'Aa1'.repeat(9);
+const xaiKey = 'xai-' + 'A'.repeat(80);
+const pplxKey = 'pplx-' + 'A'.repeat(48);
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2v',
+  tool_input: { command: `echo pinned to ${nvapiKey} for build.nvidia.com` },
+  tool_response: `keys on record: ${groqKey}, ${runcrateKey}, ${xaiKey}, ${pplxKey}`
+});
+const ing2v = received.find(r => r.body?.payload?.tool_use_id === 'tu_2v');
+const in2v = String(ing2v?.body.payload.tool_input || '');
+const out2v = String(ing2v?.body.payload.tool_response || '');
+check('bare nvidia key redacted', !in2v.includes(nvapiKey) && in2v.includes('[cmem-redacted]'), in2v);
+check('bare groq key redacted', !out2v.includes(groqKey), out2v);
+check('bare runcrate key redacted', !out2v.includes(runcrateKey), out2v);
+check('bare xai key redacted', !out2v.includes(xaiKey), out2v);
+check('bare perplexity key redacted', !out2v.includes(pplxKey), out2v);
+check('vendor-key marker kept', out2v.includes('[cmem-redacted]'), out2v);
+// A structured tool_response is JSON-stringified before redaction, so a key
+// right after a newline arrives as `\nKEY`. The `n` is a word character, so a
+// bare `\b` start cannot match there; every prefix shape must accept the
+// escaped-whitespace start too (the worker's perplexity_key form).
+const ghpKey = 'ghp_' + 'Bb2'.repeat(10);
+const structuredKeys = { nvidia: nvapiKey, groq: groqKey, runcrate: runcrateKey, xai: xaiKey, perplexity: pplxKey, github: ghpKey };
+for (const [vendor, key] of Object.entries(structuredKeys)) {
+  received = [];
+  await run('observation', {
+    session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: `tu_2s_${vendor}`,
+    tool_input: { command: 'cat .env' }, tool_response: { stdout: 'ready\n' + key }
+  });
+  const outS = String(received.find(r => r.body?.payload?.tool_use_id === `tu_2s_${vendor}`)?.body.payload.tool_response || '');
+  check(`${vendor} key after a newline in a structured response redacted`, !outS.includes(key) && outS.includes('[cmem-redacted]'), outS);
+}
+// Minimum-length keys whose last character is `-`: the whole key must become
+// one marker (a `\b` tail would stop before the `-` and leave the key whole).
+const nvapiHyphenKey = 'nvapi-' + 'Aa1'.repeat(10) + 'x-';
+const runcrateHyphenKey = 'rc_live_' + 'Aa1'.repeat(7) + 'xy-';
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2vh',
+  tool_input: { command: 'env' }, tool_response: `nim ${nvapiHyphenKey} end; rc ${runcrateHyphenKey} end`
+});
+const outHyphen = String(received.find(r => r.body?.payload?.tool_use_id === 'tu_2vh')?.body.payload.tool_response || '');
+check('hyphen-ending minimum-length vendor keys become one marker each', outHyphen === 'nim [cmem-redacted] end; rc [cmem-redacted] end', outHyphen);
 // Token-scheme Authorization: redacted in the request body AND in the spool on failed delivery
 received = [];
 await run('observation', {

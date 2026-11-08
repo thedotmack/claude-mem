@@ -250,6 +250,61 @@ describe('installer OAuth start failure classification', () => {
   });
 });
 
+describe('installer OAuth start with a setup episode (#5493)', () => {
+  const flow = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  // The exact shape cmem.ai's buildInstallerOAuthUrls returns when the start
+  // request carried setup_flow_id: the episode is copied into both claim URLs.
+  function echoedStartBody(echoedFlow: string, extra: Record<string, string> = {}) {
+    const login = `/api/pro/trial/claim?${new URLSearchParams({ pairing: pairingId, setup_flow_id: echoedFlow, login_only: '1', ...extra })}`;
+    const checkout = `https://cmem.ai/api/pro/trial/claim?${new URLSearchParams({ pairing: pairingId, setup_flow_id: echoedFlow, trial: '30', ...extra })}`;
+    return { ...validStartBody, authorization_url: `https://cmem.ai/login?next=${encodeURIComponent(login)}`, checkout_url: checkout };
+  }
+
+  it('accepts the episode it sent echoed in both claim URLs and keeps it in the links', () => {
+    const body = echoedStartBody(flow);
+    const parsed = parseInstallerOAuthStartBody(body, flow);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.authorizationUrl).toBe(body.authorization_url);
+    expect(parsed?.checkoutUrl).toBe(body.checkout_url);
+  });
+
+  it('rejects an episode it did not send, a different episode, or any other extra parameter', () => {
+    expect(parseInstallerOAuthStartBody(echoedStartBody(flow))).toBeNull();
+    expect(parseInstallerOAuthStartBody(echoedStartBody(flow), 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')).toBeNull();
+    expect(parseInstallerOAuthStartBody(echoedStartBody(flow, { redirect: 'https://evil.example' }), flow)).toBeNull();
+  });
+
+  it('still accepts a server that leaves the episode out', () => {
+    expect(parseInstallerOAuthStartBody(validStartBody, flow)).not.toBeNull();
+  });
+
+  it('completes a start that sent an episode instead of failing bad_body', async () => {
+    const previousFetch = globalThis.fetch;
+    const previousDnt = process.env.DO_NOT_TRACK;
+    const previousTelemetry = process.env.CLAUDE_MEM_TELEMETRY;
+    let sent: Record<string, unknown> = {};
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify(echoedStartBody(String(sent.setup_flow_id))), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      delete process.env.DO_NOT_TRACK;
+      process.env.CLAUDE_MEM_TELEMETRY = 'on';
+      const pairing = await startInstallerOAuthPairing({ setupFlowId: flow });
+      expect(sent.setup_flow_id).toBe(flow);
+      expect(lastOAuthStartFailure()).toBeNull();
+      expect(pairing?.pairingId).toBe(pairingId);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousDnt === undefined) delete process.env.DO_NOT_TRACK; else process.env.DO_NOT_TRACK = previousDnt;
+      if (previousTelemetry === undefined) delete process.env.CLAUDE_MEM_TELEMETRY; else process.env.CLAUDE_MEM_TELEMETRY = previousTelemetry;
+    }
+  });
+});
+
 describe('installer trial-ready contract', () => {
   it('parses an OAuth-only pairing without accepting an email or identity', () => {
     expect(parseInstallerOAuthStartBody({

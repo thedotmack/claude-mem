@@ -3490,12 +3490,12 @@ export class SessionStore {
       const fileArrayJson = (column: string): string =>
         `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
       const fileConditions = filesList.map(() => {
-        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\'))`;
+        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\'))`;
       });
       if (fileConditions.length > 0) {
         filesList.forEach(file => {
-          // The hydration filter receives literal file paths, like SQLite search.
-          const literal = file.replace(/[\\%_]/g, '\\$&');
+          // Match SQLite search's separator normalization and literal LIKE escaping.
+          const literal = file.replace(/\\/g, '/').replace(/[\\%_]/g, '\\$&');
           params.push(`%${literal}%`, `%${literal}%`);
         });
         additionalConditions.push(`(${fileConditions.join(' OR ')})`);
@@ -4390,7 +4390,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = obsStmt.get(
+        const inserted = (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4413,7 +4413,7 @@ export class SessionStore {
           titleNormKey,
           reinforcementSeed.dates,
           reinforcementSeed.lastReinforced
-        ) as { id: number } | null;
+        ) as { id: number }[])[0] ?? null;
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
