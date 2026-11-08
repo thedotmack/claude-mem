@@ -13,11 +13,14 @@ afterEach(() => new Promise<void>(resolve => (server ? server.close(() => resolv
 describe('DSH memory hooks', () => {
   it('saves ingested tool results with the configured platformSource', async () => {
     const posts: Array<{ url: string; body: any }> = [];
+    let saveReceived!: () => void;
+    const saveArrived = new Promise<void>(resolve => { saveReceived = resolve; });
     server = createServer((req, res) => {
       let raw = '';
       req.on('data', chunk => { raw += chunk; });
       req.on('end', () => {
         posts.push({ url: req.url ?? '', body: JSON.parse(raw || '{}') });
+        if (req.url === '/api/memory/save') saveReceived();
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ success: true, id: 1, title: 't', project: 'proj', message: 'saved' }));
       });
@@ -31,7 +34,13 @@ describe('DSH memory hooks', () => {
 
     const agent = { session: { id: 's1', header: { cwd: '/tmp/proj' } } };
     await handlers['tools/post-execute']({ name: 'read', agent }, { isError: false, content: [{ type: 'text', text: 'file body' }] }, async () => ({}));
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // The save is fire-and-forget, so wait for the stub to receive it. The
+    // 5 s bound is above the client's 2 s request timeout, so a lost save
+    // fails here instead of hanging until the suite's timeout.
+    await Promise.race([
+      saveArrived,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('no /api/memory/save within 5 s')), 5000)),
+    ]);
 
     const save = posts.find(post => post.url === '/api/memory/save');
     expect(save?.body.text).toBe('[read] file body');
