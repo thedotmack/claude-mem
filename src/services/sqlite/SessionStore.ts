@@ -4390,7 +4390,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = obsStmt.get(
+        const inserted = (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4413,7 +4413,7 @@ export class SessionStore {
           titleNormKey,
           reinforcementSeed.dates,
           reinforcementSeed.lastReinforced
-        ) as { id: number } | null;
+        ) as { id: number }[])[0] ?? null;
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
