@@ -96,6 +96,19 @@ const GENERIC_TOKEN_REGEX = new RegExp([
   `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
 ].join('|'), 'gi');
 
+// The worker scans tool I/O as JSON.stringify(...) (worker/http/shared.ts), so a
+// newline, tab or carriage return right before a key arrives as the two
+// characters `\n`, `\t` or `\r`. The letter is a word character, so a pattern
+// that starts with `\b` can't match there, and a key printed at the start of a
+// line was stored verbatim. Every `\b` that opens a pattern or one of its
+// alternatives also accepts that escaped pair, the way ASSIGNMENT_START does
+// for the generic patterns.
+const ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
+function matchAfterEscapedWhitespace(pattern: RedactionPattern): RedactionPattern {
+  const source = pattern.regex.source.replace(/(^|\||\(\?:)\\b/g, `$1${ESCAPED_WHITESPACE_OR_WORD_BOUNDARY}`);
+  return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
+}
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
   // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
@@ -202,12 +215,8 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
   // "Authorization: Bearer …"` commands print. The prefix is not claimed by
   // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
-  // the fixed 48-char alphanumeric body keeps the model ids out. The worker
-  // scans JSON.stringify(toolResponse), where a newline right before the key
-  // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
-  // there and the lookbehind also accepts the escaped whitespace pair, like
-  // generic_token's ASSIGNMENT_START.
-  { name: 'perplexity_key',  regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, 'g') },
+  // the fixed 48-char alphanumeric body keeps the model ids out.
+  { name: 'perplexity_key',  regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
   // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
   // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
   // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
@@ -229,7 +238,7 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
-];
+].map(matchAfterEscapedWhitespace);
 
 // Generic, lower-confidence built-ins (issue #4745): credentials that carry no
 // vendor prefix. Opt-in on top of redaction (CLAUDE_MEM_REDACT_GENERIC_ENABLED,
