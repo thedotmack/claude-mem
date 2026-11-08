@@ -102,6 +102,13 @@ plugin_hooks = $codex_hooks
 [projects."$EMV_STACK/proj"]
 trust_level = "trusted"
 TOML
+    # EMV_CODEX_CONTEXT_WINDOW=<tokens>: proof runs only, never a benchmark run (the owner wants agents at their
+    # defaults). A small window makes Codex reach its own 90% auto-compaction limit within a few turns.
+    if [[ -n $EMV_CODEX_CONTEXT_WINDOW ]]; then
+      [[ $EMV_CODEX_CONTEXT_WINDOW == <-> ]] || { echo "EMV_CODEX_CONTEXT_WINDOW must be a whole number of tokens (got '$EMV_CODEX_CONTEXT_WINDOW')" >&2; exit 2; }
+      # A top-level key: it goes before the first table, or TOML would read it as part of that table.
+      { print -r -- "model_context_window = $EMV_CODEX_CONTEXT_WINDOW"; cat $CODEX_HOME/config.toml; } > $CODEX_HOME/config.toml.new && mv $CODEX_HOME/config.toml.new $CODEX_HOME/config.toml
+    fi
   else
     cat > $CODEX_HOME/config.toml <<TOML
 model = "$EMV_CODEX_MODEL"

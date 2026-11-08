@@ -3,6 +3,8 @@ JSON line (what stats.py needs) in <tee dir>/extracted.jsonl and then deleted. T
 the usage numbers) stay. Runs until <stop file> exists, then does a last pass over everything.
 
 Usage: python3 extract.py <stop file> <tee dir>...
+EMV_KEEP_REQUEST_BODIES=1 keeps each body (renamed to <n>-req.body.kept, so it is extracted once) instead of deleting
+it: for a short proof run whose bodies are read afterwards. Unset (the default), bodies are deleted.
 Each line: n, time, proto, conversation (Anthropic metadata.user_id / Responses prompt_cache_key), model,
 tool_uses [{id, name, read_files}], messages, kind (Claude Code's summarizing request / first request continued from a
 summary), timeline_blocks, timeline_chars, thinking_blocks, body_bytes, memory_tools (claude-mem's search tools named
@@ -14,6 +16,7 @@ FILE_CMDS = {'cat', 'head', 'tail', 'nl', 'less', 'more', 'bat'}
 CONTINUED = 'This session is being continued from a previous conversation'
 TIMELINE_OPEN = '<claude-mem-timeline>'
 TIMELINE_CLOSE = '</claude-mem-timeline>'
+KEEP_REQUEST_BODIES = os.environ.get('EMV_KEEP_REQUEST_BODIES') == '1'
 MEMORY_TOOL = re.compile(r'dumb_search|get_observations|save_memory|smart_search|claude-mem-search|claude-mem-recent|mcp__[\w-]*mem[\w-]*__\w+')
 
 
@@ -136,7 +139,9 @@ def one_pass(tee_dirs, min_age_seconds):
                 except Exception as e:
                     # Kept on disk and reported, never dropped: stats.py counts unextracted bodies as an error.
                     print(f'{f}: {e}', file=sys.stderr); continue
-                out.write(json.dumps(rec) + '\n'); out.flush(); os.remove(f)
+                out.write(json.dumps(rec) + '\n'); out.flush()
+                if KEEP_REQUEST_BODIES: os.rename(f, f + '.kept')
+                else: os.remove(f)
 
 
 if __name__ == '__main__':
