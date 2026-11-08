@@ -1,18 +1,40 @@
 name: Media native runtime
 
 on:
+  # PRs run this 5-OS matrix only when they touch the image converter, its
+  # dependencies or the packaging it checks. Every push to main still runs it,
+  # so a native break from any other change shows up on main.
   pull_request:
     paths:
-      - 'src/**'
+      - 'src/services/media/**'
+      - 'src/shared/media-contract.ts'
       - 'tests/media/**'
       - 'tests/fixtures/media-v1/**'
-      - 'scripts/**'
-      - 'plugin/**'
+      - 'scripts/media/**'
+      # Every script the steps below run (npm run build, check:postinstall-allowlist,
+      # smoke:clean-room, build:binaries, smoke:media-binary) and what they import.
+      - 'scripts/sync-plugin-manifests.js'
+      - 'scripts/build-hooks.js'
+      - 'scripts/gen-plugin-lockfile.cjs'
+      - 'scripts/smoke-clean-room.cjs'
+      - 'scripts/check-postinstall-allowlist.js'
+      - 'scripts/postinstall-allowlist.js'
+      - 'scripts/build-worker-binary.js'
+      - 'scripts/smoke-media-binary.cjs'
+      - 'plugin/package.json'
       - 'package.json'
       - '.github/workflows/media-runtime.yml'
   push:
     branches: [main]
   workflow_dispatch:
+
+
+# A newer push to the same branch or PR cancels the older run: its result is
+# already out of date. 174 of 224 CI push runs on main (Nov 1-7) were superseded
+# yet ran to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -47,9 +69,9 @@ jobs:
           bun-version: '1.4.2'
       - name: Install build dependencies
         run: npm install --no-audit --no-fund
-      - name: Check converter types and real decoder fixtures
+      # Typecheck runs once in CI (ci.yml); it does not differ by OS.
+      - name: Check real decoder fixtures
         run: |
-          npm run typecheck
           npm run test:media-converter
           bun test tests/media/contract.test.ts tests/media/evaluation.test.ts
           bun scripts/media/evaluate.ts
