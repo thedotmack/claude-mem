@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'bun:test';
+import { afterAll, describe, it, expect } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import path from 'path';
 import { IdleExitMonitor, idleExitWindowMs, MIN_IDLE_EXIT_MS, parseIdleExitMs } from '../../src/services/worker/idle-exit-monitor.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 // IdleExitMonitor lives in src/services/worker/idle-exit-monitor.ts (not
 // worker-service.ts) for the same reason as runShutdownSequence in
@@ -322,5 +325,61 @@ describe('idleExitWindowMs — the window the worker arms with, which the instal
     expect(idleExitWindowMs('59')).toBe(MIN_IDLE_EXIT_MS);
     expect(idleExitWindowMs('60')).toBe(60_000);
     expect(idleExitWindowMs('600')).toBe(600_000);
+  });
+});
+
+describe('CLAUDE_MEM_IDLE_EXIT_SEC saved as a JSON number, as the worker reads it', () => {
+  // Project-local scratch (gitignored), never the system temp folder, as in
+  // tests/worker/http/routes/setup-state-routes.test.ts.
+  const scratchRoot = path.join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
+  mkdirSync(scratchRoot, { recursive: true });
+  const tempDir = mkdtempSync(path.join(scratchRoot, 'idle-exit-number-'));
+  afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
+
+  /** CLAUDE_MEM_IDLE_EXIT_SEC from a settings.json holding `saved`, loaded the way the worker loads its settings (worker-service.ts initializeBackground). */
+  const loadedFromSettingsJson = (name: string, saved: unknown): unknown => {
+    const settingsPath = path.join(tempDir, name, 'settings.json');
+    mkdirSync(path.dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_IDLE_EXIT_SEC: saved }));
+    const fromEnv = process.env.CLAUDE_MEM_IDLE_EXIT_SEC;
+    delete process.env.CLAUDE_MEM_IDLE_EXIT_SEC;
+    try {
+      return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_IDLE_EXIT_SEC;
+    } finally {
+      if (fromEnv !== undefined) process.env.CLAUDE_MEM_IDLE_EXIT_SEC = fromEnv;
+    }
+  };
+
+  it('reaches the worker as a number, and reads as the window its text would give', () => {
+    const loaded = loadedFromSettingsJson('sixty', 60);
+    // The settings manager turns only a JSON boolean into text, so the number arrives as it was saved.
+    expect(typeof loaded).toBe('number');
+    expect(parseIdleExitMs(loaded)).toBe(parseIdleExitMs('60'));
+    expect(parseIdleExitMs(loaded)).toBe(60_000);
+    expect(idleExitWindowMs(loaded)).toBe(60_000);
+  });
+
+  it('reads every number the way its text reads: 0 is off, a short window is raised to the minimum, and a fraction, a negative or an overflow is a value the worker ignores', () => {
+    // [the number saved, what parseIdleExitMs reads, the window the worker arms with]
+    const rows: Array<[number, number | null, number]> = [
+      [0, 0, 0],
+      [30, 30_000, MIN_IDLE_EXIT_MS],
+      [600, 600_000, 600_000],
+      [1.5, null, 0],
+      [-1, null, 0],
+      [1e308, null, 0],
+    ];
+    rows.forEach(([saved, parsed, window], index) => {
+      const loaded = loadedFromSettingsJson(`number-${index}`, saved);
+      expect({ saved, parsed: parseIdleExitMs(loaded), window: idleExitWindowMs(loaded) }).toEqual({ saved, parsed, window });
+      expect(parseIdleExitMs(loaded)).toBe(parseIdleExitMs(String(saved)));
+    });
+  });
+
+  it('reads JSON that is neither text nor a number as a value the worker ignores, never throwing', () => {
+    [null, [60], { seconds: 60 }].forEach((saved, index) => {
+      const loaded = loadedFromSettingsJson(`not-text-${index}`, saved);
+      expect({ saved, parsed: parseIdleExitMs(loaded), window: idleExitWindowMs(loaded) }).toEqual({ saved, parsed: null, window: 0 });
+    });
   });
 });

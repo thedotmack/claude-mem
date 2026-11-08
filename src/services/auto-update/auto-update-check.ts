@@ -48,7 +48,8 @@ import {
  * default would be pinned into every install and the switch file could never
  * move. CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL defaults to '' and empty
  * means this URL, the way CLAUDE_MEM_OPENROUTER_BASE_URL defaults to '' and
- * means DEFAULT_OPENROUTER_API_URL (src/shared/openrouter-base-url.ts).
+ * means DEFAULT_OPENROUTER_API_URL (src/shared/openrouter-base-url.ts). Only
+ * settings.json can set it, never the environment (readAutoUpdateSettings).
  */
 export const DEFAULT_PROMOTED_RELEASE_URL = 'https://raw.githubusercontent.com/thedotmack/claude-mem/main/releases/promoted-release.json';
 
@@ -677,9 +678,19 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   // declaration that sets Claude Code's own setting). known_marketplaces.json
   // is read again for it: gates 5 and 7 awaited the network since gate 1 read
   // it, and the document written back must be one read with nothing awaited
-  // since. Saved with this tick's decision below.
+  // since. Gate 1's rules for Claude Code's plugin state
+  // (claudeCodePluginStateDisabledReason) apply to this read too: a user who,
+  // while the network was read, turned claude-mem off in Claude Code,
+  // uninstalled it there, or replaced claude-mem's marketplace entry with one
+  // added another way (a fork, a #ref, a git URL, a local folder) gets the
+  // decision gate 1 gives that state. Nothing is written then, and no update
+  // launches, since the update would undo that change. Saved with this tick's
+  // decision below.
   if (backgroundUpdate.waitingForUpdaterProof) {
-    const { knownMarketplaces } = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
+    const pluginStateNow = runStage('read-claude-code-plugin-state', () => deps.readClaudeCodePluginState());
+    const pluginStateReasonNow = claudeCodePluginStateDisabledReason(pluginStateNow, deps.marketplaceDirectory());
+    if (pluginStateReasonNow !== null) return decide({ decision: 'disabled', reason: pluginStateReasonNow });
+    const { knownMarketplaces } = pluginStateNow;
     settleClaudeCodeBackgroundUpdate(deps, state, now, {
       path: knownMarketplaces.path,
       document: knownMarketplaces.kind === 'read' ? knownMarketplaces.document : null,
@@ -1101,7 +1112,8 @@ function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePlu
  * before gate 4 with only gate 3's local read of an interrupted attempt's
  * install in between, or, on the tick whose gate 7 records the proof while
  * this waited for it, one read again right before gate 8, after the network
- * reads (runAutoUpdateCheck). Every other entry and
+ * reads, which must pass gate 1's plugin-state rules again before this runs
+ * (runAutoUpdateCheck). Every other entry and
  * field is written back as read and in the order read: JSON.parse keeps it and
  * writeJsonFileAtomic's JSON.stringify writes it, except that JavaScript puts
  * integer-like keys first. A file that is not writable, or a write that fails,
@@ -1292,9 +1304,15 @@ export function resolvePromotedReleaseUrl(configuredUrl: unknown): string {
  * reads it: from the document's settings target (settingsTarget: the root, or
  * the `env` block of a wrapped document), a JSON boolean as its string
  * (coercePersistedSettingValue), the shipped default for a missing key, and an
- * environment variable over both (applyEnvOverrides), except for
- * CLAUDE_MEM_AUTO_UPDATE, which the environment can turn off but never on over
- * a saved off (autoUpdateSwitchFromEnvAndFile). Those defaults are
+ * environment variable over both (applyEnvOverrides), except for two keys.
+ * CLAUDE_MEM_AUTO_UPDATE the environment can turn off but never on over a
+ * saved off (autoUpdateSwitchFromEnvAndFile). CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL
+ * is read from the file alone, its environment variable never: it names the
+ * release switch, the file that picks the version the updater installs, and
+ * the worker's environment comes from whatever process started it (a
+ * project's SessionStart hook can cold-start the worker), so an inherited
+ * variable could point the switch at a file of its own. The file may still
+ * name a file:// or http(s) URL, for tests and the sandbox. Those defaults are
  * getAllDefaults(): loadFromFile's per-path defaults differ only in the port
  * and URL keys.
  *
@@ -1323,8 +1341,8 @@ export function readAutoUpdateSettings(settingsPath: string, env: NodeJS.Process
     const fromFile = saved[key] !== undefined ? coercePersistedSettingValue(saved[key]) : defaults[key];
     // The check reads every value through settingText, so a number or null a
     // hand edit left here is read as text, never thrown on.
-    settings[key] = (key === 'CLAUDE_MEM_AUTO_UPDATE'
-      ? autoUpdateSwitchFromEnvAndFile(fromEnv, fromFile)
+    settings[key] = (key === 'CLAUDE_MEM_AUTO_UPDATE' ? autoUpdateSwitchFromEnvAndFile(fromEnv, fromFile)
+      : key === 'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL' ? fromFile
       : fromEnv !== undefined ? fromEnv : fromFile) as string;
   }
   return settings;
@@ -1339,9 +1357,10 @@ export function readAutoUpdateSettings(settingsPath: string, env: NodeJS.Process
  * installs code on this machine. An environment value that is on gives way
  * to the file's value (a missing key is its shipped default, on); any other
  * is the value read, so its reason names it. The other keys keep the
- * settings manager's rule, the environment over the file. The worker's tick,
- * doctor's row and the installer's registerMarketplace all read it here
- * (auto-update-switch-readers.ts).
+ * settings manager's rule, the environment over the file, except the
+ * release-switch URL, which only the file sets (readAutoUpdateSettings). The
+ * worker's tick, doctor's row and the installer's registerMarketplace all
+ * read it here (auto-update-switch-readers.ts).
  */
 function autoUpdateSwitchFromEnvAndFile(fromEnv: string | undefined, fromFile: unknown): unknown {
   if (fromEnv === undefined) return fromFile;

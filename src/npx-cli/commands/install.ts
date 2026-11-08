@@ -243,17 +243,19 @@ function claudeCodeBackgroundUpdateToRegister(existingEntry: unknown): unknown {
  * with a warning, and the install goes on. Claude Code's plugin records are
  * not read: this install rewrites them. An idle exit that can stop the
  * worker before its first check (idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck)
- * reads as cannot run too.
+ * reads as cannot run too, and so does any failure to read it, with the same
+ * warning: registerMarketplace runs after the plugin files are copied, so a
+ * throw here would stop the install half done.
  */
 function canClaudeMemUpdaterRun(): boolean {
   try {
     if (readAutoUpdateSettingsSwitches(productionAutoUpdateSettingsReaders({ env: process.env })).kind !== 'on') return false;
+    return !idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck();
   } catch (error: unknown) {
     const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
     log.warn(`Could not read whether claude-mem's auto-update can run (${cause instanceof Error ? cause.message : String(cause)}), so it is read as off and Claude Code's auto-update setting for the thedotmack marketplace is kept as it is`);
     return false;
   }
-  return !idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck();
 }
 
 /**
@@ -268,7 +270,8 @@ function canClaudeMemUpdaterRun(): boolean {
  * from the settings the worker loads, the environment over the file
  * (SettingsDefaultsManager.loadFromFile; readOnly, so this read never writes
  * the file, which changes no value of this key), then idle-exit-monitor.ts
- * idleExitWindowMs, with its minimum.
+ * idleExitWindowMs, with its minimum, which reads a JSON number saved there
+ * as its text. canClaudeMemUpdaterRun catches anything this throws.
  */
 function idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck(): boolean {
   const idleExitMs = idleExitWindowMs(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }).CLAUDE_MEM_IDLE_EXIT_SEC);

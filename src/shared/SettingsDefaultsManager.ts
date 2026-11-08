@@ -501,7 +501,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   // Daily update to the release the owner promotes (src/services/auto-update/).
-  // File/env only: SettingsRoutes FILE_ONLY_SETTING_KEYS keeps HTTP from writing them.
+  // SettingsRoutes FILE_ONLY_SETTING_KEYS keeps HTTP from writing them. The
+  // updater reads CLAUDE_MEM_AUTO_UPDATE from the file and the environment,
+  // and the release URL from the file alone (auto-update-check.ts readAutoUpdateSettings).
   CLAUDE_MEM_AUTO_UPDATE: string;
   CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
@@ -832,7 +834,7 @@ export class SettingsDefaultsManager {
     // off, set in the environment or in the env block of Claude Code's user or
     // managed settings.
     CLAUDE_MEM_AUTO_UPDATE: 'true',                         // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
-    CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path
+    CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path in settings.json, since the updater never reads its environment variable
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
 

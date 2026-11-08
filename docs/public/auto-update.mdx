@@ -19,10 +19,13 @@ It is on by default.
   release the owner pulled back in the meantime is never installed.
 - **Only promoted releases.** claude-mem's updater installs only the version
   the owner names in `releases/promoted-release.json` on claude-mem's `main`
-  branch. A newer release can still reach you before the owner promotes it in
-  two ways: while Claude Code's own background update is on for claude-mem's
-  marketplace (see [below](#claude-codes-auto-update-toggle)), and when you
-  update by hand.
+  branch. Only your `~/.claude-mem/settings.json` can point it at another file
+  (`CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL`, for testing). An environment
+  variable of that name is ignored, so a process that starts the worker cannot
+  choose what it installs. A newer release can still reach you before the
+  owner promotes it in two ways: while Claude Code's own background update is
+  on for claude-mem's marketplace (see
+  [below](#claude-codes-auto-update-toggle)), and when you update by hand.
 - **Only fully published releases.** npm must show the version was published
   by claude-mem's release workflow (it carries the workflow's commit and its
   SLSA provenance). A release whose publish failed is skipped.

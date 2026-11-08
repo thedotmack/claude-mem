@@ -134,8 +134,10 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // the Observation TV guard's token ever being written. The auto-update pair
 // decides what the installer runs on this machine:
 // CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL names the file that picks the
-// version `npx claude-mem@<version> update` installs, and
-// CLAUDE_MEM_AUTO_UPDATE decides whether that runs at all.
+// version `npx claude-mem@<version> update` installs (the updater reads it
+// from the file alone, never the environment: auto-update-check.ts
+// readAutoUpdateSettings), and CLAUDE_MEM_AUTO_UPDATE decides whether that
+// runs at all.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
