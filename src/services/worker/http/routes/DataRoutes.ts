@@ -27,6 +27,7 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { parseProjectList } from '../../../../shared/project-list.js';
+import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 
 // Chroma doc_type per content kind. Observation and summary id spaces overlap,
@@ -948,9 +949,9 @@ export class DataRoutes extends BaseRouteHandler {
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,
-            facts: safeParseJson(obs.facts),
+            facts: parseStringListField(obs.facts, 'facts', id),
             narrative: obs.narrative || null,
-            concepts: safeParseJson(obs.concepts),
+            concepts: parseStringListField(obs.concepts, 'concepts', id),
             files_read: safeParseJson(obs.files_read),
             files_modified: safeParseJson(obs.files_modified),
           };
