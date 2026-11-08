@@ -16,7 +16,7 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolvePluginRoot, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
@@ -37,7 +37,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
-import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
+import { isPidAlive, setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
@@ -50,6 +50,21 @@ import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 import { provisionTreeSitterCliForPluginRoot } from './worker/tree-sitter-cli-provisioning.js';
 import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
 import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
+import {
+  AUTO_UPDATE_FIRST_TICK_DELAY_MS,
+  AUTO_UPDATE_TICK_INTERVAL_MS,
+  claudeCodeManagedSettingsDirectory,
+  fetchJsonWithTimeout,
+  isWorkerQuietBySignals,
+  logFailedAutoUpdateTick,
+  readAutoUpdateSettings,
+  readClaudeCodeSettingsEnvBlocks,
+  runAutoUpdateCheck,
+  type AutoUpdateCheckDeps,
+  type AutoUpdateOncePerBootLogKey,
+} from './auto-update/auto-update-check.js';
+import { readAutoUpdateState, writeAutoUpdateState } from './auto-update/auto-update-state.js';
+import { claudeSettingsPath, marketplaceDirectory, pluginCacheRootDirectory } from '../npx-cli/utils/paths.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -312,6 +327,7 @@ export class WorkerService implements WorkerRef {
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
   private logRetentionTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly hookSpool = new HookSpool();
   private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
@@ -331,6 +347,7 @@ export class WorkerService implements WorkerRef {
   private corpusStore: CorpusStore;
 
   private searchRoutes: SearchRoutes | null = null;
+  private corpusRoutes: CorpusRoutes | null = null;
   private workViewRoutes: WorkViewRoutes | null = null;
   private sharedWorkSync: SharedWorkSync | null = null;
 
@@ -341,7 +358,7 @@ export class WorkerService implements WorkerRef {
   private readonly viewerActivity = new ViewerActivity(active => this.syncClient?.setViewerActive(active));
   private readonly viewerSync = new ViewerSyncService({
     cloud: () => this.dbManager.getCloudSync(), pull: () => this.syncClient,
-    hasViewers: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0) > 0,
+    hasViewers: () => this.viewerEventStreamClientCount() > 0,
     onChange: sync => {
       this.sseBroadcaster.broadcast({ type: 'sync_status', sync });
       this.workViewRoutes?.publishSyncStatus(sync);
@@ -516,7 +533,7 @@ export class WorkerService implements WorkerRef {
       getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
       getLastRequestAt: () => this.server.getLastRequestAt(),
       getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
-      getViewerClientCount: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0),
+      getViewerClientCount: () => this.viewerEventStreamClientCount(),
       getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
       onIdle: () => {
         // The sequence never exits the process for non-restart reasons —
@@ -530,6 +547,15 @@ export class WorkerService implements WorkerRef {
     });
     this.idleExitMonitor.start();
     logger.info('SYSTEM', 'Idle exit enabled', { idleExitSec: idleExitMs / 1000 });
+  }
+
+  /**
+   * Viewer and My Work tabs connected to their event streams. Viewer sync,
+   * the idle-exit monitor and the auto-update quiet check all read this one
+   * count. My Work's routes are null before they mount and after shutdown.
+   */
+  private viewerEventStreamClientCount(): number {
+    return this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0);
   }
 
   /**
@@ -605,6 +631,142 @@ export class WorkerService implements WorkerRef {
       clearTimeout(this.logRetentionTimer);
       clearInterval(this.logRetentionTimer);
       this.logRetentionTimer = null;
+    }
+  }
+
+  /**
+   * Auto-update check (src/services/auto-update/auto-update-check.ts), timed
+   * like log retention: the first tick waits 5 minutes so boot and the first
+   * session's hooks finish before any background network work, then one tick
+   * runs every hour so the quiet rule can find a quiet hour. The check itself
+   * reaches the network about once a day. Settings are re-read every tick, and
+   * a failing tick is logged with its stage (logFailedAutoUpdateTick: at ERROR,
+   * once per boot for a broken settings file) and never reaches the worker.
+   * A tick still running when shutdown begins is stopped by the check
+   * itself, right before it would launch (isWorkerShuttingDown).
+   * Started by start() once the server listens, before background
+   * initialization, so it also runs on a worker whose initialization failed.
+   * Local worker only: the server runtime is rebuilt, never self-updated.
+   */
+  private startAutoUpdateTimer(): void {
+    if (this.autoUpdateTimer != null || this.isShuttingDown) return;
+    const oncePerBootLogsWritten = new Set<AutoUpdateOncePerBootLogKey>();
+    const tick = async (): Promise<void> => {
+      if (this.isShuttingDown) return;
+      try {
+        await runAutoUpdateCheck(this.buildAutoUpdateCheckDeps(oncePerBootLogsWritten));
+      } catch (error) {
+        logFailedAutoUpdateTick(error, oncePerBootLogsWritten);
+      }
+    };
+    this.autoUpdateTimer = setTimeout(() => {
+      void tick();
+      if (this.isShuttingDown) return;
+      this.autoUpdateTimer = setInterval(() => void tick(), AUTO_UPDATE_TICK_INTERVAL_MS);
+      this.autoUpdateTimer.unref?.();
+    }, AUTO_UPDATE_FIRST_TICK_DELAY_MS);
+    this.autoUpdateTimer.unref?.();
+  }
+
+  /**
+   * One tick's view of the worker; settings are read inside the tick, so a
+   * change applies on the next one. The timer runs from the moment the server
+   * listens, so every signal here copes with a startup that has not finished
+   * or failed: the session manager, server and viewer broadcaster exist from
+   * the constructor on, and a signal whose component initializeBackground has
+   * not created (the database, My Work's routes, the corpus routes) throws,
+   * which the check logs and counts as busy, never quiet.
+   */
+  private buildAutoUpdateCheckDeps(oncePerBootLogsWritten: Set<AutoUpdateOncePerBootLogKey>): AutoUpdateCheckDeps {
+    return {
+      now: Date.now,
+      env: process.env,
+      readSettings: () => readAutoUpdateSettings(USER_SETTINGS_PATH),
+      readClaudeCodeSettingsEnv: () => readClaudeCodeSettingsEnvBlocks({
+        userSettingsPath: claudeSettingsPath(),
+        managedSettingsDirectory: claudeCodeManagedSettingsDirectory(),
+      }),
+      readState: () => readAutoUpdateState(),
+      writeState: (state) => writeAutoUpdateState(state),
+      resolvePluginRoot: () => resolvePluginRoot(),
+      pluginCacheRootDirectory,
+      marketplaceDirectory,
+      fetchJson: fetchJsonWithTimeout,
+      // isWorkerQuietBySignals explains which signals count and why.
+      isWorkerQuiet: () => isWorkerQuietBySignals({
+        hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
+        // getSessionStore throws 'Database not initialized' until initializeBackground opens it.
+        getNewestCapturedActivityAt: () => this.dbManager.getSessionStore().getNewestCapturedActivityEpoch(),
+        getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
+        getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
+        // My Work's routes are null until mounted: no My Work stream is open
+        // then, and counting none leaves the most requests counted as busy.
+        getViewerClientCount: () => this.viewerEventStreamClientCount(),
+        getRunningBackgroundJobs: () => this.runningBackgroundJobNames(),
+      }, Date.now()),
+      isProcessAlive: isPidAlive,
+      isWorkerShuttingDown: () => this.isShuttingDown,
+      // Decide only: report what would be applied. Nothing is installed yet.
+      launchSupervisor: async ({ targetVersion, previousVersion }) => {
+        logger.info('AUTO_UPDATE', `would apply ${previousVersion} → ${targetVersion}`, { previousVersion, targetVersion });
+      },
+      oncePerBootLogsWritten,
+    };
+  }
+
+  /**
+   * The worker's own long-running jobs that are running now and are not a
+   * session, a queued message or an open request, for the auto-update quiet
+   * check, which counts any as busy. These are the jobs a restart would cut
+   * off with their work lost, the rule SetupStateView.backgroundWorkRunning
+   * states for the installer:
+   *  - My Work's extraction run (the setup scan with its hosted upload, or the
+   *    automatic refresh, an agent run with no time limit) and its history
+   *    import, the work the installer already waits for before it restarts
+   *    the worker (WorkViewRoutes.backgroundWorkRunning), except a setup scan
+   *    held at the upload question, which runs nothing
+   *    (countScanWaitingForUploadAnswer: false);
+   *  - My Work's card-wording requests, chat completions whose spend is lost
+   *    (WorkViewRoutes.cardWordingRequestsRunning);
+   *  - corpus builds and rebuilds that outlive their request
+   *    (CorpusRoutes.corpusBuildsRunning);
+   *  - Telegram session wrap-ups, which nothing asks for again after a
+   *    restart (SessionManager.getSessionWrapupsInFlight).
+   * Left out, because a restart loses nothing of theirs: the hook-spool drain
+   * (exactly-once across restarts, hook-spool.ts), cloud sync push and pull,
+   * media sync and the Chroma backfill (each resumes from what it saved), the
+   * backup snapshot (a .partial file the next snapshot removes), the context
+   * cache (re-rendered at boot), the transcript watcher (resumes from its saved
+   * checkpoint), focus sharing and shared work state (idempotent rounds), and
+   * the one-time boot jobs, which retry on the next start or are no-ops there
+   * (the FTS reclaim keeps the merge steps it committed, and a partly merged
+   * index is valid: FtsMaintenance.ts). A restore runs before the database
+   * opens, while the database read already reads busy.
+   *
+   * Throws while a component that runs one of them is missing:
+   * initializeBackground has not created it yet, or failed before it did, so
+   * whether its job runs cannot be read.
+   */
+  private runningBackgroundJobNames(): string[] {
+    if (this.workViewRoutes == null) {
+      throw new Error('My Work\'s routes are not mounted (background initialization has not reached them, or failed before it did), so its extraction run, history import and card wording cannot be read');
+    }
+    if (this.corpusRoutes == null) {
+      throw new Error('The corpus routes are not registered (background initialization has not reached them, or failed before it did), so a corpus build cannot be read');
+    }
+    const running: string[] = [...this.workViewRoutes.backgroundWorkRunning({ countScanWaitingForUploadAnswer: false })];
+    if (this.workViewRoutes.cardWordingRequestsRunning() > 0) running.push('my-work-card-wording');
+    if (this.corpusRoutes.corpusBuildsRunning() > 0) running.push('corpus-build');
+    if (this.sessionManager.getSessionWrapupsInFlight() > 0) running.push('telegram-session-wrapup');
+    return running;
+  }
+
+  private stopAutoUpdateTimer(): void {
+    // `!= null` and both clears: the same reasons as stopLogRetention.
+    if (this.autoUpdateTimer != null) {
+      clearTimeout(this.autoUpdateTimer);
+      clearInterval(this.autoUpdateTimer);
+      this.autoUpdateTimer = null;
     }
   }
 
@@ -768,6 +930,13 @@ export class WorkerService implements WorkerRef {
     // Bound successfully — the watchdog has done its job.
     clearTimeout(this.bootWatchdog);
     this.bootWatchdog = null;
+
+    // The auto-update timer starts here, as soon as the server listens, not
+    // with log retention at the end of initializeBackground: a release whose
+    // later startup fails or hangs must still update to a release the owner
+    // promotes to fix it. Every signal its tick reads copes with a startup
+    // that has not finished or failed (buildAutoUpdateCheckDeps).
+    this.startAutoUpdateTimer();
 
     if (this.tvToken) {
       // Operators need to see, in the log, that a remote surface is open.
@@ -1039,7 +1208,8 @@ export class WorkerService implements WorkerRef {
         this.corpusStore
       );
       const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
-      this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent));
+      this.corpusRoutes = new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent);
+      this.server.registerRoutes(this.corpusRoutes);
       logger.info('WORKER', 'CorpusRoutes registered');
 
       // Cloud sync status endpoint. Registered late (SearchRoutes pattern)
@@ -1346,6 +1516,7 @@ export class WorkerService implements WorkerRef {
         this.sharedWorkSync = null;
         this.stopPendingSessionResume();
         this.stopLogRetention();
+        this.stopAutoUpdateTimer();
         this.hookSpoolDrainer.stop();
         // Stop the idle monitor before the drain: its own trigger has
         // already disarmed it, and a route- or signal-initiated drain must

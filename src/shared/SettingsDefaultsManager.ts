@@ -62,8 +62,12 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
  * deadline migrations treat a hand-written number as the user choosing it, and
  * anything else is passed through untouched so this never rewrites a value it
  * does not understand.
+ *
+ * Exported for the auto-updater, which reads its own keys from the parsed
+ * document the same way (src/services/auto-update/auto-update-check.ts
+ * readAutoUpdateSettings).
  */
-function coercePersistedSettingValue(value: unknown): unknown {
+export function coercePersistedSettingValue(value: unknown): unknown {
   return typeof value === 'boolean' ? String(value) : value;
 }
 
@@ -496,6 +500,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
   CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
+  // Daily update to the release the owner promotes (src/services/auto-update/).
+  // File/env only: SettingsRoutes FILE_ONLY_SETTING_KEYS keeps HTTP from writing them.
+  CLAUDE_MEM_AUTO_UPDATE: string;
+  CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
 
@@ -818,6 +826,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_LOG_RETENTION_DAYS: '30',                // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
+    // Daily update to the release the owner promotes. On by default; Claude
+    // Code's DISABLE_AUTOUPDATER (unless FORCE_AUTOUPDATE_PLUGINS=1),
+    // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also turn it
+    // off, set in the environment or in the env block of Claude Code's user or
+    // managed settings.
+    CLAUDE_MEM_AUTO_UPDATE: 'true',                         // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
+    CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
 
