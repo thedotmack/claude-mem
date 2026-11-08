@@ -1552,7 +1552,7 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
     }
     const equals = item.indexOf('=');
     if (equals !== -1) {
-      options[item.slice(2, equals)] = item.slice(equals + 1);
+      options[item.slice(2, equals)] = item.slice(equals + 1) || 'true';
       continue;
     }
     const key = item.slice(2);

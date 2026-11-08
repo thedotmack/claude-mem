@@ -16,5 +16,6 @@ describe('cliFlagValue', () => {
     expect(cliFlagValue(['--branch'], '--branch')).toBeNull();
     expect(cliFlagValue(['--branch', '--dry-run'], '--branch')).toBeNull();
     expect(cliFlagValue(['--branch='], '--branch')).toBeNull();
+    expect(cliFlagValue(['--branch', ''], '--branch')).toBeNull();
   });
 });
