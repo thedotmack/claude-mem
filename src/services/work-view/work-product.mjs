@@ -107,15 +107,24 @@ function outputText(call, response) {
   return typeof call.tool_response === 'string' ? call.tool_response : '';
 }
 
+// Inside bash double quotes a backslash escapes only $, `, " and \; any other
+// backslash is literal and stays.
+const BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
+
 // The subject line of the message each `git commit` in a command passes with
 // -m or a heredoc, in order; null where the message comes from elsewhere.
 function commitSubjects(command) {
   const starts = [...command.matchAll(gitPattern(String.raw`commit\b`, 'g'))].map((match) => match.index);
   return starts.map((start, index) => {
     const invocation = command.slice(start, starts[index + 1]);
+    // -m "$(cat <<'EOF'\n<subject>\n...EOF\n)": the subject is the heredoc's first
+    // line, read raw — quotes inside the substitution are literal, so the outer
+    // "..." match below would stop at the first one.
+    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    if (substituted) return short(substituted[1]);
     const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
-    const text = inline ? (inline[1] ?? inline[2]).replace(/\\(.)/g, '$1') : heredoc?.[1];
+    const text = inline ? (inline[1] ?? inline[2]).replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') : heredoc?.[1];
     return short(text?.split('\n')[0]);
   });
 }
@@ -201,8 +210,9 @@ function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
   const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
   const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
   if (!url) return [];
-  const title = command.match(/--title\s+(?:"([^"]+)"|'([^']+)')/);
-  return [{ kind: 'pull-request', title: short(title?.[1] ?? title?.[2]) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
+  const title = command.match(/(?:--title(?:=|\s+)|\s-t\s+)(?:"((?:[^"\\]|\\.)+)"|'([^']+)'|([^\s"'-][^\s]*))/);
+  const titleText = title?.[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') ?? title?.[2] ?? title?.[3];
+  return [{ kind: 'pull-request', title: short(titleText) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
 }
 
 /** Commits and branches one recorded Bash command made. */
