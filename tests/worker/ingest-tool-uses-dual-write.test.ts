@@ -171,11 +171,11 @@ describe('ingestObservation dual-write to tool_uses', () => {
   });
 
   it('skips a late raw write when DELETE commits after a stale post-capture check', async () => {
-    const originalCheck = store!.isSessionDeleted.bind(store);
+    const originalCheck = store!.isBeforeSessionDeletion.bind(store);
     let checks = 0;
-    store!.isSessionDeleted = (platform, contentSessionId) => {
+    store!.isBeforeSessionDeletion = (platform, contentSessionId, eventOccurredAtEpochMs) => {
       checks++;
-      const deleted = originalCheck(platform, contentSessionId);
+      const deleted = originalCheck(platform, contentSessionId, eventOccurredAtEpochMs);
       if (checks === 2) {
         const row = store!.db.prepare('SELECT id, memory_session_id FROM sdk_sessions WHERE content_session_id = ?')
           .get(contentSessionId) as { id: number; memory_session_id: string };

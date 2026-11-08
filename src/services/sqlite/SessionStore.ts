@@ -309,6 +309,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureCommittedToolUsesTable();
+    this.ensureDeletedSessionCutoffTriggers();
     this.ensureTelegramWrapupsTable();
     this.addDedupTables();
     this.refreshUnicodeTitleNormKeys();
@@ -2190,58 +2191,87 @@ export class SessionStore {
         deleted_at_epoch_ms INTEGER NOT NULL
       )
     `);
-    // The trigger closes the race between the caller's preflight and INSERT on
-    // another SQLite connection. A delayed transcript must never undo deletion.
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS prevent_deleted_sdk_session_insert
-      BEFORE INSERT ON sdk_sessions
-      WHEN EXISTS (
-        SELECT 1 FROM deleted_content_sessions
-        WHERE platform_source = NEW.platform_source
-          AND content_session_id = NEW.content_session_id
-      ) OR EXISTS (
-        SELECT 1 FROM deleted_memory_sessions
-        WHERE memory_session_id = NEW.memory_session_id
-      )
-      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
-    `);
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS prevent_deleted_sdk_session_update
-      BEFORE UPDATE OF memory_session_id, content_session_id, platform_source ON sdk_sessions
-      WHEN EXISTS (
-        SELECT 1 FROM deleted_content_sessions
-        WHERE platform_source = NEW.platform_source
-          AND content_session_id = NEW.content_session_id
-      ) OR EXISTS (
-        SELECT 1 FROM deleted_memory_sessions
-        WHERE memory_session_id = NEW.memory_session_id
-      )
-      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
-    `);
-    // Media conversion can yield after session resolution. Guard the raw side
-    // index at the write boundary as well as at ingest so another connection's
-    // completed DELETE cannot be undone between a preflight and this INSERT.
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS prevent_deleted_tool_use_insert
-      BEFORE INSERT ON tool_uses
-      WHEN EXISTS (
-        SELECT 1 FROM deleted_content_sessions
-        WHERE platform_source = NEW.platform_source
-          AND content_session_id = NEW.content_session_id
-      )
-      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
-    `);
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS prevent_deleted_tool_use_update
-      BEFORE UPDATE ON tool_uses
-      WHEN EXISTS (
-        SELECT 1 FROM deleted_content_sessions
-        WHERE platform_source = NEW.platform_source
-          AND content_session_id = NEW.content_session_id
-      )
-      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
-    `);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(73, new Date().toISOString());
+  }
+
+  // v74: a deleted session's tombstone is a cutoff, not a permanent block.
+  // Content from before the deletion stays out; new work in the same
+  // conversation (a resumed Claude Code session) recreates the session.
+  // Replaces v73's triggers, which blocked the content session id forever.
+  private ensureDeletedSessionCutoffTriggers(): void {
+    this.db.transaction(() => {
+      for (const v73Trigger of [
+        'prevent_deleted_sdk_session_insert',
+        'prevent_deleted_sdk_session_update',
+        'prevent_deleted_tool_use_insert',
+        'prevent_deleted_tool_use_update',
+      ]) {
+        this.db.run(`DROP TRIGGER IF EXISTS ${v73Trigger}`);
+      }
+      // The trigger closes the race between the caller's preflight and INSERT on
+      // another SQLite connection. createSDKSession stamps started_at_epoch
+      // before its preflight, so a row whose preflight ran before a DELETE that
+      // committed in between is never newer than that deletion.
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS block_pre_deletion_sdk_session_insert
+        BEFORE INSERT ON sdk_sessions
+        WHEN EXISTS (
+          SELECT 1 FROM deleted_content_sessions
+          WHERE platform_source = NEW.platform_source
+            AND content_session_id = NEW.content_session_id
+            AND NEW.started_at_epoch <= deleted_at_epoch_ms
+        ) OR EXISTS (
+          SELECT 1 FROM deleted_memory_sessions
+          WHERE memory_session_id = NEW.memory_session_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+      `);
+      // No row may take a deleted memory identity, and no other row may be
+      // re-keyed into a deleted content identity. A recreated row keeps its
+      // own identity and may still record its new memory session id.
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS block_deleted_sdk_session_rekey
+        BEFORE UPDATE OF memory_session_id, content_session_id, platform_source ON sdk_sessions
+        WHEN EXISTS (
+          SELECT 1 FROM deleted_memory_sessions
+          WHERE memory_session_id = NEW.memory_session_id
+        ) OR (
+          (NEW.content_session_id IS NOT OLD.content_session_id OR NEW.platform_source IS NOT OLD.platform_source)
+          AND EXISTS (
+            SELECT 1 FROM deleted_content_sessions
+            WHERE platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          )
+        )
+        BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+      `);
+      // Media conversion can yield after session resolution. Guard the raw side
+      // index at the write boundary as well as at ingest so another connection's
+      // completed DELETE cannot be undone between a preflight and this INSERT.
+      // Only a session row recreated after the deletion (ids are AUTOINCREMENT,
+      // so the deleted row's id never comes back) may hold raw tool data again.
+      for (const [name, event] of [
+        ['block_pre_deletion_tool_use_insert', 'INSERT'],
+        ['block_pre_deletion_tool_use_update', 'UPDATE'],
+      ]) {
+        this.db.run(`
+          CREATE TRIGGER IF NOT EXISTS ${name}
+          BEFORE ${event} ON tool_uses
+          WHEN EXISTS (
+            SELECT 1 FROM deleted_content_sessions
+            WHERE platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          ) AND NOT EXISTS (
+            SELECT 1 FROM sdk_sessions
+            WHERE id = NEW.session_db_id
+              AND platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          )
+          BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+        `);
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(74, new Date().toISOString());
+    })();
   }
 
   hasCommittedToolUse(platformSource: string, contentSessionId: string, toolUseId: string): boolean {
@@ -2253,25 +2283,55 @@ export class SessionStore {
   }
 
   markSessionDeleted(platformSource: string, contentSessionId: string, memorySessionId?: string | null): void {
+    // A conversation can be deleted, resumed and deleted again: the cutoff
+    // moves to the newest deletion, so work between the two stays out too.
+    const deletedAtEpochMs = Date.now();
     this.db.prepare(`
-      INSERT OR IGNORE INTO deleted_content_sessions
+      INSERT INTO deleted_content_sessions
         (platform_source, content_session_id, deleted_at_epoch_ms)
       VALUES (?, ?, ?)
-    `).run(normalizePlatformSource(platformSource), contentSessionId, Date.now());
+      ON CONFLICT(platform_source, content_session_id)
+      DO UPDATE SET deleted_at_epoch_ms = MAX(deleted_at_epoch_ms, excluded.deleted_at_epoch_ms)
+    `).run(normalizePlatformSource(platformSource), contentSessionId, deletedAtEpochMs);
     if (memorySessionId) {
       this.db.prepare(`
         INSERT OR IGNORE INTO deleted_memory_sessions
           (memory_session_id, deleted_at_epoch_ms)
         VALUES (?, ?)
-      `).run(memorySessionId, Date.now());
+      `).run(memorySessionId, deletedAtEpochMs);
     }
   }
 
   isSessionDeleted(platformSource: string, contentSessionId: string): boolean {
-    return this.db.prepare(`
-      SELECT 1 FROM deleted_content_sessions
+    return this.getSessionDeletedAtEpochMs(platformSource, contentSessionId) !== null;
+  }
+
+  /** When the user last deleted this session, or null if they never did. */
+  getSessionDeletedAtEpochMs(platformSource: string, contentSessionId: string): number | null {
+    const row = this.db.prepare(`
+      SELECT deleted_at_epoch_ms FROM deleted_content_sessions
       WHERE platform_source = ? AND content_session_id = ?
-    `).get(normalizePlatformSource(platformSource), contentSessionId) != null;
+    `).get(normalizePlatformSource(platformSource), contentSessionId) as { deleted_at_epoch_ms: number } | null;
+    return row?.deleted_at_epoch_ms ?? null;
+  }
+
+  /**
+   * True when this event belongs to a deleted session and cannot prove it
+   * happened after the deletion: content that existed when the user deleted
+   * the session must never come back. Only a source time (the hook's clock,
+   * a transcript line's timestamp) later than the deletion marks new work in
+   * the same conversation. An event without one stays out.
+   */
+  isBeforeSessionDeletion(
+    platformSource: string,
+    contentSessionId: string,
+    eventOccurredAtEpochMs: number | null | undefined,
+  ): boolean {
+    const deletedAtEpochMs = this.getSessionDeletedAtEpochMs(platformSource, contentSessionId);
+    if (deletedAtEpochMs === null) return false;
+    return !(typeof eventOccurredAtEpochMs === 'number'
+      && Number.isFinite(eventOccurredAtEpochMs)
+      && eventOccurredAtEpochMs > deletedAtEpochMs);
   }
 
   /**
@@ -3737,12 +3797,15 @@ export class SessionStore {
     project: string,
     userPrompt: string,
     customTitle?: string,
-    platformSource?: string
+    platformSource?: string,
+    /** When the event creating or resolving the session happened at its source; see isBeforeSessionDeletion. */
+    eventOccurredAtEpochMs?: number | null,
   ): number {
+    // Stamped before the deletion preflight: the insert trigger relies on it.
     const now = new Date();
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
-    if (this.isSessionDeleted(normalizedPlatformSource, contentSessionId)) {
+    if (this.isBeforeSessionDeletion(normalizedPlatformSource, contentSessionId, eventOccurredAtEpochMs)) {
       throw new Error('session_deleted');
     }
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);

@@ -331,7 +331,8 @@ test('missing decoder is a safe media failure and larger deadlines cannot bypass
 });
 
 test('the owner quota stays at the value Pro enforces', () => {
-  // Pro's src/lib/media/contract.ts enforces 256 MiB (uploads past it answer 413
-  // quota_exceeded). The shared contract must not promise more until Pro changes first.
-  assert.equal(MEDIA_LIMITS.ownerQuotaBytes, 256 * 1024 * 1024);
+  // Pro's src/lib/media/contract.ts and drizzle/0107 enforce 25 GiB (uploads past
+  // it answer 413 quota_exceeded; claude-mem-pro#396). The shared contract must not
+  // promise more until Pro changes first.
+  assert.equal(MEDIA_LIMITS.ownerQuotaBytes, 25 * 1024 * 1024 * 1024);
 });

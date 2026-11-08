@@ -51,7 +51,7 @@ label; it never includes an arbitrary decoder exception message.
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 256 MiB converted assets, atomically reserved. Pro enforces it (uploads past it answer 413 `quota_exceeded`); the value matches Pro's contract |
+| Owner quota | 25 GiB converted assets, atomically reserved. Pro enforces it (uploads past it answer 413 `quota_exceeded`); the value matches Pro's contract |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 

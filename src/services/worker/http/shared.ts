@@ -146,6 +146,22 @@ export type IngestResult =
   | { ok: true; status: 'skipped'; reason: string }
   | { ok: false; reason: string; status?: number };
 
+/**
+ * A skip because the user deleted the session is logged with its reason,
+ * never silent: what was kept out, and why it could not be new work.
+ */
+export function logDeletedSessionSkip(
+  what: string,
+  why: 'not_newer_than_deletion' | 'session_not_recaptured',
+  platformSource: string,
+  contentSessionId: string,
+  detail: Record<string, unknown> = {},
+): void {
+  logger.info('INGEST', `Skipped ${what}: its session was deleted (${why})`, {
+    reason: 'session_deleted', why, platformSource, contentSessionId, ...detail,
+  });
+}
+
 export interface ObservationPayload {
   contentSessionId: string;
   toolName: string;
@@ -174,6 +190,14 @@ export interface ObservationPayload {
    * was current then, not at drain time. HTTP callers omit it (= now).
    */
   enqueuedAtEpochMs?: number;
+  /**
+   * When the tool use happened at its source: the hook's clock, or the
+   * transcript line's own timestamp (null when the line carries none). Only
+   * this proves an event in a deleted session is new work after the deletion
+   * (SessionStore.isBeforeSessionDeletion); arrival time does not, since a
+   * transcript re-read arrives now too.
+   */
+  eventOccurredAtEpochMs?: number | null;
 }
 
 export async function ingestObservation(payload: ObservationPayload, handoff: IngestHandoff = {}): Promise<IngestResult> {
@@ -272,12 +296,15 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   let sessionDbId: number;
   let promptNumber: number;
   try {
-    sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
+    sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource, payload.eventOccurredAtEpochMs);
     if (cwd) store.setSessionCwd(sessionDbId, cwd, projectContext?.keySource);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === 'session_deleted') {
+      logDeletedSessionSkip('a tool use', 'not_newer_than_deletion', platformSource, payload.contentSessionId, {
+        toolName: payload.toolName, toolUseId: payload.toolUseId, eventOccurredAtEpochMs: payload.eventOccurredAtEpochMs ?? null,
+      });
       return { ok: true, status: 'skipped', reason: 'session_deleted' };
     }
     logger.error('INGEST', 'Observation session resolution failed', {
@@ -323,7 +350,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }, mediaCaptureEnabled ? () => dbManager.getMediaStore() : undefined);
   // Explicit DELETE may commit while media conversion yields. Do not restore
   // its raw tool-use side index or put the stale observation into RAM.
-  if (store.isSessionDeleted(platformSource, payload.contentSessionId)) {
+  if (store.isBeforeSessionDeletion(platformSource, payload.contentSessionId, payload.eventOccurredAtEpochMs)) {
+    logDeletedSessionSkip('a tool use (deleted during media capture)', 'not_newer_than_deletion', platformSource, payload.contentSessionId, {
+      toolName: payload.toolName, toolUseId: payload.toolUseId, eventOccurredAtEpochMs: payload.eventOccurredAtEpochMs ?? null,
+    });
     return { ok: true, status: 'skipped', reason: 'session_deleted' };
   }
   const cleanedToolInput = media.toolInput !== undefined
@@ -364,6 +394,9 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
       // A concurrent SQLite connection can delete the session after the
       // post-capture check. The write trigger closes that final DB race.
       if (error instanceof Error && error.message === 'session_deleted') {
+        logDeletedSessionSkip('a tool use (deleted before its raw backup write)', 'not_newer_than_deletion', platformSource, payload.contentSessionId, {
+          toolName: payload.toolName, toolUseId: payload.toolUseId, eventOccurredAtEpochMs: payload.eventOccurredAtEpochMs ?? null,
+        });
         return { ok: true, status: 'skipped', reason: 'session_deleted' };
       }
       logger.warn('INGEST', 'tool_uses backup write failed (observation still queued)', {
@@ -499,11 +532,13 @@ export async function ingestSummarize(
   // Summarize only a session the worker knows. Creating a row here gave every
   // idle turn of a session nothing else recorded (an excluded checkout, a
   // skipped init) an empty-project row and a paid observer call (R5-1).
-  if (store.isSessionDeleted(platformSource, contentSessionId)) {
-    return { status: 'skipped', reason: 'session_deleted' };
-  }
+  // A deleted session has a row again only once new work recreated it.
   const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
   if (sessionDbId === null) {
+    if (store.isSessionDeleted(platformSource, contentSessionId)) {
+      logDeletedSessionSkip('a summary request', 'session_not_recaptured', platformSource, contentSessionId);
+      return { status: 'skipped', reason: 'session_deleted' };
+    }
     return { status: 'unknown_session' };
   }
 
@@ -607,10 +642,12 @@ export function ingestDeliverables(
   }
 
   const store = dbManager.getSessionStore();
-  if (store.isSessionDeleted(platformSource, contentSessionId)) {
+  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+  const sessionDeleted = store.isSessionDeleted(platformSource, contentSessionId);
+  if (sessionDeleted && sessionDbId === null) {
+    logDeletedSessionSkip('a deliverables record', 'session_not_recaptured', platformSource, contentSessionId, { files: files.length });
     return { status: 'skipped', reason: 'session_deleted', ...nothing };
   }
-  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
   if (sessionDbId !== null) {
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
     const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(store, contentSessionId, promptNumber, 'deliverables', sessionDbId);
@@ -623,7 +660,13 @@ export function ingestDeliverables(
   let stored = 0;
   let duplicates = 0;
   let unavailable = 0;
+  let beforeDeletion = 0;
   for (const file of files) {
+    // A recreated session takes only deliverables made after the deletion.
+    if (sessionDeleted && store.isBeforeSessionDeletion(platformSource, contentSessionId, file.occurredAtEpoch)) {
+      beforeDeletion++;
+      continue;
+    }
     if (!isInsideDeliverablesDir(file.bucketPath, deliverablesDir) || !isRegularFile(file.bucketPath)) {
       unavailable++;
       logger.warn('HOOK', 'A deliverable names a bucket copy this worker cannot open; not recorded', { project, bucketPath: file.bucketPath, sourcePath: file.sourcePath, deliverablesDir });
@@ -650,6 +693,9 @@ export function ingestDeliverables(
     if (result.inserted) stored++;
     else duplicates++;
   }
+  if (beforeDeletion > 0) {
+    logDeletedSessionSkip(`${beforeDeletion} deliverable(s)`, 'not_newer_than_deletion', platformSource, contentSessionId);
+  }
   // Every row is written: the hand-off point.
   handoff.markHandedOff?.();
   logger.info('HOOK', 'Deliverables recorded', { project, stored, duplicates, unavailable });
@@ -662,11 +708,12 @@ export async function ingestSessionEnd(
   handoff: IngestHandoff = {},
 ): Promise<SessionIngestOutcome> {
   const store = deps.dbManager.getSessionStore();
-  if (store.isSessionDeleted(payload.platformSource, payload.contentSessionId)) {
-    return { status: 'skipped', reason: 'session_deleted' };
-  }
   const sessionDbId = store.findSessionDbIdByContentSessionId(payload.contentSessionId, payload.platformSource);
   if (sessionDbId === null) {
+    if (store.isSessionDeleted(payload.platformSource, payload.contentSessionId)) {
+      logDeletedSessionSkip('a session end', 'session_not_recaptured', payload.platformSource, payload.contentSessionId);
+      return { status: 'skipped', reason: 'session_deleted' };
+    }
     return { status: 'unknown_session' };
   }
 
@@ -712,11 +759,20 @@ export function ingestAdvisorCalls(
   const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : 'unknown';
 
   const store = dbManager.getSessionStore();
+  // Advice given before the user deleted the session stays out; advice from
+  // new work in the same conversation is recorded.
+  const liveCalls = calls.filter(call => !store.isBeforeSessionDeletion(platformSource, contentSessionId, call.occurredAtEpoch));
+  if (liveCalls.length < calls.length) {
+    logDeletedSessionSkip(`${calls.length - liveCalls.length} advisor call(s)`, 'not_newer_than_deletion', platformSource, contentSessionId);
+    if (liveCalls.length === 0) return { status: 'skipped', reason: 'session_deleted' };
+  }
   let sessionDbId: number;
   try {
-    sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
+    sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource,
+      liveCalls.length > 0 ? Math.max(...liveCalls.map(call => call.occurredAtEpoch)) : undefined);
   } catch (error) {
     if (error instanceof Error && error.message === 'session_deleted') {
+      logDeletedSessionSkip('advisor calls (deleted while recording)', 'not_newer_than_deletion', platformSource, contentSessionId);
       return { status: 'skipped', reason: 'session_deleted' };
     }
     throw error;
@@ -725,7 +781,7 @@ export function ingestAdvisorCalls(
   let stored = 0;
   let duplicates = 0;
   let privateOnly = 0;
-  for (const call of calls) {
+  for (const call of liveCalls) {
     // <private> content never reaches the database, the same rule as
     // prompts and tool payloads. Advice that was entirely private is dropped.
     const advice = stripMemoryTags(call.advice).trim();
@@ -788,7 +844,10 @@ export function ingestSubagentStop(
     return { status: 'skipped', reason: 'project_excluded' };
   }
   const project = typeof payload.cwd === 'string' && payload.cwd.trim() ? getProjectContext(payload.cwd).primary : 'unknown';
-  if (dbManager.getSessionStore().isSessionDeleted(payload.platformSource, payload.contentSessionId)) {
+  const store = dbManager.getSessionStore();
+  if (store.isSessionDeleted(payload.platformSource, payload.contentSessionId)
+    && store.findSessionDbIdByContentSessionId(payload.contentSessionId, payload.platformSource) === null) {
+    logDeletedSessionSkip('a subagent stop', 'session_not_recaptured', payload.platformSource, payload.contentSessionId);
     return { status: 'skipped', reason: 'session_deleted' };
   }
   const fields = agentStopFields({
