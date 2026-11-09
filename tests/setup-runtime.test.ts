@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
 import {
   readInstallMarker,
@@ -287,9 +287,13 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   const REPO_TREE_SITTER_BINARY = join(import.meta.dir, '..', 'node_modules', 'tree-sitter-cli', TREE_SITTER_BINARY_NAME);
   let tempDir: string;
   let previousDataDir: string | undefined;
+  let previousPath: string | undefined;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'tree-sitter-provision-'));
+    previousPath = process.env.PATH;
+    // Hide any tree-sitter already on this machine's PATH, but keep node reachable for `#!/usr/bin/env node` fixtures.
+    process.env.PATH = (previousPath ?? '').split(delimiter).filter(dir => dir && !existsSync(join(dir, TREE_SITTER_BINARY_NAME))).join(delimiter);
     previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'data');
   });
@@ -297,6 +301,8 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   afterEach(() => {
     if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
     else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -472,6 +478,22 @@ echo 'tree-sitter 0.26.9'
     }
 
     expect(caught).toMatchObject({ cause: { killed: true } });
+  });
+
+  it.skipIf(process.platform === 'win32')('uses a compatible PATH CLI without running the package installer', async () => {
+    writeCliPackage('process.exitCode = 2;');
+    const binDir = join(tempDir, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, TREE_SITTER_BINARY_NAME), "#!/bin/sh\nprintf 'tree-sitter 0.26.9\\n'\n", { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = binDir + delimiter + (oldPath ?? '');
+    try {
+      await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary())).resolves.toBe(true);
+      expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
   });
 
   it('reports nothing when the CLI already works', async () => {
