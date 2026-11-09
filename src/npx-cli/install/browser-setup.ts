@@ -124,11 +124,12 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
   };
 
   const url = setupPageUrl(deps.workerBaseUrl);
-  deps.log.info(`Continue setup in your browser: ${url}`);
-  deps.openBrowser(url);
-  // Wait for the worker before the first report, then start a fresh hand-off: an earlier run's choice is cleared.
+  // Clear the previous run before exposing the page: opening it (or following the
+  // printed URL) can submit a new choice before a later reset would arrive.
   await waitFor(() => true);
   await report('waiting-for-choice');
+  deps.log.info(`Continue setup in your browser: ${url}`);
+  deps.openBrowser(url);
   deps.log.info('Waiting for you in the browser. This terminal finishes when setup does.');
 
   const chosen = await waitFor((state) => state.choice !== null);
