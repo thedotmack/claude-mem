@@ -86,4 +86,15 @@ describe('SessionStart systemMessage stays within the field cap (#5079)', () => 
     expect(composeSessionStartSystemMessage(null, header, 'notice')).toBe('notice');
     expect(composeSessionStartSystemMessage(null, header, null)).toBeUndefined();
   });
+
+  it('keeps every whole line that fits when the room starts exactly on a line boundary', () => {
+    const preview = 'oldest row\nmiddle row\nnewest row';
+    const top = `${header}\n\n`;
+    const roomForLastTwoLines = 'middle row\nnewest row'.length;
+    const systemMessage = composeSessionStartSystemMessage(preview, header, null, top.length + roomForLastTwoLines)!;
+    expect(systemMessage).toBe(`${top}middle row\nnewest row`);
+    // One char less: the middle row no longer fits whole, so only the newest row is kept.
+    const tighter = composeSessionStartSystemMessage(preview, header, null, top.length + roomForLastTwoLines - 1)!;
+    expect(tighter).toBe(`${top}newest row`);
+  });
 });

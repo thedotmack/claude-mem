@@ -105,9 +105,10 @@ export function composeSessionStartSystemMessage(
   const previewRoom = limit - top.length;
   let fittedPreview = preview.replace(/^\n+/, '');
   if (fittedPreview.length > previewRoom) {
-    const previewCutToRoom = previewRoom > 0 ? fittedPreview.slice(fittedPreview.length - previewRoom) : '';
-    const firstLineBreak = previewCutToRoom.indexOf('\n');
-    const keptPreview = firstLineBreak >= 0 ? previewCutToRoom.slice(firstLineBreak + 1) : '';
+    // The kept text starts after the first line break at or after the char just
+    // before the room, so a room that begins exactly on a line keeps that line.
+    const lineBreakBeforeKept = previewRoom > 0 ? fittedPreview.indexOf('\n', fittedPreview.length - previewRoom - 1) : -1;
+    const keptPreview = lineBreakBeforeKept >= 0 ? fittedPreview.slice(lineBreakBeforeKept + 1) : '';
     logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary, oldest lines first, to keep systemMessage within the field cap', {
       previewChars: fittedPreview.length,
       keptPreviewChars: keptPreview.length,
