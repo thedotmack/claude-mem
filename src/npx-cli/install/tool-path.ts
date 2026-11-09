@@ -11,6 +11,7 @@ import { homedir } from 'os';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 
 const IS_WINDOWS = process.platform === 'win32';
+const VERSION_PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * Absolute paths bun's installer can write to, recomputed per call so an
@@ -42,6 +43,9 @@ export function spawnVersionProbe(command: string, args: string[]) {
   const options: SpawnSyncOptionsWithStringEncoding = {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: VERSION_PROBE_TIMEOUT_MS,
+    // spawnSync keeps waiting if a stuck shim ignores the default SIGTERM.
+    killSignal: 'SIGKILL',
   };
   const invocation = buildSpawnSyncInvocation(command, args, options);
   return spawnSync(invocation.command, invocation.args, invocation.options);
