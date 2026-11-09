@@ -42,6 +42,14 @@ describe('SessionStore prompts', () => {
       expect(id1).not.toBe(id2);
     });
 
+    it('does not persist half of a supplementary character at the prompt limit', () => {
+      const session = createSession('content-unicode-limit');
+      const prefix = 'a'.repeat(MAX_STORED_PROMPT_CHARS - 2);
+      const id = store.saveUserPrompt(session, 1, prefix + '🌍 and more');
+      const row = store.db.prepare('SELECT prompt_text FROM user_prompts WHERE id = ?').get(id) as { prompt_text: string };
+      expect(row.prompt_text).toBe(prefix + '…');
+    });
+
     it('stores a tag-stripped, bounded prompt_text ending in an ellipsis', () => {
       const session = createSession('content-normalized');
       const oversized = `<claude-mem-context>ignored</claude-mem-context>${'A'.repeat(MAX_STORED_PROMPT_CHARS + 250)}`;

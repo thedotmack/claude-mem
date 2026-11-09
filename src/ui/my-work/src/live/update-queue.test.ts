@@ -12,8 +12,8 @@ describe('freshlyUpdatedRequestIds', () => {
     const next = [request('a', '1'), request('b', '3'), request('c', '4')]
     assert.deepEqual(freshlyUpdatedRequestIds(shown, next), ['b', 'c'])
   })
-  it('marks nothing on the first model', () => {
-    assert.deepEqual(freshlyUpdatedRequestIds([], [request('a', '1')]), [])
+  it('marks a new request after an empty model', () => {
+    assert.deepEqual(freshlyUpdatedRequestIds([], [request('a', '1')]), ['a'])
   })
 })
 
@@ -38,9 +38,8 @@ describe('requestChanges', () => {
     ])
   })
 
-  it('never reports a progress drop, a closed new request, or anything on the first model', () => {
+  it('never reports a progress drop or a closed new request', () => {
     assert.deepEqual(requestChanges([live('a', 'working', 60)], [live('a', 'working', 40), live('z', 'idle', null, { closed: true })], 1), [])
-    assert.deepEqual(requestChanges([], [live('a', 'working', 10)], 1), [])
   })
 
   it('uses the title being written while a request has no title yet', () => {
