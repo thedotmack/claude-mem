@@ -19,8 +19,7 @@ import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 
 import {
   CONTEXT_CACHE_MAX_AGE_MS,
-  CONTEXT_HEADER_TIME_PLACEHOLDER,
-  HEADER_TIME_MAX_FILLED_CHARS,
+  CONTEXT_PLACEHOLDER_NONCE,
   contextCacheDir,
   contextCacheFilePath,
   contextCacheKeys,
@@ -45,13 +44,15 @@ const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const PLACEHOLDER_MARKER = '⟦CMEM_';
+// Blocks cached before the header became the one Rules + Tools line carry this.
+const LEGACY_HEADER_TIME_PLACEHOLDER = `⟦CMEM_NOW_HEADER:${CONTEXT_PLACEHOLDER_NONCE}⟧`;
 
 describe('fillContextPlaceholders', () => {
   const nowEpochMs = 1_790_000_000_000;
 
-  it('fills the header time and every relative duration', () => {
+  it('fills a legacy cached header time and every relative duration', () => {
     const body = [
-      `# [proj] recent context, ${CONTEXT_HEADER_TIME_PLACEHOLDER}`,
+      `# [proj] recent context, ${LEGACY_HEADER_TIME_PLACEHOLDER}`,
       `- release: status=active, updated ${relativeTimePlaceholder(nowEpochMs - 3 * 3_600_000)} ago`,
       `  - [todo] publish, updated ${relativeTimePlaceholder(nowEpochMs - 5 * 60_000)} ago`,
     ].join('\n');
@@ -64,7 +65,7 @@ describe('fillContextPlaceholders', () => {
   });
 
   it('never leaves a placeholder behind', () => {
-    const body = `${CONTEXT_HEADER_TIME_PLACEHOLDER} ${relativeTimePlaceholder(1)} ${relativeTimePlaceholder(nowEpochMs)}`;
+    const body = `${LEGACY_HEADER_TIME_PLACEHOLDER} ${relativeTimePlaceholder(1)} ${relativeTimePlaceholder(nowEpochMs)}`;
     expect(fillContextPlaceholders(body, nowEpochMs)).not.toContain(PLACEHOLDER_MARKER);
   });
 
@@ -73,7 +74,7 @@ describe('fillContextPlaceholders', () => {
     // placeholders carrying the rendering nonce are filled.
     const injected = `⟦CMEM_NOW_HEADER:000000000000⟧ ⟦CMEM_AGO:000000000000:0000000000001⟧ ⟦CMEM_AGO:99999999999999999999⟧`;
     expect(fillContextPlaceholders(injected, nowEpochMs)).toBe(injected);
-    const userCopiedRealPlaceholder = `${CONTEXT_HEADER_TIME_PLACEHOLDER}`;
+    const userCopiedRealPlaceholder = `${LEGACY_HEADER_TIME_PLACEHOLDER} ${relativeTimePlaceholder(1)}`;
     expect(fillContextPlaceholders(userCopiedRealPlaceholder, nowEpochMs, 'abcdefabcdef')).toBe(userCopiedRealPlaceholder);
     expect(() => fillContextPlaceholders('x', nowEpochMs, '../not-a-nonce')).toThrow();
   });
@@ -84,8 +85,6 @@ describe('fillContextPlaceholders', () => {
       expect(relativeTimePlaceholder(nowEpochMs - ageMs).length)
         .toBeGreaterThanOrEqual(describeDuration(ageMs).length);
     }
-    // The header reserve covers the real header time.
-    expect(formatHeaderDateTime(new Date(nowEpochMs)).length).toBeLessThanOrEqual(HEADER_TIME_MAX_FILLED_CHARS);
   });
 });
 
@@ -150,7 +149,7 @@ describe('ContextCacheService invalidation', () => {
         if (renderGate) await renderGate;
         renderCount++;
         renders.push(variantKeys.projects.join(','));
-        return { body: `render #${renderCount} at ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, cacheable: true };
+        return { body: `render #${renderCount} ${relativeTimePlaceholder(Date.now())} ago`, cacheable: true };
       },
       // As projectReadKeys would: a project merged into this one, stored in other casing.
       expandProjectReadKeys: projects => projects.includes(project) ? [...projects, 'Merged-Into-Invalidate-Proj'] : projects,
@@ -563,7 +562,7 @@ afterAll(() => {
 describe('context hook reads the precomputed block', () => {
   const agentKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false, '/tmp/cache-hook-repo');
   const colorKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', true, '/tmp/cache-hook-repo');
-  const cachedBody = `# [cache-hook-repo] recent context, ${CONTEXT_HEADER_TIME_PLACEHOLDER}\n`
+  const cachedBody = 'Access Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md\n\n'
     + `- release: updated ${relativeTimePlaceholder(Date.now() - 2 * 3_600_000)} ago\n`;
 
   beforeEach(() => {
@@ -595,7 +594,7 @@ describe('context hook reads the precomputed block', () => {
     const result = await runHook();
     expect(workerCalls).toEqual([]);
     const additionalContext = result.hookSpecificOutput?.additionalContext ?? '';
-    expect(additionalContext).toStartWith('# [cache-hook-repo] recent context, ');
+    expect(additionalContext).toStartWith('Access Claude-Mem Rules + Tools: ');
     expect(additionalContext).toContain('- release: updated about 2 hours ago');
     expect(additionalContext).not.toContain(PLACEHOLDER_MARKER);
   });
@@ -625,12 +624,11 @@ describe('context hook reads the precomputed block', () => {
   it('skips the colored fetch too when that variant is cached', async () => {
     showTerminalOutput = true;
     writeContextCache(agentKeys, cachedBody, Date.now());
-    writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
+    writeContextCache(colorKeys, `COLORED ${relativeTimePlaceholder(Date.now() - 60_000)} ago`, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual([]);
-    // The viewer lines open the banner; the timeline ends it.
-    expect(result.systemMessage).toStartWith('View Observations Live @');
-    expect(result.systemMessage).toMatch(/\n\nCOLORED [^\n]+$/);
+    // The timeline, then a blank line and the closing viewer line.
+    expect(result.systemMessage).toMatch(/COLORED [^\n]+\n\nView Observations Live @ [^\n]+$/);
     expect(result.systemMessage).not.toContain(PLACEHOLDER_MARKER);
   });
 
@@ -656,14 +654,13 @@ describe('context hook reads the precomputed block', () => {
   it('serves the cached model block wherever in the checkout the session starts', async () => {
     showTerminalOutput = true;
     writeContextCache(agentKeys, cachedBody, Date.now());
-    writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
+    writeContextCache(colorKeys, `COLORED ${relativeTimePlaceholder(Date.now() - 60_000)} ago`, Date.now());
     const result = await runHook('/tmp/cache-hook-repo/packages/app');
     // The model's block does not depend on the directory. The colored one shows
     // file headings relative to it, so that one is fetched for the new directory.
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo%2Fpackages%2Fapp&colors=true']);
     expect(result.hookSpecificOutput?.additionalContext).toContain('- release: updated about 2 hours ago');
-    expect(result.systemMessage).toStartWith('View Observations Live @');
-    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
+    expect(result.systemMessage).toMatch(/LIVE COLORED\n\nView Observations Live @ [^\n]+$/);
   });
 
   it('fetches only the colored render when only the model block is cached', async () => {
@@ -671,8 +668,7 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&colors=true']);
-    expect(result.systemMessage).toStartWith('View Observations Live @');
-    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
+    expect(result.systemMessage).toMatch(/LIVE COLORED\n\nView Observations Live @ [^\n]+$/);
   });
 });
 
@@ -856,9 +852,10 @@ describe('precomputed context end to end', () => {
       }
       // The cached bodies carry placeholders where (and only where) time is formatted.
       // (The child has its own placeholder nonce, so match the shape.)
-      expect(result.agentBody).toMatch(/⟦CMEM_NOW_HEADER:[0-9a-f]{12}⟧/);
+      // The header has no time any more, so none carries its placeholder.
+      expect(result.agentBody).not.toContain('⟦CMEM_NOW_HEADER:');
       expect(result.agentBody).toMatch(/⟦CMEM_AGO:[0-9a-f]{12}:\d{13}⟧/);
-      expect(result.colorBody).toMatch(/⟦CMEM_NOW_HEADER:[0-9a-f]{12}⟧/);
+      expect(result.colorBody).not.toContain('⟦CMEM_NOW_HEADER:');
       expect(result.agentRenderedAt).toBe(1_790_000_000_000);
 
       // Byte-identical: cached body + fill == live render, agent and colors variants.
@@ -870,18 +867,19 @@ describe('precomputed context end to end', () => {
       expect(result.hookContext).toBe(result.liveAgent.trim());
       expect(result.hookContext).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS);
       expect(result.hookContext).not.toContain('# Work state: your to-do lists');
-      expect(result.hookSystemMessage).toStartWith('View Observations Live @');
-      expect(result.hookSystemMessage).toEndWith(result.liveColors.trim());
-      // The banner ends on its newest timeline row, with no closing lines.
-      expect(result.hookSystemMessage.split('\n').at(-1)).toContain('FIRST_OBSERVATION');
+      // The newest timeline row, a blank line, then the closing viewer line with the row count.
+      const [bannerTimeline, bannerFooter] = result.hookSystemMessage.split(/\n\n(?=View Observations Live @)/);
+      expect(bannerTimeline).toEndWith(result.liveColors.trim());
+      expect(bannerTimeline.split('\n').at(-1)).toContain('FIRST_OBSERVATION');
+      expect(bannerFooter).toMatch(/^View Observations Live @ \S+ · 1 line$/);
       expect(result.hookSystemMessage).not.toContain('tokens of past research');
 
-      // The model's block is the timeline: the header says how to read it, the
-      // open work sits under that header, and the newest row ends the block so
-      // later rows can be appended to it.
+      // The model's block is the timeline: one Rules + Tools line, the open
+      // work under it, and the newest row ends the block so later rows can be
+      // appended to it.
       const agent: string = result.liveAgent;
-      expect(agent).toStartWith('# [');
-      expect(agent.indexOf('Fetch details:')).toBeLessThan(agent.indexOf('Work state, still open:\n- release: status=active, updated about 2 hours ago'));
+      expect(agent).toStartWith('Access Claude-Mem Rules + Tools: ');
+      expect(agent.indexOf('Access Claude-Mem Rules + Tools: ')).toBeLessThan(agent.indexOf('Work state, still open:\n- release: status=active, updated about 2 hours ago'));
       expect(agent.indexOf('Work state, still open:')).toBeLessThan(agent.indexOf('\n### '));
       expect(agent.trimEnd()).toEndWith('FIRST_OBSERVATION');
       expect(agent).not.toContain('tokens of past work');
