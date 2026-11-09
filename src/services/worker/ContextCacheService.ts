@@ -42,9 +42,18 @@ import {
 } from '../../shared/context-cache.js';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { onContextInvalidation, type ContextInvalidation } from '../../shared/context-invalidation.js';
+import { isSessionStartWorkStateList } from '../context/sections/WorkStateRenderer.js';
 import { logger } from '../../utils/logger.js';
 
 export const CONTEXT_CACHE_RENDER_DEBOUNCE_MS = 2_000;
+
+/** A work-state change to a list the SessionStart section shows; one that names no lists counts. */
+function changesSessionStartWorkState(invalidation: ContextInvalidation): boolean {
+  const changes = invalidation.changes;
+  if (!changes?.kinds.includes('work_state')) return false;
+  const lists = changes.workStateLists;
+  return !lists || lists.length === 0 || lists.some(list => isSessionStartWorkStateList(list));
+}
 /** Variants kept fresh at once; the oldest-learned one past this is dropped (and its file removed). */
 export const CONTEXT_CACHE_MAX_VARIANTS = 64;
 const CONTEXT_CACHE_INDEX_FILENAME = 'variants.json';
@@ -274,14 +283,21 @@ export class ContextCacheService {
   private handleInvalidation(invalidation: ContextInvalidation): void {
     this.invalidationGeneration++;
     const removal = invalidation.kind === 'removal';
-    if (removal) this.removalGeneration++;
+    // A work-state write is additive, but the open lists are what the next
+    // session acts on: a block served before its re-render would hand a fresh
+    // session (auto-clear's "continue" above all) a finished step as still
+    // open. So when it touches a list the section shows, its matched files go
+    // now, as a removal's do, and a render already in flight with the old
+    // lists is discarded and re-queued.
+    const dropsFiles = removal || changesSessionStartWorkState(invalidation);
+    if (dropsFiles) this.removalGeneration++;
     let matched = 0;
     for (const [variantId, variant] of this.variants) {
       const unresolvedRemoval = removal && (variant.readKeys.size === 0 || this.activeVariantIds.has(variantId));
       if (unresolvedRemoval || invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
         this.pendingVariantIds.add(variantId);
         // Synchronous: the writer's HTTP route responds only after this returns.
-        if (removal) this.removeFile(variant.keys);
+        if (dropsFiles) this.removeFile(variant.keys);
         matched++;
       }
     }

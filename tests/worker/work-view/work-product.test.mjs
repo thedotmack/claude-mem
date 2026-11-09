@@ -23,6 +23,16 @@ test('gh pr create records the pull request URL and its title', () => {
   assert.deepEqual(productsFromToolUse(searched), []);
 });
 
+test('gh pr create reads the title from --title=, -t, unquoted values, and escaped quotes', () => {
+  const titleOf = (command) => productsFromToolUse(call({ tool_name: 'Bash', tool_input: JSON.stringify({ command }), tool_response: JSON.stringify({ stdout: 'https://github.com/o/r/pull/42\n' }) }))[0].title;
+  assert.equal(titleOf('gh pr create --title="Add work product" --body x'), 'Add work product');
+  assert.equal(titleOf("gh pr create -t 'Add work product' -b x"), 'Add work product');
+  assert.equal(titleOf('gh pr create --title "Treat \\"all\\" as every category" --body x'), 'Treat "all" as every category');
+  assert.equal(titleOf('gh pr create --title "Fix \\d+ matching" --body x'), 'Fix \\d+ matching');
+  assert.equal(titleOf('gh pr create --title=Fix --body x'), 'Fix');
+  assert.equal(titleOf('gh pr create -t Fix -b x'), 'Fix');
+});
+
 test('observers record only human-facing files, with their position in the list', () => {
   const products = productsFromObservation({ id: 9, files_modified: JSON.stringify(['/w/src/app.ts', '/w/design/pass-01.png', '/w/report.html']), created_at_epoch: 50 });
   assert.deepEqual(products.map((product) => [product.kind, product.title, product.sourceRef.index]), [['image', 'pass-01.png', 1], ['page', 'report.html', 2]]);

@@ -123,6 +123,27 @@ const ENSURE_LAUNCHER = {
   source: 'src/launcher/ensure-launcher.ts'
 };
 
+// Claude Code mod (a hooks module named by `modules` in plugin/hooks/hooks.json):
+// at the configured share of the context window, Claude saves its work state,
+// then /clear runs and "continue" is sent.
+const AUTO_CLEAR_MOD = {
+  source: 'src/mods/auto-clear/register.ts',
+  outfile: 'plugin/hooks/auto-clear.js'
+};
+
+// A hooks module runs with no Node: no require, no node: imports, and it must
+// export `register`. vm.Script cannot parse an ES module, so check the text.
+function assertModBundle(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  if (!/^export\s*\{[^}]*\bregister\b[^}]*\}/m.test(content) && !/^export\s+(const|function)\s+register\b/m.test(content)) {
+    throw new Error(`${filePath} does not export register. Claude Code would load no hooks from it.`);
+  }
+  const nodeImport = content.match(/\brequire\(|from\s+["']node:|from\s+["'](fs|os|path|child_process)["']/);
+  if (nodeImport) {
+    throw new Error(`${filePath} reaches for Node (${nodeImport[0]}). A hooks module has no Node APIs: keep src/mods/ free of Node imports.`);
+  }
+}
+
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
  * command string to the buildShellCommand() options that generate it, and each
@@ -1053,6 +1074,28 @@ async function buildHooks() {
     const ensureLauncherStats = fs.statSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
     console.log(`✓ ensure-launcher built (${(ensureLauncherStats.size / 1024).toFixed(2)} KB)`);
 
+    console.log(`\n🔧 Building auto-clear mod...`);
+    await build({
+      entryPoints: [AUTO_CLEAR_MOD.source],
+      bundle: true,
+      // A Claude Code hooks module is an ES module with no Node APIs, read as
+      // source (Claude Code lists its hooks and $ calls off the text), so it is
+      // neither minified nor given Node shims.
+      platform: 'neutral',
+      target: 'es2022',
+      format: 'esm',
+      outfile: AUTO_CLEAR_MOD.outfile,
+      minify: false,
+      legalComments: 'none',
+      logLevel: 'error',
+      banner: {
+        js: '// Built from src/mods/auto-clear/ by scripts/build-hooks.js. Edit the source, not this file.'
+      }
+    });
+    assertModBundle(AUTO_CLEAR_MOD.outfile);
+    const autoClearStats = fs.statSync(AUTO_CLEAR_MOD.outfile);
+    console.log(`✓ auto-clear mod built (${(autoClearStats.size / 1024).toFixed(2)} KB)`);
+
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
     if (!fs.existsSync(npxCliOutDir)) {
@@ -1190,6 +1233,7 @@ async function buildHooks() {
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
+      'plugin/hooks/auto-clear.js',
       'plugin/hooks/codex-hooks.json',
       'plugin/hooks/qoder-hooks.json',
       'plugin/hooks/qoder-repo-hooks.json',

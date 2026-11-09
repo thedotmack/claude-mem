@@ -16,6 +16,7 @@ import {
   getNodeAbsolutePath,
   getWorkerServiceAbsolutePath,
 } from './install-paths.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
 export const KIMI_MARKER_BEGIN = '# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>';
 export const KIMI_MARKER_END = '# <<< claude-mem kimi hooks <<<';
@@ -122,7 +123,7 @@ export function configureKimiMcp(): number {
   try {
     mkdirSync(kimiCodeHome(), { recursive: true });
     const config: { mcpServers?: Record<string, unknown> } = existsSync(mcpPath)
-      ? JSON.parse(readFileSync(mcpPath, 'utf-8'))
+      ? parseJsonWithBom(readFileSync(mcpPath, 'utf-8'))
       : {};
     config.mcpServers ??= {};
     if (config.mcpServers['mcp-search']) {
@@ -151,7 +152,7 @@ export function configureKimiMcp(): number {
 function removeKimiMcpServer(): void {
   const mcpPath = kimiMcpJsonPath();
   if (!existsSync(mcpPath)) return;
-  const config: { mcpServers?: Record<string, { args?: unknown }> } = JSON.parse(readFileSync(mcpPath, 'utf-8'));
+  const config: { mcpServers?: Record<string, { args?: unknown }> } = parseJsonWithBom(readFileSync(mcpPath, 'utf-8'));
   const args = config.mcpServers?.['mcp-search']?.args;
   const isOurs = Array.isArray(args) && args.some((arg) => typeof arg === 'string' && arg.endsWith('mcp-server.cjs'));
   if (!isOurs) return;
