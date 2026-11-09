@@ -195,7 +195,16 @@ export class WorkerClient {
       if (!response.ok) {
         throw await responseError(response)
       }
-      return await response.json() as T
+      const result: unknown = await response.json()
+      // Search/timeline use the MCP result envelope, including errors returned
+      // with HTTP 200. Keep those failures out of the successful memory index.
+      // The MemError passes through requestError unchanged.
+      if (result !== null && typeof result === 'object' && !Array.isArray(result)
+        && (result as Record<string, unknown>).isError === true) {
+        const message = contentText((result as Record<string, unknown>).content)
+        throw new MemError(message?.slice(0, 500) || 'memory worker returned an error', 'MEM_PROVIDER_ERROR')
+      }
+      return result as T
     } catch (error: unknown) {
       throw requestError(error, d.signal, signal)
     }
