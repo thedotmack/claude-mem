@@ -74,7 +74,7 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
@@ -224,7 +224,7 @@ export function runMcpCommand(): void {
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
@@ -248,7 +248,7 @@ export function runHookCommand(extraArgs: string[] = []): void {
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
