@@ -135,41 +135,55 @@ export async function searchCodebase(
   const queryLower = query.toLowerCase();
   const queryParts = queryLower.split(/[\s_\-./]+/).filter(p => p.length > 0);
 
-  const filesToParse: Array<{ absolutePath: string; relativePath: string; content: string }> = [];
-
+  // Retain paths for the whole walk, but keep only one bounded batch of source
+  // text. Language groups preserve the native parser's existing tie order.
+  const pathsByLanguage = new Map<string, string[]>();
+  const pattern = options.filePattern?.toLowerCase();
+  const portablePattern = pattern?.replaceAll("\\", "/") ?? "";
   for await (const filePath of walkDir(rootDir, rootDir, 20)) {
-    if (options.filePattern) {
-      const relPath = relative(rootDir, filePath);
-      if (!relPath.toLowerCase().includes(options.filePattern.toLowerCase())) continue;
-    }
-
-    const content = await safeReadFile(filePath);
-    if (!content) continue;
-
-    filesToParse.push({
-      absolutePath: filePath,
-      relativePath: relative(rootDir, filePath),
-      content,
-    });
+    const relPath = relative(rootDir, filePath);
+    if (pattern && !relPath.toLowerCase().includes(pattern)
+      && !relPath.toLowerCase().replaceAll("\\", "/").includes(portablePattern)) continue;
+    const group = options.skipSymbolExtraction ? "" : detectLanguage(relPath);
+    if (!pathsByLanguage.has(group)) pathsByLanguage.set(group, []);
+    pathsByLanguage.get(group)!.push(filePath);
   }
 
-  // With a broken tree-sitter CLI, parsing can never succeed and only burns
-  // build/query timeouts, while path matches need nothing from the parser.
-  // Synthesize parse-shape entries with no symbols so the extraction below is
-  // never attempted, instead of running the batch and discarding its output.
-  const parsedFiles: Map<string, FoldedFile> = options.skipSymbolExtraction === true
-    ? new Map(filesToParse.map((file) => {
-        const entry: FoldedFile = {
-          filePath: file.relativePath,
-          language: detectLanguage(file.relativePath),
-          symbols: [],
-          imports: [],
-          totalLines: file.content.split("\n").length,
-          foldedTokenEstimate: 0,
-        };
-        return [file.relativePath, entry];
-      }))
-    : parseFilesBatch(filesToParse);
+  const parsedFiles = new Map<string, FoldedFile>();
+  const batch: Parameters<typeof parseFilesBatch>[0] = [];
+  // Memory bound: at most this much source text is held while the native
+  // parser runs, so memory no longer grows with repository size. Main kept
+  // every file until one parse returned; a 48 MiB heap scanning 256 files
+  // (~91 MB of text) aborted (measured in #5534). A larger batch only saves
+  // tree-sitter CLI spawns (one per language per batch), never results.
+  const nativeParseBatchSourceBytes = 8 * 1024 * 1024;
+  let batchBytes = 0;
+  const flush = () => {
+    if (batch.length === 0) return;
+    for (const [path, file] of parseFilesBatch(batch)) parsedFiles.set(path, file);
+    batch.length = 0;
+    batchBytes = 0;
+  };
+
+  for (const paths of pathsByLanguage.values()) {
+    for (const absolutePath of paths) {
+      const content = await safeReadFile(absolutePath);
+      if (!content) continue;
+      const relativePath = relative(rootDir, absolutePath);
+      if (options.skipSymbolExtraction) {
+        parsedFiles.set(relativePath, {
+          filePath: relativePath, language: detectLanguage(relativePath), symbols: [], imports: [],
+          totalLines: content.split("\n").length, foldedTokenEstimate: 0,
+        });
+      } else {
+        const bytes = Buffer.byteLength(content);
+        if (batchBytes + bytes > nativeParseBatchSourceBytes) flush();
+        batch.push({ absolutePath, relativePath, content });
+        batchBytes += bytes;
+      }
+    }
+    flush();
+  }
 
   const foldedFiles: FoldedFile[] = [];
   const matchingSymbols: SymbolMatch[] = [];
@@ -301,7 +315,7 @@ export async function searchCodebase(
     foldedFiles: trimmedFiles,
     matchingSymbols: trimmedSymbols,
     matchingFiles,
-    totalFilesScanned: filesToParse.length,
+    totalFilesScanned: parsedFiles.size,
     totalSymbolsFound,
     tokenEstimate,
   };

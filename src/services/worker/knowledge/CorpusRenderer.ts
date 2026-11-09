@@ -28,7 +28,7 @@ export class CorpusRenderer {
     const lines: string[] = [];
 
     const dateStr = new Date(observation.created_at_epoch).toISOString().split('T')[0];
-    lines.push(`## [${observation.type.toUpperCase()}] ${observation.title}`);
+    lines.push(`## [${observation.type.toUpperCase()}] ${observation.title} (#${observation.id})`);
     lines.push(`*${dateStr}* | Project: ${observation.project}`);
 
     if (observation.subtitle) {
