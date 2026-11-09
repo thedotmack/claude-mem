@@ -47,6 +47,10 @@ try {
     } finally { db.close(); }
   } else {
     if (job.kind === 'snapshot') {
+      // VACUUM INTO creates a new file rather than preserving source modes.
+      // Keep the complete memory copy private from its first write. This is
+      // a dedicated child, so the worker's process-wide umask is unchanged.
+      if (process.platform !== 'win32') process.umask(0o077);
       // VACUUM INTO is the only consistent online copy. A raw copy of a live
       // db and its WAL can pair two different states, so there is no copy
       // fallback: a failed VACUUM INTO fails the snapshot.
