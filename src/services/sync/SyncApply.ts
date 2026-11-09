@@ -643,7 +643,7 @@ export class SyncApply {
             throw invalidOp(op, error instanceof Error ? error.message : String(error));
           }
           return op.kind === 'mutation'
-            ? this.applyMutation(op)
+            ? this.applyMutation(op, chromaJobs)
             : this.applyCanonicalRowOp(op, chromaJobs);
         });
         if ('unapplicable' in attempt) {
@@ -1597,7 +1597,7 @@ export class SyncApply {
   // Mutation ops
   // -------------------------------------------------------------------------
 
-  private applyMutation(op: SyncOp): 'applied' | 'stale' {
+  private applyMutation(op: SyncOp, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const body = this.parseBody(op);
     const mutationOp = fieldString(op, body, 'op');
     switch (mutationOp) {
@@ -1606,7 +1606,7 @@ export class SyncApply {
       case 'set_prompt_session':
         return this.applySetPromptSession(op, body);
       case 'remap_project':
-        return this.applyRemapProject(op, body);
+        return this.applyRemapProject(op, body, chromaJobs);
       default:
         throw invalidOp(op, `unknown mutation op ${String(body.op)}`);
     }
@@ -1739,7 +1739,7 @@ export class SyncApply {
     return 'applied';
   }
 
-  private applyRemapProject(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+  private applyRemapProject(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const where = body.where as Record<string, unknown> | undefined;
     const fields = body.fields as Record<string, unknown> | undefined;
     if (!where || typeof where !== 'object' || !fields || typeof fields !== 'object') {
@@ -1802,6 +1802,18 @@ export class SyncApply {
         this.db.prepare(`
           UPDATE ${table} SET ${setClauses.join(', ')}, sync_rev = ? WHERE id = ?
         `).run(...setParams, op.rev, row.id);
+        // The same-revision row echo is stale after this mutation, so it
+        // cannot refresh an already indexed row for us. Reuse the committed
+        // row forwarder and its per-row writer/current-row loader: an older
+        // in-flight write must finish before the remapped projection.
+        if (this.chromaSync) {
+          const updated = this.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(row.id) as Record<string, unknown>;
+          if (table === 'observations') {
+            this.forwardObservation(Number(row.id), op, updated, chromaJobs, true);
+          } else {
+            this.forwardSummary(Number(row.id), op, updated, chromaJobs, true);
+          }
+        }
         matched++;
       }
     }
