@@ -59,9 +59,16 @@ async function runDoctorOutputLines(): Promise<string[]> {
   spyOn(pathsModule, 'readPluginVersion').mockReturnValue('0.0.0-test');
   spyOn(process, 'exit').mockImplementation((() => { throw new Error('doctor exited'); }) as never);
   const log = spyOn(console, 'log').mockImplementation(() => {});
-  await runDoctorCommand().catch((error: unknown) => {
-    if (!(error instanceof Error) || error.message !== 'doctor exited') throw error;
-  });
+  // Doctor may report through process.exitCode; keep it from becoming this
+  // test process's exit status. Bun keeps a set code when assigned undefined.
+  const previousExitCode = process.exitCode;
+  try {
+    await runDoctorCommand().catch((error: unknown) => {
+      if (!(error instanceof Error) || error.message !== 'doctor exited') throw error;
+    });
+  } finally {
+    process.exitCode = previousExitCode ?? 0;
+  }
   return log.mock.calls.map((call) => call.map(String).join(' ')).join('\n').replace(ANSI_STYLE, '').split('\n');
 }
 
