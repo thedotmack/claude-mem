@@ -4,7 +4,7 @@
  * free of heavy imports (no settings, no worker helpers, no bun:sqlite) so it
  * bundles into a script that runs under plain `node`.
  */
-import { accessSync, constants, existsSync, statSync } from 'fs';
+import { accessSync, constants, statSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -58,7 +58,7 @@ export function getToolPath(command: string, commonPaths: string[]): string | nu
     // Not in PATH
   }
 
-  return commonPaths.find(existsSync) || null;
+  return commonPaths.find(isExecutableFile) || null;
 }
 
 /** PATH first (proven by `bun --version`), then the installer's well-known locations. */
