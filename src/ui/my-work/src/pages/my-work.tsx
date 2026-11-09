@@ -30,6 +30,8 @@ import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 import { cardGridEntries } from '@/live/card-groups'
+import { FocusOverview } from '@/components/focus-overview'
+import '@/components/focus-overview.css'
 
 type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
@@ -512,9 +514,11 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </Alert>
       )}
       <FocusChangeBar changes={focusChanges} />
+      {!focusAreaId && <FocusOverview areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
+      {!focusAreaId && <h2 className="section-label">{t('All requests')}</h2>}
       <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} onShowWorking={() => setFilter('working')} />
       <ChangeTicker onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 

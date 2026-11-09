@@ -110,6 +110,8 @@ export interface FocusArea {
   name: string
   /** One sentence saying what the area is for; null until one is written. */
   goal: string | null
+  /** What belongs here, as recorded by the focus-area router. Older workers leave it out. */
+  about?: string | null
   status: 'suggested' | 'kept' | 'dismissed' | 'done'
   /** The owner's order. When set it wins over priorityRank. */
   ownerRank: number | null
