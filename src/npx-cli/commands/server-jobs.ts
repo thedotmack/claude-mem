@@ -492,11 +492,15 @@ async function openPool(): Promise<{
   releasePool: () => Promise<void>;
 }> {
   if (testSeams.openPool) return testSeams.openPool();
-  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
-  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+  const { createPostgresPool, parsePostgresConfig } = await import('../../storage/postgres/index.js');
+  const config = parsePostgresConfig({ requireDatabaseUrl: true });
+  if (!config) throw new Error('Postgres requires CLAUDE_MEM_SERVER_DATABASE_URL');
+  // These short-lived commands own their connection lifetime. An idle shared
+  // pool keeps the CLI alive after output and cannot tear itself down on exit.
+  const pool = createPostgresPool(config);
   return {
     pool: pool as never,
-    releasePool: async () => { /* shared pool tears down on process exit */ },
+    releasePool: () => pool.end(),
   };
 }
 
