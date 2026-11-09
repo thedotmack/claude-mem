@@ -64,8 +64,8 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
   let overview: Record<string, unknown> | null = null;
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unexpectedStatusGets = 0;
-  const source = () => ({kind:'claude-mem-recorded-agent-activity',mode:'read-only-sqlite',connected:true,
-    pollIntervalMs:1000,lastCheckedAt:new Date().toISOString(),activityCheckedAt:new Date().toISOString(),lastUpdatedAt:null,error:null,stale:false});
+  const source = (at: string) => ({kind:'claude-mem-recorded-agent-activity',mode:'read-only-sqlite',connected:true,
+    pollIntervalMs:1000,lastCheckedAt:at,activityCheckedAt:at,lastUpdatedAt:null,error:null,stale:false});
   const sync = (state: string) => ({ configured:true,state,mode:'polling',observedAt:Date.now(),checkedAt:Date.now(),
     message:state === 'offline' ? 'Incoming cloud download failed.' : state === 'catching-up' ? 'Applying incoming cloud changes.' : 'Shared records are current.',
     download:{lastSuccessAt:Date.now()},projection:{remaining:state === 'catching-up' ? '9007199254740993' : '0'},
@@ -79,10 +79,12 @@ failOnCiWithoutChrome('CI requires Chrome for the mobile cloud sync indicator re
     if (url.pathname === '/fixture-ready') { markReady(); return new Response('ready'); }
     if (url.pathname === '/fixture-model') { overview = await request.json() as Record<string,unknown>; return new Response('ready'); }
     if (url.pathname === '/api/work-view/events') return new Response(new ReadableStream({start(value) {
-      controller = value; emit('work-view-overview',{...overview,generatedAt:new Date().toISOString(),source:source(),sync:sync('current')});
+      const at = new Date().toISOString();
+      controller = value; emit('work-view-overview',{...overview,generatedAt:at,source:source(at),sync:sync('current')});
     }}), {headers:{'Content-Type':'text/event-stream'}});
     if (url.pathname === '/sync') {
-      emit('heartbeat',{source:source(),at:new Date().toISOString()});
+      const at = new Date().toISOString();
+      emit('heartbeat',{source:source(at),at});
       emit('sync_status',{sync:sync(url.searchParams.get('state')!)});
       return new Response('sent');
     }

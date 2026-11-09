@@ -227,6 +227,32 @@ describe('export-memories script', () => {
     expect(existsSync(outputFile)).toBe(false);
   });
 
+  it('keeps the request deadline active while reading the response body', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+    const output = join(tempDir, 'export.json');
+    const originalTimeout = globalThis.setTimeout;
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((fn, delay, ...args) =>
+      originalTimeout(fn, delay === 30_000 ? 5 : delay, ...args)) as typeof setTimeout);
+    try {
+      globalThis.fetch = mock(async (_url, init) => new Response(new ReadableStream({
+        start(controller) {
+          const finish = originalTimeout(() => controller.close(), 100);
+          init!.signal!.addEventListener('abort', () => {
+            clearTimeout(finish);
+            controller.error(init!.signal!.reason);
+          }, { once: true });
+        }
+      }))) as typeof fetch;
+      const { exportMemories } = await import('../../scripts/export-memories.ts');
+      await expect(exportMemories('needle', output)).rejects.toThrow('Worker request timed out');
+      expect(existsSync(output)).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
   it('fails deterministically when a worker request times out', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDir;

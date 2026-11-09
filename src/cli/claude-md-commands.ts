@@ -424,7 +424,7 @@ function processAllFoldersForGeneration(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
@@ -494,7 +494,7 @@ function processFilesForCleanup(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
 export function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
