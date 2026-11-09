@@ -20,7 +20,6 @@ import {
   updateTeamBrainMembership,
   type TeamBrainConnection,
 } from '../../src/shared/teambrain.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
 import { relayedBlock } from '../../src/shared/relayed-text.js';
 import {
   MOCK_SEAT_SETUP_TOKEN,
@@ -242,11 +241,9 @@ describe('teamBrainUrlProblem', () => {
 });
 
 describe('teamBriefReserveChars', () => {
-  it('reserves the memory instructions whenever they are on, plus the brief with a team', () => {
-    expect(teamBriefReserveChars({})).toBe(MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
-    expect(teamBriefReserveChars({ CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(0);
-    expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' })).toBe(TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
-    expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
+  it('reserves room for the brief only with a team; the MCP server sends the memory instructions', () => {
+    expect(teamBriefReserveChars({})).toBe(0);
+    expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
   });
 
   it('caps supplementary characters in the name and text in UTF-16 units, within the reserve', () => {
@@ -257,7 +254,7 @@ describe('teamBriefReserveChars', () => {
     expect(text.length).toBeLessThanOrEqual(TEAM_BRIEF_MAX_CHARS);
     expect(TEAM_BRIEF_RESERVE_CHARS).toBeLessThan(TEAM_BRIEF_MAX_CHARS * 2);
     expect(brief.length + 2).toBeLessThanOrEqual(TEAM_BRIEF_RESERVE_CHARS);
-    expect((brief + '\n\n' + MEMORY_PLUGIN_INSTRUCTIONS + '\n\n').length).toBeLessThanOrEqual(
+    expect((brief + '\n\n').length).toBeLessThanOrEqual(
       teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' }),
     );
   });

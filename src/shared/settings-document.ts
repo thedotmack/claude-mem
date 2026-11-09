@@ -38,7 +38,14 @@ function cloneDocument(document: SettingsDocument): SettingsDocument {
   return JSON.parse(JSON.stringify(document)) as SettingsDocument;
 }
 
-function loadDocument(path: string): { exists: boolean; document?: SettingsDocument; error?: unknown } {
+/**
+ * Read settings.json as the writers below see it, without writing anything:
+ * `exists: false` for a missing file, and `error` for one that exists but
+ * cannot be read, does not parse, or is not a JSON object. The writers refuse
+ * on that error; the auto-updater stops its tick on it, unless the file is
+ * empty (src/services/auto-update/auto-update-check.ts readAutoUpdateSettings).
+ */
+export function loadDocument(path: string): { exists: boolean; document?: SettingsDocument; error?: unknown } {
   if (!existsSync(path)) return { exists: false };
   try {
     const parsed = readJsonFileWithBom<unknown>(path);

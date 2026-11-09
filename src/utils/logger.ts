@@ -16,6 +16,7 @@ export enum LogLevel {
 
 export type Component =
   | 'AGENTS_MD'
+  | 'AUTO_UPDATE'
   | 'AWARENESS'
   | 'BACKUP'
   | 'BRANCH'

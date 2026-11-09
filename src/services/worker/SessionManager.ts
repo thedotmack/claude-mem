@@ -63,6 +63,8 @@ export class SessionManager {
   private transportResumeDispositionEpochs = new WeakMap<ActiveSession, number>();
   /** Sessions that already used their one summarize rescue (#3419). */
   private readonly summarizeRescues = new Set<number>();
+  /** Telegram wrap-ups started by deliverSessionWrapupInBackground and not yet settled. */
+  private sessionWrapupsInFlight = 0;
 
   constructor(
     dbManager: DatabaseManager,
@@ -422,15 +424,31 @@ export class SessionManager {
       return;
     }
 
+    // Read before the count goes up: it throws while the database is not open,
+    // and a count that never comes down would read as busy forever.
+    const sessionStore = this.dbManager.getSessionStore();
+    this.sessionWrapupsInFlight++;
     void deliverSessionWrapup({
-      sessionStore: this.dbManager.getSessionStore(),
+      sessionStore,
       sessionDbId,
       formatSummary,
     }).catch((error: unknown) => {
       logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from SessionManager', {
         sessionId: sessionDbId,
       }, error instanceof Error ? error : new Error(String(error)));
+    }).finally(() => {
+      this.sessionWrapupsInFlight--;
     });
+  }
+
+  /**
+   * Telegram session wrap-ups being written and sent now: each one runs after
+   * its session has left the session map (an LLM call, then a Telegram post),
+   * and nothing asks for it again if the worker stops first. The auto-updater
+   * counts them as busy (worker-service.ts runningBackgroundJobNames).
+   */
+  getSessionWrapupsInFlight(): number {
+    return this.sessionWrapupsInFlight;
   }
 
   private takeRequestedSessionWrapup(session: ActiveSession): boolean {

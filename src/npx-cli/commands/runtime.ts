@@ -230,7 +230,7 @@ export function runMcpCommand(): void {
 }
 
 export function runHookCommand(extraArgs: string[] = []): void {
-  const workerScript = packagePluginScriptPath('worker-service.cjs');
+  const workerScript = workerServiceScriptPath(pluginRootOrExit());
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
     process.exit(1);

@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ListRootsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { pathToFileURL } from 'node:url';
+import { WORK_STATE_RULE, mcpServerInstructions } from '../../src/shared/memory-instructions.js';
 
 // #4606: behavioral check of CLAUDE_MEM_WORK_STATE_ENABLED through the real stdio
 // transport. A stub worker records every request, so the test sees whether a
@@ -32,6 +33,7 @@ async function withServer(
   // each test sets the value it means to check.
   const inherited = { ...process.env };
   delete inherited.CLAUDE_MEM_WORK_STATE_ENABLED;
+  delete inherited.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts')],
@@ -157,4 +159,30 @@ describe('CLAUDE_MEM_WORK_STATE_ENABLED over stdio (#4606)', () => {
       expect(workStateHits().length).toBeGreaterThanOrEqual(2);
     });
   }, 20_000);
+});
+
+// The work-state rule and the memory-use guidance moved out of the SessionStart
+// block, which is the memory timeline alone now, into the instructions this
+// server sends the host at initialize.
+describe('MCP server instructions over stdio', () => {
+  it('hands the host the work-state rule, then the memory guidance, at initialize', async () => {
+    await withServer({}, async (client) => {
+      expect(client.getInstructions()).toBe(mcpServerInstructions({ runtime: 'worker', workStateEnabled: true, memoryInstructionsEnabled: true }));
+      expect(client.getInstructions()).toStartWith('# Work state: your to-do lists and working state');
+      expect(client.getInstructions()).toContain('# claude-mem memory use');
+    });
+  }, 20_000);
+
+  it('leaves out each part its setting turns off', async () => {
+    await withServer({ CLAUDE_MEM_WORK_STATE_ENABLED: 'false' }, async (client) => {
+      expect(client.getInstructions()).toStartWith('# claude-mem memory use');
+      expect(client.getInstructions()).not.toContain('# Work state');
+    });
+    await withServer({ CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' }, async (client) => {
+      expect(client.getInstructions()).toBe(WORK_STATE_RULE);
+    });
+    await withServer({ CLAUDE_MEM_WORK_STATE_ENABLED: 'false', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' }, async (client) => {
+      expect(client.getInstructions()).toBeUndefined();
+    });
+  }, 60_000);
 });

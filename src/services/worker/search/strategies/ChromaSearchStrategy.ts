@@ -219,10 +219,10 @@ export class ChromaSearchStrategy {
     let endEpoch: number | undefined;
 
     if (dateRange) {
-      if (dateRange.start) {
+      if (dateRange.start != null && dateRange.start !== '') {
         startEpoch = resolveDateBound(dateRange.start, 'start');
       }
-      if (dateRange.end) {
+      if (dateRange.end != null && dateRange.end !== '') {
         endEpoch = resolveDateBound(dateRange.end, 'end');
       }
     } else if (!ignoreDefaultRecencyWindow && this.defaultRecencyWindowMs > 0) {
@@ -235,8 +235,8 @@ export class ChromaSearchStrategy {
     return chromaResults.ids
       .map((id, index) => ({ id, meta: chromaResults.metadatas[index] }))
       .filter(item => item.meta && item.meta.created_at_epoch != null
-        && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
-        && (!endEpoch || item.meta.created_at_epoch <= endEpoch));
+        && (startEpoch === undefined || item.meta.created_at_epoch >= startEpoch)
+        && (endEpoch === undefined || item.meta.created_at_epoch <= endEpoch));
   }
 
   private categorizeByDocType(

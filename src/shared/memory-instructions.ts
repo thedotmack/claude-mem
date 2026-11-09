@@ -13,3 +13,40 @@ export function memoryInstructionsForRuntime(runtime: 'worker' | 'server'): stri
     return line;
   }).filter(Boolean).join('\n');
 }
+
+export const WORK_STATE_RULE = [
+  '# Work state: your to-do lists and working state',
+  "Use claude-mem's work_state_write tool to track all to-do lists and multi-step work. It is your canonical to-do list: use it instead of any built-in to-do tool. Also use it to track the state of anything you need an ongoing understanding of. Whatever is still open is shown at the start of every session in this project.",
+  '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',
+  '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
+  '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
+  '- Made something a person can open (PR, deck, page, image, report)? Attach it to that item: fields {"work_product": "https://…" or "/absolute/file"}; several, with titles, as one JSON string: "[{\\"title\\": \\"<name>\\", \\"url\\": \\"https://…\\"}]"',
+  '- Deliverables: write a deck, report, page or other file the person asked for as a file and attach it as work_product before you finish. When you stop, claude-mem copies each attached file (and any deck, document, page, image or spreadsheet you wrote outside the source tree) into this project\'s deliverables bucket, ~/.claude-mem/deliverables/<project>/, and links it on the request\'s card in My Work.',
+  '- Read every list, closed items included: work_state_read with includeClosed=true',
+].join('\n');
+
+/**
+ * Claude Code cuts an MCP server's instructions at 4,096 characters and adds
+ * "… [truncated]" (measured on Claude Code 2.1.319: a plugin server's
+ * instructions arrived as exactly 4,096 characters plus that marker). The
+ * instructions are checked against it in tests, so a longer text fails there
+ * instead of being cut silently in every session.
+ */
+export const CLAUDE_CODE_MCP_INSTRUCTIONS_MAX_CHARS = 4_096;
+
+/**
+ * The instructions claude-mem's MCP server sends the host at initialize: how to
+ * use its tools. They live here, with the tools, so the SessionStart context
+ * can be the memory timeline alone. Each part follows the setting that turns
+ * its tools or guidance off; empty when both are off.
+ */
+export function mcpServerInstructions(options: {
+  runtime: 'worker' | 'server';
+  workStateEnabled: boolean;
+  memoryInstructionsEnabled: boolean;
+}): string {
+  return [
+    options.workStateEnabled ? WORK_STATE_RULE : '',
+    options.memoryInstructionsEnabled ? memoryInstructionsForRuntime(options.runtime) : '',
+  ].filter(Boolean).join('\n\n');
+}

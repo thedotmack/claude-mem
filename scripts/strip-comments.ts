@@ -6,9 +6,10 @@ import remarkParse from 'remark-parse';
 import remarkMdx from 'remark-mdx';
 import { visit } from 'unist-util-visit';
 import { parse as parse5Parse, parseFragment as parse5ParseFragment } from 'parse5';
-import { readFileSync, writeFileSync, statSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { readFileSync, writeFileSync, lstatSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { extname, basename, join } from 'node:path';
+import { isUtf8 } from 'node:buffer';
 import { parseArgs } from 'node:util';
 
 interface CliOptions {
@@ -110,7 +111,8 @@ function isDirectiveJs(text: string): boolean {
     .replace(/^\/\*+\s*/, '')
     .replace(/\s*\*+\/$/, '')
     .trim();
-  return /^(@ts-(?:ignore|expect-error|nocheck|check)\b|eslint-(?:disable|enable)|biome-ignore|prettier-ignore|@vitest-|c8\s+ignore|istanbul\s+ignore|@__PURE__|#__PURE__|webpack(?:ChunkName|Prefetch|Preload|Include|Exclude|Mode|Ignore))/.test(inner);
+  if (/^[ \t]*(?:\*[ \t]*)?@(?:license|preserve)\b/m.test(inner)) return true;
+  return /^(@ts-(?:ignore|expect-error|nocheck|check)\b|eslint-(?:disable|enable)|biome-ignore|prettier-ignore|@vitest-|c8\s+ignore|istanbul\s+ignore|@__PURE__|#__PURE__|[@#]\s*source(?:Mapping)?URL=|webpack(?:ChunkName|Prefetch|Preload|Include|Exclude|Mode|Ignore))/.test(inner);
 }
 
 function scriptKindFor(ext: string): ts.ScriptKind {
@@ -153,7 +155,7 @@ function stripJsLike(source: string, ext: string): string {
   }
 
   visitNode(sf);
-  const out = spliceRanges(source, ranges);
+  const out = spliceRanges(source, ranges, 'js');
 
   const after = ts.createSourceFile('check', out, ts.ScriptTarget.Latest, true, kind);
   const afterErrs = parseDiagnosticsCount(after);
@@ -163,28 +165,33 @@ function stripJsLike(source: string, ext: string): string {
   return out;
 }
 
-function collapseBlankLines(s: string): string {
-  return s.replace(/(?:[ \t]*\n){3,}/g, '\n\n');
-}
-
-function spliceRanges(source: string, ranges: Array<[number, number]>): string {
-  ranges.sort((a, b) => a[0] - b[0]);
-  let out = source;
-  for (let i = ranges.length - 1; i >= 0; i--) {
-    const [s, e] = ranges[i];
-    let removeStart = s;
-    let removeEnd = e;
-    let lineStart = s;
-    while (lineStart > 0 && (out[lineStart - 1] === ' ' || out[lineStart - 1] === '\t')) {
-      lineStart--;
+// Parser offsets point into the original text. Copy each unaffected span once;
+// whitespace in strings, templates, HTML pre blocks and fenced examples is data.
+function spliceRanges(source: string, ranges: Array<[number, number]>, syntax?: 'js'): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+    let from = start;
+    while (from > cursor && /[ \t]/.test(source[from - 1])) from--;
+    const atLineStart = from === 0 || source[from - 1] === '\n';
+    const lineEnd = source.startsWith('\r\n', end) ? 2 : source[end] === '\n' ? 1 : 0;
+    if (atLineStart && (lineEnd || end === source.length)) {
+      parts.push(source.slice(cursor, from));
+      cursor = end + lineEnd;
+      continue;
     }
-    if (lineStart === 0 || out[lineStart - 1] === '\n') {
-      removeStart = lineStart;
-      if (out[removeEnd] === '\n') removeEnd++;
+    parts.push(source.slice(cursor, start));
+    if (syntax === 'js') {
+      // A block comment separates tokens; any line terminator inside it also
+      // affects automatic semicolon insertion (e.g. a return statement).
+      const lineBreak = source.slice(start, end).match(/[\r\n\u2028\u2029]+/u);
+      if (lineBreak) parts.push(lineBreak[0]);
+      else if (start > 0 && end < source.length && !/\s/.test(source[start - 1]) && !/\s/.test(source[end])) parts.push(' ');
     }
-    out = out.slice(0, removeStart) + out.slice(removeEnd);
+    cursor = end;
   }
-  return collapseBlankLines(out);
+  parts.push(source.slice(cursor));
+  return parts.join('');
 }
 
 function stripCss(source: string): string {
@@ -203,18 +210,15 @@ function stripCss(source: string): string {
   return spliceRanges(source, ranges);
 }
 
-const HTML_COMMENT_RE = /^<!--[\s\S]*-->$/;
-
-function isMdxNarrativeComment(value: string): boolean {
-  const trimmed = value.trim();
-  if (/^\/\*[\s\S]*\*\/$/.test(trimmed)) return true;
-  if (/^\/\/.*$/.test(trimmed)) return true;
-  return false;
+const HTML_COMMENT_RE = /^<!--(?:(?!-->)[\s\S])*-->$/;
+function isHtmlDirective(raw: string): boolean {
+  return /^<!--(?:#|\s*\[if\b|\s*<!\[endif\])/i.test(raw);
 }
 
 interface MdNode {
   type: string;
   value?: string;
+  data?: { estree?: { body?: unknown[] } };
   position?: { start?: { offset?: number }; end?: { offset?: number } };
 }
 
@@ -229,13 +233,13 @@ function stripMarkdown(source: string, isMdx: boolean): string {
     const end = n.position?.end?.offset;
     if (typeof start !== 'number' || typeof end !== 'number') return;
     if (n.type === 'html' && typeof n.value === 'string' && HTML_COMMENT_RE.test(n.value.trim())) {
-      if (KEEP_MARKER.test(n.value)) return;
+      if (KEEP_MARKER.test(n.value) || isHtmlDirective(n.value.trim())) return;
       ranges.push([start, end]);
       return;
     }
     if (isMdx && (n.type === 'mdxFlowExpression' || n.type === 'mdxTextExpression')) {
       const v = n.value ?? '';
-      if (isMdxNarrativeComment(v) && !KEEP_MARKER.test(v)) {
+      if (n.data?.estree?.body?.length === 0 && /^\s*\/[*\/]/.test(v) && !KEEP_MARKER.test(v)) {
         ranges.push([start, end]);
       }
     }
@@ -246,6 +250,7 @@ function stripMarkdown(source: string, isMdx: boolean): string {
 interface Parse5Node {
   nodeName: string;
   childNodes?: Parse5Node[];
+  content?: Parse5Node;
   data?: string;
   sourceCodeLocation?: { startOffset?: number; endOffset?: number };
 }
@@ -265,11 +270,12 @@ function collectHtmlCommentRanges(node: Parse5Node, source: string, ranges: Arra
     const end = node.sourceCodeLocation?.endOffset;
     if (typeof start === 'number' && typeof end === 'number') {
       const raw = source.slice(start, end);
-      if (!KEEP_MARKER.test(raw)) {
+      if (!KEEP_MARKER.test(raw) && !isHtmlDirective(raw)) {
         ranges.push([start, end]);
       }
     }
   }
+  if (node.content) collectHtmlCommentRanges(node.content, source, ranges);
   if (node.childNodes) {
     for (const child of node.childNodes) {
       collectHtmlCommentRanges(child, source, ranges);
@@ -277,22 +283,22 @@ function collectHtmlCommentRanges(node: Parse5Node, source: string, ranges: Arra
   }
 }
 
-function stripHashComments(source: string, preserveShebang: boolean): string {
+function stripHashComments(source: string, wholeLineOnly: boolean): string {
   const lines = source.split('\n');
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (i === 0 && preserveShebang && line.startsWith('#!')) {
+    if (i === 0 && line.startsWith('#!')) {
       out.push(line);
       continue;
     }
-    const stripped = stripHashFromLine(line);
+    const stripped = wholeLineOnly && !line.trimStart().startsWith('#') ? line : stripHashFromLine(line);
     if (stripped === '' && line.trim().startsWith('#')) {
       continue;
     }
     out.push(stripped);
   }
-  return collapseBlankLines(out.join('\n'));
+  return out.join('\n');
 }
 
 function stripHashFromLine(line: string): string {
@@ -346,7 +352,12 @@ function processFile(absPath: string, relPath: string, stats: Stats, opts: CliOp
 
   let st;
   try {
-    st = statSync(absPath);
+    st = lstatSync(absPath);
+    // A tracked directory may also have been replaced by a symlink locally.
+    if (st.isFile() && realpathSync(absPath) !== absPath) {
+      stats.skipped++;
+      return;
+    }
   } catch {
     stats.skipped++;
     return;
@@ -364,7 +375,7 @@ function processFile(absPath: string, relPath: string, stats: Stats, opts: CliOp
     return;
   }
 
-  if (raw.includes(NUL_BYTE)) {
+  if (raw.includes(NUL_BYTE) || !isUtf8(raw)) {
     stats.skipped++;
     return;
   }
@@ -391,7 +402,7 @@ function processFile(absPath: string, relPath: string, stats: Stats, opts: CliOp
       base === 'Dockerfile' ||
       base.startsWith('Dockerfile.')
     ) {
-      stripped = stripHashComments(original, true);
+      stripped = stripHashComments(original, HASH_LIKE_BASE.has(base));
     } else {
       stats.skipped++;
       return;
@@ -406,18 +417,18 @@ function processFile(absPath: string, relPath: string, stats: Stats, opts: CliOp
     return;
   }
 
-  const removedBytes = original.length - stripped.length;
+  const removedBytes = raw.length - Buffer.byteLength(stripped);
   if (removedBytes > 0) {
     const lineDiff = Math.abs(original.split('\n').length - stripped.split('\n').length);
-    const removedFraction = removedBytes / Math.max(original.length, 1);
+    const removedFraction = removedBytes / Math.max(raw.length, 1);
     if (lineDiff > 20 && removedFraction < 0.005) {
       stats.reformatRatioFlags.push(relPath);
     }
   }
 
   stats.changed++;
-  stats.bytesBefore += original.length;
-  stats.bytesAfter += stripped.length;
+  stats.bytesBefore += raw.length;
+  stats.bytesAfter += Buffer.byteLength(stripped);
   stats.changedFiles.push(relPath);
 
   if (!opts.check && !opts.dryRun) {
@@ -444,10 +455,15 @@ function main(): void {
 
   let files: string[];
   try {
-    files = execSync('git ls-files', { cwd: opts.root, encoding: 'utf-8' })
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    opts.root = realpathSync(opts.root);
+    const paths = execFileSync('git', ['ls-files', '-z', '--deduplicate'], { cwd: opts.root });
+    files = [];
+    let start = 0;
+    for (let end = paths.indexOf(0); end !== -1; end = paths.indexOf(0, start)) {
+      const name = paths.subarray(start, end);
+      if (isUtf8(name)) files.push(name.toString('utf8'));
+      start = end + 1;
+    }
   } catch (e) {
     console.error(`git ls-files failed in ${opts.root}: ${(e as Error).message}`);
     process.exit(2);

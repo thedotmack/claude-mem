@@ -7,6 +7,7 @@ import {
   planPluginCachePrune,
   prunePluginCache,
   readRegisteredCacheVersions,
+  readUserScopeRegisteredCacheVersions,
   workingCacheVersions,
   DEFAULT_CACHE_RETENTION,
 } from '../../src/npx-cli/utils/prune-cache.js';
@@ -231,6 +232,28 @@ describe('readRegisteredCacheVersions', () => {
   it('throws on a corrupt registry so nothing is pruned blind', () => {
     const registryPath = writeRegistry('{ not json');
     expect(() => readRegisteredCacheVersions(registryPath)).toThrow(/Corrupt JSON/);
+  });
+
+  it('protects every scope\'s registered version, while the auto-updater reads only the user-scope entry the npx installer writes', () => {
+    // Project-local scratch (gitignored), never the system temp folder.
+    const scratchRoot = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
+    mkdirSync(scratchRoot, { recursive: true });
+    const scratch = mkdtempSync(join(scratchRoot, 'prune-registry-scopes-'));
+    try {
+      const registryPath = join(scratch, 'installed_plugins.json');
+      const entry = (scope: string, version: string) => ({ scope, installPath: join(scratch, 'cache', version), version, ...(scope === 'user' ? {} : { projectPath: '/work/p' }) });
+      writeFileSync(registryPath, JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [entry('project', '13.19.0'), entry('user', '13.20.0'), entry('local', '13.18.0')] } }));
+      expect(readRegisteredCacheVersions(registryPath)).toEqual(['13.19.0', '13.20.0', '13.18.0']);
+      expect(readUserScopeRegisteredCacheVersions(registryPath)).toEqual(['13.20.0']);
+
+      writeFileSync(registryPath, JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [entry('project', '13.19.0')] } }));
+      expect(readUserScopeRegisteredCacheVersions(registryPath)).toEqual([]);
+
+      writeFileSync(registryPath, '{ not json');
+      expect(() => readUserScopeRegisteredCacheVersions(registryPath)).toThrow(/Corrupt JSON/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it('keeps a downgraded registered install that is older than the newest two', () => {

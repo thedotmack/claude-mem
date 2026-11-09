@@ -12,5 +12,8 @@
  * 2 — Bun discovery fixes: no re-exec loop on Bun < 1.2.16 (#4933, #4940) and
  *     Windows checks explicit/known Bun paths before a bounded where.exe
  *     lookup (#4934, #4966).
+ * 3 — `hook` runs the hook-only plugin/scripts/hook-service.cjs when present
+ *     (falling back to worker-service.cjs), so a hook no longer parses the
+ *     whole worker bundle.
  */
-export const LAUNCHER_PROTOCOL = 2;
+export const LAUNCHER_PROTOCOL = 3;

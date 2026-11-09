@@ -4,7 +4,7 @@
 import { CheckIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
-import { interpolate, useI18n } from '@/lib/i18n'
+import { interpolate, LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
 import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
@@ -252,11 +252,10 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
           <select
             aria-label={t('Language')}
             value={locale}
-            onChange={(e) => setLocale(e.target.value as 'en' | 'zh-CN')}
+            onChange={(e) => setLocale(e.target.value as Locale)}
             className="setup-lang-select"
           >
-            <option value="en">English</option>
-            <option value="zh-CN">简体中文</option>
+            {LOCALES.map((code) => <option key={code} value={code}>{LOCALE_NAMES[code]}</option>)}
           </select>
         </div>
       </header>
