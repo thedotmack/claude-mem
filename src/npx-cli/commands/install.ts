@@ -1795,6 +1795,12 @@ export async function startInstallerOAuthPairing(
       } catch (error: unknown) {
         if (error instanceof Error && error.name === 'AbortError') throw error;
       }
+      // Without a server-supplied message, at least name the HTTP answer
+      // (#5493): the caller's fallback says "when cmem.ai is reachable", which
+      // sent a user with an HTTP 429 refusal hunting for a network problem.
+      if (!lastStartErrorMessage) {
+        lastStartErrorMessage = `cmem.ai answered HTTP ${response.status}`;
+      }
       return null;
     }
     // A 2xx with unparseable JSON is a server-response problem, not a
@@ -2183,7 +2189,9 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
       phase: 'login',
     });
     spinner?.stop(styleText('red', 'Could not start OAuth login.'));
-    log.error(lastOAuthStartErrorMessage() ?? 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
+    log.error(lastOAuthStartErrorMessage()
+      ? `OAuth login is required. Could not start it: ${lastOAuthStartErrorMessage()}`
+      : 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
   }
   spinner?.stop('OAuth login ready.');
@@ -2227,7 +2235,9 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
       interactive: false,
       phase: 'deferred',
     });
-    log.error(lastOAuthStartErrorMessage() ?? 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+    log.error(lastOAuthStartErrorMessage()
+      ? `Could not start the optional claude-mem sign-in: ${lastOAuthStartErrorMessage()}`
+      : 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
     return;
   }
 
@@ -2930,7 +2940,9 @@ async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairi
       phase: 'enrollment',
     });
     spinner?.stop(styleText('red', 'Could not start the CMEM Pro sign-in.'));
-    throw new Error(lastOAuthStartErrorMessage() ?? 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+    throw new Error(lastOAuthStartErrorMessage()
+      ? `Could not start the CMEM Pro sign-in: ${lastOAuthStartErrorMessage()}`
+      : 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
   }
   spinner?.stop('CMEM Pro sign-in ready; checkout continues in the browser.');
   return pairing;
