@@ -263,7 +263,10 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     delete next.conversations[ignored.conversation];
   }
   const used = new Set(Object.values(next.conversations));
-  for (const id of Object.keys(next.groups)) if (!used.has(id)) delete next.groups[id];
+  for (const [id, group] of Object.entries(next.groups)) {
+    if (!used.has(id)) delete next.groups[id];
+    else group.links = (group.links ?? []).filter((link) => link.conversations.every((key) => next.conversations[key] === id));
+  }
   next.updatedAt = iso(now);
   return next;
 }
