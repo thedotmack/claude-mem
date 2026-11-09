@@ -10,6 +10,7 @@ import { AppError } from '../../../server/ErrorHandler.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import {
@@ -387,6 +388,17 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // `cwd` below is resolved through getProjectContext, which runs `git` in it
+    // (findGitRepoRoot), so a page on another localhost port must not choose it.
+    // Same guard the mutating routes have used since #5200; hooks, the CLI and
+    // the MCP tool send no Origin and keep working.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        message: 'Context injection from a different localhost origin is not allowed.',
+      });
+      return;
+    }
     let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the

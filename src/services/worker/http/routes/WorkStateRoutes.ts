@@ -129,6 +129,14 @@ export class WorkStateRoutes extends BaseRouteHandler {
   });
 
   private handleRead = this.wrapHandler((req: Request, res: Response): void => {
+    // The read still resolves the project from `cwd`, and that resolution runs
+    // `git` in it (findGitRepoRoot), so a page on another localhost port must
+    // not choose the directory. Same guard the write above has used since
+    // #5200; hooks, the CLI and the MCP tool send no Origin and keep working.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Forbidden', message: 'Work-state reads from a different localhost origin are not allowed' });
+      return;
+    }
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd.trim() : '';
     if (!cwd) {
       this.badRequest(res, 'cwd is required');
