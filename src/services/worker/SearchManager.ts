@@ -509,7 +509,7 @@ export class SearchManager {
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
-      let chromaSucceeded = false;
+      let chromaResult: StrategySearchResult | undefined;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
       // HTTP pagination values can be strings. Keep enough filtered rows to
@@ -520,7 +520,7 @@ export class SearchManager {
       const candidateOptions = { ...options, offset: 0, limit: limit === undefined ? undefined : offset + limit };
 
       try {
-        const chromaResult = await this.orchestrator.searchChroma({
+        chromaResult = await this.orchestrator.searchChroma({
           ...candidateOptions,
           // The strategy resolves stored project keys itself; do not expand
           // the already-resolved candidateOptions.projects a second time.
@@ -534,24 +534,6 @@ export class SearchManager {
           // Omitted-limit JSON searches historically expose the ranked window.
           limit: candidateOptions.limit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
         });
-        chromaSucceeded = true;
-        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
-        // category Chroma left empty, or answers alone when Chroma left them all empty.
-        const supplemented = await this.orchestrator.supplementEmptyCategories(
-          {
-            ...candidateOptions,
-            limit: candidateOptions.limit ?? offset + SEARCH_CONSTANTS.DEFAULT_LIMIT,
-            query,
-            searchType: category ?? 'all',
-            obsType: effectiveObsType,
-            concepts,
-            files,
-            orderBy: options.orderBy ?? 'relevance',
-          },
-          chromaResult
-        );
-        ({ observations, sessions, prompts } = supplemented.results);
-        chromaSupplementStrategy = supplemented.strategy;
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -583,6 +565,29 @@ export class SearchManager {
           const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
           logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
         }
+      }
+
+      // Only a failed semantic search should trigger the Chroma fallback.
+      // A SQLite refill failure must escape, just as in SearchOrchestrator;
+      // retrying it as a Chroma failure can silently discard semantic matches.
+      if (chromaResult) {
+        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
+        // category Chroma left empty, or answers alone when Chroma left them all empty.
+        const supplemented = await this.orchestrator.supplementEmptyCategories(
+          {
+            ...candidateOptions,
+            limit: candidateOptions.limit ?? offset + SEARCH_CONSTANTS.DEFAULT_LIMIT,
+            query,
+            searchType: category ?? 'all',
+            obsType: effectiveObsType,
+            concepts,
+            files,
+            orderBy: options.orderBy ?? 'relevance',
+          },
+          chromaResult
+        );
+        ({ observations, sessions, prompts } = supplemented.results);
+        chromaSupplementStrategy = supplemented.strategy;
       }
 
       if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
