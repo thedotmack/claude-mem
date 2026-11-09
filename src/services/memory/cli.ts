@@ -8,11 +8,10 @@ import {
 import { resolve } from 'path';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { expandHome } from '../../shared/expand-home.js';
+import { cliFlagValue } from '../../shared/cli-flag-value.js';
 
 function getArgValue(args: string[], name: string): string | null {
-  const index = args.indexOf(name);
-  if (index === -1) return null;
-  return args[index + 1] ?? null;
+  return cliFlagValue(args, name) ?? null;
 }
 
 function hasFlag(args: string[], name: string): boolean {
