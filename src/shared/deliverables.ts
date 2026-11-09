@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { closeSync, constants, copyFileSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
+import fs, { closeSync, constants, copyFileSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
 import { basename, extname, join, relative, isAbsolute } from 'path';
 import { resolveDataDir } from './paths.js';
 
@@ -137,7 +137,7 @@ export function copyDeliverableIntoBucket(sourcePath: string, projectKey: string
     try {
       // Publish only if absent. Two concurrent writers with colliding short
       // hashes cannot replace one another after a check-then-rename race.
-      linkSync(partial, bucketPath);
+      fs.linkSync(partial, bucketPath);
       unlinkSync(partial);
       return { bucketPath, sha256, bytes, reused: false };
     } catch (error) {
