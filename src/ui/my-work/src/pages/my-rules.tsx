@@ -25,7 +25,7 @@ import { SAMPLE_DEVICES, SAMPLE_RUNS } from '@/data'
 import { type RuleChangeRecord, type RuleSaveOutcome, useStore, useWorkModel, useWorkspace } from '@/store'
 import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleScope, type RuleTier } from '@/data-rules'
 import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, type RuleDecision } from '@/live/rule-actions'
-import type { RuleSaveResult } from '@/live/work-data-source'
+import type { AutoRefresh, RuleSaveResult } from '@/live/work-data-source'
 
 // ---------- Derived facts ----------
 
@@ -673,13 +673,18 @@ function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft
 // ---------- Page ----------
 
 /** No story and no saved rules yet: say so, and how to get learned rules, instead of showing anything made up. */
-function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string | null }) {
+export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; readError: string | null; refresh: AutoRefresh | null }) {
+  const waiting = refresh?.state === 'waiting-for-agent'
+  const description = waiting
+    ? t('Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.')
+    : t('claude-mem learns how you like to work from your requests on its own. You can also add one.')
   return (
     <Req ids={['R12.1']}>
       <Empty className="border bg-card/60">
         <EmptyHeader>
           <EmptyTitle>{readError ? t("Can’t read your rules right now") : t("No rules yet")}</EmptyTitle>
-          <EmptyDescription>{readError ?? <>{t("claude-mem learns how you like to work from your requests on its own. You can also add one.")}</>}</EmptyDescription>
+          <EmptyDescription>{readError ?? description}</EmptyDescription>
+          {!readError && waiting && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
         </EmptyHeader>
         {!readError && (
           <EmptyContent className="flex-row justify-center gap-2">
@@ -781,7 +786,7 @@ export function MyRules() {
   if (!sample && (rulesReadError || (rules.length === 0 && !rulesLearning))) {
     return (
       <div className="space-y-5">
-        <NoRulesYet onAdd={startAdding} readError={rulesReadError} />
+        <NoRulesYet onAdd={startAdding} readError={rulesReadError} refresh={refresh} />
         <RuleEditor draft={draft} error={draftError} saving={saving} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
       </div>
     )
