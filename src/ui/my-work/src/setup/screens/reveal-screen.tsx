@@ -100,6 +100,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   const agentNames = withPrompts.map((agent) => agent.label)
   const agentsJoined = locale === 'zh-CN'
     ? (agentNames.length < 2 ? agentNames.join('') : `${agentNames.slice(0, -1).join('、')} 和 ${agentNames[agentNames.length - 1]}`)
+    : locale === 'ko' ? new Intl.ListFormat('ko', { type: 'conjunction' }).format(agentNames)
     : joinNames(agentNames)
 
   const leadText = promptCount > 0

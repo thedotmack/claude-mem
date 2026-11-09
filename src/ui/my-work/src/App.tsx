@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
 import { CreditCardIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
-import { useI18n } from '@/lib/i18n'
+import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -107,11 +107,10 @@ function LanguageSelector() {
       <select
         aria-label={t('Language')}
         value={locale}
-        onChange={(e) => setLocale(e.target.value as 'en' | 'zh-CN')}
+        onChange={(e) => setLocale(e.target.value as Locale)}
         className="h-7 rounded-md border border-border bg-card px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
-        <option value="en">English</option>
-        <option value="zh-CN">简体中文</option>
+        {LOCALES.map((code) => <option key={code} value={code}>{LOCALE_NAMES[code]}</option>)}
       </select>
     </div>
   )
