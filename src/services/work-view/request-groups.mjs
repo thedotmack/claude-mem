@@ -59,7 +59,12 @@ function queryInChunks(database, values, sqlFor, parametersFor = (chunk) => chun
   const rows = [];
   for (let index = 0; index < values.length; index += chunkSize) {
     const chunk = values.slice(index, index + chunkSize);
-    for (const row of database.prepare(sqlFor(chunk)).all(...parametersFor(chunk))) rows.push(row);
+    const statement = database.prepare(sqlFor(chunk));
+    try {
+      for (const row of statement.all(...parametersFor(chunk))) rows.push(row);
+    } finally {
+      statement.finalize();
+    }
   }
   return rows;
 }
