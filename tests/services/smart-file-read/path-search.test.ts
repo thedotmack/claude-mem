@@ -156,3 +156,12 @@ describe('skipSymbolExtraction (broken tree-sitter CLI, #4758)', () => {
     expect(output).not.toContain('── Matching Symbols ──');
   }, 120000);
 });
+
+test('file filters copied across platforms select the same relative paths', async () => {
+  const files = { 'src/library/needle.ts': 'export const value = 1;', 'src/other/needle.ts': 'export const value = 2;' };
+  for (const filePattern of ['src/library', 'src\\library']) {
+    const result = await searchFiles(files, 'needle', { filePattern, skipSymbolExtraction: true });
+    expect(result.totalFilesScanned).toBe(1);
+    expect(result.matchingFiles.map(file => file.filePath)).toEqual([join('src', 'library', 'needle.ts')]);
+  }
+});

@@ -201,6 +201,24 @@ describe('server beta postgres observation storage', () => {
     expect(explicit.generationStatus).toBe('processing');
   });
 
+  it('links an initially unscoped event when its session becomes known on redelivery', async () => {
+    const { project, session } = await createFixtureScope(storage);
+    const scope = { projectId: project.id, teamId: project.teamId };
+    const input = {
+      ...scope, contentSessionId: 'local-session', sourceAdapter: 'hook',
+      eventType: 'tool_use', occurredAt: new Date('2026-05-07T20:00:00Z')
+    };
+    const first = await storage.agentEvents.create(input);
+    expect(first.serverSessionId).toBeNull();
+    const linked = await storage.agentEvents.create({ ...input, serverSessionId: session.id });
+    expect(linked.id).toBe(first.id);
+    expect(linked.serverSessionId).toBe(session.id);
+    const other = await storage.sessions.create(scope);
+    const replay = await storage.agentEvents.create({ ...input, serverSessionId: other.id });
+    expect(replay.serverSessionId).toBe(session.id);
+    expect(await storage.agentEvents.listByProject({ ...scope, serverSessionId: session.id })).toHaveLength(1);
+  });
+
   it('creates observations, searches content, links sources, and preserves generation retry idempotency', async () => {
     const { project, session, event, eventJob } = await createFixtureScopeWithEventJob(storage);
     const generationKey = buildObservationGenerationKey({
