@@ -2,9 +2,8 @@
 // so My Work can say it out loud ("Shipped: Move embeddings into their own table").
 import type { LiveState, Request } from '../data.ts'
 
-/** Requests whose recorded content changed, or that are new, since the shown model. Nothing is "fresh" on the first model. */
+/** Requests whose recorded content changed, or that are new, since the shown model. */
 export function freshlyUpdatedRequestIds(shown: Request[], next: Request[]): string[] {
-  if (shown.length === 0) return []
   const shownFingerprints = new Map(shown.map((request) => [request.id, request.contentFingerprint]))
   return next
     .filter((request) => !shownFingerprints.has(request.id) || shownFingerprints.get(request.id) !== request.contentFingerprint)
@@ -34,7 +33,6 @@ const clockOnlyIdle = (previous: Request, next: Request) =>
  * percent that went up. Read only from the two models, never guessed. Nothing on the first model.
  */
 export function requestChanges(shown: Request[], next: Request[], at: number): RequestChange[] {
-  if (shown.length === 0) return []
   const before = new Map(shown.map((request) => [request.id, request]))
   const changes: RequestChange[] = []
   for (const request of next) {

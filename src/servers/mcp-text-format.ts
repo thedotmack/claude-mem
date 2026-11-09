@@ -45,7 +45,10 @@ function identity(row: Record<string, unknown>): string {
     + (row.project || row.projectId ? ` (${line(row.project ?? row.projectId, '', 100)})` : '');
 }
 function recordedAt(row: Record<string, unknown>): string {
-  const epoch = typeof row.created_at_epoch === 'number' ? row.created_at_epoch : typeof row.createdAtEpoch === 'number' ? row.createdAtEpoch : null;
+  // Older SQLite rows use seconds. Server createdAtEpoch is already in milliseconds.
+  const stored = row.created_at_epoch;
+  const epoch = typeof stored === 'number' ? (stored < 1e12 ? stored * 1000 : stored)
+    : typeof row.createdAtEpoch === 'number' ? row.createdAtEpoch : null;
   const date = epoch === null ? null : new Date(epoch);
   return date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '';
 }

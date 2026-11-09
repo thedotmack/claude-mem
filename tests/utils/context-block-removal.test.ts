@@ -27,6 +27,25 @@ describe('removing the managed context block keeps authored examples', () => {
     expect(readFileSync(file, 'utf8')).toBe(authored.trim());
   });
 
+  it('keeps an authored leading Markdown code block indented after cleaning', () => {
+    const code = '    example command\n    continuation';
+    const file = writeFixture(`${code}\n\n${OPEN}\nmemory\n${CLOSE}\n`);
+    expect(cleanSingleFile(file, 'CLAUDE.md', false)).toBe('cleaned');
+    expect(readFileSync(file, 'utf8')).toBe(code);
+  });
+
+  it('drops the blank lines a leading managed block leaves behind', () => {
+    const file = writeFixture(`${OPEN}\nmemory\n${CLOSE}\n\n# Notes\n`);
+    expect(cleanSingleFile(file, 'CLAUDE.md', false)).toBe('cleaned');
+    expect(readFileSync(file, 'utf8')).toBe('# Notes');
+  });
+
+  it('keeps an indented code block that follows a leading managed block', () => {
+    const file = writeFixture(`${OPEN}\nmemory\n${CLOSE}\n\n    code\n`);
+    expect(cleanSingleFile(file, 'CLAUDE.md', false)).toBe('cleaned');
+    expect(readFileSync(file, 'utf8')).toBe('    code');
+  });
+
   it('claude-md clean deletes a file that held only the managed block', () => {
     const file = writeFixture(`${OPEN}\nonly\n${CLOSE}\n`);
     expect(cleanSingleFile(file, 'CLAUDE.md', false)).toBe('deleted');

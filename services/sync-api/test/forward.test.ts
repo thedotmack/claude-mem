@@ -72,6 +72,17 @@ afterAll(async () => {
 	upstream.stop(true);
 });
 
+describe("sync listener port", () => {
+	it("requires a complete decimal port instead of silently binding its numeric prefix", () => {
+		const port = (PORT: string) => loadEnv({ FORWARD_ORIGIN: "https://example.com", PORT }).PORT;
+		for (const raw of ["8080oops", "0.5", "1e3", "", "65536"]) {
+			expect(() => port(raw)).toThrow(/PORT/);
+		}
+		expect(port("0")).toBe(0);
+		expect(port(" 65535 ")).toBe(65535);
+	});
+});
+
 describe("forward mode: env validation", () => {
 	it("does not require DATABASE_URL when FORWARD_ORIGIN is set", () => {
 		const env = loadEnv({ FORWARD_ORIGIN: "https://example.supabase.co/functions/v1/cmem-sync/" });
