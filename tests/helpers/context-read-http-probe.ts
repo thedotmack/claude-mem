@@ -91,6 +91,7 @@ export async function assertContextReadResponsive(options: { entry?: string; cwd
     const contextBody = await context.text();
     if (!context.ok) throw new Error(`Context read failed with ${context.status}: ${contextBody}\nfixture stderr: ${output.stderr}`);
     expect(contextBody).toContain('KEEP_CONTEXT_RECORD');
+    expect(contextBody).toContain('KEEP_SAVED_WORK_STATE');
   } finally {
     clearTimeout(startupTimeout);
     if (unlockTimer.value) clearTimeout(unlockTimer.value);
