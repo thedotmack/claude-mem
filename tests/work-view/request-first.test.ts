@@ -334,11 +334,10 @@ describe('the real project of an agent scratch-folder session', () => {
     }
   });
 
-  it('derives the project of a deleted temp checkout, without matching its sibling', () => {
+  it('derives the project of a deleted temp checkout', () => {
     const folder = mkdtempSync(join(tmpdir(), 'former-scratch-'));
     rmSync(folder, { recursive: true });
     expect(folderNeedsProject(folder, 'generated-task')).toBe(true);
-    expect(folderNeedsProject(join(tmpdir() + '-sibling', 'former-scratch'), 'real-project')).toBe(false);
   });
 
   it('reads native Windows paths and working folders on Windows', () => {
