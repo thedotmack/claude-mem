@@ -2522,7 +2522,7 @@ This release ships the complete two-lane sync architecture between your local cl
 - **Canonical v2 projection pipeline** and SyncHub-only client cutover
 - Hardened verifier authentication on the sync hub
 
-**Sync is OFF by default.** `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` defaults to empty — nothing leaves your machine unless you configure a hub URL (see the `cloud-sync` skill or https://docs.claude-mem.ai/cloud-sync).
+**Cloud sync is off by default.** `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` defaults to empty. Configure a hub URL to send memory records through [cloud sync](https://docs.claude-mem.ai/cloud-sync). [Usage telemetry](https://docs.claude-mem.ai/telemetry) is separate and defaults on.
 
 ### Fixes
 
@@ -2893,6 +2893,8 @@ claude-mem now ships anonymous, privacy-hardened usage analytics. This is the fi
 Eight events (`install_completed`, `install_failed`, `uninstall_completed`, `worker_started`, `session_compressed`, `context_injected`, `search_performed`, `error_occurred`), identified by a random install UUID generated locally. Every property passes a strict whitelist scrubber — only numbers, booleans, and values from closed sets we define (platform, version, IDE choice, durations, counts) can leave your machine.
 
 **Never collected — enforced by whitelist, not blocklist:** prompts or conversation content, file paths, source code, project or repo names, search queries, error messages, IP addresses, hardware identifiers, env values, emails, or any PII.
+
+The list above describes v13.5.0. Later releases added redacted error messages and stacks. See the [current telemetry disclosure](https://docs.claude-mem.ai/telemetry#error-tracking) for what is sent and how to turn it off.
 
 ### Opting out
 

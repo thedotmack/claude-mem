@@ -189,7 +189,8 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortController.signal.aborted).toBe(false);
   });
 
-  it('confirms the <skip_summary /> sentinel at once: a skip is an answer', async () => {
+  it.each(['<skip_summary reason="noise" />', "<skip_summary reason = 'noise' />"])(
+    'confirms %s at once: a skip is an answer', async (skip) => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(14, 'do the thing', 1);
     session.memorySessionId = 'mem-14';
@@ -199,7 +200,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     const resetSpy = spyOn(sm, 'resetProcessingToPending');
 
     await processAgentResponse(
-      '<skip_summary reason="noise" />', session, makeDbManager(), sm, makeWorker(), 0, null, 'TestAgent',
+      skip, session, makeDbManager(), sm, makeWorker(), 0, null, 'TestAgent',
     );
 
     expect(confirmSpy).toHaveBeenCalledWith(14);
