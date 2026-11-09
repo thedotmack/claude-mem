@@ -325,7 +325,7 @@ describe('antigravityCliAdapter - normalizeInput (camelCase protojson stdin)', (
       error: 'command failed',
     });
     expect(result.toolName).toBe('Bash');
-    expect(result.toolResponse).toEqual({ error: 'command failed' });
+    expect(result.toolResponse).toEqual({ is_error: true, error: 'command failed' });
   });
 
   it('maps an invocation payload to the AntigravityProvider provider fields', () => {
