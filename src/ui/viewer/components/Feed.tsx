@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { useI18n } from '../../i18n';
+import { interpolate, useI18n } from '../../i18n';
 import { translateViewerError } from '../../i18n/errors';
 import { FeedItem } from '../types';
 import type { DeletableItemType } from '../utils/feed-deletion';
@@ -21,9 +21,13 @@ interface FeedProps {
   isLoading: boolean;
   hasMore: boolean;
   loadError?: string | null;
+  /** False when the server refused the request outright, so Retry would only repeat it. */
+  canRetry?: boolean;
+  /** The server's deepest allowed offset when it stopped this list there instead of running out. */
+  offsetCapReachedAt?: number | null;
 }
 
-export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore, loadError }: FeedProps) {
+export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore, loadError, canRetry = true, offsetCapReachedAt = null }: FeedProps) {
   const { t } = useI18n();
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
@@ -105,7 +109,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
         {loadError && !isLoading && (
           <div role="alert" style={{ textAlign: 'center', padding: '20px' }}>
             <p>{translateViewerError(loadError, t)}</p>
-            <button onClick={onLoadMore}>{t('Retry')}</button>
+            {canRetry && <button onClick={onLoadMore}>{t('Retry')}</button>}
           </div>
         )}
         {hasMore && !isLoading && !loadError && (
@@ -113,7 +117,9 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
         )}
         {!hasMore && items.length > 0 && (
           <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
-            {t('No more items to load')}
+            {offsetCapReachedAt !== null
+              ? interpolate(t('This list stops at the newest {count} items. Filter by project to see older ones.'), { count: offsetCapReachedAt.toLocaleString() })
+              : t('No more items to load')}
           </div>
         )}
       </div>

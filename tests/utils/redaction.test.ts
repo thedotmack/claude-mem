@@ -224,6 +224,61 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // Every vendor key printed at the start of a line: the worker scans
+  // JSON.stringify(toolResponse), where that newline (or a tab/CR) arrives as
+  // the two characters `\n`, which a bare `\b` can't match after. Split
+  // literals keep GitHub push protection off these fake fixtures.
+  const A36 = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789';
+  const HEX64 = '0123456789abcdef'.repeat(4);
+  const AFTER_NEWLINE_KEYS: [string, string][] = [
+    ['github_pat', 'gh' + 'p_' + A36],
+    ['openai_key', 's' + 'k-ABCDEFGHIJ1234567890abcdef'],
+    ['anthropic_key', 's' + 'k-ant-api03-abcdef1234567890ABCDEF'],
+    ['slack_token', 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop'],
+    ['jwt', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789'],
+    ['stripe_key', 'sk' + '_live_abcdefghijklmnopqrstuvwx'],
+    ['google_api_key', 'AI' + 'zaSyA-0123456789abcdefghijklmnopqrstu'],
+    ['google_oauth_token', 'ya' + '29.' + A36],
+    ['gitlab_token', 'gl' + 'pat-' + 'aBcDeFgHiJkLmNoPqRsT'],
+    ['huggingface_token', 'h' + 'f_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567'],
+    ['npm_token', 'np' + 'm_' + A36],
+    ['docker_pat', 'dckr' + '_pat_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0'],
+    ['linear_key', 'lin_' + 'api_' + A36 + 'abcd'],
+    ['notion_token', 'nt' + 'n_' + '1234567890' + A36],
+    ['sendgrid_key', 'S' + 'G.' + 'aBcDeFgHiJkLmNoPqRsTuV' + '.' + A36 + 'aBcDeFg'],
+    ['digitalocean_token', 'do' + 'p_v1_' + HEX64],
+    ['shopify_token', 'shp' + 'at_' + HEX64.slice(0, 32)],
+    ['pypi_token', 'py' + 'pi-AgE' + A36 + A36],
+    ['databricks_token', 'da' + 'pi' + HEX64.slice(0, 32)],
+    ['vault_token', 'hv' + 's.' + A36.repeat(3)],
+    ['nvidia_nim_key', 'nv' + 'api-' + A36],
+    ['runcrate_key', 'rc_' + 'live_' + A36],
+    ['groq_key', 'gs' + 'k_' + A36 + 'aBcDeFgHiJkLmNoP'],
+    ['xai_key', 'xa' + 'i-' + A36 + A36 + 'aBcDeFgH'],
+    ['perplexity_key', 'ppl' + 'x-' + A36 + 'AbCdEfGhIjKl'],
+    ['supabase_token', 'sb' + 'p_' + HEX64.slice(0, 40)],
+    ['sentry_token', 'sntr' + 'yu_' + HEX64],
+    ['claude_mem_key', 'cm' + 'em_' + A36 + 'abcdefg'],
+  ];
+  it.each(AFTER_NEWLINE_KEYS)('redacts a %s printed right after a newline, raw and JSON-escaped', (name, key) => {
+    for (const separator of ['\n', '\t', '\r\n']) {
+      const output = `Deployment ready.${separator}${key}`;
+      for (const text of [output, JSON.stringify({ stdout: output })]) {
+        const result = redactSensitive(text, cfg);
+        expect(result.counts[name]).toBe(1);
+        expect(result.redacted).not.toContain(key);
+      }
+      const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
+      expect(JSON.parse(stored).stdout).toBe(`Deployment ready.${separator}<redacted type='${name}'/>`);
+    }
+  });
+
+  it('still leaves a key-shaped run inside a longer word alone', () => {
+    const word = 'xgh' + 'p_' + A36;
+    expect(redactSensitive(word, cfg).redacted).toBe(word);
+    expect(redactSensitive(JSON.stringify({ stdout: `a ${word}` }), cfg).redacted).toBe(JSON.stringify({ stdout: `a ${word}` }));
+  });
+
   // The worker scans JSON.stringify(toolResponse), so a newline right before
   // the key arrives as the two characters `\n`; the `n` is a word character,
   // so a bare `\b` cannot match there and the key survived redaction.
