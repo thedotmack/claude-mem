@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/hooks/file-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
+          & $bun test tests/hooks/file-context.test.ts tests/cli/adapters/shell-tilde-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
 
       - name: Context reader responsiveness and packaging
         shell: pwsh
