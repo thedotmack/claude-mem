@@ -78,6 +78,20 @@ export function extractTextContent(content: unknown): string {
     .map(block => block.text).join('\n');
 }
 
+// The worker's file evidence and shell filters use these canonical names.
+// Pi's native file tools call the path argument `path`.
+const CAPTURE_TOOL_NAMES = new Map([
+  ['read', 'Read'], ['write', 'Write'], ['edit', 'Edit'], ['bash', 'Bash'],
+]);
+
+function captureToolInput(toolName: string, input: unknown): unknown {
+  if (!['read', 'write', 'edit'].includes(toolName)
+    || !input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const fields = input as Record<string, unknown>;
+  if (typeof fields.file_path === 'string' && fields.file_path.length > 0) return input;
+  return typeof fields.path === 'string' ? { ...fields, file_path: fields.path } : input;
+}
+
 export default function claudeMemPi(pi: PiExtensionAPI): void {
   const worker = createHarnessWorkerClient();
   let current: Session | undefined;
@@ -235,12 +249,17 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     const session = current;
     if (!session || !event.toolName || event.toolName.startsWith('mem_')) return;
     const text = extractTextContent(event.content);
+    const toolName = CAPTURE_TOOL_NAMES.get(event.toolName) ?? event.toolName;
+    const toolInput = captureToolInput(event.toolName, event.input);
     return enqueue(session, ctx, async () => {
       if (!session.anchored || session.excluded) return;
       await worker.post('/api/sessions/observations', {
         contentSessionId: session.id, cwd: session.cwd, platformSource: 'pi',
-        tool_name: event.toolName, tool_input: event.input,
-        tool_response: text.slice(0, 100_000), tool_use_id: event.toolCallId,
+        tool_name: toolName, tool_input: toolInput,
+        tool_response: event.isError === true
+          ? { is_error: true, error: text.slice(0, 100_000) }
+          : text.slice(0, 100_000),
+        tool_use_id: event.toolCallId,
         telemetryToolEpochMs,
       });
     });

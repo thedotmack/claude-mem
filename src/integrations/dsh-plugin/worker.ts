@@ -182,7 +182,15 @@ export class WorkerClient {
       const text = await response.text().catch(() => '')
       throw new MemError(`memory worker returned HTTP ${response.status}: ${text.slice(0, 500)}`, 'MEM_PROVIDER_ERROR')
     }
-    return await response.json() as T
+    const result: unknown = await response.json()
+    // Search/timeline use the MCP result envelope, including errors returned
+    // with HTTP 200. Keep those failures out of the successful memory index.
+    if (result !== null && typeof result === 'object' && !Array.isArray(result)
+      && (result as Record<string, unknown>).isError === true) {
+      const message = contentText((result as Record<string, unknown>).content)
+      throw new MemError(message?.slice(0, 500) || 'memory worker returned an error', 'MEM_PROVIDER_ERROR')
+    }
+    return result as T
   }
 
   private async requestText(path: string, query: URLSearchParams, signal?: AbortSignal): Promise<string> {

@@ -3,6 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { readJsonSafe } from '../../utils/json-utils.js';
 import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
@@ -13,6 +14,7 @@ import {
   unregisterCursorProject as unregisterCursorProjectInFile,
   configureCursorMcp as configureCursorMcpFile,
   writeContextFile,
+  type CursorMcpConfig,
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
 import type { CursorInstallTarget, CursorHooksJson } from './types.js';
@@ -411,6 +413,20 @@ async function fetchInitialContextFromWorker(
   return false;
 }
 
+/**
+ * Whether claude-mem's Cursor integration is set up at `target`: one of its
+ * `hook cursor` entries in hooks.json, or its server in mcp.json. The legacy
+ * script names don't count, as the user's own hooks can have them too.
+ */
+export function hasCursorIntegration(target: CursorInstallTarget): boolean {
+  const targetDir = getTargetDir(target);
+  if (!targetDir) return false;
+  const hooksJson = readExistingCursorHooksJson(path.join(targetDir, 'hooks.json'));
+  if (hooksJson && allCursorHookEntries(hooksJson).some(isUnifiedClaudeMemCursorHook)) return true;
+  const mcpConfig = readJsonSafe<Partial<CursorMcpConfig> | null>(path.join(targetDir, 'mcp.json'), null);
+  return Boolean(mcpConfig?.mcpServers?.['claude-mem']);
+}
+
 export function uninstallCursorHooks(target: CursorInstallTarget): number {
   console.log(`\nUninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
 
@@ -484,6 +500,17 @@ function removeCursorHooksFiles(
     const projectName = getProjectContext(process.cwd()).primary;
     unregisterCursorProject(projectName);
     console.log(`  Unregistered from auto-context updates`);
+  }
+
+  // The MCP server configureCursorMcp() registered. Removed last, so an
+  // mcp.json that does not parse (readJsonSafe throws and the file is left as
+  // it is) cannot keep the hooks above in place.
+  const mcpJsonPath = path.join(targetDir, 'mcp.json');
+  const mcpConfig = readJsonSafe<Partial<CursorMcpConfig> | null>(mcpJsonPath, null);
+  if (mcpConfig?.mcpServers?.['claude-mem']) {
+    delete mcpConfig.mcpServers['claude-mem'];
+    writeJsonFileAtomic(mcpJsonPath, mcpConfig);
+    console.log(`  Removed claude-mem from mcp.json (other servers preserved)`);
   }
 
   console.log(`\nUninstallation complete!\n`);

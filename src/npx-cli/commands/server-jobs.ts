@@ -148,7 +148,9 @@ async function runJobsStatus(args: ParsedArgs): Promise<void> {
       scope: { team: scope.team, project: scope.project },
       postgres: pgCounts,
       bullmq: bullmqCounts ?? { unavailable: true },
-      divergence: detectDivergence(pgCounts, bullmqCounts),
+      divergence: bullmqCounts && (scope.team || scope.project)
+        ? { reason: 'queue_counts_are_global' }
+        : detectDivergence(pgCounts, bullmqCounts),
     };
     console.log(JSON.stringify(output, null, 2));
   } finally {
@@ -231,6 +233,10 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     }
     if (lookup.status === 'processing') {
       console.error(styleText('red', `Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
+      process.exit(1);
+    }
+    if (lookup.status !== 'failed' && lookup.status !== 'cancelled') {
+      console.error(styleText('red', `Cannot retry a ${lookup.status} job. Only failed or cancelled jobs can be retried.`));
       process.exit(1);
     }
 
