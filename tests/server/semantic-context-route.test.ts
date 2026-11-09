@@ -123,12 +123,17 @@ describe('POST /v1/context/semantic limits', () => {
     const storage = createPostgresStorageRepositories(client);
     const team = (await client.query<{ team_id: string }>('SELECT team_id FROM projects WHERE id = $1', [projectId])).rows[0]!.team_id;
     const embeddings = new PostgresObservationEmbeddingsRepository(pool);
+    const observations = [];
     for (const row of rows) {
-      const observation = await storage.observations.create({ projectId, teamId: team, ...row });
-      // With vectors, so the search finds them by meaning on any Postgres
-      // with pgvector, not only where bm25 matches any keyword.
-      const [embedded] = (await embedObservationRows(pool, [observation])) ?? [];
-      if (embedded) await embeddings.upsert({ observationId: observation.id, model: getSharedEmbedder().modelId, ...embedded });
+      observations.push(await storage.observations.create({ projectId, teamId: team, ...row }));
+    }
+    // With vectors, so the search finds them by meaning on any Postgres with
+    // pgvector, not only where bm25 matches any keyword. One embed call for the
+    // whole seed: one call per row made the 30-row clamp test pass the default
+    // 5 s timeout on loaded CI runners.
+    const embedded = (await embedObservationRows(pool, observations)) ?? [];
+    for (const [index, parts] of embedded.entries()) {
+      await embeddings.upsert({ observationId: observations[index]!.id, model: getSharedEmbedder().modelId, ...parts });
     }
   }
 
@@ -144,7 +149,11 @@ describe('POST /v1/context/semantic limits', () => {
     const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
     expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
-  });
+    // Timeout: with the batched seed this test measured 3.1 s (server search job)
+    // and 4.4 s (sync-api job) on CI, most of it the first embed loading the
+    // model. The 5 s default left under 1 s of headroom; 15 s is about 3x the
+    // slowest measured run.
+  }, 15_000);
 
   it('renders the content of a memory or summary that has no narrative', async () => {
     if (!(await canAnswer())) return;
