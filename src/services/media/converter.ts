@@ -110,6 +110,21 @@ async function loadDecoder(): Promise<Decoder> {
 }
 
 /**
+ * Only sharp's native build decodes here. Its wasm32 build
+ * (@img/sharp-wasm32, the one whose versions name emscripten) blocks Bun's
+ * main thread forever on its first decode, in a WebAssembly atomic wait, so
+ * neither sharp's timeout nor this converter's deadline timer can fire and
+ * the whole worker stops answering (#5601). Workers start with Bun's
+ * auto-install off (src/shared/bun-auto-install.ts), which is what pulled the
+ * wasm build in; this check also covers a worker started some other way.
+ * Without the native build, conversion fails decoder_unavailable and the
+ * worker keeps running.
+ */
+function assertNativeDecoder(decoder: Decoder): void {
+  if ('emscripten' in decoder.versions) throw new MediaError('decoder_unavailable');
+}
+
+/**
  * Local worker capture bounds (docs/media-contract-v1.md, "Where the
  * conversion bounds apply"). This converter runs only in the local worker,
  * off the hook path: the PostToolUse hook writes a spool file and returns, and
@@ -201,6 +216,7 @@ export function createMediaConverter(options: {
         if (claimedMime !== mimeType) throw new MediaError('mime_mismatch');
         if (mimeType === 'image/png') assertStillPng(bytes);
         const decoder = await (options.loadDecoder ?? loadDecoder)();
+        assertNativeDecoder(decoder);
         checkDeadline();
         // Copy the documented constructor limits and strict decoder failure
         // policy, never unlimited input or first-frame animated acceptance.

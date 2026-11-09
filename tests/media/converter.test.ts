@@ -330,6 +330,23 @@ test('missing decoder is a safe media failure and larger deadlines cannot bypass
   assert.throws(() => createMediaConverter({ deadlineMs: LOCAL_CONVERSION_DEADLINE_MS + 1000 }), rejects('invalid_manifest'));
 });
 
+test("sharp's wasm32 build is refused before any decode (#5601)", async () => {
+  // Bun's auto-install resolved sharp to @img/sharp-wasm32 in a plugin root
+  // without node_modules; its first metadata() blocked the main thread forever,
+  // so the deadline timer below never fired. The wasm build must never decode.
+  let decodeCalls = 0;
+  const wasmDecoder = Object.assign(() => { decodeCalls++; return sharp(Buffer.alloc(0)); }, sharp, {
+    versions: { ...sharp.versions, emscripten: '6.0.10' },
+  }) as unknown as typeof sharp;
+  const convert = createMediaConverter({ loadDecoder: async () => wasmDecoder });
+  await assert.rejects(convert(await makePng(), 'image/png'), rejects('decoder_unavailable'));
+  assert.equal(decodeCalls, 0);
+  // The native build that ships in plugin/node_modules still decodes.
+  assert.equal('emscripten' in sharp.versions, false);
+  const native = await createMediaConverter({ loadDecoder: async () => sharp })(await makePng(), 'image/png');
+  assert.equal(native.source.width, 80);
+});
+
 test('the owner quota stays at the value Pro enforces', () => {
   // Pro's src/lib/media/contract.ts and drizzle/0107 enforce 25 GiB (uploads past
   // it answer 413 quota_exceeded; claude-mem-pro#396). The shared contract must not
