@@ -680,18 +680,14 @@ export function autoUpdateCheck(sources: AutoUpdateDoctorSources): CheckResult {
  * the worker records `apply` before it launches the attempt
  * (auto-update-check.ts gate 9) and records no other decision until its next
  * tick, while the supervisor replaces the attempt in flight with its outcome
- * (auto-update-apply.ts), so "installing" would outlast the install. The same
- * holds after `launch-unconfirmed`: a launch whose supervisor may be running,
- * which the worker left in flight; until it ends, the status says why the
- * launch was not confirmed.
+ * (auto-update-apply.ts), so "installing" would outlast the install.
  * updaterOn is null when the status cannot be read.
  */
 function autoUpdateStatus(state: AutoUpdateState | null, sources: AutoUpdateDoctorSources): { line: string; updaterOn: boolean | null } {
   const recorded = state?.lastDecision ?? null;
   if (state !== null && recorded !== null) {
     const updaterOn = !AUTO_UPDATE_OFF_DECISIONS.has(recorded.decision);
-    const launchedAnAttempt = recorded.decision === 'apply' || recorded.decision === 'launch-unconfirmed';
-    const endedAttempt = launchedAnAttempt && state.inFlightAttempt === null ? state.lastAttemptOutcome : null;
+    const endedAttempt = recorded.decision === 'apply' && state.inFlightAttempt === null ? state.lastAttemptOutcome : null;
     if (endedAttempt !== null) return { updaterOn, line: `On: ${describeEndedAttempt(endedAttempt, sources.formatTime)}` };
     return { updaterOn, line: `${updaterOn ? 'On' : 'Off'}: ${recorded.reason} (the worker's decision at ${sources.formatTime(recorded.decidedAt)})` };
   }

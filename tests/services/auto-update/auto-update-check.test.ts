@@ -1722,7 +1722,7 @@ describe('runAutoUpdateCheck — across ticks', () => {
     expect(launchAttempts).toBe(2);
   });
 
-  it('keeps the attempt the launcher recorded in flight when the launch started a process (the hop outlived its budget), records why for doctor and in the log, sends no event, and gate 3 later records it as never started, not blocked', async () => {
+  it('keeps the attempt the launcher recorded in flight when the launch started a process (the hop outlived its budget), logs why at ERROR, records nothing and sends no event, and gate 3 later records it as never started, not blocked', async () => {
     const spies = silenceLogger();
     let now = NOW;
     const checkHarness = buildCheckHarness();
@@ -1744,9 +1744,8 @@ describe('runAutoUpdateCheck — across ticks', () => {
     expect(state.lastAttemptOutcome).toBeNull();
     expect(checkHarness.events).toEqual([]);
     expect(state.versionsThatFailedToApply).toEqual([]);
-    // Why, for doctor, and in the log at ERROR.
-    expect(state.lastDecision).toEqual({ decision: 'launch-unconfirmed', reason: describeAutoUpdateDecision(result), decidedAt: NOW });
-    expect(state.lastDecision!.reason).toContain(hopKilled);
+    // Nothing is recorded for doctor: the file keeps the apply decision saved before the launch. Why is in the log, at ERROR.
+    expect(state.lastDecision).toMatchObject({ decision: 'apply', decidedAt: NOW });
     expect(spies.error.mock.calls.map((call) => call[1])).toEqual(['Auto-update decision: launch-unconfirmed']);
     expect(spies.error.mock.calls[0][2]).toEqual({ targetVersion: PROMOTED, previousVersion: INSTALLED, message: hopKilled });
 
@@ -1767,19 +1766,27 @@ describe('runAutoUpdateCheck — across ticks', () => {
     }]);
   });
 
-  it('keeps a claim the supervisor wrote before the launch failed, recording the decision onto the file as it is then', async () => {
+  it('writes nothing to the state file after that launch error, so a claim its supervisor writes then stays as the supervisor wrote it', async () => {
     silenceLogger();
     const checkHarness = buildCheckHarness();
-    checkHarness.deps.launchSupervisor = async (attempt) => {
-      checkHarness.deps.writeState({ ...checkHarness.deps.readState(), inFlightAttempt: { ...attempt, startedAt: NOW, supervisorPid: null } });
-      // The hop started the supervisor, which claimed the attempt; then killing the hop failed.
-      checkHarness.deps.writeState({ ...checkHarness.deps.readState(), inFlightAttempt: { ...attempt, startedAt: NOW, supervisorPid: LIVE_SUPERVISOR_PID } });
+    const recordedByTheLauncher = { targetVersion: PROMOTED, previousVersion: INSTALLED, startedAt: NOW, supervisorPid: null, supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS };
+    // What auto-update-apply.ts claimInFlightAttempt writes: its pid, and the phase it starts in.
+    const claimedByTheSupervisor = { ...recordedByTheLauncher, supervisorPid: LIVE_SUPERVISOR_PID, supervisorPhase: 'installing-target' as const };
+    let writesWhenTheLaunchFailed = 0;
+    checkHarness.deps.launchSupervisor = async () => {
+      checkHarness.deps.writeState({ ...checkHarness.deps.readState(), inFlightAttempt: recordedByTheLauncher });
+      writesWhenTheLaunchFailed = checkHarness.writes.length;
+      // The supervisor the hop started claims the attempt just after the launch error, with its own read and
+      // write of the file: queued now, it runs once this launch has rejected, before gate 9 handles the error.
+      queueMicrotask(() => checkHarness.deps.writeState({ ...checkHarness.deps.readState(), inFlightAttempt: claimedByTheSupervisor }));
       throw new AutoUpdateLaunchError('the auto-update hop (pid 6161) did not exit within 5 s, and killing it failed (EPERM), so it may still be running; see /logs/auto-update.log', true);
     };
 
     expect((await runAutoUpdateCheck(checkHarness.deps)).decision).toBe('launch-unconfirmed');
-    expect(checkHarness.stored().inFlightAttempt).toEqual({ targetVersion: PROMOTED, previousVersion: INSTALLED, startedAt: NOW, supervisorPid: LIVE_SUPERVISOR_PID });
-    expect(checkHarness.stored().lastDecision).toMatchObject({ decision: 'launch-unconfirmed', decidedAt: NOW });
+    // The claim is in the file as the supervisor wrote it, pid and phase, for gate 3 to read.
+    expect(checkHarness.stored().inFlightAttempt).toEqual(claimedByTheSupervisor);
+    // Since the launch error the file was written once, by the supervisor's claim: gate 9 wrote nothing.
+    expect(checkHarness.writes.slice(writesWhenTheLaunchFailed).map((written) => written.inFlightAttempt)).toEqual([claimedByTheSupervisor]);
   });
 
   it('keeps the state fields this version does not know when it saves', async () => {

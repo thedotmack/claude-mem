@@ -240,7 +240,7 @@ export type AutoUpdateDecision =
   | { decision: 'apply'; targetVersion: string; previousVersion: string; applyReason: AutoUpdateApplyReason }
   /** The launch started no process, so its attempt was cleared and the version is tried again at the next due check. */
   | { decision: 'launch-failed'; targetVersion: string; previousVersion: string; message: string }
-  /** The launch started a process but could not confirm the supervisor started, so its attempt stays in flight for gate 3 (recordUnconfirmedLaunch). */
+  /** The launch started a process but could not confirm the supervisor started. Only logged: the tick writes nothing, and its attempt stays in flight for gate 3 (gate 9). */
   | { decision: 'launch-unconfirmed'; targetVersion: string; previousVersion: string; message: string };
 
 export type AutoUpdateDecisionName = AutoUpdateDecision['decision'];
@@ -317,8 +317,8 @@ export class AutoUpdateCheckError extends Error {
  * in flight, and gate 9 clears it. True when one was, or may have been: a
  * hop that outlived its budget (killed, or still running after a kill that
  * failed), one that exited with anything but 0, or a start that failed in a
- * way that does not show nothing ran. Its supervisor may then be running, so
- * gate 9 keeps the attempt for gate 3 (recordUnconfirmedLaunch).
+ * way that does not show nothing ran. Its supervisor may then be running and
+ * claiming the attempt, so gate 9 writes nothing and leaves it for gate 3.
  */
 export class AutoUpdateLaunchError extends Error {
   constructor(message: string, readonly processStarted: boolean, options?: ErrorOptions) {
@@ -502,10 +502,10 @@ export interface AutoUpdateCheckDeps {
  * and logs it. The decision is also recorded in the state file
  * (AutoUpdateState.lastDecision), for doctor, on every tick with no attempt in
  * flight: while one is in flight its supervisor writes the file, and a save
- * here could undo its claim. Two decisions are not recorded: attempt-in-flight
- * for that reason, and worker-shutting-down, which saves nothing so the next
- * boot checks again. launch-unconfirmed is recorded onto the file read again
- * for it, never from this tick's state (recordUnconfirmedLaunch).
+ * here could undo its claim. Three decisions are not recorded:
+ * attempt-in-flight and launch-unconfirmed for that reason (gate 9 ends with
+ * the attempt it launched in flight), and worker-shutting-down, which saves
+ * nothing so the next boot checks again.
  */
 export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<AutoUpdateDecision> {
   const now = deps.now();
@@ -745,10 +745,25 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   try {
     await deps.launchSupervisor({ targetVersion: promotedVersion, previousVersion: installedVersion });
   } catch (error: unknown) {
-    // A process of the launch was started, or may have been: its supervisor
-    // may be running, so the attempt the launcher recorded is kept.
+    // A process of the launch was started, or may have been, but it could not
+    // confirm that the supervisor started: the hop outlived its budget and was
+    // killed, or is still running after a kill that failed, or it ended with
+    // anything but 0. Its supervisor may be running, and may be claiming the
+    // attempt the launcher recorded at this very moment, with its own read and
+    // write of the same state file. So nothing is written here, not even onto
+    // the file read again: no lock orders the two, so a save could drop the
+    // claim's supervisorPid and supervisorPhase, and gate 3 would then take a
+    // live supervisor for one that never started. The failure is logged at
+    // ERROR, and the attempt stays as the launcher and its supervisor leave
+    // it. A later tick's gate 3 resolves it as it resolves any attempt: in
+    // flight, then never started (not blocked) when no supervisor recorded
+    // its pid by the deadline, or vanished; or the supervisor records its own
+    // outcome. No outcome is recorded and no event sent here: the attempt has
+    // not ended, and whatever records how it ended sends one. Until then
+    // doctor shows the apply decision saved before the launch, and the
+    // attempt in flight.
     if (error instanceof AutoUpdateLaunchError && error.processStarted) {
-      return recordUnconfirmedLaunch(deps, now, { targetVersion: promotedVersion, previousVersion: installedVersion, message: errorMessageOf(error) });
+      return logDecision(deps, { decision: 'launch-unconfirmed', targetVersion: promotedVersion, previousVersion: installedVersion, message: errorMessageOf(error) });
     }
     // No process was started, so the supervisor never ran, and the version is
     // not added to versionsThatFailedToApply: the next due check tries it
@@ -775,39 +790,6 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     return launchFailed;
   }
   return decision;
-}
-
-/**
- * Gate 9 when the launch started a process but could not confirm that the
- * supervisor started (AutoUpdateLaunchError.processStarted): the hop outlived
- * its budget and was killed, or is still running after a kill that failed, or
- * it ended with anything but 0. Its supervisor may already be running, so the
- * attempt the launcher recorded stays in flight as the file holds it, and a
- * later tick's gate 3 resolves it as it resolves any attempt: in flight, then
- * never started (not blocked) when no supervisor recorded its pid by the
- * deadline, or vanished; or the supervisor records its own outcome. No outcome
- * is recorded here and no event sent: the attempt has not ended, and whatever
- * records how it ended sends one.
- *
- * The launch failure is logged at ERROR, before anything is written, and
- * recorded as this tick's decision, for doctor. That decision is the one write
- * while an attempt is in flight: it goes onto the state file read again for
- * it, with nothing awaited between that read and the write, the rule
- * settleClaudeCodeBackgroundUpdate applies to known_marketplaces.json, so the
- * attempt and a claim its supervisor wrote before that read are kept. This
- * tick's own state was saved before the launch and holds no attempt.
- */
-function recordUnconfirmedLaunch(
-  deps: AutoUpdateCheckDeps,
-  now: number,
-  launch: { targetVersion: string; previousVersion: string; message: string },
-): AutoUpdateDecision {
-  const unconfirmed: AutoUpdateDecision = { decision: 'launch-unconfirmed', ...launch };
-  logDecision(deps, unconfirmed);
-  const persisted = runStage('read-state', () => deps.readState());
-  recordDecision(persisted, unconfirmed, now);
-  runStage('write-state', () => deps.writeState(persisted));
-  return unconfirmed;
 }
 
 /** What gates 1 and 2 read. The check's deps carry these, and doctor's row passes the same production readers. */
@@ -2131,7 +2113,10 @@ export function describeAutoUpdateDecision(decision: AutoUpdateDecision): string
       return `${decision.root} is not in Claude Code's plugin cache or marketplace folder (a source checkout or an override), so it is left alone`;
     case 'unknown-installed-version':
       return `the version installed at ${decision.root} (${decision.installedVersion ?? 'none recorded'}) is not one claude-mem can compare`;
-    case 'attempt-in-flight': return `updating ${decision.previousVersion} → ${decision.targetVersion}`;
+    // Neither is recorded (runAutoUpdateCheck): each ends a tick with an attempt in flight.
+    case 'attempt-in-flight':
+    case 'launch-unconfirmed':
+      return `updating ${decision.previousVersion} → ${decision.targetVersion}`;
     case 'not-due': return 'checked less than a day ago, so the next check waits';
     case 'check-failed':
       return decision.stage === 'fetch-promoted-release'
@@ -2147,8 +2132,6 @@ export function describeAutoUpdateDecision(decision: AutoUpdateDecision): string
     case 'worker-shutting-down': return `the worker was shutting down, so ${decision.targetVersion} waits for its next start`;
     case 'apply': return `installing ${decision.targetVersion} (from ${decision.previousVersion})`;
     case 'launch-failed': return `${decision.targetVersion} could not be started (${decision.message}); the next daily check tries again`;
-    case 'launch-unconfirmed':
-      return `the update to ${decision.targetVersion} was started, but the worker could not confirm that its supervisor started (${decision.message}); it stays in progress until its supervisor records an outcome or the worker records how it ended`;
   }
 }
 

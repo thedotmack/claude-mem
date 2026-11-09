@@ -528,28 +528,20 @@ describe('npx doctor Auto-update row', () => {
   });
 
   describe('a launch the worker could not confirm, whose attempt it left in flight', () => {
-    const HOP_KILLED = 'the auto-update hop (pid 6161) did not exit within 5 s, so it was killed; see /logs/auto-update-1.log';
-    const unconfirmed: Partial<AutoUpdateState> = {
-      ...checked,
-      lastSeenPromotedVersion: TARGET,
-      lastDecision: recorded({ decision: 'launch-unconfirmed', targetVersion: TARGET, previousVersion: INSTALLED, message: HOP_KILLED }),
-    };
-
-    it('while the attempt is in flight: the status says why the launch was not confirmed, and the attempt shows in progress, with no warning', () => {
+    // The worker writes nothing after that launch error (auto-update-check.ts gate 9): the file keeps the apply
+    // it saved before the launch, and the attempt as the launcher recorded it, no supervisor pid yet.
+    it('the apply the worker recorded before the launch, and the attempt in progress, with no warning', () => {
       const row = autoUpdateCheck(sources({
-        state: { ...unconfirmed, inFlightAttempt: { targetVersion: TARGET, previousVersion: INSTALLED, startedAt: NOW - 10 * MINUTE_MS, supervisorPid: null, supervisorDeadlineMs: RECORDED_DEADLINE_MS } },
+        state: {
+          ...checked,
+          lastSeenPromotedVersion: TARGET,
+          lastDecision: recorded({ decision: 'apply', targetVersion: TARGET, previousVersion: INSTALLED, applyReason: 'quiet' }),
+          inFlightAttempt: { targetVersion: TARGET, previousVersion: INSTALLED, startedAt: NOW - 10 * MINUTE_MS, supervisorPid: null, supervisorDeadlineMs: RECORDED_DEADLINE_MS },
+        },
       }));
       expect(row.status).toBe('ok');
-      expect(lines(row.detail)[0]).toBe(`On: the update to ${TARGET} was started, but the worker could not confirm that its supervisor started (${HOP_KILLED}); it stays in progress until its supervisor records an outcome or the worker records how it ended (the worker's decision at [-10 min])`);
+      expect(lines(row.detail)[0]).toBe(`On: installing ${TARGET} (from ${INSTALLED}) (the worker's decision at [-10 min])`);
       expect(lines(row.detail)).toContain(`In progress: ${INSTALLED} → ${TARGET}, started [-10 min]`);
-    });
-
-    it('once the attempt has ended: how it ended, as after apply', () => {
-      const row = autoUpdateCheck(sources({
-        state: { ...unconfirmed, inFlightAttempt: null, lastAttemptOutcome: outcome('applied', { finishedAt: NOW - 2 * MINUTE_MS }) },
-        installedVersion: TARGET,
-      }));
-      expect(lines(row.detail)[0]).toBe(`On: updated to ${TARGET} at [-2 min]`);
     });
   });
 

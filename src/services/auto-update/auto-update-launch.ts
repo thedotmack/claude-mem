@@ -11,10 +11,11 @@
  *  2. The hop (runAutoUpdateApplyCommand with --detached-hop) starts the same
  *     runtime and script again without the flag, and exits as soon as that
  *     process exists. Exit 0 tells the worker the supervisor was started;
- *     anything else is a launch failure, which the check records without
- *     blocking the version (auto-update-check.ts gate 9). It keeps the
- *     attempt in flight for its gate 3 once a hop process was started, since
- *     the supervisor may be running, and clears it only when none was
+ *     anything else is a launch failure, which the check handles without
+ *     blocking the version (auto-update-check.ts gate 9). Once a hop process
+ *     was started, it only logs the failure and writes nothing, leaving the
+ *     attempt in flight for its gate 3, since the supervisor may be running
+ *     and claiming it; it clears the attempt only when none was
  *     (AutoUpdateLaunchError).
  *  3. Once the hop has exited, the supervisor has no parent in the worker's
  *     tree (the OS reparents it), so a recycle tree-kill, which walks the
@@ -301,14 +302,14 @@ export interface AutoUpdateLaunchDeps {
  * The worker's launchSupervisor (auto-update-check.ts gate 9). Writes the
  * attempt in flight with no supervisor yet and the deadline it may run for,
  * starts the hop and waits for it to exit 0. Throws on anything else, which
- * gate 9 records without blocking the version. From the hop's start on, every
+ * gate 9 handles without blocking the version. From the hop's start on, every
  * failure is an AutoUpdateLaunchError saying whether a process was started:
  * only a start that startDetachedAutoUpdateProcess reports as never begun
  * started none, and gate 9 then clears the attempt. A hop that outlived its
  * budget, ended with anything but 0, or failed to start in another way may
- * have started the supervisor, so gate 9 keeps the attempt in flight for its
- * gate 3. A throw before the hop's start (reading or writing the state)
- * started nothing and is passed on as it is.
+ * have started the supervisor, so gate 9 writes nothing and leaves the attempt
+ * in flight for its gate 3. A throw before the hop's start (reading or writing
+ * the state) started nothing and is passed on as it is.
  */
 export async function launchAutoUpdateSupervisor(
   versions: { targetVersion: string; previousVersion: string },
