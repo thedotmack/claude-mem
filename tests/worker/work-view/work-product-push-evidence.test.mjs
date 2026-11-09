@@ -36,3 +36,15 @@ test('same-named branches pushed to different repositories retain both destinati
     `To ${repo}\n${update}\nTo ${second}\n${update}`);
   assert.deepEqual(mergeProducts([items]).map(p=>p.repo).sort(), ['acme/demo','other/demo']);
 });
+
+test('a no-op push before a simulated push does not make the simulation look real', () => {
+  const cmd = `git push ${repo} main && git push -n ${repo} feature`;
+  const out = `Everything up-to-date\nTo ${repo}\n * [new branch] feature -> feature`;
+  assert.deepEqual(gitProductsFromCommand(cmd, {}, out), []);
+});
+
+test('a combined tag and branch push retains the changed branch', () => {
+  const out = `To ${repo}\n${update}\n * [new tag] v1 -> v1`;
+  const rows = gitProductsFromCommand(`git push ${repo} main --tags`, {}, out);
+  assert.deepEqual(rows.map(row => row.branch), ['main']);
+});

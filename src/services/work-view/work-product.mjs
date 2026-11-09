@@ -169,9 +169,10 @@ function pushTargets(command) {
     const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
     const [remote, refspec] = tokens.filter(token => !token.startsWith('-'));
     const destination = refspec && !refspec.startsWith(':') ? refspec.replace(/^\+/, '').split(':').at(-1) : null;
-    const deletesOrTags = tokens.some(token => ['-d', '--delete', '--tags'].includes(token)) || destination?.startsWith('refs/tags/');
+    const onlyNonBranches = tokens.some(token => ['-d', '--delete'].includes(token)) || destination?.startsWith('refs/tags/');
+    const deletesOrTags = onlyNonBranches || tokens.includes('--tags');
     const branch = destination?.replace(/^refs\/heads\//, '');
-    return { repo: githubRepo(remote), branch: branch && branch !== 'HEAD' && !deletesOrTags ? branch : null,
+    return { repo: githubRepo(remote), branch: branch && branch !== 'HEAD' && !onlyNonBranches ? branch : null,
       dryRun: tokens.some(token => token === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)), deletesOrTags };
   });
 }
@@ -189,7 +190,13 @@ function pushesFrom(command, response, out) {
     const key = JSON.stringify([repo, branch]);
     pushes.set(key, { branch, repo, heads: head ? [head] : [] });
   };
-  for (const line of out.split('\n')) {
+  const lines = out.split('\n');
+  const mixedSimulation = targets.some(t => t.dryRun) && targets.some(t => !t.dryRun);
+  // Quiet or truncated mixed transcripts may not identify which invocation
+  // produced a ref line. An ambiguous simulated update is not a publication.
+  if (mixedSimulation && lines.filter(line => /^To |^Everything up-to-date$/.test(line)).length !== targets.length) return [];
+  for (const line of lines) {
+    if (line === 'Everything up-to-date') { index++; continue; }
     const remote = line.match(/^To (\S+)$/);
     if (remote) {
       target = targets[index++] ?? (targets.length === 1 ? targets[0] : null);
@@ -203,7 +210,7 @@ function pushesFrom(command, response, out) {
       continue;
     }
     const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
-    if (ref && !ref[3].startsWith('refs/tags/') && (!target?.deletesOrTags || line.includes('[new branch]'))) add(ref[3].replace(/^refs\/heads\//, ''), ref[1]);
+    if (ref && !ref[3].startsWith('refs/tags/') && (!target?.deletesOrTags || ref[3].replace(/^refs\/heads\//, '') === target.branch || line.includes('[new branch]'))) add(ref[3].replace(/^refs\/heads\//, ''), ref[1]);
   }
   const branch = recorded ?? target?.branch;
   if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch
