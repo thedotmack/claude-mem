@@ -26,8 +26,10 @@ import {
   linkToolUsesToObservation as linkToolUsesToObservationRows,
   getToolUsesByIds as getToolUsesByIdsRows,
   queryToolUses as queryToolUsesRows,
+  queryToolUseIndex as queryToolUseIndexRows,
   countToolUses as countToolUsesRows,
   type ToolUseRow,
+  type ToolUseIndexRow,
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
@@ -3402,6 +3404,10 @@ export class SessionStore {
 
   queryToolUses(filters: ToolUseQueryFilters = {}): ToolUseRow[] {
     return queryToolUsesRows(this.db, filters);
+  }
+
+  queryToolUseIndex(filters: ToolUseQueryFilters = {}): ToolUseIndexRow[] {
+    return queryToolUseIndexRows(this.db, filters);
   }
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
