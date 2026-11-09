@@ -235,6 +235,10 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
       console.error(styleText('red', `Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
       process.exit(1);
     }
+    if (lookup.status !== 'failed' && lookup.status !== 'cancelled') {
+      console.error(styleText('red', `Cannot retry a ${lookup.status} job. Only failed or cancelled jobs can be retried.`));
+      process.exit(1);
+    }
 
     const newRetriedCount = extractRetriedCount(lookup.payload) + 1;
     const newPayload = {
