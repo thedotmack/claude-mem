@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, u
 import { DB_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
-import { SNAPSHOT_FILE_PATTERN } from './snapshot-files.js';
+import { listSnapshotNames, readPendingRestore } from './snapshot-files.js';
 
 /** Settings keys BackupManager reads (subset of SettingsDefaults). */
 export interface BackupSettingKeys {
@@ -47,7 +47,7 @@ export interface BackupStatus {
 const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 
 /** A snapshot still being written, or left behind by a crash mid-write. */
-const PARTIAL_SNAPSHOT_PATTERN = /\.db\.partial(-wal|-shm|-journal)?$/;
+const PARTIAL_SNAPSHOT_PATTERN = /^claude-mem-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.db\.partial(-wal|-shm|-journal)?$/;
 
 /**
  * Automatic local SQLite snapshots with retention.
@@ -121,7 +121,7 @@ export class BackupManager {
    * restarts that enabling backups and restoring both go through.
    */
   status(): BackupStatus {
-    const names = this.listSnapshotNames();
+    const names = listSnapshotNames(this.backupsDir);
     const newest = names[0] ? statSync(join(this.backupsDir, names[0])) : null;
     return {
       configured: true,
@@ -176,8 +176,9 @@ export class BackupManager {
    * ISO filenames sort lexicographically, so name order is timestamp order.
    */
   async applyRetention(): Promise<void> {
-    const names = this.listSnapshotNames();
-    const excess = names.slice(this.retainCount);
+    const names = listSnapshotNames(this.backupsDir);
+    const pending = readPendingRestore()?.snapshot;
+    const excess = names.slice(this.retainCount).filter(name => name !== pending);
     for (const name of excess) {
       const snapshotPath = join(this.backupsDir, name);
       unlinkSync(snapshotPath);
@@ -288,17 +289,9 @@ export class BackupManager {
 
   /** Leftovers of a snapshot interrupted by a crash or kill. */
   private removePartialSnapshots(): void {
-    for (const name of readdirSync(this.backupsDir)) {
-      if (PARTIAL_SNAPSHOT_PATTERN.test(name)) unlinkSync(join(this.backupsDir, name));
+    for (const entry of readdirSync(this.backupsDir, { withFileTypes: true })) {
+      if (entry.isFile() && PARTIAL_SNAPSHOT_PATTERN.test(entry.name)) unlinkSync(join(this.backupsDir, entry.name));
     }
   }
 
-  /** Snapshot basenames, newest first. */
-  private listSnapshotNames(): string[] {
-    if (!existsSync(this.backupsDir)) return [];
-    return readdirSync(this.backupsDir)
-      .filter(name => SNAPSHOT_FILE_PATTERN.test(name))
-      .sort()
-      .reverse();
-  }
 }
