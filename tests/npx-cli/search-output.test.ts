@@ -9,7 +9,7 @@ import { join } from 'node:path';
 // ({ content: [{ type: 'text', text }] }, SearchManager.search). The CLI must
 // print that rendered text, not the JSON wrapper around it.
 describe('npx claude-mem search output', () => {
-  async function runSearchAgainst(body: unknown): Promise<{ exitCode: number; stdout: string }> {
+  async function runSearchAgainst(body: unknown, freshClient = false): Promise<{ exitCode: number; stdout: string }> {
     const root = mkdtempSync(join(tmpdir(), 'claude-mem-search-output-'));
     const server = http.createServer((_request, response) => {
       response.setHeader('Content-Type', 'application/json');
@@ -24,10 +24,14 @@ describe('npx claude-mem search output', () => {
       const modulePath = join(import.meta.dir, '../../src/npx-cli/commands/runtime.ts');
       const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_MEM_DATA_DIR: root, CLAUDE_CONFIG_DIR: root,
         CLAUDE_MEM_TELEMETRY: '0', DO_NOT_TRACK: '1', CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(port) };
+      if (freshClient) {
+        delete env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+        env.CLAUDE_MEM_WORKER_URL = `http://127.0.0.1:${port}`;
+      }
       const child = Bun.spawn({
         cmd: [process.execPath, '-e', `import { runSearchCommand } from ${JSON.stringify(modulePath)};
           await runSearchCommand(['auth']);`],
-        cwd: join(import.meta.dir, '../..'),
+        cwd: freshClient ? root : join(import.meta.dir, '../..'),
         env,
         stdout: 'pipe', stderr: 'pipe',
       });
@@ -44,6 +48,13 @@ describe('npx claude-mem search output', () => {
     const { exitCode, stdout } = await runSearchAgainst({ content: [{ type: 'text', text }] });
     expect(exitCode).toBe(0);
     expect(stdout.trim()).toBe(text);
+  }, 30_000);
+
+  it('searches an explicit worker from a checkout without an installed local plugin', async () => {
+    const text = 'Search result from the configured worker.';
+    const result = await runSearchAgainst({ content: [{ type: 'text', text }] }, true);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe(text);
   }, 30_000);
 
   it('exits non-zero when the worker reports an error result', async () => {

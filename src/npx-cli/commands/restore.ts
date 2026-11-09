@@ -13,7 +13,9 @@
 import { existsSync } from 'fs';
 import path from 'path';
 import { styleText } from 'node:util';
-import { paths } from '../../shared/paths.js';
+import { paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { normalizeWorkerBaseUrl } from '../../shared/worker-url.js';
 import { resolveSnapshotInside, stagePendingRestore } from '../../services/backup/snapshot-files.js';
 import { runRestartCommand } from './runtime.js';
 
@@ -27,6 +29,11 @@ export function runRestoreCommand(argv: string[] = []): void {
   if (!requested) {
     printRestoreUsage();
     process.exit(1);
+  }
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  if (normalizeWorkerBaseUrl(settings.CLAUDE_MEM_WORKER_URL)) {
+    throw new Error('CLAUDE_MEM_WORKER_URL is set. Run restore on the machine that manages the worker.');
   }
 
   const backupsDir = paths.backups();

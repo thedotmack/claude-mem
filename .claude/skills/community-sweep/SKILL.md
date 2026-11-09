@@ -163,7 +163,7 @@ git merge --no-edit origin/main                                   # a merge comm
 ```
 
 **Generated bundles never land from a PR**; they're rebuilt at release. The generated set is what `scripts/build-hooks.js` and `scripts/build-viewer.js` write. If the list below looks stale, re-read those two scripts:
-- `plugin/scripts/{worker-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
+- `plugin/scripts/{worker-service,hook-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
 - `plugin/sqlite/**`;
 - `plugin/ui/viewer-bundle.js`, `plugin/ui/viewer.html`, `plugin/ui/tv.html`, `plugin/ui/work-view/**` (the Vite build of `src/ui/my-work`), and the fonts and icons copied into `plugin/ui/`;
 - `plugin/package.json`;

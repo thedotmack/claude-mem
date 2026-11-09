@@ -41,6 +41,17 @@ describe('dedupeObservations', () => {
     expect(dedupeObservations(items).map(i => i.id)).toEqual([10, 20, 30])
   })
 
+  it('keeps distinct fields and fact boundaries when deduplicating content', () => {
+    const items = [
+      { id: 1, title: 'Deploy', subtitle: 'Paused' },
+      { id: 2, title: 'Deploy', narrative: 'Paused' },
+      { id: 3, title: 'Deploy', facts: ['a\u0000b'] },
+      { id: 4, title: 'Deploy', facts: ['a', 'b'] },
+      { id: 5, title: 'deploy', narrative: ' PAUSED ' },
+    ]
+    expect(dedupeObservations(items).map(item => item.id)).toEqual([1, 2, 3, 4])
+  })
+
   it('never drops observations with empty content fingerprint', () => {
     const blank = { id: 1, title: '', narrative: '' } as MemObservation
     expect(dedupeObservations([blank, blank, blank]).length).toBe(3)
@@ -58,6 +69,14 @@ describe('dedupeRenderedTable', () => {
     expect(out).toContain('#627')
     expect(out).not.toContain('#671')
     expect(out).toContain('#715')
+  })
+
+  it('keeps a time when it is the title rather than the display time', () => {
+    const rows = [
+      '| #1 | 9:00 AM | ◆ | 10:30 | ~10 |',
+      '| #2 | ″ | ◆ | 11:30 | ~10 |',
+    ].join('\n')
+    expect(dedupeRenderedTable(rows)).toBe(rows)
   })
 
   it('leaves non-row lines untouched', () => {
