@@ -8,7 +8,7 @@ import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { applyGroupDecisions, groupIdFor, groupingInput, linkBackwards, readCandidates, readLedger, runCli, validateGroupingAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
-import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
+import { NO_PROJECT, folderNeedsProject, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
 import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -332,6 +332,13 @@ describe('the real project of an agent scratch-folder session', () => {
       if (previous === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE; else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = previous;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('derives the project of a deleted temp checkout, without matching its sibling', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'former-scratch-'));
+    rmSync(folder, { recursive: true });
+    expect(folderNeedsProject(folder, 'generated-task')).toBe(true);
+    expect(folderNeedsProject(join(tmpdir() + '-sibling', 'former-scratch'), 'real-project')).toBe(false);
   });
 
   it('reads native Windows paths and working folders on Windows', () => {
