@@ -13,7 +13,8 @@ declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
-import { spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
+import { spoolWorkStateMcpInstruction, spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
+import { mcpServerInstructions } from '../shared/memory-instructions.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -1186,6 +1187,15 @@ function teamBrainJoined(): boolean {
  * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
+  // How to use these tools: the work-state rule and the memory-use guidance.
+  // They are sent here, at initialize, so the SessionStart context can be the
+  // memory timeline alone. Each part follows the setting that turns it off.
+  const workStateRuleIncluded = workStateEnabled();
+  const instructions = mcpServerInstructions({
+    runtime: selectRuntime(),
+    workStateEnabled: workStateRuleIncluded,
+    memoryInstructionsEnabled: loadFromFileOnce().CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED !== 'false',
+  });
   const server = new Server(
     {
       name: 'claude-mem',
@@ -1195,8 +1205,10 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       capabilities: {
         tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
       },
+      ...(instructions ? { instructions } : {}),
     }
   );
+  server.oninitialized = () => spoolWorkStateMcpInstruction(workStateRuleIncluded);
 
   const stdioCwd = getCwd ? null : createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
   if (stdioCwd) server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());

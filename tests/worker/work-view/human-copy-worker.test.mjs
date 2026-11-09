@@ -54,6 +54,29 @@ test('setup pause suppresses already queued and newly observed user-token calls 
   assert.equal(calls, 1);
 });
 
+test('a pause that begins between pump and run starts nothing and leaves no request counted as generating', async t => {
+  let now = 0, calls = 0;
+  const instance = worker(async input => { calls++; return { output: copy(input) }; }, { now: () => now, quietMs: 100 });
+  t.after(() => instance.close());
+  instance.observe(view(request()));
+  assert.equal(instance.status().queued, 1);
+  now = 1000;
+  // pump() reads the pause, then run() reads it again: setup becomes active between the two reads.
+  let pauseReads = 0;
+  instance.pauseWhile(() => ++pauseReads > 1);
+  instance.pump();
+  assert.equal(pauseReads, 2, 'pump and run each read the pause');
+  assert.equal(calls, 0);
+  // The auto-updater reads this count as busy (WorkViewRoutes.cardWordingRequestsRunning).
+  assert.equal(instance.status().generating, 0);
+  // Once setup ends, the request is generated: no stale entry holds it back.
+  instance.pauseWhile(() => false);
+  instance.pump();
+  await waitForWorker(instance);
+  assert.equal(calls, 1);
+  assert.equal(instance.status().generating, 0);
+});
+
 test('one request stays single-flight and reuses its copy across polling, source ages and display-label changes', async t => {
   let calls = 0;
   const pending = deferred();

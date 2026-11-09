@@ -10,6 +10,7 @@ import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { parseContextCountValue } from '../shared/context-count.js';
 import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
@@ -252,7 +253,9 @@ export async function updateFolderClaudeMdFiles(
   projectRoot?: string
 ): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const limit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
+  // A count of 0 means the user wants no observations, so no folder file is fetched or written.
+  if (limit === 0) return;
   const targetFilename = getTargetFilename(settings);
 
   let folderMdExcludePaths: string[] = [];

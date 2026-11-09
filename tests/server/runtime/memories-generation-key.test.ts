@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import type pg from 'pg';
+import * as embeddingService from '../../../src/server/services/ObservationEmbeddingService.js';
 import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import { bootstrapServerPostgresSchema, createPostgresStorageRepositories } from '../../../src/storage/postgres/index.js';
@@ -82,6 +83,18 @@ describe('POST /v1/memories generationKey', () => {
       [original.id],
     );
     expect(audit.rows.map(row => row.details?.outcome ?? null)).toEqual([null, 'existing_generation_key']);
+  });
+  it('invokes the embedding path only for the winning generation key insert', async () => {
+    const embed = spyOn(embeddingService, 'embedObservationRows').mockResolvedValue(null);
+    try {
+      const first = await post({ generationKey: 'embedding:1' });
+      const replay = await post({ generationKey: 'embedding:1', content: 'replacement' });
+      expect(first.status).toBe(201);
+      expect(replay.status).toBe(200);
+      expect(embed).toHaveBeenCalledTimes(1);
+    } finally {
+      embed.mockRestore();
+    }
   });
   it('gives a write-only key the existing id but not the stored content', async () => {
     const original = (await (await post({ generationKey: 'import:1' })).json()).memory;

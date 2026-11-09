@@ -97,6 +97,7 @@
           "configuration/custom-anthropic-backends",
           "modes",
           "telemetry",
+          "auto-update",
           "development",
           "troubleshooting",
           "platform-integration",

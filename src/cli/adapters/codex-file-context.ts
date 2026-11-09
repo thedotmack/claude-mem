@@ -131,7 +131,8 @@ function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string)
         optionsEnded = true;
         continue;
       }
-      if (!optionsEnded && isFlagLike(token)) {
+      // cat accepts +name as a filename; other readers can use + for positioning.
+      if (!optionsEnded && (token.startsWith('-') || (argv0 !== 'cat' && token.startsWith('+')))) {
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }

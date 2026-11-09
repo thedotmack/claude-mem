@@ -22,6 +22,7 @@ import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
 import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
+import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -429,7 +430,7 @@ function processAllFoldersForGeneration(
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   const workingDir = process.cwd();
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const observationLimit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
 
   logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
     workingDir,

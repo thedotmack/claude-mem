@@ -16,7 +16,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from './paths.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from './memory-instructions.js';
 import { clipUtf16, relayedBlock, relayedLine } from './relayed-text.js';
 import type { SettingsDefaults } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
@@ -68,19 +67,14 @@ export function teamBrainConnection(settings: Partial<TeamBrainSettings>): TeamB
 }
 
 /**
- * Room the context body leaves for what the SessionStart hook appends after
- * it: the brief (once this install is in a team), then the memory instructions
- * (unless turned off, with or without a team). The body is fitted to the
- * host's delivery limit minus this (ContextInput.reserveChars, the work-state
- * pattern), so the whole block stays inside the limit and the brief is not
- * routinely cut to fit.
+ * Room the context body leaves for the brief the SessionStart hook puts ahead
+ * of it once this install is in a team. The body is fitted to the host's
+ * delivery limit minus this (ContextInput.reserveChars), so the whole block
+ * stays inside the limit and the brief is not routinely cut to fit. The memory
+ * instructions take no room here: the MCP server sends them, not the hook.
  */
-export function teamBriefReserveChars(
-  settings: Partial<TeamBrainSettings> & { CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED?: string },
-): number {
-  const brief = teamBrainConnection(settings) ? TEAM_BRIEF_RESERVE_CHARS : 0;
-  const instructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? 0 : MEMORY_PLUGIN_INSTRUCTIONS.length + 2;
-  return brief + instructions;
+export function teamBriefReserveChars(settings: Partial<TeamBrainSettings>): number {
+  return teamBrainConnection(settings) ? TEAM_BRIEF_RESERVE_CHARS : 0;
 }
 
 /** A URL, or null when the text is not one. Never throws. */

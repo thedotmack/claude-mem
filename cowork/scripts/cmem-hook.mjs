@@ -260,16 +260,24 @@ const REDACTED = '[cmem-redacted]';
 // (src/utils/redaction.ts): clean() redacts JSON.stringify()'d values, where a
 // newline right before a key arrives as `\n`. The `n` is a word character, so
 // a bare `\b` could not match there and the key went out verbatim.
+// Host names ignore letter case, but the path after them does not. Mirror the
+// worker's webhookHost (src/utils/redaction.ts): every letter in the host
+// becomes a two-case class, so `Hooks.Slack.Com` matches while the path
+// segments stay exact.
+function webhookHost(host) {
+  const caseInsensitive = host.replace(/\\.|[a-z]/g, (c) => (c.length === 1 ? `[${c}${c.toUpperCase()}]` : c));
+  return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${caseInsensitive}`;
+}
 const SECRET_PATTERNS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM key blocks
-  /\b(?:Bearer|Basic|Token)[ \t]+[A-Za-z0-9._~+/=-]{16,512}\b/gi,                // auth scheme credentials
+  /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g, // PEM key blocks, incl. PGP's PRIVATE KEY BLOCK armor
+  /(?<=\\[nrt]|\b)(?:Bearer|Basic|Token)[ \t]+[A-Za-z0-9._~+/=-]{16,512}(?!\w)/gi, // auth scheme credentials
   /(?<=\\[nrt]|\b)eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, // JWTs
   /(?<=\\[nrt]|\b)sk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                           // OpenAI/Anthropic-style keys
-  /(?<=\\[nrt]|\b)[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                   // Stripe-style keys
+  /(?<=\\[nrt]|\b)(?:[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{32,})\b/g, // Stripe-style keys and webhook signing secrets
   /(?<=\\[nrt]|\b)gh[pousr]_[A-Za-z0-9]{20,}\b/g,                               // GitHub tokens
   /(?<=\\[nrt]|\b)github_pat_[A-Za-z0-9_]{20,}\b/g,                             // GitHub fine-grained PATs
   /(?<=\\[nrt]|\b)glpat-[A-Za-z0-9_-]{20,}\b/g,                                 // GitLab PATs
-  /(?<=\\[nrt]|\b)xox[baprs]-[A-Za-z0-9-]{10,}\b/g,                             // Slack tokens
+  /(?<=\\[nrt]|\b)(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g,              // Slack tokens, incl. refresh (xoxe-) and app-level (xapp-)
   /(?<=\\[nrt]|\b)(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g, // AWS access key ids
   /(?<=\\[nrt]|\b)AIza[0-9A-Za-z_-]{35}\b/g,                                    // Google API keys
   /(?<=\\[nrt]|\b)npm_[A-Za-z0-9]{36}\b/g,                                      // npm tokens
@@ -282,7 +290,33 @@ const SECRET_PATTERNS = [
   /(?<=\\[nrt]|\b)rc_live_[A-Za-z0-9_-]{24,}(?!\w)/g,                           // Runcrate keys
   /(?<=\\[nrt]|\b)gsk_[A-Za-z0-9]{52}(?!\w)/g,                                  // Groq keys
   /(?<=\\[nrt]|\b)xai-[A-Za-z0-9_]{80}(?!\w)/g,                                 // xAI keys
-  /(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)/g                                  // Perplexity keys
+  /(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)/g,                                 // Perplexity keys
+  // The rest of the worker's set, which the shim still sent verbatim: each is a
+  // prefix none of the patterns above claims, and none is named api_key=/token:,
+  // so KEYVALUE_RE could not catch a bare key either. Fixed-length bodies keep
+  // model ids and short look-alikes out.
+  /(?<=\\[nrt]|\b)ya29\.(?:c\.)?[A-Za-z0-9_-]{20,}(?!\w)/g,                     // Google OAuth access tokens
+  /(?<=\\[nrt]|\b)gl(?:dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g,  // GitLab deploy/runner tokens (glpat- is above)
+  /(?<=\\[nrt]|\b)hf_[A-Za-z0-9]{30,}\b/g,                                      // Hugging Face tokens
+  /(?<=\\[nrt]|\b)dckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g,                          // Docker Hub personal access tokens
+  /(?<=\\[nrt]|\b)lin_api_[A-Za-z0-9]{40}(?!\w)/g,                              // Linear API keys
+  /(?<=\\[nrt]|\b)(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g,       // Notion integration tokens
+  /(?<=\\[nrt]|\b)SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g,          // SendGrid API keys
+  /(?<=\\[nrt]|\b)do[opr]_v1_[a-f0-9]{64}\b/g,                                  // DigitalOcean access/OAuth/refresh tokens
+  /(?<=\\[nrt]|\b)shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g,                       // Shopify admin/app/shared-secret tokens
+  /(?<=\\[nrt]|\b)pypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g,                           // PyPI API tokens
+  /(?<=\\[nrt]|\b)dapi[a-f0-9]{32}(?:-\d)?(?!\w)/g,                             // Databricks personal access tokens
+  /(?<=\\[nrt]|\b)(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g,        // HashiCorp Vault service/batch tokens
+  /(?<=\\[nrt]|\b)sbp_[a-f0-9]{40}(?!\w)/g,                                     // Supabase personal access tokens
+  /(?<=\\[nrt]|\b)(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+/]{20,}={0,2}_[A-Za-z0-9+/]{43}(?![\w+/]))/g, // Sentry auth tokens
+  /(?<=\\[nrt]|\b)cmem_[A-Za-z0-9_-]{32,}(?!\w)/g,                              // claude-mem server API keys
+  /(?<=\\[nrt]|\b)cm_pro_[A-Za-z0-9_-]{8,}(?!\w)/g,                             // claude-mem Pro memory keys
+  // Incoming webhook URLs carry their secret in the path, so only the last
+  // segment is replaced and the host plus workspace/channel ids stay readable.
+  // The host must start the URL's host part, so a path that merely contains the
+  // host name keeps its own segments.
+  new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, 'g'), // Slack incoming/workflow/trigger webhooks
+  new RegExp(String.raw`(?<=${webhookHost(String.raw`(?:(?:ptb|canary)\.)?discord(?:app)?\.com`)}\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])`, 'g') // Discord incoming webhooks
 ];
 // `password: …` / `api_key=…` style assignments — keep the key, redact the
 // ENTIRE value through the line or record delimiter (quote, backtick, comma,
