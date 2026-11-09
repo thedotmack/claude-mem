@@ -77,8 +77,10 @@ export function sessionStartBannerHeader(
   viewerUrl: string,
   trialDaysLine: string | null,
   teamBrainDiscoveryLine: string | null,
+  plan = '',
 ): string {
-  return `View Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+  return [`View Observations Live @ ${viewerUrl}`, proTrialLine('session-start', plan), trialDaysLine, teamBrainDiscoveryLine]
+    .filter(Boolean).join('\n');
 }
 
 /**
@@ -511,7 +513,7 @@ export const contextHandler: EventHandler = {
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
     const systemMessage = composeSessionStartSystemMessage(
       showsBanner ? displayContent : null,
-      sessionStartBannerHeader(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      sessionStartBannerHeader(viewerUrl, trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
       workerOutageNotice,
     );
 

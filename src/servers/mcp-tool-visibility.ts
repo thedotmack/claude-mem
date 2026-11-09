@@ -15,11 +15,10 @@ export const SERVER_BETA_ONLY_TOOL_NAMES = [
 const serverBetaOnlyToolNameSet = new Set<string>(SERVER_BETA_ONLY_TOOL_NAMES);
 
 /**
- * Tools whose handler refuses the server runtime outright (dumb_search reads
- * the local worker's SQLite index). Advertising them there only invites a call
+ * Tools whose handlers require worker runtime (local search, note writes and raw tool I/O). Advertising them there only invites a call
  * that always fails with unsupported_runtime.
  */
-export const WORKER_ONLY_TOOL_NAMES = ['dumb_search'] as const;
+export const WORKER_ONLY_TOOL_NAMES = ['dumb_search', 'save_memory', 'get_tool_uses'] as const;
 
 const workerOnlyToolNameSet = new Set<string>(WORKER_ONLY_TOOL_NAMES);
 

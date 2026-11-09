@@ -57,7 +57,7 @@ export async function postCorpusRequestOverSse(
 
   // A worker that predates SSE answers with its single JSON body.
   const contentType = streamed.headers.get('content-type') ?? '';
-  if (!contentType.includes('text/event-stream')) {
+  if (contentType.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream') {
     return JSON.parse(await readAllText(streamed.chunks));
   }
 

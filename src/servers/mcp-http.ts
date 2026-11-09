@@ -98,7 +98,7 @@ function loopbackHostOrThrow(raw: string): string {
 export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): McpHttpOptions | null {
   const flag = (name: string): string | undefined => {
     for (let i = 0; i < argv.length; i++) {
-      if (argv[i] === `--${name}`) return argv[i + 1];
+      if (argv[i] === `--${name}`) return argv[i + 1] ?? '';
       if (argv[i].startsWith(`--${name}=`)) return argv[i].slice(name.length + 3);
     }
     return undefined;
@@ -109,7 +109,7 @@ export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): 
   const host = loopbackHostOrThrow(flag('host') ?? env.CLAUDE_MEM_MCP_HTTP_HOST ?? DEFAULT_HTTP_HOST);
   const portText = flag('port') ?? env.CLAUDE_MEM_MCP_HTTP_PORT ?? String(DEFAULT_HTTP_PORT);
   const port = Number(portText);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  if (!portText.trim() || !Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid MCP HTTP port: ${portText}`);
   }
   return { host, port };

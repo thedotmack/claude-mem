@@ -4,6 +4,8 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
+import { kimiCodeHome } from '../../shared/kimi-paths.js';
+import { getOpenCodeConfigDirectory } from '../../services/integrations/OpenCodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
 import { getGooseConfigPath } from '../../services/integrations/McpIntegrations.js';
@@ -65,7 +67,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'opencode',
       label: 'OpenCode',
       detected:
-        existsSync(join(home, '.config', 'opencode')) || isCommandInPath('opencode'),
+        existsSync(getOpenCodeConfigDirectory()) || isCommandInPath('opencode'),
       hint: 'plugin-based integration',
     },
     {
@@ -82,7 +84,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'codex-cli',
       label: 'Codex CLI',
-      detected: existsSync(join(home, '.codex')),
+      detected: existsSync(process.env.CODEX_HOME || join(home, '.codex')),
       hint: 'native hooks integration',
     },
     {
@@ -94,7 +96,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'kimi',
       label: 'Kimi Code',
-      detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
+      detected: existsSync(kimiCodeHome()) || isCommandInPath('kimi'),
       hint: 'hooks + MCP integration',
     },
     {
@@ -161,7 +163,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'roo-code',
       label: 'Roo Code',
-      detected: hasVscodeExtension('roo-code'),
+      detected: hasVscodeExtension('rooveterinaryinc.roo-cline'),
       hint: 'MCP-based integration',
     },
     {
