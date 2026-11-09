@@ -5171,6 +5171,11 @@ export class SessionStore {
     agent_type?: string | null;
     agent_id?: string | null;
     merged_into_project?: string | null;
+    metadata?: string | null;
+    generated_by_model?: string | null;
+    occurrence_count?: number;
+    reinforcement_dates?: string | null;
+    last_reinforced?: string | null;
   }): { imported: boolean; id: number } {
     // A row from a legacy or hand-edited export can arrive without a session
     // id, and observations.memory_session_id is NOT NULL. /api/import validates
@@ -5205,13 +5210,27 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    // These are recorded memory attributes, not this installation's sync
+    // identity. Keep them on a fresh import so note fingerprints still prevent
+    // re-ingestion and reinforced memories retain their selection history.
+    for (const field of ['metadata', 'generated_by_model', 'reinforcement_dates', 'last_reinforced'] as const) {
+      if (obs[field] != null && typeof obs[field] !== 'string') {
+        throw new TypeError(`Imported ${field} must be a string or null`);
+      }
+    }
+    const occurrenceCount = obs.occurrence_count ?? 1;
+    if (!Number.isSafeInteger(occurrenceCount) || occurrenceCount < 1) {
+      throw new TypeError('Imported occurrence_count must be a positive safe integer');
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
-        created_at, created_at_epoch, merged_into_project
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, created_at_epoch, merged_into_project,
+        metadata, generated_by_model, occurrence_count, reinforcement_dates, last_reinforced
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // The row and its observation_files mappings commit together: an import
@@ -5237,7 +5256,12 @@ export class SessionStore {
         obs.agent_id ?? null,
         obs.created_at,
         obs.created_at_epoch,
-        typeof obs.merged_into_project === 'string' ? obs.merged_into_project : null
+        typeof obs.merged_into_project === 'string' ? obs.merged_into_project : null,
+        obs.metadata ?? null,
+        obs.generated_by_model ?? null,
+        occurrenceCount,
+        obs.reinforcement_dates ?? null,
+        obs.last_reinforced ?? null
       );
       const id = result.lastInsertRowid as number;
       replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
