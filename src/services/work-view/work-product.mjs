@@ -161,18 +161,18 @@ function commitsFrom(command, response, out) {
   return [...commits.values()];
 }
 
-// The remote and branch a `git push` command names (`git push -u origin <branch>`,
-// `git push <url> HEAD:<branch>`); null for a push that deletes or sends tags.
+// The remote and destination branches named in each `git push` command.
 function pushTargets(command) {
   const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
   return [...command.matchAll(pattern)].map(([, args]) => {
     const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
-    const [remote, refspec] = tokens.filter(token => !token.startsWith('-'));
-    const destination = refspec && !refspec.startsWith(':') ? refspec.replace(/^\+/, '').split(':').at(-1) : null;
-    const onlyNonBranches = tokens.some(token => ['-d', '--delete'].includes(token)) || destination?.startsWith('refs/tags/');
-    const deletesOrTags = onlyNonBranches || tokens.includes('--tags');
-    const branch = destination?.replace(/^refs\/heads\//, '');
-    return { repo: githubRepo(remote), branch: branch && branch !== 'HEAD' && !onlyNonBranches ? branch : null,
+    const [remote, ...refspecs] = tokens.filter(token => !token.startsWith('-'));
+    const destinations = refspecs.map(spec => spec.startsWith(':') ? '' : spec.replace(/^\+/, '').split(':').at(-1));
+    const deleting = tokens.some(token => ['-d', '--delete'].includes(token));
+    const branches = deleting ? [] : destinations.map(ref =>
+      ref && ref !== 'HEAD' && (!ref.startsWith('refs/') || ref.startsWith('refs/heads/')) ? ref.replace(/^refs\/heads\//, '') : null);
+    const deletesOrTags = deleting || tokens.includes('--tags') || destinations.some(ref => ref.startsWith('refs/tags/'));
+    return { repo: githubRepo(remote), branches,
       dryRun: tokens.some(token => token === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)), deletesOrTags };
   });
 }
@@ -210,9 +210,12 @@ function pushesFrom(command, response, out) {
       continue;
     }
     const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
-    if (ref && !ref[3].startsWith('refs/tags/') && (!target?.deletesOrTags || ref[3].replace(/^refs\/heads\//, '') === target.branch || line.includes('[new branch]'))) add(ref[3].replace(/^refs\/heads\//, ''), ref[1]);
+    if (ref && !ref[3].startsWith('refs/tags/')) {
+      const branch = ref[3].replace(/^refs\/heads\//, '');
+      if (!target?.deletesOrTags || target.branches.includes(branch) || line.includes('[new branch]')) add(branch, ref[1]);
+    }
   }
-  const branch = recorded ?? target?.branch;
+  const branch = recorded ?? target?.branches[0];
   if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch
     && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
   return [...pushes.values()];

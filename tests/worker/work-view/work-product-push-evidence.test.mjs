@@ -48,3 +48,9 @@ test('a combined tag and branch push retains the changed branch', () => {
   const rows = gitProductsFromCommand(`git push ${repo} main --tags`, {}, out);
   assert.deepEqual(rows.map(row => row.branch), ['main']);
 });
+
+test('mixed pushes retain every changed destination branch and omit the tag', () => {
+  const out = `To ${repo}\n${update}\n   abcdef0..bcdef01  side -> review/side\n * [new tag] v1 -> v1`;
+  const rows = gitProductsFromCommand(`git push ${repo} main side:refs/heads/review/side --tags`, {}, out);
+  assert.deepEqual(rows.map(row => row.branch), ['main', 'review/side']);
+});
