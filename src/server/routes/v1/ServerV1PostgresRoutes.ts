@@ -5,7 +5,7 @@ import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { AppError } from '../../../services/server/ErrorHandler.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import type { PostgresPool } from '../../../storage/postgres/pool.js';
+import { withPostgresTransaction, type PostgresPool } from '../../../storage/postgres/pool.js';
 import {
   PostgresAgentEventsRepository,
   type CreatePostgresAgentEventInput,
@@ -1721,7 +1721,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
     // Scope check first — same NotFound disclosure as the rest of the routes.
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await this.loadScopedById(req, res, {
+    const visible = await this.loadScopedById(req, res, {
       id,
       teamId,
       table: 'observation_generation_jobs',
@@ -1729,10 +1729,74 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       scopeMismatch: 'not-found',
       load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
     });
-    if (!current) return null;
+    if (!visible) return null;
 
-    // Idempotent fast-path: already queued -> emit audit only, no DB writes.
-    if (current.status === 'queued') {
+    // Keep the state check and update under the same row lock used by the
+    // generation commit path. Queue I/O and audit publication happen after
+    // this transaction, never while it holds a generation row.
+    const transition = await withPostgresTransaction(this.options.pool, async client => {
+      const current = await new PostgresObservationGenerationJobRepository(client).getByIdForScope({
+        id, projectId: visible.projectId, teamId, forUpdate: true,
+      });
+      if (!current) return { kind: 'missing' as const };
+      if (current.status === 'queued') return { kind: 'unchanged' as const, current };
+      if (current.status === 'processing' || current.status === 'completed') {
+        return { kind: 'conflict' as const, current };
+      }
+      // Reset to queued, clear lock + lifecycle timestamps, increment
+      // retried_count for audit. Preserve the existing explicit operator retry
+      // policy: an exhausted job receives one additional attempt.
+      //
+      // current.payload is the canonical BullMQ payload persisted at outbox
+      // create time (kind/team_id/project_id/source_type/source_id/
+      // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
+      // The retry adds operator metadata to the persisted row but enqueues
+      // ONLY the BullMQ payload — the worker calls
+      // assertServerGenerationJobPayload(job.data) on receipt and would reject
+      // the metadata-only object the previous implementation handed it.
+      const retriedCount = extractRetriedCount(current.payload) + 1;
+      const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
+        ? current.payload
+        : {}) as Record<string, unknown>;
+      const newPayload = {
+        ...persistedBullmqPayload,
+        retried_count: retriedCount,
+        last_retried_by_actor: req.authContext?.apiKeyId ?? null,
+        last_retried_request_id: req.requestId ?? null,
+      };
+      // The payload we re-publish to BullMQ on retry: refresh request_id (so
+      // the worker logs/audit attribute this run to the operator's request)
+      // but keep all canonical job context that the worker validates against.
+      const retryBullmqPayload = {
+        ...persistedBullmqPayload,
+        request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
+      };
+      const updated = await client.query(
+        `
+          UPDATE observation_generation_jobs
+          SET status = 'queued',
+              locked_at = NULL,
+              locked_by = NULL,
+              failed_at = NULL,
+              cancelled_at = NULL,
+              completed_at = NULL,
+              last_error = NULL,
+              attempts = LEAST(attempts, max_attempts - 1),
+              payload = $4::jsonb,
+              updated_at = now()
+          WHERE id = $1 AND project_id = $2 AND team_id = $3
+          RETURNING *
+        `,
+        [id, current.projectId, teamId, JSON.stringify(newPayload)],
+      );
+      return { kind: 'updated' as const, current, updatedRow: updated.rows[0], retriedCount, retryBullmqPayload };
+    });
+    if (transition.kind === 'missing') {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    if (transition.kind === 'unchanged') {
+      const current = transition.current;
       await this.auditWrite(req, 'generation_job.retried_by_operator', current.id, current.projectId, {
         outcome: 'noop_already_queued',
         currentAttempts: current.attempts,
@@ -1740,85 +1804,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
       return { job: current, retriedCount: extractRetriedCount(current.payload), alreadyQueued: true };
     }
-
-    if (current.status === 'processing') {
-      // Refuse retry on in-flight jobs — the running worker MUST be allowed
-      // to finish or fail through its normal lifecycle. Operator can wait
-      // or cancel, then retry.
+    if (transition.kind === 'conflict') {
       res.status(409).json({
         error: 'Conflict',
-        message: 'Generation job is currently processing; cancel or wait for completion before retrying',
+        message: transition.current.status === 'processing'
+          ? 'Generation job is currently processing; cancel or wait for completion before retrying'
+          : 'Generation job already completed; retrying would duplicate observations',
       });
       return null;
     }
-
-    if (current.status === 'completed') {
-      // Refuse retry on already-completed jobs. The deduplication index on
-      // observations (generation_key = job_id + index + content) does NOT
-      // protect against re-running the provider, because LLM output is
-      // non-deterministic and the second run almost always produces a
-      // different content string. Replaying would persist a parallel set
-      // of observations attributed to the same generation_job_id.
-      // cancelGenerationJob applies the same 409 guard for the same reason.
-      res.status(409).json({
-        error: 'Conflict',
-        message: 'Generation job already completed; retrying would duplicate observations',
-      });
-      return null;
-    }
-
-    // Reset to queued, clear lock + lifecycle timestamps, increment
-    // retried_count for audit. attempts is intentionally preserved so the
-    // BullMQ attempt cap is not bypassed; if the job hit max_attempts the
-    // operator must lift the cap explicitly via a separate flow.
-    //
-    // current.payload is the canonical BullMQ payload persisted at outbox
-    // create time (kind/team_id/project_id/source_type/source_id/
-    // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
-    // The retry adds operator metadata to the persisted row but enqueues
-    // ONLY the BullMQ payload — the worker calls
-    // assertServerGenerationJobPayload(job.data) on receipt and would reject
-    // the metadata-only object the previous implementation handed it.
-    const retriedCount = extractRetriedCount(current.payload) + 1;
-    const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
-      ? current.payload
-      : {}) as Record<string, unknown>;
-    const newPayload = {
-      ...persistedBullmqPayload,
-      retried_count: retriedCount,
-      last_retried_by_actor: req.authContext?.apiKeyId ?? null,
-      last_retried_request_id: req.requestId ?? null,
-    };
-    // The payload we re-publish to BullMQ on retry: refresh request_id (so
-    // the worker logs/audit attribute this run to the operator's request)
-    // but keep all canonical job context that the worker validates against.
-    const retryBullmqPayload = {
-      ...persistedBullmqPayload,
-      request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
-    };
-    const updated = await this.options.pool.query(
-      `
-        UPDATE observation_generation_jobs
-        SET status = 'queued',
-            locked_at = NULL,
-            locked_by = NULL,
-            failed_at = NULL,
-            cancelled_at = NULL,
-            completed_at = NULL,
-            last_error = NULL,
-            attempts = LEAST(attempts, max_attempts - 1),
-            payload = $4::jsonb,
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [id, current.projectId, teamId, JSON.stringify(newPayload)],
-    );
-    const updatedRow = updated.rows[0];
-    if (!updatedRow) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const { current, updatedRow, retriedCount, retryBullmqPayload } = transition;
 
     // Append lifecycle event so the audit chain mirrors the lifecycle tracker.
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
@@ -1889,7 +1884,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await this.loadScopedById(req, res, {
+    const visible = await this.loadScopedById(req, res, {
       id,
       teamId,
       table: 'observation_generation_jobs',
@@ -1897,38 +1892,47 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       scopeMismatch: 'not-found',
       load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
     });
-    if (!current) return null;
-    if (current.status === 'cancelled') {
+    if (!visible) return null;
+    const transition = await withPostgresTransaction(this.options.pool, async client => {
+      const current = await new PostgresObservationGenerationJobRepository(client).getByIdForScope({
+        id, projectId: visible.projectId, teamId, forUpdate: true,
+      });
+      if (!current) return { kind: 'missing' as const };
+      if (current.status === 'cancelled' || current.status === 'completed') {
+        return { kind: 'unchanged' as const, current };
+      }
+      const updateResult = await client.query(
+        `
+          UPDATE observation_generation_jobs
+          SET status = 'cancelled',
+              cancelled_at = now(),
+              updated_at = now()
+          WHERE id = $1 AND project_id = $2 AND team_id = $3
+          RETURNING *
+        `,
+        [id, current.projectId, teamId],
+      );
+      return { kind: 'updated' as const, current, updatedRow: updateResult.rows[0] };
+    });
+    if (transition.kind === 'missing') {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    const { current } = transition;
+    if (transition.kind === 'unchanged') {
+      if (current.status === 'completed') {
+        res.status(409).json({
+          error: 'Conflict', message: 'Generation job already completed; cannot cancel',
+        });
+        return null;
+      }
       await this.auditWrite(req, 'generation_job.cancelled_by_operator', current.id, current.projectId, {
         outcome: 'noop_already_cancelled',
         requestId: req.requestId ?? null,
       });
       return { job: current, alreadyCancelled: true };
     }
-    if (current.status === 'completed') {
-      res.status(409).json({
-        error: 'Conflict',
-        message: 'Generation job already completed; cannot cancel',
-      });
-      return null;
-    }
-
-    const updateResult = await this.options.pool.query(
-      `
-        UPDATE observation_generation_jobs
-        SET status = 'cancelled',
-            cancelled_at = now(),
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [id, current.projectId, teamId],
-    );
-    const updatedRow = updateResult.rows[0];
-    if (!updatedRow) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const { updatedRow } = transition;
 
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
     await eventsRepo.append({
