@@ -1071,6 +1071,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
         // subagent hook events.
         excludeSubagents: z.boolean().optional(),
+        // Apply the session-start mode filters before the result limit.
+        // Empty arrays intentionally select no observations, but keep summaries.
+        observationTypes: z.array(z.string().min(1)).optional(),
+        observationConcepts: z.array(z.string().min(1)).optional(),
       }).refine(body => body.summaryLimit === undefined || (
         body.query === undefined
         && body.summaryLimit <= (body.limit ?? SERVER_CONTEXT_RECENT_DEFAULT_LIMIT)
@@ -1095,6 +1099,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
+            observationTypes: body.observationTypes,
+            observationConcepts: body.observationConcepts,
             queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           };
           if (body.summaryLimit === undefined) {
@@ -1130,6 +1136,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           platformSource,
           folderProjects: body.folderProjects ?? null,
           excludeSubagents: body.excludeSubagents === true,
+          observationTypes: body.observationTypes ?? null,
+          observationConcepts: body.observationConcepts ?? null,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });

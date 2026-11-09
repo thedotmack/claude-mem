@@ -196,6 +196,10 @@ export interface ServerContextObservationsRequest {
   folderProjects?: string[];
   // Leave out rows generated from subagent events (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY).
   excludeSubagents?: boolean;
+  // Active-mode filters for observations. Empty selects none; summaries keep
+  // their own allowance. Omitted preserves the unfiltered API contract.
+  observationTypes?: string[];
+  observationConcepts?: string[];
 }
 
 export interface ServerContextObservationsResponse {
@@ -341,6 +345,8 @@ export class ServerClient {
       payload.folderProjects = input.folderProjects;
     }
     if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
+    if (input.observationTypes !== undefined) payload.observationTypes = input.observationTypes;
+    if (input.observationConcepts !== undefined) payload.observationConcepts = input.observationConcepts;
     return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
   }
 
