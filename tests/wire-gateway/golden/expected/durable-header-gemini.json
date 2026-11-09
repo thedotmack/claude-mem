@@ -1,0 +1,4 @@
+{"systemInstruction":{"parts":[{"text":"You are Gemini CLI. <b> & \u00e9 \/"},{"text":"<claude-mem-rules>\n# My Rules\n\n## Everywhere\n\n- Keep <b> & \"quotes\" é 😀\n</claude-mem-rules>"}]},
+ "contents":[{"role":"user","parts":[{"text":"<cwd>/work/app</cwd> read go.mod 0.70"}]}],
+ "tools":[{"functionDeclarations":[{"name":"read_file","parameters":{"type":"object"}}]}],
+ "generationConfig":{"temperature":0.70,"maxOutputTokens":64}}

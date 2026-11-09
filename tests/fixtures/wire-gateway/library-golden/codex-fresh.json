@@ -1,0 +1,12 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.codex/config.toml": "[features]\nhooks = true\n\n[plugins.\"claude-mem@thedotmack\"]\nenabled = false\n\n[plugins.\"claude-mem@claude-mem-local\"]\nenabled = true\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>",
+    "cli-calls.log": "codex --version\ncodex plugin marketplace add <SANDBOX>/home/.claude/plugins/marketplaces/thedotmack\ncodex plugin add claude-mem@claude-mem-local\ncodex plugin list\n"
+  }
+}

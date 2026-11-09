@@ -1,47 +1,24 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, mkdirSync } from 'fs';
-import { logger } from '../../utils/logger.js';
+import { existsSync } from 'fs';
+import { toBmpSafe } from '../../utils/bmp-safe.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
-import { readJsonSafe } from '../../utils/json-utils.js';
-import { stripUtf8Bom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
-import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
-
-export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
-
-*No context yet. Complete your first session and context will appear here.*
-
-Use claude-mem's MCP search tools for manual memory queries.`;
-
-export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
-  return {
-    command: getNodeAbsolutePath(),
-    args: [mcpServerPath],
-  };
-}
-
-export function writeMcpJsonConfig(
-  configFilePath: string,
-  mcpServerPath: string,
-  serversKeyName: string = 'mcpServers',
-): void {
-  const parentDirectory = path.dirname(configFilePath);
-  mkdirSync(parentDirectory, { recursive: true });
-
-  const existingConfig = readJsonSafe<Record<string, any>>(configFilePath, {});
-
-  if (!existingConfig[serversKeyName]) {
-    existingConfig[serversKeyName] = {};
-  }
-
-  existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
-
-  // Other MCP servers live in this file too, so replace it rather than truncate
-  // it: an interrupted write must not leave a config every MCP host then fails
-  // to parse. writeJsonFileAtomic writes the same bytes via a temp file + rename.
-  writeJsonFileAtomic(configFilePath, existingConfig);
-}
+import {
+  LIBRARY_GROUPS,
+  PLACEHOLDER_CONTEXT,
+  contextBlockItem,
+  mcpMemberItem,
+  nodeMcpServerEntry,
+} from '../wire-gateway/library/agent-library-targets.js';
+import { encodeMcpServerEntry } from '../wire-gateway/library/mcp-servers.js';
+import {
+  applyLibraryForInstaller,
+  currentLibraryInstallEnvironment,
+  removeLibraryForInstaller,
+  withoutInstructionsWhenWireInjects,
+} from '../wire-gateway/library/library-runtime.js';
+import type { ConfigMemberItem, LibraryItem } from '../wire-gateway/library/types.js';
 
 interface McpInstallerConfig {
   ideId: string;
@@ -86,15 +63,23 @@ function writeMcpConfigAndContext(
   skipWarpConfigWrite: boolean,
   contextPath: string | undefined,
 ): void {
+  const environment = { ...currentLibraryInstallEnvironment(), mcpServerPath };
+  const items: LibraryItem[] = [];
+  if (!skipWarpConfigWrite) items.push(mcpMemberItem(configPath, [config.configKey, 'claude-mem'], nodeMcpServerEntry(environment)));
+  // #2787: astral (surrogate-pair) code points are stripped so a context truncation can't split one.
+  if (contextPath) items.push(contextBlockItem(contextPath, toBmpSafe(PLACEHOLDER_CONTEXT), 'after-trimmed-text'));
+  applyLibraryForInstaller({
+    agentId: config.ideId,
+    items: withoutInstructionsWhenWireInjects(config.ideId, items),
+    ownedGroups: [LIBRARY_GROUPS.mcp, LIBRARY_GROUPS.instructions],
+  });
+
   if (skipWarpConfigWrite) {
     console.log(`  Note: ~/.warp/ not found. MCP may need to be configured via Warp Drive UI.`);
   } else {
-    writeMcpJsonConfig(configPath, mcpServerPath, config.configKey);
     console.log(`  MCP config written to: ${configPath}`);
   }
-
   if (contextPath) {
-    injectContextIntoMarkdownFile(contextPath, PLACEHOLDER_CONTEXT);
     console.log(`  Context placeholder written to: ${contextPath}`);
   }
 
@@ -129,11 +114,14 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
 
 /** Remove claude-mem from Copilot CLI's MCP servers so Copilot stops launching a deleted MCP server. Returns 0 when an entry was removed. */
 export function uninstallCopilotCliMcpIntegration(): number {
-  const { configPath } = COPILOT_CLI_CONFIG;
-  const config = readJsonSafe<Record<string, any>>(configPath, {});
-  if (!config.mcpServers?.['claude-mem']) return 1;
-  delete config.mcpServers['claude-mem'];
-  writeJsonFileAtomic(configPath, config);
+  const { configPath, configKey } = COPILOT_CLI_CONFIG;
+  if (!existsSync(configPath)) return 1;
+  const environment = { ...currentLibraryInstallEnvironment(), mcpServerPath: getMcpServerAbsolutePath() ?? '' };
+  const result = removeLibraryForInstaller({
+    agentId: COPILOT_CLI_CONFIG.ideId,
+    items: [mcpMemberItem(configPath, [configKey, 'claude-mem'], nodeMcpServerEntry(environment))],
+  });
+  if (!result.items.some((item) => item.outcome === 'removed' || item.outcome === 'restored')) return 1;
   console.log(`  Removed claude-mem from the Copilot CLI MCP servers in: ${configPath}`);
   return 0;
 }
@@ -163,106 +151,10 @@ export function getGooseConfigPath(platform: NodeJS.Platform = process.platform,
   return path.join(homedir(), '.config', 'goose', 'config.yaml');
 }
 
-function buildGooseClaudeMemExtensionLines(mcpServerPath: string, indent: string): string[] {
-  return [
-    `${indent}claude-mem:`,
-    `${indent}  enabled: true`,
-    `${indent}  type: stdio`,
-    `${indent}  name: claude-mem`,
-    `${indent}  cmd: ${getNodeAbsolutePath()}`,
-    `${indent}  args:`,
-    `${indent}    - ${mcpServerPath}`,
-    `${indent}  timeout: 300`,
-  ];
-}
-
-function leadingSpaceCount(line: string): number {
-  return line.length - line.trimStart().length;
-}
-
-function isYamlContentLine(line: string): boolean {
-  return line.trim() !== '' && !line.trimStart().startsWith('#');
-}
-
-/** What follows `key:` when `line` is that key at `indent`, written plain or quoted; null for any other line. */
-function yamlKeyLineRest(line: string, indent: string, key: string): string | null {
-  const match = new RegExp(`^${indent}(["']?)${key}\\1:`).exec(line);
-  if (!match) return null;
-  const rest = line.slice(match[0].length);
-  return rest === '' || /^\s/.test(rest) ? rest : null;
-}
-
-interface GooseExtensionsSpan {
-  lines: string[];
-  /** Line of the top-level `extensions:` key. */
-  header: number;
-  /** First line after the mapping (the next top-level key, or end of file). */
-  end: number;
-  indent: string;
-  /** The claude-mem entry's [start, end) lines, or null when there is none. */
-  claudeMemEntry: [number, number] | null;
-}
-
-/** Where the top-level `extensions` mapping and its claude-mem entry sit in `content`; null when there is no such mapping. */
-function findGooseExtensionsSpan(content: string): GooseExtensionsSpan | null {
-  const lines = content.split('\n');
-  const header = lines.findIndex(line => yamlKeyLineRest(line, '', 'extensions') !== null);
-  if (header === -1) return null;
-  if (isYamlContentLine(yamlKeyLineRest(lines[header], '', 'extensions')!)) {
-    throw new Error('Goose config.yaml sets extensions inline; write it as a block mapping and try again');
-  }
-
-  // The mapping runs to the next top-level key; entries keep the indent of those already there.
-  let end = header + 1;
-  while (end < lines.length && !(isYamlContentLine(lines[end]) && leadingSpaceCount(lines[end]) === 0)) end++;
-  const firstEntry = lines.slice(header + 1, end).find(isYamlContentLine);
-  const indent = ' '.repeat(firstEntry ? leadingSpaceCount(firstEntry) : 2);
-
-  const existing = lines.findIndex((line, index) => index > header && index < end && yamlKeyLineRest(line, indent, 'claude-mem') !== null);
-  if (existing === -1) return { lines, header, end, indent, claudeMemEntry: null };
-  // The entry runs to the next sibling; blank lines and comments just before it stay with it.
-  let existingEnd = existing + 1;
-  while (existingEnd < end && !(isYamlContentLine(lines[existingEnd]) && leadingSpaceCount(lines[existingEnd]) <= indent.length)) {
-    existingEnd++;
-  }
-  while (existingEnd > existing + 1 && !isYamlContentLine(lines[existingEnd - 1])) existingEnd--;
-  return { lines, header, end, indent, claudeMemEntry: [existing, existingEnd] };
-}
-
-/**
- * `content` with claude-mem set in the top-level `extensions` mapping, the
- * only place Goose starts MCP servers from: it never reads a `mcpServers` key
- * in config.yaml. Every other line stays as written, including the
- * `mcpServers` block that earlier installs left behind.
- */
-function upsertGooseExtension(content: string, mcpServerPath: string): string {
-  const span = findGooseExtensionsSpan(content);
-  if (!span) {
-    const existingLines = content.trimEnd() ? [content.trimEnd()] : [];
-    return [...existingLines, 'extensions:', ...buildGooseClaudeMemExtensionLines(mcpServerPath, '  ')].join('\n') + '\n';
-  }
-  const { lines, header, indent, claudeMemEntry } = span;
-  const extension = buildGooseClaudeMemExtensionLines(mcpServerPath, indent);
-  if (!claudeMemEntry) {
-    return [...lines.slice(0, header + 1), ...extension, ...lines.slice(header + 1)].join('\n');
-  }
-  return [...lines.slice(0, claudeMemEntry[0]), ...extension, ...lines.slice(claudeMemEntry[1])].join('\n');
-}
-
-/**
- * `content` without the claude-mem entry under `extensions` (and without the
- * `extensions:` key itself when nothing else is left in it); null when there
- * is no entry to remove.
- */
-function removeGooseExtension(content: string): string | null {
-  const span = findGooseExtensionsSpan(content);
-  if (!span?.claudeMemEntry) return null;
-  const { lines, header, end, claudeMemEntry: [entryStart, entryEnd] } = span;
-  const remaining = [...lines.slice(0, entryStart), ...lines.slice(entryEnd)];
-  const removedCount = entryEnd - entryStart;
-  const mappingStillHasEntries = remaining.slice(header + 1, end - removedCount).some(isYamlContentLine);
-  if (!mappingStillHasEntries) remaining.splice(header, 1);
-  return remaining.join('\n');
+/** claude-mem in Goose's top-level `extensions` mapping, the only place Goose starts MCP servers from (it never reads `mcpServers` in config.yaml). */
+function gooseExtensionItem(mcpServerPath: string, configPath: string = getGooseConfigPath()): ConfigMemberItem {
+  const entry = encodeMcpServerEntry({ transport: 'stdio', command: getNodeAbsolutePath(), args: [mcpServerPath] }, 'goose');
+  return mcpMemberItem(configPath, ['extensions', 'claude-mem'], entry, LIBRARY_GROUPS.mcp, 'yaml');
 }
 
 export async function installGooseMcpIntegration(): Promise<number> {
@@ -276,10 +168,8 @@ export async function installGooseMcpIntegration(): Promise<number> {
   }
 
   const configPath = getGooseConfigPath();
-  const configDirectory = path.dirname(configPath);
 
   try {
-    mkdirSync(configDirectory, { recursive: true });
     mergeGooseYamlConfig(configPath, mcpServerPath);
     return 0;
   } catch (error) {
@@ -292,19 +182,15 @@ export async function installGooseMcpIntegration(): Promise<number> {
 /** Remove claude-mem from Goose's extensions so Goose stops launching a deleted MCP server. Returns 0 when an entry was removed. */
 export function uninstallGooseMcpIntegration(configPath: string = getGooseConfigPath()): number {
   if (!existsSync(configPath)) return 1;
-  const updated = removeGooseExtension(stripUtf8Bom(readFileSync(configPath, 'utf-8')));
-  if (updated === null) return 1;
-  // The Goose config is a user-owned YAML file other extensions share: write it
-  // through a temp file and a rename so an interrupted uninstall cannot leave a
-  // half-written config.yaml that stops Goose from starting.
-  writeTextFileAtomic(configPath, updated);
+  const result = removeLibraryForInstaller({ agentId: 'goose', items: [gooseExtensionItem(getMcpServerAbsolutePath() ?? '', configPath)] });
+  if (!result.items.some((item) => item.outcome === 'removed' || item.outcome === 'restored')) return 1;
   console.log(`  Removed claude-mem from the Goose extensions of: ${configPath}`);
   return 0;
 }
 
+/** Register claude-mem in Goose's config.yaml with the Phase 7 YAML editor: every other line stays as written. */
 export function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
-  const yamlContent = existsSync(configPath) ? stripUtf8Bom(readFileSync(configPath, 'utf-8')) : '';
-  writeTextFileAtomic(configPath, upsertGooseExtension(yamlContent, mcpServerPath));
+  applyLibraryForInstaller({ agentId: 'goose', items: [gooseExtensionItem(mcpServerPath, configPath)], ownedGroups: [LIBRARY_GROUPS.mcp] });
   console.log(`  Registered claude-mem in the Goose extensions of: ${configPath}`);
 
   console.log(`
@@ -324,9 +210,8 @@ Next steps:
 // NOTE: 'antigravity' is intentionally absent here. It graduated from an
 // MCP-only integration to a full hooks+MCP installer — see
 // AntigravityCliHooksInstaller.ts, which owns Antigravity's install/uninstall
-// end-to-end (reusing writeMcpJsonConfig/buildMcpServerEntry from this file
-// for its MCP half). Leaving an entry here too would create two competing
-// install paths for the same IDE.
+// end-to-end. Leaving an entry here too would create two competing install
+// paths for the same IDE.
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
   'goose': installGooseMcpIntegration,

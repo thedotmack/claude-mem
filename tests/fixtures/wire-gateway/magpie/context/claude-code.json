@@ -1,0 +1,1131 @@
+{
+ "model": "claude-fable-5-1",
+ "messages": [
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "<system-reminder>\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur \n\nContents of /home/dev/.claude/CLAUDE.md (user's private global instructions for all projects):\n\nlorem ipsum dolor si\n\nlorem ipsum dolor sit amet consectetur \n\nlorem ipsum dolor\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor l\nlorem ipsum dolor sit amet consectetur a\nlorem ipsum dolor sit amet co\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lo\nlorem ipsum dolor sit amet consectetur adipiscing el\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod temp\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t\n\nlorem ipsum dolor sit am\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dol\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor l\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipisci\nlorem ipsum dolor sit amet consectetur adipiscing \n\nContents of /home/dev/proj/CLAUDE.md (project instructions, checked into the codebase):\n\n# ledger\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eius\n</system-reminder>"
+    },
+    {
+     "type": "text",
+     "text": "<system-reminder>\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \n# userEmail\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet con\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor s\n</system-reminder>\n"
+    },
+    {
+     "type": "text",
+     "text": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsu"
+    }
+   ]
+  },
+  {
+   "role": "system",
+   "content": "# Environment\nlorem ipsum dolor sit amet consectetur adipiscing el\nlorem ipsum dolor sit amet consectetur adipi\nlorem ipsum dolor sit amet co\nlorem ipsum dolor s\nlorem ipsum d\nlorem ipsum dolor sit amet c\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing\n\nlorem ipsum dolor sit amet consectetur ad\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor l\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit s\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consect\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit s\n\n# MCP Server Instructions\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor\n\nlorem ipsum dolor sit am\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor si\n\nlorem ips\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consect\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do e\n\nlorem ipsum \nlorem ipsum dolor\nlorem ipsum \nlorem ipsum do\nlorem ipsum dolor sit \nlorem ipsum do\nlorem ipsum \nlorem ipsum dolor s\nlorem ipsum dolor sit \nlorem ipsum dolor\nlorem ipsum dolor sit\nlorem ipsum dol\nlorem ipsum \nlorem ipsum dolor sit amet\nlorem ipsum dolo\nlorem ipsum dolor sit amet \nlorem i\nlorem ipsum dolor sit\nlorem ipsum dolor sit amet conse\nlorem ips\nlorem ipsum do\nlorem ipsum dolor\nlorem ipsum dolor\nlorem ipsum dolor\nlorem ipsum \nlorem ips\nlorem ipsum dolor sit amet con\nlorem ipsum d\nlorem ipsum dolor sit am\nlorem ipsum dolor si\nlorem ipsum\nlorem ipsum dolor si\nlorem ipsum do\nlorem ipsu\nlorem i\nlorem i\nlorem ipsum dol\nlorem ipsum d\nlorem ipsum dolor sit amet consectet\nlorem ipsum dol\nlorem ipsu\nlorem ipsum dolor\nlorem ipsum d\nlorem ipsum\nlorem ipsum d\nlorem ipsum \nlorem ipsum dolor\nlorem ipsum dolo\nlorem ipsum dolor si\nlorem ipsum dolo\nlorem \nlorem ips\nlorem ipsu\nlorem ipsum dolor sit amet\nlorem ipsum dolor sit ame\nlorem ipsum dolor sit am\nlorem ipsu\nlorem ipsum d\nlorem ip\nlorem ip\nlorem i\nlore\nlorem ipsum d\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum do\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet co\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consect\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetu\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectet\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tem\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsu\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit se\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed d\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor \nlorem \nlorem ipsum dolor\nlorem ipsum dolor sit amet consecte\nlorem ipsum dolor sit amet consec\nlorem ipsum dolor sit amet cons\nlorem ipsum dolor sit amet conse\nlorem ipsum dolor sit a\nlorem ipsum dolor sit a\nlorem ipsum dolor sit amet consecte\nlorem ipsum dolor sit amet conse\nlorem ipsum dolor sit amet\nlorem ipsum dolor sit \nlorem ipsum dolor sit a\nlorem ipsum dolor sit amet conse\nlorem ipsum dolor sit a\n\nlorem ipsum dolor sit amet ",
+   "output_config": {
+    "effort": "high"
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "I'll read both files and list the directory in parallel."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01JNepVefG3fPanHE5anGavy",
+     "name": "Read",
+     "input": {
+      "file_path": "/home/dev/proj/main.go"
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01FoXbuXtdXQHTyVs6kCB1Fg",
+     "name": "Read",
+     "input": {
+      "file_path": "/home/dev/proj/reconcile.go"
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_012f19D2H3vze3HDPudJNKFa",
+     "name": "Bash",
+     "input": {
+      "command": "ls /home/dev/proj",
+      "description": "List files in project directory"
+     },
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "tool_use_id": "toolu_01JNepVefG3fPanHE5anGavy",
+     "type": "tool_result",
+     "content": "lorem ipsum do\nlo\nlorem ipsum do\nlo\nlorem ipsum dolor sit amet consectetur adipiscing elit s\nlo"
+    },
+    {
+     "tool_use_id": "toolu_01FoXbuXtdXQHTyVs6kCB1Fg",
+     "type": "tool_result",
+     "content": "lorem ipsum do\nlo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod te\nlorem ipsum dolor sit amet conse\nlorem ips\nlorem ipsum dolor sit ame\nlorem ipsu\nlore\nlorem ipsum\nlore\nlor"
+    },
+    {
+     "tool_use_id": "toolu_012f19D2H3vze3HDPudJNKFa",
+     "type": "tool_result",
+     "content": "CLAUDE.md\nmain.go\nreconcile.go",
+     "is_error": false,
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     }
+    }
+   ]
+  },
+  {
+   "role": "system",
+   "content": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing"
+  }
+ ],
+ "system": [
+  {
+   "type": "text",
+   "text": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod temp"
+  },
+  {
+   "type": "text",
+   "text": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do ",
+   "cache_control": {
+    "type": "ephemeral",
+    "ttl": "1h"
+   }
+  },
+  {
+   "type": "text",
+   "text": "\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor si\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod temp\n\n# Harness\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet co\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscin\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiu\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipis\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod\n\n# Session-specific guidance\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed\n\n# Memory\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor\n\nlorem ipsum\nlor\nlorem ipsum dolor sit amet co\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t\nlorem ips\nlorem ipsum dolor sit amet consectetur adipis\nlor\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing\nlor\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusm\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ip\n\n# Environment\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do\n\n# Context management\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet c\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipisc\n\n# Delivering work\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do e\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do \n\n# Writing for the user\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t\n\nlorem ipsum dolor sit a\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consec\nlorem ipsum dolor sit amet consectetur adipis\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscin\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consect\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor l\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipisc\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipi\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempo\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ",
+   "cache_control": {
+    "type": "ephemeral",
+    "ttl": "1h"
+   }
+  }
+ ],
+ "tools": [
+  {
+   "name": "Agent",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipisci\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem \n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiu\n\nlorem ipsum do\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit a\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tem\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do e\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum do\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do ",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "description": {
+      "description": "A short (3-5 word) description of the task",
+      "type": "string"
+     },
+     "prompt": {
+      "description": "The task for the agent to perform",
+      "type": "string"
+     },
+     "subagent_type": {
+      "description": "The type of specialized agent to use for this task",
+      "type": "string"
+     },
+     "model": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing ",
+      "type": "string",
+      "enum": [
+       "sonnet",
+       "opus",
+       "haiku",
+       "fable"
+      ]
+     },
+     "effort": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adip",
+      "type": "string",
+      "enum": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     },
+     "run_in_background": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit ",
+      "type": "boolean"
+     },
+     "isolation": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusm",
+      "type": "string",
+      "enum": [
+       "worktree",
+       "remote"
+      ]
+     }
+    },
+    "required": [
+     "description",
+     "prompt"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Bash",
+   "description": "lorem ipsum dolor sit amet consectetur adipisci\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do e\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit se\n\n# Git\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit am\nlorem ipsum dolor sit amet consectetur adipiscing elit sed d\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lore\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit ",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "command": {
+      "description": "The command to execute",
+      "type": "string"
+     },
+     "timeout": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod ",
+      "type": "number"
+     },
+     "description": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lo\nlorem ipsum dolor sit amet consectetur a\nlorem ipsum dolor sit amet consectetur ad\nlorem ipsum dolor sit amet consectetur adipisc\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit \nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i",
+      "type": "string"
+     },
+     "run_in_background": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet ",
+      "type": "boolean"
+     },
+     "dangerouslyDisableSandbox": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Edit",
+   "description": "lorem ipsum dolor sit amet consectetur adipi\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor \nlorem ipsum dolor sit amet consectetur adipiscing elit s",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "description": "The absolute path to the file to modify",
+      "type": "string"
+     },
+     "old_string": {
+      "description": "The text to replace",
+      "type": "string"
+     },
+     "new_string": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do e",
+      "type": "string"
+     },
+     "replace_all": {
+      "description": "Replace all occurrences of old_string (default false)",
+      "default": false,
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "file_path",
+     "old_string",
+     "new_string"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Grep",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing el\n\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adi\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit a\nlorem ipsum dolor sit amet consectetur adipiscing",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "pattern": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do",
+      "type": "string"
+     },
+     "path": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lor",
+      "type": "string"
+     },
+     "glob": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor",
+      "type": "string"
+     },
+     "output_mode": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dol",
+      "type": "string",
+      "enum": [
+       "content",
+       "files_with_matches",
+       "count"
+      ]
+     },
+     "-B": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit ame",
+      "type": "number"
+     },
+     "-A": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit am",
+      "type": "number"
+     },
+     "-C": {
+      "description": "Alias for context.",
+      "type": "number"
+     },
+     "context": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consecte",
+      "type": "number"
+     },
+     "-n": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet co",
+      "type": "boolean"
+     },
+     "-i": {
+      "description": "Case insensitive search (rg -i)",
+      "type": "boolean"
+     },
+     "-o": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consec",
+      "type": "boolean"
+     },
+     "type": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing e",
+      "type": "string"
+     },
+     "head_limit": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod te",
+      "type": "number"
+     },
+     "offset": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do e",
+      "type": "number"
+     },
+     "multiline": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur ad",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "pattern"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Read",
+   "description": "lorem ipsum dolor sit amet consectetur \n\nlorem ipsum dolor sit amet consectetur \nlorem ipsum dolor sit amet consectet\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur a\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempo\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do ei\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consecte\nlorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "description": "The absolute path to the file to read",
+      "type": "string"
+     },
+     "offset": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dol",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "limit": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "pages": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "file_path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp__claude_ai_Claude_Docs__create",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string",
+      "enum": [
+       "file",
+       "node",
+       "utterance",
+       "enum",
+       "blob"
+      ]
+     },
+     "engine": {
+      "type": "string"
+     },
+     "payload": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "string"
+       }
+      ]
+     },
+     "container": {
+      "type": "object",
+      "properties": {
+       "kind": {
+        "type": "string"
+       },
+       "id": {
+        "type": "string"
+       },
+       "version": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "kind",
+       "id"
+      ]
+     },
+     "verbose": {
+      "type": "boolean"
+     },
+     "opId": {
+      "type": "string"
+     },
+     "artifact": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object",
+     "payload"
+    ]
+   }
+  },
+  {
+   "name": "mcp__claude_ai_Claude_Docs__read",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusm",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "object",
+      "properties": {
+       "object": {
+        "type": "string",
+        "enum": [
+         "project",
+         "file",
+         "node",
+         "utterance",
+         "enum",
+         "blob"
+        ]
+       },
+       "id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "object",
+       "id"
+      ]
+     },
+     "engine": {
+      "type": "string"
+     },
+     "container": {
+      "type": "object",
+      "properties": {
+       "kind": {
+        "type": "string"
+       },
+       "id": {
+        "type": "string"
+       },
+       "version": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "kind",
+       "id"
+      ]
+     },
+     "payload": {
+      "anyOf": [
+       {
+        "type": "object"
+       },
+       {
+        "type": "string"
+       }
+      ]
+     }
+    },
+    "required": [
+     "ref"
+    ]
+   }
+  },
+  {
+   "name": "mcp__linear__get_issue",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consecte",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet c"
+     },
+     "fields": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d",
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "id",
+        "uuid",
+        "title",
+        "description",
+        "projectMilestone",
+        "priority",
+        "estimate",
+        "url",
+        "gitBranchName",
+        "createdAt",
+        "updatedAt",
+        "archivedAt",
+        "completedAt",
+        "startedAt",
+        "canceledAt",
+        "startedTriageAt",
+        "triagedAt",
+        "dueDate",
+        "slaStartedAt",
+        "slaMediumRiskAt",
+        "slaHighRiskAt",
+        "slaBreachesAt",
+        "slaType",
+        "status",
+        "statusType",
+        "labels",
+        "triageIntel",
+        "createdBy",
+        "createdById",
+        "assignee",
+        "assigneeId",
+        "delegate",
+        "delegateId",
+        "project",
+        "projectId",
+        "parentId",
+        "team",
+        "teamId",
+        "cycleId",
+        "attachments",
+        "documents",
+        "stateHistory",
+        "relations",
+        "customerNeeds",
+        "releases"
+       ]
+      }
+     },
+     "includeRelations": {
+      "default": false,
+      "description": "Include blocking/related/duplicate relations",
+      "type": "boolean"
+     },
+     "includeCustomerNeeds": {
+      "default": false,
+      "description": "Include associated customer needs",
+      "type": "boolean"
+     },
+     "includeReleases": {
+      "default": false,
+      "description": "Include associated releases",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp__linear__list_issues",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dol",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "limit": {
+      "default": 50,
+      "description": "Max results (default 50, max 250)",
+      "type": "number",
+      "maximum": 250
+     },
+     "cursor": {
+      "description": "Next page cursor",
+      "type": "string"
+     },
+     "orderBy": {
+      "default": "updatedAt",
+      "description": "Sort: createdAt | updatedAt",
+      "type": "string",
+      "enum": [
+       "createdAt",
+       "updatedAt"
+      ]
+     },
+     "query": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod",
+      "type": "string"
+     },
+     "customView": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur ad",
+      "type": "string",
+      "minLength": 1
+     },
+     "team": {
+      "description": "Team name or ID",
+      "type": "string"
+     },
+     "includeSubTeams": {
+      "default": false,
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ",
+      "type": "boolean"
+     },
+     "state": {
+      "description": "State type, name, or ID",
+      "type": "string"
+     },
+     "cycle": {
+      "description": "Cycle name, number, or ID",
+      "type": "string"
+     },
+     "label": {
+      "description": "Label name or ID",
+      "type": "string"
+     },
+     "assignee": {
+      "description": "User ID, name, email, or \"me\"",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "creator": {
+      "description": "User ID, name, email, or \"me\"",
+      "type": "string"
+     },
+     "delegate": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit s",
+      "type": "string"
+     },
+     "project": {
+      "description": "Project name, ID, identifier (e.g., P-ENG-123), or slug",
+      "type": "string"
+     },
+     "release": {
+      "description": "Release ID or slug",
+      "type": "string"
+     },
+     "priority": {
+      "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+      "type": "number"
+     },
+     "parentId": {
+      "description": "Parent issue ID or identifier (e.g., LIN-123)",
+      "type": "string"
+     },
+     "fields": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d",
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "id",
+        "uuid",
+        "title",
+        "description",
+        "projectMilestone",
+        "priority",
+        "estimate",
+        "url",
+        "gitBranchName",
+        "createdAt",
+        "updatedAt",
+        "archivedAt",
+        "completedAt",
+        "startedAt",
+        "canceledAt",
+        "startedTriageAt",
+        "triagedAt",
+        "dueDate",
+        "slaStartedAt",
+        "slaMediumRiskAt",
+        "slaHighRiskAt",
+        "slaBreachesAt",
+        "slaType",
+        "status",
+        "statusType",
+        "labels",
+        "triageIntel",
+        "createdBy",
+        "createdById",
+        "assignee",
+        "assigneeId",
+        "delegate",
+        "delegateId",
+        "project",
+        "projectId",
+        "parentId",
+        "team",
+        "teamId",
+        "cycleId"
+       ]
+      }
+     },
+     "createdAt": {
+      "description": "Created after: ISO-8601 date/duration (e.g., -P1D)",
+      "type": "string"
+     },
+     "updatedAt": {
+      "description": "Updated after: ISO-8601 date/duration (e.g., -P1D)",
+      "type": "string"
+     },
+     "triagedAt": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing ",
+      "type": "string"
+     },
+     "includeArchived": {
+      "default": false,
+      "description": "Include archived items",
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp__linear__save_issue",
+   "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod ",
+   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "id": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do ",
+      "type": "string"
+     },
+     "title": {
+      "description": "Issue title (required when creating, unless template is set)",
+      "type": "string"
+     },
+     "description": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum d",
+      "type": "string"
+     },
+     "patch": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor s",
+      "minItems": 1,
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+       "oneOf": [
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "replace"
+          },
+          "old_string": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eius"
+          },
+          "new_string": {
+           "type": "string",
+           "description": "Replacement text. Empty string deletes the match"
+          },
+          "replace_all": {
+           "description": "Replace every occurrence instead of requiring a unique match",
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "op",
+          "old_string",
+          "new_string"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "insert_before"
+          },
+          "anchor": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod te"
+          },
+          "text": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempo"
+          }
+         },
+         "required": [
+          "op",
+          "anchor",
+          "text"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "insert_after"
+          },
+          "anchor": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t"
+          },
+          "text": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod temp"
+          }
+         },
+         "required": [
+          "op",
+          "anchor",
+          "text"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "prepend"
+          },
+          "text": {
+           "type": "string",
+           "minLength": 1,
+           "description": "Text to insert at the very start of the content"
+          }
+         },
+         "required": [
+          "op",
+          "text"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "append"
+          },
+          "text": {
+           "type": "string",
+           "minLength": 1,
+           "description": "Text to insert at the very end of the content"
+          }
+         },
+         "required": [
+          "op",
+          "text"
+         ]
+        },
+        {
+         "type": "object",
+         "properties": {
+          "op": {
+           "type": "string",
+           "const": "replace_range"
+          },
+          "from": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
+          },
+          "to": {
+           "type": "string",
+           "minLength": 1,
+           "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor si"
+          },
+          "new_string": {
+           "type": "string",
+           "description": "Text replacing the range. Empty string deletes it"
+          }
+         },
+         "required": [
+          "op",
+          "from",
+          "to",
+          "new_string"
+         ]
+        }
+       ]
+      }
+     },
+     "team": {
+      "description": "Team name or ID (required when creating)",
+      "type": "string"
+     },
+     "template": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipis",
+      "type": "string"
+     },
+     "cycle": {
+      "description": "Cycle name, number, or ID. Null to remove",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "milestone": {
+      "description": "Milestone name or ID",
+      "type": "string"
+     },
+     "priority": {
+      "description": "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+      "type": "number"
+     },
+     "project": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod t",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "state": {
+      "description": "State type, name, or ID",
+      "type": "string"
+     },
+     "assignee": {
+      "description": "User ID, name, email, or \"me\". Null to remove",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "delegate": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod te",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "labels": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet c",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "addLabels": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsu",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "removeLabels": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ips",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "dueDate": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eius",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "slaBreachesAt": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ",
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "slaType": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor si",
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "all",
+         "onlyBusinessDays"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "parentId": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "estimate": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor sit amet consectetur adipiscing",
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "links": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ip",
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "format": "uri"
+        },
+        "title": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "url",
+        "title"
+       ]
+      }
+     },
+     "setReleases": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ipsum dolor s",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "addReleases": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "removeReleases": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod temp",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "blocks": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem i",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "blockedBy": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lorem ips",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "relatedTo": {
+      "description": "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor lor",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "duplicateOf": {
+      "description": "Duplicate of issue ID/identifier. Null to remove",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "removeBlocks": {
+      "description": "Issue IDs/identifiers to stop blocking",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "removeBlockedBy": {
+      "description": "Issue IDs/identifiers to remove as blockers of this issue",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "removeRelatedTo": {
+      "description": "Related issue IDs/identifiers to remove",
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "additionalProperties": false
+   }
+  }
+ ],
+ "max_tokens": 64000,
+ "thinking": {
+  "type": "adaptive",
+  "display": "omitted"
+ },
+ "context_management": {
+  "edits": [
+   {
+    "type": "clear_thinking_20251015",
+    "keep": "all"
+   }
+  ]
+ },
+ "output_config": {
+  "effort": "high"
+ },
+ "stream": true
+}

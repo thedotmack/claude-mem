@@ -17,6 +17,7 @@ import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+import { utf8CutIndex } from '../../shared/utf8-cut.js';
 export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
@@ -114,8 +115,7 @@ export function truncatePayload(value: string, maxBytes: number = MAX_TOOL_PAYLO
   if (byteLength <= maxBytes) return value;
 
   const buf = Buffer.from(value, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  const end = utf8CutIndex(buf, maxBytes);
   return `${buf.subarray(0, end).toString('utf8')}…[truncated: ${byteLength} bytes]`;
 }
 
@@ -178,6 +178,17 @@ export function createToolUsesSchema(db: Database): void {
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_created_at_epoch ON tool_uses(created_at_epoch)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_observation_id ON tool_uses(observation_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_or_generation_id ON tool_uses(or_generation_id)');
+
+  // Every observation of the batch a tool use was summarized in. tool_uses.observation_id
+  // keeps only the batch's first one; Endless Mode shows each of them as a timeline row.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tool_use_batch_observations (
+      content_session_id TEXT NOT NULL,
+      tool_use_id TEXT NOT NULL,
+      observation_id INTEGER NOT NULL,
+      PRIMARY KEY (content_session_id, tool_use_id, observation_id)
+    )
+  `);
 }
 
 /**
@@ -268,10 +279,17 @@ export function linkToolUsesToObservation(
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
+    /**
+     * Every observation the batch stored, `observationId` (its first) among them. Recorded for
+     * the tool uses this batch owns (their observation_id is `observationId`), so a batch that
+     * re-claims a tool use another batch owns adds nothing to it.
+     */
+    batchObservationIds?: number[];
   }
 ): number {
   const ids = params.toolUseIds.filter(id => typeof id === 'string' && id.length > 0);
   if (ids.length === 0) return 0;
+  const batchObservationIds = [...new Set([params.observationId, ...(params.batchObservationIds ?? [])])];
 
   const placeholders = ids.map(() => '?').join(',');
   const result = db.prepare(`
@@ -293,7 +311,30 @@ export function linkToolUsesToObservation(
     params.observationId
   );
 
+  const recordBatchObservation = db.prepare(`
+    INSERT OR IGNORE INTO tool_use_batch_observations (content_session_id, tool_use_id, observation_id)
+    SELECT content_session_id, tool_use_id, ? FROM tool_uses
+    WHERE content_session_id = ? AND tool_use_id IN (${placeholders}) AND observation_id = ?
+  `);
+  for (const batchObservationId of batchObservationIds) {
+    recordBatchObservation.run(batchObservationId, params.contentSessionId, ...ids, params.observationId);
+  }
+
   return Number(result.changes ?? 0);
+}
+
+/**
+ * Whether the tool use `(contentSessionId, toolUseId)` already produced an
+ * observation (its `observation_id` is linked). A replay of such a tool use
+ * after a worker restart must not be queued again: the in-memory dedupe in
+ * SessionMessageBuffer lasts one worker lifetime only. A row with no linked
+ * observation yet is not "done": its generation may have been lost.
+ */
+export function isToolUseLinkedToObservation(db: Database, contentSessionId: string, toolUseId: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 AS linked FROM tool_uses WHERE content_session_id = ? AND tool_use_id = ? AND observation_id IS NOT NULL'
+  ).get(contentSessionId, toolUseId) as { linked: number } | null;
+  return row !== null && row !== undefined;
 }
 
 function mapPlatformFilter(platformSource: string | undefined): { clause: string; param: string } | null {
@@ -383,6 +424,55 @@ export function getToolUsesByIds(
     ORDER BY created_at_epoch DESC
     LIMIT ${rowLimit}
   `).all(...params) as ToolUseRow[];
+}
+
+/** A tool use's observation as the wire gateway's Endless Mode needs it: no tool bodies. */
+export interface ToolUseObservationRow {
+  tool_use_id: string;
+  observation_id: number;
+  type: string;
+  title: string | null;
+  subtitle: string | null;
+  narrative: string | null;
+  facts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  created_at_epoch: number;
+}
+
+/**
+ * For each of `toolUseIds` of one session that is linked to an observation,
+ * one row per observation of its batch (tool_use_batch_observations; a link
+ * made before that table existed has only the batch's first), with each
+ * observation's type, title, subtitle, narrative, facts, files and creation time (POST
+ * /api/wire/tool-observations). Ids with no observation yet are left out.
+ */
+export function getToolUseObservations(
+  db: Database,
+  query: { contentSessionId: string; platformSource?: string; toolUseIds: string[] },
+): ToolUseObservationRow[] {
+  const toolUseIds = [...new Set(query.toolUseIds.filter(id => typeof id === 'string' && id.length > 0))];
+  if (toolUseIds.length === 0) return [];
+  const params: Array<string | number> = [query.contentSessionId, ...toolUseIds];
+  const conditions = ['t.content_session_id = ?', `t.tool_use_id IN (${toolUseIds.map(() => '?').join(',')})`];
+  const platform = mapPlatformFilter(query.platformSource);
+  if (platform) {
+    conditions.push(platform.clause.replace('platform_source', 't.platform_source'));
+    params.push(platform.param);
+  }
+  return db.prepare(`
+    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.type AS type, o.title AS title, o.subtitle AS subtitle, o.narrative AS narrative, o.facts AS facts,
+      o.files_read AS files_read, o.files_modified AS files_modified, o.created_at_epoch AS created_at_epoch
+    FROM tool_uses t
+    JOIN (
+      SELECT content_session_id, tool_use_id, observation_id FROM tool_use_batch_observations
+      UNION
+      SELECT content_session_id, tool_use_id, observation_id FROM tool_uses WHERE observation_id IS NOT NULL
+    ) b ON b.content_session_id = t.content_session_id AND b.tool_use_id = t.tool_use_id
+    JOIN observations o ON o.id = b.observation_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY t.tool_use_id, o.id
+  `).all(...params) as ToolUseObservationRow[];
 }
 
 /**

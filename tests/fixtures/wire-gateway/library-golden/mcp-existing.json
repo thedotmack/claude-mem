@@ -1,0 +1,19 @@
+{
+  "exitCodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.config/goose/config.yaml": "GOOSE_PROVIDER: openai\nextensions:\n  claude-mem:\n    enabled: true\n    type: stdio\n    name: claude-mem\n    cmd: <EXEC_PATH>\n    args:\n      - <SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\n    timeout: 300\n  developer:\n    enabled: true\n    type: builtin\n    name: developer\n",
+    "home/.github/copilot/mcp.json": "{\n  \"servers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    },\n    \"claude-mem\": {\n      \"command\": \"<EXEC_PATH>\",\n      \"args\": [\n        \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\"\n      ]\n    }\n  }\n}\n",
+    "home/.warp/.mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    },\n    \"claude-mem\": {\n      \"command\": \"<EXEC_PATH>\",\n      \"args\": [\n        \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\"\n      ]\n    }\n  }\n}\n",
+    "workspace/.github/copilot-instructions.md": "# Copilot rules\n\n<claude-mem-context>\n# claude-mem: Cross-Session Memory\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n</claude-mem-context>\n",
+    "workspace/.roo/mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    },\n    \"claude-mem\": {\n      \"command\": \"<EXEC_PATH>\",\n      \"args\": [\n        \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\"\n      ]\n    }\n  }\n}\n",
+    "workspace/.roo/rules/claude-mem-context.md": "<claude-mem-context>\n# claude-mem: Cross-Session Memory\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n</claude-mem-context>\n",
+    "workspace/WARP.md": "# Warp rules\n\n<claude-mem-context>\n# claude-mem: Cross-Session Memory\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n</claude-mem-context>\n",
+    "data/": "<empty dir>"
+  }
+}

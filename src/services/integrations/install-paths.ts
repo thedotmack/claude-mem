@@ -100,11 +100,33 @@ export function getBunAbsolutePath(): string {
 }
 
 /**
+ * Set by the npx CLI (Node) on the Bun child it runs the Library in
+ * (npx-cli/commands/library.ts): the Node binary that ran `npx claude-mem`.
+ */
+export const INSTALLER_NODE_PATH_ENV = 'CLAUDE_MEM_INSTALLER_NODE_PATH';
+
+/**
  * Absolute path to the Node runtime launching this installer. MCP-only
- * integrations register `node <mcp-server.cjs>`; baking `process.execPath`
+ * integrations register `node <mcp-server.cjs>`; baking the installer's Node
  * guarantees the same Node that ran the installer is the one that launches the
- * server.
+ * server. Under npx the config edits run in a Bun child, whose own
+ * `process.execPath` is Bun, so the parent's Node comes in through
+ * INSTALLER_NODE_PATH_ENV.
  */
 export function getNodeAbsolutePath(): string {
-  return process.execPath;
+  return process.env[INSTALLER_NODE_PATH_ENV] || process.execPath;
+}
+
+/**
+ * claude-mem's stdio MCP server as a `{command, args}` entry, for an installer
+ * outside the Library (DevinHooksInstaller). Here, not in McpIntegrations:
+ * that module fixes its per-project config paths from process.cwd() when it
+ * loads, and worker-service imports the Devin installer before a command
+ * returns to the caller's directory.
+ */
+export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
+  return {
+    command: getNodeAbsolutePath(),
+    args: [mcpServerPath],
+  };
 }

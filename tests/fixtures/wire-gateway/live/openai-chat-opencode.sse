@@ -1,0 +1,14 @@
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"I'll create the","reasoning":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":" files and run tests","reasoning":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":".\n","reasoning":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":null,"reasoning":null,"tool_calls":[{"id":"3cd8c3f9-a14b-4015-8ab1-f126f5b4f139","type":"function","function":{"name":"write","arguments":"{\"content\": \"def c_to_f(c):\\n    return c * 9/5 + 32\\n\", \"filePath\": \"/home/user/project______________________________________________________________________________________________________\"}"}}]}}],"usage":null}
+
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[{"index":0,"finish_reason":"tool_calls","delta":{"role":"assistant","content":null,"reasoning":null,"tool_calls":[{"id":"186eef01-967c-4c64-93c5-74114f869a67","type":"function","function":{"name":"write","arguments":"{\"content\": \"from temps import c_to_f\\n\\n\\ndef test_c_to_f():\\n    assert c_to_f(0) == 32\\n    assert c_to_f(100) == 212\\n    assert c_to_f(37) == 98.6\\n\", \"filePath\": \"/home/user/project___________________________________________________________________________________________________________\"}"}}]}}],"usage":null}
+
+data: {"id":"mai-api-08c6ac51-7572-4e27-94ee-322132e26829","object":"chat.completion.chunk","created":1792881138,"model":"big-pickle","choices":[],"usage":{"prompt_tokens":7135,"completion_tokens":605,"total_tokens":7740,"prompt_tokens_details":{"cached_tokens":73},"completion_tokens_details":{"reasoning_tokens":408},"cost":0,"opencode":{"billing_source":"free","list_cost":0,"tokens":{"input":7062,"output":605,"reasoning":408,"cache_read":73,"cache_write_5m":0,"cache_write_1h":0}}}}
+
+data: [DONE]
+

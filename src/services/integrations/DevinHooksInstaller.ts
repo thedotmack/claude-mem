@@ -17,8 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
-import { getBunAbsolutePath, getMcpServerAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
-import { buildMcpServerEntry } from './McpIntegrations.js';
+import { buildMcpServerEntry, getBunAbsolutePath, getMcpServerAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
 
 interface DevinHookCommand {
   type: string;

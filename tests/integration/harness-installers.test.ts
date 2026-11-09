@@ -222,13 +222,16 @@ describe('first-party harness installers', () => {
       const rename = fs.renameSync;
       const { mock } = await import('bun:test');
       let refuse = true;
-      mock.module('node:fs', () => ({ ...fs, renameSync(from, to) {
-        if (refuse && String(from).includes('.claude-mem-files-') && String(to).endsWith('package.json')) {
+      // The Library writes each file through a temp file renamed over it (writeFileAtomic).
+      const refusingFs = () => ({ ...fs, renameSync(from, to) {
+        if (refuse && String(from).endsWith('.tmp') && String(to).endsWith('package.json')) {
           refuse = false;
           throw new Error('injected one-time rename refusal');
         }
         return rename(from, to);
-      } }));
+      } });
+      mock.module('node:fs', refusingFs);
+      mock.module('fs', refusingFs);
     ` });
     expect(result.status).toBe(1);
     expect(result.after).toEqual(result.before);

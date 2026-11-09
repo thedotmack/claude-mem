@@ -1,0 +1,16 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.config/goose/config.yaml": "GOOSE_PROVIDER: openai\nextensions:\n  developer:\n    enabled: true\n    type: builtin\n    name: developer\n",
+    "home/.github/copilot/mcp.json": "{\n  \"servers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}\n",
+    "home/.warp/.mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}\n",
+    "workspace/.github/copilot-instructions.md": "# Copilot rules\n\n<claude-mem-context>\nold\n</claude-mem-context>\n",
+    "workspace/.roo/mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}\n",
+    "workspace/WARP.md": "# Warp rules\n",
+    "data/": "<empty dir>"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.config/opencode/AGENTS.md": "# Global rules\n\nUse tabs.\n",
+    "home/.config/opencode/opencode.json": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"plugin\": [\n    \"opencode-wakatime\",\n    \"./plugins/claude-mem.js\"\n  ],\n  \"mcp\": {\n    \"github\": {\n      \"type\": \"local\",\n      \"command\": [\n        \"gh-mcp\"\n      ]\n    },\n    \"claude-mem\": {\n      \"type\": \"local\",\n      \"command\": [\n        \"<EXEC_PATH>\",\n        \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\"\n      ]\n    }\n  }\n}\n",
+    "home/.config/opencode/plugins/claude-mem.js": "export default { id: \"claude-mem\" };\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>",
+    "cli-calls.log": "opencode --version\n"
+  }
+}

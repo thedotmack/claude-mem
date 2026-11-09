@@ -36,7 +36,7 @@ describe('MCP server name safety (#2473)', () => {
     // Read the source rather than importing it (importing runs the stdio server
     // bootstrap, which is undesirable in a unit test). Extract `name: '...'`
     // entries from the tools array.
-    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
+    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-tool-table.ts');
     const src = readFileSync(serverSrcPath, 'utf-8');
 
     const toolNames = Array.from(src.matchAll(/^\s{4}name: '([^']+)',?$/gm)).map(m => m[1]);
@@ -60,7 +60,7 @@ describe('MCP server name safety (#2473)', () => {
   // convention some hosts use, and MCP naming guidance says tool names should
   // start with an alphanumeric character. Pin that here.
   it('every registered MCP tool name starts with an alphanumeric character (#3288)', () => {
-    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
+    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-tool-table.ts');
     const src = readFileSync(serverSrcPath, 'utf-8');
 
     const toolNames = Array.from(src.matchAll(/^\s{4}name: '([^']+)',?$/gm)).map(m => m[1]);

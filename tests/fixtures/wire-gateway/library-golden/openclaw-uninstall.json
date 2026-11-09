@@ -1,0 +1,13 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.openclaw/extensions/": "<empty dir>",
+    "home/.openclaw/openclaw.json": "{\n  \"theme\": \"dark\",\n  \"plugins\": {\n    \"entries\": {\n      \"other\": {\n        \"enabled\": true\n      }\n    },\n    \"slots\": {}\n  }\n}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

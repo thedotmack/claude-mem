@@ -19,6 +19,8 @@ export function isRecursiveMemoryTool(toolName: string): boolean {
   if (!toolName) return false;
   // Preserve the OpenClaw adapter's existing native memory_* recursion gate.
   if (toolName.startsWith('memory_')) return true;
+  // The wire gateway's hidden tool when the agent has a memory_search of its own (claude_mem_memory_search[_N]).
+  if (toolName.startsWith('claude_mem_memory_search')) return true;
   if (toolName === 'claude_mem_search' || toolName === 'claude_mem_timeline' || toolName === 'claude_mem_get_observations') return true;
   if (toolName === 'dumb_search' || toolName === 'mem_search' || toolName === 'get_summaries') return true;
   const tool = claudeMemToolName(toolName);

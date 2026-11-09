@@ -1,0 +1,17 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.pi/agent/extensions/claude-mem/CLAUDE-MEM-LICENSE.txt": "claude-mem license\n",
+    "home/.pi/agent/extensions/claude-mem/CLAUDE-MEM-NOTICE.txt": "claude-mem notice\n",
+    "home/.pi/agent/extensions/claude-mem/LICENSE.txt": "pi third-party license\n",
+    "home/.pi/agent/extensions/claude-mem/TYPEBOX-LICENSE.txt": "MIT License (typebox)\n",
+    "home/.pi/agent/extensions/claude-mem/TYPEBOX-PROVENANCE.json": "{\"name\":\"typebox\",\"version\":\"1.1.24\",\"license\":\"MIT\",\"licenseSha256\":\"b16d9a26df6c6386f81bbce56584135fe6f9cde1a63162b6e1a28ca86bd4181b\"}",
+    "home/.pi/agent/extensions/claude-mem/index.js": "export default function pi() {}\n",
+    "home/.pi/agent/extensions/claude-mem/package.json": "{\"name\":\"@claude-mem/pi\",\"private\":true,\"type\":\"module\"}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

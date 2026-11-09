@@ -2,7 +2,7 @@ import { mkdirSync, watch as fsWatch } from 'fs';
 import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSessionInit, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
 import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
 import { isLiveObserverEvent, isExpiredObserverEvent } from '../../shared/observer-work-policy.js';
 
@@ -22,6 +22,21 @@ export async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff:
     return true;
   }
   switch (entry.kind) {
+    case 'session_init': {
+      // Every outcome is final: initialized, a duplicate of a prompt already
+      // saved, or skipped (private, internal, excluded). A conflict (the
+      // native prompt id was used for other text) can never succeed either.
+      // Dated when it was spooled, like the observations after it (see ingestObservation).
+      const outcome = await ingestSessionInit({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
+      if (outcome.status === 'conflict') {
+        logger.warn('HOOK', 'Spooled session init conflicts with a saved prompt; dropping it', {
+          contentSessionId: entry.payload.contentSessionId,
+          nativePromptId: entry.payload.nativePromptId,
+          error: outcome.error,
+        });
+      }
+      return true;
+    }
     case 'work_state_telemetry': {
       const { payload } = entry;
       const db = requireIngestContext().dbManager.getSessionStore().db;
@@ -96,11 +111,19 @@ export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumed
 
 export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
   const result = await spool.drain((entry, markHandedOff) => {
-    // Compatibility cleanup only. Before this change hooks persisted these
-    // inputs; replaying them now would restart a paid observer backlog.
     if (isLiveObserverEvent(entry.kind)) {
-      logger.debug('HOOK', 'Discarded legacy observer spool entry without inference', { kind: entry.kind });
-      return true;
+      // Compatibility cleanup. Before #5347 hooks persisted these inputs;
+      // replaying them now would restart a paid observer backlog.
+      if (!entry.liveObserverHandoff) {
+        logger.debug('HOOK', 'Discarded legacy observer spool entry without inference', { kind: entry.kind });
+        return true;
+      }
+      // The wire gateway's live handoff: one attempt while fresh (an expired
+      // one is skipped inside ingestHookSpoolEntry), never kept for a retry.
+      return ingestHookSpoolEntry(entry, markHandedOff).then(outcome => {
+        if (outcome !== true) logger.debug('HOOK', 'Live observer handoff not ingested; skipped, not retried', { kind: entry.kind });
+        return true;
+      });
     }
     return ingestHookSpoolEntry(entry, markHandedOff);
   }, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));

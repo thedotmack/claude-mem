@@ -24,7 +24,10 @@ import {
   createToolUsesSchema,
   upsertToolUse as upsertToolUseRow,
   linkToolUsesToObservation as linkToolUsesToObservationRows,
+  isToolUseLinkedToObservation as isToolUseLinkedToObservationRow,
   getToolUsesByIds as getToolUsesByIdsRows,
+  getToolUseObservations as getToolUseObservationsRows,
+  type ToolUseObservationRow,
   queryToolUses as queryToolUsesRows,
   countToolUses as countToolUsesRows,
   type ToolUseRow,
@@ -3384,11 +3387,16 @@ export class SessionStore {
     return upsertToolUseRow(this.db, input);
   }
 
+  isToolUseLinkedToObservation(contentSessionId: string, toolUseId: string): boolean {
+    return isToolUseLinkedToObservationRow(this.db, contentSessionId, toolUseId);
+  }
+
   linkToolUsesToObservation(params: {
     contentSessionId: string;
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
+    batchObservationIds?: number[];
   }): number {
     return linkToolUsesToObservationRows(this.db, params);
   }
@@ -3402,6 +3410,10 @@ export class SessionStore {
 
   queryToolUses(filters: ToolUseQueryFilters = {}): ToolUseRow[] {
     return queryToolUsesRows(this.db, filters);
+  }
+
+  getToolUseObservations(query: { contentSessionId: string; platformSource?: string; toolUseIds: string[] }): ToolUseObservationRow[] {
+    return getToolUseObservationsRows(this.db, query);
   }
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
@@ -3973,6 +3985,11 @@ export class SessionStore {
     emitContextInvalidation(session ? { projects: [session.project] } : 'all', reason, 'additive', { kinds: ['prompt'] });
   }
 
+  /**
+   * `createdAtEpoch` is for a prompt ingested after it was said (a hook
+   * spool entry): it is dated when the producer saw it, so observations
+   * spooled after it are attributed to it. Omitted, it is now.
+   */
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
     const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();

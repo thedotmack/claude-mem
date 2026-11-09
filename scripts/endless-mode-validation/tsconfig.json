@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["forward/*.ts", "backtest/*.ts", "../../src/types/*.d.ts"],
+  "exclude": []
+}

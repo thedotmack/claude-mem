@@ -1,0 +1,81 @@
+{
+  "id": "resp_67ca09c5efe0819096d0511c92b8c890096610f474011cc0",
+  "object": "response",
+  "access_programs": null,
+  "created_at": 1741294021,
+  "status": "completed",
+  "completed_at": 1741294022,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "model": "gpt-6-astra",
+  "output": [
+    {
+      "type": "function_call",
+      "id": "fc_67ca09c6bedc8190a7abfec07b1a1332096610f474011cc0",
+      "call_id": "call_unLAR8MvFNptuiZK6K6HCy5k",
+      "name": "get_current_weather",
+      "arguments": "{\"location\":\"Boston, MA\",\"unit\":\"celsius\"}",
+      "status": "completed"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": null,
+    "summary": null
+  },
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "function",
+      "description": "Get the current weather in a given location",
+      "name": "get_current_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city and state, e.g. San Francisco, CA"
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "celsius",
+              "fahrenheit"
+            ]
+          }
+        },
+        "required": [
+          "location",
+          "unit"
+        ]
+      },
+      "strict": true
+    }
+  ],
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 291,
+    "output_tokens": 23,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 314,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    }
+  },
+  "user": null,
+  "metadata": {}
+}

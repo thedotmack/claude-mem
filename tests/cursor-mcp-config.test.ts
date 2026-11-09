@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import {
-  configureCursorMcp,
-  type CursorMcpConfig
-} from '../src/utils/cursor-utils';
+import { type CursorMcpConfig } from '../src/utils/cursor-utils';
+// Cursor's mcp.json is written through the Library (CursorHooksInstaller → wire-gateway/library).
+import { configureCursorMcpFile as configureCursorMcp } from '../src/services/integrations/CursorHooksInstaller';
 
 describe('Cursor MCP Configuration', () => {
   let tempDir: string;
@@ -82,7 +81,7 @@ describe('Cursor MCP Configuration', () => {
       expect(config.mcpServers['claude-mem'].args).toEqual([newPath]);
     });
 
-    it('refuses to overwrite an unparseable mcp.json, keeping the user\'s servers', () => {
+    it('adds to a commented (JSONC) mcp.json in place, keeping the user\'s comments and servers', () => {
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       const userConfig = `{
   // my servers
@@ -90,8 +89,19 @@ describe('Cursor MCP Configuration', () => {
 }`;
       writeFileSync(mcpJsonPath, userConfig);
 
-      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow(/refusing to overwrite/);
-      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(userConfig);
+      configureCursorMcp(mcpJsonPath, mcpServerPath);
+      const written = readFileSync(mcpJsonPath, 'utf-8');
+      expect(written).toContain('// my servers');
+      expect(written).toContain('"github": { "command": "npx", "args": ["github-mcp"] }');
+      expect(written).toContain(JSON.stringify(mcpServerPath));
+    });
+
+    it('refuses to overwrite an mcp.json that is not JSON at all', () => {
+      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
+      writeFileSync(mcpJsonPath, '{ not json');
+
+      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow(/left as it is/);
+      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe('{ not json');
     });
 
     it('handles mcp.json with missing mcpServers key', () => {

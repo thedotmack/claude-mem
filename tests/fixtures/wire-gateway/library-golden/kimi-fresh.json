@@ -1,0 +1,13 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.kimi-code/config.toml": "# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>\n[[hooks]]\nevent = \"SessionStart\"\nmatcher = \"startup|resume\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" start'\ntimeout = 120\n\n[[hooks]]\nevent = \"UserPromptSubmit\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi session-init-context'\ntimeout = 120\n\n[[hooks]]\nevent = \"PostToolUse\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi observation'\ntimeout = 120\n\n[[hooks]]\nevent = \"PostToolUseFailure\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi observation'\ntimeout = 120\n\n[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Read\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi file-context'\ntimeout = 60\n\n[[hooks]]\nevent = \"Stop\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi summarize'\ntimeout = 120\n\n[[hooks]]\nevent = \"PreCompact\"\nmatcher = \"manual|auto\"\ncommand = '\"<SANDBOX>/home/.bun/bin/bun\" \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\" hook kimi summarize'\ntimeout = 120\n# <<< claude-mem kimi hooks <<<\n",
+    "home/.kimi-code/mcp.json": "{\n  \"mcpServers\": {\n    \"mcp-search\": {\n      \"type\": \"stdio\",\n      \"command\": \"<EXEC_PATH>\",\n      \"args\": [\n        \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\"\n      ]\n    }\n  }\n}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

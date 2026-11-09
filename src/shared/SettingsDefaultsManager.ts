@@ -509,6 +509,29 @@ export interface SettingsDefaults {
   CLAUDE_MEM_AUTO_UPDATE: string;
   CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
+  // Wire gateway (src/services/wire-gateway/): a separate loopback daemon that
+  // relays agent model traffic. Never the worker's port or process.
+  CLAUDE_MEM_WIRE_GATEWAY_PORT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_HOST: string;
+  CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: string;
+  CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: string;
+  CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_RECORDING: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: string;
+  CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: string;
+  CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: string;
+  CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OTLP: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -840,6 +863,29 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_AUTO_UPDATE: 'true',                         // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
     CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path in settings.json, since the updater never reads its environment variable
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
+    // Mirrors the worker formula above, 100 ports lower: 37600–37699 sits below
+    // the worker (37700–37799) and the server runtime (37877+). 37677 on Windows.
+    CLAUDE_MEM_WIRE_GATEWAY_PORT: String(37600 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WIRE_GATEWAY_HOST: '127.0.0.1',
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: 'true',             // worker starts the wire gateway at boot while routes.json has a route
+    CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: '600000',    // stop/restart waits this long for in-flight streams before force-closing
+    CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '67108864', // 64 MiB: largest request body the relay reads; larger ones get a protocol-native 413
+    CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: '7',           // days of raw wire recordings (turns.jsonl) kept, when recording is consented to
+    CLAUDE_MEM_WIRE_GATEWAY_RECORDING: '',                 // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
+    CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: 'false',   // routes without their own setting swap secrets for placeholders before the provider sees them
+    CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: 'false', // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'false',         // routes without their own features.endlessMode fold finished work into one growing timeline (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: 'timeline', // how the timeline shows each observation: timeline | observation | observation-with-narrative (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: 'true',      // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: 'true',        // captureSource:'wire' routes without their own features.durableHeader get the owner's rules as a cached system block, changed only at a turn start (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: '1500',    // how long a conversation's first request waits for that context (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: 'false',   // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_OTLP: 'true',                  // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: '',     // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED: 'false',               // 'true' = shared team gateway: a second, team listener (SHARED_HOST:SHARED_PORT) where every request needs a client key in the base URL (/k/<key>/r/<route>); capture goes to each key's claude-mem server runtime; CLAUDE_MEM_WIRE_GATEWAY_HOST stays loopback (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: '0.0.0.0',        // shared mode: the team listener's address (every interface by default; a client key is always required there, loopback peers included)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: '',               // shared mode: the team listener's port, required when SHARED=true (the port a TLS proxy forwards to; never the loopback listener's)
+    CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: '',                 // shared mode: IPs/CIDR ranges (comma or space separated) other computers may connect from, judged on the socket address only; '' = every address; a malformed entry lets nothing in (read at gateway start)
   };
 
   static getAllDefaults(): SettingsDefaults {
@@ -861,7 +907,7 @@ export class SettingsDefaultsManager {
   static get(key: keyof SettingsDefaults): string {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
-      return this.normalizeWorkerHost(value);
+      return this.normalizeLoopbackHost(value);
     }
     // Callers join the data dir into file paths, and fs reads a leading `~` as
     // a directory name, so expand it the way paths.ts resolves the data dir
@@ -876,14 +922,15 @@ export class SettingsDefaultsManager {
   // 'localhost' resolves IPv6-first on modern Windows resolvers while
   // server.listen(port, 'localhost') binds ::1 only, so the hook client and
   // the worker can land on different loopback families (#2992). Pin the
-  // documented IPv4 loopback so every consumer of the setting agrees.
-  private static normalizeWorkerHost(host: string): string {
+  // documented IPv4 loopback so every consumer of the setting agrees (the
+  // worker's host here, the wire gateway's in its config.ts).
+  static normalizeLoopbackHost(host: string): string {
     return host === 'localhost' ? '127.0.0.1' : host;
   }
 
   private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
-    result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    result.CLAUDE_MEM_WORKER_HOST = this.normalizeLoopbackHost(result.CLAUDE_MEM_WORKER_HOST);
     // The default points at <home>/.claude-mem, and fresh settings files persist
     // it, so a custom CLAUDE_MEM_DATA_DIR would still share the home install's
     // transcript watches. Only an explicitly configured path is kept as is.

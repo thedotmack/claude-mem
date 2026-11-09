@@ -1,8 +1,11 @@
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { OwnedFileItem } from '../wire-gateway/library/types.js';
 
 /**
  * OMP (Oh My Pi) hook installer.
@@ -16,7 +19,8 @@ import { MARKETPLACE_ROOT } from '../../shared/paths.js';
  *
  * This installer copies the shipped hook bundle to
  * `~/.omp/agent/hooks/pre/claude-mem.ts`, where OMP loads it for every session
- * regardless of project. Uninstall removes that single file.
+ * regardless of project, through the Library (which records it). Uninstall
+ * removes that single file; `hooks/pre` is OMP's own folder and stays.
  */
 
 const OMP_HOOK_FILENAME = 'claude-mem.ts';
@@ -48,6 +52,10 @@ export function findOmpHookSourcePath(): string | null {
   return null;
 }
 
+function ompHookItem(contents: Uint8Array): OwnedFileItem {
+  return { kind: 'hook', id: 'hook:claude-mem.ts', group: LIBRARY_GROUPS.hooks, place: 'file', path: ompHookDestination(), contents };
+}
+
 export async function installOmpHooks(): Promise<number> {
   const source = findOmpHookSourcePath();
   if (!source) {
@@ -60,8 +68,7 @@ export async function installOmpHooks(): Promise<number> {
 
   try {
     const destination = ompHookDestination();
-    mkdirSync(ompHooksPreDir(), { recursive: true });
-    writeFileSync(destination, readFileSync(source, 'utf-8'), 'utf-8');
+    applyLibraryForInstaller({ agentId: 'omp', items: [ompHookItem(readFileSync(source))], ownedGroups: [LIBRARY_GROUPS.hooks] });
     console.log(`  OMP hook installed to: ${destination}`);
     logger.info('OMP', 'Hook installed', { destination });
     return 0;
@@ -79,7 +86,7 @@ export function uninstallOmpHooks(): number {
     return 0;
   }
   try {
-    rmSync(destination, { force: true });
+    removeLibraryForInstaller({ agentId: 'omp', items: [ompHookItem(new Uint8Array(0))] });
     console.log(`  Removed OMP hook: ${destination}`);
     return 0;
   } catch (error) {

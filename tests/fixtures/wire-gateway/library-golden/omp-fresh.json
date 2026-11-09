@@ -1,0 +1,11 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.omp/agent/hooks/pre/claude-mem.ts": "export default function hook() {}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

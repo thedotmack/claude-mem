@@ -1,0 +1,10 @@
+{
+  "model": "claude-opus-5-5",
+  "unit": "USD per million tokens",
+  "input": 4.0,
+  "cache_write_5m": 5.0,
+  "cache_write_1h": 8.0,
+  "cache_read": 0.20,
+  "output": 20.0,
+  "source": "The list prices every number in our Endless Mode reports uses (long-session, growing-timeline and backtest reports on PR 4800). Check them against Anthropic's current pricing page before quoting dollar amounts; the comparisons between configurations hold at any price because every configuration is priced the same way."
+}

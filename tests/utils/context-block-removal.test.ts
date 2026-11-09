@@ -3,10 +3,21 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanSingleFile } from '../../src/cli/claude-md-commands.js';
-import { removeContextTagBlock } from '../../src/services/integrations/AntigravityCliHooksInstaller.js';
+import { findTextBlock, removeTextBlock } from '../../src/services/wire-gateway/library/text-block.js';
 
 const OPEN = '<claude-mem-context>';
 const CLOSE = '</claude-mem-context>';
+
+// Agent uninstalls (Antigravity's GEMINI.md and rules file among them) take
+// the block out through the Library's text blocks, as library-engine does.
+function removeContextTagBlock(file: string): boolean {
+  const text = readFileSync(file, 'utf8');
+  const range = findTextBlock(text, OPEN, CLOSE);
+  if (!range) return false;
+  writeFileSync(file, removeTextBlock(text, range));
+  return true;
+}
+
 const authored = `# Notes\n\nKeep the \`${OPEN} ... ${CLOSE}\` markers in examples.\n\n\`\`\`md\n${OPEN}\nexample only\n${CLOSE}\n\`\`\`\n`;
 
 const sandboxes: string[] = [];

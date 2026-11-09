@@ -1,0 +1,11 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "workspace/.cursor/hooks.json": "{\n  \"version\": 1,\n  \"hooks\": {\n    \"beforeSubmitPrompt\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor session-init\"\n      },\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor context\"\n      }\n    ],\n    \"afterMCPExecution\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor observation\"\n      }\n    ],\n    \"afterShellExecution\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor observation\"\n      }\n    ],\n    \"afterFileEdit\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor file-edit\"\n      }\n    ],\n    \"stop\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook cursor summarize\"\n      }\n    ]\n  }\n}",
+    "workspace/.cursor/rules/claude-mem-context.mdc": "---\nalwaysApply: true\ndescription: \"Claude-mem context from past sessions (auto-updated)\"\n---\n\n# Memory Context from Past Sessions\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n",
+    "data/cursor-projects.json": "{\n  \"workspace\": {\n    \"workspacePath\": \"<SANDBOX>/workspace\",\n    \"installedAt\": \"<ISO_TIMESTAMP>\"\n  }\n}"
+  }
+}

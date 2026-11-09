@@ -2,7 +2,9 @@ import { test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { configureCursorMcp, registerCursorProject } from '../src/utils/cursor-utils';
+import { registerCursorProject } from '../src/utils/cursor-utils';
+import { configureCursorMcpFile as configureCursorMcp } from '../src/services/integrations/CursorHooksInstaller';
+import { parseJsonWithBom } from '../src/shared/atomic-json';
 
 function withFile(run: (file: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'cursor-bom-'));
@@ -13,7 +15,9 @@ test('adding Cursor MCP preserves existing BOM-prefixed configuration', () => wi
   const existing = { mcpServers: { other: { command: 'node', args: ['other.cjs'] } }, custom: true };
   writeFileSync(file, '\uFEFF' + JSON.stringify(existing));
   configureCursorMcp(file, '/claude-mem.cjs');
-  const result = JSON.parse(readFileSync(file, 'utf8'));
+  // The Library edits the file in place, so its BOM stays.
+  expect(readFileSync(file, 'utf8').startsWith('\uFEFF')).toBe(true);
+  const result = parseJsonWithBom<any>(readFileSync(file, 'utf8'));
   expect(result.mcpServers.other).toEqual(existing.mcpServers.other);
   expect(result.custom).toBe(true);
   expect(result.mcpServers['claude-mem'].args).toEqual(['/claude-mem.cjs']);

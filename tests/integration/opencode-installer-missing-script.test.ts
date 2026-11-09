@@ -11,7 +11,7 @@ import * as realInstallPathsModule from '../../src/services/integrations/install
 // that resolves an install path sees the stub.
 const realInstallPathsSnapshot = { ...realInstallPathsModule };
 
-// Force the MCP server script to be unresolvable, so addOpenCodeMcpReference
+// Force the MCP server script to be unresolvable, so the OpenCode MCP item
 // returns the config without a claude-mem MCP entry — the condition that must
 // produce a user-visible warning and a partial-install result.
 mock.module('../../src/services/integrations/install-paths.js', () => ({

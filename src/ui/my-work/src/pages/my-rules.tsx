@@ -36,6 +36,8 @@ function useRuleScope(scopeId: string): RuleScope {
   return scope
 }
 const scopeHeading = (scope: RuleScope) => scope.tier === 'everywhere' ? 'Everywhere' : scope.tier === 'project' ? `In ${scope.name}` : scope.name
+/** A scope's heading in MY-RULES.md, as renderRulesFile (work-view/my-rules.mjs) writes it. */
+const rulesFileHeading = (scope: RuleScope) => scope.tier === 'situation' ? `Situation: ${scope.name}` : scopeHeading(scope)
 const displayScope = (scope: RuleScope) => scope.tier === 'everywhere' ? t('Everywhere') : scope.tier === 'project' ? interpolate(t('In {name}'), { name: scope.name }) : scope.name
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
@@ -491,7 +493,7 @@ function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
     ...ordered.flatMap((scope) => {
       // The mapped model has only whole-day recency; sub-day ordering needs the original timestamps.
       const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || byStrength(a, b))
-      return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${scopeHeading(scope)}`, ruleId: null }, { text: '', ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
+      return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${rulesFileHeading(scope)}`, ruleId: null }, { text: '', ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
     }),
   ]
 }

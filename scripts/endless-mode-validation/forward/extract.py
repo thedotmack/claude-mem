@@ -1,0 +1,152 @@
+"""Keep the disk small during a run: every few seconds, each tee'd request body older than 3 s is reduced to one
+JSON line (what stats.py needs) in <tee dir>/extracted.jsonl and then deleted. The responses (resp.raw, which hold
+the usage numbers) stay. Runs until <stop file> exists, then does a last pass over everything.
+
+Usage: python3 extract.py <stop file> <tee dir>...
+EMV_KEEP_REQUEST_BODIES=1 keeps each body (renamed to <n>-req.body.kept, so it is extracted once) instead of deleting
+it: for a short proof run whose bodies are read afterwards. Unset (the default), bodies are deleted.
+Each line: n, time, proto, conversation (Anthropic metadata.user_id / Responses prompt_cache_key), model,
+tool_uses [{id, name, read_files}], messages, kind (Claude Code's summarizing request / first request continued from a
+summary), timeline_blocks, timeline_chars, thinking_blocks, body_bytes, memory_tools (claude-mem's search tools named
+anywhere in this request: the tools list, or the text where Claude Code names its deferred tools).
+"""
+import glob, json, os, re, shlex, sys, time
+
+FILE_CMDS = {'cat', 'head', 'tail', 'nl', 'less', 'more', 'bat'}
+CONTINUED = 'This session is being continued from a previous conversation'
+TIMELINE_OPEN = '<claude-mem-timeline>'
+TIMELINE_CLOSE = '</claude-mem-timeline>'
+KEEP_REQUEST_BODIES = os.environ.get('EMV_KEEP_REQUEST_BODIES') == '1'
+MEMORY_TOOL = re.compile(r'dumb_search|get_observations|save_memory|smart_search|claude-mem-search|claude-mem-recent|mcp__[\w-]*mem[\w-]*__\w+')
+
+
+def shell_reads(cmd):
+    """Files a shell command prints (cat/head/tail/nl/less/more/bat, sed -n)."""
+    out = []
+    for part in re.split(r'&&|\|\||;|\|', cmd):
+        try: toks = shlex.split(part)
+        except Exception: toks = part.split()
+        if not toks: continue
+        if toks[0] in ('bash', 'zsh', 'sh') and '-lc' in toks: continue
+        if toks[0] in FILE_CMDS or (toks[0] == 'sed' and '-n' in toks):
+            out += [t for t in toks[1:] if not t.startswith('-') and re.search(r'\.\w+$', t) and not re.match(r'^\d', t)]
+    return out
+
+
+def timeline_of(items, content_key):
+    # Every item: after a compaction the agent's leading context (its summary, the messages it kept) comes first, at any length.
+    for it in items:
+        parts = it.get(content_key) if isinstance(it, dict) else None
+        if not isinstance(parts, list): continue
+        texts = [p.get('text', '') for p in parts if isinstance(p, dict)]
+        if texts and texts[0].startswith(TIMELINE_OPEN) and TIMELINE_CLOSE in texts:
+            return texts[:texts.index(TIMELINE_CLOSE)]
+    return []
+
+
+def tool_detail(tool_input):
+    """What a tool call acts on, for the live panel: its command, file path or search pattern, in full."""
+    for key in ('command', 'file_path', 'path', 'pattern', 'url', 'query'):
+        value = tool_input.get(key)
+        if isinstance(value, list): value = ' '.join(map(str, value))
+        if isinstance(value, str) and value: return value
+    return ''
+
+
+def extract_anthropic(b):
+    msgs = b.get('messages', []); tool_uses = []; thinking = 0
+    for m in msgs:
+        if not isinstance(m.get('content'), list): continue
+        for c in m['content']:
+            t = c.get('type')
+            if t in ('thinking', 'redacted_thinking'): thinking += 1
+            if t == 'tool_use':
+                i = c.get('input') or {}
+                files = [i.get('file_path', '')] if c.get('name') == 'Read' else shell_reads(i.get('command', '')) if c.get('name') == 'Bash' else []
+                tool_uses.append(dict(id=c.get('id'), name=c.get('name'), read_files=[os.path.basename(x) for x in files if x], detail=tool_detail(i)))
+    last = json.dumps(msgs[-1]).lower() if msgs else ''
+    kind = 'summarizing request' if ('summary of the conversation' in last or 'summarize the conversation' in last) else \
+           'continued from a summary' if msgs and CONTINUED in json.dumps(msgs[:3]) else None
+    return dict(proto='anthropic', conversation=(b.get('metadata') or {}).get('user_id', ''), model=b.get('model'), tool_uses=tool_uses,
+                messages=len(msgs), kind=kind, thinking_blocks=thinking, timeline=timeline_of(msgs, 'content'))
+
+
+def extract_responses(b):
+    items = b.get('input', []) or []; tool_uses = []
+    for it in items:
+        if it.get('type') not in ('function_call', 'custom_tool_call', 'local_shell_call'): continue
+        args = it.get('arguments') or it.get('input') or ''; cmd = args
+        try:
+            a = json.loads(args); cmd = a.get('cmd') or a.get('command') or ''
+            if isinstance(cmd, list): cmd = ' '.join(cmd)
+        except Exception: pass
+        if isinstance(cmd, str) and 'exec_command' in cmd:
+            cmds = [m.group(2) for m in re.finditer(r'cmd\s*:\s*(["\'`])(.*?)(?<!\\)\1', cmd, re.S)]
+            files = [x for c in cmds for x in shell_reads(c)]
+        else:
+            files = shell_reads(cmd) if isinstance(cmd, str) else []
+        tool_uses.append(dict(id=it.get('call_id') or it.get('id'), name=it.get('name') or it.get('type'), read_files=[os.path.basename(x) for x in files if x], detail=cmd if isinstance(cmd, str) else ''))
+    reasoning = sum(1 for it in items if it.get('type') == 'reasoning')
+    return dict(proto='responses', conversation=b.get('prompt_cache_key', ''), model=b.get('model'), tool_uses=tool_uses,
+                messages=len(items), kind=None, side_call=not b.get('tools'), thinking_blocks=reasoning, timeline=timeline_of(items, 'content'))
+
+
+# OpenAI chat completions (Hermes Agent, OpenClaw). Their file-read tools and their shell tools.
+CHAT_READ_TOOLS = {'read_file', 'read'}
+CHAT_SHELL_TOOLS = {'terminal', 'exec', 'bash'}
+CHAT_SUMMARY_MARKERS = ('[CONTEXT COMPACTION', '[CONTEXT SUMMARY]', '<summary>')  # Hermes; Hermes (older); OpenClaw
+
+
+def extract_chat(b):
+    msgs = b.get('messages', []); tool_uses = []; reasoning = 0; summary = False
+    for m in msgs:
+        if m.get('reasoning_content') or m.get('reasoning') or m.get('reasoning_details'): reasoning += 1
+        content = m.get('content')
+        text = content if isinstance(content, str) else ' '.join(p.get('text', '') for p in content or [] if isinstance(p, dict))
+        if any(marker in text[:500] for marker in CHAT_SUMMARY_MARKERS): summary = True
+        for call in m.get('tool_calls') or []:
+            fn = call.get('function') or {}; name = fn.get('name')
+            try: args = json.loads(fn.get('arguments') or '{}')
+            except Exception: args = {}
+            if not isinstance(args, dict): args = {}
+            files = [args.get('path') or args.get('file_path') or ''] if name in CHAT_READ_TOOLS else shell_reads(args.get('command') or '') if name in CHAT_SHELL_TOOLS else []
+            tool_uses.append(dict(id=call.get('id'), name=name, read_files=[os.path.basename(x) for x in files if x], detail=tool_detail(args)))
+    # A request with no tools is an agent's side call (title, compression summary): its cost counts, its prompt size
+    # is not the session's.
+    return dict(proto='chat', conversation='', model=b.get('model'), tool_uses=tool_uses, messages=len(msgs),
+                kind='continued from a summary' if summary else None, side_call=not b.get('tools'), thinking_blocks=reasoning, timeline=timeline_of(msgs, 'content'))
+
+
+def extract(path):
+    b = json.load(open(path))
+    meta_path = json.load(open(path.replace('-req.body', '-req.json'))).get('path') or ''
+    rec = extract_chat(b) if 'chat/completions' in meta_path else extract_anthropic(b) if 'messages' in b else extract_responses(b)
+    blocks = rec.pop('timeline')
+    rec['memory_tools'] = sorted(set(MEMORY_TOOL.findall(json.dumps(b))))
+    meta = json.load(open(path.replace('-req.body', '-req.json')))
+    rec.update(n=os.path.basename(path)[:4], time=meta['time'], path=meta.get('path'), timeline_blocks=len(blocks),
+               timeline_chars=sum(len(x) for x in blocks), body_bytes=os.path.getsize(path))
+    return rec
+
+
+def one_pass(tee_dirs, min_age_seconds):
+    for d in tee_dirs:
+        if not os.path.isdir(d): continue
+        with open(os.path.join(d, 'extracted.jsonl'), 'a') as out:
+            for f in sorted(glob.glob(os.path.join(d, '*-req.body'))):
+                if time.time() - os.path.getmtime(f) < min_age_seconds: continue
+                try: rec = extract(f)
+                except Exception as e:
+                    # Kept on disk and reported, never dropped: stats.py counts unextracted bodies as an error.
+                    print(f'{f}: {e}', file=sys.stderr); continue
+                out.write(json.dumps(rec) + '\n'); out.flush()
+                if KEEP_REQUEST_BODIES: os.rename(f, f + '.kept')
+                else: os.remove(f)
+
+
+if __name__ == '__main__':
+    stop_file, tee_dirs = sys.argv[1], sys.argv[2:]
+    # 3 s: a body is written in one call before its request goes upstream; 3 s is well past that write.
+    while not os.path.exists(stop_file):
+        one_pass(tee_dirs, 3); time.sleep(5)
+    one_pass(tee_dirs, 0)

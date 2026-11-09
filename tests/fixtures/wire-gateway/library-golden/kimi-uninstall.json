@@ -1,0 +1,15 @@
+{
+  "exitCodes": [
+    0,
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.kimi-code/config.toml": "default_model = \"kimi-k2\"\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"./notify.sh\"\n",
+    "home/.kimi-code/config.toml.bak-<YYYYMMDD>": "default_model = \"kimi-k2\"\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"./notify.sh\"\n",
+    "home/.kimi-code/mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

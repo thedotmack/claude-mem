@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { parseJsonWithBom, stripUtf8Bom } from '../../src/shared/atomic-json.js';
 import { deregisterOpenCodePluginFromConfig, registerOpenCodePluginInConfig } from '../../src/services/integrations/OpenCodeInstaller.js';
 import { configureKimiMcp, uninstallKimiHooks } from '../../src/services/integrations/KimiHooksInstaller.js';
 
 // Host configs saved by Windows editors (PowerShell 5.1 "UTF8", Notepad) start
 // with a UTF-8 BOM. Like the Cursor, Windsurf and Devin installers, these must
 // read them instead of failing with "Unrecognized token".
+// The Library edits a config in place and keeps its leading BOM, so the
+// results are read back the way the installers read them.
 const BOM = '﻿';
 const env = { OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, KIMI_CODE_HOME: process.env.KIMI_CODE_HOME };
 const roots: string[] = [];
@@ -25,11 +28,11 @@ describe('installers read BOM-prefixed host configs', () => {
     process.env.OPENCODE_CONFIG_DIR = dir;
     writeFileSync(join(dir, 'opencode.json'), BOM + JSON.stringify({ mcp: { context7: { enabled: true } } }));
     expect(registerOpenCodePluginInConfig()).toBe(0);
-    expect(JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf-8')).mcp.context7).toEqual({ enabled: true });
+    expect(parseJsonWithBom<any>(readFileSync(join(dir, 'opencode.json'), 'utf-8')).mcp.context7).toEqual({ enabled: true });
 
-    writeFileSync(join(dir, 'opencode.json'), BOM + readFileSync(join(dir, 'opencode.json'), 'utf-8'));
+    writeFileSync(join(dir, 'opencode.json'), BOM + stripUtf8Bom(readFileSync(join(dir, 'opencode.json'), 'utf-8')));
     expect(deregisterOpenCodePluginFromConfig()).toBe(0);
-    expect(JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf-8')).mcp).toEqual({ context7: { enabled: true } });
+    expect(parseJsonWithBom<any>(readFileSync(join(dir, 'opencode.json'), 'utf-8')).mcp).toEqual({ context7: { enabled: true } });
   });
 
   it('Kimi: configures and removes mcp-search in a BOM-prefixed mcp.json', () => {
@@ -37,11 +40,11 @@ describe('installers read BOM-prefixed host configs', () => {
     process.env.KIMI_CODE_HOME = home;
     writeFileSync(join(home, 'mcp.json'), BOM + JSON.stringify({ mcpServers: { context7: { url: 'https://mcp.context7.com/mcp' } } }));
     expect(configureKimiMcp()).toBe(0);
-    expect(JSON.parse(readFileSync(join(home, 'mcp.json'), 'utf-8')).mcpServers['mcp-search']).toBeDefined();
+    expect(parseJsonWithBom<any>(readFileSync(join(home, 'mcp.json'), 'utf-8')).mcpServers['mcp-search']).toBeDefined();
 
-    writeFileSync(join(home, 'mcp.json'), BOM + readFileSync(join(home, 'mcp.json'), 'utf-8'));
+    writeFileSync(join(home, 'mcp.json'), BOM + stripUtf8Bom(readFileSync(join(home, 'mcp.json'), 'utf-8')));
     expect(uninstallKimiHooks()).toBe(0);
-    const mcp = JSON.parse(readFileSync(join(home, 'mcp.json'), 'utf-8'));
+    const mcp = parseJsonWithBom<any>(readFileSync(join(home, 'mcp.json'), 'utf-8'));
     expect(mcp.mcpServers['mcp-search']).toBeUndefined();
     expect(mcp.mcpServers.context7).toBeDefined();
   });
@@ -60,9 +63,9 @@ describe('installers read BOM-prefixed host configs', () => {
     const output = new TextDecoder().decode(run.stdout) + new TextDecoder().decode(run.stderr);
     expect(output).not.toContain('Corrupt JSON');
     expect(run.exitCode).toBe(0);
-    const settings = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8'));
+    const settings = parseJsonWithBom<any>(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8'));
     expect(settings.theme).toBe('dark');
     expect(settings.hooks?.SessionStart).toBeUndefined();
-    expect(JSON.parse(readFileSync(join(home, '.gemini', 'config', 'hooks.json'), 'utf-8'))['other-tool']).toEqual({ event: 'x' });
+    expect(parseJsonWithBom<any>(readFileSync(join(home, '.gemini', 'config', 'hooks.json'), 'utf-8'))['other-tool']).toEqual({ event: 'x' });
   }, 30_000);
 });

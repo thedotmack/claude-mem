@@ -178,6 +178,27 @@ describe('drainHookSpool', () => {
     } finally { ingest.mockRestore(); }
   });
 
+  it('takes the wire gateway\'s live observer handoff once while fresh, and never replays it', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    store.createSDKSession('wire-live', 'repo', 'prompt', undefined, 'codex');
+    const ingest = spyOn(ingestShared, 'ingestObservation').mockResolvedValue({ ok: false, reason: 'provider unavailable' } as never);
+    try {
+      spool.enqueueLiveObserverHandoff('observation', { contentSessionId: 'wire-live', platformSource: 'codex', toolName: 'shell', toolUseId: 'call_fresh', cwd: '/repo' });
+      // A handoff older than the live window (a worker that was down) is dropped unread.
+      const stale = { contentSessionId: 'wire-live', platformSource: 'codex', toolName: 'shell', toolUseId: 'call_stale', cwd: '/repo' };
+      writeFileSync(join(spool.directory, `observation-${hookSpoolKeyFor('observation', stale)}.json`),
+        JSON.stringify({ kind: 'observation', payload: stale, enqueuedAtEpochMs: Date.now() - 3 * 24 * 60 * 60_000, liveObserverHandoff: true }));
+
+      expect((await drainHookSpool(spool)).drained).toBe(2);
+      expect(ingest).toHaveBeenCalledTimes(1);
+      expect((ingest.mock.calls[0][0] as { toolUseId?: string }).toolUseId).toBe('call_fresh');
+      // A failed live ingest is skipped, not kept for the next drain.
+      expect(spoolFiles(spool)).toEqual([]);
+      expect((await drainHookSpool(new HookSpool(spool.directory))).drained).toBe(0);
+      expect(ingest).toHaveBeenCalledTimes(1);
+    } finally { ingest.mockRestore(); }
+  });
+
   it('retains a session-end metadata event through the init race', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     spool.enqueue('session_end', { contentSessionId: 'late-init', platformSource: 'claude' });

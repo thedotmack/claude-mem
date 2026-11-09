@@ -111,7 +111,7 @@ test('My Work pages and components do not use string replacement for placeholder
 });
 
 const rulesSource = ts.createSourceFile('my-rules.tsx', readFileSync(new URL('my-rules.tsx', pages), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const fileHelpers = new Set(['scopeHeading', 'strengthScore', 'byStrength', 'lowerFirst', 'SET_BY_ORDER', 'rulesFileLines']);
+const fileHelpers = new Set(['scopeHeading', 'rulesFileHeading', 'strengthScore', 'byStrength', 'lowerFirst', 'SET_BY_ORDER', 'rulesFileLines']);
 const fileFormatter = rulesSource.statements.filter(node =>
   (ts.isFunctionDeclaration(node) && fileHelpers.has(node.name?.text ?? '')) ||
   (ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => fileHelpers.has(declaration.name.getText(rulesSource))))

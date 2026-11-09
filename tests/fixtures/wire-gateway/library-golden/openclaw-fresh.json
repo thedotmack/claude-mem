@@ -1,0 +1,16 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.openclaw/extensions/claude-mem/dist/chunk.js": "export const chunk = 1;\n",
+    "home/.openclaw/extensions/claude-mem/dist/index.js": "export default {};\n",
+    "home/.openclaw/extensions/claude-mem/openclaw.plugin.json": "{\"id\":\"claude-mem\"}\n",
+    "home/.openclaw/extensions/claude-mem/package.json": "{\n  \"name\": \"claude-mem\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"dist/index.js\",\n  \"openclaw\": {\n    \"extensions\": [\n      \"./dist/index.js\"\n    ]\n  }\n}\n",
+    "home/.openclaw/extensions/claude-mem/skills/memory/SKILL.md": "# memory skill\n",
+    "home/.openclaw/openclaw.json": "{\n  \"plugins\": {\n    \"slots\": {\n      \"memory\": \"claude-mem\"\n    },\n    \"entries\": {\n      \"claude-mem\": {\n        \"enabled\": true,\n        \"config\": {\n          \"workerPort\": 1,\n          \"project\": \"openclaw\",\n          \"syncMemoryFile\": true\n        }\n      }\n    }\n  }\n}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

@@ -161,10 +161,12 @@ import {
   existsSync as existsSync3,
   fchmodSync,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync as readFileSync3,
+  readdirSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -245,53 +247,75 @@ function renameWithWindowsRetry(from, to, rename = renameSync, onWindows = IS_WI
     }
   }
 }
-function writeBufferAtomic(filepath, payload, options = {}) {
-  const resolved = resolveSymlinkWriteTarget(filepath);
-  ensureDirectoryExists(dirname(resolved));
-  const dir = dirname(resolved);
-  const base = basename(resolved);
-  const tmpPath = join4(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
-  let mode = options.mode;
-  if (mode === void 0) {
+function writeJsonFileAtomic(filepath, data, options = {}) {
+  writeFileAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8"), options);
+}
+function atomicTempFilePath(resolvedTargetPath) {
+  return join4(dirname(resolvedTargetPath), `.${basename(resolvedTargetPath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+}
+function isAtomicTempFileNameOf(fileName, targetBaseName) {
+  const prefix = `.${targetBaseName}.`;
+  return fileName.startsWith(prefix) && /^[0-9]+\.[0-9a-f]+\.tmp$/.test(fileName.slice(prefix.length));
+}
+function removeStaleAtomicTempFiles(resolvedTargetPath) {
+  const dir = dirname(resolvedTargetPath);
+  const base = basename(resolvedTargetPath);
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!isAtomicTempFileNameOf(entry, base)) continue;
     try {
-      mode = statSync(resolved).mode & 511;
+      const entryPath = join4(dir, entry);
+      if (now - statSync(entryPath).mtimeMs > STALE_ATOMIC_TEMP_FILE_AGE_MS) unlinkSync(entryPath);
     } catch {
     }
   }
+}
+function writeAllBytes(fd, payload, position) {
+  let written = 0;
+  while (written < payload.length) {
+    const n = writeSync(fd, payload, written, payload.length - written, position === null ? null : position + written);
+    if (n === 0) {
+      throw new Error(`writeSync stalled at ${written}/${payload.length} bytes`);
+    }
+    written += n;
+  }
+}
+function fsyncDirectory(dir) {
+  if (IS_WINDOWS_PLATFORM) return;
+  let dirFd;
+  try {
+    dirFd = openSync(dir, "r");
+    fsyncSync(dirFd);
+  } catch (dirSyncErr) {
+    const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
+    emitDiagnostic(`claude-mem: directory fsync failed for ${dir}: ${dirSyncError.message}
+`);
+  } finally {
+    if (dirFd !== void 0) {
+      try {
+        closeSync(dirFd);
+      } catch {
+      }
+    }
+  }
+}
+function writeSyncedTempFile(resolvedTargetPath, payload, mode) {
+  const tmpPath = atomicTempFilePath(resolvedTargetPath);
   let fd;
   try {
     fd = mode !== void 0 ? openSync(tmpPath, "w", mode) : openSync(tmpPath, "w");
     if (mode !== void 0 && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
-    let written = 0;
-    while (written < payload.length) {
-      const n = writeSync(fd, payload, written, payload.length - written);
-      if (n === 0) {
-        throw new Error(`writeSync stalled at ${written}/${payload.length} bytes`);
-      }
-      written += n;
-    }
+    writeAllBytes(fd, payload, null);
     fsyncSync(fd);
     closeSync(fd);
     fd = void 0;
-    renameWithWindowsRetry(tmpPath, resolved);
-    if (!IS_WINDOWS_PLATFORM) {
-      let dirFd;
-      try {
-        dirFd = openSync(dir, "r");
-        fsyncSync(dirFd);
-      } catch (dirSyncErr) {
-        const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
-        emitDiagnostic(`claude-mem: directory fsync failed for ${dir}: ${dirSyncError.message}
-`);
-      } finally {
-        if (dirFd !== void 0) {
-          try {
-            closeSync(dirFd);
-          } catch {
-          }
-        }
-      }
-    }
+    return tmpPath;
   } catch (err) {
     if (fd !== void 0) {
       try {
@@ -306,10 +330,73 @@ function writeBufferAtomic(filepath, payload, options = {}) {
     throw err;
   }
 }
-function writeJsonFileAtomic(filepath, data, options = {}) {
-  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8"), options);
+function writeHardLinkedFileInPlace(resolvedTargetPath, payload, mode, modeIsForced) {
+  let targetFd;
+  try {
+    targetFd = openSync(resolvedTargetPath, "r+");
+  } catch (err) {
+    const code = err.code;
+    if (code === "EACCES" || code === "EPERM") return false;
+    throw err;
+  }
+  let tmpPath;
+  try {
+    tmpPath = writeSyncedTempFile(resolvedTargetPath, payload, mode);
+  } catch (err) {
+    try {
+      closeSync(targetFd);
+    } catch {
+    }
+    throw err;
+  }
+  try {
+    writeAllBytes(targetFd, payload, 0);
+    ftruncateSync(targetFd, payload.length);
+    if (modeIsForced && mode !== void 0) fchmodSync(targetFd, mode);
+    fsyncSync(targetFd);
+  } catch (err) {
+    try {
+      closeSync(targetFd);
+    } catch {
+    }
+    const error = err instanceof Error ? err : new Error(String(err));
+    throw new Error(`${error.message}; the new text is kept in ${tmpPath}`, { cause: error });
+  }
+  closeSync(targetFd);
+  try {
+    unlinkSync(tmpPath);
+  } catch {
+  }
+  return true;
 }
-var IS_WINDOWS_PLATFORM, WINDOWS_RENAME_RETRY_CODES, WINDOWS_RENAME_RETRY_DELAYS_MS;
+function writeFileAtomic(filepath, payload, options = {}) {
+  const resolved = resolveSymlinkWriteTarget(filepath);
+  const dir = dirname(resolved);
+  ensureDirectoryExists(dir);
+  let existing;
+  try {
+    existing = statSync(resolved);
+  } catch {
+  }
+  const mode = options.mode ?? (existing ? Number(existing.mode) & 511 : void 0);
+  if (existing && existing.isFile() && existing.nlink > 1 && writeHardLinkedFileInPlace(resolved, payload, mode, options.mode !== void 0)) {
+    removeStaleAtomicTempFiles(resolved);
+    return;
+  }
+  const tmpPath = writeSyncedTempFile(resolved, payload, mode);
+  try {
+    renameWithWindowsRetry(tmpPath, resolved);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+    }
+    throw err;
+  }
+  fsyncDirectory(dir);
+  removeStaleAtomicTempFiles(resolved);
+}
+var IS_WINDOWS_PLATFORM, WINDOWS_RENAME_RETRY_CODES, WINDOWS_RENAME_RETRY_DELAYS_MS, STALE_ATOMIC_TEMP_FILE_AGE_MS;
 var init_atomic_json = __esm({
   "src/shared/atomic-json.ts"() {
     "use strict";
@@ -317,6 +404,7 @@ var init_atomic_json = __esm({
     IS_WINDOWS_PLATFORM = process.platform === "win32";
     WINDOWS_RENAME_RETRY_CODES = /* @__PURE__ */ new Set(["EPERM", "EBUSY", "EACCES"]);
     WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+    STALE_ATOMIC_TEMP_FILE_AGE_MS = 10 * 60 * 1e3;
   }
 });
 
@@ -410,17 +498,10 @@ var init_settings_document = __esm({
   }
 });
 
-// src/shared/paths.ts
-import { join as join5, dirname as dirname2, basename as basename2 } from "path";
+// src/shared/data-dir.ts
+import { existsSync as existsSync5 } from "fs";
 import { homedir as homedir4 } from "os";
-import { existsSync as existsSync5, mkdirSync as mkdirSync2 } from "fs";
-import { fileURLToPath } from "url";
-function getDirname() {
-  if (typeof __dirname !== "undefined") {
-    return __dirname;
-  }
-  return dirname2(fileURLToPath(import.meta.url));
-}
+import { join as join5 } from "path";
 function resolveDataDir() {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
     return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
@@ -440,67 +521,105 @@ function resolveDataDir() {
   }
   return defaultDataDir2;
 }
-var _dirname, DATA_DIR, DEFAULT_CLAUDE_CONFIG_DIR, CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT, LOGS_DIR, USER_SETTINGS_PATH, DB_FILENAME, DB_PATH, OBSERVER_SESSIONS_DIR, OBSERVER_SESSIONS_PROJECT, paths;
+var init_data_dir = __esm({
+  "src/shared/data-dir.ts"() {
+    "use strict";
+    init_atomic_json();
+    init_expand_home();
+    init_settings_document();
+  }
+});
+
+// src/shared/paths.ts
+import { join as join6, dirname as dirname2, basename as basename2 } from "path";
+import { homedir as homedir5 } from "os";
+import { fileURLToPath } from "url";
+function getDirname() {
+  if (typeof __dirname !== "undefined") {
+    return __dirname;
+  }
+  return dirname2(fileURLToPath(import.meta.url));
+}
+var _dirname, DATA_DIR, DEFAULT_CLAUDE_CONFIG_DIR, CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT, LOGS_DIR, USER_SETTINGS_PATH, MY_RULES_FILE_PATH, DB_FILENAME, DB_PATH, OBSERVER_SESSIONS_DIR, OBSERVER_SESSIONS_PROJECT, WIRE_GATEWAY_DIR, paths;
 var init_paths = __esm({
   "src/shared/paths.ts"() {
     "use strict";
-    init_atomic_json();
-    init_settings_document();
+    init_data_dir();
     init_expand_home();
     init_expand_home();
+    init_data_dir();
     _dirname = getDirname();
     DATA_DIR = resolveDataDir();
-    DEFAULT_CLAUDE_CONFIG_DIR = join5(homedir4(), ".claude");
+    DEFAULT_CLAUDE_CONFIG_DIR = join6(homedir5(), ".claude");
     CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
-    MARKETPLACE_ROOT = join5(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
-    LOGS_DIR = join5(DATA_DIR, "logs");
-    USER_SETTINGS_PATH = join5(DATA_DIR, "settings.json");
+    MARKETPLACE_ROOT = join6(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
+    LOGS_DIR = join6(DATA_DIR, "logs");
+    USER_SETTINGS_PATH = join6(DATA_DIR, "settings.json");
+    MY_RULES_FILE_PATH = join6(DATA_DIR, "MY-RULES.md");
     DB_FILENAME = "claude-mem.db";
-    DB_PATH = join5(DATA_DIR, DB_FILENAME);
-    OBSERVER_SESSIONS_DIR = join5(DATA_DIR, "observer-sessions");
+    DB_PATH = join6(DATA_DIR, DB_FILENAME);
+    OBSERVER_SESSIONS_DIR = join6(DATA_DIR, "observer-sessions");
     OBSERVER_SESSIONS_PROJECT = basename2(OBSERVER_SESSIONS_DIR);
+    WIRE_GATEWAY_DIR = join6(DATA_DIR, "wire-gateway");
     paths = {
       dataDir: () => DATA_DIR,
-      workerPid: () => join5(DATA_DIR, "worker.pid"),
-      workerHeartbeat: () => join5(DATA_DIR, "worker-heartbeat.json"),
+      workerPid: () => join6(DATA_DIR, "worker.pid"),
+      workerHeartbeat: () => join6(DATA_DIR, "worker-heartbeat.json"),
       // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
       // remain `.server-beta.*` so existing installations keep finding their
       // pid/port/runtime state. Plan §1d will migrate the basenames.
-      serverPid: () => join5(DATA_DIR, ".server-beta.pid"),
-      serverPort: () => join5(DATA_DIR, ".server-beta.port"),
-      serverRuntime: () => join5(DATA_DIR, ".server-beta.runtime.json"),
-      settings: () => join5(DATA_DIR, "settings.json"),
-      database: () => join5(DATA_DIR, DB_FILENAME),
+      serverPid: () => join6(DATA_DIR, ".server-beta.pid"),
+      serverPort: () => join6(DATA_DIR, ".server-beta.port"),
+      serverRuntime: () => join6(DATA_DIR, ".server-beta.runtime.json"),
+      settings: () => join6(DATA_DIR, "settings.json"),
+      database: () => join6(DATA_DIR, DB_FILENAME),
       // Automatic snapshot target (BackupManager). Nested under backups/auto so
       // the manager's retention sweep never touches the legacy one-off backups
       // that live directly in backups/.
-      backups: () => join5(DATA_DIR, "backups", "auto"),
+      backups: () => join6(DATA_DIR, "backups", "auto"),
       // A restore staged by `npx claude-mem restore`, applied by the next worker
       // boot before it opens the database, and the outcome of the last one.
-      pendingRestore: () => join5(DATA_DIR, "backups", "restore-pending.json"),
-      lastRestore: () => join5(DATA_DIR, "backups", "last-restore.json"),
-      chroma: () => join5(DATA_DIR, "chroma"),
-      combinedCerts: () => join5(DATA_DIR, "combined_certs.pem"),
-      transcriptsConfig: () => join5(DATA_DIR, "transcript-watch.json"),
-      transcriptsState: () => join5(DATA_DIR, "transcript-watch-state.json"),
-      corpora: () => join5(DATA_DIR, "corpora"),
-      supervisorRegistry: () => join5(DATA_DIR, "supervisor.json"),
-      envFile: () => join5(DATA_DIR, ".env"),
-      logsDir: () => LOGS_DIR
+      pendingRestore: () => join6(DATA_DIR, "backups", "restore-pending.json"),
+      lastRestore: () => join6(DATA_DIR, "backups", "last-restore.json"),
+      chroma: () => join6(DATA_DIR, "chroma"),
+      combinedCerts: () => join6(DATA_DIR, "combined_certs.pem"),
+      transcriptsConfig: () => join6(DATA_DIR, "transcript-watch.json"),
+      transcriptsState: () => join6(DATA_DIR, "transcript-watch-state.json"),
+      corpora: () => join6(DATA_DIR, "corpora"),
+      supervisorRegistry: () => join6(DATA_DIR, "supervisor.json"),
+      envFile: () => join6(DATA_DIR, ".env"),
+      logsDir: () => LOGS_DIR,
+      wireGatewayRoutes: () => join6(WIRE_GATEWAY_DIR, "routes.json"),
+      wireGatewayConsent: () => join6(WIRE_GATEWAY_DIR, "consent.json"),
+      wireGatewayRedactKey: () => join6(WIRE_GATEWAY_DIR, "redact.key"),
+      wireGatewayPid: () => join6(WIRE_GATEWAY_DIR, "state", "wire-gateway.pid"),
+      wireGatewayPort: () => join6(WIRE_GATEWAY_DIR, "state", "wire-gateway.port"),
+      wireGatewayRuntime: () => join6(WIRE_GATEWAY_DIR, "state", "wire-gateway.runtime.json"),
+      wireGatewayProcessRegistry: () => join6(WIRE_GATEWAY_DIR, "state", "supervisor.json"),
+      wireGatewayMagpieFollowerState: () => join6(WIRE_GATEWAY_DIR, "state", "magpie-follower.json"),
+      wireGatewayPushEventLedger: () => join6(WIRE_GATEWAY_DIR, "state", "push-events.jsonl"),
+      /** Shared team gateway client keys (plan Phase 16): scrypt hashes and each key's server destination, 0600. */
+      wireGatewayClientKeys: () => join6(WIRE_GATEWAY_DIR, "keys", "keys.json"),
+      /** Shared team gateway: events waiting for (or delivered to) the claude-mem server runtime (plan Phase 16). */
+      wireGatewayOutbox: () => join6(WIRE_GATEWAY_DIR, "outbox")
     };
   }
 });
 
 // src/utils/logger.ts
-import { closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
+import { dirname as dirname3, join as join7 } from "path";
 function escapeLineBreaks(value) {
   return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 }
 function escapeStackText(stack) {
   return "  " + stack.replace(/\r/g, "\\r").replace(/\n(?![ \t]+at )/g, "\\n");
 }
-var LogLevel, errorSink, Logger, logger;
+function redactWireClientKeys(line) {
+  if (!line.includes("cmw_")) return line;
+  return line.replace(WIRE_CLIENT_KEY_PATH_PATTERN, "/k/[REDACTED]").replace(WIRE_CLIENT_KEY_PATTERN, "cmw_[REDACTED]");
+}
+var LogLevel, errorSink, Logger, WIRE_CLIENT_KEY_SHAPE, WIRE_CLIENT_KEY_PATH_PATTERN, WIRE_CLIENT_KEY_PATTERN, logger;
 var init_logger = __esm({
   "src/utils/logger.ts"() {
     "use strict";
@@ -537,9 +656,9 @@ var init_logger = __esm({
         try {
           const logsDir = paths.logsDir();
           if (!existsSync6(logsDir)) {
-            mkdirSync3(logsDir, { recursive: true });
+            mkdirSync2(logsDir, { recursive: true });
           }
-          this.logFilePath = join6(logsDir, `claude-mem-${date2}.log`);
+          this.logFilePath = join7(logsDir, `claude-mem-${date2}.log`);
           this.logFileInitialized = true;
         } catch (error) {
           if (firstAttemptToday) {
@@ -579,7 +698,7 @@ var init_logger = __esm({
           if (!current) this.closeLogFd();
         }
         if (this.logFd === null) {
-          mkdirSync3(dirname3(path4), { recursive: true });
+          mkdirSync2(dirname3(path4), { recursive: true });
           this.logFd = openSync2(path4, "a");
         }
         try {
@@ -776,7 +895,7 @@ ${escapeStackText(data.stack)}`;
             contextStr = ` {${pairs.join(", ")}}`;
           }
         }
-        const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${escapeLineBreaks(message)}${contextStr}${dataStr}`;
+        const logLine = redactWireClientKeys(`[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${escapeLineBreaks(message)}${contextStr}${dataStr}`);
         if (this.logFilePath) {
           try {
             this.appendLine(this.logFilePath, logLine + "\n");
@@ -839,6 +958,9 @@ ${err.stack ?? ""}
         this.error(component, `\u2717 ${message}`, context, data);
       }
     };
+    WIRE_CLIENT_KEY_SHAPE = "(?<![A-Za-z0-9_-])cmw_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])";
+    WIRE_CLIENT_KEY_PATH_PATTERN = new RegExp(`/k/${WIRE_CLIENT_KEY_SHAPE}`, "g");
+    WIRE_CLIENT_KEY_PATTERN = new RegExp(WIRE_CLIENT_KEY_SHAPE, "g");
     logger = new Logger();
   }
 });
@@ -892,18 +1014,18 @@ var init_openrouter_base_url = __esm({
 });
 
 // src/shared/SettingsDefaultsManager.ts
-import { readFileSync as readFileSync6, existsSync as existsSync7, writeFileSync } from "fs";
-import { basename as basename3, dirname as dirname4, join as join7 } from "path";
-import { homedir as homedir5, hostname } from "os";
+import { readFileSync as readFileSync5, existsSync as existsSync7, writeFileSync } from "fs";
+import { basename as basename3, dirname as dirname4, join as join8 } from "path";
+import { homedir as homedir6, hostname } from "os";
 import { parseEnv } from "util";
 function coercePersistedSettingValue(value) {
   return typeof value === "boolean" ? String(value) : value;
 }
 function envFileSetsAnthropicBaseUrl(settingsPath) {
-  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join7(dirname4(settingsPath), ".env");
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join8(dirname4(settingsPath), ".env");
   try {
     if (!existsSync7(envFile)) return false;
-    const parsed = parseEnv(stripUtf8Bom(readFileSync6(envFile, "utf-8")));
+    const parsed = parseEnv(stripUtf8Bom(readFileSync5(envFile, "utf-8")));
     return Boolean(parsed.ANTHROPIC_BASE_URL);
   } catch {
     return true;
@@ -926,7 +1048,7 @@ function hasRetiredOpenRouterDefault(flatSettings) {
   return baseUrl === "" || isOpenRouterApiUrl(baseUrl);
 }
 function raisedDefaultMarkerPath(settingsPath, raised) {
-  return join7(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
+  return join8(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
 }
 function markRaisedDefaultDone(settingsPath, raised) {
   try {
@@ -1119,7 +1241,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: "0.93",
         CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: "0.92",
         CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: "0.95",
-        CLAUDE_MEM_DATA_DIR: join7(homedir5(), ".claude-mem"),
+        CLAUDE_MEM_DATA_DIR: join8(homedir6(), ".claude-mem"),
         CLAUDE_MEM_LOG_LEVEL: "INFO",
         CLAUDE_MEM_PYTHON_VERSION: "3.13",
         CLAUDE_CODE_PATH: "",
@@ -1160,7 +1282,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_FOLDER_USE_LOCAL_MD: "false",
         // When true, writes to CLAUDE.local.md instead of CLAUDE.md
         CLAUDE_MEM_TRANSCRIPTS_ENABLED: "true",
-        CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join7(homedir5(), ".claude-mem", "transcript-watch.json"),
+        CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join8(homedir6(), ".claude-mem", "transcript-watch.json"),
         CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: "false",
         // Codex subagent rollouts through the transcript watch: each one's tool
         // calls are new observer spend (the gateway allowance, or the user's own
@@ -1440,8 +1562,59 @@ var init_SettingsDefaultsManager = __esm({
         // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
         CLAUDE_MEM_WORKER_AUTOSTART: "true",
         // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
-        CLAUDE_MEM_PROJECT_NAME_SOURCE: "path"
+        // Daily update to the release the owner promotes. On by default; Claude
+        // Code's DISABLE_AUTOUPDATER (unless FORCE_AUTOUPDATE_PLUGINS=1),
+        // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also turn it
+        // off, set in the environment or in the env block of Claude Code's user or
+        // managed settings.
+        CLAUDE_MEM_AUTO_UPDATE: "true",
+        // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
+        CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: "",
+        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path in settings.json, since the updater never reads its environment variable
+        CLAUDE_MEM_PROJECT_NAME_SOURCE: "path",
         // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
+        // Mirrors the worker formula above, 100 ports lower: 37600–37699 sits below
+        // the worker (37700–37799) and the server runtime (37877+). 37677 on Windows.
+        CLAUDE_MEM_WIRE_GATEWAY_PORT: String(37600 + (process.getuid?.() ?? 77) % 100),
+        CLAUDE_MEM_WIRE_GATEWAY_HOST: "127.0.0.1",
+        CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: "true",
+        // worker starts the wire gateway at boot while routes.json has a route
+        CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: "600000",
+        // stop/restart waits this long for in-flight streams before force-closing
+        CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: "67108864",
+        // 64 MiB: largest request body the relay reads; larger ones get a protocol-native 413
+        CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: "7",
+        // days of raw wire recordings (turns.jsonl) kept, when recording is consented to
+        CLAUDE_MEM_WIRE_GATEWAY_RECORDING: "",
+        // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
+        CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: "false",
+        // routes without their own setting swap secrets for placeholders before the provider sees them
+        CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: "false",
+        // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
+        CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: "false",
+        // routes without their own features.endlessMode fold finished work into one growing timeline (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: "timeline",
+        // how the timeline shows each observation: timeline | observation | observation-with-narrative (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: "true",
+        // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: "true",
+        // captureSource:'wire' routes without their own features.durableHeader get the owner's rules as a cached system block, changed only at a turn start (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: "1500",
+        // how long a conversation's first request waits for that context (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: "false",
+        // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_OTLP: "true",
+        // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: "",
+        // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_SHARED: "false",
+        // 'true' = shared team gateway: a second, team listener (SHARED_HOST:SHARED_PORT) where every request needs a client key in the base URL (/k/<key>/r/<route>); capture goes to each key's claude-mem server runtime; CLAUDE_MEM_WIRE_GATEWAY_HOST stays loopback (read at gateway start)
+        CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: "0.0.0.0",
+        // shared mode: the team listener's address (every interface by default; a client key is always required there, loopback peers included)
+        CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: "",
+        // shared mode: the team listener's port, required when SHARED=true (the port a TLS proxy forwards to; never the loopback listener's)
+        CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: ""
+        // shared mode: IPs/CIDR ranges (comma or space separated) other computers may connect from, judged on the socket address only; '' = every address; a malformed entry lets nothing in (read at gateway start)
       };
       static getAllDefaults() {
         return { ...this.DEFAULTS };
@@ -1460,7 +1633,7 @@ var init_SettingsDefaultsManager = __esm({
       static get(key) {
         const value = process.env[key] ?? this.DEFAULTS[key];
         if (key === "CLAUDE_MEM_WORKER_HOST") {
-          return this.normalizeWorkerHost(value);
+          return this.normalizeLoopbackHost(value);
         }
         if (key === "CLAUDE_MEM_DATA_DIR") {
           return expandHome(value);
@@ -1470,16 +1643,17 @@ var init_SettingsDefaultsManager = __esm({
       // 'localhost' resolves IPv6-first on modern Windows resolvers while
       // server.listen(port, 'localhost') binds ::1 only, so the hook client and
       // the worker can land on different loopback families (#2992). Pin the
-      // documented IPv4 loopback so every consumer of the setting agrees.
-      static normalizeWorkerHost(host) {
+      // documented IPv4 loopback so every consumer of the setting agrees (the
+      // worker's host here, the wire gateway's in its config.ts).
+      static normalizeLoopbackHost(host) {
         return host === "localhost" ? "127.0.0.1" : host;
       }
       static finalizeSettings(settings2, applyEnvOverrides) {
         const result = applyEnvOverrides ? this.applyEnvOverrides(settings2) : settings2;
-        result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+        result.CLAUDE_MEM_WORKER_HOST = this.normalizeLoopbackHost(result.CLAUDE_MEM_WORKER_HOST);
         const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
         if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
-          result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join7(expandHome(dataDir), "transcript-watch.json");
+          result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join8(expandHome(dataDir), "transcript-watch.json");
         }
         return result;
       }
@@ -1511,7 +1685,7 @@ var init_SettingsDefaultsManager = __esm({
             }
             return this.finalizeSettings(defaults, applyEnvOverrides);
           }
-          const settingsData = readFileSync6(settingsPath, "utf-8");
+          const settingsData = readFileSync5(settingsPath, "utf-8");
           const settings2 = parseJsonWithBom(settingsData);
           let flatSettings = settingsTarget(settings2);
           const hasNestedEnv = flatSettings !== settings2;
@@ -2045,7 +2219,7 @@ var init_work_product = __esm({
 });
 
 // src/utils/worktree.ts
-import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync6 } from "fs";
 import path from "path";
 function detectWorktree(cwd) {
   const gitPath = path.join(cwd, ".git");
@@ -2063,7 +2237,7 @@ function detectWorktree(cwd) {
   }
   let content;
   try {
-    content = readFileSync7(gitPath, "utf-8").trim();
+    content = readFileSync6(gitPath, "utf-8").trim();
   } catch (error) {
     logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
     return NOT_A_WORKTREE;
@@ -2243,7 +2417,7 @@ var init_project_environments = __esm({
 // src/utils/project-name.ts
 import path2 from "path";
 import { existsSync as existsSync9, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
-import { homedir as homedir6, tmpdir } from "os";
+import { homedir as homedir7, tmpdir } from "os";
 import { execFileSync } from "child_process";
 function findGitRepoRoot(dir) {
   try {
@@ -2272,7 +2446,7 @@ function isWithin(child, parent) {
   return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
 }
 function markerWalkStops() {
-  return [homedir6(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
+  return [homedir7(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
     const resolved = path2.resolve(dir);
     return [resolved, realpathOrSelf2(resolved)];
   });
@@ -2494,8 +2668,8 @@ var init_project_name = __esm({
 
 // src/services/work-view/session-project.mjs
 import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
-import { homedir as homedir7, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, dirname as dirname5, join as join8, resolve as resolve3 } from "node:path";
+import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
 function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
   if (typeof project !== "string") return null;
   return gitRemoteNames ? project : project.split("/")[0];
@@ -2511,7 +2685,7 @@ function isAgentScratchFolder(folder) {
   if (typeof folder !== "string" || !folder) return false;
   if (CODEX_SCRATCH.test(folder)) return true;
   const absolute = resolve3(folder);
-  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
 }
 function repoRootOf(path4) {
   const visited = [];
@@ -2522,7 +2696,7 @@ function repoRootOf(path4) {
       break;
     }
     visited.push(current);
-    if (existsSync10(join8(current, ".git"))) {
+    if (existsSync10(join9(current, ".git"))) {
       found = current;
       break;
     }
@@ -2552,7 +2726,7 @@ function pathsIn(toolInput, platform = process.platform) {
   const paths2 = [];
   for (const text5 of strings) for (const match of text5.matchAll(PATH_START)) {
     const raw = match[1].trim();
-    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join8(HOME, raw.slice(2)) : raw;
+    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join9(HOME, raw.slice(2)) : raw;
     if (path4.length > 1 && isAbsoluteOn(path4, platform) && !isAgentHome(path4)) paths2.push(path4);
   }
   return paths2;
@@ -2648,12 +2822,12 @@ var init_session_project = __esm({
       }
     };
     TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve3(tmpdir2()), realpathOrSelf3(resolve3(tmpdir2())), "/tmp", "/private/tmp"])];
-    HOME = homedir7();
+    HOME = homedir8();
     TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename6(folder)).filter((name) => name && name !== "tmp"));
     CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
     repoRootCache = /* @__PURE__ */ new Map();
     PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
-    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join8(HOME, name));
+    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
     isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
     isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
     checkoutForPath = (path4) => {
@@ -2993,7 +3167,7 @@ var init_work_state_limits = __esm({
 });
 
 // src/utils/redaction.ts
-import { existsSync as existsSync11, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync7 } from "fs";
 function genericBuiltinRegex(lookbehind) {
   return new RegExp(`${lookbehind}${GENERIC_VALUE}`, "gi");
 }
@@ -3082,7 +3256,7 @@ function loadRedactionConfig(settings2) {
 function readSettingsText(settingsPath) {
   if (!existsSync11(settingsPath)) return null;
   try {
-    return readFileSync8(settingsPath, "utf-8");
+    return readFileSync7(settingsPath, "utf-8");
   } catch {
     return "";
   }
@@ -3172,7 +3346,7 @@ function redactJsonStrings(value, config = getRedactionConfig()) {
   };
   return walk(value);
 }
-var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE;
+var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE, ALPHANUMERIC_CHARACTERS, TOKEN_CHARACTERS, IDENTIFIER_CHARACTERS, SECRET_VALUE_CLASS, FIELD_QUOTE, SECRET_NAME_WORDS, SECRET_NAME_WORD_PATTERN, SECRET_ASSIGNMENT_AFTER_NAME, BARE_KEY_FIELD_PATTERN, URL_SCHEME_CHARACTERS, OUTBOUND_PLACEHOLDER, OUTBOUND_PLACEHOLDER_PATTERN, WHOLE_OUTBOUND_PLACEHOLDER_PATTERN, SECRET_FIELD_NAME_PATTERN;
 var init_redaction = __esm({
   "src/utils/redaction.ts"() {
     "use strict";
@@ -3357,6 +3531,23 @@ var init_redaction = __esm({
     WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
     AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
     WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
+    ALPHANUMERIC_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    TOKEN_CHARACTERS = `${ALPHANUMERIC_CHARACTERS}_-`;
+    IDENTIFIER_CHARACTERS = `${ALPHANUMERIC_CHARACTERS}_.-`;
+    SECRET_VALUE_CLASS = String.raw`[A-Za-z0-9_\-./+=~!@#%^&*]`;
+    FIELD_QUOTE = String.raw`(?:\\?["'])?`;
+    SECRET_NAME_WORDS = String.raw`password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential`;
+    SECRET_NAME_WORD_PATTERN = new RegExp(SECRET_NAME_WORDS, "gi");
+    SECRET_ASSIGNMENT_AFTER_NAME = new RegExp(`${FIELD_QUOTE}[ \\t]*[:=][ \\t]*${FIELD_QUOTE}(${SECRET_VALUE_CLASS}{8,})`, "y");
+    BARE_KEY_FIELD_PATTERN = new RegExp(
+      `(?<![A-Za-z0-9_.-])${FIELD_QUOTE}key${FIELD_QUOTE}[ \\t]*[:=][ \\t]*${FIELD_QUOTE}(${SECRET_VALUE_CLASS}{16,})`,
+      "gi"
+    );
+    URL_SCHEME_CHARACTERS = `${ALPHANUMERIC_CHARACTERS}+.-`;
+    OUTBOUND_PLACEHOLDER = String.raw`\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}`;
+    OUTBOUND_PLACEHOLDER_PATTERN = new RegExp(OUTBOUND_PLACEHOLDER, "g");
+    WHOLE_OUTBOUND_PLACEHOLDER_PATTERN = new RegExp(`^${OUTBOUND_PLACEHOLDER}$`);
+    SECRET_FIELD_NAME_PATTERN = new RegExp(`${SECRET_NAME_WORDS}|authori[sz]ation|cookie|^key$`);
   }
 });
 
@@ -4158,6 +4349,15 @@ var init_env_sanitizer = __esm({
       // SDK child from recovering it from user settings. Keep this as a single
       // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
       "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      // One of Claude Code's documented "no background updates" switches (the
+      // other two, DISABLE_AUTOUPDATER and DISABLE_UPDATES, have no CLAUDE_CODE_
+      // prefix and pass already). The worker's auto-update check reads it from its
+      // own env to stay off (src/services/auto-update/auto-update-check.ts), and
+      // every worker spawn passes through sanitizeEnv, so stripping it left the
+      // updater running for a user who set it. The Observer's SDK child inherits
+      // it too, which keeps the user's choice there as well. Keep this as a single
+      // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
       // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
       // path to the claude binary, documented as settable from the file OR the
       // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
@@ -4199,7 +4399,7 @@ var init_oauth_token = __esm({
 });
 
 // src/shared/EnvManager.ts
-import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync2, mkdirSync as mkdirSync4, chmodSync } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync8, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, chmodSync } from "fs";
 import { parseEnv as parseEnv2 } from "util";
 function envFilePath() {
   return process.env.CLAUDE_MEM_ENV_FILE ?? paths.envFile();
@@ -4213,7 +4413,7 @@ function loadClaudeMemEnv() {
     return {};
   }
   try {
-    const content = readFileSync9(envFile, "utf-8");
+    const content = readFileSync8(envFile, "utf-8");
     const parsed = parseEnvFile(content);
     const result = {};
     for (const key of CREDENTIAL_KEYS) {
@@ -4332,7 +4532,7 @@ __export(request_judge_exports, {
   routeUndecided: () => routeUndecided,
   rulesJudge: () => rulesJudge
 });
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 function bandFor(confidence) {
   if (!Number.isFinite(confidence)) throw new TypeError(`A judge's confidence must be a number, got ${confidence}.`);
   return confidence >= JOIN_THRESHOLD ? "join" : confidence >= SUGGEST_THRESHOLD ? "suggest" : "new";
@@ -4466,7 +4666,7 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
   const routed = [], unplaced = [];
   let working = ledger.groups;
   const persist = () => {
-    if (apply) writeJsonAtomic(join9(dir, "request-groups.json"), working);
+    if (apply) writeJsonAtomic(join10(dir, "request-groups.json"), working);
   };
   for (; ; ) {
     const input = groupingInput({ ...ledger, groups: working }, database, { sinceEpoch, limit: Infinity, skip });
@@ -4585,7 +4785,7 @@ function decideSuggestion({ dir, database, conversationKey: conversationKey2, ac
     next.updatedAt = iso2(now);
   }
   if (writeGroups) writeGroups(next);
-  else writeJsonAtomic(join9(dir, "request-groups.json"), next);
+  else writeJsonAtomic(join10(dir, "request-groups.json"), next);
   return { status: next.suggestions[conversationKey2].status, requestId: next.conversations[conversationKey2] ?? null };
 }
 var DAY_MS, iso2, JOIN_THRESHOLD, SUGGEST_THRESHOLD, MAX_CANDIDATE_REQUESTS, MAX_DECISION_BODY_BYTES, DECISION_TIMEOUT_MS, JEV_MODEL, OPENROUTER_DECISIONS_URL, CONTEXT_PROMPTS, CONTEXT_PROMPT_CHARS, CONTEXT_RECORDED_TITLES, CONTEXT_TITLE_CHARS, PICK_INSTRUCTIONS, CHECK_INSTRUCTIONS, CHECK_CRITERIA, clean, rulesJudge;
@@ -4634,9 +4834,9 @@ var init_request_judge = __esm({
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
 import { createHash as createHash4 } from "node:crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync10, readdirSync, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync3 } from "node:fs";
-import { homedir as homedir8 } from "node:os";
-import { join as join10 } from "node:path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync9, readdirSync as readdirSync2, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { join as join11 } from "node:path";
 function placeholders(values2) {
   return values2.map(() => "?").join(",");
 }
@@ -4782,7 +4982,7 @@ function readGoals(database) {
 }
 function readJson(path4, fallback) {
   try {
-    return JSON.parse(readFileSync10(path4, "utf8"));
+    return JSON.parse(readFileSync9(path4, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return fallback;
     throw error;
@@ -4790,7 +4990,7 @@ function readJson(path4, fallback) {
 }
 function writeJsonAtomic(path4, value) {
   const finish = beforeSharedFileWrite(path4, value);
-  mkdirSync5(join10(path4, ".."), { recursive: true });
+  mkdirSync4(join11(path4, ".."), { recursive: true });
   const temp = `${path4}.tmp`;
   const stored = finish && Object.hasOwn(finish, "value") ? finish.value : value;
   writeFileSync3(temp, `${JSON.stringify(stored, null, 2)}
@@ -5070,24 +5270,24 @@ function validateStory(story) {
   };
 }
 function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join10(dir, "request-groups.json"), emptyGroups());
+  const groups = readJson(join11(dir, "request-groups.json"), emptyGroups());
   const progress = {};
   let names = [];
   try {
-    names = readdirSync(join10(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
+    names = readdirSync2(join11(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
   for (const name of names) {
-    const entry = readJson(join10(dir, "progress", name), null);
+    const entry = readJson(join11(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
     groups,
     progress,
-    story: readJson(join10(dir, "story.json"), null),
-    refresh: readJson(join10(dir, "refresh.json"), null),
-    agentWrittenPromptIds: new Set(readJson(join10(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+    story: readJson(join11(dir, "story.json"), null),
+    refresh: readJson(join11(dir, "refresh.json"), null),
+    agentWrittenPromptIds: new Set(readJson(join11(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
   };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
@@ -5254,7 +5454,7 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
 function readInput(source) {
-  return JSON.parse(readFileSync10(source === "-" ? 0 : source, "utf8"));
+  return JSON.parse(readFileSync9(source === "-" ? 0 : source, "utf8"));
 }
 function textOption(args, name) {
   const index = args.indexOf(`--${name}`);
@@ -5268,7 +5468,7 @@ function option(args, name, fallback) {
   return value;
 }
 function openDatabase() {
-  const path4 = process.env.CLAUDE_MEM_DB ?? join10(DATA_DIR2, "claude-mem.db");
+  const path4 = process.env.CLAUDE_MEM_DB ?? join11(DATA_DIR2, "claude-mem.db");
   statSync6(path4);
   const database = new Database(path4, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
@@ -5352,7 +5552,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "apply") {
     const ledger = readLedger(dir);
     const next = applyDecisions(ledger.groups, readInput(args[0] ?? "-"), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
-    writeJsonAtomic(join10(dir, "request-groups.json"), next);
+    writeJsonAtomic(join11(dir, "request-groups.json"), next);
     return print2({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command2 === "pending" || command2 === "show") {
@@ -5390,7 +5590,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join10(dir, "progress", `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join11(dir, "progress", `${entry.groupId}.json`), entry);
     return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...coercedFields.size ? { coercedFields: [...coercedFields] } : {} });
   }
   if (command2 === "story-input") {
@@ -5419,7 +5619,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const validated = validateStory(readInput(args[0] ?? "-"));
     const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference2) => preference2?.source === OWNER_GOALS_LIST);
     const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso3(now) };
-    writeJsonAtomic(join10(dir, "story.json"), story);
+    writeJsonAtomic(join11(dir, "story.json"), story);
     return print2({ recorded: "story", preferences: story.preferences.length });
   }
   const focusQuestion = () => {
@@ -5447,8 +5647,8 @@ var init_request_groups = __esm({
     init_session_project();
     init_my_focus();
     init_shared_file_hooks();
-    DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join10(homedir8(), ".claude-mem");
-    LEDGER_DIR = join10(DATA_DIR2, "work-view");
+    DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join11(homedir9(), ".claude-mem");
+    LEDGER_DIR = join11(DATA_DIR2, "work-view");
     AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
     DAY_MS2 = 864e5;
     GOALS_STALE_MS = DAY_MS2;
@@ -5493,7 +5693,7 @@ var init_request_groups = __esm({
 });
 
 // src/services/work-view/request-groups-cli.mjs
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 
 // src/integrations/harness-worker.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
@@ -5533,8 +5733,8 @@ import { existsSync as existsSync13 } from "node:fs";
 
 // src/services/work-view/shared-ledger-adapter.mjs
 init_request_groups();
-import { readFileSync as readFileSync11, readdirSync as readdirSync2, mkdirSync as mkdirSync6, renameSync as renameSync4, writeFileSync as writeFileSync4, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
-import { join as join11 } from "node:path";
+import { readFileSync as readFileSync10, readdirSync as readdirSync3, mkdirSync as mkdirSync5, renameSync as renameSync4, writeFileSync as writeFileSync4, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
+import { join as join12 } from "node:path";
 import { createHash as createHash7 } from "node:crypto";
 
 // src/services/work-view/agent-view.mjs
@@ -7086,7 +7286,7 @@ var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-wr
 var fileKinds = (name) => name === "request-groups.json" ? ["group", "ignored"] : name === "story.json" ? ["story"] : name === "refresh.json" ? ["refresh"] : name === "agent-written-prompts.json" ? ["exclusion"] : /^progress\/g_[a-f0-9]{12}\.json$/.test(name) ? ["progress"] : [];
 function load(path4) {
   try {
-    const raw = readFileSync11(path4);
+    const raw = readFileSync10(path4);
     if (raw.byteLength > MAX_FILE_BYTES) throw new RangeError("Shared My Work file is over the local import limit");
     return JSON.parse(raw.toString("utf8"));
   } catch (error) {
@@ -7095,7 +7295,7 @@ function load(path4) {
   }
 }
 function rawWrite(path4, value) {
-  mkdirSync6(join11(path4, ".."), { recursive: true });
+  mkdirSync5(join12(path4, ".."), { recursive: true });
   const temp = `${path4}.${process.pid}.shared.tmp`;
   try {
     writeFileSync4(temp, `${JSON.stringify(value, null, 2)}
@@ -7147,7 +7347,7 @@ var SharedLedgerAdapter = class {
     const bases = Object.fromEntries([...knownKeys].map((key) => [key, shared.records.get(key)?.hash ?? prior.bases[key] ?? null]));
     this.db.prepare(`INSERT INTO my_work_file_state(name, observed_hash, bases, keys_json, pending_json, pending_delete) VALUES(?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET observed_hash=excluded.observed_hash, bases=excluded.bases,
-      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? digest(load(join11(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
+      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? digest(load(join12(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
   }
   localLedger() {
     try {
@@ -7155,7 +7355,7 @@ var SharedLedgerAdapter = class {
     } catch {
       const safe = (name, fallback) => {
         try {
-          return load(join11(this.directory, name)) ?? fallback;
+          return load(join12(this.directory, name)) ?? fallback;
         } catch {
           return fallback;
         }
@@ -7163,7 +7363,7 @@ var SharedLedgerAdapter = class {
       const groups = safe("request-groups.json", { groups: {}, conversations: {}, ignored: {} });
       const progress = {};
       try {
-        for (const name of readdirSync2(join11(this.directory, "progress"))) if (/^g_[a-f0-9]{12}\.json$/.test(name)) {
+        for (const name of readdirSync3(join12(this.directory, "progress"))) if (/^g_[a-f0-9]{12}\.json$/.test(name)) {
           const value = safe(`progress/${name}`, null);
           if (value) progress[name.slice(0, -5)] = value;
         }
@@ -7181,12 +7381,12 @@ var SharedLedgerAdapter = class {
   signature(captureActivity) {
     const names = [...fixedFiles, "human-copy.json"];
     try {
-      names.push(...readdirSync2(join11(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
+      names.push(...readdirSync3(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
     } catch {
     }
     const files = names.sort().map((name) => {
       try {
-        const stat = statSync7(join11(this.directory, name));
+        const stat = statSync7(join12(this.directory, name));
         return [name, stat.ino, stat.size, stat.mtimeMs];
       } catch {
         return [name, "missing"];
@@ -7302,11 +7502,11 @@ var SharedLedgerAdapter = class {
       if (this.state(name).pending_json !== JSON.stringify(redactJsonStrings(value))) return false;
       if (value === null) {
         try {
-          unlinkSync2(join11(this.directory, name));
+          unlinkSync2(join12(this.directory, name));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
-      } else rawWrite(join11(this.directory, name), value);
+      } else rawWrite(join12(this.directory, name), value);
       this.remember(name, value, updates, shared ?? this.shared(), false);
       return true;
     }).immediate();
@@ -7331,18 +7531,18 @@ var SharedLedgerAdapter = class {
   finishPendingFile(name) {
     return this.db.transaction(() => {
       const prior = this.state(name);
-      const current = load(join11(this.directory, name));
+      const current = load(join12(this.directory, name));
       if (prior.pending_json === null) return current;
       const originallyPending = JSON.parse(prior.pending_json);
       const pending = redactJsonStrings(originallyPending);
       if (current !== void 0 && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending) && digest(current) !== digest(pending)) throw new Error("Local file changed during an unfinished shared write");
       if (prior.pending_delete) {
         try {
-          unlinkSync2(join11(this.directory, name));
+          unlinkSync2(join12(this.directory, name));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
-      } else rawWrite(join11(this.directory, name), pending);
+      } else rawWrite(join12(this.directory, name), pending);
       this.remember(name, pending, this.updatesForFile(name, pending), this.shared(), false);
       return pending;
     }).immediate();
@@ -7358,7 +7558,7 @@ var SharedLedgerAdapter = class {
   saveFile(name, value, options) {
     if (!fileKinds(name).length) throw new TypeError("Unsupported shared My Work file");
     const finish = this.beforeWrite(name, value, options);
-    rawWrite(join11(this.directory, name), finish && Object.hasOwn(finish, "value") ? finish.value : value);
+    rawWrite(join12(this.directory, name), finish && Object.hasOwn(finish, "value") ? finish.value : value);
     finish?.();
   }
   publish(updates) {
@@ -7382,17 +7582,17 @@ var SharedLedgerAdapter = class {
     this.errors = [];
     const names = [.../* @__PURE__ */ new Set([...fixedFiles, ...this.db.prepare("SELECT name FROM my_work_file_state").all().map((row) => row.name)])];
     try {
-      names.push(...readdirSync2(join11(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
+      names.push(...readdirSync3(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
     for (const name of names) {
       try {
-        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join11(this.directory, name));
+        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join12(this.directory, name));
         if ((current !== void 0 || this.state(name).observed_hash !== null) && digest(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
           if (finish && Object.hasOwn(finish, "value") && digest(current) !== digest(finish.value)) {
-            rawWrite(join11(this.directory, name), finish.value);
+            rawWrite(join12(this.directory, name), finish.value);
             current = finish.value;
           }
           finish?.();
@@ -7416,7 +7616,7 @@ var SharedLedgerAdapter = class {
       if (value == null || this.errors.some((error) => error.file === name)) continue;
       const kinds = fileKinds(name);
       if (!shared.records.size || ![...shared.records.values()].some((record) => kinds.includes(record.kind))) continue;
-      if (digest(load(join11(this.directory, name))) === digest(value)) {
+      if (digest(load(join12(this.directory, name))) === digest(value)) {
         const prior = this.state(name);
         if (this.tombstoneKeys(name, shared).some((key) => prior.bases[key] !== shared.records.get(key).hash)) {
           this.remember(name, value, this.updatesForFile(name, value), shared, false);
@@ -7431,7 +7631,7 @@ var SharedLedgerAdapter = class {
       if (!record.deleted) continue;
       const name = record.kind === "story" && record.key === "current" ? "story.json" : record.kind === "progress" && /^g_[a-f0-9]{12}$/.test(record.key) ? `progress/${record.key}.json` : null;
       if (!name || this.errors.some((error) => error.file === name)) continue;
-      if (load(join11(this.directory, name)) === void 0) {
+      if (load(join12(this.directory, name)) === void 0) {
         if (this.state(name).bases[sharedRecordKey(record.kind, record.key)] !== record.hash) this.remember(name, null, [], shared, false);
         continue;
       }
@@ -7442,7 +7642,7 @@ var SharedLedgerAdapter = class {
     let copies = {}, copyHash = null;
     if (captureActivity) {
       try {
-        copies = load(join11(this.directory, "human-copy.json"))?.entries ?? {};
+        copies = load(join12(this.directory, "human-copy.json"))?.entries ?? {};
         copyHash = digest(copies);
       } catch (error) {
         this.errors.push({ file: "human-copy.json", message: String(error.message) });
@@ -7531,17 +7731,17 @@ async function saveFocus(body) {
   if (!response.ok) throw new Error(`worker refused /api/work-view/focus/router: ${response.status} ${text5}`);
   return JSON.parse(text5);
 }
-var settings = SettingsDefaultsManager.loadFromFile(join12(resolveDataDir(), "settings.json"), true, { readOnly: true });
+var settings = SettingsDefaultsManager.loadFromFile(join13(resolveDataDir(), "settings.json"), true, { readOnly: true });
 var localDeviceId = settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
 var sharedDatabase = null;
 var stopSharedWriter = null;
 var command = process.argv[2];
 var writesLedger = ["apply", "record-progress", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
-if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join12(resolveDataDir(), "claude-mem.db"))) {
-  sharedDatabase = new Database2(join12(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
-  localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join12(resolveDataDir(), "settings.json"), localDeviceId);
-  const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join12(resolveDataDir(), "work-view"), deviceId: localDeviceId });
-  stopSharedWriter = registerSharedFileWriter(join12(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));
+if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) {
+  sharedDatabase = new Database2(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
+  localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
+  const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join13(resolveDataDir(), "work-view"), deviceId: localDeviceId });
+  stopSharedWriter = registerSharedFileWriter(join13(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));
 }
 var output = "";
 var print = (value) => {

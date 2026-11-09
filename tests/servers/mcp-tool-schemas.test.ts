@@ -1,13 +1,19 @@
 import { afterAll, beforeAll, describe, it, expect } from 'bun:test';
 import express from 'express';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { spawn } from 'node:child_process';
+import { createServer as createNetServer } from 'node:net';
 
-const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
+// The tool table moved out of the stdio entry point (wire gateway Phase 12);
+// the round trips spawn the entry point, the source guards read both.
+const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-tool-table.ts', import.meta.url));
+const mcpStdioEntryPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
 type ListedTool = { name: string; inputSchema: { properties?: Record<string, unknown>; required?: string[] } };
 
@@ -30,7 +36,7 @@ async function withServer(
   const dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'claude-mem-tool-schemas-')));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [mcpServerPath],
+    args: [mcpStdioEntryPath],
     cwd: dataDir,
     stderr: 'pipe',
     env: {
@@ -114,9 +120,76 @@ describe('work_state tools', () => {
   }, 30_000);
 });
 
+/** A port the OS just handed out and released, for a child that must be told its port up front. */
+async function freePort(): Promise<number> {
+  const probe = createNetServer();
+  await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address() as { port: number };
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+  return port;
+}
+
+// main #5028 added `--http`; on this branch the tools live in mcp-tool-table.ts,
+// so this drives the real table through the entry point's HTTP mode.
+describe('work_state tools over the stdio server\'s HTTP mode', () => {
+  it('send each session\'s X-Claude-Mem-Cwd, not the process cwd', async () => {
+    const workerRequests: Array<{ path: string; body: any; query: any }> = [];
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { workerRequests.push({ path: req.path, body: req.body, query: req.query }); next(); });
+    app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+    app.get('/api/work-state', (_req, res) => res.json({ entries: [] }));
+    const worker = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => worker.once('listening', resolve));
+    const { port: workerPort } = worker.address() as { port: number };
+    const dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'claude-mem-tool-schemas-http-')));
+    const projectA = join(dataDir, 'project-a');
+    const projectB = join(dataDir, 'project-b');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    const httpPort = await freePort();
+    const child = spawn(process.execPath, [mcpStdioEntryPath, '--http', `--port=${httpPort}`], {
+      cwd: dataDir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: {
+        ...process.env,
+        CLAUDE_MEM_DATA_DIR: dataDir,
+        CLAUDE_MEM_WORKER_PORT: String(workerPort),
+        CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+        CLAUDE_MEM_WORKER_AUTOSTART: 'false',
+        CLAUDE_MEM_WORK_STATE_ENABLED: 'true',
+        CLAUDE_MEM_RUNTIME: 'worker',
+      },
+    });
+    const clients: Client[] = [];
+    try {
+      const base = `http://127.0.0.1:${httpPort}`;
+      // Bounded by the test timeout; the child needs a moment to bind.
+      for (;;) {
+        try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* not listening yet */ }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      for (const [project, list] of [[projectA, 'list-a'], [projectB, 'list-b']]) {
+        const client = new Client({ name: 'tool-schema-http-fixture', version: '1' });
+        await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { 'X-Claude-Mem-Cwd': project } } }));
+        clients.push(client);
+        await client.callTool({ name: 'work_state_read', arguments: { list } });
+      }
+      const cwdOf = (list: string) => workerRequests.find(request => request.path === '/api/work-state' && request.query.list === list)?.query.cwd;
+      expect(cwdOf('list-a')).toBe(projectA);
+      expect(cwdOf('list-b')).toBe(projectB);
+    } finally {
+      for (const client of clients) await client.close();
+      child.kill('SIGTERM');
+      await new Promise<void>((resolve, reject) => worker.close(error => error ? reject(error) : resolve()));
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 describe('mcp-server source guards', () => {
   it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {
-    const src = await Bun.file(mcpServerPath).text();
+    const src = await Bun.file(mcpStdioEntryPath).text();
     // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
     // `selectRuntime()` normalizes the legacy `'server-beta'` to `'server'`.
     expect(src).toContain("selectRuntime() === 'server'");
@@ -124,8 +197,10 @@ describe('mcp-server source guards', () => {
   });
 
   it('mcp-server does NOT import WorkerService (anti-pattern guard, plan line 772)', async () => {
-    const src = await Bun.file(mcpServerPath).text();
-    expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
-    expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
+    for (const path of [mcpServerPath, mcpStdioEntryPath]) {
+      const src = await Bun.file(path).text();
+      expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
+      expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
+    }
   });
 });

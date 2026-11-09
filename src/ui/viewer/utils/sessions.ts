@@ -54,9 +54,16 @@ export function sessionRefOf(row: SessionScopedRow): SessionRef | null {
 export type ViewRoute =
   | { view: 'timeline' }
   | { view: 'sessions' }
-  | { view: 'session'; session: SessionRef };
+  | { view: 'session'; session: SessionRef }
+  | { view: 'wire' };
 
 const SESSIONS_HASH = '#/sessions';
+const WIRE_HASH = '#/wire';
+
+/** The Wire page: the wire gateway's agents, consent, live calls and savings. */
+export function wireHash(): string {
+  return WIRE_HASH;
+}
 
 export function sessionsHash(): string {
   return SESSIONS_HASH;
@@ -66,8 +73,9 @@ export function sessionHash(ref: SessionRef): string {
   return `${SESSIONS_HASH}/${encodeURIComponent(ref.platformSource)}/${encodeURIComponent(ref.contentSessionId)}`;
 }
 
-/** `#/sessions` is the list, `#/sessions/<platform>/<id>` one session; anything else is the timeline. */
+/** `#/sessions` is the list, `#/sessions/<platform>/<id>` one session, `#/wire` the Wire page; anything else is the timeline. */
 export function parseViewRoute(hash: string): ViewRoute {
+  if (hash === WIRE_HASH) return { view: 'wire' };
   if (hash === SESSIONS_HASH) return { view: 'sessions' };
   if (!hash.startsWith(`${SESSIONS_HASH}/`)) return { view: 'timeline' };
   const parts = hash.slice(SESSIONS_HASH.length + 1).split('/');

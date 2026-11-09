@@ -3,16 +3,28 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, st
 import { tmpdir } from 'os';
 import path from 'path';
 import {
-  buildKimiHooksBlock,
   checkKimiHooksStatus,
   configureKimiMcp,
   installKimiHooks,
   KIMI_MARKER_BEGIN,
   KIMI_MARKER_END,
-  removeManagedBlock,
   uninstallKimiHooks,
-  upsertManagedBlock,
 } from '../../src/services/integrations/KimiHooksInstaller.js';
+import { kimiHooksBlockBody } from '../../src/services/wire-gateway/library/agent-library-targets.js';
+import { findTextBlock, removeTextBlock, renderTextBlock, upsertTextBlock } from '../../src/services/wire-gateway/library/text-block.js';
+import { libraryBackupsDirectory } from '../../src/services/wire-gateway/library/backups.js';
+import { defaultLibraryDirectory } from '../../src/services/wire-gateway/library/library-record.js';
+
+// Kimi's managed block goes through the Library's marker-block helpers.
+const upsertKimiBlock = (content: string, block: string): string => {
+  const body = block.slice(KIMI_MARKER_BEGIN.length + 1, block.length - KIMI_MARKER_END.length - 1);
+  return upsertTextBlock(content, KIMI_MARKER_BEGIN, KIMI_MARKER_END, body, 'after-blank-line');
+};
+const removeKimiBlock = (content: string): string => {
+  const range = findTextBlock(content, KIMI_MARKER_BEGIN, KIMI_MARKER_END);
+  return range ? removeTextBlock(content, range) : content;
+};
+const renderKimiBlock = (bunPath: string, workerPath: string): string => renderTextBlock(KIMI_MARKER_BEGIN, kimiHooksBlockBody(bunPath, workerPath), KIMI_MARKER_END);
 
 const ORIGINAL_HOME = process.env.KIMI_CODE_HOME;
 let scratch: string | undefined;
@@ -35,30 +47,30 @@ describe('managed block merge', () => {
   const block = `${KIMI_MARKER_BEGIN}\n[[hooks]]\nevent = "Stop"\ncommand = 'x'\n${KIMI_MARKER_END}`;
 
   test('appends to empty config', () => {
-    expect(upsertManagedBlock('', block)).toBe(`${block}\n`);
+    expect(upsertKimiBlock('', block)).toBe(`${block}\n`);
   });
 
   test('replaces an existing managed block, preserving user content', () => {
     const user = 'default_model = "kimi-code/k3"\n';
-    const once = upsertManagedBlock(user, block);
-    const twice = upsertManagedBlock(once, block.replace('"Stop"', '"PreCompact"'));
+    const once = upsertKimiBlock(user, block);
+    const twice = upsertKimiBlock(once, block.replace('"Stop"', '"PreCompact"'));
     expect(twice).toContain('default_model');
     expect(twice).toContain('"PreCompact"');
     expect(twice).not.toContain('"Stop"');
     expect(twice.split(KIMI_MARKER_BEGIN)).toHaveLength(2);
   });
 
-  test('removeManagedBlock strips exactly the block', () => {
-    const merged = upsertManagedBlock('default_model = "kimi-code/k3"\n', block);
-    const restored = removeManagedBlock(merged);
+  test('removeKimiBlock strips exactly the block', () => {
+    const merged = upsertKimiBlock('default_model = "kimi-code/k3"\n', block);
+    const restored = removeKimiBlock(merged);
     expect(restored).not.toContain(KIMI_MARKER_BEGIN);
     expect(restored).toContain('default_model');
   });
 
-  test('removeManagedBlock only collapses blank lines at the seam', () => {
+  test('removeKimiBlock only collapses blank lines at the seam', () => {
     const user = 'a = 1\n\n\n\nb = 2\n';
-    const merged = upsertManagedBlock(user, block);
-    const restored = removeManagedBlock(merged);
+    const merged = upsertKimiBlock(user, block);
+    const restored = removeKimiBlock(merged);
     expect(restored).not.toContain(KIMI_MARKER_BEGIN);
     // Unrelated triple blank lines in user content must stay untouched.
     expect(restored).toContain('a = 1\n\n\n\nb = 2');
@@ -66,16 +78,16 @@ describe('managed block merge', () => {
     expect(restored).toMatch(/b = 2\n$/);
   });
 
-  test('removeManagedBlock leaves at most one blank line at the join', () => {
+  test('removeKimiBlock leaves at most one blank line at the join', () => {
     const merged = `a = 1\n\n\n${block}\n\n\nb = 2\n`;
-    const restored = removeManagedBlock(merged);
+    const restored = removeKimiBlock(merged);
     expect(restored).not.toContain(KIMI_MARKER_BEGIN);
     expect(restored).toBe('a = 1\n\nb = 2\n');
   });
 });
 
 describe('installKimiHooks', () => {
-  test('writes the managed block, backs up config, is idempotent', () => {
+  test('writes the managed block, is idempotent', () => {
     const home = makeScratchHome();
     writeFileSync(path.join(home, 'config.toml'), 'default_model = "kimi-code/k3"\n');
     expect(installKimiHooks()).toBe(0);
@@ -91,13 +103,18 @@ describe('installKimiHooks', () => {
     expect(again.split(KIMI_MARKER_BEGIN)).toHaveLength(2);
   });
 
+  // The backup holds every Kimi setting (#5290). The Library keeps it under
+  // <DATA_DIR>/wire-gateway/library/backups/<change>/kimi/<absolute path>.
   test.skipIf(process.platform === 'win32')('writes the backup owner-only, even from a readable config', () => {
     const home = makeScratchHome();
     writeFileSync(path.join(home, 'config.toml'), 'default_model = "kimi-code/k3"\n');
     chmodSync(path.join(home, 'config.toml'), 0o644);
     expect(installKimiHooks()).toBe(0);
-    const backup = readdirSync(home).find((name) => name.startsWith('config.toml.bak-'));
-    expect(statSync(path.join(home, backup!)).mode & 0o777).toBe(0o600);
+    const backupsRoot = libraryBackupsDirectory(defaultLibraryDirectory());
+    const configInChange = path.join('kimi', path.join(home, 'config.toml').slice(path.parse(home).root.length));
+    const backups = readdirSync(backupsRoot).map((change) => path.join(backupsRoot, change, configInChange)).filter((file) => existsSync(file));
+    expect(backups).toHaveLength(1);
+    expect(statSync(backups[0]).mode & 0o777).toBe(0o600);
   });
 
   test('status reports installed state; uninstall removes the block', () => {
@@ -107,7 +124,8 @@ describe('installKimiHooks', () => {
     expect(checkKimiHooksStatus()).toBe(0);
     expect(uninstallKimiHooks()).toBe(0);
     expect(checkKimiHooksStatus()).toBe(1);
-    expect(readFileSync(path.join(home, 'config.toml'), 'utf-8')).not.toContain(KIMI_MARKER_BEGIN);
+    // claude-mem created config.toml, so uninstall puts back exactly what was there: no file.
+    expect(existsSync(path.join(home, 'config.toml'))).toBe(false);
   });
 });
 
@@ -140,9 +158,9 @@ describe('configureKimiMcp', () => {
   });
 });
 
-describe('buildKimiHooksBlock', () => {
+describe('renderKimiBlock', () => {
   test('contains all seven rules with TOML literal commands and valid timeouts', () => {
-    const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/worker-service.cjs');
+    const block = renderKimiBlock('/home/u/.bun/bin/bun', '/x/worker-service.cjs');
     for (const event of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'PreCompact']) {
       expect(block).toContain(`event = "${event}"`);
     }
@@ -174,7 +192,7 @@ describe('buildKimiHooksBlock', () => {
     const BS = '\\\\';
     const bunPath = `C:${BS}Users${BS}o'brien${BS}.bun${BS}bin${BS}bun.exe`;
   const workerPath = `C:${BS}Users${BS}o'brien${BS}cli${BS}worker-service.cjs`;
-  const block = buildKimiHooksBlock(bunPath, workerPath);
+  const block = renderKimiBlock(bunPath, workerPath);
   const commandLines = block.split('\n').filter((line) => line.startsWith('command = '));
   expect(commandLines).toHaveLength(7);
 
@@ -195,7 +213,7 @@ describe('buildKimiHooksBlock', () => {
 });
 
 test('still uses the escape-free literal form for ordinary paths', () => {
-    const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
+    const block = renderKimiBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
     expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/w.cjs\"");
   });
 });

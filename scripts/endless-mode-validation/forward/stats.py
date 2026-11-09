@@ -1,0 +1,181 @@
+"""Stats for one configuration's session, from its tee (extracted.jsonl from extract.py, plus the saved responses).
+Usage: python3 stats.py <stack dir> <prices file> [<netwatch log>]   (prints one JSON object)
+
+Definitions (the same as in our reports):
+- requests: every request in the tee that got an answer with usage. A stack's tee serves one scripted session, and side
+  calls (titles, summaries) are billed too, so all of them count. Requests are assigned to turns by the session log's
+  turn start times. requests_outside_session counts those not carrying the session's id (Anthropic: metadata.user_id;
+  Codex: the thread id as prompt_cache_key).
+- tool_calls: every tool call seen in any request, deduplicated by call id; file_reads: Read calls and shell commands
+  that print a file; file_rereads: reads of a file after its first.
+- cost: from the provider's own usage on every request, at the prices file's per-MTok prices. Where the provider
+  itself reports a cost per request (OpenRouter's usage.cost), measured_cost_usd sums it, with the count of requests
+  that carried one.
+- compactions: Claude Code's summarizing request, and the first request continued from its summary, with the
+  requests just before and after.
+- errors: requests with no answer, a non-200 answer or an error event. A turn is spoiled when it has one, or a
+  netwatch probe of its provider failed inside it.
+"""
+import glob, json, os, re, sys
+
+S, prices_file = sys.argv[1], sys.argv[2]
+netwatch = sys.argv[3] if len(sys.argv) > 3 else None
+P = json.load(open(prices_file))
+log = open(os.path.join(S, 'logs', 'session.log')).read()
+sid_path = os.path.join(S, 'logs', 'session.sid')
+sid = open(sid_path).read().strip() if os.path.exists(sid_path) else ''  # none when every turn failed: run health says so
+starts = [(m.group(1), int(m.group(2))) for m in re.finditer(r'^(\S+Z) turn (\d+) start', log, re.M)]
+dones = {int(m.group(2)): m.group(1) for m in re.finditer(r'^(\S+Z) turn (\d+) done', log, re.M)}
+turn_rc = {}
+for m in re.finditer(r'^(\S+Z) turn (\d+) start\n(?:turn-retry:[^\n]*\n)?rc=(\S+) secs=(\S+) error=(\S+)', log, re.M):
+    turn_rc[int(m.group(2))] = dict(rc=m.group(3), secs=int(m.group(4)), error=m.group(5) not in ('False', 'None'))
+retried_turns = sorted({int(m.group(1)) for m in re.finditer(r'turn (\d+) start\nturn-retry:', log)})
+
+def turn_of(iso):
+    c = [n for s, n in starts if s <= iso]
+    return max(c) if c else 0
+
+def price(key):
+    v = P.get(key)
+    return 0.0 if v is None else v
+
+recs, status_by = [], {}
+tee_dirs = [d for d in (os.path.join(S, 'tee-anthropic'), os.path.join(S, 'tee-codex')) if os.path.isdir(d)]
+unextracted = 0
+for d in tee_dirs:
+    if os.path.exists(os.path.join(d, 'index.tsv')):
+        for line in open(os.path.join(d, 'index.tsv')):
+            p = line.rstrip('\n').split('\t')
+            if len(p) >= 4: status_by[(d, p[0])] = p[3]
+    if os.path.exists(os.path.join(d, 'extracted.jsonl')):
+        by_n = {}
+        for l in open(os.path.join(d, 'extracted.jsonl')):
+            r = json.loads(l); r['dir'] = d; by_n[r['n']] = r
+        recs += sorted(by_n.values(), key=lambda r: r['n'])
+    unextracted += len([f for f in os.listdir(d) if f.endswith('-req.body')])
+# Chat completions name no session.
+outside_session = sum(1 for r in recs if r['proto'] != 'chat' and not (sid in r['conversation'] if r['proto'] == 'anthropic' else r['conversation'] == sid))
+
+reads, seen, reqs, errors = {}, set(), [], []
+measured = dict(usd=0.0, requests=0)
+for r in recs:
+    for c in r['tool_uses']:
+        if c['id'] in seen: continue
+        seen.add(c['id'])
+        for f in c['read_files']: reads[f] = reads.get(f, 0) + 1
+    turn = turn_of(r['time'])
+    rp = os.path.join(r['dir'], f"{r['n']}-resp.raw"); status = status_by.get((r['dir'], r['n']), '?')
+    if not os.path.exists(rp) or status != '200':
+        errors.append(dict(n=r['n'], turn=turn, status=status)); continue
+    u, out, err, cost_reported = {}, 0, None, None
+    body_text = open(rp, errors='replace').read()
+    # A chat completion may be answered whole (side calls are not always streamed).
+    lines = body_text.splitlines() if body_text.lstrip().startswith(('data:', 'event:', ':')) else ['data: ' + body_text.replace('\n', ' ')]
+    for line in lines:
+        if not line.startswith('data: '): continue
+        try: ev = json.loads(line[6:])
+        except Exception: continue
+        if r['proto'] == 'chat':
+            if ev.get('error'): err = json.dumps(ev)[:200]
+            if ev.get('usage'): u = ev['usage']; out = u.get('completion_tokens', 0)
+            if isinstance(u.get('cost'), (int, float)): cost_reported = u['cost']
+            continue
+        t = ev.get('type')
+        if t in ('error', 'response.failed'): err = json.dumps(ev)[:200]
+        if t == 'message_start': u = dict(ev['message'].get('usage') or {})
+        if t == 'message_delta':
+            du = ev.get('usage') or {}; out = du.get('output_tokens', out)
+            for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'):
+                if du.get(k): u[k] = du[k]
+            if isinstance(du.get('cost'), (int, float)): cost_reported = du['cost']
+        if t == 'response.completed':
+            u = ev['response'].get('usage') or {}; out = u.get('output_tokens', 0)
+        if isinstance(u.get('cost'), (int, float)): cost_reported = u['cost']
+    if err: errors.append(dict(n=r['n'], turn=turn, error=err)); continue
+    if r['proto'] == 'chat':
+        if not u: errors.append(dict(n=r['n'], turn=turn, error='answer carried no usage')); continue
+        rd = (u.get('prompt_tokens_details') or {}).get('cached_tokens') or 0
+        inp = (u.get('prompt_tokens') or 0) - rd; w5 = w1 = 0
+    elif r['proto'] == 'anthropic':
+        cc = u.get('cache_creation') or {}
+        w5 = cc.get('ephemeral_5m_input_tokens') or 0; w1 = cc.get('ephemeral_1h_input_tokens') or 0
+        if not cc and u.get('cache_creation_input_tokens'): w5 = u['cache_creation_input_tokens']
+        # OpenRouter's Anthropic-compatible stream sends null for fields it does not fill (e.g. cache reads in
+        # message_start); null counts as 0.
+        inp = u.get('input_tokens') or 0; rd = u.get('cache_read_input_tokens') or 0; w5 = w5 or 0; w1 = w1 or 0
+    else:
+        total_in = u.get('input_tokens', 0); rd = (u.get('input_tokens_details') or {}).get('cached_tokens', 0)
+        inp = total_in - rd; w5 = w1 = 0
+    cost = (inp * price('input') + w5 * price('cache_write_5m') + w1 * price('cache_write_1h') + rd * price('cache_read') + out * price('output')) / 1e6
+    if cost_reported is not None: measured['usd'] += cost_reported; measured['requests'] += 1
+    out = out or 0
+    reqs.append(dict(n=r['n'], turn=turn, inp=inp, read=rd, w5=w5, w1=w1, out=out, size=inp + rd + w5 + w1, cost=cost, measured=cost_reported, kind=r['kind'], side_call=r.get('side_call', False),
+                     timeline_blocks=r['timeline_blocks'], timeline_chars=r['timeline_chars']))
+
+cum = 0
+for r in reqs: cum += r['cost']; r['cum'] = cum
+compactions, seen_continued = [], False
+for i, r in enumerate(reqs):
+    if r['kind'] == 'summarizing request' or (r['kind'] == 'continued from a summary' and not seen_continued):
+        if r['kind'] == 'continued from a summary': seen_continued = True
+        b = reqs[i - 1] if i else None; a = reqs[i + 1] if i + 1 < len(reqs) else None
+        compactions.append(dict(n=r['n'], turn=r['turn'], kind=r['kind'], prompt=r['size'], cost=round(r['cost'], 4),
+                                prompt_before=b and b['size'], cost_before=b and round(b['cost'], 4), cumulative_cost_before=b and round(b['cum'], 4),
+                                prompt_after=a and a['size'], cost_after=a and round(a['cost'], 4)))
+per_turn = {}
+for r in reqs:
+    t = per_turn.setdefault(r['turn'], dict(requests=0, cost=0.0, prompt=0, measured=0.0, uncached=0, cached=0, output=0))
+    t['requests'] += 1; t['cost'] += r['cost']; t['prompt'] = r['size']; t['measured'] += r['measured'] or 0
+    t['uncached'] += r['inp'] + r['w5'] + r['w1']; t['cached'] += r['read']; t['output'] += r['out']
+
+# Spoiled turns: an unanswered/failed request, or a failed probe of this provider inside the turn.
+probe_key = 'chatgpt=' if any(r['proto'] == 'responses' for r in recs) else ('openrouter=' if 'openrouter' in (P.get('source') or '') else 'anthropic=')
+probe_fail = []
+if netwatch and os.path.exists(netwatch):
+    for l in open(netwatch):
+        m = re.search(probe_key + r'(\d+)', l)
+        if m and m.group(1) == '000': probe_fail.append(l.split()[0])
+spoiled = {}
+for s, n in starts:
+    e = dones.get(n, '9999')
+    bad = sum(1 for t in probe_fail if s <= t <= e); errs = sum(1 for x in errors if x['turn'] == n)
+    if bad or errs or turn_rc.get(n, {}).get('error'):
+        spoiled[n] = dict(netwatch_failures=bad, request_errors=errs, turn_error=turn_rc.get(n, {}).get('error', False))
+
+rereads = sum(v - 1 for v in reads.values() if v > 1)
+main_reqs = [r for r in reqs if not r['side_call']]
+res = dict(stack=os.path.basename(S), turns=max(per_turn) if per_turn else 0, turns_started=len(starts), requests=len(reqs),
+           output_tokens=sum(r['out'] for r in reqs), final_prompt_tokens=main_reqs[-1]['size'] if main_reqs else 0,
+           max_prompt_tokens=max((r['size'] for r in main_reqs), default=0), side_calls=len(reqs) - len(main_reqs), tool_calls=len(seen), file_reads=sum(reads.values()), file_rereads=rereads,
+           cache_read=sum(r['read'] for r in reqs), cache_write=sum(r['w5'] + r['w1'] for r in reqs), uncached_input=sum(r['inp'] for r in reqs),
+           input_cost_usd=round(sum((r['inp'] * price('input') + r['w5'] * price('cache_write_5m') + r['w1'] * price('cache_write_1h') + r['read'] * price('cache_read')) / 1e6 for r in reqs), 6),
+           output_cost_usd=round(sum(r['out'] for r in reqs) * price('output') / 1e6, 6))
+res['total_cost_usd'] = round(res['input_cost_usd'] + res['output_cost_usd'], 6)
+res['measured_cost_usd'] = round(measured['usd'], 6) if measured['requests'] else None
+res['measured_cost_requests'] = measured['requests']
+res['prices'] = dict(file=os.path.basename(prices_file), source=P.get('source'))
+last = reqs[-1] if reqs else None
+res['timeline_end'] = dict(blocks=last['timeline_blocks'], chars=last['timeline_chars'], est_tokens=last['timeline_chars'] // 4) if last else None
+# Five places are too coarse for a turn at DeepSeek prices (a cheap turn is under a tenth of a cent), and the cells sum these.
+res['per_turn'] = {k: dict(requests=v['requests'], cost=round(v['cost'], 7), prompt=v['prompt'], measured=round(v['measured'], 9), uncached=v['uncached'], cached=v['cached'], output=v['output']) for k, v in sorted(per_turn.items())}
+res['compactions'] = compactions; res['errors'] = errors; res['spoiled_turns'] = spoiled; res['retried_turns'] = retried_turns
+res['unextracted_bodies'] = unextracted
+res['requests_outside_session'] = outside_session
+res['memory_tools_seen'] = sorted({t for r in recs for t in r.get('memory_tools') or []})
+# Observer health: quota pauses in the worker's log.
+quota_pauses = 0
+for lf in glob.glob(os.path.join(S, 'data', 'logs', '*.log')):
+    quota_pauses += sum(1 for l in open(lf, errors='replace') if 'paused for quota' in l)
+res['observer_quota_pauses'] = quota_pauses
+# What the stack's claude-mem stored (None for `none`, which has no database): observations and session summaries.
+db = os.path.join(S, 'data', 'claude-mem.db')
+res['observations_stored'] = res['summaries_stored'] = None
+if os.path.exists(db):
+    import sqlite3
+    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+    def count(table):
+        try: return con.execute(f'select count(*) from {table}').fetchone()[0]
+        except sqlite3.OperationalError: return None
+    res['observations_stored'] = count('observations'); res['summaries_stored'] = count('session_summaries')
+    con.close()
+print(json.dumps(res))

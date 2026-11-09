@@ -10,6 +10,7 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 import { formatHeaderDateTime, compactTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
+import { renderAgentAssistantMessageRow } from './exchange-rows.js';
 
 function formatActiveMode(): string {
   const manager = ModeManager.getInstance();
@@ -77,7 +78,7 @@ export function renderAgentDayHeader(day: string): string[] {
 
 
 export function renderAgentTableRow(
-  obs: Observation,
+  obs: Pick<Observation, 'id' | 'type' | 'title'>,
   timeDisplay: string,
   config: ContextConfig
 ): string {
@@ -144,7 +145,7 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
   return [
     `**Previously**`,
     '',
-    `A: ${priorMessages.assistantMessage}`,
+    renderAgentAssistantMessageRow(priorMessages.assistantMessage),
     ''
   ];
 }

@@ -23,7 +23,8 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  const read = () => Bun.YAML.parse(readFileSync(configPath, 'utf-8')) as Record<string, any>;
+  // The YAML editor keeps a byte order mark the file had; Bun.YAML reads past it only once it is stripped.
+  const read = () => Bun.YAML.parse(readFileSync(configPath, 'utf-8').replace(/^\uFEFF/, '')) as Record<string, any>;
   const claudeMemExtension = (serverPath: string) => ({
     enabled: true,
     type: 'stdio',
@@ -133,6 +134,7 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
 
     mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
 
+    expect(readFileSync(configPath, 'utf-8').startsWith('\uFEFF')).toBe(true);
     expect(read().extensions).toEqual({
       'claude-mem': claudeMemExtension('/plugin/scripts/mcp-server.cjs'),
       developer,
@@ -160,10 +162,18 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
   });
 
   it('refuses to rewrite an extensions value written inline', () => {
-    writeFileSync(configPath, 'extensions: {}\n');
+    writeFileSync(configPath, 'extensions: {developer: {enabled: true}}\n');
 
     expect(() => mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs')).toThrow(/extensions/);
-    expect(readFileSync(configPath, 'utf-8')).toBe('extensions: {}\n');
+    expect(readFileSync(configPath, 'utf-8')).toBe('extensions: {developer: {enabled: true}}\n');
+  });
+
+  it('turns an empty inline extensions mapping into a block holding claude-mem', () => {
+    writeFileSync(configPath, 'extensions: {}\n');
+
+    mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
+
+    expect(read().extensions).toEqual({ 'claude-mem': claudeMemExtension('/plugin/scripts/mcp-server.cjs') });
   });
 });
 

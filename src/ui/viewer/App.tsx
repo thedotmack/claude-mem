@@ -5,6 +5,7 @@ import { Feed } from './components/Feed';
 import { ViewTabs, type ViewTab } from './components/ViewTabs';
 import { SessionList } from './components/SessionList';
 import { SessionDetailPage } from './components/SessionDetailPage';
+import { WirePage } from './components/WirePage';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
@@ -27,6 +28,7 @@ import {
   sessionKey,
   sessionRefOf,
   sessionsHash,
+  wireHash,
   type SessionRef,
   type SessionScopedRow,
   type ViewRoute,
@@ -43,7 +45,8 @@ function feedScopeKey(scope: FeedScope): string {
 }
 
 function scopeForRoute(route: ViewRoute, project: string): FeedScope | null {
-  if (route.view === 'sessions') return null;
+  // The Sessions list and the Wire page keep the last feed scope (no feed rows to load).
+  if (route.view === 'sessions' || route.view === 'wire') return null;
   if (route.view === 'session') return { project: '', session: route.session };
   return { project, session: null };
 }
@@ -466,18 +469,20 @@ export function App() {
     ?? pagination.summaries.offsetCapReachedAt ?? pagination.prompts.offsetCapReachedAt;
   // Retry still helps when a sibling list has more, even if one list was refused.
   const feedCanRetry = hasMore || feedLoadError !== rejectedFeedErrorRef.current;
-  const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
+  const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : route.view === 'wire' ? 'wire' : 'sessions';
   const tabs = (
     <>
       <div className="memory-page-heading">
         <div>
-          <p className="memory-eyebrow">{t('Your saved context')}</p>
-          <h2>{route.view === 'timeline' ? t('Memory timeline') : route.view === 'sessions' ? t('Sessions') : t('Session memory')}</h2>
+          <p className="memory-eyebrow">{route.view === 'wire' ? t('Wire gateway') : t('Your saved context')}</p>
+          <h2>{route.view === 'timeline' ? t('Memory timeline') : route.view === 'sessions' ? t('Sessions') : route.view === 'wire' ? t('Wire') : t('Session memory')}</h2>
           <p>{route.view === 'timeline'
             ? t('Browse observations, summaries, and prompts from your work.')
             : route.view === 'sessions'
               ? t('Open a session to revisit what happened and what was learned.')
-              : t('Review the context captured during this session.')}</p>
+              : route.view === 'wire'
+                ? t('Agents wired through the gateway, their live model calls, and what memory costs and saves.')
+                : t('Review the context captured during this session.')}</p>
           {showLatestRefresh && <button type="button" onClick={() => {
             resyncPausedRef.current = false;
             resyncInterruptionsRef.current = 0;
@@ -488,14 +493,16 @@ export function App() {
         </div>
         <ViewTabs
           active={activeTab}
-          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : tab === 'wire' ? wireHash() : '')}
         />
       </div>
     </>
   );
 
   let content: React.ReactNode;
-  if (route.view === 'sessions') {
+  if (route.view === 'wire') {
+    content = <WirePage header={tabs} />;
+  } else if (route.view === 'sessions') {
     content = (
       <SessionList
         header={tabs}
