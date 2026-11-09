@@ -408,12 +408,16 @@ describe('processesStillUsingArm', () => {
   }
 
   it('merges what pgrep and lsof find, drops this process, and gives pgrep the data dir as a literal pattern', () => {
+    // These are canned query results, so choose distinct PIDs that cannot be this test runner.
+    const sharedPid = process.pid + 1;
+    const pgrepOnlyPid = process.pid + 2;
+    const lsofOnlyPid = process.pid + 3;
     const { calls, query } = answering({
-      pgrep: { status: 0, signal: null, stdout: `4100\n${process.pid}\n`, stderr: '' },
-      lsof: { status: 0, signal: null, stdout: '4100\n4200\n', stderr: '' },
+      pgrep: { status: 0, signal: null, stdout: `${sharedPid}\n${process.pid}\n${pgrepOnlyPid}\n`, stderr: '' },
+      lsof: { status: 0, signal: null, stdout: `${sharedPid}\n${lsofOnlyPid}\n${process.pid}\n`, stderr: '' },
     });
 
-    expect(processesStillUsingArm(arm, query)).toEqual([4100, 4200]);
+    expect(processesStillUsingArm(arm, query)).toEqual([sharedPid, pgrepOnlyPid, lsofOnlyPid]);
     expect(calls).toEqual([
       ['pgrep', ['-f', '--', '/work/claude-mem 🧠 \\(copy\\)/\\.scratch/read-gate-eval/t/on/data']],
       ['lsof', ['-nP', '-iTCP:51234', '-sTCP:LISTEN', '-t']],
