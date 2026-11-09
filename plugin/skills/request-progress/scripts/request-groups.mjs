@@ -4640,26 +4640,39 @@ import { join as join10 } from "node:path";
 function placeholders(values2) {
   return values2.map(() => "?").join(",");
 }
+function queryInChunks(database, values2, sqlFor, parametersFor = (chunk) => chunk, chunkSize = 500) {
+  const rows = [];
+  for (let index = 0; index < values2.length; index += chunkSize) {
+    const chunk = values2.slice(index, index + chunkSize);
+    const statement = database.prepare(sqlFor(chunk));
+    try {
+      for (const row of statement.all(...parametersFor(chunk))) rows.push(row);
+    } finally {
+      statement.finalize();
+    }
+  }
+  return rows;
+}
 function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const stored = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
+  const stored = pairs ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`, (chunk) => chunk.flat(), 250) : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
   if (!stored.length) return [];
   const sessions = withDerivedProjects(database, stored);
-  const ids = sessions.map((session) => session.id);
-  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const writes = database.prepare(`SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
-    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const observations = database.prepare(`SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
+  const ids = [...new Set(sessions.map((session) => session.id))];
+  const prompts = queryInChunks(database, ids, (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const writes = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
+    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(chunk)})`);
+  const observations = queryInChunks(database, ids, (chunk) => `SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
     FROM observations o JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE s.id IN (${placeholders(ids)}) GROUP BY s.id`).all(...ids);
+    WHERE s.id IN (${placeholders(chunk)}) GROUP BY s.id`);
   const observationsBySession = new Map(observations.map((row) => [row.session_db_id, row]));
-  const toolActivity = database.prepare(`SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
-    WHERE session_db_id IN (${placeholders(ids)}) GROUP BY session_db_id`).all(...ids);
+  const toolActivity = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
+    WHERE session_db_id IN (${placeholders(chunk)}) GROUP BY session_db_id`);
   const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
   const promptsBySession = /* @__PURE__ */ new Map();
   for (const prompt of prompts) {
