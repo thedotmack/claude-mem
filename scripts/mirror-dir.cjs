@@ -155,18 +155,27 @@ function copySymlink(sourcePath, destPath, sourceStat, stats) {
 }
 
 // A stale directory can contain receiver-only data (e.g. node_modules or a
-// nested .git). Check the entire subtree before deciding what can be removed.
-function pruneReceiver(destPath, relativePath, entry, rules, checkOnly = false) {
+// nested .git). Omit stats to check what can be removed without changing it.
+function pruneReceiver(destPath, relativePath, entry, rules, stats) {
   if (isExcluded(rules, relativePath, entry.isDirectory())) return false;
   if (!entry.isDirectory()) {
-    if (!checkOnly) rmSync(destPath);
+    if (stats) rmSync(destPath);
     return true;
   }
-  let empty = true;
-  for (const child of readdirSync(destPath, { withFileTypes: true })) {
-    if (!pruneReceiver(path.join(destPath, child.name), joinRelative(relativePath, child.name), child, rules, checkOnly)) empty = false;
+  const children = readdirSync(destPath, { withFileTypes: true });
+  let removableChildren = 0;
+  for (const child of children) {
+    if (pruneReceiver(path.join(destPath, child.name), joinRelative(relativePath, child.name), child, rules, stats)) {
+      removableChildren++;
+    }
   }
-  if (empty && !checkOnly) rmdirSync(destPath);
+  const empty = removableChildren === children.length;
+  if (stats) {
+    // A removed subtree counts once at its parent. Only a retained directory
+    // needs to report the separate children that were removed beneath it.
+    if (empty) rmdirSync(destPath);
+    else stats.deleted += removableChildren;
+  }
   return empty;
 }
 
@@ -186,7 +195,7 @@ function mirrorInto(sourceDir, destDir, relativeBase, rules, stats) {
   // node_modules, plugin/data, ...) are left alone rather than wiped.
   for (const entry of readdirSync(destDir, { withFileTypes: true })) {
     if (sourceNames.has(entry.name)) continue;
-    if (pruneReceiver(path.join(destDir, entry.name), joinRelative(relativeBase, entry.name), entry, rules)) stats.deleted++;
+    if (pruneReceiver(path.join(destDir, entry.name), joinRelative(relativeBase, entry.name), entry, rules, stats)) stats.deleted++;
   }
 
   for (const entry of sourceEntries) {
@@ -195,7 +204,7 @@ function mirrorInto(sourceDir, destDir, relativeBase, rules, stats) {
 
     if (!entry.isDirectory()) {
       const destStat = lstatSync(destPath, { throwIfNoEntry: false });
-      if (destStat?.isDirectory() && !pruneReceiver(destPath, joinRelative(relativeBase, entry.name), destStat, rules, true)) {
+      if (destStat?.isDirectory() && !pruneReceiver(destPath, joinRelative(relativeBase, entry.name), destStat, rules)) {
         throw new Error(`Cannot replace directory containing excluded data: ${destPath}`);
       }
     }

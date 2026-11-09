@@ -20,9 +20,10 @@ test('retains protected descendants of stale directories but removes unprotected
   mkdirSync(join(dest, 'obsolete/.git'), { recursive: true });
   writeFileSync(join(dest, 'obsolete/.git/HEAD'), 'ref');
   writeFileSync(join(dest, 'obsolete/stale'), 'stale');
-  mirror.mirrorDirectory(src, dest, { exclude: ['.git'] });
+  const stats = mirror.mirrorDirectory(src, dest, { exclude: ['.git'] });
   assert.equal(readFileSync(join(dest, 'obsolete/.git/HEAD'), 'utf8'), 'ref');
   assert.equal(existsSync(join(dest, 'obsolete/stale')), false);
+  assert.equal(stats.deleted, 1);
 });
 
 test('does not replace protected receiver data during a directory-to-file transition', t => {
