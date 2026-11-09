@@ -3,9 +3,10 @@ import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { remoteHookSpoolReceipt, type HookSpoolEntry } from '../shared/hook-spool.js';
 import { remoteHookSpoolToken, usesRemoteHookSpool, REMOTE_SPOOL_PROTOCOL_VERSION } from '../shared/hook-spool-remote.js';
 import { logger } from '../utils/logger.js';
+import { deliverLiveObserverHandoff } from '../shared/live-observer-handoff.js';
 
 /** One live handoff, no disk outbox, background child, or delivery retry. */
-export const LIVE_OBSERVER_HANDOFF_TIMEOUT_MS = 250;
+export { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../shared/live-observer-handoff.js';
 const handoffs = new Set<Promise<void>>();
 
 export function sendLiveObserverEvent(entry: HookSpoolEntry): string {
@@ -49,9 +50,6 @@ async function deliver(entry: HookSpoolEntry): Promise<void> {
   } else {
     throw new Error(`Not a live observer event: ${entry.kind}`);
   }
-  const response = await workerHttpRequest(path, { method: 'POST', headers,
-    body: JSON.stringify(body), timeoutMs: LIVE_OBSERVER_HANDOFF_TIMEOUT_MS,
-    idleTimeoutMs: LIVE_OBSERVER_HANDOFF_TIMEOUT_MS });
-  await response.body?.cancel();
-  if (!response.ok) throw new Error(`Live observer handoff returned ${response.status}`);
+  await deliverLiveObserverHandoff(timeoutMs => workerHttpRequest(path, { method: 'POST', headers,
+    body: JSON.stringify(body), timeoutMs, idleTimeoutMs: timeoutMs }));
 }
