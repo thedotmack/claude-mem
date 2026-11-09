@@ -43,6 +43,26 @@ describe('SessionStart systemMessage stays within the field cap (#5079)', () => 
     expect(countTerminalTimelineRows(preview)).toBe(3);
   });
 
+  it('counts the plain block\'s rows, which antigravity-cli shows, and not its day headings', () => {
+    const block = [
+      'Access Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md',
+      '',
+      'Work state, still open:',
+      '- release: status=active, updated 1 minute ago',
+      '',
+      '### Oct 26, 2025',
+      'S15448 Monitor CI checks (Oct 26 at 1:31 PM)',
+      '2586 12:58a ○ Context hook file empty',
+      '2587 " ✓ Context hook reads the summary table',
+      '**2588** 1:02a ◆ **A full observation**',
+      '3f2a9c1e 3:07p ● A server row',
+      '### Oct 27, 2025',
+      'A: the prior reply',
+      '**Investigated**: summary field',
+    ].join('\n');
+    expect(countTerminalTimelineRows(block)).toBe(5);
+  });
+
   it('fits the longest header and closing lines the hook composes, and their separators, in the reserved room', () => {
     const footer = sessionStartBannerFooter(viewerUrl, 9_999);
     expect(header.length + 2 + 2 + footer.length).toBeLessThanOrEqual(TERMINAL_BANNER_RESERVE_CHARS);

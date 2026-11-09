@@ -79,8 +79,13 @@ export function sessionStartBannerHeader(
 }
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
-/** A terminal timeline row: `  #<id>  <time>  <type>  <title>`, or a summary's `#S<id> …`. */
-const TERMINAL_TIMELINE_ROW = /^\s*#S?\S+\s/;
+/**
+ * A timeline row, opening with its id (digits, or a server's hex display ref):
+ * the colored preview's `  #<id>  <time> …` or summary `#S<id> …`, or the
+ * plain block's `<id> <time> …`, `S<id> …` or `**<id>** …` (antigravity-cli
+ * shows the model's block). A `### <day>` heading has no id, so it is not one.
+ */
+const TERMINAL_TIMELINE_ROW = /^(?:\s*#|\*\*)?S?[0-9a-f][0-9a-f-]*(?:\*\*)? /;
 
 /** How many timeline rows a terminal preview shows. */
 export function countTerminalTimelineRows(preview: string): number {
