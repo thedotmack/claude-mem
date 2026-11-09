@@ -1,4 +1,9 @@
 const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+\-=|{}.!\\]/g;
+// Bounds a stalled connection so it cannot block the alerts queued behind it
+// (TelegramNotifier sends one at a time) or hold the wrap-up sent-claim open
+// forever. Same budget as NOTION_REQUEST_TIMEOUT_MS (NotionExporter.ts) for
+// outbound integration calls; a healthy Telegram sendMessage answers in well
+// under a second.
 const TELEGRAM_REQUEST_TIMEOUT_MS = 15_000;
 
 export function escapeMarkdownV2(value: string): string {
