@@ -130,12 +130,12 @@ const toolUsesBatchSchema = z.object({
 }).passthrough();
 
 // The cloud/export shape (CloudSync `toCloud`) carries columns that are stored
-// locally as JSON strings — facts, concepts, files_read/modified — as real
-// arrays. Re-stringify them at the boundary so every downstream consumer
-// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) sees the
-// canonical JSON-string shape rather than a raw array. Without this, the array
-// crashes bun:sqlite ("Binding expected string…") and silently drops from Chroma.
-const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified'] as const;
+// locally as JSON strings — facts, concepts, files_read/modified, metadata — as
+// arrays or objects. Re-stringify them at the boundary so downstream consumers
+// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) receive
+// their canonical JSON-string shape. Object metadata otherwise fails the store's
+// string-column validation, rejecting an otherwise valid cloud observation.
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified', 'metadata'] as const;
 const SUMMARY_JSON_FIELDS = ['files_read', 'files_edited'] as const;
 
 const jsonStringifyFields = (fields: readonly string[]) =>
