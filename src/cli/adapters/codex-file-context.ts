@@ -34,6 +34,10 @@ function splitSegments(tokens: ParsedToken[]): string[][] {
   return segments;
 }
 
+// Codex runs PowerShell on Windows, where a quoted '~/x' path still resolves
+// to the home directory, so only POSIX shells keep a quoted or escaped tilde literal.
+const QUOTED_TILDE_IS_LITERAL = process.platform !== 'win32';
+
 // Expand before shell-quote removes quote/escape information. A quoted or
 // escaped tilde, and every literal argv element, names cwd/~/... instead.
 function expandShellHome(command: string, homeDirectory: string): string {
@@ -73,7 +77,7 @@ function expandShellHome(command: string, homeDirectory: string): string {
 }
 
 function normalizeCommand(command: unknown, homeDirectory: string): string | null {
-  if (typeof command === 'string') return expandShellHome(command, homeDirectory);
+  if (typeof command === 'string') return QUOTED_TILDE_IS_LITERAL ? expandShellHome(command, homeDirectory) : command;
   if (Array.isArray(command)) {
     const parts = command.filter((part): part is string => typeof part === 'string');
     return parts.length > 0 ? quote(parts) : null;
@@ -174,8 +178,13 @@ function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string)
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
-      if (isExistingFile(token, cwd)) {
-        paths.push(token);
+      // The POSIX scanner splices the home directory in as text, so normalize
+      // it to the shape path.join gives (no doubled separator from HOME=/).
+      const candidate = QUOTED_TILDE_IS_LITERAL
+        ? (token.startsWith(homeDirectory) ? path.normalize(token) : token)
+        : expandHomeDirectory(token, homeDirectory);
+      if (isExistingFile(candidate, cwd)) {
+        paths.push(candidate);
       }
     }
   }
