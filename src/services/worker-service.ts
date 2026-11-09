@@ -2246,24 +2246,10 @@ async function main() {
     }
 
     case 'hook': {
-      // IO discipline: this case is the entry point to the hook execution path.
-      // Once hookCommand is invoked, src/shared/hook-io.ts owns all
-      // stdout/stderr/exit. The pre-hookCommand error paths below (missing args,
-      // worker failed to start) are CLI-style: console.error + exit 1 is
-      // acceptable because they occur BEFORE the buffered window opens.
-      const platform = process.argv[3];
-      const event = process.argv[4];
-      if (!platform || !event) {
-        console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, codex, cursor, antigravity-cli, raw');
-        console.error('Events: context, session-init, observation, summarize, user-message');
-        process.exit(1);
-      }
-
-      const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
-      restoreHookOriginalCwd();
-      const { hookCommand } = await import('../cli/hook-command.js');
-      await hookCommand(platform, event);
+      // Shared with the hook-only bundle (src/cli/hook-entry.ts), which the
+      // launcher and bun-runner.js run for `hook` when the plugin ships it.
+      const { runHookSubcommand } = await import('../cli/run-hook-subcommand.js');
+      await runHookSubcommand(process.argv[3], process.argv[4]);
       break;
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, chmodSync, appendFileSync, writeFileSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
@@ -172,6 +172,16 @@ if (args.length === 0) {
 args[0] = fixBrokenScriptPath(args[0]);
 // Resolve a relative script path against the launch directory before the child starts in the neutral run dir (#4628)
 args[0] = resolve(process.cwd(), args[0]);
+
+// A hook is a short-lived process: parsing the whole worker bundle for it costs
+// ~0.3 s and ~120 MB. Route `hook` to the hook-only sibling bundle when it
+// exists; an older plugin without it keeps running worker-service.cjs. Same
+// rule as the compiled launcher (src/launcher/claude-mem-launcher.ts); this
+// file cannot import it.
+if (args[1] === 'hook' && basename(args[0]) === 'worker-service.cjs') {
+  const hookServicePath = join(dirname(args[0]), 'hook-service.cjs');
+  if (existsSync(hookServicePath)) args[0] = hookServicePath;
+}
 
 const bunPath = findBun();
 
