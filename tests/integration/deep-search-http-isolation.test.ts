@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-it('keeps real context rendering and HTTP responses available during a native deep scan', () => {
+it.each([false, true])('keeps real context rendering and HTTP responses available during a native deep scan (probe contention: %s)', (contention) => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-deep-http-'));
   try {
     const child = spawnSync(process.execPath, ['tests/fixtures/deep-search-http-isolation.ts'], {
       encoding: 'utf8', timeout: 60_000,
       env: { ...process.env, CLAUDE_MEM_DATA_DIR: dir, CLAUDE_CONFIG_DIR: dir,
         CLAUDE_MEM_MODES_DIR: join(process.cwd(), 'plugin/modes'), CLAUDE_MEM_CHROMA_ENABLED: 'false',
-        CLAUDE_MEM_TELEMETRY_ENABLED: 'false', DO_NOT_TRACK: '1' },
+        CLAUDE_MEM_TELEMETRY_ENABLED: 'false', DO_NOT_TRACK: '1',
+        CM_TEST_SNAPSHOT_CONTENTION: String(contention) },
     });
     if (child.status !== 0) throw new Error(`Isolation fixture failed (${child.signal}): ${child.stderr.slice(-3000)}`);
     const result = JSON.parse(child.stdout.trim().split('\n').at(-1)!);

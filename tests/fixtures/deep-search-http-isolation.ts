@@ -1,4 +1,5 @@
 import express from 'express';
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { configureToolUseIndex } from '../../src/services/sqlite/tool-use-search.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
@@ -50,16 +51,17 @@ const get = async (query: string, project = 'slow', raw = true) => {
   if (!response.ok) throw new Error('HTTP search failed: ' + await response.text());
   return response.json() as Promise<any>;
 };
-async function sample(overlap?: () => boolean) {
+async function sample(confirmOverlap?: () => Promise<void>) {
   const times: number[] = []; const texts: string[] = [];
   for (let i = 0; i < 10; i++) {
-    if (overlap && !overlap()) break;
+    await confirmOverlap?.();
     const started = performance.now();
     const response = await fetch(origin + '/fixture/context');
     if (!response.ok) throw new Error('Context render failed');
     const text = await response.text();
-    if (overlap && !overlap()) break;
-    texts.push(text); times.push(performance.now() - started);
+    const elapsed = performance.now() - started;
+    await confirmOverlap?.();
+    texts.push(text); times.push(elapsed);
   }
   return { times, texts };
 }
@@ -69,12 +71,27 @@ try {
   let finished = false;
   const pending = get('一 ' + terms + ' absent').then(result => { finished = true; return result; });
   await waitForReadSnapshot(snapshotPinned, () => finished, 4000);
+  // Probe writes can briefly be SQLITE_BUSY while the same raw SELECT remains
+  // active. Retry asynchronously at every boundary, not only at scan startup.
+  // Still require a real snapshot before/after each response; never count an
+  // inconclusive probe or a response completed after the deep request ended.
+  const confirmOverlap = () => waitForReadSnapshot(snapshotPinned, () => finished, 1000);
   const busy = await get('RECOVERY_MARKER', 'app');
-  const underLoad = await sample(() => !finished && snapshotPinned());
+  // A second WAL writer can temporarily prevent the probe's UPDATE without
+  // stopping the deep child's read. Exercise that distinction deterministically.
+  let releaseWriter: Promise<void> | undefined;
+  if (process.env.CM_TEST_SNAPSHOT_CONTENTION === 'true') {
+    const writer = new Database(rawPath);
+    writer.run('BEGIN IMMEDIATE');
+    releaseWriter = Bun.sleep(75).then(() => { writer.run('ROLLBACK'); writer.close(); });
+  }
+  let underLoad;
+  try { underLoad = await sample(confirmOverlap); }
+  finally { await releaseWriter; }
   const health = await (await fetch(origin + '/fixture/health')).json();
-  if (!snapshotPinned() || finished) throw new Error('Deep SQL ended before ordinary search');
+  await confirmOverlap();
   const ordinary = await get('ORDINARY_CONTEXT_RECORD', 'app', false);
-  if (!snapshotPinned() || finished) throw new Error('Deep SQL ended during ordinary search');
+  await confirmOverlap();
   const timeout = await pending;
   // The slot can remain busy briefly while SIGKILL is reaped.
   let recovery;
