@@ -458,6 +458,27 @@ describe('SearchRoutes Welcome Hint', () => {
   });
   }
 
+  it('uses the request-local account plan for the welcome hint trial promotion', async () => {
+    const previousPlan = process.env.CLAUDE_MEM_PRO_PLAN;
+    const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+    try {
+      for (const plan of ['none', 'trial', 'pro']) {
+        process.env.CLAUDE_MEM_PRO_PLAN = plan;
+        const res = createMockRes();
+        handler(req, res as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+
+        const body = (res.send as any).mock.calls[0][0] as string;
+        expect(body).toContain('# claude-mem status');
+        expect(body.includes('https://cmem.ai/pro?from=welcome-hint')).toBe(plan === 'none');
+      }
+    } finally {
+      if (previousPlan === undefined) delete process.env.CLAUDE_MEM_PRO_PLAN;
+      else process.env.CLAUDE_MEM_PRO_PLAN = previousPlan;
+    }
+  });
+
   it('uses the request-local worker port env override in the welcome hint URL', async () => {
     process.env.CLAUDE_MEM_WORKER_PORT = '43210';
 

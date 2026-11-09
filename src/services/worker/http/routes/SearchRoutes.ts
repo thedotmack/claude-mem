@@ -577,7 +577,7 @@ export class SearchRoutes extends BaseRouteHandler {
       if (!await this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = getViewerBaseUrl(port);
-        const promo = proTrialLine('welcome-hint', settings.CLAUDE_MEM_PRO_PLAN);
+        const promo = proTrialLine('welcome-hint', process.env.CLAUDE_MEM_PRO_PLAN ?? settings.CLAUDE_MEM_PRO_PLAN);
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
           .replace('{pro_trial_line}', promo ? `\n${promo}` : '');
