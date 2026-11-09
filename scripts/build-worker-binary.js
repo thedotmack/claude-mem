@@ -13,6 +13,8 @@ fs.mkdirSync(outDir, { recursive: true });
 console.log(`Building Windows exe v${version}...`);
 
 try {
+  // Standalone deep queries execute the embedded runtime with BUN_BE_BUN.
+  execFileSync('bun', ['scripts/build-native-worker.js', '--check-runtime'], { stdio: 'inherit' });
   // Rebuild the source graph even when this script is invoked directly. The
   // checked-in worker bundle alone cannot prove that recent source is shipped.
   execFileSync(npm, ['run', 'build'], { stdio: 'inherit', shell: process.platform === 'win32' });

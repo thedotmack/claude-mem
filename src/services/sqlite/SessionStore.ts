@@ -3397,7 +3397,7 @@ export class SessionStore {
 
   getToolUsesByIds(
     ids: Array<number | string>,
-    options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+    options: { limit?: number; project?: string; projects?: string[]; platformSource?: string; contentSessionId?: string } = {}
   ): ToolUseRow[] {
     return getToolUsesByIdsRows(this.db, ids, options);
   }
