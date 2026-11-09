@@ -19,7 +19,7 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference" | "macro" | "variant";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -165,7 +165,14 @@ const QUERIES: Record<string, string> = {
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (_) @name) @impl_def
+(impl_item trait: (_)? @implemented_trait type: (_) @name) @impl_def
+(function_signature_item name: (identifier) @name) @rust_signature
+(associated_type name: (type_identifier) @name) @tdef
+(type_item name: (type_identifier) @name) @tdef
+(trait_item body: (declaration_list (const_item name: (identifier) @name) @const_def))
+(impl_item body: (declaration_list (const_item name: (identifier) @name) @const_def))
+(macro_definition name: (identifier) @name) @macro_def
+(enum_variant name: (identifier) @name) @variant
 (mod_item name: (identifier) @name) @namespace_def
 (use_declaration) @imp
 `,
@@ -589,6 +596,7 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
+  rust_signature: "function",
   const_func: "function",
   cls: "class",
   method: "method",
@@ -601,6 +609,9 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   enm: "enum",
   struct_def: "struct",
   trait_def: "trait",
+  const_def: "const",
+  macro_def: "macro",
+  variant: "variant",
   impl_def: "impl",
   namespace_def: "namespace",
   mixin_def: "mixin",
@@ -621,6 +632,7 @@ const SIGNATURE_END_LANGUAGES = new Set(["python", "ruby", "lua"]);
 // methods, and a Haskell function holds its `where`/`let` helpers.
 const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
   php: new Set(["enum"]),
+  rust: new Set(["enum"]),
   haskell: new Set(["function"]),
 };
 
@@ -774,6 +786,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const haskellSignatures = new Set<CodeSymbol>();
   const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const implementedTraits = new Map<CodeSymbol, string>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
@@ -884,7 +897,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
-    if (language === "markdown" && kind === "section") {
+    if (language === "rust" && ["rust_signature", "tdef", "const_def"].includes(kindCapture.tag)) {
+      // These declarations end at their semicolon; there is no function body
+      // from which the generic signature extractor could infer a boundary.
+      const declaration = captureText(lines, kindCapture);
+      signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
+    } else if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
       if (nameCapture && !nameCapture.text) {
@@ -964,6 +982,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
+    const trait = match.captures.find(c => c.tag === "implemented_trait");
+    if (trait) implementedTraits.set(sym, captureText(lines, trait));
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
@@ -1170,7 +1190,27 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  return { symbols: symbols.filter(s => !nested.has(s)), imports };
+  const roots = symbols.filter(s => !nested.has(s));
+  if (implementedTraits.size) {
+    // Keep existing unambiguous paths. Distinguish trait impls when a sibling
+    // inherent or trait impl for the same receiver would otherwise shadow one.
+    const disambiguate = (siblings: CodeSymbol[]) => {
+      const receivers = new Set<string>();
+      const repeated = new Set<string>();
+      for (const symbol of siblings) {
+        if (symbol.kind !== "impl") continue;
+        if (receivers.has(symbol.name)) repeated.add(symbol.name);
+        receivers.add(symbol.name);
+      }
+      for (const symbol of siblings) {
+        const trait = implementedTraits.get(symbol);
+        if (trait && repeated.has(symbol.name)) symbol.name = `<${symbol.name} as ${trait}>`;
+        if (symbol.children) disambiguate(symbol.children);
+      }
+    };
+    disambiguate(roots);
+  }
+  return { symbols: roots, imports };
 }
 
 export function parseFile(content: string, filePath: string): FoldedFile {
