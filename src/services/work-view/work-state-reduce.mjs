@@ -71,7 +71,7 @@ export function reduceWorkState(entries, { currentProject, currentProjectScope =
       inCurrentScope: scope.has(normalizedKey(row.project)),
     });
   }
-  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list) => {
+  const lists = [...listsById.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch || b.latestEntryId - a.latestEntryId).map((list) => {
     const tasks = [...list.tasksByName.values()].map((task) => ({
       ...task, status: effectiveStatus(task.fields.status), isOpen: !isClosed(task.fields.status), updatedAt: iso(task.updatedAtEpoch),
     }));

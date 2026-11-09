@@ -70,6 +70,16 @@ export interface ToolUseRow {
   created_at_epoch: number;
 }
 
+/** Metadata disclosed before a caller chooses which raw tool bodies to read. */
+export type ToolUseIndexRow = Pick<ToolUseRow,
+  'id' | 'tool_use_id' | 'tool_name' | 'project' | 'content_session_id' |
+  'memory_session_id' | 'platform_source' | 'agent_id' | 'agent_type' |
+  'observation_id' | 'or_generation_id' | 'or_session_id' | 'prompt_number' |
+  'created_at' | 'created_at_epoch'> & {
+    tool_input_bytes: number;
+    tool_response_bytes: number;
+  };
+
 export interface UpsertToolUseInput {
   toolUseId: string;
   contentSessionId: string;
@@ -385,12 +395,27 @@ export function getToolUsesByIds(
   `).all(...params) as ToolUseRow[];
 }
 
-/**
- * Index-shaped listing for Receipt tallies and for finding ids to hand to
- * `getToolUsesByIds`. Deliberately still returns full rows — callers that want
- * the cheap shape project it themselves — but it is always bounded by a limit.
- */
+/** Bounded full-row listing for callers that explicitly need stored bodies. */
 export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): ToolUseRow[] {
+  return queryToolUseRows(db, filters, '*') as ToolUseRow[];
+}
+
+/**
+ * Keep raw payloads inside SQLite for the progressive-disclosure index. Count
+ * BLOB bytes, not TEXT characters, so Unicode and embedded NULs agree with
+ * the sizes an explicit body fetch returns.
+ */
+export function queryToolUseIndex(db: Database, filters: ToolUseQueryFilters = {}): ToolUseIndexRow[] {
+  return queryToolUseRows(db, filters, `
+    id, tool_use_id, tool_name, project, content_session_id, memory_session_id,
+    platform_source, agent_id, agent_type, observation_id, or_generation_id,
+    or_session_id, prompt_number, created_at, created_at_epoch,
+    COALESCE(length(CAST(tool_input AS BLOB)), 0) AS tool_input_bytes,
+    COALESCE(length(CAST(tool_response AS BLOB)), 0) AS tool_response_bytes
+  `) as ToolUseIndexRow[];
+}
+
+function queryToolUseRows(db: Database, filters: ToolUseQueryFilters, projection: string): unknown[] {
   const conditions: string[] = [];
   const params: Array<string | number> = [];
 
@@ -441,11 +466,11 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const offset = Math.max(Math.floor(filters.offset ?? 0), 0);
 
   return db.prepare(`
-    SELECT * FROM tool_uses
+    SELECT ${projection} FROM tool_uses
     ${whereClause}
     ORDER BY created_at_epoch ${order}, id ${order}
     LIMIT ${limit} OFFSET ${offset}
-  `).all(...params) as ToolUseRow[];
+  `).all(...params);
 }
 
 /**

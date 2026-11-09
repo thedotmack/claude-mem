@@ -98,7 +98,7 @@ export async function processGeneratedResponse(
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
 
-  const outcome = await persistGeneratedObservations(
+  return persistGeneratedObservations(
     input,
     observationsToWrite.map(observation => ({
       kind: observation.type ?? 'observation',
@@ -115,22 +115,6 @@ export async function processGeneratedResponse(
     })),
     privateContentDetected,
   );
-
-  // Cost/usage metering — AFTER the transaction commits, so a metering insert
-  // failure can NEVER roll back the observation + job writes (Greptile #3078: a
-  // failed insert aborts the tx, and the catch can't un-abort it). Opt-in;
-  // best-effort (logged); awaited so callers observe usage consistently.
-  if (outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
-    try {
-      await recordUsageMetering(input, outcome.observations.length);
-    } catch (usageError) {
-      logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
-        jobId: input.job.id,
-        error: usageError instanceof Error ? usageError.message : String(usageError),
-      });
-    }
-  }
-  return outcome;
 }
 
 export interface MarkGenerationFailedInput {
@@ -313,7 +297,8 @@ async function persistGeneratedObservations(
     })),
   );
 
-  return withPostgresTransaction(input.pool, async (client) => {
+  let completedNow = false;
+  const outcome = await withPostgresTransaction<ProcessGeneratedResponseOutcome>(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
     const embeddingsRepo = new PostgresObservationEmbeddingsRepository(client);
     const sourcesRepo = new PostgresObservationSourcesRepository(client);
@@ -522,6 +507,7 @@ async function persistGeneratedObservations(
       });
     }
 
+    completedNow = true;
     return {
       kind: 'completed' as const,
       jobId: fresh.id,
@@ -529,6 +515,22 @@ async function persistGeneratedObservations(
       privateContentDetected,
     };
   });
+
+  // Both event and summary jobs consume provider tokens. Meter only the
+  // transaction that completed this attempt: a terminal replay also returns
+  // `completed`, but must not charge the same response again. Keep writes
+  // outside the transaction so a metering failure cannot undo saved memory.
+  if (completedNow && outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
+    try {
+      await recordUsageMetering(input, outcome.observations.length);
+    } catch (usageError) {
+      logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
+        jobId: input.job.id,
+        error: usageError instanceof Error ? usageError.message : String(usageError),
+      });
+    }
+  }
+  return outcome;
 }
 
 // Post-commit usage metering writes (tokens + observation counts). Extracted

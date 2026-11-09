@@ -170,7 +170,9 @@ async function runServerKeysRotateCommand(): Promise<void> {
     try {
       previousApiKeyId = await lookupApiKeyIdByPlaintext(currentApiKey);
     } catch {
-      // ignore — we'll just generate a new key without revoking the old one
+      console.error(styleText('red', 'Cannot rotate: the current API key could not be looked up in Postgres.'));
+      console.error('No replacement key was created. Confirm Postgres is available and retry.');
+      process.exit(1);
     }
   }
 

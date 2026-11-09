@@ -105,7 +105,7 @@ describe('kimiAdapter against Kimi Code payloads', () => {
 
   test('records the error of a PostToolUseFailure as the tool response', () => {
     const input = kimiAdapter.normalizeInput(fixture.payloads.PostToolUseFailure);
-    expect(input.toolResponse).toEqual(fixture.payloads.PostToolUseFailure.error);
+    expect(input.toolResponse).toEqual({ is_error: true, error: fixture.payloads.PostToolUseFailure.error });
     expect(input.hookEventName).toBe('PostToolUseFailure');
   });
 

@@ -1,4 +1,4 @@
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { existsSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from 'fs';
 import { DB_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -16,7 +16,7 @@ export interface BackupManagerOptions {
   dbPath?: string;
   /** Snapshot target directory (defaults to paths.backups()). */
   backupsDir?: string;
-  /** Directory probed for free disk space (defaults to the db's directory). */
+  /** Directory probed for free disk space (defaults to the snapshot destination). */
   preflightDir?: string;
   /** Delay before the first scheduled run after start(). */
   initialDelayMs?: number;
@@ -91,7 +91,7 @@ export class BackupManager {
     this.retainCount = Number.isFinite(retain) && retain > 0 ? retain : 7;
     this.dbPath = options.dbPath ?? DB_PATH;
     this.backupsDir = options.backupsDir ?? paths.backups();
-    this.preflightDir = options.preflightDir ?? dirname(this.dbPath);
+    this.preflightDir = options.preflightDir ?? this.backupsDir;
     this.initialDelayMs = options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
     this.now = options.now ?? Date.now;
   }
@@ -157,10 +157,17 @@ export class BackupManager {
   }
 
   private async createOwnedSnapshot(signal: AbortSignal): Promise<BackupSnapshotResult> {
-    const dbSize = statSync(this.dbPath).size;
-    this.assertDiskSpace(dbSize);
-
+    // Committed pages can still live only in the WAL. Counting just the main
+    // file substantially underestimates a snapshot until the next checkpoint.
+    let sourceBytes = statSync(this.dbPath).size;
+    try {
+      sourceBytes += statSync(`${this.dbPath}-wal`).size;
+    } catch (error: unknown) {
+      // A non-WAL database, or a concurrent checkpoint, has no sidecar.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     mkdirSync(this.backupsDir, { recursive: true });
+    this.assertDiskSpace(sourceBytes);
     const createdAt = this.now();
     const ts = new Date(createdAt).toISOString().replace(/[:.]/g, '-');
     const backupPath = join(this.backupsDir, `claude-mem-${ts}.db`);
@@ -184,7 +191,7 @@ export class BackupManager {
     }
 
     const bytes = statSync(backupPath).size;
-    logger.info('BACKUP', 'Snapshot created', { backupPath, dbSize, bytes });
+    logger.info('BACKUP', 'Snapshot created', { backupPath, sourceBytes, bytes });
     this.lastError = null;
     return { path: backupPath, bytes, createdAt };
   }
@@ -269,15 +276,16 @@ export class BackupManager {
 
   /**
    * Disk pre-flight copied from CleanupV12_4_3: refuse to snapshot when free
-   * space is credibly below 1.2x the DB size + 100 MiB (VACUUM INTO writes a
+   * destination space is credibly below 1.2x the DB plus WAL size + 100 MiB
+   * (VACUUM INTO writes a
    * full copy, plus headroom so a snapshot never fills the disk the live DB
    * needs). statfs failures and non-credible readings (Bun <= 1.3.14
    * darwin-x64 returns a misaligned struct with bsize = 0,
    * https://github.com/oven-sh/bun/issues/31133) skip the gate rather than
    * block: a real out-of-space condition still surfaces from the write.
    */
-  private assertDiskSpace(dbSize: number): void {
-    const required = Math.ceil(dbSize * 1.2) + 100 * 1024 * 1024;
+  private assertDiskSpace(sourceBytes: number): void {
+    const required = Math.ceil(sourceBytes * 1.2) + 100 * 1024 * 1024;
 
     let fsStats: ReturnType<typeof statfsSync> | undefined;
     try {

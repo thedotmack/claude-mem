@@ -66,8 +66,10 @@ export class HybridSearchStrategy {
     const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
 
     if (rankedIds.length > 0) {
+      const rankedSet = new Set(rankedIds);
       for (const id of metadataIds) {
-        if (!rankedIds.includes(id)) {
+        if (!rankedSet.has(id)) {
+          rankedSet.add(id);
           rankedIds.push(id);
         }
       }
@@ -80,7 +82,8 @@ export class HybridSearchStrategy {
         platformSource: options.platformSource
       });
       if (!dateOrder) {
-        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+        const rankById = new Map(rankedIds.map((id, index) => [id, index]));
+        observations.sort((a, b) => (rankById.get(a.id) ?? -1) - (rankById.get(b.id) ?? -1));
       }
 
       return { observations, sessions, usedChroma: true };
@@ -123,9 +126,11 @@ export class HybridSearchStrategy {
   private intersectWithRanking(metadataIds: number[], chromaIds: number[]): number[] {
     const metadataSet = new Set(metadataIds);
     const rankedIds: number[] = [];
+    const seen = new Set<number>();
 
     for (const chromaId of chromaIds) {
-      if (metadataSet.has(chromaId) && !rankedIds.includes(chromaId)) {
+      if (metadataSet.has(chromaId) && !seen.has(chromaId)) {
+        seen.add(chromaId);
         rankedIds.push(chromaId);
       }
     }
