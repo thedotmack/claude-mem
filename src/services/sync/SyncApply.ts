@@ -643,7 +643,7 @@ export class SyncApply {
             throw invalidOp(op, error instanceof Error ? error.message : String(error));
           }
           return op.kind === 'mutation'
-            ? this.applyMutation(op)
+            ? this.applyMutation(op, chromaJobs)
             : this.applyCanonicalRowOp(op, chromaJobs);
         });
         if ('unapplicable' in attempt) {
@@ -1363,42 +1363,46 @@ export class SyncApply {
   // The synchronous loader runs inside ChromaSync's row writer: an op can
   // wait in either queue while a newer revision, remap or deletion commits.
   private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
+    if (this.chromaSync) {
+      const write = this.observationChromaWrite(this.chromaSync, id, op, body, replaceExisting);
+      chromaJobs.push(() => this.enqueueChromaWrite(`observation:${id}`, write));
+    }
+  }
+
+  private observationChromaWrite(chroma: ChromaSyncLike, id: number, op: SyncOp, body: Record<string, unknown>, replaceExisting: boolean): () => Promise<void> {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     const type = fieldString(op, body, 'type')!;
-    if (this.chromaSync) {
-      const chroma = this.chromaSync;
-      const platformSource = this.sessionPlatformSource(memorySessionId);
-      chromaJobs.push(() => this.enqueueChromaWrite(`observation:${id}`, () => chroma.syncObservation(
-        id,
-        memorySessionId,
-        project,
-        {
-          type,
-          title: fieldString(op, body, 'title'),
-          subtitle: fieldString(op, body, 'subtitle'),
-          text: fieldString(op, body, 'text'),
-          facts: parseStringListField(fieldString(op, body, 'facts'), 'facts', id),
-          narrative: fieldString(op, body, 'narrative'),
-          concepts: parseStringListField(fieldString(op, body, 'concepts'), 'concepts', id),
-          files_read: parseFileList(fieldString(op, body, 'files_read')),
-          files_modified: parseFileList(fieldString(op, body, 'files_modified')),
-          merged_into_project: fieldString(op, body, 'merged_into_project'),
-        },
-        fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch,
-        platformSource,
-        replaceExisting,
-        () => {
-          const row = this.db.query('SELECT * FROM observations WHERE id = ?').get(id) as
-            (StoredObservation & { sync_rev: string }) | undefined;
-          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
-            platform_source: this.sessionPlatformSource(row.memory_session_id) },
-            replaceExisting: row.sync_rev !== op.rev };
-        }
-      )));
-    }
+    const platformSource = this.sessionPlatformSource(memorySessionId);
+    return () => chroma.syncObservation(
+      id,
+      memorySessionId,
+      project,
+      {
+        type,
+        title: fieldString(op, body, 'title'),
+        subtitle: fieldString(op, body, 'subtitle'),
+        text: fieldString(op, body, 'text'),
+        facts: parseStringListField(fieldString(op, body, 'facts'), 'facts', id),
+        narrative: fieldString(op, body, 'narrative'),
+        concepts: parseStringListField(fieldString(op, body, 'concepts'), 'concepts', id),
+        files_read: parseFileList(fieldString(op, body, 'files_read')),
+        files_modified: parseFileList(fieldString(op, body, 'files_modified')),
+        merged_into_project: fieldString(op, body, 'merged_into_project'),
+      },
+      fieldNumber(op, body, 'prompt_number') ?? 0,
+      createdAtEpoch,
+      platformSource,
+      replaceExisting,
+      () => {
+        const row = this.db.query('SELECT * FROM observations WHERE id = ?').get(id) as
+          (StoredObservation & { sync_rev: string }) | undefined;
+        return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+          platform_source: this.sessionPlatformSource(row.memory_session_id) },
+          replaceExisting: row.sync_rev !== op.rev };
+      }
+    );
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
@@ -1453,37 +1457,64 @@ export class SyncApply {
   }
 
   private forwardSummary(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
+    if (this.chromaSync) {
+      const write = this.summaryChromaWrite(this.chromaSync, id, op, body, replaceExisting);
+      chromaJobs.push(() => this.enqueueChromaWrite(`summary:${id}`, write));
+    }
+  }
+
+  private summaryChromaWrite(chroma: ChromaSyncLike, id: number, op: SyncOp, body: Record<string, unknown>, replaceExisting: boolean): () => Promise<void> {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
-    if (this.chromaSync) {
-      const chroma = this.chromaSync;
-      const platformSource = this.sessionPlatformSource(memorySessionId);
-      chromaJobs.push(() => this.enqueueChromaWrite(`summary:${id}`, () => chroma.syncSummary(
-        id,
-        memorySessionId,
-        project,
-        {
-          request: fieldString(op, body, 'request'),
-          investigated: fieldString(op, body, 'investigated'),
-          learned: fieldString(op, body, 'learned'),
-          completed: fieldString(op, body, 'completed'),
-          next_steps: fieldString(op, body, 'next_steps'),
-          notes: fieldString(op, body, 'notes'),
-          merged_into_project: fieldString(op, body, 'merged_into_project'),
-        },
-        fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch,
-        platformSource,
-        replaceExisting,
-        () => {
-          const row = this.db.query('SELECT * FROM session_summaries WHERE id = ?').get(id) as
-            (StoredSummary & { sync_rev: string }) | undefined;
-          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
-            platform_source: this.sessionPlatformSource(row.memory_session_id) },
-            replaceExisting: row.sync_rev !== op.rev };
-        }
-      )));
+    const platformSource = this.sessionPlatformSource(memorySessionId);
+    return () => chroma.syncSummary(
+      id,
+      memorySessionId,
+      project,
+      {
+        request: fieldString(op, body, 'request'),
+        investigated: fieldString(op, body, 'investigated'),
+        learned: fieldString(op, body, 'learned'),
+        completed: fieldString(op, body, 'completed'),
+        next_steps: fieldString(op, body, 'next_steps'),
+        notes: fieldString(op, body, 'notes'),
+        merged_into_project: fieldString(op, body, 'merged_into_project'),
+      },
+      fieldNumber(op, body, 'prompt_number') ?? 0,
+      createdAtEpoch,
+      platformSource,
+      replaceExisting,
+      () => {
+        const row = this.db.query('SELECT * FROM session_summaries WHERE id = ?').get(id) as
+          (StoredSummary & { sync_rev: string }) | undefined;
+        return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+          platform_source: this.sessionPlatformSource(row.memory_session_id) },
+          replaceExisting: row.sync_rev !== op.rev };
+      }
+    );
+  }
+
+  private async refreshRemappedVectors(
+    chroma: ChromaSyncLike,
+    op: SyncOp,
+    rows: Array<{ table: 'observations' | 'session_summaries'; id: number }>,
+  ): Promise<void> {
+    for (const { table, id } of rows) {
+      const kind = table === 'observations' ? 'observation' : 'summary';
+      try {
+        await this.enqueueChromaWrite(`${kind}:${id}`, () => {
+          // Read the row when its turn comes; one deleted meanwhile has nothing to refresh.
+          const row = this.db.query(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+          if (!row) return Promise.resolve();
+          return kind === 'observation'
+            ? this.observationChromaWrite(chroma, id, op, row, true)()
+            : this.summaryChromaWrite(chroma, id, op, row, true)();
+        });
+      } catch (error) {
+        logChromaWriteFailure('SYNC_APPLY', 'Chroma refresh of a remapped row failed, continuing with the rest of the remap', { id, kind },
+          error instanceof Error ? error : new Error(String(error)));
+      }
     }
   }
 
@@ -1597,7 +1628,7 @@ export class SyncApply {
   // Mutation ops
   // -------------------------------------------------------------------------
 
-  private applyMutation(op: SyncOp): 'applied' | 'stale' {
+  private applyMutation(op: SyncOp, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const body = this.parseBody(op);
     const mutationOp = fieldString(op, body, 'op');
     switch (mutationOp) {
@@ -1606,7 +1637,7 @@ export class SyncApply {
       case 'set_prompt_session':
         return this.applySetPromptSession(op, body);
       case 'remap_project':
-        return this.applyRemapProject(op, body);
+        return this.applyRemapProject(op, body, chromaJobs);
       default:
         throw invalidOp(op, `unknown mutation op ${String(body.op)}`);
     }
@@ -1739,7 +1770,7 @@ export class SyncApply {
     return 'applied';
   }
 
-  private applyRemapProject(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+  private applyRemapProject(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const where = body.where as Record<string, unknown> | undefined;
     const fields = body.fields as Record<string, unknown> | undefined;
     if (!where || typeof where !== 'object' || !fields || typeof fields !== 'object') {
@@ -1792,7 +1823,8 @@ export class SyncApply {
     // unreliable `changes` after RETURNING statements in the same
     // transaction). Both statements see identical in-transaction state.
     let matched = 0;
-    for (const table of ['observations', 'session_summaries']) {
+    const remapped: Array<{ table: 'observations' | 'session_summaries'; id: number }> = [];
+    for (const table of ['observations', 'session_summaries'] as const) {
       const rows = this.db.prepare(`
         SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev
         FROM ${table} WHERE ${whereClauses.join(' AND ')}
@@ -1802,8 +1834,19 @@ export class SyncApply {
         this.db.prepare(`
           UPDATE ${table} SET ${setClauses.join(', ')}, sync_rev = ? WHERE id = ?
         `).run(...setParams, op.rev, row.id);
+        if (this.chromaSync) remapped.push({ table, id: Number(row.id) });
         matched++;
       }
+    }
+    // The same-revision row echo is stale after this mutation, so it cannot
+    // refresh an already indexed row for us. One remap can match every row of
+    // a project, so refresh them one at a time in a single job: a burst must
+    // not flood chroma-mcp's single stdio channel or hold every row body in
+    // memory. Each row goes through the committed row forwarder's writer and
+    // current-row loader, behind any older in-flight write for that row.
+    if (this.chromaSync && remapped.length) {
+      const chroma = this.chromaSync;
+      chromaJobs.push(() => this.refreshRemappedVectors(chroma, op, remapped));
     }
     // The cwd-remap shape (ProcessManager.ts:312-314) also retargets the
     // owning session row; sdk_sessions has no sync_rev — log order wins.
