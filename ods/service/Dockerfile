@@ -21,5 +21,7 @@ WORKDIR /opt/cmem/node_modules/claude-mem
 ENV CLAUDE_MEM_DATA_DIR=/data
 ENV CLAUDE_MEM_TELEMETRY=false
 ENV DO_NOT_TRACK=1
+# The image is rebuilt to change versions, never updated in place.
+ENV CLAUDE_MEM_AUTO_UPDATE=false
 
 CMD ["bun", "plugin/scripts/worker-service.cjs", "--daemon"]

@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
+import { autoUpdateAttemptLogPath } from '../../src/services/auto-update/auto-update-launch.js';
 import { pruneOldLogs } from '../../src/services/worker/log-retention.js';
+
+// Project-local scratch (gitignored), never the system temp folder.
+const scratchRoot = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
@@ -32,7 +35,8 @@ function baseName(path: string): string {
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'cm-log-retention-'));
+  mkdirSync(scratchRoot, { recursive: true });
+  dir = mkdtempSync(join(scratchRoot, 'cm-log-retention-'));
 });
 
 afterEach(() => {
@@ -129,6 +133,40 @@ describe('pruneOldLogs', () => {
 
     expect(result.removed).toHaveLength(20);
     expect(order[0]).toBe('event-loop-turn');
+  });
+
+  it('prunes auto-update attempt logs by the same window, dated by the day their attempt started', async () => {
+    // Named exactly as the supervisor names them.
+    const attemptLog = (daysAgo: number, mtimeDaysAgo = daysAgo): string =>
+      seedLog(basename(autoUpdateAttemptLogPath(NOW - daysAgo * DAY_MS, dir)), mtimeDaysAgo);
+    const old = [attemptLog(31), attemptLog(200)];
+    const kept = [attemptLog(0), attemptLog(1), attemptLog(30)];
+    // An attempt that started long ago but whose log is still being appended to.
+    const stillWritten = attemptLog(45, 0);
+
+    const result = await pruneOldLogs(dir, 30, NOW);
+
+    expect(result.removed.sort()).toEqual(old.map(baseName).sort());
+    for (const path of old) expect(existsSync(path)).toBe(false);
+    for (const path of [...kept, stillWritten]) expect(existsSync(path)).toBe(true);
+  });
+
+  it('never touches files that only look like attempt logs', async () => {
+    const others = [
+      seedLog('auto-update-state.json', 400),
+      seedLog('auto-update-.log', 400),
+      seedLog('auto-update-12ab.log', 400),
+      seedLog(`${basename(autoUpdateAttemptLogPath(NOW - 400 * DAY_MS, dir))}.bak`, 400),
+    ];
+
+    expect(await pruneOldLogs(dir, 30, NOW)).toEqual({ removed: [], bytes: 0 });
+    for (const path of others) expect(existsSync(path)).toBe(true);
+  });
+
+  it('keeps every attempt log for a retention of 0', async () => {
+    const attemptLog = seedLog(basename(autoUpdateAttemptLogPath(NOW - 400 * DAY_MS, dir)), 400);
+    expect(await pruneOldLogs(dir, 0, NOW)).toEqual({ removed: [], bytes: 0 });
+    expect(existsSync(attemptLog)).toBe(true);
   });
 
   it('counts the age of a file from its UTC date name just after UTC midnight', async () => {

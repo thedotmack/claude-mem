@@ -51,7 +51,7 @@ describe('Install Non-TTY Support', () => {
       // The offer runs after the success line and before install_completed.
       const callIndex = installSource.indexOf('await offerDeferredLogin(options, version)');
       expect(callIndex).toBeGreaterThan(installSource.indexOf("'\\nclaude-mem installed successfully!'"));
-      expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+      expect(callIndex).toBeLessThan(installSource.indexOf('await captureInstallCompleted({'));
     });
 
     it('prints the agent browser-setup hint only on the non-interactive path, after the sign-in offer', () => {
@@ -62,7 +62,7 @@ describe('Install Non-TTY Support', () => {
       expect(gateIndex).toBeLessThan(hintIndex);
       expect(hintIndex).toBeGreaterThan(nonInteractiveSuccessIndex);
       expect(hintIndex).toBeGreaterThan(installSource.indexOf('await offerDeferredLogin(options, version)'));
-      expect(hintIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+      expect(hintIndex).toBeLessThan(installSource.indexOf('await captureInstallCompleted({'));
       const gateCall = installSource.slice(gateIndex, hintIndex);
       expect(gateCall).toContain('ci: Boolean(process.env.CI)');
       expect(gateCall).toContain('providerSource: options.providerSource');
