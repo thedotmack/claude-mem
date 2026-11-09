@@ -89,6 +89,14 @@ describe('devinAdapter tool names', () => {
     expect(normalize(devinName).toolName).toBe(claudeName);
   });
 
+  test.each(['constructor', 'toString', 'hasOwnProperty', '__proto__'])(
+    'passes the unmapped tool name %s through without prototype lookup', toolName => {
+      const input = normalize(toolName);
+      expect(input.toolName).toBe(toolName);
+      expect(JSON.parse(JSON.stringify(input)).toolName).toBe(toolName);
+    },
+  );
+
   test('passes unmapped and MCP tool names through', () => {
     expect(normalize('run_subagent').toolName).toBe('run_subagent');
     expect(normalize('mcp__github__get_issue').toolName).toBe('mcp__github__get_issue');

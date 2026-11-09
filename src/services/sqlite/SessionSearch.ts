@@ -344,11 +344,11 @@ export class SessionSearch {
 
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         conditions.push(`${tableAlias}.created_at_epoch >= ?`);
         params.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         conditions.push(`${tableAlias}.created_at_epoch <= ?`);
         params.push(resolveDateBound(end, 'end'));
       }
@@ -1080,11 +1080,11 @@ export class SessionSearch {
 
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         baseConditions.push('s.created_at_epoch >= ?');
         sessionParams.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         baseConditions.push('s.created_at_epoch <= ?');
         sessionParams.push(resolveDateBound(end, 'end'));
       }
@@ -1159,11 +1159,11 @@ export class SessionSearch {
 
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         baseConditions.push('up.created_at_epoch >= ?');
         params.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         baseConditions.push('up.created_at_epoch <= ?');
         params.push(resolveDateBound(end, 'end'));
       }

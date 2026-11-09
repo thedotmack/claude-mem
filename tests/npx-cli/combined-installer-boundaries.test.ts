@@ -45,8 +45,13 @@ if (originalOsDefault) {
 }
 mock.module('os', () => scopedOs);
 mock.module('node:os', () => scopedOs);
-const keys = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'DSH_HOME', 'PATH', 'CLAUDE_MEM_SERVER_DATABASE_URL'];
+const keys = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'DSH_HOME', 'PATH', 'CLAUDE_MEM_SERVER_DATABASE_URL',
+  'CODEX_HOME', 'KIMI_CODE_HOME', 'OPENCODE_CONFIG_DIR'];
 const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+// Host directory overrides must use this fixture's isolated home too.
+delete process.env.CODEX_HOME;
+delete process.env.KIMI_CODE_HOME;
+delete process.env.OPENCODE_CONFIG_DIR;
 const priorTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
 const data = join(fixture, 'data');

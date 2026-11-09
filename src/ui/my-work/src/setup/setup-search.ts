@@ -9,8 +9,11 @@ interface SearchSession { id: number; request?: string | null; learned?: string 
 interface SearchPrompt { id: number; prompt_text?: string | null; project?: string | null; content_session_id?: string | null; platform_source?: string | null; created_at?: string | null }
 export interface WorkerSearchResult { observations?: SearchObservation[]; sessions?: SearchSession[]; prompts?: SearchPrompt[] }
 
-const AGENT_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', opencode: 'OpenCode' }
-const agentName = (platform: string | null | undefined) => (platform && AGENT_NAMES[platform]) || 'Claude-Mem'
+const AGENT_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', opencode: 'OpenCode', cursor: 'Cursor', hermes: 'Hermes' }
+function agentName(platform: string | null | undefined): string {
+  if (!platform) return 'Claude-Mem'
+  return Object.hasOwn(AGENT_NAMES, platform) ? AGENT_NAMES[platform] : platform
+}
 const day = (at: string | null | undefined) => (at && /^\d{4}-\d{2}-\d{2}/.test(at) ? at.slice(0, 10) : new Date().toISOString().slice(0, 10))
 const shortSession = (id: string | null | undefined) => (id ? id.slice(0, 8) : 'session')
 const clip = (text: string, length: number) => (text.length > length ? `${text.slice(0, length - 1).trimEnd()}…` : text)
