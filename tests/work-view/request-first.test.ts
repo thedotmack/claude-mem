@@ -354,7 +354,7 @@ describe('the real project of an agent scratch-folder session', () => {
         addSession(db, 1, 'scratch', 'generated-task', 'Fix the release script', Date.now(), checkout);
         db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input) VALUES (?, ?, ?)')
           .run(1, 'Read', JSON.stringify({ file_path: join(repo, 'README.md') }));
-      } finally { db.close(); }
+      } finally { db.close(true); }
       rmSync(checkout, { recursive: true });
       const cli = fileURLToPath(new URL('../../plugin/skills/request-progress/scripts/request-groups.mjs', import.meta.url));
       const result = Bun.spawnSync([process.execPath, cli, 'candidates', '--brief'], {
