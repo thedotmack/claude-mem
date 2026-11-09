@@ -151,7 +151,12 @@ export async function searchCodebase(
 
   const parsedFiles = new Map<string, FoldedFile>();
   const batch: Parameters<typeof parseFilesBatch>[0] = [];
-  const sourceBudget = 8 * 1024 * 1024;
+  // Memory bound: at most this much source text is held while the native
+  // parser runs, so memory no longer grows with repository size. Main kept
+  // every file until one parse returned; a 48 MiB heap scanning 256 files
+  // (~91 MB of text) aborted (measured in #5534). A larger batch only saves
+  // tree-sitter CLI spawns (one per language per batch), never results.
+  const nativeParseBatchSourceBytes = 8 * 1024 * 1024;
   let batchBytes = 0;
   const flush = () => {
     if (batch.length === 0) return;
@@ -172,7 +177,7 @@ export async function searchCodebase(
         });
       } else {
         const bytes = Buffer.byteLength(content);
-        if (batchBytes + bytes > sourceBudget) flush();
+        if (batchBytes + bytes > nativeParseBatchSourceBytes) flush();
         batch.push({ absolutePath, relativePath, content });
         batchBytes += bytes;
       }
