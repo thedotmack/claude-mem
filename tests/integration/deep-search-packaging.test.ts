@@ -51,7 +51,11 @@ describe('deep search release artifacts', () => {
         expect(run('unique_marker').deep.complete).toBe(true);
         if (format === 'standalone') expect(run('unique_marker', 1000, '1.2.15').deep.status).toBe('unsupported');
         expect((store.db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as any).busy).toBe(0);
-      } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+      } finally {
+        store.close();
+        Bun.gc(true); // Finalize fixture statements before unlinking SQLite files on Windows.
+        rmSync(dir, { recursive: true, force: true });
+      }
     }, 40_000);
   }
 });

@@ -12,7 +12,12 @@ import { readSnapshotProbe, waitForReadSnapshot } from '../helpers/deep-search-s
 const clients: DeepSearchClient[] = [];
 const stores: SessionStore[] = [];
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(clients.splice(0).map(c => c.close())); stores.splice(0).forEach(s => s.close()); dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });
+afterEach(async () => {
+  await Promise.all(clients.splice(0).map(c => c.close()));
+  stores.splice(0).forEach(s => s.close());
+  Bun.gc(true); // Finalize fixture statements before unlinking SQLite files on Windows.
+  dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true }));
+});
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'cm-deep-process-')); dirs.push(dir);
   const dbPath = join(dir, 'memory.db');

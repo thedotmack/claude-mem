@@ -63,7 +63,9 @@ for (const fault of ['startup-error', 'exit-before-ready', 'terminate-hang']) {
       finally { await recovery.close(); }
     } finally {
       if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      await client?.close(); store.close(); rmSync(dir, { recursive: true, force: true });
+      await client?.close(); store.close();
+      Bun.gc(true); // Finalize fixture statements before unlinking SQLite files on Windows.
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 10_000);
 }

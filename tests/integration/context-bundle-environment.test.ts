@@ -74,6 +74,11 @@ for (const format of ['cjs', 'standalone']) {
       const cacheEntries = existsSync(join(dir, 'cache')) ? readdirSync(join(dir, 'cache')).length : 0;
       if (format === 'cjs' && process.versions.bun === '1.3.13') expect(cacheEntries).toBeGreaterThan(0);
       console.log(JSON.stringify({ format, cacheEntries, bun: process.versions.bun }));
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally {
+      // SessionStore's uncached statements are finalized by GC even after close.
+      // Windows cannot unlink the fixture DB until those native handles release.
+      Bun.gc(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 40_000);
 }

@@ -157,7 +157,9 @@ for (const artifact of ['bundle', 'standalone']) {
         await exited; clearTimeout(timer);
       }
     } finally {
-      ownedStore?.close(); rmSync(dir, { recursive: true, force: true });
+      ownedStore?.close(); ownedStore = undefined;
+      Bun.gc(true); // Finalize fixture statements before unlinking SQLite files on Windows.
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
 }
