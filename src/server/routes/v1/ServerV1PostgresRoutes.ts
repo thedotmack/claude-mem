@@ -41,6 +41,7 @@ import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-lim
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
@@ -106,16 +107,22 @@ const TERMINAL_JOB_STATUSES: readonly PostgresObservationGenerationJob['status']
 async function waitForTerminalJob(
   jobRepo: PostgresObservationGenerationJobRepository,
   job: PostgresObservationGenerationJob,
-  timeoutMs: number = WAIT_TIMEOUT_MS,
-  intervalMs: number = WAIT_POLL_INTERVAL_MS,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<{ job: PostgresObservationGenerationJob; timedOut: boolean }> {
   if (TERMINAL_JOB_STATUSES.includes(job.status)) {
     return { job, timedOut: false };
   }
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + (options.timeoutMs ?? WAIT_TIMEOUT_MS);
+  const { signal } = options;
   let current = job;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  while (Date.now() < deadline && !signal?.aborted) {
+    try {
+      await delay(WAIT_POLL_INTERVAL_MS, undefined, { signal });
+    } catch (error) {
+      if (signal?.aborted) break;
+      throw error;
+    }
+    if (signal?.aborted) break;
     const refreshed = await jobRepo.getByIdForScope({
       id: job.id,
       projectId: job.projectId,
@@ -129,7 +136,25 @@ async function waitForTerminalJob(
       return { job: refreshed, timedOut: false };
     }
   }
-  return { job: current, timedOut: true };
+  return { job: current, timedOut: !signal?.aborted };
+}
+
+/** Only the HTTP wait ends on disconnect; committed generation keeps its ownership. */
+function responseWaitSignal(res: Response): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const socket = res.socket;
+  const onClose = () => controller.abort();
+  res.once('close', onClose);
+  // Bun's streaming HTTP surface can report disconnect on the socket.
+  socket?.once('close', onClose);
+  if (res.destroyed || res.writableEnded || socket?.destroyed) onClose();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      res.off('close', onClose);
+      socket?.off('close', onClose);
+    },
+  };
 }
 
 export class ServerV1PostgresRoutes implements RouteHandler {
@@ -313,19 +338,25 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
-        let resolved = outbox;
-        let waitTimedOut = false;
-        if (outbox) {
-          const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
-          const result = await waitForTerminalJob(jobRepo, outbox);
-          resolved = result.job;
-          waitTimedOut = result.timedOut;
+        const waiting = responseWaitSignal(res);
+        try {
+          let resolved = outbox;
+          let waitTimedOut = false;
+          if (outbox) {
+            const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+            const result = await waitForTerminalJob(jobRepo, outbox, { signal: waiting.signal });
+            resolved = result.job;
+            waitTimedOut = result.timedOut;
+          }
+          if (waiting.signal.aborted) return;
+          res.status(201).json({
+            event: serializeEvent(event),
+            generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
+            ...(waitTimedOut ? { waitTimedOut: true } : {}),
+          });
+        } finally {
+          waiting.dispose();
         }
-        res.status(201).json({
-          event: serializeEvent(event),
-          generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
-          ...(waitTimedOut ? { waitTimedOut: true } : {}),
-        });
         return;
       }
 
@@ -400,29 +431,36 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
-        const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
-        const waitDeadline = Date.now() + WAIT_TIMEOUT_MS;
-        const resolved: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null; timedOut: boolean }[] = [];
-        for (const item of inserted) {
-          if (!item.outbox) {
-            resolved.push({ event: item.event, outbox: null, timedOut: false });
-            continue;
+        const waiting = responseWaitSignal(res);
+        try {
+          const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+          const waitDeadline = Date.now() + WAIT_TIMEOUT_MS;
+          const resolved: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null; timedOut: boolean }[] = [];
+          for (const item of inserted) {
+            if (waiting.signal.aborted) return;
+            if (!item.outbox) {
+              resolved.push({ event: item.event, outbox: null, timedOut: false });
+              continue;
+            }
+            const remaining = Math.max(0, waitDeadline - Date.now());
+            const result = await waitForTerminalJob(jobRepo, item.outbox, { timeoutMs: remaining, signal: waiting.signal });
+            resolved.push({ event: item.event, outbox: result.job, timedOut: result.timedOut });
           }
-          const remaining = Math.max(0, waitDeadline - Date.now());
-          const result = await waitForTerminalJob(jobRepo, item.outbox, remaining);
-          resolved.push({ event: item.event, outbox: result.job, timedOut: result.timedOut });
+          if (waiting.signal.aborted) return;
+          const anyTimedOut = resolved.some(r => r.timedOut);
+          res.status(201).json({
+            events: resolved.map(({ event, outbox, timedOut }, index) => ({
+              event: serializeEvent(event),
+              generationJob: outbox
+                ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
+                : null,
+              ...(timedOut ? { waitTimedOut: true } : {}),
+            })),
+            ...(anyTimedOut ? { waitTimedOut: true } : {}),
+          });
+        } finally {
+          waiting.dispose();
         }
-        const anyTimedOut = resolved.some(r => r.timedOut);
-        res.status(201).json({
-          events: resolved.map(({ event, outbox, timedOut }, index) => ({
-            event: serializeEvent(event),
-            generationJob: outbox
-              ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
-              : null,
-            ...(timedOut ? { waitTimedOut: true } : {}),
-          })),
-          ...(anyTimedOut ? { waitTimedOut: true } : {}),
-        });
         return;
       }
 
