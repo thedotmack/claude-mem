@@ -66,6 +66,8 @@ async function importMemories(inputFile: string) {
 
   const result = await response.json();
   const stats = result.stats;
+  const hasRejectedRows = ['sessionsRejected', 'summariesRejected', 'observationsRejected', 'promptsRejected']
+    .some(key => (stats[key] ?? 0) > 0);
 
   console.log('\n✅ Import complete!');
   console.log('📊 Summary:');
@@ -84,6 +86,9 @@ async function importMemories(inputFile: string) {
     if (rows.length > 5) {
       console.log(`   ⚠️  …and ${rows.length - 5} more ${kind} rejected`);
     }
+  }
+  if (hasRejectedRows || Object.values(rejected).some(rows => rows.length > 0)) {
+    process.exitCode = 1;
   }
 }
 
