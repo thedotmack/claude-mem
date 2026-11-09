@@ -606,9 +606,12 @@ export function buildDetachedWorkerDaemonSpawn(
   setsidAvailable: boolean = existsSync(SETSID_PATH)
 ): DetachedWorkerDaemonSpawn {
   const useSetsid = platform !== 'win32' && setsidAvailable;
+  // Resolve installed dependencies only. Bun can otherwise auto-install the
+  // WASM build of Sharp from a dependency-incomplete plugin root (#5601).
+  const runtimeArgs = ['--no-install', scriptPath, '--daemon'];
   return {
     command: useSetsid ? SETSID_PATH : runtimePath,
-    args: useSetsid ? [runtimePath, scriptPath, '--daemon'] : [scriptPath, '--daemon'],
+    args: useSetsid ? [runtimePath, ...runtimeArgs] : runtimeArgs,
     options: {
       detached: true,
       stdio: 'ignore',
