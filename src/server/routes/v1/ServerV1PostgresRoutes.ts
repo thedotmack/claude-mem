@@ -37,8 +37,7 @@ import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueMa
 import type { ServerQueueManager } from '../../runtime/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
-import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
-import { meterRequests } from '../../middleware/usage-metering.js';
+import { serverUsageGuards } from '../../middleware/usage-guards.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
@@ -182,19 +181,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // a middleware array wherever a single handler goes, so the per-route
     // registrations below need no changes. Order after auth: rate limit → quota
     // → meter, so the request is counted only once it's admitted.
-    const guards: RequestHandler[] = [];
-    const ratePerMin = Number(process.env.CLAUDE_MEM_RATE_LIMIT_PER_MIN ?? '0');
-    if (ratePerMin > 0) guards.push(requireRateLimit(this.options.pool, { windowSec: 60, max: ratePerMin }));
-    const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
-    if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
-    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
-    // A monthly TOKEN cap gates writes only (ingestion drives generation = token
-    // spend); reads stay available so a team over budget can still recall.
-    const writeGuards: RequestHandler[] = [...guards];
-    const tokenCap = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0');
-    if (tokenCap > 0) writeGuards.push(requireMonthlyQuota(this.options.pool, { kind: 'tokens', cap: tokenCap }));
-    const writeAuth: RequestHandler[] = [baseWrite, ...writeGuards];
-    const readAuth: RequestHandler[] = [baseRead, ...guards];
+    const writeAuth: RequestHandler[] = [baseWrite, ...serverUsageGuards(this.options.pool, { write: true })];
+    const readAuth: RequestHandler[] = [baseRead, ...serverUsageGuards(this.options.pool)];
 
     // GET /v1/usage — per-kind usage totals for the caller's team this month.
     app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
