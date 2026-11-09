@@ -5,13 +5,15 @@ import { formatPromptDay } from '@/lib/prompt-time'
 import { needsYou, type FocusArea, type Request } from '@/data'
 import { focusOverview } from '@/live/focus-overview'
 import { FocusArtwork } from './focus-artwork'
-import { useStore } from '@/store'
+import type { FocusArtwork as ArtworkDensity } from '@/store/store-types'
 
 /** The same saved areas in setup and My Work. Reading this view never starts inference. */
-export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest }: {
+export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', onArtworkChange }: {
   areas: readonly FocusArea[]; requests: readonly Request[]; loading?: boolean; discovering?: boolean
   workLoading?: boolean; incomplete?: boolean; emptyMessage?: string
   onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
+  /** Display density only. The setup screen has no store, so it shows full artwork without the control. */
+  artwork?: ArtworkDensity; onArtworkChange?: (artwork: ArtworkDensity) => void
 }) {
   const { t } = useI18n()
   const id = useId()
@@ -19,7 +21,6 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [query, setQuery] = useState('')
-  const artwork = useStore((state) => state.view.focusArtwork)
   const overview = focusOverview(areas, requests)
   // Suggestions stay visible after setup. Opening one reaches its existing Keep / Dismiss controls.
   const searching = query.trim().length > 0
@@ -36,11 +37,11 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
           <h2 id={`${id}-heading`}>{t('Your focus areas')}</h2>
           <p>{t(discovering ? 'The things you keep coming back to, with the work behind them.' : 'What you’re working toward, across your agents and conversations.')}</p>
         </div>
-        <label className="focus-artwork-control">{t('Artwork')}
-          <select aria-label={t('Artwork')} value={artwork} onChange={(event) => useStore.getState().setFocusArtwork(event.target.value as 'full' | 'compact' | 'off')}>
+        {onArtworkChange && <label className="focus-artwork-control">{t('Artwork')}
+          <select aria-label={t('Artwork')} value={artwork} onChange={(event) => onArtworkChange(event.target.value as ArtworkDensity)}>
             <option value="full">{t('Full')}</option><option value="compact">{t('Compact')}</option><option value="off">{t('Off')}</option>
           </select>
-        </label>
+        </label>}
       </header>
       {overview.areas.length + overview.suggested.length > 8 && <label className="focus-area-search"><span className="sr-only">{t('Find a focus area')}</span><input type="search" placeholder={t('Find a focus area…')} value={query} onChange={(event) => setQuery(event.target.value)} /></label>}
       {loading && visible.length === 0 ? <div className="focus-area-loading" role="status"><p>{t('Finding the threads in your work…')}</p><div aria-hidden="true" className="focus-area-skeleton" /></div>

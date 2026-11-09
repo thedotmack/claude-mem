@@ -21,7 +21,7 @@ const compiled = buildSync({
   },
   tsconfig: resolve(import.meta.dir, '../../../src/ui/my-work/tsconfig.app.json'),
   bundle: true, write: false, format: 'cjs', platform: 'node',
-  loader: { '.webp': 'dataurl' }, define: { 'process.env.NODE_ENV': '"production"' },
+  loader: { '.webp': 'dataurl', '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' },
 }).outputFiles[0].text;
 
 function fixture() {
@@ -111,12 +111,12 @@ describe('hosted setup scan control', () => {
     const empty = { goals: [], work: [], rules: [] };
     const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
     expect(local).toContain('You skipped this step.');
-    expect(local).not.toContain('already knows your work');
+    expect(local).not.toContain('Your work is starting to connect.');
     // An upload that came back with nothing must never be described as "nothing was uploaded".
     const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
     expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
-    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
+    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your work is starting to connect.');
   });
 
   it('lets people continue after capacity refusal without claiming results or a voluntary skip', () => {
@@ -265,7 +265,7 @@ describe('hosted setup scan control', () => {
     expect(latest.scan.phase).toBe('uploading');
     expect(latest.scan.improveProduct).toBe(false);
     Stream.latest.send('work-view', {
-      goals: null, rules: [], story: null,
+      humanRequests: [], agents: [], source: { connected: true }, goals: null, rules: [], story: null,
       setup: { extraction: { state: 'ok', step: null }, work: [{ groupId: 'g1', title: 'Ship the upload', platform: 'codex', lastActiveAt: null, progressPercent: null }] },
     });
     Stream.latest.send('setup-scan', scan({ phase: 'done', done: true, percent: 100, improveProduct: false }));
@@ -315,7 +315,7 @@ describe('hosted setup scan control', () => {
     await until(() => bodies.length > 0);
     expect(bodies).toEqual([{ improveProduct: false }]);
     Stream.latest.send('setup-scan', scan({ phase: 'uploading', percent: 99, improveProduct: false }));
-    Stream.latest.send('work-view', { goals: null, rules: [], story: null, setup: { extraction: { state: 'ok', step: null }, work: [] } });
+    Stream.latest.send('work-view', { humanRequests: [], agents: [], source: { connected: true }, goals: null, rules: [], story: null, setup: { extraction: { state: 'ok', step: null }, work: [] } });
     Stream.latest.send('setup-scan', scan({ phase: 'done', percent: 100, done: true, improveProduct: false }));
     expect(latest.scan.done).toBe(true);
     expect(latest.scan.improveProduct).toBe(false);
