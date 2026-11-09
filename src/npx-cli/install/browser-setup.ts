@@ -1,6 +1,7 @@
 // The installer's side of the install funnel: open the setup page, wait for the storage choice, apply it, then wait
 // until the page finishes setup. The worker holds the state (GET /api/setup/state); the terminal only waits.
-// There is no time limit anywhere: if the browser never connects, the URL is on screen and the wait goes on.
+// There is no time limit anywhere: the URL is printed once the worker answers, and if the browser never connects
+// the wait goes on.
 import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
