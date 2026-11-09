@@ -243,6 +243,15 @@ describe('combined public installer runtime boundary', () => {
   });
 });
 describe.skipIf(process.platform === 'win32')('real Pi+DSH detection and public selection', () => {
+  it('recognizes Roo Code by the extension ID in its marketplace manifest', () => {
+    const extension = join(hostHome, '.vscode', 'extensions', 'rooveterinaryinc.roo-cline-3.53.0');
+    mkdirSync(extension, { recursive: true });
+    try {
+      expect(initialIDESelection(detectInstalledIDEs())).toContain('roo-code');
+    } finally {
+      rmSync(extension, { recursive: true, force: true });
+    }
+  });
   it('detects both configured harness roots in detector order without Claude', async () => {
     const detected = detectInstalledIDEs();
     expect(detected.find(ide => ide.id === 'pi')?.detected).toBe(true);
