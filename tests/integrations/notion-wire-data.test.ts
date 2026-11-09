@@ -54,3 +54,32 @@ test('multibyte long paragraphs fit the wire budget across page creation and app
   await exporter.upsert({ ...row, observation: { ...observation, narrative } });
   assert.equal(writes.flatMap(b => b.paragraph.rich_text.map((t: any) => t.text.content)).join(''), narrative);
 });
+
+for (const { label, title, characters } of [
+  { label: 'a writable multibyte subtitle', title: 'note', characters: 170_000 },
+  { label: 'a subtitle shared with the title fallback', title: null, characters: 100_000 },
+]) {
+  test(`${label} fits the create budget without changing the export key`, async () => {
+    const subtitle = '戦'.repeat(characters);
+    const exporter = new NotionExporter({ token: 'test', databaseId: 'db', sourceId: 'source',
+      autoCreateProperties: false, minRequestIntervalMs: 0,
+      fetchImpl: async (url, init) => {
+        if (init.method === 'GET') return Response.json({ properties: {
+          Name: { type: 'title' }, Subtitle: { type: 'rich_text' }, 'Export Key': { type: 'rich_text' },
+        } });
+        if (url.endsWith('/query')) return Response.json({ results: [] });
+        assert.ok(url.endsWith('/pages'));
+        const body = String(init.body);
+        assert.ok(Buffer.byteLength(body) <= 500_000, 'create exceeds 500 KB');
+        const { properties } = JSON.parse(body);
+        const retained = properties.Subtitle.rich_text.map((part: any) => part.text.content).join('');
+        assert.ok(retained.length > 0 && retained.length < subtitle.length && subtitle.startsWith(retained));
+        const pageTitle = properties.Name.title.map((part: any) => part.text.content).join('');
+        if (title) assert.equal(pageTitle, title);
+        else assert.ok(pageTitle.length > 0 && subtitle.startsWith(pageTitle));
+        assert.equal(properties['Export Key'].rich_text[0].text.content, 'source:1');
+        return Response.json({ id: 'page' });
+      } });
+    assert.equal(await exporter.upsert({ ...row, observation: { ...observation, title, subtitle } }), 'created');
+  });
+}

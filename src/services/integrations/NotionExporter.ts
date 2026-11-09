@@ -208,6 +208,29 @@ export function buildNotionProperties(record: NotionObservationRecord, titleProp
   };
 }
 
+/** Trim the longest property previews by complete rich-text chunks. Keep the dedupe key intact. */
+function fitPageProperties(payload: { properties: Record<string, unknown> }, observationId: number): void {
+  let bytes = Buffer.byteLength(JSON.stringify(payload));
+  if (bytes <= MAX_REQUEST_BYTES) return;
+
+  const fields = Object.entries(payload.properties).flatMap(([name, value]) => {
+    const { title, rich_text } = value as { title?: RichText; rich_text?: RichText };
+    const parts = title ?? rich_text;
+    if (!parts || (rich_text && name === NOTION_PROPERTIES.exportKey.name)) return [];
+    return [{ name, parts }];
+  });
+  const trimmed = new Set<string>();
+  while (bytes > MAX_REQUEST_BYTES) {
+    const largest = fields.sort((a, b) => b.parts.length - a.parts.length)[0];
+    if (!largest || largest.parts.length < 2) throw new Error('Notion page properties exceed the request limit');
+    bytes -= Buffer.byteLength(JSON.stringify(largest.parts.pop())) + 1; // includes the preceding comma
+    trimmed.add(largest.name);
+  }
+  logger.warn('NOTION', 'Notion page exceeds the request limit, truncating property text', {
+    observationId, properties: [...trimmed],
+  });
+}
+
 /** Fit array entries to both Notion limits, including commas and the JSON envelope. */
 function batchEnd(entries: unknown[], start: number, envelope: object): number {
   let bytes = Buffer.byteLength(JSON.stringify(envelope));
@@ -403,6 +426,7 @@ export class NotionExporter {
 
     const children = buildNotionChildren(record.observation);
     const payload = { parent: { database_id: this.databaseId }, properties, children: [] };
+    fitPageProperties(payload, record.observationId);
     const firstEnd = batchEnd(children, 0, payload);
     const page = await this.request('POST', '/pages', {
       ...payload, children: children.slice(0, firstEnd),
