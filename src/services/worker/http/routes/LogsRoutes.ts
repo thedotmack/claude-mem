@@ -58,8 +58,8 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
     if (fileSize <= readSize) {
       totalEstimate = allLines.length;
     } else {
-      const avgLineLength = content.length / Math.max(newlineCount, 1);
-      totalEstimate = Math.round(fileSize / avgLineLength);
+      const avgLineBytes = readSize / Math.max(newlineCount, 1);
+      totalEstimate = Math.round(fileSize / avgLineBytes);
     }
 
     return {
