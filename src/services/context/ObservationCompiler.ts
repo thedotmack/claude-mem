@@ -1,9 +1,10 @@
 
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
+import { findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
@@ -305,47 +306,23 @@ export function cwdToDashed(cwd: string): string {
   return `${dashed.slice(0, CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH)}-${claudeProjectDirNameHash(cwd)}`;
 }
 
-function parseAssistantTextFromLine(line: string): string | null {
-  if (!/"type"\s*:\s*"assistant"/.test(line)) return null;
-
-  const entry = JSON.parse(line);
-  if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-    let text = '';
-    for (const block of entry.message.content) {
-      if (block.type === 'text') text += block.text;
-    }
-    text = stripSystemReminderBlocks(text).trim();
-    if (text) return text;
+function assistantTextFromEntry(entry: any): string | undefined {
+  if (entry?.type !== 'assistant' || !Array.isArray(entry.message?.content)) return undefined;
+  let text = '';
+  for (const block of entry.message.content) {
+    if (block?.type === 'text' && typeof block.text === 'string') text += block.text;
   }
-  return null;
-}
-
-function findLastAssistantMessage(lines: string[]): string {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const result = parseAssistantTextFromLine(lines[i]);
-      if (result) return result;
-    } catch (parseError) {
-      if (parseError instanceof Error) {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
-      } else {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i, error: String(parseError) });
-      }
-      continue;
-    }
-  }
-  return '';
+  text = stripSystemReminderBlocks(text).trim();
+  return text || undefined;
 }
 
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
     if (!existsSync(transcriptPath)) return { assistantMessage: '' };
-    const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) return { assistantMessage: '' };
-
-    const lines = content.split('\n').filter(line => line.trim());
-    const lastAssistantMessage = findLastAssistantMessage(lines);
-    return { assistantMessage: lastAssistantMessage };
+    // SessionStart needs one reply, not an in-memory copy of a long session.
+    // Reuse the chunked reader while keeping this path's text-only semantics
+    // (no synthetic tool-only reply).
+    return { assistantMessage: findLastJsonlEntryBackward(transcriptPath, assistantTextFromEntry) ?? '' };
   } catch (error) {
     if (error instanceof Error) {
       logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
