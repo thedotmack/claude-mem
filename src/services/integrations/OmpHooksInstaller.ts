@@ -1,6 +1,7 @@
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import { writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
@@ -61,7 +62,7 @@ export async function installOmpHooks(): Promise<number> {
   try {
     const destination = ompHookDestination();
     mkdirSync(ompHooksPreDir(), { recursive: true });
-    writeFileSync(destination, readFileSync(source, 'utf-8'), 'utf-8');
+    writeTextFileAtomic(destination, readFileSync(source, 'utf-8'));
     console.log(`  OMP hook installed to: ${destination}`);
     logger.info('OMP', 'Hook installed', { destination });
     return 0;

@@ -56,7 +56,9 @@ const serverRuntime = () => ({
 }) as never;
 
 const config = (totalObservationCount: number, sessionCount = 10) =>
-  ({ totalObservationCount, sessionCount } as never);
+  ({ totalObservationCount, sessionCount,
+    observationTypes: new Set(['bugfix']), observationConcepts: new Set(['how-it-works']),
+  });
 
 const rowsRequest = (overrides: Record<string, unknown> = {}) => ({
   config: config(20),
@@ -160,10 +162,10 @@ describe('the shared store as a row source', () => {
 
   it('asks the store to leave subagent rows out exactly when CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY is on', async () => {
     await fetchServerContextRows(serverRuntime(), rowsRequest({
-      config: { totalObservationCount: 20, sessionCount: 10, mainAgentOnly: true },
+      config: { ...config(20), mainAgentOnly: true },
     }));
     await fetchServerContextRows(serverRuntime(), rowsRequest({
-      config: { totalObservationCount: 20, sessionCount: 10, mainAgentOnly: false },
+      config: { ...config(20), mainAgentOnly: false },
     }));
     expect(contextCalls.map(call => call.excludeSubagents)).toEqual([true, false]);
   });

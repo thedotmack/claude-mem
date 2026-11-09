@@ -5,7 +5,8 @@ import { REFUSED_RETRY_DELAYS_MS, retryWhileRefused } from "../../src/integratio
 
 // #4091: OpenCode-only users have nothing that starts the worker before the
 // first hooks fire; the MCP server OpenCode launches (#3621) starts it. A
-// capture POST refused while it boots is retried in the background.
+// metadata POST refused while it boots is retried in the background. Live
+// observations and summaries must never enter this retry path.
 
 const pluginCtx = {
   client: {},
@@ -46,7 +47,7 @@ describe("retryWhileRefused", () => {
 });
 
 describe("OpenCode capture while the worker starts (#4091)", () => {
-  it("does not hold the hook, and lands the observation once the worker answers", async () => {
+  it("does not hold the hook or replay an observation once the worker answers", async () => {
     const originalFetch = globalThis.fetch;
     const delivered: string[] = [];
     let workerUp = false;
@@ -68,7 +69,7 @@ describe("OpenCode capture while the worker starts (#4091)", () => {
 
       workerUp = true;
       await new Promise((resolve) => setTimeout(resolve, REFUSED_RETRY_DELAYS_MS[0] + 200));
-      expect(delivered).toEqual(["/api/sessions/observations"]);
+      expect(delivered).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }

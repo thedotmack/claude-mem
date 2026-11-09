@@ -122,7 +122,7 @@ async function errorCodeOf(response: Response): Promise<MediaErrorCode | null> {
 
 function classifyFailure<T>(status: number, code: MediaErrorCode | null): CloudCallOutcome<T> {
   if (status === 401 || status === 402 || status === 403) return { kind: 'retry', code: code ?? 'unauthorized_owner' };
-  if (status === 429 || status >= 500) return { kind: 'retry', code: code ?? 'storage_unavailable' };
+  if (status === 408 || status === 429 || status >= 500) return { kind: 'retry', code: code ?? 'storage_unavailable' };
   if (code === 'media_not_ready' || code === 'quota_exceeded' || code === 'conversion_busy') return { kind: 'retry', code };
   return { kind: 'final', code: code ?? 'invalid_manifest' };
 }
@@ -225,8 +225,11 @@ export class MediaCloudClient {
     if (!response.ok) return classifyFailure(response.status, await errorCodeOf(response));
     try {
       return { kind: 'ok', value: parseCloudDescriptor(JSON.parse((await readBoundedBody(response, DESCRIPTOR_MAX_BYTES)).toString('utf8')), attachmentId) };
-    } catch {
-      return { kind: 'final', code: 'invalid_manifest' };
+    } catch (error) {
+      // A rejected body read is a transport failure, not a malformed descriptor.
+      return error instanceof MediaError || error instanceof SyntaxError
+        ? { kind: 'final', code: 'invalid_manifest' }
+        : { kind: 'retry', code: 'storage_unavailable' };
     }
   }
 
@@ -238,7 +241,9 @@ export class MediaCloudClient {
     try {
       bytes = await readBoundedBody(response, variant === 'viewer' ? MEDIA_LIMITS.maxCanonicalBytes : MEDIA_LIMITS.maxDerivativeBytes);
     } catch (error) {
-      return { kind: 'final', code: error instanceof MediaError ? error.code : 'storage_unavailable' };
+      return error instanceof MediaError
+        ? { kind: 'final', code: error.code }
+        : { kind: 'retry', code: 'storage_unavailable' };
     }
     if (bytes.length !== expected.byteLength || createHash('sha256').update(bytes).digest('hex') !== expected.sha256) {
       return { kind: 'final', code: 'checksum_mismatch' };
@@ -363,7 +368,7 @@ export class MediaCloudSync {
       WHERE origin='native' AND state='ready' AND upload_state='pending' AND upload_retry_at<=?
       ORDER BY created_at LIMIT ${UPLOAD_BATCH}`).all(this.now()) as UploadCandidate[];
     for (const candidate of candidates) {
-      if (this.stopped) return;
+      if (this.stopped || !this.options.uploadsEnabled()) return;
       await this.uploadOne(candidate, result);
     }
   }
@@ -403,7 +408,9 @@ export class MediaCloudSync {
       this.recordUploadFailure(attempted, { kind: code === 'storage_unavailable' ? 'retry' : 'final', code }, result);
       return;
     }
-    if (this.stopped) return;
+    // Consent may change while the file read is pending. Do not begin a new
+    // cloud send after opt-out; the retained row stays pending for an opt-in.
+    if (this.stopped || !this.options.uploadsEnabled()) return;
     const outcome = await this.client.upload(manifest, canonicalBytes);
     if (this.stopped) return;
     if (outcome.kind !== 'ok') {

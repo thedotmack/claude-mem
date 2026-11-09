@@ -169,9 +169,9 @@ function buildGooseClaudeMemExtensionLines(mcpServerPath: string, indent: string
     `${indent}  enabled: true`,
     `${indent}  type: stdio`,
     `${indent}  name: claude-mem`,
-    `${indent}  cmd: ${getNodeAbsolutePath()}`,
+    `${indent}  cmd: ${JSON.stringify(getNodeAbsolutePath())}`,
     `${indent}  args:`,
-    `${indent}    - ${mcpServerPath}`,
+    `${indent}    - ${JSON.stringify(mcpServerPath)}`,
     `${indent}  timeout: 300`,
   ];
 }

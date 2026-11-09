@@ -80,6 +80,8 @@ export async function fetchServerContextRows(
         : {}),
       folderProjects,
       excludeSubagents: config.mainAgentOnly,
+      observationTypes: Array.from(config.observationTypes),
+      observationConcepts: Array.from(config.observationConcepts),
       ...(platformSource ? { platformSource } : {}),
     }, timeoutMs === undefined ? {} : { timeoutMs });
     rows = Array.isArray(result?.observations) ? result.observations : [];

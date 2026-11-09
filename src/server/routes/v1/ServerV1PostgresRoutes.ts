@@ -5,7 +5,7 @@ import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { AppError } from '../../../services/server/ErrorHandler.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import type { PostgresPool } from '../../../storage/postgres/pool.js';
+import { withPostgresTransaction, type PostgresPool } from '../../../storage/postgres/pool.js';
 import {
   PostgresAgentEventsRepository,
   type CreatePostgresAgentEventInput,
@@ -37,10 +37,10 @@ import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueMa
 import type { ServerQueueManager } from '../../runtime/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
-import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
-import { meterRequests } from '../../middleware/usage-metering.js';
+import { serverUsageGuards } from '../../middleware/usage-guards.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
@@ -106,16 +106,22 @@ const TERMINAL_JOB_STATUSES: readonly PostgresObservationGenerationJob['status']
 async function waitForTerminalJob(
   jobRepo: PostgresObservationGenerationJobRepository,
   job: PostgresObservationGenerationJob,
-  timeoutMs: number = WAIT_TIMEOUT_MS,
-  intervalMs: number = WAIT_POLL_INTERVAL_MS,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<{ job: PostgresObservationGenerationJob; timedOut: boolean }> {
   if (TERMINAL_JOB_STATUSES.includes(job.status)) {
     return { job, timedOut: false };
   }
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + (options.timeoutMs ?? WAIT_TIMEOUT_MS);
+  const { signal } = options;
   let current = job;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  while (Date.now() < deadline && !signal?.aborted) {
+    try {
+      await delay(WAIT_POLL_INTERVAL_MS, undefined, { signal });
+    } catch (error) {
+      if (signal?.aborted) break;
+      throw error;
+    }
+    if (signal?.aborted) break;
     const refreshed = await jobRepo.getByIdForScope({
       id: job.id,
       projectId: job.projectId,
@@ -129,7 +135,25 @@ async function waitForTerminalJob(
       return { job: refreshed, timedOut: false };
     }
   }
-  return { job: current, timedOut: true };
+  return { job: current, timedOut: !signal?.aborted };
+}
+
+/** Only the HTTP wait ends on disconnect; committed generation keeps its ownership. */
+function responseWaitSignal(res: Response): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const socket = res.socket;
+  const onClose = () => controller.abort();
+  res.once('close', onClose);
+  // Bun's streaming HTTP surface can report disconnect on the socket.
+  socket?.once('close', onClose);
+  if (res.destroyed || res.writableEnded || socket?.destroyed) onClose();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      res.off('close', onClose);
+      socket?.off('close', onClose);
+    },
+  };
 }
 
 export class ServerV1PostgresRoutes implements RouteHandler {
@@ -182,19 +206,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // a middleware array wherever a single handler goes, so the per-route
     // registrations below need no changes. Order after auth: rate limit → quota
     // → meter, so the request is counted only once it's admitted.
-    const guards: RequestHandler[] = [];
-    const ratePerMin = Number(process.env.CLAUDE_MEM_RATE_LIMIT_PER_MIN ?? '0');
-    if (ratePerMin > 0) guards.push(requireRateLimit(this.options.pool, { windowSec: 60, max: ratePerMin }));
-    const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
-    if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
-    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
-    // A monthly TOKEN cap gates writes only (ingestion drives generation = token
-    // spend); reads stay available so a team over budget can still recall.
-    const writeGuards: RequestHandler[] = [...guards];
-    const tokenCap = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0');
-    if (tokenCap > 0) writeGuards.push(requireMonthlyQuota(this.options.pool, { kind: 'tokens', cap: tokenCap }));
-    const writeAuth: RequestHandler[] = [baseWrite, ...writeGuards];
-    const readAuth: RequestHandler[] = [baseRead, ...guards];
+    const writeAuth: RequestHandler[] = [baseWrite, ...serverUsageGuards(this.options.pool, { write: true })];
+    const readAuth: RequestHandler[] = [baseRead, ...serverUsageGuards(this.options.pool)];
 
     // GET /v1/usage — per-kind usage totals for the caller's team this month.
     app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
@@ -313,19 +326,25 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
-        let resolved = outbox;
-        let waitTimedOut = false;
-        if (outbox) {
-          const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
-          const result = await waitForTerminalJob(jobRepo, outbox);
-          resolved = result.job;
-          waitTimedOut = result.timedOut;
+        const waiting = responseWaitSignal(res);
+        try {
+          let resolved = outbox;
+          let waitTimedOut = false;
+          if (outbox) {
+            const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+            const result = await waitForTerminalJob(jobRepo, outbox, { signal: waiting.signal });
+            resolved = result.job;
+            waitTimedOut = result.timedOut;
+          }
+          if (waiting.signal.aborted) return;
+          res.status(201).json({
+            event: serializeEvent(event),
+            generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
+            ...(waitTimedOut ? { waitTimedOut: true } : {}),
+          });
+        } finally {
+          waiting.dispose();
         }
-        res.status(201).json({
-          event: serializeEvent(event),
-          generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
-          ...(waitTimedOut ? { waitTimedOut: true } : {}),
-        });
         return;
       }
 
@@ -400,29 +419,36 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
-        const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
-        const waitDeadline = Date.now() + WAIT_TIMEOUT_MS;
-        const resolved: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null; timedOut: boolean }[] = [];
-        for (const item of inserted) {
-          if (!item.outbox) {
-            resolved.push({ event: item.event, outbox: null, timedOut: false });
-            continue;
+        const waiting = responseWaitSignal(res);
+        try {
+          const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+          const waitDeadline = Date.now() + WAIT_TIMEOUT_MS;
+          const resolved: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null; timedOut: boolean }[] = [];
+          for (const item of inserted) {
+            if (waiting.signal.aborted) return;
+            if (!item.outbox) {
+              resolved.push({ event: item.event, outbox: null, timedOut: false });
+              continue;
+            }
+            const remaining = Math.max(0, waitDeadline - Date.now());
+            const result = await waitForTerminalJob(jobRepo, item.outbox, { timeoutMs: remaining, signal: waiting.signal });
+            resolved.push({ event: item.event, outbox: result.job, timedOut: result.timedOut });
           }
-          const remaining = Math.max(0, waitDeadline - Date.now());
-          const result = await waitForTerminalJob(jobRepo, item.outbox, remaining);
-          resolved.push({ event: item.event, outbox: result.job, timedOut: result.timedOut });
+          if (waiting.signal.aborted) return;
+          const anyTimedOut = resolved.some(r => r.timedOut);
+          res.status(201).json({
+            events: resolved.map(({ event, outbox, timedOut }, index) => ({
+              event: serializeEvent(event),
+              generationJob: outbox
+                ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
+                : null,
+              ...(timedOut ? { waitTimedOut: true } : {}),
+            })),
+            ...(anyTimedOut ? { waitTimedOut: true } : {}),
+          });
+        } finally {
+          waiting.dispose();
         }
-        const anyTimedOut = resolved.some(r => r.timedOut);
-        res.status(201).json({
-          events: resolved.map(({ event, outbox, timedOut }, index) => ({
-            event: serializeEvent(event),
-            generationJob: outbox
-              ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
-              : null,
-            ...(timedOut ? { waitTimedOut: true } : {}),
-          })),
-          ...(anyTimedOut ? { waitTimedOut: true } : {}),
-        });
         return;
       }
 
@@ -1083,6 +1109,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
         // subagent hook events.
         excludeSubagents: z.boolean().optional(),
+        // Apply the session-start mode filters before the result limit.
+        // Empty arrays intentionally select no observations, but keep summaries.
+        observationTypes: z.array(z.string().min(1)).optional(),
+        observationConcepts: z.array(z.string().min(1)).optional(),
       }).refine(body => body.summaryLimit === undefined || (
         body.query === undefined
         && body.summaryLimit <= (body.limit ?? SERVER_CONTEXT_RECENT_DEFAULT_LIMIT)
@@ -1107,6 +1137,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
+            observationTypes: body.observationTypes,
+            observationConcepts: body.observationConcepts,
             queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           };
           if (body.summaryLimit === undefined) {
@@ -1142,6 +1174,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           platformSource,
           folderProjects: body.folderProjects ?? null,
           excludeSubagents: body.excludeSubagents === true,
+          observationTypes: body.observationTypes ?? null,
+          observationConcepts: body.observationConcepts ?? null,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });
@@ -1721,7 +1755,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
     // Scope check first — same NotFound disclosure as the rest of the routes.
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await this.loadScopedById(req, res, {
+    const visible = await this.loadScopedById(req, res, {
       id,
       teamId,
       table: 'observation_generation_jobs',
@@ -1729,10 +1763,74 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       scopeMismatch: 'not-found',
       load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
     });
-    if (!current) return null;
+    if (!visible) return null;
 
-    // Idempotent fast-path: already queued -> emit audit only, no DB writes.
-    if (current.status === 'queued') {
+    // Keep the state check and update under the same row lock used by the
+    // generation commit path. Queue I/O and audit publication happen after
+    // this transaction, never while it holds a generation row.
+    const transition = await withPostgresTransaction(this.options.pool, async client => {
+      const current = await new PostgresObservationGenerationJobRepository(client).getByIdForScope({
+        id, projectId: visible.projectId, teamId, forUpdate: true,
+      });
+      if (!current) return { kind: 'missing' as const };
+      if (current.status === 'queued') return { kind: 'unchanged' as const, current };
+      if (current.status === 'processing' || current.status === 'completed') {
+        return { kind: 'conflict' as const, current };
+      }
+      // Reset to queued, clear lock + lifecycle timestamps, increment
+      // retried_count for audit. Preserve the existing explicit operator retry
+      // policy: an exhausted job receives one additional attempt.
+      //
+      // current.payload is the canonical BullMQ payload persisted at outbox
+      // create time (kind/team_id/project_id/source_type/source_id/
+      // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
+      // The retry adds operator metadata to the persisted row but enqueues
+      // ONLY the BullMQ payload — the worker calls
+      // assertServerGenerationJobPayload(job.data) on receipt and would reject
+      // the metadata-only object the previous implementation handed it.
+      const retriedCount = extractRetriedCount(current.payload) + 1;
+      const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
+        ? current.payload
+        : {}) as Record<string, unknown>;
+      const newPayload = {
+        ...persistedBullmqPayload,
+        retried_count: retriedCount,
+        last_retried_by_actor: req.authContext?.apiKeyId ?? null,
+        last_retried_request_id: req.requestId ?? null,
+      };
+      // The payload we re-publish to BullMQ on retry: refresh request_id (so
+      // the worker logs/audit attribute this run to the operator's request)
+      // but keep all canonical job context that the worker validates against.
+      const retryBullmqPayload = {
+        ...persistedBullmqPayload,
+        request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
+      };
+      const updated = await client.query(
+        `
+          UPDATE observation_generation_jobs
+          SET status = 'queued',
+              locked_at = NULL,
+              locked_by = NULL,
+              failed_at = NULL,
+              cancelled_at = NULL,
+              completed_at = NULL,
+              last_error = NULL,
+              attempts = LEAST(attempts, max_attempts - 1),
+              payload = $4::jsonb,
+              updated_at = now()
+          WHERE id = $1 AND project_id = $2 AND team_id = $3
+          RETURNING *
+        `,
+        [id, current.projectId, teamId, JSON.stringify(newPayload)],
+      );
+      return { kind: 'updated' as const, current, updatedRow: updated.rows[0], retriedCount, retryBullmqPayload };
+    });
+    if (transition.kind === 'missing') {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    if (transition.kind === 'unchanged') {
+      const current = transition.current;
       await this.auditWrite(req, 'generation_job.retried_by_operator', current.id, current.projectId, {
         outcome: 'noop_already_queued',
         currentAttempts: current.attempts,
@@ -1740,85 +1838,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
       return { job: current, retriedCount: extractRetriedCount(current.payload), alreadyQueued: true };
     }
-
-    if (current.status === 'processing') {
-      // Refuse retry on in-flight jobs — the running worker MUST be allowed
-      // to finish or fail through its normal lifecycle. Operator can wait
-      // or cancel, then retry.
+    if (transition.kind === 'conflict') {
       res.status(409).json({
         error: 'Conflict',
-        message: 'Generation job is currently processing; cancel or wait for completion before retrying',
+        message: transition.current.status === 'processing'
+          ? 'Generation job is currently processing; cancel or wait for completion before retrying'
+          : 'Generation job already completed; retrying would duplicate observations',
       });
       return null;
     }
-
-    if (current.status === 'completed') {
-      // Refuse retry on already-completed jobs. The deduplication index on
-      // observations (generation_key = job_id + index + content) does NOT
-      // protect against re-running the provider, because LLM output is
-      // non-deterministic and the second run almost always produces a
-      // different content string. Replaying would persist a parallel set
-      // of observations attributed to the same generation_job_id.
-      // cancelGenerationJob applies the same 409 guard for the same reason.
-      res.status(409).json({
-        error: 'Conflict',
-        message: 'Generation job already completed; retrying would duplicate observations',
-      });
-      return null;
-    }
-
-    // Reset to queued, clear lock + lifecycle timestamps, increment
-    // retried_count for audit. attempts is intentionally preserved so the
-    // BullMQ attempt cap is not bypassed; if the job hit max_attempts the
-    // operator must lift the cap explicitly via a separate flow.
-    //
-    // current.payload is the canonical BullMQ payload persisted at outbox
-    // create time (kind/team_id/project_id/source_type/source_id/
-    // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
-    // The retry adds operator metadata to the persisted row but enqueues
-    // ONLY the BullMQ payload — the worker calls
-    // assertServerGenerationJobPayload(job.data) on receipt and would reject
-    // the metadata-only object the previous implementation handed it.
-    const retriedCount = extractRetriedCount(current.payload) + 1;
-    const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
-      ? current.payload
-      : {}) as Record<string, unknown>;
-    const newPayload = {
-      ...persistedBullmqPayload,
-      retried_count: retriedCount,
-      last_retried_by_actor: req.authContext?.apiKeyId ?? null,
-      last_retried_request_id: req.requestId ?? null,
-    };
-    // The payload we re-publish to BullMQ on retry: refresh request_id (so
-    // the worker logs/audit attribute this run to the operator's request)
-    // but keep all canonical job context that the worker validates against.
-    const retryBullmqPayload = {
-      ...persistedBullmqPayload,
-      request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
-    };
-    const updated = await this.options.pool.query(
-      `
-        UPDATE observation_generation_jobs
-        SET status = 'queued',
-            locked_at = NULL,
-            locked_by = NULL,
-            failed_at = NULL,
-            cancelled_at = NULL,
-            completed_at = NULL,
-            last_error = NULL,
-            attempts = LEAST(attempts, max_attempts - 1),
-            payload = $4::jsonb,
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [id, current.projectId, teamId, JSON.stringify(newPayload)],
-    );
-    const updatedRow = updated.rows[0];
-    if (!updatedRow) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const { current, updatedRow, retriedCount, retryBullmqPayload } = transition;
 
     // Append lifecycle event so the audit chain mirrors the lifecycle tracker.
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
@@ -1889,7 +1918,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await this.loadScopedById(req, res, {
+    const visible = await this.loadScopedById(req, res, {
       id,
       teamId,
       table: 'observation_generation_jobs',
@@ -1897,38 +1926,47 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       scopeMismatch: 'not-found',
       load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
     });
-    if (!current) return null;
-    if (current.status === 'cancelled') {
+    if (!visible) return null;
+    const transition = await withPostgresTransaction(this.options.pool, async client => {
+      const current = await new PostgresObservationGenerationJobRepository(client).getByIdForScope({
+        id, projectId: visible.projectId, teamId, forUpdate: true,
+      });
+      if (!current) return { kind: 'missing' as const };
+      if (current.status === 'cancelled' || current.status === 'completed') {
+        return { kind: 'unchanged' as const, current };
+      }
+      const updateResult = await client.query(
+        `
+          UPDATE observation_generation_jobs
+          SET status = 'cancelled',
+              cancelled_at = now(),
+              updated_at = now()
+          WHERE id = $1 AND project_id = $2 AND team_id = $3
+          RETURNING *
+        `,
+        [id, current.projectId, teamId],
+      );
+      return { kind: 'updated' as const, current, updatedRow: updateResult.rows[0] };
+    });
+    if (transition.kind === 'missing') {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    const { current } = transition;
+    if (transition.kind === 'unchanged') {
+      if (current.status === 'completed') {
+        res.status(409).json({
+          error: 'Conflict', message: 'Generation job already completed; cannot cancel',
+        });
+        return null;
+      }
       await this.auditWrite(req, 'generation_job.cancelled_by_operator', current.id, current.projectId, {
         outcome: 'noop_already_cancelled',
         requestId: req.requestId ?? null,
       });
       return { job: current, alreadyCancelled: true };
     }
-    if (current.status === 'completed') {
-      res.status(409).json({
-        error: 'Conflict',
-        message: 'Generation job already completed; cannot cancel',
-      });
-      return null;
-    }
-
-    const updateResult = await this.options.pool.query(
-      `
-        UPDATE observation_generation_jobs
-        SET status = 'cancelled',
-            cancelled_at = now(),
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [id, current.projectId, teamId],
-    );
-    const updatedRow = updateResult.rows[0];
-    if (!updatedRow) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const { updatedRow } = transition;
 
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
     await eventsRepo.append({

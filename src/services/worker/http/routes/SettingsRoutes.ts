@@ -192,6 +192,38 @@ export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): bo
   return originPort !== port;
 }
 
+/**
+ * True when a GET comes from a browser page other than the worker's own. A
+ * read that runs something for the caller (resolving a project from `cwd` runs
+ * `git` there) needs more than the write guard: a `no-cors` fetch or an
+ * `<img src>` sends no Origin, so this also refuses a foreign Referer and a
+ * `same-site`/`cross-site` fetch with neither header (another localhost port is
+ * same-site). Requests with no Origin, Referer or Sec-Fetch-Site (hooks, the
+ * CLI, the MCP server) and `same-origin`/`none` fetches pass. Exported for tests.
+ */
+export function isForeignBrowserRead(req: Pick<Request, 'headers'>): boolean {
+  if (isForeignLoopbackBrowserWrite(req)) return true;
+  const rawReferer = req.headers?.referer;
+  if (Array.isArray(rawReferer)) return true;
+  const hasReferer = typeof rawReferer === 'string' && rawReferer.length > 0;
+  if (hasReferer) {
+    let refererOrigin: string;
+    try {
+      refererOrigin = new URL(rawReferer).origin;
+    } catch {
+      return true;
+    }
+    // Same test as the Origin above: only this worker's own loopback host:port.
+    if (isForeignLoopbackBrowserWrite({ headers: { origin: refererOrigin, host: req.headers.host } })) return true;
+  }
+  const site = req.headers?.['sec-fetch-site'];
+  if (site === 'same-site' || site === 'cross-site') {
+    const hasOrigin = typeof req.headers.origin === 'string' && req.headers.origin.length > 0;
+    if (!hasOrigin && !hasReferer) return true;
+  }
+  return false;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager

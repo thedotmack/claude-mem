@@ -110,12 +110,18 @@ export function getProjectDocCount(db: Database, project: string): number {
 
 /**
  * Build a project-scoped `token -> idf` function plus the corpus size, from token_df.
- * Loads the whole project DF table into a Map ONCE (not a per-token SQLite round-trip),
- * so a scan classifying thousands of pairs does one query, not thousands.
+ * Loads the requested token frequencies in one query, or the whole project
+ * model for a full sweep. Live scans only need tokens in their bounded set
+ * of titles, not every token ever written by the project.
  */
-export function buildProjectIdf(db: Database, project: string): { idfFn: (t: string) => number; docCount: number } {
+export function buildProjectIdf(db: Database, project: string, tokens?: Iterable<string>): { idfFn: (t: string) => number; docCount: number } {
   const docCount = getProjectDocCount(db, project);
-  const dfRows = db.prepare('SELECT token, df FROM token_df WHERE project = ?').all(project) as { token: string; df: number }[];
+  // One JSON binding avoids SQLite's host-parameter limit for long titles or
+  // large MAX_SCAN settings; (project, token) remains an indexed lookup.
+  const dfRows = (tokens === undefined
+    ? db.prepare('SELECT token, df FROM token_df WHERE project = ?').all(project)
+    : db.prepare('SELECT token, df FROM token_df WHERE project = ? AND token IN (SELECT value FROM json_each(?))')
+      .all(project, JSON.stringify([...new Set(tokens)]))) as { token: string; df: number }[];
   const dfMap = new Map<string, number>(dfRows.map(r => [r.token, r.df]));
   return { idfFn: buildIdfFn((token: string) => dfMap.get(token) ?? 0, docCount), docCount };
 }
@@ -142,27 +148,30 @@ export function isFuzzyReady(db: Database, project: string, minDocs: number): bo
  * post-deletion DF drift is reclaimed. Returns the project doc count.
  */
 export function backfillProjectDedup(db: Database, project: string, maxRows: number = Number.POSITIVE_INFINITY): number {
-  const total = (db.prepare('SELECT COUNT(*) c FROM observations WHERE project = ?').get(project) as { c: number }).c;
-  if (total > maxRows) {
-    logger.warn('DEDUP', `Skipping dedup backfill for project ${project}: ${total} rows exceeds cap ${maxRows} (CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS)`);
-    return 0;
-  }
-  // NOTE: dedup_meta.deleted_since_rebuild / last_rebuild_doc_count are reset here and are
-  // RESERVED for a future delete-hook-driven auto-rebuild; today the scan always does a full
-  // rebuild, so nothing increments deleted_since_rebuild (no runtime observation-delete path).
-  const rows = db.prepare(
-    'SELECT o.id, o.title, o.agent_id, o.agent_type, s.platform_source FROM observations o ' +
-    'LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id WHERE o.project = ?'
-  ).all(project) as {
-    id: number;
-    title: string | null;
-    agent_id: string | null;
-    agent_type: string | null;
-    platform_source: string | null;
-  }[];
-  const updKey = db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
-  const insDf = db.prepare('INSERT INTO token_df (project, token, df) VALUES (?, ?, ?)');
-  const tx = db.transaction(() => {
+  // Reserve the writer before reading the snapshot. A live observer can update
+  // both observations and token_df; a snapshot taken outside this transaction
+  // would overwrite that writer's increments with an older model.
+  return db.transaction(() => {
+    const total = (db.prepare('SELECT COUNT(*) c FROM observations WHERE project = ?').get(project) as { c: number }).c;
+    if (total > maxRows) {
+      logger.warn('DEDUP', `Skipping dedup backfill for project ${project}: ${total} rows exceeds cap ${maxRows} (CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS)`);
+      return 0;
+    }
+    // NOTE: dedup_meta.deleted_since_rebuild / last_rebuild_doc_count are reset here and are
+    // RESERVED for a future delete-hook-driven auto-rebuild; today the scan always does a full
+    // rebuild, so nothing increments deleted_since_rebuild (no runtime observation-delete path).
+    const rows = db.prepare(
+      'SELECT o.id, o.title, o.agent_id, o.agent_type, s.platform_source FROM observations o ' +
+      'LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id WHERE o.project = ?'
+    ).all(project) as {
+      id: number;
+      title: string | null;
+      agent_id: string | null;
+      agent_type: string | null;
+      platform_source: string | null;
+    }[];
+    const updKey = db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
+    const insDf = db.prepare('INSERT INTO token_df (project, token, df) VALUES (?, ?, ?)');
     const dfMap = new Map<string, number>();
     for (const r of rows) {
       updKey.run(computeTitleNormKey(project, r.platform_source, r.title, isSubagentEvent(r.agent_id, r.agent_type)), r.id);
@@ -174,9 +183,8 @@ export function backfillProjectDedup(db: Database, project: string, maxRows: num
       'INSERT INTO dedup_meta (project, doc_count, last_rebuild_doc_count, deleted_since_rebuild) VALUES (?, ?, ?, 0) ' +
       'ON CONFLICT(project) DO UPDATE SET doc_count = excluded.doc_count, last_rebuild_doc_count = excluded.last_rebuild_doc_count, deleted_since_rebuild = 0'
     ).run(project, rows.length, rows.length);
-  });
-  tx();
-  return rows.length;
+    return rows.length;
+  }).immediate();
 }
 
 /**
@@ -186,12 +194,18 @@ export function backfillProjectDedup(db: Database, project: string, maxRows: num
  * Persists review-only candidates (INSERT OR IGNORE). Returns the count persisted.
  */
 export function sweepProjectCandidates(db: Database, project: string, cfg: DedupRuntimeConfig): number {
+  // Read one extra row to detect an oversized corpus without materializing
+  // it first. Explicitly unbounded callers retain the previous behavior.
+  const cap = Math.trunc(cfg.maxBackfillRows);
+  const rowLimit = Number.isSafeInteger(cap) && cap < Number.MAX_SAFE_INTEGER
+    ? Math.max(0, cap) + 1
+    : -1;
   const rows = db.prepare(
-    'SELECT id, title FROM observations WHERE project = ? AND title IS NOT NULL ORDER BY id ASC'
-  ).all(project) as { id: number; title: string }[];
+    'SELECT id, title FROM observations WHERE project = ? AND title IS NOT NULL ORDER BY id ASC LIMIT ?'
+  ).all(project, rowLimit) as { id: number; title: string }[];
   if (rows.length < 2) return 0;
   if (rows.length > cfg.maxBackfillRows) {
-    logger.warn('DEDUP', `Skipping dedup sweep for project ${project}: ${rows.length} rows exceeds cap ${cfg.maxBackfillRows}`);
+    logger.warn('DEDUP', `Skipping dedup sweep for project ${project}: more than ${cfg.maxBackfillRows} rows`);
     return 0;
   }
   const { idfFn, docCount } = buildProjectIdf(db, project);
@@ -264,16 +278,19 @@ export function recordTier1Candidates(
   cfg: DedupRuntimeConfig
 ): number {
   if (!title) return 0;
-  const { idfFn, docCount } = buildProjectIdf(db, project);
+  const rows = db.prepare(
+    'SELECT id, title FROM observations WHERE project = ? AND id != ? AND title IS NOT NULL ' +
+    'ORDER BY created_at_epoch DESC, id DESC LIMIT ?'
+  ).all(project, newObsId, cfg.maxScan) as { id: number; title: string }[];
+  if (rows.length === 0) return 0;
+  const tokens = new Set(tokenizeWs(title));
+  for (const row of rows) for (const token of tokenizeWs(row.title)) tokens.add(token);
+  const { idfFn, docCount } = buildProjectIdf(db, project, tokens);
   const thresholds: ClassifyThresholds = {
     cosineThreshold: cfg.cosineThreshold,
     vetoThetaIdf: vetoThetaFor(cfg.idfVetoDf, docCount),
     minSharedTokens: cfg.minSharedTokens,
   };
-  const rows = db.prepare(
-    'SELECT id, title FROM observations WHERE project = ? AND id != ? AND title IS NOT NULL ' +
-    'ORDER BY created_at_epoch DESC, id DESC LIMIT ?'
-  ).all(project, newObsId, cfg.maxScan) as { id: number; title: string }[];
   if (rows.length === cfg.maxScan) {
     logger.debug('DEDUP', `Tier-1 scan hit MAX_SCAN=${cfg.maxScan} for project ${project}; older rows covered by dedup-scan`);
   }

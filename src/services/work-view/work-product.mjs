@@ -75,9 +75,23 @@ function parse(value) {
 }
 
 function urlsIn(value, found = []) {
-  if (typeof value === 'string') { const url = safeWebUrl(value); if (url) found.push(url); }
-  else if (Array.isArray(value)) for (const item of value) urlsIn(item, found);
-  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) if (/url$/i.test(key) || typeof item === 'object') urlsIn(item, found);
+  // Captured JSON can be much deeper than the JavaScript call stack.
+  const pending = [value];
+  const visited = new WeakSet();
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === 'string') {
+      const url = safeWebUrl(item);
+      if (url) found.push(url);
+    } else if (item && typeof item === 'object' && !visited.has(item)) {
+      visited.add(item);
+      const children = Array.isArray(item) ? item : Object.entries(item)
+        .filter(([key, child]) => /url$/i.test(key) || typeof child === 'object')
+        .map(([, child]) => child);
+      // Reverse insertion preserves the previous depth-first source order.
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    }
+  }
   return found;
 }
 
@@ -282,9 +296,10 @@ export function productsFromObservation(observation) {
   if (!Array.isArray(files)) return [];
   return files.flatMap((path, index) => {
     const kind = fileKind(path);
+    if (!kind) return [];
     // A generic entry file is named by its folder (…/launch-review/index.html).
     const title = /^index\.\w+$/i.test(basename(path)) ? basename(path.slice(0, -basename(path).length - 1)) || basename(path) : basename(path);
-    return kind ? [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }] : [];
+    return [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }];
   });
 }
 
