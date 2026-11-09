@@ -343,23 +343,6 @@ The worker also offers tools for code navigation (`smart_search`, `smart_outline
 - **uv**: Python package manager for vector search (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
-### Building standalone executables
-
-`npm run build:cli-binary` (native executable) and `npm run build:binaries`
-(Windows executable) require a Bun compiler **at least 1.2.16**. The executable
-embeds that compiler's runtime; deep-search subprocesses need its `BUN_BE_BUN`
-capability. Installing a newer Bun on the user's PATH does not upgrade an
-already-built executable: rebuild the executable with a compatible compiler.
-Older compilers are rejected before compilation with an actionable error.
-
-This build requirement is separate from `package.json`'s package-wide
-`engines.bun >=1.1.31` declaration. It does not raise the minimum for every
-installation path, nor certify all project APIs on Bun 1.2.16. The subprocess
-deep-search build and tests have been exercised with **Bun 1.3.13 on macOS
-ARM64**; Linux/Windows behavior still needs platform CI results. A standalone
-runtime lacking the capability returns `unsupported` before spawning a deep
-query. CJS/source execution uses the installed Bun CLI instead.
-
 ---
 ### Windows Setup Notes
 
