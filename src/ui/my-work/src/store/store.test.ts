@@ -99,6 +99,19 @@ describe('reading work', () => {
     stop()
   })
 
+  it('announces the first request arriving after a loaded empty model', () => {
+    const { store } = testStore()
+    const { source, feed } = fakeSource()
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, requests: [] })
+      const request = { ...LOCAL_MODEL.requests[0], closed: false }
+      feed.onModel({ ...LOCAL_MODEL, requests: [request] })
+      assert.deepEqual([...store.getState().work.freshlyUpdatedIds], [request.id])
+      assert.deepEqual(store.getState().work.recentChanges.map(change => change.kind), ['new'])
+    } finally { stop() }
+  })
+
   it('drops a recent change once its request is no longer in the model', async () => {
     const { store } = testStore()
     const { source, feed } = fakeSource()

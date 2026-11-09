@@ -1177,11 +1177,11 @@ async function setupServerRuntimeNonInteractive(options: InstallOptions): Promis
       + `(pg + redis/valkey). The server listens at ${serverBaseUrl}.`,
   );
 
-  // The server mounts its MCP endpoint at `<baseUrl>/mcp` over HTTP (vs. the
+  // The server mounts its MCP endpoint at `<baseUrl>/v1/mcp` over HTTP (vs. the
   // worker's stdio transport); trailing slashes are trimmed so we never emit
-  // `http://host//mcp`.
+  // `http://host//v1/mcp`.
   log.info(
-    `IDE MCP config target for the server runtime: http ${serverBaseUrl.replace(/\/+$/, '')}/mcp`,
+    `IDE MCP config target for the server runtime: http ${serverBaseUrl.replace(/\/+$/, '')}/v1/mcp`,
   );
 
   await maybeBootstrapServerApiKey();
