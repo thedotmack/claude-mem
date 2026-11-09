@@ -193,6 +193,8 @@ See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command
 - ✅ 300-second timeout (allows for npm install if needed)
 - ✅ Progressive disclosure format (index, not full details)
 - ✅ Configurable observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`
+- ✅ The block is the memory timeline: a header that says how to read it, then any outage warning and the open work-state lists, then the timeline. The newest timeline entry ends the block, with no footer, so later updates can append rows to it. How to use claude-mem's tools (work state, memory search, notes) is in the MCP server's instructions, not in this block.
+- ✅ The terminal banner has the same shape: the viewer link (`View Observations Live @ …`) and the trial lines on top, then the timeline, ending on its newest entry with no closing lines.
 
 **Codex compaction:** A Codex compaction replaces the thread's history, timeline included. The root thread gets the timeline back from `SessionStart` (source `compact`). Codex never sends `SessionStart` to a subagent thread, and `PostCompact` output cannot carry context, so the `PostCompact` hook marks the thread (`~/.claude-mem/state/codex-compaction-pending/`) and the thread's next `PostToolUse` returns the timeline as `additionalContext`, once. A thread whose `SessionStart` already re-injected the timeline does not get it again.
 

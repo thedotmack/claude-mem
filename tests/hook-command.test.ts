@@ -11,6 +11,7 @@ import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
 import { HookStdoutError } from '../src/shared/hook-io.js';
+import * as spoolHookEventModule from '../src/cli/spool-hook-event.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resetHookSettingsCacheForTesting } from '../src/shared/hook-settings.js';
@@ -236,6 +237,33 @@ describe('hookCommand stdout delivery failures', () => {
       expect(output).toEqual(['{}\n']);
       expect(executeSpy).toHaveBeenCalledTimes(1);
     } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
+describe('hookCommand stdout failure while capture handoffs settle', () => {
+  it('reports the closed stdout as a handled delivery error, never an unhandled rejection', async () => {
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockResolvedValue({ continue: true });
+    // The handoff wait outlives the failed write, so an un-awaited stdout promise would reject with no handler.
+    const settleSpy = spyOn(spoolHookEventModule, 'settleHookSpoolNudges').mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+    const unhandledRejections: unknown[] = [];
+    const recordUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+    process.on('unhandledRejection', recordUnhandledRejection);
+    process.stdout.write = ((_chunk: string, callback: (error?: Error | null) => void): boolean => {
+      setTimeout(() => callback(new Error('write EPIPE')), 0);
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'stdout-closed-during-handoff', cwd: process.cwd() }));
+    try {
+      await expect(hookCommand('claude-code', 'session-init', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', recordUnhandledRejection);
+      settleSpy.mockRestore();
       executeSpy.mockRestore();
     }
   });

@@ -153,6 +153,15 @@ describe('memory import into an existing content session', () => {
     expect(store.db.query('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
+  it('syncs an imported merged observation to Chroma with its merge target', async () => {
+    const payload = exportedMemory();
+    payload.observations[0].merged_into_project = 'app';
+    const restored = await importMemory(payload);
+    expect(restored.stats).toMatchObject({ observationsImported: 1, observationsRejected: 0 });
+    expect(syncObservation).toHaveBeenCalledTimes(1);
+    expect((syncObservation.mock.calls[0][3] as { merged_into_project: string | null }).merged_into_project).toBe('app');
+  });
+
   it('still rejects memories whose exported parent session is missing', async () => {
     const payload = exportedMemory();
     const restored = await importMemory({ ...payload, sessions: [], prompts: [] });

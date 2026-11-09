@@ -581,8 +581,8 @@ describe('context hook reads the precomputed block', () => {
     return contextHandler.execute({ sessionId: 'cache-session', cwd, platform: 'claude-code' });
   }
 
-  it('re-renders an old cached body that has no room for current memory instructions', async () => {
-    writeContextCache(agentKeys, 'old record\n'.repeat(1_000).slice(0, 10_000), Date.now());
+  it('re-renders an old cached body that no longer fits the delivery limit, instead of cutting it', async () => {
+    writeContextCache(agentKeys, 'old record\n'.repeat(1_000), Date.now());
     const result = await runHook();
     expect(workerCalls).toHaveLength(1);
     expect(result.hookSpecificOutput?.additionalContext).toContain('LIVE CONTEXT');
@@ -605,20 +605,21 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(agentKeys, 'A block without the prior reply', Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&sessionId=cache-session']);
-    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
+    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
   it('takes the live path on a miss, including the observed checkout cwd', async () => {
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo']);
-    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
+    // Instructions on, and still nothing after the timeline: the MCP server sends them.
+    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
   it('takes the live path when the cached block is older than 24h', async () => {
     writeContextCache(agentKeys, cachedBody, Date.now() - CONTEXT_CACHE_MAX_AGE_MS - 60_000);
     const result = await runHook();
     expect(workerCalls).toHaveLength(1);
-    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
+    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
   it('skips the colored fetch too when that variant is cached', async () => {
@@ -627,8 +628,9 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual([]);
-    expect(result.systemMessage).toStartWith('COLORED ');
-    expect(result.systemMessage).toContain('View Observations Live @');
+    // The viewer lines open the banner; the timeline ends it.
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toMatch(/\n\nCOLORED [^\n]+$/);
     expect(result.systemMessage).not.toContain(PLACEHOLDER_MARKER);
   });
 
@@ -660,7 +662,8 @@ describe('context hook reads the precomputed block', () => {
     // file headings relative to it, so that one is fetched for the new directory.
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo%2Fpackages%2Fapp&colors=true']);
     expect(result.hookSpecificOutput?.additionalContext).toContain('- release: updated about 2 hours ago');
-    expect(result.systemMessage).toStartWith('LIVE COLORED');
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
   });
 
   it('fetches only the colored render when only the model block is cached', async () => {
@@ -668,7 +671,8 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&colors=true']);
-    expect(result.systemMessage).toStartWith('LIVE COLORED');
+    expect(result.systemMessage).toStartWith('View Observations Live @');
+    expect(result.systemMessage).toEndWith('\n\nLIVE COLORED');
   });
 });
 
@@ -807,7 +811,7 @@ describe('precomputed context end to end', () => {
       const { budgetResult } = JSON.parse(line);
       expect(budgetResult.normal).toContain('RECORD_79_' + 'x'.repeat(350));
       expect(budgetResult.reserved).toContain('RECORD_79_' + 'x'.repeat(350));
-      expect(budgetResult.reserved.length + 3000 + MEMORY_PLUGIN_INSTRUCTIONS.length + 2).toBeLessThanOrEqual(10_000);
+      expect(budgetResult.reserved.length + 3000).toBeLessThanOrEqual(10_000);
       expect(budgetResult.reserved.length).toBeLessThan(budgetResult.normal.length);
       expect(budgetResult.cachedAfter).toBe(budgetResult.cachedBefore);
       expect(budgetResult.coldBefore).toBeNull();
@@ -863,9 +867,24 @@ describe('precomputed context end to end', () => {
 
       // The hook answered from the cache without any request to the worker.
       expect(result.fetchCalls).toBe(0);
-      expect(result.hookContext).toBe(`${result.liveAgent.trim()}\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
-      expect(result.liveAgent).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS);
-      expect(result.hookSystemMessage).toStartWith(result.liveColors.trim());
+      expect(result.hookContext).toBe(result.liveAgent.trim());
+      expect(result.hookContext).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS);
+      expect(result.hookContext).not.toContain('# Work state: your to-do lists');
+      expect(result.hookSystemMessage).toStartWith('View Observations Live @');
+      expect(result.hookSystemMessage).toEndWith(result.liveColors.trim());
+      // The banner ends on its newest timeline row, with no closing lines.
+      expect(result.hookSystemMessage.split('\n').at(-1)).toContain('FIRST_OBSERVATION');
+      expect(result.hookSystemMessage).not.toContain('tokens of past research');
+
+      // The model's block is the timeline: the header says how to read it, the
+      // open work sits under that header, and the newest row ends the block so
+      // later rows can be appended to it.
+      const agent: string = result.liveAgent;
+      expect(agent).toStartWith('# [');
+      expect(agent.indexOf('Fetch details:')).toBeLessThan(agent.indexOf('Work state, still open:\n- release: status=active, updated about 2 hours ago'));
+      expect(agent.indexOf('Work state, still open:')).toBeLessThan(agent.indexOf('\n### '));
+      expect(agent.trimEnd()).toEndWith('FIRST_OBSERVATION');
+      expect(agent).not.toContain('tokens of past work');
 
       // A store write re-rendered the cached block.
       expect(result.agentAfterWrite).toContain('SECOND_OBSERVATION');

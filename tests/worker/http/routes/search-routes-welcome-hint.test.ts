@@ -34,7 +34,6 @@ import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js
 import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { buildWorkStateContextSection } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { TEAM_BRIEF_RESERVE_CHARS } from '../../../../src/shared/teambrain.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../../../src/shared/memory-instructions.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -42,8 +41,6 @@ const observerHealthPath = join(realPaths.paths.dataDir(), OBSERVER_HEALTH_FILEN
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-// What every response leads with while nothing has been written: the rule, then "Nothing open yet."
-const EMPTY_WORK_STATE_SECTION = buildWorkStateContextSection([], 0);
 const workStateEntriesStub = mock((): any[] => []);
 
 interface MockRes {
@@ -204,8 +201,8 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
     expect(body).toContain('# claude-mem status');
     expect(body).toContain('disappears once the first observation lands');
-    // Hint first, warning second — same order as normal context, so the
-    // warning is the last thing on screen rather than the first thing scrolled off.
+    // Hint first, warning second, so the warning is the last thing on screen
+    // rather than the first thing scrolled off.
     expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('What to do:'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
@@ -265,7 +262,7 @@ describe('SearchRoutes Welcome Hint', () => {
     await new Promise(resolve => setImmediate(resolve));
 
     expect(generateContextStub).toHaveBeenCalledTimes(1);
-    expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
   it('skips the welcome hint when CLAUDE_MEM_WELCOME_HINT_ENABLED=false', async () => {
@@ -281,7 +278,7 @@ describe('SearchRoutes Welcome Hint', () => {
     await new Promise(resolve => setImmediate(resolve));
 
     expect(generateContextStub).toHaveBeenCalledTimes(1);
-    expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
   it('trims hand-typed spacing in a comma-separated project list', async () => {
@@ -479,12 +476,7 @@ describe('SearchRoutes Welcome Hint', () => {
       { id: 1, project: '/path/parent', list_name: 'release', fields: { version: '13.25.3', status: 'active' }, created_at_epoch: Date.now() },
       { id: 2, project: '/path/worktree', list_name: 'release', fields: { task: 'publish', status: 'todo' }, created_at_epoch: Date.now() },
     ];
-    // These tests measure the work-state budget, so the memory-use block is off;
-    // its own reserve is checked in the TeamBrain and #5180 tests below.
-    beforeEach(() => { process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false'; });
-    afterEach(() => { delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED; });
-
-    it('leads the context with what is still open and takes its length off the memory budget', async () => {
+    it('hands what is still open to the renderer, which measures it with the block it places it in', async () => {
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
       mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
@@ -500,17 +492,17 @@ describe('SearchRoutes Welcome Hint', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(workStateEntriesStub).toHaveBeenCalledWith(['/path/parent', '/path/worktree']);
-      const body = (res.send as any).mock.calls[0][0] as string;
-      expect(body).toStartWith('# Work state: your to-do lists and working state');
-      expect(body).toContain('\n\nStill open:\n- release: version=13.25.3, status=active, updated 1 minute ago\n  - [todo] publish, updated 1 minute ago');
-      expect(body).toEndWith('\n\nCONTEXT_FROM_GENERATOR');
-      // The budget is reserved for the section as rendered with its time
-      // placeholders (cacheable form), which are never shorter than the filled text.
+      // The renderer puts the section under its header, above the timeline, so
+      // the route no longer glues it on top or reserves room for it.
+      expect((res.send as any).mock.calls[0][0]).toBe('CONTEXT_FROM_GENERATOR');
+      // The section goes in with its time placeholders (cacheable form), so the
+      // fitter measures it at least as long as the filled text it becomes.
       const renderedEntries = (workStateEntriesStub.mock.results[0] as { value: any[] }).value;
-      const placeholderSectionLength = buildWorkStateContextSection(renderedEntries, 'placeholders').length;
-      const filledSectionLength = body.length - '\n\nCONTEXT_FROM_GENERATOR'.length;
-      expect(placeholderSectionLength).toBeGreaterThanOrEqual(filledSectionLength);
-      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: placeholderSectionLength + 2 }), false, expect.objectContaining({ execution: 'inline' }));
+      const section = buildWorkStateContextSection(renderedEntries, 'placeholders');
+      expect(section).toStartWith('Work state, still open:\n- release: version=13.25.3, status=active, updated ');
+      expect(section).toContain('\n  - [todo] publish, updated ');
+      expect(section).not.toContain('# Work state: your to-do lists');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ workStateSection: section, reserveChars: 0 }), false, expect.objectContaining({ execution: 'inline' }));
     });
 
     it('leads the welcome hint with what is still open', async () => {
@@ -522,9 +514,9 @@ describe('SearchRoutes Welcome Hint', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       const body = (res.send as any).mock.calls[0][0] as string;
-      expect(body).toStartWith('# Work state: your to-do lists and working state');
+      expect(body).toStartWith('Work state, still open:\n- release');
       expect(body).toContain('  - [todo] publish');
-      expect(body.indexOf('Still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
+      expect(body.indexOf('Work state, still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
     });
 
     // #4606: a host that tracks work its own way can turn the section off, so
@@ -543,10 +535,10 @@ describe('SearchRoutes Welcome Hint', () => {
 
       expect(workStateEntriesStub).not.toHaveBeenCalled();
       expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
-      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0 }), false, expect.objectContaining({ execution: 'inline' }));
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0, workStateSection: '' }), false, expect.objectContaining({ execution: 'inline' }));
     });
 
-    it('leaves room for the TeamBrain brief and the memory instructions the hook appends once the install is in a team', async () => {
+    it('leaves room for the TeamBrain brief the hook puts ahead of the block once the install is in a team', async () => {
       process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
@@ -558,26 +550,22 @@ describe('SearchRoutes Welcome Hint', () => {
         await new Promise(resolve => setImmediate(resolve));
       };
       try {
-        delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
         process.env.CLAUDE_MEM_TEAMBRAIN_URL = 'https://cmem.ai';
-        await render();
-        expect(generateContextStub).toHaveBeenCalledWith(
-          expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2 }),
-          false,
-          expect.objectContaining({ execution: 'inline' }),
-        );
-
-        process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
-        await render();
-        expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false, expect.objectContaining({ execution: 'inline' }));
+        for (const instructions of [undefined, 'false']) {
+          if (instructions === undefined) delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+          else process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = instructions;
+          await render();
+          expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false, expect.objectContaining({ execution: 'inline' }));
+        }
       } finally {
         delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
         delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
       }
     });
 
-    // #5180: the hook appends the memory-use block with or without a team.
-    it('leaves room for the memory instructions without a team too', async () => {
+    // The memory-use block moved from the hook's output to the MCP server's
+    // instructions, so no session's block gives up room for it any more.
+    it('reserves nothing for the memory instructions, with them on or off', async () => {
       process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
@@ -591,10 +579,14 @@ describe('SearchRoutes Welcome Hint', () => {
       };
       delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
       delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
-      expect((await reserved()).reserveChars).toBe(MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
+      try {
+        expect((await reserved()).reserveChars).toBe(0);
 
-      process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
-      expect((await reserved()).reserveChars).toBe(0);
+        process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
+        expect((await reserved()).reserveChars).toBe(0);
+      } finally {
+        delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+      }
     });
 
     it('leaves the work state out of the welcome hint when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {

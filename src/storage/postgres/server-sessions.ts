@@ -73,14 +73,15 @@ export class PostgresServerSessionsRepository {
           id, project_id, team_id, external_session_id, idempotency_key, content_session_id,
           agent_id, agent_type, platform_source, generation_status, metadata
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::text, 'idle'), $11::jsonb)
         ON CONFLICT (project_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET
           external_session_id = excluded.external_session_id,
           content_session_id = excluded.content_session_id,
           agent_id = excluded.agent_id,
           agent_type = excluded.agent_type,
           platform_source = excluded.platform_source,
-          generation_status = excluded.generation_status,
+          -- A replay omitting the initial state must not undo a lifecycle transition.
+          generation_status = COALESCE($10::text, server_sessions.generation_status),
           metadata = excluded.metadata,
           updated_at = now()
         RETURNING *
@@ -95,7 +96,7 @@ export class PostgresServerSessionsRepository {
         input.agentId ?? null,
         input.agentType ?? null,
         platformSource,
-        input.generationStatus ?? 'idle',
+        input.generationStatus ?? null,
         // Session metadata can carry the opening prompt: no <private> sections stored.
         JSON.stringify(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))
       ]

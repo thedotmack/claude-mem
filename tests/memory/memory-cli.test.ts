@@ -42,6 +42,14 @@ describe('memory ingest CLI', () => {
     expect(errors).toEqual([`memory ingest source not found: ${join(callerCheckout, 'notes')}`]);
   });
 
+  it('reads --cwd=<dir> and --source=<dir> like their two-argument forms', async () => {
+    const errors = captureErrors();
+
+    expect(await runMemoryCommand('ingest', ['--dry-run', `--cwd=${callerCheckout}`, '--source=notes'])).toBe(1);
+
+    expect(errors).toEqual([`memory ingest source not found: ${join(callerCheckout, 'notes')}`]);
+  });
+
   it('resolves a relative --cwd before deriving its memory dir', async () => {
     const errors = captureErrors();
 
