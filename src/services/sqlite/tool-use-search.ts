@@ -190,7 +190,7 @@ export function searchToolUses(db: Database, query: string, options: SearchOptio
     conditions.push('t.platform_source = ?'); params.push(normalizePlatformSource(options.platformSource));
   }
   for (const [bound, operator] of [['start', '>='], ['end', '<=']] as const) {
-    if (options.dateRange?.[bound] !== undefined) {
+    if (options.dateRange?.[bound] != null && options.dateRange[bound] !== '') {
       conditions.push(`t.created_at_epoch ${operator} ?`);
       params.push(resolveDateBound(options.dateRange[bound], bound));
     }

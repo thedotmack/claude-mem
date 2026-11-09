@@ -135,6 +135,21 @@ describe('optional raw-tool content index (#4060)', () => {
     expect(h.find().deep.hasMore).toBe(true);
   });
 
+  it('ignores empty and null date bounds while retaining the opposite bound and epoch zero', () => {
+    const h = fixture(); h.enable();
+    const before = h.write('before', 'needle 连接池', { createdAtEpoch: -1 });
+    const at = h.write('at', 'needle 连接池', { createdAtEpoch: 0 });
+    const after = h.write('after', 'needle 连接池', { createdAtEpoch: 1 });
+    for (const query of ['needle', '连接池']) {
+      for (const absent of ['', null, undefined]) {
+        const ids = (dateRange: object) => h.find(query, { dateRange }).toolUses.map(r => r.id).sort((a, b) => a - b);
+        expect(ids({ start: 0, end: absent })).toEqual([at!, after!]);
+        expect(ids({ start: absent, end: 0 })).toEqual([before!, at!]);
+        expect(ids({ start: absent, end: absent })).toEqual([before!, at!, after!]);
+      }
+    }
+  });
+
   it('requires every FTS term and treats operators and punctuation as literal input', () => {
     const h = fixture(); h.enable(); h.write('one');
     expect(h.find('DB_CONN_1042 30').toolUses).toHaveLength(1);

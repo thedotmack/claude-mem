@@ -55,6 +55,8 @@ try {
   const rekeySelected = await batch(rekey.body.toolUses.map(r=>r.id), {project:'target',projects:'target,raw-only',platformSource:'codex'});
   const wrongPlatform = await get({project:'target',platformSource:'claude'});
   const rejected = await get({project:'target',deep:'yes'});
+  const blankEnd = await get({project:'target',dateStart:'1970-01-01',dateEnd:''});
+  const blankStart = await get({project:'target',dateStart:'',dateEnd:'2099-12-31'});
   seed('delete-me', null);
   store.upsertToolUse({toolUseId:'delete-me',contentSessionId:'delete-me',project:'delete-me',toolName:'Bash',toolResponse:'DB_CONN_1042'});
   const deleteUrl = url + '/api/sessions/claude/delete-me';
@@ -67,7 +69,7 @@ try {
   const deletedStatus = deleted.status; const deletedBody = await deleted.text();
   const afterDelete = await get({project:'delete-me'});
   store.db.run("INSERT INTO tool_uses_fts(tool_uses_fts, rank) VALUES('integrity-check', 1)");
-  console.log(JSON.stringify({ids,scoped,selected,rekey,rekeySelected,wrongPlatform,rejected,failedDeleteStatus,afterFailedDelete,deletedStatus,deletedBody,afterDelete}));
+  console.log(JSON.stringify({ids,scoped,selected,rekey,rekeySelected,wrongPlatform,rejected,blankEnd,blankStart,failedDeleteStatus,afterFailedDelete,deletedStatus,deletedBody,afterDelete}));
 } finally { await new Promise(resolve=>server.close(resolve)); await Promise.all([reader.close(), deepReader.close()]); store.close(); }
 `;
 
@@ -94,6 +96,12 @@ it('keeps HTTP search, worker reads and selected raw bodies in the same project/
     expect(ids(data.rekey.body.toolUses)).not.toContain(data.ids.other);
     expect(data.wrongPlatform.body.toolUses).toEqual([]);
     expect(data.rejected.status).toBe(400);
+    for (const response of [data.blankEnd, data.blankStart]) {
+      expect(response.status).toBe(200);
+      expect(response.body.deep.status).toBe('ok');
+      expect(response.body.deep.complete).toBe(true);
+      expect(ids(response.body.toolUses)).toEqual(ids(data.scoped.body.toolUses));
+    }
     expect(data.failedDeleteStatus).toBe(500);
     expect(data.afterFailedDelete).toBe(1);
     expect({status:data.deletedStatus,body: data.deletedStatus === 200 ? '' : data.deletedBody}).toEqual({status:200,body:''});
