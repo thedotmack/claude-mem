@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
-import { dirname, join, win32 } from 'path';
+import { delimiter, dirname, join, win32 } from 'path';
 
 const BUN_RUNNER_PATH = join(import.meta.dir, '..', 'plugin', 'scripts', 'bun-runner.js');
 const source = readFileSync(BUN_RUNNER_PATH, 'utf-8');
@@ -457,5 +457,58 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('bun-runner.js hook routing', () => {
+  // A hook must not parse the whole worker bundle: `hook` runs the hook-only
+  // sibling hook-service.cjs when it exists, and falls back to worker-service.cjs.
+  function runHook(withHookService: boolean, args: string[]): { status: number | null; stdout: string } {
+    const sandbox = mkdtempSync(join(tmpdir(), 'bun-runner-hook-routing-'));
+    try {
+      const scripts = join(sandbox, 'scripts');
+      mkdirSync(scripts);
+      cpSync(BUN_RUNNER_PATH, join(scripts, 'bun-runner.js'));
+      writeFileSync(join(sandbox, 'package.json'), '{"type":"module"}');
+      const stub = (name: string) => `process.stdout.write(JSON.stringify({ script: '${name}', argv: process.argv.slice(2) }));`;
+      writeFileSync(join(scripts, 'worker-service.cjs'), stub('worker-service'));
+      if (withHookService) writeFileSync(join(scripts, 'hook-service.cjs'), stub('hook-service'));
+      const dataDir = join(sandbox, 'data');
+      mkdirSync(dataDir);
+      const result = spawnSync('node', [join(scripts, 'bun-runner.js'), join(scripts, 'worker-service.cjs'), ...args], {
+        cwd: sandbox,
+        input: '{"hook_event_name":"PostToolUse"}',
+        encoding: 'utf-8',
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ''}`,
+          HOME: sandbox,
+          CLAUDE_CONFIG_DIR: join(sandbox, '.claude'),
+          CLAUDE_MEM_DATA_DIR: dataDir,
+        },
+      });
+      return { status: result.status, stdout: result.stdout ?? '' };
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }
+
+  it('routes hook commands to hook-service.cjs when it exists', () => {
+    const result = runHook(true, ['hook', 'claude-code', 'observation']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ script: 'hook-service', argv: ['hook', 'claude-code', 'observation'] });
+  });
+
+  it('falls back to worker-service.cjs when hook-service.cjs is absent', () => {
+    const result = runHook(false, ['hook', 'claude-code', 'observation']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).script).toBe('worker-service');
+  });
+
+  it('keeps non-hook commands on worker-service.cjs even when hook-service.cjs exists', () => {
+    const result = runHook(true, ['start']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ script: 'worker-service', argv: ['start'] });
   });
 });

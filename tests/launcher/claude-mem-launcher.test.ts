@@ -222,6 +222,44 @@ describe('claude-mem launcher', () => {
     expect(existsSync(path.join(temporaryHome, '.claude-mem', 'CAPTURE_BROKEN'))).toBe(false);
   });
 
+  // A hook must not parse the whole worker bundle: it runs the hook-only
+  // hook-service.cjs when the plugin ships it, and worker-service.cjs otherwise.
+  describe('hook routing', () => {
+    const hookServiceStub = `process.stdout.write(JSON.stringify({ script: 'hook-service', argv: process.argv.slice(2) }));`;
+
+    it('runs hook-service.cjs for hook commands when it exists', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      writeFileSync(path.join(pluginRoot, 'scripts', 'hook-service.cjs'), hookServiceStub);
+
+      const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ script: 'hook-service', argv: ['hook', 'claude-code', 'observation'] });
+    });
+
+    it('falls back to worker-service.cjs for hook commands when hook-service.cjs is absent', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+
+      const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['hook', 'claude-code', 'observation']);
+    });
+
+    it('keeps non-hook commands on worker-service.cjs even when hook-service.cjs exists', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      writeFileSync(path.join(pluginRoot, 'scripts', 'hook-service.cjs'), hookServiceStub);
+
+      const result = runLauncher(['start'], { temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['start']);
+    });
+  });
+
   it('accepts a root that has worker-service.cjs but no bun-runner.js', () => {
     const temporaryHome = makeTemporaryHome();
     const workerOnlyRoot = makeStubPluginRoot(path.join(temporaryHome, 'worker-only-root'));
