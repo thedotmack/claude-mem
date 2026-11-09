@@ -55,12 +55,19 @@
  * while one runs, answering or not (startWorkerIfNoneRuns).
  *
  * The state file is shared with the worker's check (auto-update-check.ts,
- * gate 3). The supervisor writes it twice:
- *  1. at start, its pid, into the in-flight attempt the worker wrote, only
- *     while that attempt is still its own (same startedAt) and unclaimed;
- *  2. at the end, its outcome, replacing the in-flight attempt only while it is
+ * gate 3). The supervisor writes it at three points:
+ *  1. at start, its pid and the phase it starts in, installing the target,
+ *     into the in-flight attempt the worker wrote, only while that attempt is
+ *     still its own (same startedAt) and unclaimed;
+ *  2. right before the previous version's installer runs, the phase
+ *     restoring the previous version, only while the attempt in flight is
+ *     still its own and claimed by it; with none or another in flight it
+ *     writes nothing and logs (recordSupervisorPhase);
+ *  3. at the end, its outcome, replacing the in-flight attempt only while it is
  *     still its own or already null (the worker recorded it vanished). With a
  *     different attempt in flight it writes nothing and logs.
+ * Gate 3 reads the phase for an attempt whose supervisor vanished, to tell a
+ * restore that had begun from an attempt that changed nothing.
  */
 
 import { writeFileSync } from 'fs';
@@ -74,6 +81,7 @@ import {
   AUTO_UPDATE_FORWARD_FIX_COMMAND,
   autoUpdateFixCommand,
   type AutoUpdateFix,
+  type AutoUpdateSupervisorPhase,
 } from './auto-update-state-file.js';
 import type { AutoUpdateAttemptOutcome, AutoUpdateState } from './auto-update-state.js';
 
@@ -309,13 +317,15 @@ export async function applyAutoUpdate(attempt: AutoUpdateApplyAttempt, deps: Aut
     supervisorPid: deps.processId,
   });
 
+  // The phase the claim recorded; restorePreviousVersion moves it on.
+  const progress: SupervisorProgress = { phase: 'installing-target' };
   let finished: FinishedAttempt;
   try {
-    finished = await installProveAndRestore(attempt, deps);
+    finished = await installProveAndRestore(attempt, deps, progress);
   } catch (error: unknown) {
     logger.error('AUTO_UPDATE', 'Auto-update supervisor stopped on an unexpected error', describeAttempt(attempt),
       error instanceof Error ? error : new Error(String(error)));
-    finished = await outcomeAfterUnexpectedError(attempt, deps, error);
+    finished = await outcomeAfterUnexpectedError(attempt, deps, error, progress.phase);
   }
 
   let recorded: 'recorded' | 'left-to-another-attempt';
@@ -339,10 +349,11 @@ export async function applyAutoUpdate(attempt: AutoUpdateApplyAttempt, deps: Aut
 type ClaimResult = { claimed: true } | { claimed: false; reason: string };
 
 /**
- * Record this supervisor's pid in the attempt the worker wrote. Anything else
- * in flight (none, another startedAt, other versions, or a supervisor already
- * recorded) means this process is a stale or duplicate launch, so it claims
- * nothing.
+ * Record this supervisor's pid in the attempt the worker wrote, with the phase
+ * it starts in: installing the target, before the target's installer runs
+ * (AutoUpdateInFlightAttempt.supervisorPhase). Anything else in flight (none,
+ * another startedAt, other versions, or a supervisor already recorded) means
+ * this process is a stale or duplicate launch, so it claims nothing.
  */
 function claimInFlightAttempt(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps): ClaimResult {
   const state = deps.readState();
@@ -359,9 +370,46 @@ function claimInFlightAttempt(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateA
   if (inFlight.supervisorPid !== null) {
     return { claimed: false, reason: `supervisor pid ${inFlight.supervisorPid} already runs this attempt` };
   }
-  state.inFlightAttempt = { ...inFlight, supervisorPid: deps.processId };
+  state.inFlightAttempt = { ...inFlight, supervisorPid: deps.processId, supervisorPhase: 'installing-target' };
   deps.writeState(state);
   return { claimed: true };
+}
+
+/** How far this supervisor has got, kept as it goes, so its error path knows it too (outcomeAfterUnexpectedError). */
+interface SupervisorProgress {
+  phase: AutoUpdateSupervisorPhase;
+}
+
+/**
+ * Record how far this supervisor got in the attempt in flight
+ * (AutoUpdateInFlightAttempt.supervisorPhase), by the rules its claim and its
+ * final write go by: only while that attempt is still its own (same
+ * startedAt) and claimed by it. With none in flight, or another, it writes
+ * nothing and logs, as the final write does, and the run goes on: the final
+ * write decides what it records then. A read or write that fails is logged
+ * and the run goes on too. Stopping would leave the install half-switched with
+ * nothing to put it back, while a phase not recorded only leaves gate 3 to
+ * judge a vanished attempt by the phase recorded before.
+ */
+function recordSupervisorPhase(attempt: AutoUpdateApplyAttempt, phase: AutoUpdateSupervisorPhase, deps: AutoUpdateApplyDeps): void {
+  try {
+    const state = deps.readState();
+    const inFlight = state.inFlightAttempt;
+    if (inFlight === null || inFlight.startedAt !== attempt.startedAt || inFlight.supervisorPid !== deps.processId) {
+      logger.warn('AUTO_UPDATE', 'The attempt in flight is no longer this supervisor\'s, so it does not record how far it got', {
+        ...describeAttempt(attempt),
+        phase,
+        inFlightStartedAt: inFlight === null ? null : new Date(inFlight.startedAt).toISOString(),
+        inFlightSupervisorPid: inFlight?.supervisorPid ?? null,
+      });
+      return;
+    }
+    state.inFlightAttempt = { ...inFlight, supervisorPhase: phase };
+    deps.writeState(state);
+  } catch (error: unknown) {
+    logger.error('AUTO_UPDATE', 'Auto-update supervisor could not record how far it got in the state file, and goes on', { ...describeAttempt(attempt), phase },
+      error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 interface AttemptFailure {
@@ -376,12 +424,13 @@ interface FinishedAttempt {
    * Whether the target goes on versionsThatFailedToApply, never retried
    * automatically. False when nothing of the target was written: the install
    * moved before the installer started, or nothing switched
-   * (recoverOnPreviousVersion says why that is not blocked).
+   * (recoverOnPreviousVersion says why that is not blocked), including after
+   * an unexpected error (outcomeAfterUnexpectedError).
    */
   blocksVersion: boolean;
 }
 
-async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps): Promise<FinishedAttempt> {
+async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps, progress: SupervisorProgress): Promise<FinishedAttempt> {
   const { targetVersion, previousVersion } = attempt;
 
   // The worker read the install when it decided; anything may have changed
@@ -450,7 +499,7 @@ async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: Aut
       blocksVersion: true,
     };
   }
-  return restorePreviousVersion(attempt, failure, afterInstall, deps);
+  return restorePreviousVersion(attempt, failure, afterInstall, deps, progress);
 }
 
 /** No installer process was started, so nothing of the version was written and there is nothing to prove. */
@@ -641,7 +690,10 @@ async function recoverOnPreviousVersion(attempt: AutoUpdateApplyAttempt, failure
  * marketplace copy and installed_plugins.json (the marker alone cannot), and
  * prove the previous version again. Right before that installer starts, the
  * install and the stamp are read again (readAgainBeforeTheRestore), since the
- * npm read before it awaited. That installer deletes and recopies
+ * npm read before it awaited. Then the supervisor records that the restore
+ * has begun (recordSupervisorPhase), since from then on the readings of an
+ * attempt cut off without an outcome can no longer show whether the restore
+ * ran (auto-update-check.ts gate 3). That installer deletes and recopies
  * cache/<previous> (install.ts copyPluginToCache), so a reinstall that also
  * fails can leave the previous version unable to start too: that outcome is
  * restore_failed, with the fix command.
@@ -651,6 +703,7 @@ async function restorePreviousVersion(
   failure: AttemptFailure,
   afterInstall: InstallVersionsRead,
   deps: AutoUpdateApplyDeps,
+  progress: SupervisorProgress,
 ): Promise<FinishedAttempt> {
   const { targetVersion, previousVersion } = attempt;
   const where = describeInstallVersions(afterInstall);
@@ -717,6 +770,8 @@ async function restorePreviousVersion(
   const workerPidBeforeRestore = await deps.getCurrentWorkerPid();
   const movedOnBeforeTheRestore = readAgainBeforeTheRestore(attempt, failure, afterInstall, notes, deps);
   if (movedOnBeforeTheRestore !== null) return movedOnBeforeTheRestore;
+  progress.phase = 'restoring-previous-version';
+  recordSupervisorPhase(attempt, progress.phase, deps);
   const restoreInstall = await deps.runInstaller(previousVersion);
   if (restoreInstall.kind === 'timed-out' && restoreInstall.installerStillRunning) {
     return {
@@ -753,10 +808,11 @@ async function restorePreviousVersion(
  * have finished meanwhile; the previous version's installer would then
  * overwrite a newer install, or put back a version that cannot open the
  * database. Nothing is awaited between this read and the installer's start:
- * the production runInstaller spawns before its first await
- * (auto-update-launch.ts runAutoUpdateInstaller). The installer itself can
- * still wait on the spawn lock after it has started, which no reading here
- * can see past.
+ * the phase recorded between them is a synchronous read and write of the
+ * state file (recordSupervisorPhase), and the production runInstaller spawns
+ * before its first await (auto-update-launch.ts runAutoUpdateInstaller). The
+ * installer itself can still wait on the spawn lock after it has started,
+ * which no reading here can see past.
  *  - A reading moved to a version newer than the target since the
  *    supervisor's reading after the target's installer (classifyInstallChange
  *    on the two): another update moved the install on, so nothing runs
@@ -893,13 +949,22 @@ export async function readInterruptedAttemptInstall(
   ];
   const newerVersion = firstVersionNewerThan(versionsRead, attempt.targetVersion);
   if (newerVersion !== undefined) return { kind: 'moved-past-target', where, newerVersion };
-  const marketplace = marketplaceCopyState(read.marketplace);
-  const marketplaceHoldsNoneOfTheTarget = marketplace.kind === 'absent'
-    || (marketplace.kind === 'intact' && marketplace.version !== attempt.targetVersion);
-  if (resolvesAndIsRegisteredOnlyAt(read, attempt.previousVersion) && marketplaceHoldsNoneOfTheTarget) {
+  if (resolvesAndIsRegisteredOnlyAt(read, attempt.previousVersion) && marketplaceCopyHoldsNoneOf(read.marketplace, attempt.targetVersion)) {
     return { kind: 'on-previous-version', where };
   }
   return { kind: 'half-switched', where };
+}
+
+/**
+ * No part of `targetVersion` is in the marketplace copy, read with no reading
+ * from before the installer to compare with: there is no copy, or it is whole
+ * at another version. The installer writes no other version there, so a copy
+ * whole at another version (a Claude Code clone) is not the attempt's doing,
+ * while a damaged one may be.
+ */
+function marketplaceCopyHoldsNoneOf(copy: MarketplaceCopyRead, targetVersion: string): boolean {
+  const marketplace = marketplaceCopyState(copy);
+  return marketplace.kind === 'absent' || (marketplace.kind === 'intact' && marketplace.version !== targetVersion);
 }
 
 /** The resolver picks `version`, and the npx installer's registration in installed_plugins.json names that version and no other. */
@@ -998,13 +1063,28 @@ function outcomeAfterFailure(
  * resolved to and registered only at the previous version is `failed`;
  * anywhere else, or unreadable, is `restore_failed`, since nothing proved it.
  * Every read here is guarded: this must always produce an outcome.
+ *
+ * The target is blocked by the rule recoverOnPreviousVersion applies: not when
+ * nothing switched. With no reading from before the installer to compare
+ * with, nothing switched is what readInterruptedAttemptInstall reads as on the
+ * previous version (no part of the target in the marketplace copy either), and
+ * no restore begun (`phase`): the restore runs only once the switch had
+ * started, and once the previous version's installer has run, the install
+ * reads as it did before the update. Any other outcome blocks the target.
  */
-async function outcomeAfterUnexpectedError(attempt: AutoUpdateApplyAttempt, deps: AutoUpdateApplyDeps, error: unknown): Promise<FinishedAttempt> {
+async function outcomeAfterUnexpectedError(
+  attempt: AutoUpdateApplyAttempt,
+  deps: AutoUpdateApplyDeps,
+  error: unknown,
+  phase: AutoUpdateSupervisorPhase,
+): Promise<FinishedAttempt> {
   let whereTheInstallIs: string;
   let leftOnPreviousVersion = false;
+  let noPartOfTheTargetInPlace = false;
   try {
     const read = deps.readInstallVersions();
     leftOnPreviousVersion = resolvesAndIsRegisteredOnlyAt(read, attempt.previousVersion);
+    noPartOfTheTargetInPlace = leftOnPreviousVersion && marketplaceCopyHoldsNoneOf(read.marketplace, attempt.targetVersion);
     whereTheInstallIs = describeInstallVersions(read);
   } catch (readError: unknown) {
     logger.error('AUTO_UPDATE', 'Could not read where the install is after the supervisor\'s error', describeAttempt(attempt),
@@ -1013,7 +1093,11 @@ async function outcomeAfterUnexpectedError(attempt: AutoUpdateApplyAttempt, deps
   }
   const failure: AttemptFailure = { stage: 'supervisor-exception', message: `The auto-update supervisor stopped on an unexpected error: ${errorMessageOf(error)}` };
   if (leftOnPreviousVersion) {
-    return { outcome: failedOutcome(attempt, deps.now(), 'failed', failure, whereTheInstallIs), restoreResult: 'unknown', blocksVersion: true };
+    const nothingSwitched = noPartOfTheTargetInPlace && phase !== 'restoring-previous-version';
+    const whatHappenedNext = nothingSwitched
+      ? `${whereTheInstallIs} Nothing of ${attempt.targetVersion} was written, so it is tried again at the next due check.`
+      : whereTheInstallIs;
+    return { outcome: failedOutcome(attempt, deps.now(), 'failed', failure, whatHappenedNext), restoreResult: 'unknown', blocksVersion: !nothingSwitched };
   }
   let fix: AutoUpdateFix;
   try {

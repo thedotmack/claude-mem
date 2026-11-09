@@ -4,9 +4,8 @@
  * the env blocks of Claude Code's user and managed settings, Claude Code's
  * plugin records, and the install's plugin root, every Claude Code path under
  * CLAUDE_CONFIG_DIR (npx-cli/utils/paths.ts). The worker's tick
- * (worker-service.ts buildAutoUpdateCheckDeps), doctor's Auto-update row and
- * the installer's registerMarketplace (install.ts) all take them from here,
- * so they read the same files the same way.
+ * (worker-service.ts buildAutoUpdateCheckDeps) and doctor's Auto-update row
+ * both take them from here, so they read the same files the same way.
  *
  * Its own module, not auto-update-check.ts: that one keeps every effect
  * injected, so `bun test` drives the gates with fixtures instead.
@@ -28,7 +27,7 @@ export type AutoUpdateSettingsReaders = Pick<AutoUpdateSwitchReaders, 'env' | 'r
 
 /**
  * `env` is where Claude Code's switches are read first: the worker passes its
- * own environment, doctor and the installer the one they run in.
+ * own environment, doctor the one it runs in.
  */
 export function productionAutoUpdateSettingsReaders(options: { env: NodeJS.ProcessEnv }): AutoUpdateSettingsReaders {
   return {

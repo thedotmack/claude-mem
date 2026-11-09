@@ -520,7 +520,7 @@ export class WorkerService implements WorkerRef {
       });
       return;
     }
-    // The same window the installer reads (idle-exit-monitor.ts idleExitWindowMs).
+    // The window raised to its minimum (idle-exit-monitor.ts idleExitWindowMs).
     const idleExitMs = idleExitWindowMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
     if (idleExitMs > configuredIdleExitMs) {
       logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {

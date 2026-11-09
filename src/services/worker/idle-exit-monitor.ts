@@ -214,9 +214,7 @@ export function parseIdleExitMs(raw: unknown): number | null {
  * it never idle-exits (absent, empty or '0', and a value parseIdleExitMs
  * rejects, which the worker ignores), otherwise the value raised to
  * MIN_IDLE_EXIT_MS. The value is taken as settings.json stores it, a string
- * or a number, as parseIdleExitMs reads it. The installer reads it the same
- * way (install.ts registerMarketplace) to tell whether the worker can stop
- * before its first auto-update check.
+ * or a number, as parseIdleExitMs reads it.
  */
 export function idleExitWindowMs(raw: unknown): number {
   const configuredIdleExitMs = parseIdleExitMs(raw);

@@ -238,7 +238,10 @@ export type AutoUpdateDecision =
   | { decision: 'deferred-busy'; promotedVersion: string | null; busySince: number; observedBusyMs: number }
   | { decision: 'worker-shutting-down'; targetVersion: string; previousVersion: string }
   | { decision: 'apply'; targetVersion: string; previousVersion: string; applyReason: AutoUpdateApplyReason }
-  | { decision: 'launch-failed'; targetVersion: string; previousVersion: string; message: string };
+  /** The launch started no process, so its attempt was cleared and the version is tried again at the next due check. */
+  | { decision: 'launch-failed'; targetVersion: string; previousVersion: string; message: string }
+  /** The launch started a process but could not confirm the supervisor started, so its attempt stays in flight for gate 3 (recordUnconfirmedLaunch). */
+  | { decision: 'launch-unconfirmed'; targetVersion: string; previousVersion: string; message: string };
 
 export type AutoUpdateDecisionName = AutoUpdateDecision['decision'];
 
@@ -303,6 +306,24 @@ export class AutoUpdateCheckError extends Error {
   constructor(readonly stage: AutoUpdateCheckStage, cause: unknown) {
     super(`auto-update check failed at ${stage}: ${errorMessageOf(cause)}`, { cause });
     this.name = 'AutoUpdateCheckError';
+  }
+}
+
+/**
+ * A launch of an auto-update process that failed (auto-update-launch.ts
+ * startDetachedAutoUpdateProcess, launchAutoUpdateSupervisor), saying whether
+ * a process of it was started. `processStarted` is false only when none was:
+ * the spawn failed before a process existed, so nothing can claim the attempt
+ * in flight, and gate 9 clears it. True when one was, or may have been: a
+ * hop that outlived its budget (killed, or still running after a kill that
+ * failed), one that exited with anything but 0, or a start that failed in a
+ * way that does not show nothing ran. Its supervisor may then be running, so
+ * gate 9 keeps the attempt for gate 3 (recordUnconfirmedLaunch).
+ */
+export class AutoUpdateLaunchError extends Error {
+  constructor(message: string, readonly processStarted: boolean, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AutoUpdateLaunchError';
   }
 }
 
@@ -459,6 +480,13 @@ export interface AutoUpdateCheckDeps {
   readInterruptedAttemptInstall: (attempt: { targetVersion: string; previousVersion: string }) => Promise<InterruptedAttemptInstall>;
   /** True once the worker has begun shutting down. Read again right before a launch. */
   isWorkerShuttingDown: () => boolean;
+  /**
+   * Records the attempt in flight, then starts the supervisor
+   * (auto-update-launch.ts launchAutoUpdateSupervisor). Every failure from the
+   * start of its first process on is an AutoUpdateLaunchError, which says
+   * whether a process was started; any other throw came before that, when no
+   * process existed.
+   */
   launchSupervisor: (attempt: { targetVersion: string; previousVersion: string }) => Promise<void>;
   /**
    * telemetry.ts captureEvent (consent-gated, never throws), for the outcomes
@@ -476,7 +504,8 @@ export interface AutoUpdateCheckDeps {
  * flight: while one is in flight its supervisor writes the file, and a save
  * here could undo its claim. Two decisions are not recorded: attempt-in-flight
  * for that reason, and worker-shutting-down, which saves nothing so the next
- * boot checks again.
+ * boot checks again. launch-unconfirmed is recorded onto the file read again
+ * for it, never from this tick's state (recordUnconfirmedLaunch).
  */
 export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<AutoUpdateDecision> {
   const now = deps.now();
@@ -672,7 +701,8 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   // The turn-off before gate 4 waited for the proof this tick just recorded.
   // Left for the next tick, it would come only after the update: the attempt
   // launched below keeps every later tick at gate 3 until it ends, so the
-  // first update on an install registered before Phase 4 would run beside
+  // first update on an install whose entry still has autoUpdate true (every
+  // new install's, and every one registered before Phase 4) would run beside
   // Claude Code's own updater. So it runs again here, before gate 8, by the same rules (npx on
   // the worker's PATH, a file that is writable, no extraKnownMarketplaces
   // declaration that sets Claude Code's own setting). known_marketplaces.json
@@ -715,9 +745,15 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
   try {
     await deps.launchSupervisor({ targetVersion: promotedVersion, previousVersion: installedVersion });
   } catch (error: unknown) {
-    // The supervisor never ran, so the version is not added to
-    // versionsThatFailedToApply: the next due check tries it again. A record
-    // the launcher may have written is cleared, so gate 3 waits on nothing.
+    // A process of the launch was started, or may have been: its supervisor
+    // may be running, so the attempt the launcher recorded is kept.
+    if (error instanceof AutoUpdateLaunchError && error.processStarted) {
+      return recordUnconfirmedLaunch(deps, now, { targetVersion: promotedVersion, previousVersion: installedVersion, message: errorMessageOf(error) });
+    }
+    // No process was started, so the supervisor never ran, and the version is
+    // not added to versionsThatFailedToApply: the next due check tries it
+    // again. The record the launcher may have written is cleared, so gate 3
+    // waits on nothing.
     const message = `The supervisor could not be launched: ${errorMessageOf(error)}`;
     state.inFlightAttempt = null;
     state.lastAttemptOutcome = {
@@ -739,6 +775,39 @@ export async function runAutoUpdateCheck(deps: AutoUpdateCheckDeps): Promise<Aut
     return launchFailed;
   }
   return decision;
+}
+
+/**
+ * Gate 9 when the launch started a process but could not confirm that the
+ * supervisor started (AutoUpdateLaunchError.processStarted): the hop outlived
+ * its budget and was killed, or is still running after a kill that failed, or
+ * it ended with anything but 0. Its supervisor may already be running, so the
+ * attempt the launcher recorded stays in flight as the file holds it, and a
+ * later tick's gate 3 resolves it as it resolves any attempt: in flight, then
+ * never started (not blocked) when no supervisor recorded its pid by the
+ * deadline, or vanished; or the supervisor records its own outcome. No outcome
+ * is recorded here and no event sent: the attempt has not ended, and whatever
+ * records how it ended sends one.
+ *
+ * The launch failure is logged at ERROR, before anything is written, and
+ * recorded as this tick's decision, for doctor. That decision is the one write
+ * while an attempt is in flight: it goes onto the state file read again for
+ * it, with nothing awaited between that read and the write, the rule
+ * settleClaudeCodeBackgroundUpdate applies to known_marketplaces.json, so the
+ * attempt and a claim its supervisor wrote before that read are kept. This
+ * tick's own state was saved before the launch and holds no attempt.
+ */
+function recordUnconfirmedLaunch(
+  deps: AutoUpdateCheckDeps,
+  now: number,
+  launch: { targetVersion: string; previousVersion: string; message: string },
+): AutoUpdateDecision {
+  const unconfirmed: AutoUpdateDecision = { decision: 'launch-unconfirmed', ...launch };
+  logDecision(deps, unconfirmed);
+  const persisted = runStage('read-state', () => deps.readState());
+  recordDecision(persisted, unconfirmed, now);
+  runStage('write-state', () => deps.writeState(persisted));
+  return unconfirmed;
 }
 
 /** What gates 1 and 2 read. The check's deps carry these, and doctor's row passes the same production readers. */
@@ -828,11 +897,9 @@ export type AutoUpdateSettingsSwitchesRead =
  * reads them: claude-mem's own settings (autoUpdateDisabledReason), Claude
  * Code's "no background updates" switches (claudeCodeSwitchInForce), and an
  * extraKnownMarketplaces declaration that turns Claude Code's own update of
- * claude-mem's marketplace on. readAutoUpdateSwitches runs it first, and the
- * installer's registerMarketplace runs it alone (install.ts), with the same
- * readers, to decide whether claude-mem's updater can take over from Claude
- * Code's. Reads only local files, writes nothing and logs nothing; a read that
- * fails throws AutoUpdateCheckError with its stage.
+ * claude-mem's marketplace on. readAutoUpdateSwitches runs it first, before
+ * Claude Code's plugin records. Reads only local files, writes nothing and
+ * logs nothing; a read that fails throws AutoUpdateCheckError with its stage.
  */
 export function readAutoUpdateSettingsSwitches(
   readers: Pick<AutoUpdateSwitchReaders, 'env' | 'readSettings' | 'readClaudeCodeSettingsEnv'>,
@@ -1080,13 +1147,15 @@ function readClaudeCodeRegistration(installedPluginsPath: string): ClaudeCodePlu
 
 /**
  * Turn off Claude Code's background update of the thedotmack marketplace,
- * once claude-mem's own updater has shown it can work on this machine.
- * Installers before Phase 4 registered the marketplace with autoUpdate set to
- * true (install.ts registerMarketplace now writes false while claude-mem's
- * updater is on). Claude Code's background update then installs main's version
- * at a session start as soon as a version bump lands there, before the owner
- * promotes it, so claude-mem's updater always reads "up to date", never runs
- * the installer, and the flag would never flip on those installs.
+ * once claude-mem's own updater has shown it can work on this machine. This
+ * is the only place that turns it off: install.ts registerMarketplace
+ * registers a new entry with autoUpdate true, as every installer before Phase
+ * 4 did, and keeps an existing entry's as it is, since nothing the installer
+ * can read shows that claude-mem's updater works here. Claude Code's
+ * background update then installs main's version at a session start as soon
+ * as a version bump lands there, before the owner promotes it, so claude-mem's
+ * updater always reads "up to date", never runs the installer, and the flag
+ * would never flip on those installs.
  *
  * Nothing to do, and any reason recorded earlier is cleared, when Claude
  * Code's own setting already has it off (the extraKnownMarketplaces
@@ -1359,8 +1428,8 @@ export function readAutoUpdateSettings(settingsPath: string, env: NodeJS.Process
  * is the value read, so its reason names it. The other keys keep the
  * settings manager's rule, the environment over the file, except the
  * release-switch URL, which only the file sets (readAutoUpdateSettings). The
- * worker's tick, doctor's row and the installer's registerMarketplace all
- * read it here (auto-update-switch-readers.ts).
+ * worker's tick and doctor's row both read it here
+ * (auto-update-switch-readers.ts).
  */
 function autoUpdateSwitchFromEnvAndFile(fromEnv: string | undefined, fromFile: unknown): unknown {
   if (fromEnv === undefined) return fromFile;
@@ -1825,9 +1894,9 @@ function recordNeverStartedSupervisor(
  * Close an attempt whose supervisor vanished without recording an outcome.
  * When the install already reports the target version, the update applied and
  * only its outcome was lost, so it is recorded as applied and the version is
- * not blocked. Otherwise it failed, and the version is never retried; where
- * the attempt left the install is read the supervisor's way
- * (deps.readInterruptedAttemptInstall). A reboot can kill the supervisor and
+ * not blocked. Otherwise it failed; where the attempt left the install is read
+ * the supervisor's way (deps.readInterruptedAttemptInstall), and whether the
+ * version is never retried follows vanishedAttemptBlocksItsTarget. A reboot can kill the supervisor and
  * its installer after the target is registered, and then no supervisor
  * repairs it and nothing tells the user: an install left with part of the
  * target in place is recorded as restore_failed, naming the target's own
@@ -1891,14 +1960,47 @@ async function recordVanishedSupervisor(
       ...versions,
       finishedAt: now,
       failureStage: 'supervisor-vanished',
-      message: `${whatHappened} ${leftAt.where}${movedOn}`,
+      message: `${whatHappened} ${leftAt.where}${movedOn}${whatBecomesOfTheTarget(attempt, leftAt)}`,
       ...resolution,
     };
   }
-  if (!state.versionsThatFailedToApply.includes(attempt.targetVersion)) {
+  if (vanishedAttemptBlocksItsTarget(attempt, leftAt) && !state.versionsThatFailedToApply.includes(attempt.targetVersion)) {
     state.versionsThatFailedToApply.push(attempt.targetVersion);
   }
   return state.lastAttemptOutcome;
+}
+
+/**
+ * Whether a vanished attempt that did not apply blocks its target, never
+ * retried automatically. The install's readings alone cannot tell an attempt
+ * that changed nothing (a reboot during the npm download) from one whose
+ * restore put the previous version back before the supervisor was killed, so
+ * the phase the supervisor recorded decides with them
+ * (AutoUpdateInFlightAttempt.supervisorPhase):
+ *  - blocked once the restore had begun, since a restore runs only after the
+ *    target's switch failed, or when the readings show part of the target in
+ *    place (half-switched);
+ *  - not blocked while it was still installing the target with no part of it
+ *    in place, the supervisor's own rule when nothing switched
+ *    (auto-update-apply.ts recoverOnPreviousVersion): the next due check tries
+ *    it again;
+ *  - blocked for an attempt claimed with no phase recorded, by a supervisor
+ *    from before the phase was, as every vanished attempt was before.
+ */
+function vanishedAttemptBlocksItsTarget(attempt: AutoUpdateInFlightAttempt, leftAt: InterruptedAttemptInstall): boolean {
+  if (attempt.supervisorPhase === undefined) return true;
+  return attempt.supervisorPhase === 'restoring-previous-version' || leftAt.kind === 'half-switched';
+}
+
+/** What the failed outcome of a vanished attempt says becomes of its target, for the doctor row and the log ('' when there is nothing to add). */
+function whatBecomesOfTheTarget(attempt: AutoUpdateInFlightAttempt, leftAt: Exclude<InterruptedAttemptInstall, { kind: 'half-switched' }>): string {
+  if (attempt.supervisorPhase === 'restoring-previous-version') {
+    return ` Its supervisor had begun restoring ${attempt.previousVersion}, so ${attempt.targetVersion} had already failed here and is not tried again.`;
+  }
+  if (attempt.supervisorPhase === 'installing-target' && leftAt.kind === 'on-previous-version') {
+    return ` Its supervisor was still installing ${attempt.targetVersion}, and nothing of it is in place, so it is tried again at the next due check.`;
+  }
+  return '';
 }
 
 /**
@@ -2045,6 +2147,8 @@ export function describeAutoUpdateDecision(decision: AutoUpdateDecision): string
     case 'worker-shutting-down': return `the worker was shutting down, so ${decision.targetVersion} waits for its next start`;
     case 'apply': return `installing ${decision.targetVersion} (from ${decision.previousVersion})`;
     case 'launch-failed': return `${decision.targetVersion} could not be started (${decision.message}); the next daily check tries again`;
+    case 'launch-unconfirmed':
+      return `the update to ${decision.targetVersion} was started, but the worker could not confirm that its supervisor started (${decision.message}); it stays in progress until its supervisor records an outcome or the worker records how it ended`;
   }
 }
 
@@ -2089,7 +2193,7 @@ function logDecision<D extends AutoUpdateDecision>(deps: AutoUpdateCheckDeps, de
     if (name === 'not-due') {
       // 23 of every 24 ticks end here; the state file has the time of the last check.
       logger.debug('AUTO_UPDATE', message, details);
-    } else if (name === 'launch-failed') {
+    } else if (name === 'launch-failed' || name === 'launch-unconfirmed') {
       logger.error('AUTO_UPDATE', message, details);
     } else if (name === 'check-failed' || name === 'unknown-installed-version' || name === 'unknown-schema') {
       logger.warn('AUTO_UPDATE', message, details);

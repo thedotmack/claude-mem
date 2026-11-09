@@ -76,6 +76,21 @@ export interface AutoUpdateFix {
   when: AutoUpdateFixCommandWhen;
 }
 
+/**
+ * How far the supervisor got in its attempt (auto-update-apply.ts), as it
+ * records it in the attempt in flight:
+ *  - installing the target: written with its claim, before the target's
+ *    installer runs;
+ *  - restoring the previous version: written right before the previous
+ *    version's installer runs, once the target's switch has failed.
+ * The worker's gate 3 reads it for an attempt whose supervisor vanished: the
+ * install's readings alone cannot tell one nothing touched from one the
+ * restore put back before the supervisor was killed.
+ */
+export type AutoUpdateSupervisorPhase = 'installing-target' | 'restoring-previous-version';
+
+const SUPERVISOR_PHASES: ReadonlySet<string> = new Set<AutoUpdateSupervisorPhase>(['installing-target', 'restoring-previous-version']);
+
 export interface AutoUpdateInFlightAttempt {
   targetVersion: string;
   previousVersion: string;
@@ -88,6 +103,12 @@ export interface AutoUpdateInFlightAttempt {
   startedAt: number;
   /** The supervisor's pid, null until the supervisor records it. */
   supervisorPid: number | null;
+  /**
+   * How far the supervisor got (AutoUpdateSupervisorPhase). Absent until a
+   * supervisor claims the attempt, and in a file a supervisor from before it
+   * was recorded wrote: gate 3 then judges a vanished attempt as before.
+   */
+  supervisorPhase?: AutoUpdateSupervisorPhase;
   /**
    * How long the attempt may run: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS as the
    * worker that launched it computed it (auto-update-launch.ts
@@ -542,6 +563,7 @@ function isInFlightAttempt(value: unknown): boolean {
     && isNonEmptyString(value.previousVersion)
     && isNonNegativeMilliseconds(value.startedAt)
     && (value.supervisorPid === null || isPid(value.supervisorPid))
+    && (value.supervisorPhase === undefined || (typeof value.supervisorPhase === 'string' && SUPERVISOR_PHASES.has(value.supervisorPhase)))
     && (value.supervisorDeadlineMs === undefined || isNonNegativeMilliseconds(value.supervisorDeadlineMs))
     && (value.resolvedAt === undefined || isNonNegativeMilliseconds(value.resolvedAt))
     && (value.resolvedWithWorkerVersion === undefined || isNonEmptyString(value.resolvedWithWorkerVersion));

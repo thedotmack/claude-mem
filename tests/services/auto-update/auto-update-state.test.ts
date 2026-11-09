@@ -38,7 +38,7 @@ const fullState: AutoUpdateState = {
   busyDeferralStartedAt: NOW - 3_600_000,
   busyDeferralObservedBusyMs: 1_800_000,
   busyDeferralLastBusyObservationAt: NOW - 1_000,
-  inFlightAttempt: { targetVersion: '15.12.0', previousVersion: '15.11.0', startedAt: NOW, supervisorPid: 4242, supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS },
+  inFlightAttempt: { targetVersion: '15.12.0', previousVersion: '15.11.0', startedAt: NOW, supervisorPid: 4242, supervisorPhase: 'restoring-previous-version', supervisorDeadlineMs: AUTO_UPDATE_SUPERVISOR_DEADLINE_MS },
   lastAttemptOutcome: {
     result: 'restore_failed',
     targetVersion: '15.11.0',
@@ -185,7 +185,7 @@ describe('auto-update state file', () => {
     expect(() => readAutoUpdateState(statePath)).toThrow();
   });
 
-  it('reads a file from before fixCommand, fixCommandWhen, resolvedAt, supervisorDeadlineMs and lastDecision existed, quietly', () => {
+  it('reads a file from before fixCommand, fixCommandWhen, resolvedAt, supervisorDeadlineMs, supervisorPhase and lastDecision existed, quietly', () => {
     const olderOutcome = { result: 'restore_failed', targetVersion: '15.11.0', previousVersion: '15.10.1', finishedAt: NOW, failureStage: 'prove-install', message: 'Run: npx claude-mem@15.10.1 update' };
     const olderAttempt = { targetVersion: '15.12.0', previousVersion: '15.11.0', startedAt: NOW, supervisorPid: 4242 };
     writeFileSync(statePath, JSON.stringify({ lastAttemptOutcome: olderOutcome, inFlightAttempt: olderAttempt }));
@@ -217,6 +217,19 @@ describe('auto-update state file', () => {
       writeFileSync(statePath, JSON.stringify({ lastAttemptOutcome: { ...fullState.lastAttemptOutcome, ...wrong } }));
       expect(readAutoUpdateState(statePath).lastAttemptOutcome).toBeNull();
     }
+  });
+
+  it('reads both supervisor phases, and logs one it does not know as an invalid attempt, never guessing how far the supervisor got', () => {
+    for (const supervisorPhase of ['installing-target', 'restoring-previous-version'] as const) {
+      writeFileSync(statePath, JSON.stringify({ inFlightAttempt: { ...fullState.inFlightAttempt, supervisorPhase } }));
+      expect(readAutoUpdateState(statePath).inFlightAttempt).toEqual({ ...fullState.inFlightAttempt!, supervisorPhase });
+    }
+    expect(loggedErrors).not.toHaveBeenCalled();
+    for (const supervisorPhase of ['restoring', '', 2]) {
+      writeFileSync(statePath, JSON.stringify({ inFlightAttempt: { ...fullState.inFlightAttempt, supervisorPhase } }));
+      expect(readAutoUpdateState(statePath).inFlightAttempt).toBeNull();
+    }
+    expect(loggedErrors.mock.calls.map((call) => call[2])).toEqual([0, 1, 2].map(() => expect.objectContaining({ invalidFields: 'inFlightAttempt' })));
   });
 
   it('readAutoUpdateStateFile reports what was wrong instead of logging it, and whether the file exists', () => {

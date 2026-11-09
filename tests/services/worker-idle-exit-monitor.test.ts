@@ -315,7 +315,7 @@ describe('parseIdleExitMs — CLAUDE_MEM_IDLE_EXIT_SEC parsing', () => {
   });
 });
 
-describe('idleExitWindowMs — the window the worker arms with, which the installer reads too', () => {
+describe('idleExitWindowMs — the window the worker arms with', () => {
   it('is 0 where the worker never idle-exits: absent, empty, 0, and a value it ignores', () => {
     for (const raw of [undefined, '', '  ', '0', 'abc', '-1', '1e308']) expect(idleExitWindowMs(raw)).toBe(0);
   });

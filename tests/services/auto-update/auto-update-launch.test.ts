@@ -34,7 +34,7 @@ import {
   type AutoUpdateLaunchDeps,
   type StartedAutoUpdateProcess,
 } from '../../../src/services/auto-update/auto-update-launch.js';
-import { NPM_PUBLIC_REGISTRY_URL, npmVersionMetadataUrl } from '../../../src/services/auto-update/auto-update-check.js';
+import { AutoUpdateLaunchError, NPM_PUBLIC_REGISTRY_URL, npmVersionMetadataUrl } from '../../../src/services/auto-update/auto-update-check.js';
 import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, WORKER_PID_CAPTURE_TIMEOUT_MS } from '../../../src/services/auto-update/auto-update-deadlines.js';
 import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
@@ -918,21 +918,54 @@ describe('startDetachedAutoUpdateProcess', () => {
     expect(readFileSync(logPath, 'utf-8')).toContain('hop says hi');
   }, REAL_PROCESS_TEST_TIMEOUT_MS);
 
-  it('rejects when the runtime cannot be started, including the ENOENT that arrives after spawn returned', async () => {
-    await expect(startDetachedAutoUpdateProcess(path.join(runDirectory, 'missing-bun'), [], {
+  it('rejects, with no process started, when the runtime cannot be started, including the ENOENT that arrives after spawn returned', async () => {
+    const start = startDetachedAutoUpdateProcess(path.join(runDirectory, 'missing-bun'), [], {
       logPath: freshLogPath(),
       env: {},
       cwd: runDirectory,
-    })).rejects.toThrow('ENOENT');
+    });
+    await expect(start).rejects.toThrow('ENOENT');
+    await expect(start).rejects.toMatchObject({ name: 'AutoUpdateLaunchError', processStarted: false });
   });
 
-  it('rejects when spawn throws', async () => {
-    await expect(startDetachedAutoUpdateProcess('bun', [], {
+  it('rejects, with no process started, when spawn throws', async () => {
+    const start = startDetachedAutoUpdateProcess('bun', [], {
       logPath: freshLogPath(),
       env: {},
       cwd: runDirectory,
       spawnImplementation: (() => { throw new Error('spawn EMFILE'); }) as never,
-    })).rejects.toThrow('could not start bun: spawn EMFILE');
+    });
+    await expect(start).rejects.toThrow('could not start bun: spawn EMFILE');
+    await expect(start).rejects.toMatchObject({ name: 'AutoUpdateLaunchError', processStarted: false });
+  });
+
+  it('rejects, with no process started and nothing spawned, when the attempt log cannot be opened', async () => {
+    const spawned: string[] = [];
+    // A file where the log's folder would be.
+    const notAFolder = path.join(runDirectory, `not-a-folder-${++logCounter}`);
+    writeFileSync(notAFolder, 'x');
+    const start = startDetachedAutoUpdateProcess('bun', [], {
+      logPath: path.join(notAFolder, 'attempt.log'),
+      env: {},
+      cwd: runDirectory,
+      spawnImplementation: ((command: string) => { spawned.push(command); throw new Error('not expected'); }) as never,
+    });
+    await expect(start).rejects.toThrow(`could not start bun: its log ${path.join(notAFolder, 'attempt.log')} could not be opened`);
+    await expect(start).rejects.toMatchObject({ name: 'AutoUpdateLaunchError', processStarted: false });
+    expect(spawned).toEqual([]);
+  });
+
+  it('rejects as a process that may have started when spawn reports it without a pid', async () => {
+    const child = Object.assign(new EventEmitter(), { pid: undefined, unref() {} });
+    const start = startDetachedAutoUpdateProcess('bun', [], {
+      logPath: freshLogPath(),
+      env: {},
+      cwd: runDirectory,
+      spawnImplementation: (() => child) as never,
+    });
+    child.emit('spawn');
+    await expect(start).rejects.toThrow('could not start bun: it started without a pid');
+    await expect(start).rejects.toMatchObject({ name: 'AutoUpdateLaunchError', processStarted: true });
   });
 
   it('logs an error after the process started instead of leaving it unhandled', async () => {
@@ -985,26 +1018,42 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
     expect(harness.stored().lastSeenPromotedVersion).toBe(TARGET);
   });
 
-  it('throws when the hop exits non-zero, naming the attempt log', async () => {
+  // Gate 9 keeps the attempt in flight whenever a process of the launch was
+  // started (AutoUpdateLaunchError.processStarted): its supervisor may be running.
+  const processStarted = { name: 'AutoUpdateLaunchError', processStarted: true };
+
+  it('throws when the hop exits non-zero, naming the attempt log, as a launch that started a process', async () => {
     const harness = launchHarness(async () => fakeHop(Promise.resolve({ exitCode: 1, signal: null })));
-    await expect(launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps))
-      .rejects.toThrow(`the auto-update hop (pid 6161) exited with code 1 before the supervisor was started; see /logs/auto-update-${STARTED_AT}.log`);
+    const launch = launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
+    await expect(launch).rejects.toThrow(`the auto-update hop (pid 6161) exited with code 1 before the supervisor was started; see /logs/auto-update-${STARTED_AT}.log`);
+    await expect(launch).rejects.toMatchObject(processStarted);
   });
 
-  it('throws when the hop cannot be started', async () => {
+  it('passes on a hop start that never began as a launch that started no process', async () => {
+    const neverBegan = new AutoUpdateLaunchError('could not start /missing/bun: spawn ENOENT', false);
+    const harness = launchHarness(async () => { throw neverBegan; });
+    const launch = launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
+    await expect(launch).rejects.toBe(neverBegan);
+    await expect(launch).rejects.toMatchObject({ name: 'AutoUpdateLaunchError', processStarted: false });
+  });
+
+  it('throws on any other failure to start the hop as a launch that may have started a process', async () => {
     const harness = launchHarness(async () => { throw new Error('could not start /missing/bun: spawn ENOENT'); });
-    await expect(launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps)).rejects.toThrow('spawn ENOENT');
+    const launch = launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
+    await expect(launch).rejects.toThrow('spawn ENOENT');
+    await expect(launch).rejects.toMatchObject(processStarted);
   });
 
-  it('kills a hop that outlives its budget, and throws', async () => {
+  it('kills a hop that outlives its budget, and throws as a launch that started a process', async () => {
     silenceLogger();
     const harness = launchHarness(async () => fakeHop(new Promise(() => {})), { hopExitBudgetMs: 1 });
-    await expect(launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps))
-      .rejects.toThrow('did not exit within 0 s, so it was killed');
+    const launch = launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
+    await expect(launch).rejects.toThrow('did not exit within 0 s, so it was killed');
+    await expect(launch).rejects.toMatchObject(processStarted);
     expect(harness.killed).toEqual([6161]);
   });
 
-  it('reports a kill of the hop that failed as failed, never as killed', async () => {
+  it('reports a kill of the hop that failed as failed, never as killed, and as a launch that started a process', async () => {
     const logs = silenceLogger();
     const harness = launchHarness(async () => fakeHop(new Promise(() => {})), {
       hopExitBudgetMs: 1,
@@ -1013,6 +1062,7 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
     const launch = launchAutoUpdateSupervisor({ targetVersion: TARGET, previousVersion: PREVIOUS }, harness.deps);
     await expect(launch).rejects.toThrow('did not exit within 0 s, and killing it failed (tree-kill failed for PID 6161: EPERM), so it may still be running');
     await expect(launch).rejects.not.toThrow('so it was killed');
+    await expect(launch).rejects.toMatchObject(processStarted);
     expect(logs.error.mock.calls.map((call) => call[1])).toContain('Could not kill an auto-update hop that outlived its budget');
   });
 

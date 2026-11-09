@@ -81,8 +81,9 @@ Claude Code switches set through MDM profiles, the Windows registry or
 server-managed settings are not read (see below).
 
 With it off, claude-mem leaves Claude Code's own update setting for its
-marketplace as it is. A fresh install with it off registers the marketplace
-with Claude Code's update on, as every install did before auto-update.
+marketplace as it is. Only claude-mem's worker ever turns that setting off,
+and only while claude-mem's own updater is on and has shown it works (see
+[below](#claude-codes-auto-update-toggle)).
 
 ## Claude Code's switches
 
@@ -235,23 +236,16 @@ marketplace it installs whatever is on claude-mem's `main` branch, at a random
 time, before the owner promotes it. It also writes the same folders as
 claude-mem's updater.
 
-So while its own updater can run, claude-mem turns Claude Code's update off for
-its marketplace:
+So claude-mem's worker turns Claude Code's update off for its marketplace,
+once claude-mem's own updater has shown it works on that machine: a check has
+read the promoted file and npm, and `npx` is on the worker's PATH. Until then
+Claude Code's update stays on, so the install always has an updater, also on a
+network that blocks `raw.githubusercontent.com` or `registry.npmjs.org`.
+`npx claude-mem doctor` says which.
 
-- New installs and `npx claude-mem update` register the marketplace with it
-  off, but only when claude-mem's updater can run there. When it cannot
-  (`CLAUDE_MEM_AUTO_UPDATE` is not `true`, `CLAUDE_MEM_WORKER_AUTOSTART=false`,
-  `CLAUDE_MEM_WORKER_URL` is set, the server runtime, one of Claude Code's
-  switches above, or a settings file that turns Claude Code's update of the
-  marketplace on), the installer keeps Claude Code's setting as it was, and a
-  fresh install registers it on, so the install always has an updater. An idle
-  exit (`CLAUDE_MEM_IDLE_EXIT_SEC`) shorter than the 5 minutes the worker waits
-  before its first check counts as "cannot run" too, because the worker can
-  stop before every check.
-- On older installs, the worker turns it off once claude-mem's updater has
-  shown it works on that machine: a check has read the promoted file and npm,
-  and `npx` is on the worker's PATH. Until then, Claude Code's update stays on,
-  so the install always has an updater. `npx claude-mem doctor` says which.
+The installer never turns it off. `npx claude-mem install` and
+`npx claude-mem update` register the marketplace with Claude Code's update on
+when it is new, and keep the setting it has when it is already registered.
 
 If you turn the toggle on again, what happens depends on where Claude Code
 saves it:

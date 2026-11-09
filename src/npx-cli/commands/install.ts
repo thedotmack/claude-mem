@@ -171,9 +171,6 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
-import { AUTO_UPDATE_FIRST_TICK_DELAY_MS, readAutoUpdateSettingsSwitches } from '../../services/auto-update/auto-update-check.js';
-import { productionAutoUpdateSettingsReaders } from '../../services/auto-update/auto-update-switch-readers.js';
-import { idleExitWindowMs } from '../../services/worker/idle-exit-monitor.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -207,75 +204,21 @@ export function registerMarketplace(): void {
 
 /**
  * The autoUpdate registerMarketplace records for Claude Code's background
- * update of the thedotmack marketplace.
- *  - false while claude-mem's own updater can run here. claude-mem updates
- *    itself to the release the owner promotes (src/services/auto-update/),
- *    while Claude Code's background update pulls main at a random time and
- *    writes the same cache folders. With both on, the two updaters race, and
- *    main stays a release channel the owner does not control. Installs
- *    registered before this get it turned off by the worker once its updater
- *    has shown it works there (auto-update-check.ts
- *    settleClaudeCodeBackgroundUpdate).
- *  - otherwise the existing entry's autoUpdate is kept, unset included, so an
- *    install whose own updater cannot run keeps Claude Code's, the only
- *    updater left; with no entry, true, what every install recorded before.
+ * update of the thedotmack marketplace: an existing entry's autoUpdate as it
+ * is, unset included, and true for a new entry, what every install recorded
+ * before claude-mem had its own updater. The installer never turns it off.
+ * Only the worker does (auto-update-check.ts settleClaudeCodeBackgroundUpdate),
+ * once its own updater has shown it works on this machine: a check read the
+ * promoted file and npm's metadata from here, and npx is on the worker's PATH.
+ * Nothing the installer can read shows either, and turning Claude Code's update
+ * off where claude-mem's cannot work would leave the install with no updater.
+ * Keeping an existing value also keeps a false the worker wrote, so an update,
+ * the auto-updater's own installer run included, never turns Claude Code's
+ * update back on.
  */
 function claudeCodeBackgroundUpdateToRegister(existingEntry: unknown): unknown {
-  if (canClaudeMemUpdaterRun()) return false;
   const isEntry = typeof existingEntry === 'object' && existingEntry !== null && !Array.isArray(existingEntry);
   return isEntry ? (existingEntry as Record<string, unknown>).autoUpdate : true;
-}
-
-/**
- * Whether claude-mem's own updater can run on this install, as far as the
- * worker's gate 1 reads it from settings and the environment, with the
- * worker's own readers (auto-update-check.ts readAutoUpdateSettingsSwitches,
- * auto-update-switch-readers.ts): CLAUDE_MEM_AUTO_UPDATE on, the worker not
- * run by an outside process manager (CLAUDE_MEM_WORKER_AUTOSTART), not on
- * another machine (CLAUDE_MEM_WORKER_URL), the worker runtime (this install's
- * runtime choice is already saved by now: promptRuntime runs before the
- * registration tasks), none of Claude Code's "no background updates" switches
- * in this environment or Claude Code's settings files, and no settings file
- * turning Claude Code's own update of the marketplace on. Any of those leaves
- * claude-mem's updater off, and turning Claude Code's off too would leave the
- * install with no updater at all. A file those readers cannot read stops every
- * tick there, so that updater is not running either: it reads as cannot run,
- * with a warning, and the install goes on. Claude Code's plugin records are
- * not read: this install rewrites them. An idle exit that can stop the
- * worker before its first check (idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck)
- * reads as cannot run too, and so does any failure to read it, with the same
- * warning: registerMarketplace runs after the plugin files are copied, so a
- * throw here would stop the install half done.
- */
-function canClaudeMemUpdaterRun(): boolean {
-  try {
-    if (readAutoUpdateSettingsSwitches(productionAutoUpdateSettingsReaders({ env: process.env })).kind !== 'on') return false;
-    return !idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck();
-  } catch (error: unknown) {
-    const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
-    log.warn(`Could not read whether claude-mem's auto-update can run (${cause instanceof Error ? cause.message : String(cause)}), so it is read as off and Claude Code's auto-update setting for the thedotmack marketplace is kept as it is`);
-    return false;
-  }
-}
-
-/**
- * Whether the worker's opt-in idle exit can stop it before its first
- * auto-update check on every start, so claude-mem's updater may never run
- * here. The worker's first check waits AUTO_UPDATE_FIRST_TICK_DELAY_MS
- * (5 minutes) after it starts, and the idle window starts once its
- * background start-up has finished (worker-service.ts startIdleExitMonitor),
- * so only a window shorter than that delay can end it first; a short burst
- * of hooks or MCP calls then starts a worker that stops again before every
- * check. The window is read the way the worker reads it: CLAUDE_MEM_IDLE_EXIT_SEC
- * from the settings the worker loads, the environment over the file
- * (SettingsDefaultsManager.loadFromFile; readOnly, so this read never writes
- * the file, which changes no value of this key), then idle-exit-monitor.ts
- * idleExitWindowMs, with its minimum, which reads a JSON number saved there
- * as its text. canClaudeMemUpdaterRun catches anything this throws.
- */
-function idleExitEndsTheWorkerBeforeItsFirstAutoUpdateCheck(): boolean {
-  const idleExitMs = idleExitWindowMs(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }).CLAUDE_MEM_IDLE_EXIT_SEC);
-  return idleExitMs !== 0 && idleExitMs < AUTO_UPDATE_FIRST_TICK_DELAY_MS;
 }
 
 /**

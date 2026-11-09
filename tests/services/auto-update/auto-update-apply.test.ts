@@ -422,8 +422,10 @@ describe('applyAutoUpdate', () => {
     const result = await applyAutoUpdate(attempt, harness.deps);
 
     expect(result).toMatchObject({ kind: 'finished', recorded: 'recorded', restoreResult: null });
-    // The supervisor's first write: its pid, into the worker's record.
-    expect(harness.writes[0]!.inFlightAttempt).toEqual({ targetVersion: TARGET, previousVersion: PREVIOUS, startedAt: STARTED_AT, supervisorPid: SUPERVISOR_PID });
+    // The supervisor's first write: its pid, and the phase it starts in, into the worker's record.
+    expect(harness.writes[0]!.inFlightAttempt).toEqual({ targetVersion: TARGET, previousVersion: PREVIOUS, startedAt: STARTED_AT, supervisorPid: SUPERVISOR_PID, supervisorPhase: 'installing-target' });
+    // No restore ran, so no other phase was written before the outcome.
+    expect(harness.writes).toHaveLength(2);
     expect(harness.installerRuns).toEqual([TARGET]);
     // The proof needs a new pid: the worker running before the install was OLD_WORKER_PID.
     expect(harness.proofs).toEqual([{ oldPid: OLD_WORKER_PID, version: TARGET }]);
@@ -1199,10 +1201,12 @@ describe('applyAutoUpdate', () => {
     });
   });
 
-  it('an exception mid-run still writes the outcome and clears the attempt', async () => {
+  it('an exception mid-run still writes the outcome and clears the attempt; before anything of the target was written, the target is tried again, as when nothing switched', async () => {
     const logs = silenceLogger();
     const harness = buildApplyHarness({
       installers: { [TARGET]: () => { throw new Error('installer runner exploded'); } },
+      // Gate 3 had blocked it while it took this supervisor for vanished; nothing switched, so the block goes too.
+      state: { ...launchedState(), versionsThatFailedToApply: ['15.12.5', TARGET] },
     });
 
     const result = await applyAutoUpdate(attempt, harness.deps);
@@ -1216,9 +1220,46 @@ describe('applyAutoUpdate', () => {
       failureStage: 'supervisor-exception',
       message: expect.stringContaining('installer runner exploded'),
     });
-    expect(state.versionsThatFailedToApply).toEqual([TARGET]);
+    // A fresh copy: toMatchObject above wrote its matcher into `state`.
+    expect(harness.stored().lastAttemptOutcome!.message).toContain(`the marketplace copy is ${PREVIOUS}. Nothing of ${TARGET} was written, so it is tried again at the next due check.`);
+    expect(state.versionsThatFailedToApply).toEqual(['15.12.5']);
     expect(logs.error.mock.calls.map((call) => call[1])).toContain('Auto-update supervisor stopped on an unexpected error');
     expectFailureTelemetry(harness, 'supervisor-exception', 'unknown');
+  });
+
+  it('an exception that leaves the install on the previous version but part of the target in the marketplace copy blocks the target: that is a switch that started', async () => {
+    silenceLogger();
+    const harness = buildApplyHarness({
+      installers: { [TARGET]: (world) => { writeMarketplaceCopy(world.install, TARGET, 'missing'); throw new Error('lost the installer mid-run'); } },
+    });
+    // The resolver and the registration still say the previous version.
+    expect(harness.versions()).toMatchObject({ resolved: PREVIOUS, registered: { kind: 'read', versions: [PREVIOUS] } });
+
+    await applyAutoUpdate(attempt, harness.deps);
+
+    expect(harness.versions()).toMatchObject({ resolved: PREVIOUS, registered: { kind: 'read', versions: [PREVIOUS] }, marketplace: intactMarketplaceCopy(TARGET) });
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'failed', failureStage: 'supervisor-exception' });
+    expect(harness.stored().lastAttemptOutcome!.message).not.toContain('tried again');
+    expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
+  });
+
+  it('an exception once the restore had begun blocks the target, even with the install back on the previous version', async () => {
+    silenceLogger();
+    const harness = buildApplyHarness({
+      installers: {
+        [TARGET]: stopsHalfWritten(TARGET),
+        // The restore put every file back, then the supervisor stopped on an error before its proof.
+        [PREVIOUS]: (world) => { writeCompleteInstall(world.install, PREVIOUS); throw new Error('lost the restore installer mid-run'); },
+      },
+    });
+
+    await applyAutoUpdate(attempt, harness.deps);
+
+    expect(harness.installerRuns).toEqual([TARGET, PREVIOUS]);
+    expect(harness.versions()).toEqual({ resolved: PREVIOUS, registered: { kind: 'read', versions: [PREVIOUS] }, marketplace: intactMarketplaceCopy(PREVIOUS) });
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'failed', failureStage: 'supervisor-exception', message: expect.stringContaining('lost the restore installer mid-run') });
+    expect(harness.stored().lastAttemptOutcome!.message).not.toContain('tried again');
+    expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
   });
 
   it('an exception after the version moved is restore_failed with the fix command, since nothing proved where the install is', async () => {
@@ -1406,6 +1447,69 @@ describe('applyAutoUpdate', () => {
       fixCommandWhen: 'now',
     });
     expect(harness.stored().lastAttemptOutcome!.message).not.toContain(AUTO_UPDATE_FORWARD_FIX_COMMAND);
+  });
+
+  describe('how far the supervisor got, recorded in its attempt for gate 3', () => {
+    it('records installing the target with its claim, and restoring the previous version right before that version\'s installer runs', async () => {
+      silenceLogger();
+      const phaseWhenEachInstallerRan: Record<string, unknown> = {};
+      const notingThePhase = (version: string, installer: ScriptedInstaller): ScriptedInstaller => (world) => {
+        phaseWhenEachInstallerRan[version] = harness.deps.readState().inFlightAttempt?.supervisorPhase;
+        return installer(world);
+      };
+      const harness = buildApplyHarness({
+        installers: { [TARGET]: notingThePhase(TARGET, stopsHalfWritten(TARGET)), [PREVIOUS]: notingThePhase(PREVIOUS, installsCompletely(PREVIOUS)) },
+      });
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(phaseWhenEachInstallerRan).toEqual({ [TARGET]: 'installing-target', [PREVIOUS]: 'restoring-previous-version' });
+      // The claim, the restore's phase, then the outcome, which replaces the attempt.
+      expect(harness.writes.map((write) => write.inFlightAttempt?.supervisorPhase ?? null)).toEqual(['installing-target', 'restoring-previous-version', null]);
+      expect(harness.writes[1]!.inFlightAttempt).toEqual({ targetVersion: TARGET, previousVersion: PREVIOUS, startedAt: STARTED_AT, supervisorPid: SUPERVISOR_PID, supervisorPhase: 'restoring-previous-version' });
+      expect(harness.stored().lastAttemptOutcome).toMatchObject({ result: 'restored' });
+    });
+
+    it('writes no phase into an attempt in flight that is not its own, logs it, and still restores', async () => {
+      const logs = silenceLogger();
+      const anotherAttempt = { targetVersion: NEWER, previousVersion: PREVIOUS, startedAt: STARTED_AT + 2 * MINUTE_MS, supervisorPid: 9001 };
+      const harness = buildApplyHarness({
+        installers: {
+          [TARGET]: (world) => {
+            // While this supervisor ran, the worker took it for vanished and launched another attempt.
+            harness.deps.writeState({ ...harness.deps.readState(), inFlightAttempt: anotherAttempt });
+            return stopsHalfWritten(TARGET)(world);
+          },
+          [PREVIOUS]: installsCompletely(PREVIOUS),
+        },
+      });
+
+      const result = await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.installerRuns).toEqual([TARGET, PREVIOUS]);
+      // Left exactly as it was by the phase write, and by the final write.
+      expect(harness.stored().inFlightAttempt).toEqual(anotherAttempt);
+      expect(result).toMatchObject({ kind: 'finished', recorded: 'left-to-another-attempt' });
+      expect(logs.warn.mock.calls.map((call) => call[1])).toContain('The attempt in flight is no longer this supervisor\'s, so it does not record how far it got');
+    });
+
+    it('logs a phase it cannot write, and still restores and records its outcome', async () => {
+      const logs = silenceLogger();
+      const harness = buildApplyHarness({ installers: { [TARGET]: stopsHalfWritten(TARGET), [PREVIOUS]: installsCompletely(PREVIOUS) } });
+      const writeState = harness.deps.writeState;
+      let writeNumber = 0;
+      harness.deps.writeState = (state) => {
+        // The claim is the first write and the outcome the third: only the restore's phase, the second, fails.
+        if (++writeNumber === 2) throw new Error('EIO: i/o error, write');
+        writeState(state);
+      };
+
+      await applyAutoUpdate(attempt, harness.deps);
+
+      expect(harness.installerRuns).toEqual([TARGET, PREVIOUS]);
+      expect(logs.error.mock.calls.map((call) => call[1])).toContain('Auto-update supervisor could not record how far it got in the state file, and goes on');
+      expect(harness.stored()).toMatchObject({ inFlightAttempt: null, lastAttemptOutcome: { result: 'restored' } });
+    });
   });
 
   describe('the final write', () => {

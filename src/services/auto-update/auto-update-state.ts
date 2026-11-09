@@ -56,6 +56,7 @@ export {
   type AutoUpdateState,
   type AutoUpdateStateFileProblem,
   type AutoUpdateStateFileRead,
+  type AutoUpdateSupervisorPhase,
   type InFlightAttemptReading,
 } from './auto-update-state-file.js';
 

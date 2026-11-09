@@ -12,7 +12,10 @@
  *     runtime and script again without the flag, and exits as soon as that
  *     process exists. Exit 0 tells the worker the supervisor was started;
  *     anything else is a launch failure, which the check records without
- *     blocking the version (auto-update-check.ts gate 9).
+ *     blocking the version (auto-update-check.ts gate 9). It keeps the
+ *     attempt in flight for its gate 3 once a hop process was started, since
+ *     the supervisor may be running, and clears it only when none was
+ *     (AutoUpdateLaunchError).
  *  3. Once the hop has exited, the supervisor has no parent in the worker's
  *     tree (the OS reparents it), so a recycle tree-kill, which walks the
  *     worker's descendants (kill-process-tree.ts), cannot reach it while the
@@ -61,7 +64,7 @@ import {
   type InterruptedAttemptInstall,
   type RunningWorkerRead,
 } from './auto-update-apply.js';
-import { fetchJsonWithTimeout, INSTALLED_VERSION_PATTERN, NPM_PUBLIC_REGISTRY_URL, readNpmPublication, RELEASE_VERSION_PATTERN } from './auto-update-check.js';
+import { AutoUpdateLaunchError, fetchJsonWithTimeout, INSTALLED_VERSION_PATTERN, NPM_PUBLIC_REGISTRY_URL, readNpmPublication, RELEASE_VERSION_PATTERN } from './auto-update-check.js';
 import {
   AUTO_UPDATE_INSTALLER_DEADLINE_MS,
   AUTO_UPDATE_SUPERVISOR_DEADLINE_MS,
@@ -218,10 +221,13 @@ export interface DetachedAutoUpdateProcessOptions {
  * and exit code would be setsid's, and the worker could not read the hop's
  * exit. `detached` already gives the child its own process group.
  *
- * Resolves once the process exists ('spawn'). Rejects when it cannot start:
- * a throw from spawn, or an 'error' event, which Bun and Node emit after spawn
- * has returned (a missing runtime returns no pid, then emits ENOENT). An
- * 'error' after the process started is logged, never left unhandled.
+ * Resolves once the process exists ('spawn'). Rejects with an
+ * AutoUpdateLaunchError that says whether a process was started: none when
+ * the attempt log cannot be opened, spawn throws, or an 'error' event comes
+ * before 'spawn', which Bun and Node emit after spawn has returned (a missing
+ * runtime returns no pid, then emits ENOENT); maybe one when 'spawn' comes
+ * without a pid, which leaves nothing to wait on or kill. An 'error' after the
+ * process started is logged, never left unhandled.
  */
 export function startDetachedAutoUpdateProcess(
   command: string,
@@ -229,8 +235,13 @@ export function startDetachedAutoUpdateProcess(
   options: DetachedAutoUpdateProcessOptions,
 ): Promise<StartedAutoUpdateProcess> {
   const spawnImplementation = options.spawnImplementation ?? spawnHidden;
-  mkdirSync(path.dirname(options.logPath), { recursive: true });
-  const logFd = openSync(options.logPath, 'a');
+  let logFd: number;
+  try {
+    mkdirSync(path.dirname(options.logPath), { recursive: true });
+    logFd = openSync(options.logPath, 'a');
+  } catch (error: unknown) {
+    return Promise.reject(new AutoUpdateLaunchError(`could not start ${command}: its log ${options.logPath} could not be opened: ${errorMessageOf(error)}`, false, { cause: error }));
+  }
   let logClosed = false;
   const closeLog = (): void => {
     if (logClosed) return;
@@ -243,7 +254,7 @@ export function startDetachedAutoUpdateProcess(
       child = spawnImplementation(command, args, { detached: true, stdio: ['ignore', logFd, logFd], cwd: options.cwd, env: options.env });
     } catch (error: unknown) {
       closeLog();
-      reject(new Error(`could not start ${command}: ${errorMessageOf(error)}`, { cause: error }));
+      reject(new AutoUpdateLaunchError(`could not start ${command}: ${errorMessageOf(error)}`, false, { cause: error }));
       return;
     }
     let started = false;
@@ -253,7 +264,7 @@ export function startDetachedAutoUpdateProcess(
     child.on('error', (error: Error) => {
       closeLog();
       if (!started) {
-        reject(new Error(`could not start ${command}: ${error.message}`, { cause: error }));
+        reject(new AutoUpdateLaunchError(`could not start ${command}: ${error.message}`, false, { cause: error }));
         return;
       }
       logger.warn('AUTO_UPDATE', 'An auto-update process reported an error after it started', { command, pid: child.pid }, error);
@@ -262,7 +273,7 @@ export function startDetachedAutoUpdateProcess(
       started = true;
       closeLog();
       if (child.pid === undefined) {
-        reject(new Error(`could not start ${command}: it started without a pid`));
+        reject(new AutoUpdateLaunchError(`could not start ${command}: it started without a pid`, true));
         return;
       }
       resolve({ child, pid: child.pid, exited });
@@ -290,7 +301,14 @@ export interface AutoUpdateLaunchDeps {
  * The worker's launchSupervisor (auto-update-check.ts gate 9). Writes the
  * attempt in flight with no supervisor yet and the deadline it may run for,
  * starts the hop and waits for it to exit 0. Throws on anything else, which
- * gate 9 records as launch-failed without blocking the version.
+ * gate 9 records without blocking the version. From the hop's start on, every
+ * failure is an AutoUpdateLaunchError saying whether a process was started:
+ * only a start that startDetachedAutoUpdateProcess reports as never begun
+ * started none, and gate 9 then clears the attempt. A hop that outlived its
+ * budget, ended with anything but 0, or failed to start in another way may
+ * have started the supervisor, so gate 9 keeps the attempt in flight for its
+ * gate 3. A throw before the hop's start (reading or writing the state)
+ * started nothing and is passed on as it is.
  */
 export async function launchAutoUpdateSupervisor(
   versions: { targetVersion: string; previousVersion: string },
@@ -308,7 +326,13 @@ export async function launchAutoUpdateSupervisor(
   deps.writeState(state);
 
   const logPath = deps.attemptLogPath(attempt.startedAt);
-  const hop = await deps.startHop(attempt);
+  let hop: StartedAutoUpdateProcess;
+  try {
+    hop = await deps.startHop(attempt);
+  } catch (error: unknown) {
+    if (error instanceof AutoUpdateLaunchError) throw error;
+    throw new AutoUpdateLaunchError(`starting the auto-update hop failed (${errorMessageOf(error)}), and nothing shows that no process was started; see ${logPath}`, true, { cause: error });
+  }
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
   const outlivedBudget = new Promise<'outlived-budget'>((resolveTimeout) => {
     budgetTimer = setTimeout(() => resolveTimeout('outlived-budget'), deps.hopExitBudgetMs);
@@ -322,13 +346,17 @@ export async function launchAutoUpdateSupervisor(
     } catch (error: unknown) {
       logger.error('AUTO_UPDATE', 'Could not kill an auto-update hop that outlived its budget', { hopPid: hop.pid, logPath },
         error instanceof Error ? error : new Error(String(error)));
-      throw new Error(`the auto-update hop (pid ${hop.pid}) did not exit within ${budgetSeconds} s, and killing it failed (${errorMessageOf(error)}), so it may still be running; see ${logPath}`, { cause: error });
+      throw new AutoUpdateLaunchError(`the auto-update hop (pid ${hop.pid}) did not exit within ${budgetSeconds} s, and killing it failed (${errorMessageOf(error)}), so it may still be running; see ${logPath}`, true, { cause: error });
     }
-    throw new Error(`the auto-update hop (pid ${hop.pid}) did not exit within ${budgetSeconds} s, so it was killed; see ${logPath}`);
+    // The hop may have started the supervisor first. The kill walks the
+    // descendants it reads at that moment (kill-process-tree.ts), so a
+    // supervisor started after that read, or left without a parent by a hop
+    // that exited just as its budget ran out, can survive it.
+    throw new AutoUpdateLaunchError(`the auto-update hop (pid ${hop.pid}) did not exit within ${budgetSeconds} s, so it was killed; see ${logPath}`, true);
   }
   if (hopEnded.exitCode !== EXIT_SUCCESS) {
     const ending = hopEnded.exitCode === null ? `was ended by ${hopEnded.signal ?? 'an unknown signal'}` : `exited with code ${hopEnded.exitCode}`;
-    throw new Error(`the auto-update hop (pid ${hop.pid}) ${ending} before the supervisor was started; see ${logPath}`);
+    throw new AutoUpdateLaunchError(`the auto-update hop (pid ${hop.pid}) ${ending} before the supervisor was started; see ${logPath}`, true);
   }
   logger.info('AUTO_UPDATE', `Auto-update supervisor launched: ${attempt.previousVersion} → ${attempt.targetVersion}`, {
     targetVersion: attempt.targetVersion,

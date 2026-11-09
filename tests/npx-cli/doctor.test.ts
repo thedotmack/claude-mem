@@ -328,7 +328,7 @@ describe('npx doctor Auto-update row', () => {
     CLAUDE_MEM_RUNTIME: 'worker',
   };
 
-  /** known_marketplaces.json as the installer writes it now: claude-mem's entry with Claude Code's update off. */
+  /** known_marketplaces.json with claude-mem's entry as the installer writes it, with Claude Code's update off, as the worker leaves it once it has turned it off. */
   const INSTALLERS_ENTRY: ClaudeCodePluginState['knownMarketplaces'] = {
     kind: 'read',
     path: KNOWN_MARKETPLACES,
@@ -524,6 +524,32 @@ describe('npx doctor Auto-update row', () => {
         CLAUDE_CODE_OFF_UNCHANGED,
         `Fix: run \`npx claude-mem@${INSTALLED} update\`, then restart Claude Code.`,
       ]);
+    });
+  });
+
+  describe('a launch the worker could not confirm, whose attempt it left in flight', () => {
+    const HOP_KILLED = 'the auto-update hop (pid 6161) did not exit within 5 s, so it was killed; see /logs/auto-update-1.log';
+    const unconfirmed: Partial<AutoUpdateState> = {
+      ...checked,
+      lastSeenPromotedVersion: TARGET,
+      lastDecision: recorded({ decision: 'launch-unconfirmed', targetVersion: TARGET, previousVersion: INSTALLED, message: HOP_KILLED }),
+    };
+
+    it('while the attempt is in flight: the status says why the launch was not confirmed, and the attempt shows in progress, with no warning', () => {
+      const row = autoUpdateCheck(sources({
+        state: { ...unconfirmed, inFlightAttempt: { targetVersion: TARGET, previousVersion: INSTALLED, startedAt: NOW - 10 * MINUTE_MS, supervisorPid: null, supervisorDeadlineMs: RECORDED_DEADLINE_MS } },
+      }));
+      expect(row.status).toBe('ok');
+      expect(lines(row.detail)[0]).toBe(`On: the update to ${TARGET} was started, but the worker could not confirm that its supervisor started (${HOP_KILLED}); it stays in progress until its supervisor records an outcome or the worker records how it ended (the worker's decision at [-10 min])`);
+      expect(lines(row.detail)).toContain(`In progress: ${INSTALLED} → ${TARGET}, started [-10 min]`);
+    });
+
+    it('once the attempt has ended: how it ended, as after apply', () => {
+      const row = autoUpdateCheck(sources({
+        state: { ...unconfirmed, inFlightAttempt: null, lastAttemptOutcome: outcome('applied', { finishedAt: NOW - 2 * MINUTE_MS }) },
+        installedVersion: TARGET,
+      }));
+      expect(lines(row.detail)[0]).toBe(`On: updated to ${TARGET} at [-2 min]`);
     });
   });
 
@@ -759,7 +785,7 @@ describe('npx doctor Auto-update row', () => {
     const claudeCodeLine = (readers: ReaderOptions, state: Partial<AutoUpdateState> = checked) =>
       lines(autoUpdateCheck(sources({ state, readers })).detail).find((line) => line.startsWith('Claude Code\'s background update'));
 
-    it('an extraKnownMarketplaces declaration outranks known_marketplaces.json, as on every new install the installer registers with it off', () => {
+    it('an extraKnownMarketplaces declaration outranks known_marketplaces.json, here an entry with it off', () => {
       expect(claudeCodeLine({ declarations: [{ path: USER_SETTINGS, autoUpdate: true }] }))
         .toBe(`Claude Code's background update: on (set in extraKnownMarketplaces in ${USER_SETTINGS}); claude-mem has not changed it`);
     });
