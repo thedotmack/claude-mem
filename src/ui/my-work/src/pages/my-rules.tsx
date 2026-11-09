@@ -673,7 +673,7 @@ function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft
 // ---------- Page ----------
 
 /** No story and no saved rules yet: say so, and how to get learned rules, instead of showing anything made up. */
-function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; readError: string | null; refresh: AutoRefresh | null }) {
+export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; readError: string | null; refresh: AutoRefresh | null }) {
   const waiting = refresh?.state === 'waiting-for-agent'
   const description = waiting
     ? t('Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.')
