@@ -4,18 +4,35 @@ import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
 import { sessionKey, type SessionRef } from '../utils/sessions';
 
-interface PaginationState { isLoading: boolean; hasMore: boolean }
+// offsetCapReachedAt: the server's deepest allowed offset, set when it stopped
+// this list there (server runtime feeds) rather than running out of rows.
+interface PaginationState { isLoading: boolean; hasMore: boolean; offsetCapReachedAt: number | null }
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 type Boundary = { at: number; id: number };
 export const PAGINATION_REQUEST_TIMEOUT_MS = 10_000;
+
+/** A page request the server refused (a 4xx other than timeout/rate limit): repeating it gets the same answer. */
+export class PageRejectedError extends Error {}
+
+/** The server's own message for a refused page request, or null when the failure may pass on retry. */
+export async function rejectedPageMessage(response: Response): Promise<string | null> {
+  if (response.status < 400 || response.status >= 500 || response.status === 408 || response.status === 429) return null;
+  const body = await response.json().catch(() => null) as { message?: unknown } | null;
+  return typeof body?.message === 'string' && body.message.trim() ? body.message : `HTTP ${response.status}`;
+}
+
+/** The deepest offset the server allows, when this page is the last one it will serve. */
+export function offsetCapOf(page: { offsetCapReached?: unknown; maxOffset?: unknown }): number | null {
+  return page.offsetCapReached === true && typeof page.maxOffset === 'number' && Number.isFinite(page.maxOffset) ? page.maxOffset : null;
+}
 
 function boundaryOf(row: DataItem | undefined): Boundary | null {
   return row && Number.isFinite(row.created_at_epoch) ? { at: row.created_at_epoch, id: row.id } : null;
 }
 
 function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string, currentSession: SessionRef | null) {
-  const [state, setState] = useState<PaginationState>({ isLoading: false, hasMore: true });
+  const [state, setState] = useState<PaginationState>({ isLoading: false, hasMore: true, offsetCapReachedAt: null });
   const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
   const boundaryRef = useRef<Boundary | null>(null);
@@ -55,7 +72,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
       requestRef.current?.controller.abort();
       offsetRef.current = 0; boundaryRef.current = null;
       lastLoadedVersionRef.current = selectionVersion;
-      setCurrentState({ isLoading: false, hasMore: true });
+      setCurrentState({ isLoading: false, hasMore: true, offsetCapReachedAt: null });
     }
     if (!refresh && (stateRef.current.isLoading || !stateRef.current.hasMore)) return [];
     if (refresh) requestRef.current?.controller.abort();
@@ -74,6 +91,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     let pageCount = 0;
     let offset = refresh ? 0 : offsetRef.current;
     let hasMore = stateRef.current.hasMore;
+    let offsetCapReachedAt = stateRef.current.offsetCapReachedAt;
     try {
       for (;;) {
         if (++pageCount > maxPages) throw new Error('Memory changed too much while refreshing. Retry to refresh this view.');
@@ -85,8 +103,16 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
         }
         const response = await fetch(`${endpoint}?${params}`, { cache: 'no-store', signal: controller.signal });
         if (stale()) return [];
-        if (!response.ok) throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
-        const data = await response.json() as { items: TItem[]; hasMore: boolean };
+        if (!response.ok) {
+          const rejected = await rejectedPageMessage(response);
+          if (stale()) return [];
+          if (rejected !== null) {
+            setCurrentState({ ...stateRef.current, hasMore: false });
+            throw new PageRejectedError(`Failed to load ${dataType}: ${rejected}`);
+          }
+          throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+        }
+        const data = await response.json() as { items: TItem[]; hasMore: boolean; offsetCapReached?: unknown; maxOffset?: unknown };
         if (stale()) return [];
         if (!Array.isArray(data.items)) throw new Error(`Failed to load ${dataType}: invalid page`);
         let reachedBoundary = false;
@@ -104,6 +130,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
         }
         offset += data.items.length;
         hasMore = retained < data.items.length || data.hasMore === true;
+        offsetCapReachedAt = offsetCapOf(data);
         if (!refresh || reachedBoundary || !data.hasMore || !data.items.length || (!previousBoundary && rows.length >= target)) break;
       }
       if (stale()) return [];
@@ -111,7 +138,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
       // suffixes must remain available when the user asks for older history.
       offsetRef.current = refresh ? rows.length : offsetRef.current + rows.length;
       boundaryRef.current = boundaryOf(rows.at(-1)) ?? (refresh ? null : boundaryRef.current);
-      setCurrentState({ isLoading: false, hasMore });
+      setCurrentState({ isLoading: false, hasMore, offsetCapReachedAt });
       return rows;
     } catch (error) {
       if (stale() || (controller.signal.aborted && !timedOut)) return [];

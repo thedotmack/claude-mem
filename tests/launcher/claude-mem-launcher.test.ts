@@ -418,6 +418,24 @@ describe('claude-mem launcher', () => {
     expect(readFileSync(path.join(temporaryHome, '.claude-mem', 'CAPTURE_BROKEN'), 'utf-8')).toContain('issue #2188');
   });
 
+  it('records an empty stdin payload under a ~-relative CLAUDE_MEM_DATA_DIR in home, not the project', () => {
+    const temporaryHome = makeTemporaryHome();
+    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+    const project = path.join(temporaryHome, 'project');
+    mkdirSync(project, { recursive: true });
+
+    const result = runLauncher(['hook', 'claude-code', 'observation'], {
+      temporaryHome,
+      stdinPayload: '',
+      workingDirectory: project,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, CLAUDE_MEM_DATA_DIR: '~/tilde-data' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(path.join(temporaryHome, 'tilde-data', 'CAPTURE_BROKEN'), 'utf-8')).toContain('issue #2188');
+    expect(existsSync(path.join(project, '~'))).toBe(false);
+  });
+
   // findBun() checks PATH, $BUN/$BUN_PATH/$BUN_INSTALL, ~/.bun/bin/bun, then
   // these absolute system paths. The env/HOME candidates are controlled below;
   // the absolute ones cannot be, so the fallback is only provable without them.
