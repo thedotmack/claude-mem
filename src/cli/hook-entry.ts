@@ -1,17 +1,18 @@
 /**
- * Thin entry for `claude-mem hook <platform> <event>`.
+ * Thin entry for `claude-mem hook <platform> <event>`, built to
+ * plugin/scripts/hook-service.cjs.
  *
  * Every agent hook is a short-lived process. Loading the whole worker bundle
  * for it costs ~0.3 s of parse time and ~120 MB per hook; with several agents
  * starting at once that is the dominant CPU cost. This bundle carries only the
- * hook pipeline and mirrors the `hook` branch of `main()` in worker-service.ts.
- * The worker-service.cjs shim (src/services/worker-service-shim.ts) routes
- * `hook` here, so the version-stable launcher contract is unchanged.
+ * hook pipeline. The compiled launcher (src/launcher/claude-mem-launcher.ts)
+ * and plugin/scripts/bun-runner.js run it for `hook` when it exists and fall
+ * back to worker-service.cjs otherwise. The subcommand itself is
+ * runHookSubcommand, the same function worker-service.ts runs for `hook`.
  */
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isHookStdoutClosed } from '../shared/hook-io.js';
-import { restoreHookOriginalCwd } from './hook-original-cwd.js';
-import { hookCommand } from './hook-command.js';
+import { runHookSubcommand } from './run-hook-subcommand.js';
 import { logger } from '../utils/logger.js';
 
 async function main(): Promise<void> {
@@ -24,17 +25,7 @@ async function main(): Promise<void> {
   }
 
   // argv: [runtime, script, 'hook', platform, event]
-  const platform = process.argv[3];
-  const event = process.argv[4];
-  if (!platform || !event) {
-    console.error('Usage: claude-mem hook <platform> <event>');
-    console.error('Platforms: claude-code, codex, cursor, antigravity-cli, raw');
-    console.error('Events: context, session-init, observation, summarize, user-message');
-    process.exit(1);
-  }
-
-  restoreHookOriginalCwd();
-  await hookCommand(platform, event);
+  await runHookSubcommand(process.argv[3], process.argv[4]);
 }
 
 main().catch((error) => {
