@@ -18,6 +18,7 @@ import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
+  SERVER_MAX_PAID_SENDS_PER_JOB,
   classifyHttpProviderError,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
@@ -124,7 +125,15 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     // schemas 400); openrouter.ai and cmem already send it, so they give up
     // here instead of sending the same body again. Both calls were billed.
     if (isLengthTruncatedEmptyReply(rawText, finishReason)) {
-      if (!disabledOnSend) {
+      // The outbox attempt includes this request. Use the same conservative
+      // allowance as ProviderObservationGenerator: a correction inside the
+      // final allowed attempt must not buy a third potentially billed send.
+      if (!disabledOnSend && context.job.attempts >= SERVER_MAX_PAID_SENDS_PER_JOB) {
+        logger.error('SDK', 'OpenRouter reply was empty; skipping the reasoning correction because the job paid-send allowance is exhausted', {
+          provider: 'openrouter', model: this.model,
+          attempt: context.job.attempts, maxPaidSends: SERVER_MAX_PAID_SENDS_PER_JOB,
+        });
+      } else if (!disabledOnSend) {
         const firstUsage = data.usage;
         logger.error('SDK', reasoningBudgetRetryMessage('OpenRouter'), { provider: 'openrouter', model: this.model, finishReason });
         try {
