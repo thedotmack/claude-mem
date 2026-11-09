@@ -82,6 +82,17 @@ describe('PaginationHelper.getObservations content_session_id', () => {
     expect(prompts.items[0].prompt_text).toBe('prompt-a');
   });
 
+  it('preserves the full relative path when a nested folder shares the project name', () => {
+    const sessionId = store.createSDKSession('nested-path', 'proj', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionId, 'mem-nested-path');
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, files_read, created_at, created_at_epoch)
+      VALUES ('mem-nested-path', 'proj', 'discovery', 'path', ?, '2026-07-20T00:00:00Z', 1752969600000)
+    `).run(JSON.stringify(['packages/proj/index.ts', '/work/proj/packages/proj/index.ts']));
+    const [row] = helper.getObservations(0, 10, 'proj').items;
+    expect(JSON.parse(row.files_read!)).toEqual(['packages/proj/index.ts', 'packages/proj/index.ts']);
+  });
+
   it('pairs contentSessionId with platformSource: the same id under another platform is a different session', () => {
     const claudeSession = store.createSDKSession('shared-id', 'proj', 'a', undefined, 'claude');
     const codexSession = store.createSDKSession('shared-id', 'proj', 'b', undefined, 'codex');

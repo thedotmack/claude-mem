@@ -91,6 +91,14 @@ describe('readLastLines (#1203 OOM fix)', () => {
     expect(readLastLines(testFile, 1).lines).toBe(lastLine);
   });
 
+  it('estimates multibyte log lines in bytes when reading only the tail', () => {
+    const line = '甲'.repeat(21); // 64 bytes including the newline
+    writeFileSync(testFile, (line + '\n').repeat(2048));
+    const result = readLastLines(testFile, 3);
+    expect(result.lines).toBe([line, line, line].join('\n'));
+    expect(result.totalEstimate).toBe(2048);
+  });
+
   it('should provide accurate totalEstimate when entire file is read', () => {
     const lines = Array.from({ length: 5 }, (_, i) => `line${i}`);
     writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
