@@ -5,6 +5,7 @@ import { join } from 'path';
 
 import {
   autoUpdateCheck,
+  bunRuntimeCheck,
   hookLauncherCheck,
   observerProviderCheck,
   probeChromaDiagnostics,
@@ -225,6 +226,21 @@ describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', 
   });
 });
 
+describe('npx doctor Bun runtime', () => {
+  it('warns about rebuilding with an older Bun on macOS', () => {
+    const result = bunRuntimeCheck('1.4.0', 'darwin');
+    expect(result).toMatchObject({ status: 'warn', required: true });
+    expect(result.detail).toContain('1.4.1');
+    expect(result.detail).toContain('bun upgrade');
+  });
+
+  it('accepts a supported Bun on macOS and leaves the Linux minimum alone', () => {
+    expect(bunRuntimeCheck('v1.4.1', 'darwin')).toMatchObject({ status: 'ok', detail: 'v1.4.1' });
+    expect(bunRuntimeCheck('1.4.0', 'linux').status).toBe('ok');
+    expect(bunRuntimeCheck(null, 'darwin').status).toBe('fail');
+  });
+});
+
 // `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, so the first `claude-mem` there is
 // this CLI, not the hook launcher. Hooks run outside npx and find the launcher, so doctor must look past itself.
 describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => {
@@ -238,8 +254,8 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     chmodSync(path, 0o755);
   }
 
-  function host(pathValue: string) {
-    return { homeDirectory: root, platform: process.platform, environmentVariables: { PATH: pathValue } };
+  function host(pathValue: string, platform: NodeJS.Platform = 'linux') {
+    return { homeDirectory: root, platform, environmentVariables: { PATH: pathValue } };
   }
 
   beforeEach(() => {
@@ -265,6 +281,43 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     const result = hookLauncherCheck(host(`${npxBin}:${launcherDir}:/usr/bin:/bin`), runningCli);
     expect(result.status).toBe('ok');
     expect(result.detail).toContain(join(launcherDir, 'claude-mem'));
+  });
+
+  it('fails on macOS when a launcher answers --version but fails signature verification', () => {
+    const launcher = join(launcherDir, 'claude-mem');
+    const verify = (binaryPath: string) => {
+      expect(binaryPath).toBe(launcher);
+      return { status: 1, stderr: 'invalid signature\n' };
+    };
+
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, verify);
+
+    expect(result).toMatchObject({ status: 'fail', required: true });
+    expect(result.detail).toContain('codesign --verify --strict');
+    expect(result.detail).toContain('invalid signature');
+    expect(result.detail).toContain('npx claude-mem install');
+  });
+
+  it('checks a macOS launcher killed before --version can answer', () => {
+    const launcher = join(launcherDir, 'claude-mem');
+    writeFileSync(launcher, '#!/bin/sh\nkill -KILL $$\n# usage: claude-mem hook <platform> <event>\n# continuing without memory\n');
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({
+      status: 1,
+      stderr: 'code object is not signed at all',
+    }));
+
+    expect(result).toMatchObject({ status: 'fail', required: true });
+    expect(result.detail).toContain('code object is not signed at all');
+  });
+
+  it('keeps the protocol result for a signed launcher', () => {
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({
+      status: 0,
+      stderr: '',
+    }));
+
+    expect(result.status).toBe('ok');
+    expect(result.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
   });
 
   it('still fails when another claude-mem that is not the launcher comes first', () => {

@@ -60,10 +60,17 @@ import {
 import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
+  launcherFileEmbedsBundle,
   probeLauncherVersion,
   resolveLauncherBinaryPath,
+  verifyLauncherSignature,
+  type LauncherCodesignRunner,
   type LauncherHostEnvironment,
 } from '../../launcher/install-launcher.js';
+import {
+  bunVersionHonoursMacosSignatureFix,
+  MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN,
+} from '../../launcher/bun-be-bun-support.js';
 import { LAUNCHER_PROTOCOL } from '../../launcher/launcher-protocol.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
@@ -115,6 +122,23 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
     console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
     return null;
   }
+}
+
+export function bunRuntimeCheck(bunVersion: string | null, platform: NodeJS.Platform = process.platform): CheckResult {
+  const name = 'Bun runtime';
+  if (!bunVersion) {
+    return { name, status: 'fail', detail: 'not found on PATH — install: https://bun.sh', required: true };
+  }
+  const version = bunVersion.replace(/^v/, '');
+  if (platform === 'darwin' && !bunVersionHonoursMacosSignatureFix(version)) {
+    return {
+      name,
+      status: 'warn',
+      detail: `v${version}. Rebuilding the launcher for macOS 27 requires Bun ${MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN} or newer. Run \`bun upgrade\`.`,
+      required: true,
+    };
+  }
+  return { name, status: 'ok', detail: `v${version}`, required: true };
 }
 
 async function probeWorkerHealth(workerUrl: string): Promise<{
@@ -508,9 +532,10 @@ function realPathOrNull(path: string): string | null {
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
  * form, so a missing launcher surfaces in Claude Code as
  * `Executable not found in $PATH: "claude-mem"` on every hook. Required: a
- * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
- * doctor. An older protocol only warns, because the SessionStart self-heal
- * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
+ * missing launcher, a failed macOS signature check, or a `claude-mem` on PATH
+ * that is not the launcher fails doctor. An older protocol only warns, because
+ * the SessionStart self-heal (ensure-launcher.cjs) replaces it on the next startup.
+ * Exported for tests.
  *
  * `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, where `claude-mem` is this CLI.
  * Hooks run outside npx, so when this CLI (`runningCliPath`) is npx's copy, PATH directories that resolve to it
@@ -519,6 +544,7 @@ function realPathOrNull(path: string): string | null {
 export function hookLauncherCheck(
   host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
   runningCliPath: string | undefined = process.argv[1],
+  verifySignature: LauncherCodesignRunner = verifyLauncherSignature,
 ): CheckResult {
   const name = 'Hook launcher';
   const reinstallHint = 'run `npx claude-mem install`';
@@ -536,8 +562,21 @@ export function hookLauncherCheck(
     };
   }
   const probeStartedAt = performance.now();
-  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath);
+  const { protocol: printedProtocol, failure: probeFailure, signal } = probeLauncherVersion(launcherOnPath);
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
+  if (host.platform === 'darwin' && (printedProtocol !== null || (signal !== null && launcherFileEmbedsBundle(launcherOnPath)))) {
+    const { status, stderr } = verifySignature(launcherOnPath);
+    if (status !== 0) {
+      const reason = stderr.trim() || (status === null ? 'could not run codesign' : `exit ${status}`);
+      const fix = status === null ? '' : ` Move the launcher aside, then ${reinstallHint}.`;
+      return {
+        name,
+        status: 'fail',
+        detail: `${launcherOnPath} failed codesign --verify --strict: ${reason}.${fix}`,
+        required: true,
+      };
+    }
+  }
   if (printedProtocol === null) {
     return {
       name,
@@ -1009,13 +1048,7 @@ export async function runDoctorCommand(): Promise<void> {
   const dataDir = resolveDataDir();
 
   // 1. Bun (required — hooks run on Bun).
-  const bunVersion = probeVersion('bun');
-  checks.push({
-    name: 'Bun runtime',
-    status: bunVersion ? 'ok' : 'fail',
-    detail: bunVersion ? `v${bunVersion.replace(/^v/, '')}` : 'not found on PATH — install: https://bun.sh',
-    required: true,
-  });
+  checks.push(bunRuntimeCheck(probeVersion('bun')));
 
   // 2. uv (warn-only — only needed for vector search).
   const uvVersion = probeVersion('uv');
