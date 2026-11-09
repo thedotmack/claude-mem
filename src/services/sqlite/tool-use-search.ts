@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { checkAndRaiseSchemaWriterStampInTransaction, LATEST_SCHEMA_VERSION } from './connection.js';
-import { buildFTSMatchQuery, buildSubstringClause, substringTerms, UNSEGMENTED_SCRIPT } from './search-query.js';
+import { buildFTSMatchQuery, buildSubstringClause, substringTerms, UNSEGMENTED_SCRIPT, MAX_SUBSTRING_TERMS } from './search-query.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
@@ -22,11 +22,11 @@ export interface ToolUseHit {
   snippet: string;
 }
 export interface DeepSearchResult {
-  deep: { status: ToolUseIndexStatus | 'ok' | 'not_applicable' | 'observation_error' | 'observations_found'; count: number; hasMore: boolean };
+  deep: { status: ToolUseIndexStatus | 'ok' | 'not_applicable' | 'observation_error' | 'observations_found' | 'busy' | 'timeout' | 'cancelled' | 'invalid_query'; complete: boolean; count: number | null; hasMore: boolean | null };
   toolUses: ToolUseHit[];
 }
 export function emptyDeepResult(status: DeepSearchResult['deep']['status']): DeepSearchResult {
-  return { deep: { status, count: 0, hasMore: false }, toolUses: [] };
+  return { deep: { status, complete: false, count: null, hasMore: null }, toolUses: [] };
 }
 
 function exists(db: Database, name: string): boolean {
@@ -177,7 +177,8 @@ function matchingSnippet(columns: string[], terms: string[], markers?: [string, 
 export function searchToolUses(db: Database, query: string, options: SearchOptions = {}): DeepSearchResult {
   const status = toolUseIndexStatus(db);
   if (status !== 'ready') return emptyDeepResult(status);
-  if (!query.trim() || query.length > 4096) return emptyDeepResult('not_applicable');
+  if (!query.trim() || query.length > 4096
+    || substringTerms(query, MAX_SUBSTRING_TERMS + 1).length > MAX_SUBSTRING_TERMS) return emptyDeepResult('invalid_query');
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   const projects = scopedProjects(options);
@@ -220,5 +221,5 @@ export function searchToolUses(db: Database, query: string, options: SearchOptio
   const toolUses = rows.slice(0, limit).map(({input_excerpt, response_excerpt, ...row}) => ({ ...row,
     snippet: matchingSnippet([input_excerpt ?? '', response_excerpt ?? ''], terms, cjk ? undefined : markers),
   }));
-  return { deep: { status: 'ok', count: toolUses.length, hasMore: rows.length > limit }, toolUses };
+  return { deep: { status: 'ok', complete: true, count: toolUses.length, hasMore: rows.length > limit }, toolUses };
 }

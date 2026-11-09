@@ -370,11 +370,11 @@ export class SessionSearch {
 
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         conditions.push(`${tableAlias}.created_at_epoch >= ?`);
         params.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         conditions.push(`${tableAlias}.created_at_epoch <= ?`);
         params.push(resolveDateBound(end, 'end'));
       }
@@ -402,14 +402,15 @@ export class SessionSearch {
       const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
+          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
         conditions.push(`(${fileConditions.join(' OR ')})`);
         files.forEach(file => {
-          const literal = file.replace(/[\\%_]/g, '\\$&');
+          // Compare equivalent separators before escaping literal LIKE characters.
+          const literal = file.replace(/\\/g, '/').replace(/[\\%_]/g, '\\$&');
           params.push(`%${literal}%`, `%${literal}%`);
         });
       }
@@ -957,10 +958,13 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    // A dot names the relative root, not a character required in its filenames.
+    // Let the direct-child predicate select root files (including Makefile and
+    // LICENSE) before pagination, just as it does for other folder candidates.
+    if (isFolder && normalizePath(filePath) === '.') return ['%'];
+
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const variants = isFolder
-      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
-      : [filePath];
+    const variants = [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')];
     const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
@@ -970,9 +974,7 @@ export class SessionSearch {
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
       patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      if (filePath.includes('\\')) {
-        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
-      }
+      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
     }
     return patterns;
   }
@@ -1054,11 +1056,11 @@ export class SessionSearch {
 
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         baseConditions.push('s.created_at_epoch >= ?');
         sessionParams.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         baseConditions.push('s.created_at_epoch <= ?');
         sessionParams.push(resolveDateBound(end, 'end'));
       }
@@ -1133,11 +1135,11 @@ export class SessionSearch {
 
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
-      if (start) {
+      if (start != null && start !== '') {
         baseConditions.push('up.created_at_epoch >= ?');
         params.push(resolveDateBound(start, 'start'));
       }
-      if (end) {
+      if (end != null && end !== '') {
         baseConditions.push('up.created_at_epoch <= ?');
         params.push(resolveDateBound(end, 'end'));
       }

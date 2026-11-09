@@ -19,7 +19,7 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference" | "macro" | "variant";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -65,10 +65,17 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   yaml: "@tree-sitter-grammars/tree-sitter-yaml",
   sql: "@derekstride/tree-sitter-sql",
   markdown: "@tree-sitter-grammars/tree-sitter-markdown",
+  pascal: "tree-sitter-delphi",
 };
 
 const GRAMMAR_SUBDIR: Record<string, string> = {
   markdown: "tree-sitter-markdown",
+};
+
+// `--lang-name` must match the grammar's exported `tree_sitter_<name>` symbol.
+// It equals our language key except where the grammar is named differently.
+const GRAMMAR_LANG_NAME: Record<string, string> = {
+  pascal: "delphi",
 };
 
 function resolveGrammarPath(language: string): string | null {
@@ -158,7 +165,14 @@ const QUERIES: Record<string, string> = {
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (_) @name) @impl_def
+(impl_item trait: (_)? @implemented_trait type: (_) @name) @impl_def
+(function_signature_item name: (identifier) @name) @rust_signature
+(associated_type name: (type_identifier) @name) @tdef
+(type_item name: (type_identifier) @name) @tdef
+(trait_item body: (declaration_list (const_item name: (identifier) @name) @const_def))
+(impl_item body: (declaration_list (const_item name: (identifier) @name) @const_def))
+(macro_definition name: (identifier) @name) @macro_def
+(enum_variant name: (identifier) @name) @variant
 (mod_item name: (identifier) @name) @namespace_def
 (use_declaration) @imp
 `,
@@ -189,6 +203,7 @@ const QUERIES: Record<string, string> = {
 (function_declarator declarator: (identifier) @function_name)
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(union_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (preproc_include) @imp
 `,
@@ -199,6 +214,7 @@ const QUERIES: Record<string, string> = {
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(union_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (namespace_definition name: (_) @name) @namespace_def
 (preproc_include) @imp
@@ -270,6 +286,7 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
+(variable_declaration (identifier) @name [(struct_declaration) (enum_declaration) (union_declaration) (opaque_declaration)]) @cls
 (test_declaration (string) @name) @func
 (test_declaration (identifier) @name) @doctest
 (test_declaration . (block)) @func
@@ -309,6 +326,17 @@ const QUERIES: Record<string, string> = {
 (create_table (object_reference) @name) @cls
 (create_function (object_reference) @name) @func
 (create_view (object_reference) @name) @cls
+`,
+
+  pascal: `
+(type_declaration name: (identifier) @name (class_definition)) @cls
+(type_declaration name: (identifier) @name (record_definition)) @struct_def
+(type_declaration name: (identifier) @name (interface_definition)) @iface
+(type_declaration name: (identifier) @name (type_alias_definition (enum_type))) @enm
+(function_definition header: (function_declaration name: (function_name) @name)) @func
+(function_declaration name: (function_name) @name) @method
+(class_property name: (identifier) @name) @property
+(unit_reference name: (identifier) @imp)
 `,
 
   markdown: `
@@ -358,6 +386,7 @@ function getQueryKey(language: string): string {
     case "yaml": return "yaml";
     case "sql": return "sql";
     case "markdown": return "markdown";
+    case "pascal": return "pascal";
     default: return "generic";
   }
 }
@@ -408,6 +437,11 @@ const grammarLibOptOut = new Set<string>();
  *  not permanently poison subsequent test cases running in the same process. */
 export function _resetGrammarLibOptOut(): void {
   grammarLibOptOut.clear();
+}
+
+/** @internal — test-only: whether `language` fell back to `--grammar-path`. */
+export function _isGrammarLibOptedOut(language: string): boolean {
+  return grammarLibOptOut.has(language);
 }
 
 function newestGrammarSourceMtime(grammarPath: string): number {
@@ -504,7 +538,8 @@ function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: st
 
   const libPath = ensureGrammarLib(language, grammarPath);
   if (libPath) {
-    const output = execQuery(["query", "-l", libPath, "--lang-name", language, queryFile, ...sourceFiles], sourceFiles.length);
+    const langName = GRAMMAR_LANG_NAME[language] ?? language;
+    const output = execQuery(["query", "-l", libPath, "--lang-name", langName, queryFile, ...sourceFiles], sourceFiles.length);
     if (output !== null) return parseMultiFileQueryOutput(output);
 
     // The artifact exists but will not bind — a grammar whose language function
@@ -561,6 +596,7 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
+  rust_signature: "function",
   const_func: "function",
   cls: "class",
   method: "method",
@@ -573,9 +609,13 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   enm: "enum",
   struct_def: "struct",
   trait_def: "trait",
+  const_def: "const",
+  macro_def: "macro",
+  variant: "variant",
   impl_def: "impl",
   namespace_def: "namespace",
   mixin_def: "mixin",
+  property: "property",
   heading: "section",
   code_block: "code",
   frontmatter: "metadata",
@@ -592,6 +632,7 @@ const SIGNATURE_END_LANGUAGES = new Set(["python", "ruby", "lua"]);
 // methods, and a Haskell function holds its `where`/`let` helpers.
 const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
   php: new Set(["enum"]),
+  rust: new Set(["enum"]),
   haskell: new Set(["function"]),
 };
 
@@ -745,6 +786,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const haskellSignatures = new Set<CodeSymbol>();
   const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const implementedTraits = new Map<CodeSymbol, string>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
@@ -855,7 +897,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
-    if (language === "markdown" && kind === "section") {
+    if (language === "rust" && ["rust_signature", "tdef", "const_def"].includes(kindCapture.tag)) {
+      // These declarations end at their semicolon; there is no function body
+      // from which the generic signature extractor could infer a boundary.
+      const declaration = captureText(lines, kindCapture);
+      signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
+    } else if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
       if (nameCapture && !nameCapture.text) {
@@ -935,6 +982,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
+    const trait = match.captures.find(c => c.tag === "implemented_trait");
+    if (trait) implementedTraits.set(sym, captureText(lines, trait));
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
@@ -1069,7 +1118,99 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  return { symbols: symbols.filter(s => !nested.has(s)), imports };
+  // Pascal declares a class method inside the class and implements it later as
+  // `procedure TClass.Method`, outside the class range. Move the body range
+  // onto the declared member so the method unfolds once, then merge interface
+  // declarations with their implementations. Signatures are compared up to
+  // the semicolon that ends the routine header, so `overload`/`virtual`
+  // directives on either side do not split a declaration from its body.
+  // Semicolons inside the parameter list separate parameter groups, so they
+  // are skipped: `Run(A: Integer; B: Integer)` and `Run(A: Integer; B: String)`
+  // are different overloads.
+  if (language === "pascal") {
+    const signatureKey = (signature: string): string => {
+      let parenDepth = 0;
+      for (let index = 0; index < signature.length; index++) {
+        const character = signature[index];
+        if (character === "(") parenDepth++;
+        else if (character === ")") parenDepth = Math.max(0, parenDepth - 1);
+        else if (character === ";" && parenDepth === 0) return signature.slice(0, index + 1);
+      }
+      return signature;
+    };
+    for (const sym of symbols) {
+      if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
+      const dot = sym.name.lastIndexOf(".");
+      if (dot <= 0) continue;
+      const ownerName = sym.name.slice(0, dot);
+      const leafName = sym.name.slice(dot + 1);
+      // Advanced records (`record_definition`, kind "struct") carry methods too.
+      const owner = containers.find(container =>
+        (container.sym.kind === "class" || container.sym.kind === "struct") && container.sym.name === ownerName);
+      if (!owner?.sym.children) continue;
+      const signature = sym.signature.replace(
+        new RegExp(`^((?:class\\s+)?(?:procedure|function|constructor|destructor|operator)\\s+)${ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`),
+        "$1",
+      );
+      const member = owner.sym.children.find(child => child.name === leafName
+        && signatureKey(child.signature) === signatureKey(signature));
+      if (!member) continue;
+      // A definition's header matches the same member as the definition body;
+      // it is redundant either way, only its larger range may be applied.
+      nested.add(sym);
+      const candidate = ranges.get(sym)!;
+      const current = ranges.get(member)!;
+      if (candidate.endRow - candidate.startRow < current.endRow - current.startRow) continue;
+      member.signature = signature;
+      member.lineStart = sym.lineStart;
+      member.lineEnd = sym.lineEnd;
+      ranges.set(member, candidate);
+    }
+
+    const declarations = new Map<string, CodeSymbol>();
+    for (const sym of symbols) {
+      if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
+      if (sym.name.includes(".")) continue;
+      const key = `${sym.name}|${signatureKey(sym.signature)}`;
+      const previous = declarations.get(key);
+      if (!previous) {
+        declarations.set(key, sym);
+        continue;
+      }
+      const keep = sym.lineEnd - sym.lineStart > previous.lineEnd - previous.lineStart ? sym : previous;
+      declarations.set(key, keep);
+      nested.add(keep === sym ? previous : sym);
+    }
+
+    // A standalone routine declared in the interface is a function, not a
+    // method: it only became a method because Pascal declares routines with
+    // the same node type used for class members.
+    for (const sym of symbols) {
+      if (!nested.has(sym) && sym.kind === "method" && !sym.name.includes(".")) sym.kind = "function";
+    }
+  }
+
+  const roots = symbols.filter(s => !nested.has(s));
+  if (implementedTraits.size) {
+    // Keep existing unambiguous paths. Distinguish trait impls when a sibling
+    // inherent or trait impl for the same receiver would otherwise shadow one.
+    const disambiguate = (siblings: CodeSymbol[]) => {
+      const receivers = new Set<string>();
+      const repeated = new Set<string>();
+      for (const symbol of siblings) {
+        if (symbol.kind !== "impl") continue;
+        if (receivers.has(symbol.name)) repeated.add(symbol.name);
+        receivers.add(symbol.name);
+      }
+      for (const symbol of siblings) {
+        const trait = implementedTraits.get(symbol);
+        if (trait && repeated.has(symbol.name)) symbol.name = `<${symbol.name} as ${trait}>`;
+        if (symbol.children) disambiguate(symbol.children);
+      }
+    };
+    disambiguate(roots);
+  }
+  return { symbols: roots, imports };
 }
 
 export function parseFile(content: string, filePath: string): FoldedFile {

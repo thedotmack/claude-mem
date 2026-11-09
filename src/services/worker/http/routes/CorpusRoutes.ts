@@ -8,6 +8,7 @@ import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
@@ -103,6 +104,7 @@ function writeSseEvent(res: Response, eventName: 'result' | 'error', data: Recor
  */
 export class CorpusRoutes extends BaseRouteHandler {
   private readonly sseHeartbeatIntervalMs: number;
+  private corpusBuildsInProgress = 0;
 
   constructor(
     private corpusStore: CorpusStore,
@@ -112,6 +114,25 @@ export class CorpusRoutes extends BaseRouteHandler {
   ) {
     super();
     this.sseHeartbeatIntervalMs = options.sseHeartbeatIntervalMs ?? DEFAULT_CORPUS_SSE_HEARTBEAT_INTERVAL_MS;
+  }
+
+  /**
+   * Corpus builds and rebuilds running now. Unlike prime, query and reprime,
+   * they are not handed the abort controller, so they keep running after
+   * their client leaves, when the server no longer counts them as requests.
+   * The auto-updater counts them as busy (worker-service.ts runningBackgroundJobNames).
+   */
+  corpusBuildsRunning(): number {
+    return this.corpusBuildsInProgress;
+  }
+
+  private async countCorpusBuild<T>(build: () => Promise<T>): Promise<T> {
+    this.corpusBuildsInProgress++;
+    try {
+      return await build();
+    } finally {
+      this.corpusBuildsInProgress--;
+    }
   }
 
   setupRoutes(app: express.Application): void {
@@ -150,6 +171,14 @@ export class CorpusRoutes extends BaseRouteHandler {
     res: Response,
     work: (abortController: AbortController) => Promise<CorpusOutcome>
   ): Promise<void> {
+    // Every mutating corpus route (build, rebuild, prime, query, reprime) runs
+    // long Agent SDK work and writes corpus files, so other localhost pages may
+    // not trigger it. Origin-less callers (the MCP corpus tools, the CLI) keep
+    // the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Corpus work from a different localhost origin is not allowed' });
+      return;
+    }
     const abortController = new AbortController();
     let workSettled = false;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -232,7 +261,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     // strategies, whose error handling turns it into a failed or unfiltered build.
     if (dateStart) resolveDateBound(dateStart, 'start');
     if (dateEnd) resolveDateBound(dateEnd, 'end');
-    return this.runLongCorpusWork(req, res, () => this.buildCorpus(body, dateStart, dateEnd));
+    return this.runLongCorpusWork(req, res, () => this.countCorpusBuild(() => this.buildCorpus(body, dateStart, dateEnd)));
   });
 
   private async buildCorpus(
@@ -291,7 +320,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json({ success: true });
   });
 
-  private handleRebuildCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, async () => {
+  private handleRebuildCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, () => this.countCorpusBuild(async () => {
     const name = this.toStringParam(req.params.name);
     const previousCorpus = this.corpusStore.read(name);
 
@@ -322,7 +351,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     this.corpusStore.write(corpus);
     const { observations, ...metadata } = corpus;
     return { status: 200, body: metadata };
-  }));
+  })));
 
   // A rebuild that keeps more than half of a non-trivial corpus is treated as a
   // routine refresh; keeping half or less is a destructive shrink that must be

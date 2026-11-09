@@ -4,13 +4,13 @@
  * ideograph blocks, and Hangul syllables. Shared by distilled-memory and raw-tool search.
  */
 const UNSEGMENTED_SCRIPT_RANGES =
-  '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
-export const UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`);
-const UNSEGMENTED_RUN = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
+export const UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, 'u');
+const UNSEGMENTED_RUN = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'gu');
 export const MAX_SUBSTRING_TERMS = 500;
-export function substringTerms(query: string): string[] {
-  return [...new Set(query.match(UNSEGMENTED_RUN) ?? [])].slice(0, MAX_SUBSTRING_TERMS);
+export function substringTerms(query: string, limit = MAX_SUBSTRING_TERMS): string[] {
+  return [...new Set(query.match(UNSEGMENTED_RUN) ?? [])].slice(0, limit);
 }
 
 export function buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {

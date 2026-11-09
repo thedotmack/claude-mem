@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Real HTTP routes, persistent SQLite, and the existing read-only worker thread.
+// Real HTTP routes, persistent SQLite, a context worker, and a separate raw process.
 const fixture = String.raw`
 import express from 'express';
 import { SessionStore } from './src/services/sqlite/SessionStore.ts';
@@ -12,10 +12,12 @@ import { SearchManager } from './src/services/worker/SearchManager.ts';
 import { FormattingService } from './src/services/worker/FormattingService.ts';
 import { SearchRoutes } from './src/services/worker/http/routes/SearchRoutes.ts';
 import { DataRoutes } from './src/services/worker/http/routes/DataRoutes.ts';
+import { DeepSearchClient } from './src/services/deep-search/DeepSearchClient.ts';
 import { ContextReadWorkerClient } from './src/services/context/ContextReadWorkerClient.ts';
 const store = new SessionStore(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db');
 const search = new SessionSearch(store.db);
 const reader = new ContextReadWorkerClient();
+const deepReader = new DeepSearchClient(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db');
 const seed = (project, merged) => {
   const id = store.createSDKSession(project, project, 'prompt');
   store.ensureMemorySessionIdRegistered(id, project + '-memory');
@@ -32,7 +34,7 @@ for (const project of ['target', 'legacy', 'partial', 'raw-only', 'other']) ids[
   toolInput: 'diagnose', toolResponse: 'DB_CONN_1042: increase pool to 30',
 });
 await search.configureToolUseIndex(true);
-const manager = new SearchManager(search, store, null, new FormattingService(), {}, undefined, reader);
+const manager = new SearchManager(search, store, null, new FormattingService(), {}, undefined, reader, deepReader);
 const app = express(); app.use(express.json());
 new SearchRoutes(manager).setupRoutes(app);
 new DataRoutes({}, {getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null}, {getSession: () => undefined}, {broadcast: () => {}}, {}, Date.now()).setupRoutes(app);
@@ -66,7 +68,7 @@ try {
   const afterDelete = await get({project:'delete-me'});
   store.db.run("INSERT INTO tool_uses_fts(tool_uses_fts, rank) VALUES('integrity-check', 1)");
   console.log(JSON.stringify({ids,scoped,selected,rekey,rekeySelected,wrongPlatform,rejected,failedDeleteStatus,afterFailedDelete,deletedStatus,deletedBody,afterDelete}));
-} finally { await new Promise(resolve=>server.close(resolve)); await reader.close(); store.close(); }
+} finally { await new Promise(resolve=>server.close(resolve)); await Promise.all([reader.close(), deepReader.close()]); store.close(); }
 `;
 
 it('keeps HTTP search, worker reads and selected raw bodies in the same project/platform scope', () => {
@@ -82,6 +84,7 @@ it('keeps HTTP search, worker reads and selected raw bodies in the same project/
     const ids = (rows: any[]) => rows.map(r => r.id).sort((a,b)=>a-b);
     expect(data.scoped.status).toBe(200);
     expect(data.scoped.body.deep.status).toBe('ok');
+    expect(data.scoped.body.deep.complete).toBe(true);
     expect(ids(data.scoped.body.toolUses)).toEqual([data.ids.target, data.ids.legacy].sort((a,b)=>a-b));
     expect(ids(data.selected.body)).toEqual(ids(data.scoped.body.toolUses));
     expect(data.rekeySelected.status).toBe(200);

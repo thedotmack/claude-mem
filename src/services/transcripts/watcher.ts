@@ -10,10 +10,12 @@ import {
   TranscriptAnchorError,
   TranscriptEventProcessor,
   TranscriptObservationError,
+  TranscriptSummaryError,
   TranscriptSpoolError,
   type TranscriptFileContext,
   type TranscriptObservationTransport,
 } from './processor.js';
+import { recordTimeEpochMs } from './field-utils.js';
 import { decompressZstdFrame, decompressZstdFrameBytes, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -133,24 +135,14 @@ async function readFirstLine(filePath: string, isZstd: boolean, limit: number): 
 }
 
 /**
- * When a transcript's first record says it was written: a top-level
- * `timestamp` (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness),
- * as an ISO string or epoch seconds/milliseconds. Null when the first record
- * carries none or cannot be read.
+ * When a transcript's first record says it was written (recordTimeEpochMs).
+ * Null when the first record carries none or cannot be read.
  */
 async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number): Promise<number | null> {
   try {
     const line = await readFirstLine(filePath, isZstd, size);
     if (line === null) return null;
-    const record = JSON.parse(line) as Record<string, unknown> | null;
-    for (const key of ['timestamp', 'time', 'createdAt']) {
-      const value = record?.[key];
-      const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
-        : typeof value === 'string' ? Date.parse(value)
-          : Number.NaN;
-      if (Number.isFinite(ms) && ms > 0) return ms;
-    }
-    return null;
+    return recordTimeEpochMs(JSON.parse(line));
   } catch {
     return null;
   }
@@ -1228,7 +1220,7 @@ export class TranscriptWatcher {
       // A turn whose prompt the worker did not record, or an event it did not
       // accept, stops the pass with the checkpoint at its line (or frame), so
       // it is retried, not misfiled or lost.
-      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSpoolError) {
+      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSummaryError || error instanceof TranscriptSpoolError) {
         logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),

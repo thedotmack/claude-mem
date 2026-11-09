@@ -51,6 +51,16 @@ function genericBuiltinRegex(lookbehind: string): RegExp {
   return new RegExp(`${lookbehind}${GENERIC_VALUE}`, 'gi');
 }
 
+// A webhook host, matched in any letter case (DNS names are case-insensitive)
+// and only where a host can start: after `//`, after userinfo `@`, or after a
+// character that cannot be part of a URL path. `host` is a regex source whose
+// letters are made case-insensitive one by one, so the rest of the pattern
+// keeps its case-sensitive path checks.
+function webhookHost(host: string): string {
+  const ci = host.replace(/\\.|[a-z]/g, (c) => (c.length === 1 ? `[${c}${c.toUpperCase()}]` : c));
+  return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${ci}`;
+}
+
 /** `key=value`, `key: value`, `"key": "value"`, with JSON-escaped quotes too. */
 function keyedLookbehind(key: string): string {
   return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
@@ -65,7 +75,8 @@ function keyedLookbehind(key: string): string {
 // - an env/shell or query assignment with no spaces around `=`, at the start
 //   or after whitespace, `?` or `&` (`api_key=…`, `export secret=…`,
 //   `?token=…`), whose value is not a call (`token=getAuthToken()`);
-// - a CLI flag (`--token=…`, `--api-key …`);
+// - a CLI flag (`--token=…`, `--api-key …`), prefixed ones too
+//   (`--auth-token …`, `--client-secret=…`, `--hf-token …`);
 // - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
 //   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
 // The worker scans tool output as `JSON.stringify(response)`, so a JSON
@@ -81,11 +92,33 @@ const GENERIC_TOKEN_REGEX = new RegExp([
   `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
   `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
   `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
-  String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+  String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
   `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
 ].join('|'), 'gi');
 
+// The worker scans tool I/O as JSON.stringify(...) (worker/http/shared.ts), so a
+// newline, tab or carriage return right before a key arrives as the two
+// characters `\n`, `\t` or `\r`. The letter is a word character, so a pattern
+// that starts with `\b` can't match there, and a key printed at the start of a
+// line was stored verbatim. Every `\b` that opens a pattern or one of its
+// alternatives also accepts that escaped pair, the way ASSIGNMENT_START does
+// for the generic patterns.
+const ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
+function matchAfterEscapedWhitespace(pattern: RedactionPattern): RedactionPattern {
+  const source = pattern.regex.source.replace(/(^|\||\(\?:)\\b/g, `$1${ESCAPED_WHITESPACE_OR_WORD_BOUNDARY}`);
+  return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
+}
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
+  // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
+  // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
+  // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
+  // so the scheme, user and host stay readable. The value stops at `/`, `@`,
+  // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
+  // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
+  // First in the list, so the whole password goes before a vendor pattern can
+  // split it with its marker and leave the rest of it behind.
+  { name: 'url_credentials', regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
   // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
   // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
   // export-credentials`), printed next to its secret and session token.
@@ -118,12 +151,94 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
   // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
-  { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
+  // API keys (`sk_`/`pk_`/`rk_`) and webhook signing secrets (`whsec_`, what
+  // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
+  { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+  // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
+  // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
+  // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
+  // JSON print them; each grants an hour of the account's API access.
+  { name: 'google_oauth_token', regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
+  // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
+  // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
+  // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
+  // npm access tokens (`npm_` + 36 chars) and Docker Hub personal access tokens
+  // (`dckr_pat_` + 27 chars): credentials printed in config files, CLI commands
+  // (`glab`, `huggingface-cli`, `npm`, `docker login`), and env dumps.
+  { name: 'gitlab_token',    regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
+  { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
+  { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
+  // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
+  // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
+  // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
+  // `secret_` words and short look-alikes out.
+  { name: 'linear_key',      regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
+  { name: 'notion_token',    regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
+  // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
+  // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
+  // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
+  // `shpca_`, `shppa_`, `shpss_` + 32 hex): what `doctl`, the Shopify CLI and
+  // `.env` dumps print.
+  { name: 'sendgrid_key',    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
+  { name: 'digitalocean_token', regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
+  { name: 'shopify_token',   regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
+  // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
+  // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
+  // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
+  { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
+  // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
+  // `databricks tokens create` print, and HashiCorp Vault service and batch
+  // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
+  // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
+  // print.
+  { name: 'databricks_token', regex: /\bdapi[a-f0-9]{32}(?:-\d)?(?!\w)/g },
+  { name: 'vault_token',     regex: /\b(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g },
+  // Two OpenAI-compatible providers this project onboards users for
+  // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
+  // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
+  // their installer hint, and neither was claimed by openai_key (`sk-`), so a
+  // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
+  // verbatim. 32+ trailing chars keeps short placeholders out.
+  { name: 'nvidia_nim_key',  regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
+  { name: 'runcrate_key',    regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
+  // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
+  // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
+  // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
+  // print. Neither prefix is claimed by openai_key, so they stayed in the text.
+  { name: 'groq_key',        regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
+  { name: 'xai_key',         regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+  // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+  // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+  // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+  // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+  // the fixed 48-char alphanumeric body keeps the model ids out.
+  { name: 'perplexity_key',  regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
+  // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
+  // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
+  // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
+  // payload + `_` + a 43-char base64 secret), which SENTRY_AUTH_TOKEN lines,
+  // `.sentryclirc` dumps and source-map upload commands print.
+  { name: 'supabase_token',  regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
+  { name: 'sentry_token',    regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
+  // Incoming webhook URLs carry their secret in the path, so anyone holding
+  // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
+  // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
+  // <id>/<token>`, discordapp.com and the ptb/canary hosts too), as printed by
+  // `.env` dumps, CI configs and `curl -X POST` commands. Only the last path
+  // segment is replaced, so the host and the workspace/channel ids stay
+  // readable. The host must start the URL's host part (after `//`, `@`, or a
+  // non-URL character), so `example.com/hooks.slack.com/…` keeps its path, and
+  // it matches in any letter case, as DNS does; the path stays case-sensitive.
+  { name: 'slack_webhook',   regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, 'g') },
+  { name: 'discord_webhook', regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`(?:(?:ptb|canary)\.)?discord(?:app)?\.com`)}\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])`, 'g') },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
-];
+].map(matchAfterEscapedWhitespace);
 
 // Generic, lower-confidence built-ins (issue #4745): credentials that carry no
 // vendor prefix. Opt-in on top of redaction (CLAUDE_MEM_REDACT_GENERIC_ENABLED,
@@ -137,6 +252,9 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
   { name: 'generic_token',    regex: GENERIC_TOKEN_REGEX },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
+  // `Authorization: Basic …` carries base64(user:password), a password anyone
+  // can decode, as in `curl -H "Authorization: Basic dXNlcjpodW50ZXIy"`.
+  { name: 'basic_auth',       regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Basic${BOUNDED_SPACE})`) },
 ];
 
 // Measured in UTF-16 code units (string.length). Bounds the regex work per
@@ -366,7 +484,7 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
 // key paired with the value again. As in text, only the token after `Bearer`
 // is replaced: the same spacing is accepted around `Bearer`, and whatever
 // follows the token (trailing whitespace included) is kept, unanchored.
-const AUTHORIZATION_KEY = /^authorization$/i;
+const AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
 const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
 
 function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
@@ -374,6 +492,16 @@ function bearerMarkerForKeyedValue(key: string, value: string, config: Redaction
   if (!AUTHORIZATION_KEY.test(key)) return null;
   const match = KEYED_BEARER_VALUE.exec(value);
   return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
+}
+
+// The same pairing for the credentials of `{"Authorization": "Basic …"}`.
+const KEYED_BASIC_VALUE = new RegExp(`^(${BOUNDED_SPACE}Basic${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
+
+function basicMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('basic_auth')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BASIC_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='basic_auth'/>${value.slice(match[0].length)}` : null;
 }
 
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
@@ -414,6 +542,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
         ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
         ?? bearerMarkerForKeyedValue(key, node, config)
+        ?? basicMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }

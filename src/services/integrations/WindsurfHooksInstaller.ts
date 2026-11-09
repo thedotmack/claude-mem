@@ -1,11 +1,11 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
@@ -59,7 +59,7 @@ export function readWindsurfRegistry(): WindsurfProjectRegistry {
 export function writeWindsurfRegistry(registry: WindsurfProjectRegistry): void {
   const dir = path.dirname(WINDSURF_REGISTRY_FILE);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(WINDSURF_REGISTRY_FILE, JSON.stringify(registry, null, 2));
+  writeJsonFileAtomic(WINDSURF_REGISTRY_FILE, registry);
 }
 
 export function registerWindsurfProject(workspacePath: string): void {
@@ -83,7 +83,6 @@ export function unregisterWindsurfProject(workspacePath: string): void {
 export function writeWindsurfContextFile(workspacePath: string, context: string): void {
   const rulesDir = path.join(workspacePath, '.windsurf', 'rules');
   const rulesFile = path.join(rulesDir, 'claude-mem-context.md');
-  const tempFile = `${rulesFile}.tmp`;
 
   mkdirSync(rulesDir, { recursive: true });
 
@@ -102,8 +101,7 @@ ${context}
       '\n\n*[Truncated — use MCP search for full history]*\n';
   }
 
-  writeFileSync(tempFile, content);
-  renameSync(tempFile, rulesFile);
+  writeTextFileAtomic(rulesFile, content);
 }
 
 function buildHookCommand(bunPath: string, workerServicePath: string, eventName: string): string {
@@ -161,7 +159,7 @@ function mergeAndWriteHooksJson(
     existingConfig.hooks[eventName] = [...existingHooks, hookEntry];
   }
 
-  writeFileSync(WINDSURF_HOOKS_JSON_PATH, JSON.stringify(existingConfig, null, 2));
+  writeJsonFileAtomic(WINDSURF_HOOKS_JSON_PATH, existingConfig);
 }
 
 export async function installWindsurfHooks(): Promise<number> {
@@ -227,14 +225,13 @@ Next steps:
 }
 
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
-  const port = getWorkerPort();
   const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
 
   try {
-    contextGenerated = await fetchWindsurfContextFromWorker(port, projectName, workspaceRoot);
+    contextGenerated = await fetchWindsurfContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
     if (error instanceof Error) {
       logger.debug('WORKER', 'Worker not running during install', {}, error);
@@ -253,7 +250,7 @@ async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void>
 
 Use claude-mem's MCP search tools for manual memory queries.
 `;
-    writeFileSync(rulesFile, placeholderContent);
+    writeTextFileAtomic(rulesFile, placeholderContent);
     console.log(`  Created placeholder context file (will populate after first session)`);
   }
 
@@ -262,11 +259,10 @@ Use claude-mem's MCP search tools for manual memory queries.
 }
 
 async function fetchWindsurfContextFromWorker(
-  port: number,
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const workerUrl = `http://${formatHostForUrl(getWorkerHost())}:${port}`;
+  const workerUrl = getWorkerBaseUrl();
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
@@ -334,7 +330,7 @@ function removeClaudeMemHookEntries(): void {
     unlinkSync(WINDSURF_HOOKS_JSON_PATH);
     console.log(`  Removed hooks.json (no hooks remaining)`);
   } else {
-    writeFileSync(WINDSURF_HOOKS_JSON_PATH, JSON.stringify(config, null, 2));
+    writeJsonFileAtomic(WINDSURF_HOOKS_JSON_PATH, config);
     console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
   }
 }
@@ -351,47 +347,4 @@ function removeWindsurfContextAndUnregister(workspaceRoot: string): void {
 
   console.log(`\nUninstallation complete!\n`);
   console.log('Restart Windsurf to apply changes.');
-}
-
-export function checkWindsurfHooksStatus(): number {
-  console.log('\nClaude-Mem Windsurf Hooks Status\n');
-
-  if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
-    console.log(`User-level: Installed`);
-    console.log(`   Config: ${WINDSURF_HOOKS_JSON_PATH}`);
-
-    let parsedConfig: Partial<WindsurfHooksJson> | null = null;
-    try {
-      parsedConfig = parseJsonWithBom(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, normalizedError);
-      console.log(`   Mode: Unable to parse hooks.json`);
-    }
-
-    if (parsedConfig) {
-      const registeredEvents = WINDSURF_HOOK_EVENTS.filter(
-        (event) => (parsedConfig?.hooks?.[event] ?? []).some(
-          (hook) => hook.command.includes('worker-service') && hook.command.includes('windsurf')
-        )
-      );
-      console.log(`   Events: ${registeredEvents.length}/${WINDSURF_HOOK_EVENTS.length} registered`);
-      for (const event of registeredEvents) {
-        console.log(`     - ${event}`);
-      }
-    }
-
-    const contextFile = path.join(process.cwd(), '.windsurf', 'rules', 'claude-mem-context.md');
-    if (existsSync(contextFile)) {
-      console.log(`   Context: Active (current workspace)`);
-    } else {
-      console.log(`   Context: Not yet generated for this workspace`);
-    }
-  } else {
-    console.log(`User-level: Not installed`);
-    console.log(`\nNo hooks installed. Run: claude-mem windsurf install\n`);
-  }
-
-  console.log('');
-  return 0;
 }

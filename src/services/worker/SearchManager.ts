@@ -1,3 +1,4 @@
+import type { DeepSearchExecutor } from '../deep-search/protocol.js';
 import { emptyDeepResult, type DeepSearchResult } from '../sqlite/tool-use-search.js';
 import { formatDeepSearch } from '../../shared/deep-search-format.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -5,7 +6,7 @@ import { AppError } from '../server/ErrorHandler.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
-import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
+import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -27,6 +28,15 @@ import { isCategoryRequested } from './search/types.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
+import { scopeRowIdsFor } from './search/scope-row-ids.js';
+
+/**
+ * Ceiling for `depth_before` / `depth_after` on the timeline route. Every unit
+ * is a row fetched and rendered, so an unbounded depth turns one request into a
+ * scan of the whole project history. The progressive search path caps this at 3
+ * (`progressive-search.ts`); the direct route keeps a wider but finite window.
+ */
+const TIMELINE_MAX_DEPTH = 50;
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -59,7 +69,8 @@ export class SearchManager {
      * An explicit `dateRange` on a request always wins over it.
      */
     private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS,
-    private contextReader: ContextReadWorkerClient | null = null
+    private contextReader: ContextReadWorkerClient | null = null,
+    private deepReader: DeepSearchExecutor | null = null
   ) {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
@@ -84,15 +95,14 @@ export class SearchManager {
   private async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>,
-    progress?: ChromaQueryProgress
+    whereFilter: Record<string, any> | undefined,
+    progress: ChromaQueryProgress | undefined,
+    fallbackRowIds: ChromaFallbackRowIds
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return progress
-      ? await this.chromaSync.queryChroma(query, limit, whereFilter, progress)
-      : await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return await this.chromaSync.queryChroma(query, limit, whereFilter, progress, fallbackRowIds);
   }
 
   /**
@@ -131,6 +141,11 @@ export class SearchManager {
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
+    const fallbackRowIds = scopeRowIdsFor(this.sessionStore, {
+      observations: docType === 'observation',
+      sessions: docType === 'session_summary',
+      prompts: docType === 'user_prompt',
+    }, { project, projects: readKeys, platformSource });
     const startEpoch = dateRange
       ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
       : this.searchRecencyWindowMs > 0 ? Date.now() - this.searchRecencyWindowMs : undefined;
@@ -145,7 +160,7 @@ export class SearchManager {
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined);
+      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined, fallbackRowIds);
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
         return meta && meta.created_at_epoch != null
@@ -327,7 +342,7 @@ export class SearchManager {
 
     const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
     const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
-    if (dateStart || dateEnd) {
+    if ((dateStart != null && dateStart !== '') || (dateEnd != null && dateEnd !== '')) {
       normalized.dateRange = {
         start: dateStart,
         end: dateEnd
@@ -460,7 +475,7 @@ export class SearchManager {
       || ['contentSessionId', 'sessionDbId', 'memorySessionId', 'session', 'toolName', 'agentId']
         .some(key => normalized[key] !== undefined);
     let raw: DeepSearchResult;
-    if (typeof query !== 'string' || !query.trim() || query.length > 4096
+    if (typeof query !== 'string' || !query.trim()
       || Number(options.offset || 0) !== 0 || unmapped || state.status === 'not_requested') {
       raw = emptyDeepResult('not_applicable');
     } else if (state.status === 'error') raw = emptyDeepResult('observation_error');
@@ -471,8 +486,8 @@ export class SearchManager {
         const projects = projectReadKeysFor(this.sessionStore, options.project, options.projects);
         const rawOptions = { ...options, projects };
         raw = status !== 'ready' ? emptyDeepResult(status)
-          : this.contextReader ? await this.contextReader.searchToolUses(query, rawOptions)
-            : this.sessionSearch.searchToolUses(query, rawOptions);
+          : this.deepReader ? await this.deepReader.search(query, rawOptions)
+            : emptyDeepResult('unsupported');
       } catch (error) {
         logger.error('SEARCH', 'Raw tool search failed', {}, error instanceof Error ? error : undefined);
         raw = emptyDeepResult('error');
@@ -830,8 +845,9 @@ export class SearchManager {
 
   private parseNumericAnchor(anchor: unknown): number | null {
     if (typeof anchor === 'number') return anchor;
-    if (typeof anchor === 'string' && /^\d+$/.test(anchor.trim())) {
-      return Number(anchor.trim());
+    // Search output names observations "#123" (sessions "#S5", accepted below).
+    if (typeof anchor === 'string' && /^#?\d+$/.test(anchor.trim())) {
+      return Number(anchor.trim().replace(/^#/, ''));
     }
     return null;
   }
@@ -857,6 +873,14 @@ export class SearchManager {
 
     if (![depthBefore, depthAfter].every(depth => Number.isSafeInteger(depth) && depth >= 0)) {
       return { content: [{ type: 'text' as const, text: 'Invalid timeline depth: depth_before and depth_after must be non-negative safe integers' }], isError: true };
+    }
+    // A safe integer is still unbounded: depth is the one dimension on this
+    // route with no ceiling, and each unit is a row fetched and rendered. Left
+    // open, `depth_before=100000` walks the whole project history in one
+    // request. The progressive search path already caps this at 3; keep the
+    // direct route generous but finite.
+    if (depthBefore > TIMELINE_MAX_DEPTH || depthAfter > TIMELINE_MAX_DEPTH) {
+      return { content: [{ type: 'text' as const, text: `Invalid timeline depth: depth_before and depth_after must be at most ${TIMELINE_MAX_DEPTH}` }], isError: true };
     }
     if (anchorAsNumber !== null && (!Number.isSafeInteger(anchorAsNumber) || anchorAsNumber <= 0)) {
       return { content: [{ type: 'text' as const, text: 'Invalid observation anchor: must be a positive safe integer' }], isError: true };

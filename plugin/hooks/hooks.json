@@ -1,5 +1,8 @@
 {
   "description": "Claude-mem memory system hooks",
+  "modules": [
+    "./auto-clear.js"
+  ],
   "hooks": {
     "Setup": [
       {
@@ -112,7 +115,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$",
+        "matcher": "Read|^read_file$|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$",
         "hooks": [
           {
             "type": "command",

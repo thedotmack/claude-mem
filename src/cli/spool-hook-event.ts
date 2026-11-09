@@ -1,8 +1,9 @@
-import { HookSpool, remoteHookSpoolReceipt, type HookSpoolKind, type HookSpoolPayloadByKind } from '../shared/hook-spool.js';
+import { HookSpool, remoteHookSpoolReceipt, type HookSpoolKind, type DurableHookSpoolKind, type HookSpoolPayloadByKind } from '../shared/hook-spool.js';
 import { workerHttpRequest, getWorkerHost } from '../shared/worker-utils.js';
 import { resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { resolveDataDir } from '../shared/paths.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
@@ -10,6 +11,9 @@ import { selectRuntime } from '../services/hooks/runtime-selector.js';
 import { REMOTE_SPOOL_PROTOCOL_VERSION, REMOTE_SPOOL_TIMEOUT_MS, REMOTE_SPOOL_REQUEST_TIMEOUT_MS, REMOTE_SPOOL_MAX_ENTRIES,
   usesRemoteHookSpool, remoteHookSpoolToken } from '../shared/hook-spool-remote.js';
 import { logger } from '../utils/logger.js';
+import { isLiveObserverEvent } from '../shared/observer-work-policy.js';
+import { sendLiveObserverEvent, settleLiveObserverEvents } from './live-observer-event.js';
+import { normalizePlatformSource } from '../shared/platform-source.js';
 
 export const SPOOL_NUDGE_TIMEOUT_MS = 250;
 
@@ -27,6 +31,9 @@ export async function uploadRemoteHookSpool(): Promise<void> {
     logger.warn('HOOK', 'Remote hook capture is queued locally; configure CLAUDE_MEM_WORKER_INGEST_TOKEN on the client and worker');
     return;
   }
+  if (!settings.CLAUDE_MEM_WORKER_URL.trim() && usesRemoteHookSpool(getWorkerHost())) {
+    logger.warn('HOOK', 'Remote hook capture sends event content and the ingest token over plain HTTP; set an https CLAUDE_MEM_WORKER_URL unless this network is trusted');
+  }
   let deadline: number | null = null;
   let attempted = 0;
   let failed = false;
@@ -36,6 +43,8 @@ export async function uploadRemoteHookSpool(): Promise<void> {
     return Date.now() < deadline && attempted < REMOTE_SPOOL_MAX_ENTRIES && !failed;
   };
   await new HookSpool().drain(async entry => {
+      // Upgrade cleanup: old inference fragments are not an upload backlog.
+      if (isLiveObserverEvent(entry.kind)) return true;
       attempted++;
       try {
         const response = await workerHttpRequest('/api/spool/ingest', {
@@ -97,15 +106,30 @@ function scheduleRemoteHookSpoolUpload(): Promise<void> {
   return upload;
 }
 
+/**
+ * The script the detached `upload-spool` child runs. Only the worker bundle
+ * handles `upload-spool`, so a hook running from the hook-only bundle uses the
+ * worker-service.cjs beside it (the same plugin root) before falling back to
+ * the resolved install, which may be a different version.
+ */
+export function uploadSpoolEntrypoint(currentScript: string | undefined): string | null {
+  if (currentScript && /worker-service\.(?:cjs|ts)$/.test(currentScript) && existsSync(currentScript)) {
+    return currentScript;
+  }
+  if (currentScript && basename(currentScript) === 'hook-service.cjs') {
+    const siblingWorkerScript = join(dirname(currentScript), 'worker-service.cjs');
+    if (existsSync(siblingWorkerScript)) return siblingWorkerScript;
+  }
+  return resolveWorkerScriptPath();
+}
+
 function startRemoteHookSpoolUpload(): void {
   const token = remoteHookSpoolToken(loadFromFileOnce().CLAUDE_MEM_WORKER_INGEST_TOKEN);
   if (!token) {
     logger.warn('HOOK', 'Remote hook capture is queued locally; configure CLAUDE_MEM_WORKER_INGEST_TOKEN on the client and worker');
     return;
   }
-  const currentScript = process.argv[1];
-  const script = currentScript && /worker-service\.(?:cjs|ts)$/.test(currentScript) && existsSync(currentScript)
-    ? currentScript : resolveWorkerScriptPath();
+  const script = uploadSpoolEntrypoint(process.argv[1]);
   if (!script) {
     logger.warn('HOOK', 'Remote hook upload entrypoint is unavailable; retaining the outbox');
     return;
@@ -154,7 +178,7 @@ function startRemoteHookSpoolUpload(): void {
  */
 export function nudgeWorkerToDrainHookSpool(): Promise<void> {
   const settings = loadFromFileOnce();
-  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)) {
+  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)) {
     remoteUploadRequested = true;
     return scheduleRemoteHookSpoolUpload();
   }
@@ -180,9 +204,10 @@ export function nudgeWorkerToDrainHookSpool(): Promise<void> {
 
 /** Resolves once every nudge this process started has been delivered or timed out (≤ 250 ms). */
 export async function settleHookSpoolNudges(): Promise<void> {
+  await settleLiveObserverEvents();
   if (!pendingNudge && !remoteUploadRequested && selectRuntime() === 'worker') {
     const settings = loadFromFileOnce();
-    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)
+    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)
       && new HookSpool().hasEntries()) {
       void nudgeWorkerToDrainHookSpool();
     }
@@ -192,12 +217,17 @@ export async function settleHookSpoolNudges(): Promise<void> {
 }
 
 /**
- * Write-hook hand-off: persist the event to the hook spool, start the poke to
- * the worker, return. The handler makes no awaited worker call and no
- * readiness wait; only hookCommand's exit waits (≤ 250 ms) for the poke.
+ * Compatibility entry point for hook capture. Inference inputs take a single
+ * live handoff; only non-inference metadata goes to disk. hookCommand settles
+ * the handoff within 250 ms. Neither path starts a worker or waits for readiness.
  */
 export function spoolHookEvent<K extends HookSpoolKind>(kind: K, payload: HookSpoolPayloadByKind[K]): string {
-  const entryPath = new HookSpool().enqueue(kind, payload);
+  if (isLiveObserverEvent(kind)) {
+    return sendLiveObserverEvent({ kind, payload: {
+      ...payload, platformSource: normalizePlatformSource(payload.platformSource),
+    }, enqueuedAtEpochMs: Date.now() } as import('../shared/hook-spool.js').HookSpoolEntry);
+  }
+  const entryPath = new HookSpool().enqueue(kind as DurableHookSpoolKind, payload as HookSpoolPayloadByKind[DurableHookSpoolKind]);
   logger.debug('HOOK', 'Hook event spooled for the worker', { kind, entryPath });
   void nudgeWorkerToDrainHookSpool();
   return entryPath;

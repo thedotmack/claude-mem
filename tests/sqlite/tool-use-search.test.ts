@@ -22,6 +22,14 @@ function fixture(file = ':memory:') {
 }
 
 describe('optional raw-tool content index (#4060)', () => {
+  it('does not silently truncate large term lists and finds supplementary Han characters', () => {
+    const h = fixture(); h.write('han', 'before𠀀𠀁after'); h.enable();
+    expect(h.find('𠀀').toolUses).toHaveLength(1);
+    const tooMany = '中 ' + Array.from({ length: 500 }, (_, i) => `x${i}`).join(' ');
+    expect(h.find(tooMany).deep).toEqual({ status: 'invalid_query', complete: false, count: null, hasMore: null });
+    expect(h.find('a'.repeat(4097)).deep.status).toBe('invalid_query');
+    expect(h.find('中 '.repeat(501)).deep.status).toBe('ok'); // repeated terms are deduplicated
+  });
   it('is absent by default and backfills historical bodies only on explicit initialization', () => {
     const h = fixture(); const id = h.write('old');
     new SessionSearch(h.db);
@@ -151,7 +159,7 @@ describe('optional raw-tool content index (#4060)', () => {
     const h = fixture(); h.enable();
     h.write('large', 'x'.repeat(MAX_TOOL_PAYLOAD_BYTES) + ' lost_after_storage_cap');
     expect(h.find('lost_after_storage_cap').toolUses).toEqual([]);
-    expect(h.find('x'.repeat(4097)).deep.status).toBe('not_applicable');
+    expect(h.find('x'.repeat(4097)).deep.status).toBe('invalid_query');
     h.write('long', 'longword'.repeat(400) + ' needle');
     expect(h.find('needle').toolUses[0].snippet.length).toBeLessThanOrEqual(480);
     expect(h.find('needle').toolUses[0].snippet).toContain('needle');

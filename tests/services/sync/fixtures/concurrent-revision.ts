@@ -56,7 +56,7 @@ manager.callTool = async (tool: string, args: any) => {
   }
   if (failWrites && mutations.has(tool)
     && args.metadatas.some((metadata: any) => metadata.sqlite_id === targetId && metadata.doc_type === docType)
-    && args.documents.some((text: string) => text.includes('new green cluster'))) {
+    && args.documents?.some((text: string) => text.includes('new green cluster'))) {
     throw new Error('Injected temporary failure writing the revised memory');
   }
   let result: any = {};
@@ -70,13 +70,15 @@ manager.callTool = async (tool: string, args: any) => {
   } else if (tool === 'chroma_delete_documents') {
     ids.forEach(id => indexed.delete(id));
   } else if (mutations.has(tool)) {
-    // add rejects the whole conflicting batch; update ignores missing IDs.
+    // add rejects the whole conflicting batch; update ignores missing IDs and,
+    // when it carries no documents, keeps the stored text.
     if (tool === 'chroma_add_documents' && ids.some(id => indexed.has(id))) {
       throw new Error('IDs already exist in collection');
     }
     ids.forEach((id, index) => {
       if (tool === 'chroma_add_documents' || indexed.has(id)) {
-        indexed.set(id, { document: args.documents[index], metadata: args.metadatas[index] });
+        const document = args.documents ? args.documents[index] : indexed.get(id)!.document;
+        indexed.set(id, { document, metadata: args.metadatas[index] });
       }
     });
   }

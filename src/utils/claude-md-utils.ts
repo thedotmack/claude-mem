@@ -1,5 +1,6 @@
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { logger } from './logger.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
@@ -9,6 +10,7 @@ import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { parseContextCountValue } from '../shared/context-count.js';
 import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
@@ -48,7 +50,10 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
       return false;
     }
 
-    if (hasConsecutiveDuplicateSegments(resolved)) {
+    // Start at the project folder's own name, so a doubled prefix like
+    // frontend/frontend still matches (#814) but a project checked out at
+    // ~/code/app/app does not reject every path.
+    if (hasConsecutiveDuplicateSegments(path.relative(path.dirname(normalizedRoot), resolved))) {
       return false;
     }
   }
@@ -100,9 +105,17 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // symlink loop or an unwritable target throws, as any write failure does.
   const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
   ensureDirectoryExists(path.dirname(writeTarget));
-  const tempFile = `${writeTarget}.tmp`;
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, writeTarget);
+  // Random name + exclusive create: a predictable `.tmp` sibling can be
+  // shipped inside a checkout as a symlink, and a following write would then
+  // clobber whatever it points at (the rename only replaces the link itself).
+  const tempFile = `${writeTarget}.${randomUUID()}.tmp`;
+  writeFileSync(tempFile, finalContent, { flag: 'wx' });
+  try {
+    renameSync(tempFile, writeTarget);
+  } catch (error) {
+    try { unlinkSync(tempFile); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 interface ParsedObservation {
@@ -240,7 +253,9 @@ export async function updateFolderClaudeMdFiles(
   projectRoot?: string
 ): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const limit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
+  // A count of 0 means the user wants no observations, so no folder file is fetched or written.
+  if (limit === 0) return;
   const targetFilename = getTargetFilename(settings);
 
   let folderMdExcludePaths: string[] = [];

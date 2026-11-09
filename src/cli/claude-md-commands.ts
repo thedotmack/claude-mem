@@ -17,10 +17,12 @@ import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { findContextBlockRange } from '../utils/context-injection.js';
 import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
 import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
+import { parseContextCountValue } from '../shared/context-count.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -231,41 +233,26 @@ function findObservationsByFolder(
   );
 }
 
-function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
-  if (obs.files_modified) {
+// The heading uses the same predicate that selected the row, so an observation
+// that also touched a same-named folder elsewhere is filed under this folder's file.
+function extractRelevantFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): string {
+  for (const [column, filesJson] of [['files_modified', obs.files_modified], ['files_read', obs.files_read]] as const) {
+    if (!filesJson) continue;
     try {
-      const modified = JSON.parse(obs.files_modified);
-      if (Array.isArray(modified)) {
-        for (const file of modified) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
+      const files = JSON.parse(filesJson);
+      if (Array.isArray(files)) {
+        const file = files.find((entry): entry is string => typeof entry === 'string' && isFolderChild(entry));
+        if (file) return path.posix.basename(normalizePath(file));
       }
     } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_modified JSON', { error: error instanceof Error ? error.message : String(error) });
-    }
-  }
-
-  if (obs.files_read) {
-    try {
-      const read = JSON.parse(obs.files_read);
-      if (Array.isArray(read)) {
-        for (const file of read) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_read JSON', { error: error instanceof Error ? error.message : String(error) });
+      logger.warn('CLAUDE_MD', `Failed to parse ${column} JSON`, { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
   return 'General';
 }
 
-function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
+function formatObservationsForClaudeMd(observations: ObservationRow[], isFolderChild: (file: string) => boolean): string {
   const lines: string[] = [];
   lines.push('# Recent Activity');
   lines.push('');
@@ -286,7 +273,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 
     const byFile = new Map<string, ObservationRow[]>();
     for (const obs of dayObs) {
-      const file = extractRelevantFile(obs, folderPath);
+      const file = extractRelevantFile(obs, isFolderChild);
       if (!byFile.has(file)) byFile.set(file, []);
       byFile.get(file)!.push(obs);
     }
@@ -374,7 +361,7 @@ function regenerateFolder(
   }
 
   try {
-    const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
+    const formatted = formatObservationsForClaudeMd(observations, makeFolderChildMatcher(relativeFolder, resolvedWorkingDir));
     writeClaudeMdToFolder(absoluteFolder, formatted);
     return { success: true, observationCount: observations.length };
   } catch (error) {
@@ -443,7 +430,7 @@ function processAllFoldersForGeneration(
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   const workingDir = process.cwd();
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+  const observationLimit = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) ?? 50;
 
   logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
     workingDir,
@@ -510,9 +497,12 @@ function processFilesForCleanup(
   return 0;
 }
 
-function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
-  const content = readFileSync(file, 'utf-8');
-  const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
+export function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
+  let remaining = readFileSync(file, 'utf-8');
+  for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
+    remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
+  }
+  const stripped = remaining.trim();
 
   if (stripped === '') {
     if (!dryRun) {
@@ -558,7 +548,7 @@ export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
         } else if (entry.name === 'CLAUDE.md') {
           try {
             const content = readFileSync(fullPath, 'utf-8');
-            if (content.includes('<claude-mem-context>')) {
+            if (findContextBlockRange(content)) {
               filesToProcess.push(fullPath);
             }
           } catch {

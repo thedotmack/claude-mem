@@ -171,7 +171,7 @@ Writes from this host stamp `platformSource=grok-bot`. When reading, do not drop
 3. Do a small unit of work in Grok Bot, then search. New observations should show `platformSource=grok-bot`.
 4. Default observer: first real observation stores via model `cmem-observer`. Host observer: if the queue sits idle, the reply is probably prose instead of `skip_summary`.
 5. Live INDEX: after an observation is stored (any project on this worker), `agents/<this-seat-uuid>/memory/log/zz-claude-mem-inject.md` should gain a new newest row (`- (YYYY-MM-DD) [episode] [claude-mem] <id> …`) without anyone hand-writing the file. A thin seat project still fills from the newest house rows. Turn off with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`.
-6. Awareness push pilot (LFG + Orifice): a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Turn off with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
+6. Opt-in awareness push: a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Enable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=true` and set `CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS` to your agent UUIDs (empty by default).
 
 ## Troubleshooting
 
@@ -199,6 +199,8 @@ Cursor uses hooks (`npx claude-mem hook cursor …`) and `platformSource=cursor`
 ### This is not Grok Build
 
 The Grok **Build** CLI marketplace (`xai-org/plugin-marketplace`) is a different catalog. This page is Grok Bot only.
+
+Grok Build loads the Claude plugin's `hooks/hooks.json` (this plugin's skills and `mcp-search` stay on that host). Runtime hooks there are exec form (`claude-mem` plus arguments, no shell command string). The claude-code adapter accepts Grok Build's camelCase payload (`toolName`, `toolInput`, `toolResult`, `lastAssistantMessage`, `userPrompt`), and the file-context matcher includes Grok Build's `read_file` tool, whose `target_file` is read as the file path. Grok Build does not inject SessionStart or UserPromptSubmit stdout into the model; capture still runs.
 
 ## Next steps
 

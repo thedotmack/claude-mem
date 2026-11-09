@@ -10,7 +10,7 @@ import {
   type WorkerScriptCandidate,
 } from '../../shared/worker-utils.js';
 import { readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
-import { readJsonSafe } from '../../utils/json-utils.js';
+import { readClaudeMemRegistrationEntries, readUserScopeClaudeMemInstallPaths, registeredInstallPathsOf } from '../../shared/claude-code-plugin-paths.js';
 
 /**
  * Versions of the plugin cache to keep: the newly installed one (N) and the
@@ -239,13 +239,21 @@ export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
  * Throws on a corrupt registry, before anything is deleted.
  */
 export function readRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
-  const registry = readJsonSafe<{ plugins?: Record<string, unknown> } | null>(registryPath, {});
-  const entries = registry?.plugins?.['claude-mem@thedotmack'];
-  if (!Array.isArray(entries)) return [];
-  return entries
-    .map(entry => (entry as { installPath?: unknown } | null)?.installPath)
-    .filter((installPath): installPath is string => typeof installPath === 'string' && installPath.length > 0)
-    .map(installPath => basename(installPath));
+  return registeredInstallPathsOf(readClaudeMemRegistrationEntries(registryPath)).map(installPath => basename(installPath));
+}
+
+/**
+ * The cache version directories of the one registration the npx installer
+ * writes, and every `npx claude-mem update` replaces (install.ts
+ * registerPlugin): claude-mem@thedotmack's user-scope entries. Claude Code can
+ * also hold project- or local-scope entries for claude-mem, each at a version
+ * of its own, which no npx run writes; the auto-updater reads only this one,
+ * so another scope's version never reads as the install having moved
+ * (auto-update-check.ts, auto-update-launch.ts readInstallVersions). Throws on
+ * a corrupt registry, as readRegisteredCacheVersions does.
+ */
+export function readUserScopeRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
+  return readUserScopeClaudeMemInstallPaths(registryPath).map(installPath => basename(installPath));
 }
 
 export interface PruneProtection {

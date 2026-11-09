@@ -7,21 +7,40 @@ import { logger } from '../../utils/logger.js';
 
 type NodeHandler = ReturnType<typeof import('better-auth/node').toNodeHandler>;
 
-const cachedHandlers = new WeakMap<Database, NodeHandler>();
+const cachedHandlers = new WeakMap<Database, Promise<NodeHandler>>();
 
-async function getBetterAuthHandler(database: Database): Promise<NodeHandler> {
+async function buildBetterAuthHandler(database: Database): Promise<NodeHandler> {
+  const [{ toNodeHandler }, { createAuth }, { getMigrations }] = await Promise.all([
+    import('better-auth/node'),
+    import('./auth.js'),
+    import('better-auth/db/migration'),
+  ]);
+  const auth = createAuth(database);
+  // better-auth never creates its own tables, and nothing else in the worker
+  // runs its migrations, so a fresh install has no user/session/account
+  // tables and every auth request fails with "Database schema mismatch"
+  // (#5453). Run the migrations once, before the first request is served.
+  const { runMigrations } = await getMigrations(auth.options);
+  await runMigrations();
+  return toNodeHandler(auth);
+}
+
+function getBetterAuthHandler(database: Database): Promise<NodeHandler> {
   const cachedHandler = cachedHandlers.get(database);
   if (cachedHandler) {
     return cachedHandler;
   }
 
-  const [{ toNodeHandler }, { createAuth }] = await Promise.all([
-    import('better-auth/node'),
-    import('./auth.js'),
-  ]);
-  const handler = toNodeHandler(createAuth(database));
-  cachedHandlers.set(database, handler);
-  return handler;
+  const handlerPromise = buildBetterAuthHandler(database);
+  cachedHandlers.set(database, handlerPromise);
+  // A failed build (missing package, failed migration) must not stay cached:
+  // the next request retries instead of reusing the same rejection forever.
+  handlerPromise.catch(() => {
+    if (cachedHandlers.get(database) === handlerPromise) {
+      cachedHandlers.delete(database);
+    }
+  });
+  return handlerPromise;
 }
 
 export class BetterAuthRoutes implements RouteHandler {

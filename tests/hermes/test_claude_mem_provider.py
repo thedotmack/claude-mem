@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -155,6 +156,16 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(observation["cwd"], self.cwd)
         self.assertEqual(summary["last_assistant_message"], "All green")
         self.assertEqual(summary["contentSessionId"], "sess-1")
+
+    def test_a_private_last_turn_sends_no_summary_after_a_public_turn(self):
+        self.provider.on_turn_start(1, "Fix the failing login test")
+        self.provider.on_turn_start(2, "<private>rotate the prod key sk-live-123</private>")
+        self.provider.on_session_end([{"role": "assistant", "content": "Rotated sk-live-123"}])
+        self.drain()
+        # The public first turn is recorded; the private last turn's reply never
+        # leaves Hermes, so no summarize request carries it.
+        self.assertEqual(self.fake.paths(), ["/api/sessions/init"])
+        self.assertNotIn("sk-live-123", json.dumps([r["body"] for r in self.fake.requests]))
 
     def test_a_long_tool_result_is_capped(self):
         self.provider.on_turn_start(1, "read the log")
@@ -338,7 +349,53 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(self.fake.requests[0]["body"]["cwd"], other)
 
 
+class TagScanTest(unittest.TestCase):
+    """The tag scanner visits each character once: the old `<name[^>]*>` tail
+    rescanned the rest of the text for every unfinished `<name` candidate."""
+
+    def test_a_long_attribute_list_still_hides_its_content(self):
+        # Bounding the attribute tail (`{0,512}`, as PR #5152 did) would stop
+        # this opener from matching and let the private text reach the worker.
+        attributes = " " + "k=v " * 500
+        text = "keep <private" + attributes + ">secret</private> done"
+        self.assertEqual(client_module._strip_text(text), "keep  done")
+
+    def test_a_tag_ends_at_the_first_greater_than(self):
+        self.assertEqual(client_module._strip_text("a<private b>c</private>d"), "ad")
+        self.assertEqual(client_module._strip_text("a<private b<c>d</private>e"), "ae")
+
+    def test_matching_stays_case_insensitive(self):
+        self.assertEqual(client_module._strip_text("a<PRIVATE>s</Private>b"), "ab")
+
+    def test_an_unclosed_section_still_runs_to_the_end(self):
+        self.assertEqual(client_module._strip_text("keep <private>secret"), "keep ")
+
+    def test_an_unfinished_opener_is_not_rescanned_per_candidate(self):
+        payload = "<private" * 45000  # ~351 KB with no '>' anywhere
+        started = time.monotonic()
+        self.assertEqual(client_module.strip_tags(payload), payload)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+
 class FailSoftTest(unittest.TestCase):
+    def test_truncated_http_response_counts_toward_breaker(self):
+        transport = client_module.Transport(client_module.Config("http://localhost"))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.side_effect = client_module.http.client.IncompleteRead(b"", 2)
+            for _ in range(client_module.BREAKER_FAILURES):
+                with self.assertRaises(client_module.RequestFailed):
+                    transport.worker("GET", "/test")
+        self.assertTrue(transport.breaker.open())
+
+    def test_invalid_configured_url_fails_soft(self):
+        client = client_module.ClaudeMemClient(client_module.Config("invalid"))
+        self.addCleanup(client.close)
+        self.assertEqual(client.recent_context(REPO), "")
+
+    def test_query_stops_at_distinct_term_limit(self):
+        self.assertEqual(client_module.server_query("First first second third", 2), "first or second")
+        self.assertEqual(client_module.server_query("first second", 0), "")
+
     def test_a_stopped_worker_never_raises_and_never_stalls(self):
         config = client_module.Config("http://127.0.0.1:%d" % unused_port())
         client = client_module.ClaudeMemClient(config)
@@ -467,10 +524,21 @@ class SettingsTest(unittest.TestCase):
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory, "CLAUDE_MEM_WORKER_PORT": "39999"})
         self.assertEqual(config.worker_base, "http://[::1]:39999")
 
-    def test_default_port_follows_the_uid(self):
+    def test_default_port_matches_the_shared_fallback(self):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
-        self.assertEqual(config.worker_base, "http://127.0.0.1:" + str(37700 + (os.getuid() if hasattr(os, "getuid") else 77) % 100))
+        self.assertEqual(config.worker_base, "http://127.0.0.1:" + client_module.default_worker_port(directory))
+
+    def test_default_port_matches_shared_windows_path_hashes_without_uid(self):
+        cases = [
+            (r"C:\Profiles\Claude", "37746"),
+            (r"D:\AgentData\CMEM", "37791"),
+        ]
+
+        with mock.patch.object(client_module.os, "getuid", None, create=True):
+            for directory, expected_port in cases:
+                with self.subTest(directory=directory):
+                    self.assertEqual(client_module.default_worker_port(directory), expected_port)
 
     def test_server_needs_all_three_settings(self):
         partial = self.write_settings({"CLAUDE_MEM_RUNTIME": "server", "CLAUDE_MEM_SERVER_URL": "https://m.example",
@@ -508,6 +576,47 @@ class CheckoutProjectTest(unittest.TestCase):
         plain = os.path.join(root, "notes")
         os.makedirs(plain)
         self.assertEqual(client_module.checkout_project(plain), "notes")
+
+    def test_the_cache_serves_the_key_it_already_derived_within_the_ttl(self):
+        client_module._PROJECT_KEYS.clear()
+        root = tempfile.mkdtemp(prefix="hermes-ttl-")
+        repo = os.path.join(root, "nested")
+        os.makedirs(os.path.join(repo, "sub"))
+        self.git("init", "-q", repo)
+        self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                 "--allow-empty", "-m", "init")
+        cwd = os.path.join(repo, "sub")
+        # The git root is `nested`, so the key is the root folder name.
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+        # A nested repository under the same path changes the git root, but the
+        # entry is still inside its TTL, so the key it already derived is served.
+        self.git("init", "-q", cwd)
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+
+    def test_a_cache_entry_expires_at_its_original_deadline(self):
+        client_module._PROJECT_KEYS.clear()
+        ttl = client_module._PROJECT_KEY_TTL_S
+        start = 1000.0
+        clock = [start]
+        original_time = client_module.time
+        client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
+        try:
+            root = tempfile.mkdtemp(prefix="hermes-ttl-")
+            repo = os.path.join(root, "nested")
+            os.makedirs(os.path.join(repo, "sub"))
+            self.git("init", "-q", repo)
+            self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                     "--allow-empty", "-m", "init")
+            cwd = os.path.join(repo, "sub")
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            self.git("init", "-q", cwd)
+            # A hit near the end of the window must not extend the deadline.
+            clock[0] = start + ttl - 1
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            clock[0] = start + ttl + 1
+            self.assertEqual(client_module.checkout_project(cwd), "sub")
+        finally:
+            client_module.time = original_time
 
 
 class RecallPrivacyTest(unittest.TestCase):
@@ -567,9 +676,9 @@ class ServerModeTest(unittest.TestCase):
         provider.on_session_end([{"role": "assistant", "content": "Deployed"}])
         self.assertTrue(client.flush(5.0))
         self.assertEqual(fake.paths(), ["/v1/sessions/start", "/v1/events", "/v1/events", "/v1/memories",
-                                        "/v1/sessions/start", "/v1/events", "/v1/sessions/srv-1/end"])
+                                        "/v1/events", "/v1/sessions/srv-1/end"])
         self.assertTrue(all(r["authorization"] == "Bearer key-1" for r in fake.requests))
-        start, prompt, tool, note, _, last, _ = (r["body"] for r in fake.requests)
+        start, prompt, tool, note, last, _ = (r["body"] for r in fake.requests)
         self.assertEqual(start["projectId"], "proj-1")
         self.assertEqual(start["metadata"]["prompt"], "deploy the app")
         # Every prompt is its own event; it does not start a generation by itself.
@@ -594,6 +703,37 @@ class ServerModeTest(unittest.TestCase):
         self.assertNotIn("hunter2", query)
         self.assertIn("deploy or application", query)
         provider.shutdown()
+
+    def test_failed_final_event_still_attempts_to_end_session(self):
+        transport = mock.Mock()
+        transport.server.side_effect = [client_module.RequestFailed("bad event"), b"{}"]
+        client = client_module.ClaudeMemClient(client_module.Config("", "https://server", "key", "id"), transport)
+        self.addCleanup(client.close)
+        session = client_module.Session("s")
+        session.anchored = True
+        session.server_session_id = "known/id"
+        client._finish(session, REPO, "last message")
+        self.assertEqual([call.args[1] for call in transport.server.call_args_list],
+                         ["/v1/events", "/v1/sessions/known%2Fid/end"])
+
+    def test_a_private_last_turn_still_ends_the_server_session(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        fake.replies["/v1/sessions/start"] = (200, {"session": {"id": "srv-2"}})
+        config = client_module.Config("http://127.0.0.1:1", fake.base, "key-1", "proj-1")
+        client = client_module.ClaudeMemClient(config)
+        provider = claude_mem.ClaudeMemMemoryProvider(client=client)
+        self.addCleanup(provider.shutdown)
+        provider.initialize("sess-p", cwd="/work/app")
+        provider.on_turn_start(1, "deploy the app")
+        provider.on_turn_start(2, "<private>use password hunter2</private>")
+        provider.on_session_end([{"role": "assistant", "content": "Logged in with hunter2"}])
+        self.assertTrue(client.flush(5.0))
+        # The private turn's assistant message is dropped, but the session the
+        # public turn opened is still ended on the server.
+        self.assertEqual(fake.paths(), ["/v1/sessions/start", "/v1/events",
+                                        "/v1/sessions/srv-2/end"])
+        self.assertNotIn("hunter2", json.dumps([r["body"] for r in fake.requests]))
 
 
 if __name__ == "__main__":

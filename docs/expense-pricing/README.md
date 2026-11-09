@@ -8,7 +8,7 @@ Expense reports should do:
 tokens × this table
 ```
 
-Do **not** join OpenRouter spend logs, generation ids, activity APIs, or management keys. Those are a different authority (`RECEIPT-JOIN.md`).
+Do **not** join OpenRouter spend logs, generation ids, activity APIs, or management keys. Those are a different authority (`docs/receipt-join.md`).
 
 ## Files
 

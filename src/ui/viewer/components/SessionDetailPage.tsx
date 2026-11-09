@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useI18n } from '../../i18n';
 import { Feed } from './Feed';
 import { CategoryFilter } from './CategoryFilter';
 import { FeedItem } from '../types';
@@ -17,14 +18,17 @@ interface SessionDetailPageProps {
   isLoading: boolean;
   hasMore: boolean;
   loadError?: string | null;
+  canRetry?: boolean;
+  offsetCapReachedAt?: number | null;
   onLoadMore: () => void;
   onDeleted: (itemType: DeletableItemType, id: number) => void;
   onBack: () => void;
 }
 
 export function SessionDetailPage({
-  tabs, session, title, items, isLoading, hasMore, loadError, onLoadMore, onDeleted, onBack,
+  tabs, session, title, items, isLoading, hasMore, loadError, canRetry, offsetCapReachedAt, onLoadMore, onDeleted, onBack,
 }: SessionDetailPageProps) {
+  const { t } = useI18n();
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
   const currentSessionKey = sessionKey(session);
 
@@ -56,7 +60,7 @@ export function SessionDetailPage({
       {tabs}
       <div className="session-detail-header">
         <button className="session-detail-back" onClick={onBack}>
-          ← Back to sessions
+          ← {t('Back to sessions')}
         </button>
         <div className="session-detail-title-group">
           {title && <span className="session-detail-title">{title}</span>}
@@ -85,6 +89,8 @@ export function SessionDetailPage({
       isLoading={isLoading}
       hasMore={hasMore}
       loadError={loadError}
+      canRetry={canRetry}
+      offsetCapReachedAt={offsetCapReachedAt}
     />
   );
 }

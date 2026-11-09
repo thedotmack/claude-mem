@@ -1,7 +1,9 @@
+import type { MediaManifest } from '../shared/media-contract.js';
 
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
 import type { ClaudeCredential } from '../shared/quota-cooldown.js';
+import type { MediaAttachmentRef, MediaFailureDescriptor } from '../shared/media-contract.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -97,6 +99,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Epoch ms at which the response-stall pacer spent its bounded resumes and
+   * scheduled none (#5405). Its buffered work is discarded at that moment, so
+   * nothing waits on it; cleared when any generator starts. Reported by
+   * /api/processing-status; nothing resumes on it.
+   */
+  stallResumesExhaustedAt?: number;
+  /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
    * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
@@ -134,7 +143,8 @@ export interface ActiveSession {
   paidSendBudget?: PaidSendBudget;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
-   * it, so a stale timer never restarts a session a newer generation paused.
+   * it and session teardown clears it, so a stale timer never restarts a
+   * session a newer generation paused, or one that is gone.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -234,6 +244,9 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: any;
@@ -252,6 +265,9 @@ export interface PendingMessageWithId extends PendingMessage {
 }
 
 export interface ObservationData {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   tool_name: string;
   tool_input: any;
   tool_response: any;
@@ -302,6 +318,8 @@ export interface Observation {
   prompt_number: number;
   created_at: string;
   created_at_epoch: number;
+  /** Validated `metadata.cmem_media_v1` refs; absent for image-free rows (see media/feed.ts). */
+  media?: MediaManifest;
 }
 
 export interface Summary {

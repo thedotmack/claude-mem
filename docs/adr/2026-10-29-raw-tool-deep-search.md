@@ -37,7 +37,9 @@ search returns one typed raw hit and its bounded excerpt.
   triggers until ready. New rows above the cursor await their batch; indexed
   rows update immediately. Missing triggers invalidate the derived index and
   restart this build, rather than attaching normal delete triggers to stale data.
-- No additional background process, polling loop, external marker, or outbox.
+- No background indexing process, polling loop, external marker, or outbox.
+  Raw queries now use a separate disposable process with an independent guard;
+  they never occupy the ordinary context reader.
   The historical observation-FTS bloat cleanup is a one-time repair for an older
   write-amplification bug, not a generic scheduler for new indexes. This index
   uses SQLite's normal merges; tests also exercise an explicit merge and FTS
@@ -88,13 +90,15 @@ body copy. Total database growth also includes page/metadata overhead.
 
 An earlier run with autocheckpointing deliberately disabled accumulated about
 3.86 GB of WAL. That is not the default configuration, but shows why disk headroom
-and long-lived readers that prevent checkpoints matter. Expensive raw reads run
-on the existing read worker, keeping the main event loop free; they can still
-delay other requests queued on that reader. A bounded result count does not bound
-FTS ranking or CJK scan CPU. Project filters greatly help CJK misses but do not
+and long-lived readers that prevent checkpoints matter. These measurements
+precede the subprocess revision: the initial implementation ran expensive raw
+reads on the existing reader and could delay normal context reads. The current
+implementation isolates raw reads in a disposable child and reports timeout
+after a provisional 1-second budget including preparation/startup. A bounded
+result count does not bound FTS ranking or CJK scan CPU. Project filters greatly help CJK misses but do not
 make common-word FTS ranking cheap.
 
-## Validation and remaining gate
+## Initial validation (historical) and remaining gate
 
 - Baseline/candidate comparison uses the same stored-body fixture described above.
 - 73 focused tests across six files pass, including a real HTTP route + read-worker
@@ -105,7 +109,9 @@ make common-word FTS ranking cheap.
   POSIX SIGKILL/reopen, retention, session deletion rollback, old/current backups,
   read-only main-file byte identity, and external-content FTS integrity.
 - Typecheck, build, test-lane coverage and 24 committed-version checks pass.
-  Affected runtime bundles are regenerated as required by the development guide.
+  Those initial commits included generated bundles. The maintainer subsequently
+  requested source-only PR changes; generated files now match upstream main,
+  while validation rebuilds the final source graph in an isolated copy.
 - The full fast lane was run during implementation: 6,750 passed / 90 skipped /
   3 failed in its first process, and 3,688 passed / 7 skipped / 0 failed in its
   second. Two feature-related failures (logger-policy coverage and trigger-aware
@@ -121,3 +127,54 @@ by plan-12. Synthetic scale tests cannot settle real payload distribution, ongoi
 write contention, or the acceptable latency threshold. Maintainer review should
 also confirm the local-only first slice and raw probing when summaries/prompts
 match but observations do not. No native Windows or Linux host run was performed.
+
+
+## Maintainer follow-up (2026-11-09)
+
+- Current verification on the merged source: **174 tests passed across 20 files**,
+  including production child faults, HTTP/MCP release entrypoints, both artifact
+  formats, environment isolation, CJK/server comparisons and upstream zero-epoch
+  and work-view packaging regressions. Root TypeScript, bundle build, spawn-env,
+  hook-IO and test-lane checks passed. The full suite and Linux/Windows host tests
+  were not rerun locally; platform workflows remain required.
+- Integrated main `989a98a2` (v15.13.0). Preserved the upstream Windows CJS
+  compilation/media-sidecar path, work-view reader entry and lifecycle cleanup.
+  Native builds use the shared Bun options; both compiler paths reject runtimes
+  lacking the standalone child capability before building.
+- Ordinary reads remain on the context reader. Deep queries have single-flight
+  admission, explicit incomplete statuses, a disposable read-only child and
+  confirmed-exit cleanup. Preparation is shared without accumulating request
+  callbacks. Synthetic tests prove termination/recovery and overlap with an
+  exclusively attributable deep-database reader, not real-corpus p95.
+- The 1-second budget is a provisional protective choice motivated by the
+  initial multi-second synthetic measurements above, not a fitted production
+  threshold. The evidence and limitation are also beside the constant.
+- Real-corpus preflight: with the owner's permission, SQLite's backup API read
+  the local database through a read-only connection into a temporary snapshot.
+  The snapshot contained **0 tool-use rows and 0 observations**. It is ineligible
+  for qualification; no index-size/backfill acceptance numbers are claimed.
+  Neither the original database nor the daily Worker was modified. No database,
+  stored body, project name or query text is published.
+
+### plan-25 contract matrix and remaining scope question
+
+`tests/sqlite/raw-tool-cjk-contract.test.ts` uses the same text/query pairs against
+worker observations, worker raw bodies and the server SQLite memory repository.
+It covers Han, supplementary Han, Japanese, halfwidth Katakana, Katakana
+extensions, Korean, Thai, mixed Latin/CJK, case folding, missing AND terms and
+literal underscores, including project isolation. Upstream extended-Katakana
+ranges are preserved in the extracted shared worker helper.
+
+Two existing cross-runtime differences are explicit tests, not hidden failures:
+server memory search tokenizes `+` and `%`, whereas worker observation/raw
+substring matching preserves them literally. For `项目+配置` in `项目 配置` and
+`数据%池` in `数据库连接池`, both worker tiers miss while server memory matches.
+The server also has a distinct 64-term query budget; raw substring queries reject
+more than 500 terms. No claim of complete cross-runtime equivalence is made.
+
+Server **raw** search remains outside this local-first slice: `deep:true` is
+explicitly rejected. The matrix covers the SQLite server memory route, not
+Postgres or a new server raw endpoint. Maintainer confirmation is still needed
+on whether these existing plan-25 differences/server raw support must be resolved
+in this PR or tracked separately. Keep the PR draft pending that decision and a
+representative, nonempty real corpus.

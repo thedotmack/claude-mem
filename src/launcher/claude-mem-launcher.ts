@@ -5,7 +5,8 @@
  *   { "command": "claude-mem", "args": ["hook", "claude-code", "<event>"] }
  * This launcher's only job is to find the installed plugin root, run
  * `<root>/scripts/worker-service.cjs <args…>` under Bun with the same argv
- * (plus the hook's stdin for `hook`), and fail open (exit 0 + one stderr line)
+ * (plus the hook's stdin for `hook`, which runs the hook-only
+ * `<root>/scripts/hook-service.cjs` instead when the plugin ships it), and fail open (exit 0 + one stderr line)
  * on every failure. Subcommands are never interpreted here, so new worker
  * subcommands work without recompiling the on-PATH binary.
  *
@@ -23,12 +24,13 @@
  * `bun build --compile` binary (process.argv[0..1] is runtime + entry in both).
  */
 import { spawn, type SpawnOptions } from 'child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 import { findBun } from './bun-runtime.js';
+import { expandHome } from '../shared/expand-home.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -234,7 +236,11 @@ function collectStdin(): Promise<Buffer | null> {
  * hint reads. Exit 0: the marker file, not the exit code, is the durable signal.
  */
 function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: string, pluginRoot: string): never {
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  // expandHome, as in neutralBunSpawnCwd: a `~/x` data dir must not become a
+  // literal `~` directory inside the user's project (the launch directory).
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
   const payloadType = stdinData === null
     ? 'null (no data event or stream error)'
     : 'empty Buffer (zero bytes received)';
@@ -265,6 +271,31 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
   process.exit(0);
 }
 
+/**
+ * Neutral working directory for the Bun child. tmpdir() would do for the
+ * tsconfig-warning dodge (#4628), but Bun also auto-loads bunfig.toml from
+ * cwd — on a shared /tmp another local user could plant a `preload` there.
+ * An owner-controlled run dir keeps both properties: no tsconfig.json, and
+ * not writable by other accounts. Falls back to the home directory, which is
+ * likewise per-user.
+ */
+function neutralBunSpawnCwd(): string {
+  // expandHome: a `~/x` data dir must land under home, not as a literal `~`
+  // directory inside the user's project (the launch directory).
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') chmodSync(runDir, 0o700);
+    return runDir;
+  } catch (error) {
+    process.stderr.write(`[claude-mem-launcher] could not prepare ${runDir} (${error instanceof Error ? error.message : String(error)}); starting Bun from the home directory\n`);
+    return homedir();
+  }
+}
+
 async function runThroughWorker(workerServiceArguments: string[]): Promise<never> {
   if (isToolHookDisabledByEnvironment(workerServiceArguments) || isPluginDisabledInClaudeSettings()) {
     process.exit(0);
@@ -275,6 +306,13 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
     exitContinuingWithoutMemory('plugin scripts not found');
   }
   const workerScriptPath = join(pluginRoot, 'scripts', 'worker-service.cjs');
+  // A hook is a short-lived process: parsing the whole worker bundle for it costs
+  // ~0.3 s and ~120 MB. `hook` runs the hook-only bundle when the plugin ships
+  // one and falls back to worker-service.cjs for an older plugin.
+  const hookScriptPath = join(pluginRoot, 'scripts', 'hook-service.cjs');
+  const scriptPath = workerServiceArguments[0] === 'hook' && existsSync(hookScriptPath)
+    ? hookScriptPath
+    : workerScriptPath;
 
   const bunRuntime = await selectBunRuntime();
   if (!bunRuntime) {
@@ -290,11 +328,11 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
     stdinData = await collectStdin();
     // A hook always needs a payload, so an empty one is reported before spawning.
     if (!stdinData || stdinData.length === 0) {
-      reportEmptyStdinAndExit(stdinData, workerScriptPath, pluginRoot);
+      reportEmptyStdinAndExit(stdinData, scriptPath, pluginRoot);
     }
   }
 
-  const workerArguments = [workerScriptPath, ...workerServiceArguments];
+  const workerArguments = [scriptPath, ...workerServiceArguments];
   const spawnOptions: SpawnOptions = {
     stdio: ['pipe', 'inherit', 'inherit'],
     windowsHide: true,
@@ -303,7 +341,7 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
     // it in a neutral directory and hand it the launch directory; the hook
     // entry point (src/cli/hook-original-cwd.ts) moves back there.
     env: { ...process.env, ...bunRuntime.extraEnvironment, CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() },
-    cwd: tmpdir(),
+    cwd: neutralBunSpawnCwd(),
   };
   let spawnCommand = bunRuntime.bunExecutablePath;
   let spawnArguments = workerArguments;

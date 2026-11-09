@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { CmemMark } from '@/components/brand'
 import { SparklesCore } from '@/components/aceternity/sparkles'
+import { useI18n } from '@/lib/i18n'
 import type { SetupTool } from '../setup-data'
 import chatgptMark from '../assets/agents/chatgpt.webp'
 import claudeMark from '../assets/agents/claude.webp'
@@ -15,6 +16,7 @@ const TOKEN_IMAGES: Record<SetupTool['mark'], string> = { terminal: claudeMark, 
  * drawn into its center, then the brain folds away. Reduced motion never mounts this step (the page skips to the workspace).
  */
 export function LaunchScreen({ tools, onDone }: { tools: SetupTool[]; onDone: () => void }) {
+  const { t } = useI18n()
   const stageRef = useRef<HTMLDivElement>(null)
   const brainRef = useRef<HTMLSpanElement>(null)
   const doneRef = useRef(onDone)
@@ -47,8 +49,8 @@ export function LaunchScreen({ tools, onDone }: { tools: SetupTool[]; onDone: ()
   }, [tools])
   return (
     <section aria-labelledby="launch-title">
-      <h1 id="launch-title" className="sr-only" tabIndex={-1}>Opening your memory workspace</h1>
-      <p className="sr-only" role="status" aria-live="polite">Bringing your tools and memory together.</p>
+      <h1 id="launch-title" className="sr-only" tabIndex={-1}>{t('Opening your memory workspace')}</h1>
+      <p className="sr-only" role="status" aria-live="polite">{t('Bringing your tools and memory together.')}</p>
       <div ref={stageRef} className="launch-stage">
         {/* One sparkle field behind the brain while the tools gather; reduced motion never reaches this step. */}
         <SparklesCore className="launch-sparkles" background="transparent" particleColor="#5b57e6" minSize={0.6} maxSize={1.6} particleDensity={90} speed={2} />

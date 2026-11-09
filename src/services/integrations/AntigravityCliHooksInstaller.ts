@@ -11,8 +11,9 @@ import {
 } from './install-paths.js';
 import { writeMcpJsonConfig, PLACEHOLDER_CONTEXT } from './McpIntegrations.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { findContextBlockRange, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
 // agy hook schema (builtin `agy-customizations/docs/hooks.md`): each top-level
 // key of hooks.json is a hook NAME, mapping to an object of event keys. Only
@@ -242,7 +243,7 @@ function readAntigravitySettings(): AntigravitySettingsJson {
 
   const content = readFileSync(GEMINI_SETTINGS_PATH, 'utf-8');
   try {
-    return JSON.parse(content) as AntigravitySettingsJson;
+    return parseJsonWithBom<AntigravitySettingsJson>(content);
   } catch (error) {
     if (error instanceof Error) {
       logger.error('WORKER', 'Corrupt JSON in Antigravity CLI (shared Gemini) settings', { path: GEMINI_SETTINGS_PATH }, error);
@@ -272,7 +273,7 @@ function readAntigravityHooksConfig(): AntigravityHooksConfig {
     return {};
   }
   try {
-    return JSON.parse(content) as AntigravityHooksConfig;
+    return parseJsonWithBom<AntigravityHooksConfig>(content);
   } catch (error) {
     logger.error(
       'WORKER',
@@ -512,15 +513,16 @@ function removeClaudeMemFromMcpConfig(mcpConfigPath: string): boolean {
   return true;
 }
 
-function removeContextTagBlock(filePath: string): boolean {
+export function removeContextTagBlock(filePath: string): boolean {
   if (!existsSync(filePath)) return false;
 
-  let content = readFileSync(filePath, 'utf-8');
-  const contextRegex = /\n?<claude-mem-context>[\s\S]*?<\/claude-mem-context>\n?/;
-  if (!contextRegex.test(content)) return false;
+  const content = readFileSync(filePath, 'utf-8');
+  const block = findContextBlockRange(content);
+  if (!block) return false;
 
-  content = content.replace(contextRegex, '');
-  writeFileSync(filePath, content);
+  const start = content[block.start - 1] === '\n' ? block.start - 1 : block.start;
+  const end = content[block.end] === '\n' ? block.end + 1 : block.end;
+  writeFileSync(filePath, content.slice(0, start) + content.slice(end));
   return true;
 }
 

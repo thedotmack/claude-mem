@@ -19,6 +19,7 @@ import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from '../project-where-filter.js';
+import { scopeRowIdsFor } from '../scope-row-ids.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -119,10 +120,15 @@ export class ChromaSearchStrategy {
       projects: options.projects,
       platformSource: options.platformSource,
     };
+    const fallbackRowIds = scopeRowIdsFor(this.sessionStore, {
+      observations: options.searchObservations,
+      sessions: options.searchSessions,
+      prompts: options.searchPrompts,
+    }, sqlOptions);
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress);
+      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress, fallbackRowIds);
       const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
       const categorized = this.categorizeByDocType(recentItems, options);
       results = {
@@ -213,10 +219,10 @@ export class ChromaSearchStrategy {
     let endEpoch: number | undefined;
 
     if (dateRange) {
-      if (dateRange.start) {
+      if (dateRange.start != null && dateRange.start !== '') {
         startEpoch = resolveDateBound(dateRange.start, 'start');
       }
-      if (dateRange.end) {
+      if (dateRange.end != null && dateRange.end !== '') {
         endEpoch = resolveDateBound(dateRange.end, 'end');
       }
     } else if (!ignoreDefaultRecencyWindow && this.defaultRecencyWindowMs > 0) {
@@ -229,8 +235,8 @@ export class ChromaSearchStrategy {
     return chromaResults.ids
       .map((id, index) => ({ id, meta: chromaResults.metadatas[index] }))
       .filter(item => item.meta && item.meta.created_at_epoch != null
-        && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
-        && (!endEpoch || item.meta.created_at_epoch <= endEpoch));
+        && (startEpoch === undefined || item.meta.created_at_epoch >= startEpoch)
+        && (endEpoch === undefined || item.meta.created_at_epoch <= endEpoch));
   }
 
   private categorizeByDocType(

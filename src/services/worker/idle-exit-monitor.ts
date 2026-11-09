@@ -184,17 +184,40 @@ export class IdleExitMonitor {
 }
 
 /**
- * Parse CLAUDE_MEM_IDLE_EXIT_SEC. Returns milliseconds for a valid value, 0
- * for an absent/empty value (the seeded default '0' means "never"), or null
- * when the value is present but not a non-negative integer of seconds whose
- * millisecond value is a safe integer (`1e308` would be Infinity ms and never
- * fire) — the caller warns and stays off. Windows under MIN_IDLE_EXIT_MS are
- * returned as given; the caller raises them to the minimum with a warning.
+ * Parse CLAUDE_MEM_IDLE_EXIT_SEC as settings.json stores it. A hand edit can
+ * save it as a JSON number (`60`), which SettingsDefaultsManager.loadFromFile
+ * passes through as a number (coercePersistedSettingValue converts only
+ * booleans), so a number is read as its text: `60` and `"60"` are the same
+ * window, the way parseTimeoutMs (retry.ts) reads a timeout. Returns
+ * milliseconds for a valid value, 0 for an absent/empty value (the seeded
+ * default '0' means "never"), or null when the value is present but not a
+ * non-negative integer of seconds whose millisecond value is a safe integer
+ * (`1e308` would be Infinity ms and never fire), or is neither a string nor a
+ * number (null, an array, an object) — the caller warns and stays off.
+ * Windows under MIN_IDLE_EXIT_MS are returned as given; the caller raises
+ * them to the minimum with a warning.
  */
-export function parseIdleExitMs(raw: string | undefined): number | null {
-  if (raw === undefined || raw.trim() === '') return 0;
-  const seconds = Number(raw.trim());
+export function parseIdleExitMs(raw: unknown): number | null {
+  if (raw === undefined) return 0;
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  const text = String(raw).trim();
+  if (text === '') return 0;
+  const seconds = Number(text);
   const milliseconds = seconds * 1000;
   if (!Number.isInteger(seconds) || seconds < 0 || !Number.isSafeInteger(milliseconds)) return null;
   return milliseconds;
+}
+
+/**
+ * The idle window, in milliseconds, the worker arms with for this
+ * CLAUDE_MEM_IDLE_EXIT_SEC (worker-service.ts startIdleExitMonitor): 0 when
+ * it never idle-exits (absent, empty or '0', and a value parseIdleExitMs
+ * rejects, which the worker ignores), otherwise the value raised to
+ * MIN_IDLE_EXIT_MS. The value is taken as settings.json stores it, a string
+ * or a number, as parseIdleExitMs reads it.
+ */
+export function idleExitWindowMs(raw: unknown): number {
+  const configuredIdleExitMs = parseIdleExitMs(raw);
+  if (configuredIdleExitMs === null || configuredIdleExitMs === 0) return 0;
+  return Math.max(configuredIdleExitMs, MIN_IDLE_EXIT_MS);
 }

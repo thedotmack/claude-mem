@@ -45,11 +45,17 @@ export interface NormalizedHookInput {
    */
   submittedPrompt?: string | null;
   agentType?: string;    
+  /**
+   * When the event happened at its source. Unset for a live hook: it happened
+   * now, and the handler stamps the hook's clock. The transcript watcher sets
+   * the line's own timestamp, or null when the line carries none. Lets the
+   * worker tell new work in a deleted session from content that predates the
+   * deletion (SessionStore.isBeforeSessionDeletion).
+   */
+  eventOccurredAtEpochMs?: number | null;
 }
 
 export interface HookResult {
-  /** Internal measurement hint; stripped before platform formatting/output. */
-  workStateTelemetry?: 'measure' | 'excluded' | 'unknown';
   continue?: boolean;
   suppressOutput?: boolean;
   hookSpecificOutput?: {

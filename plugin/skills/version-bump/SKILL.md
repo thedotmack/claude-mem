@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing.
+description: Maintainer release workflow for the thedotmack/claude-mem repository only. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. npm publishing is done by the tag-triggered GitHub Actions workflow through npm trusted publishing. Does not apply to any other repository or npm package.
 ---
 
 # Version Bump & Release Workflow
@@ -9,10 +9,25 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 **CRITICAL:** Commit EVERYTHING (including build artifacts). At the end of this workflow, NOTHING should be left uncommitted or unpushed. Run `git status` at the end to verify.
 
+## Scope — check this first
+
+This workflow is for **one repository and one npm package**: `thedotmack/claude-mem`,
+published as `claude-mem`. It is not a general release recipe. Do not adapt any
+step of it to another repository or package.
+
+Before doing anything else, run:
+
+```bash
+git remote get-url origin   # must be github.com/thedotmack/claude-mem(.git)
+node -p "require('./package.json').name"   # must print claude-mem
+```
+
+If either check fails, stop and tell the user this skill does not apply here.
+
 ## Preparation
 
 1.  **Analyze**: Determine if the change is **PATCH** (bug fixes), **MINOR** (features), or **MAJOR** (breaking).
-2.  **Environment**: Identify repository owner/name from `git remote -v`.
+2.  **Environment**: The repository is `thedotmack/claude-mem`, confirmed by the scope check above.
 3.  **Paths — every file that carries the version string**:
     - `package.json` — **the npm/npx-published version** (`npx claude-mem@X.Y.Z` resolves from this)
     - `plugin/package.json` — bundled plugin runtime deps
@@ -34,7 +49,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 ## Workflow
 
-1.  **Update**: Increment the version string in every path above. Do NOT touch `CHANGELOG.md` — it's regenerated.
+1.  **Update**: Increment the version string in every path above. Do NOT touch `docs/CHANGELOG.md` — it's regenerated.
 2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fourteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
@@ -45,8 +60,8 @@ description: Automated semantic versioning and release workflow for Claude Code 
     ```bash
     npm run changelog:generate
     ```
-    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `CHANGELOG.md`.)
-9.  **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
+    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `docs/CHANGELOG.md`.)
+9.  **Sync changelog**: Commit and push the updated `docs/CHANGELOG.md`.
 10. **Pre-publish audit**: Verify the release commit, tag, GitHub release, and
     changelog are pushed, and the release worktree has no pending tracked changes.
 11. **Publish to npm — the workflow does it.** Pushing the `vX.Y.Z` tag triggers
@@ -68,14 +83,41 @@ description: Automated semantic versioning and release workflow for Claude Code 
     Trusted Publisher (GitHub Actions, `thedotmack/claude-mem`, `npm-publish.yml`,
     `npm publish` allowed). Renaming the workflow file breaks publishing until
     that entry is updated; changing it requires the maintainer's security key.
-12. **Post-publish verification and notification**: After publishing, verify
+12. **Post-publish verification**: After publishing, verify
     both the exact version and the latest dist-tag:
     ```bash
     npm view claude-mem@X.Y.Z version
     npm view claude-mem dist-tags.latest
     npm view claude-mem@X.Y.Z dist.attestations --json   # provenance from the workflow
     ```
-    Then post the release to X, only after npm verification:
+13. **Promote for auto-update**: `releases/promoted-release.json` on `main` names
+    the version claude-mem's own updater moves installs to. Promote, hold and
+    pull back control only that updater: installs where Claude Code's own
+    auto-update for this marketplace is on follow `main` instead, so a bad
+    release that reached `main` is fixed with a new patch release. Do this step
+    only after npm verification.
+    - **Promote:** these commands work from a detached release worktree and
+      when `main` has moved since the release push:
+      ```bash
+      git pull --rebase origin main
+      # set "promotedVersion" in releases/promoted-release.json to "X.Y.Z"
+      bun test tests/infrastructure/promoted-release.test.ts
+      git add releases/promoted-release.json
+      git commit -m "chore: promote X.Y.Z for auto-update"
+      git push origin HEAD:main
+      ```
+      If the push is rejected because `main` moved again (git reports
+      `non-fast-forward` or `fetch first`), run `git pull --rebase origin main`
+      and push again. Most installs update within about a day; a machine that
+      is never quiet updates within about two days.
+    - **Hold:** only when the owner asked to hold this release. Skip this step
+      and say so in the release report.
+    - **Pull back a bad release:** set `promotedVersion` to the last good
+      version (find it with `git log -p -- releases/promoted-release.json`) and
+      push it with the same commands. Installs below it still move up to it.
+      Installs already on the bad version stay there until a newer version is
+      promoted. Nothing is downgraded.
+14. **Notification**: Post the release to X, only after npm verification:
     - Generate one image about the release with an available image-generation
       tool, drawn from the release notes.
     - In a browser that is already logged in to X (for example Claude in
@@ -84,7 +126,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
       post and say so in the release report. Never sign in or switch accounts.
     - Post a short summary of the release with the version, the GitHub release
       URL and the image attached, then report the post's URL.
-13. **Finalize**: `git status` — working tree must be clean and everything must
+15. **Finalize**: `git status` — working tree must be clean and everything must
     be pushed.
 
 ## Checklist
@@ -94,9 +136,10 @@ description: Automated semantic versioning and release workflow for Claude Code 
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
 - [ ] GitHub release created with notes
-- [ ] `CHANGELOG.md` updated and pushed
+- [ ] `docs/CHANGELOG.md` updated and pushed
 - [ ] Pre-publish audit passed
 - [ ] `Publish to npm` workflow run for the tag succeeded (no local `npm publish`)
 - [ ] Exact npm version and `latest` both verified after publishing
+- [ ] `releases/promoted-release.json` set to X.Y.Z and pushed to `main` after npm verification (or the owner's hold stated in the release report)
 - [ ] Release posted to X as `@Claude_Memory` with a generated image after npm verification (or skipped because no browser was logged in as that account)
 - [ ] `git status` shows clean tree

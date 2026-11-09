@@ -1,5 +1,5 @@
-import { mock } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { beforeEach, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -18,6 +18,36 @@ import { join } from 'path';
  */
 if (!process.env.CLAUDE_MEM_DATA_DIR) {
   process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-test-run-'));
+}
+
+// The suite asserts each capture at the call. Production leaves this unset and
+// holds the high-volume events for the daily file (src/services/telemetry/daily-volume.ts).
+process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
+
+/**
+ * Auto-update tripwire: no test may start a real auto-update — a hop, a
+ * supervisor, or `npx claude-mem@<version> update` against the real ~/.claude
+ * install (CLAUDE_CONFIG_DIR is not isolated here the way the data dir is).
+ * While this is set, every production effect that could start one refuses
+ * before it acts (FORBID_REAL_AUTO_UPDATE_ENV in
+ * src/services/auto-update/auto-update-launch.ts), and every process a test
+ * starts inherits it. Set unconditionally, so a shell that exports it empty
+ * cannot turn it off. It is not a setting: tests of the shipped defaults see
+ * CLAUDE_MEM_AUTO_UPDATE as shipped.
+ */
+process.env.CLAUDE_MEM_FORBID_REAL_AUTO_UPDATE = '1';
+
+// The cmem cap probe (src/shared/cmem-cap-probe.ts) is a file in the data dir.
+// One test's allowance_exhausted must not withhold gateway sends in the next.
+// Subprocesses spawned by tests load this preload outside the test runner,
+// where beforeEach throws; only the runner needs the hook.
+try {
+  beforeEach(() => {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
+  });
+} catch {
+  // not under `bun test`
 }
 
 /**

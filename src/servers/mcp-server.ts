@@ -1,9 +1,20 @@
+/**
+ * The MCP server your agent searches memory through.
+ *
+ * Its core is the three-step mem-search workflow: `search` for a compact
+ * index, `timeline` for what happened around a result, `get_observations`
+ * for full details of only the IDs that matter. It also offers code
+ * navigation (smart_*), saving a note on purpose (save_memory) and work
+ * state. The memory tools answer by calling the worker over HTTP
+ * (callWorker); the smart_* code tools read files in the workspace directly.
+ */
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
-import { spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
+import { spoolWorkStateMcpInstruction, spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
+import { mcpServerInstructions } from '../shared/memory-instructions.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -55,6 +66,7 @@ import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { parseProjectList, projectsQueryValues } from '../shared/project-list.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
@@ -164,7 +176,9 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
+        for (const entry of Array.isArray(value) ? value : [value]) {
+          searchParams.append(key, String(entry));
+        }
       }
     }
     response = await workerHttpRequest(`${endpoint}?${searchParams}`);
@@ -418,19 +432,11 @@ interface SessionStartContextArgs {
 }
 
 function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
-  if (Array.isArray(args.projects)) {
-    return args.projects
-      .map(project => typeof project === 'string' ? project.trim() : '')
-      .filter(Boolean);
-  }
-  if (typeof args.projects === 'string') {
-    return args.projects
-      .split(',')
-      .map(project => project.trim())
-      .filter(Boolean);
+  if (args.projects !== undefined) {
+    return parseProjectList(args.projects);
   }
   if (typeof args.project === 'string' && args.project.trim().length > 0) {
-    return [args.project.trim()];
+    return [args.project];
   }
   return [];
 }
@@ -451,7 +457,7 @@ async function handleSessionStartContext(
 
   return callWorker('/api/context/inject', {
     query: {
-      projects: projects.join(','),
+      projects: projectsQueryValues(projects),
       ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
       ...(args.full !== undefined ? { full: args.full } : {}),
       ...(args.colors !== undefined ? { colors: args.colors } : {}),
@@ -691,14 +697,15 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server). At most 100 ids per call; split larger selections across several calls.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+          description: 'Array of selected observation IDs to fetch (at most 100; split larger selections). String IDs in server runtime.'
         },
         projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
@@ -718,16 +725,17 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_tool_uses',
-    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId. At most 100 ids per call; split larger selections.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+          description: 'Tool-use ids to fetch (required, at most 100; split larger selections). Numeric tool_uses.id or opaque tool_use_id strings.'
         },
-        limit: { type: 'number', description: 'Max rows to return' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 200)' },
         project: { type: 'string', description: 'Filter by project name' },
         contentSessionId: { type: 'string', description: 'Filter to one content session' }
       },
@@ -1181,6 +1189,15 @@ function teamBrainJoined(): boolean {
  * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
+  // How to use these tools: the work-state rule and the memory-use guidance.
+  // They are sent here, at initialize, so the SessionStart context can be the
+  // memory timeline alone. Each part follows the setting that turns it off.
+  const workStateRuleIncluded = workStateEnabled();
+  const instructions = mcpServerInstructions({
+    runtime: selectRuntime(),
+    workStateEnabled: workStateRuleIncluded,
+    memoryInstructionsEnabled: loadFromFileOnce().CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED !== 'false',
+  });
   const server = new Server(
     {
       name: 'claude-mem',
@@ -1190,8 +1207,10 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       capabilities: {
         tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
       },
+      ...(instructions ? { instructions } : {}),
     }
   );
+  server.oninitialized = () => spoolWorkStateMcpInstruction(workStateRuleIncluded);
 
   const stdioCwd = getCwd ? null : createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
   if (stdioCwd) server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());

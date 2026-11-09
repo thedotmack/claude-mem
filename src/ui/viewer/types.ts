@@ -17,6 +17,51 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  /** Validated `metadata.cmem_media_v1` refs; absent for image-free rows. Readiness is not in here. */
+  media?: ObservationMedia;
+}
+
+/** Copy of MediaAttachmentRef (src/shared/media-contract.ts): IDs and labels only. */
+export interface ObservationMediaRef {
+  id: string;
+  label: string;
+  inspection: 'inspected' | 'uninspected';
+}
+
+export interface ObservationMedia {
+  version: 1;
+  attachments: ObservationMediaRef[];
+  /** More refs remain on the source event because the row reached its bound. */
+  overflow?: boolean;
+}
+
+export interface MediaVariantDescriptor {
+  sha256: string;
+  width: number;
+  height: number;
+  byteLength: number;
+  mimeType: 'image/webp';
+}
+
+/** GET /api/media/:id: safe metadata only (MediaRoutes.safeMetadata). */
+export interface MediaMetadataResponse {
+  id: string;
+  state: 'converting' | 'ready' | 'failed' | 'unresolved_replica';
+  recipe: 'screenshot-v1' | 'photo-v1';
+  encoderVersion: string | null;
+  viewer: MediaVariantDescriptor | null;
+  llm: MediaVariantDescriptor | null;
+  failureCode: string | null;
+  capturedAt: number;
+}
+
+/** GET /api/media/:id/details: owner-only, fetched only on explicit request. */
+export interface MediaOwnerDetailsResponse {
+  id: string;
+  platform: string | null;
+  sourceShape: string | null;
+  sourceLocatorPath: string | null;
+  sourceAvailability: 'converted_only' | 'file_present' | 'file_missing';
 }
 
 export interface Summary {
@@ -61,7 +106,10 @@ export type FeedItem =
 export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted' | 'sync_status' | 'data_changed';
+  /** Missing fields mean every memory kind/project may have changed. */
+  kinds?: string[];
+  sync?: import('./utils/sync-presentation').SyncStatusForDisplay;
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -92,6 +140,8 @@ export interface Settings {
   CLAUDE_MEM_WORKER_HOST: string;
 
   CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_OBSERVER_ENABLED?: string;
+  CLAUDE_MEM_MEDIA_CAPTURE_ENABLED?: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD?: string;
   CLAUDE_MEM_CODEX_MODEL?: string;
   CLAUDE_MEM_GEMINI_API_KEY?: string;
@@ -116,6 +166,7 @@ export interface Settings {
   CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD?: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL?: string;
+  CLAUDE_MEM_WORK_VIEW_AGENT?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;

@@ -1,9 +1,10 @@
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
+import { ingestObservation, ingestSummarize, ingestSessionEnd, logDeletedSessionSkip, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
 import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
@@ -22,6 +23,7 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
@@ -64,6 +66,20 @@ import {
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+// The session write endpoints are state-changing, so a browser page served
+// from a different local port may not call them. Origin-less callers (hooks,
+// the CLI, curl) pass. There is deliberately no requireLocalhost here: remote
+// capture (docs/remote-worker-capture.md), Docker bridge clients and the
+// OpenCode/Pi/DSH integrations call these routes from non-loopback peers, and
+// non-loopback writes are governed by the remote read-only guard instead.
+function rejectForeignLoopbackBrowserWrite(req: Request, res: Response, next: () => void): void {
+  if (isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Session writes from a different localhost origin are not allowed' });
+    return;
+  }
+  next();
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
@@ -148,7 +164,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const activeSession = this.sessionManager.getSession(input.sessionDbId);
     const selection = activeSession?.currentProvider
       ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
-      : selectProviderForGenerator();
+      : selectProviderForGenerator(activeSession?.platformSource ?? input.platformSource);
     const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
 
     try {
@@ -196,14 +212,19 @@ export class SessionRoutes extends BaseRouteHandler {
   public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
     let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
     if (!includeOperatorOnly && sessionIds.length > 0) {
-      const provider = getSelectedProvider();
-      const cooldown = getQuotaCooldown(provider);
-      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
-        && !(provider === 'claude' && claudeQuotaStandIn())) {
-        if (isQuotaCooldownActive(provider)) return 0;
-        sessionIds = sessionIds.slice(0, 1);
-      }
+      // Each session is paced on the provider its own source dispatches to.
+      const probed = new Set<SelectableProvider>();
+      sessionIds = sessionIds.filter(sessionDbId => {
+        const provider = getSelectedProvider(this.sessionManager.getSession(sessionDbId)?.platformSource);
+        const cooldown = getQuotaCooldown(provider);
+        // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+        if (!cooldown || !cooldownAppliesToCurrentAccount(cooldown)
+          || (provider === 'claude' && claudeQuotaStandIn())) return true;
+        if (isQuotaCooldownActive(provider)) return false;
+        if (probed.has(provider)) return false;
+        probed.add(provider);
+        return true;
+      });
     }
     for (const sessionDbId of sessionIds) {
       void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
@@ -246,6 +267,21 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      // A request already in flight still needs its claimed messages to join
+      // file evidence when the response returns. Drop only work that has not
+      // been handed to a provider.
+      const discarded = this.sessionManager.getMessageBuffer().clearUnclaimed(sessionDbId);
+      if (discarded > 0) {
+        logger.info('SESSION', 'Observer capture disabled; discarding buffered work without starting a provider', {
+          sessionId: sessionDbId,
+          source,
+          discarded,
+        });
+      }
+      return;
+    }
+
     // Nothing is buffered, so a generator would only open with its INIT turn
     // and idle out: one paid request per user prompt, including prompts that
     // never use a tool (#3454). Gated BEFORE provider selection, so this path
@@ -262,7 +298,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
-    const selection = selectProviderForGenerator();
+    const selection = selectProviderForGenerator(session.platformSource);
     const selectedProvider = selection.provider;
 
     if (!session.generatorPromise) {
@@ -503,6 +539,16 @@ export class SessionRoutes extends BaseRouteHandler {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
+        // A quota/auth outage must not turn later hooks into a backlog. A
+        // short rate limit may retain the bounded live buffer; spent quota
+        // and refused credentials skip it, including legacy paused work.
+        if (cooldown?.window !== 'rate_limit') {
+          this.sessionManager.discardBufferedWork(sessionDbId);
+          session.pendingAgentId = null;
+          session.pendingAgentType = null;
+          session.paidSendBudget = undefined;
+          session.pausedReason = cooldown?.cause === 'auth' ? 'auth' : 'quota';
+        }
         logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
           sessionId: sessionDbId,
           source,
@@ -575,10 +621,13 @@ export class SessionRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     // Operator repair route: it starts generators and retries auth/transport
     // pauses that the automatic sweep leaves alone, so it is localhost-only
-    // like the other admin routes.
+    // like the other admin routes. The origin guard keeps a browser page on
+    // another local port from triggering those unpaced paid retries; the
+    // Origin-less script callers keep working.
     app.post(
       '/api/processing',
       requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
@@ -588,21 +637,25 @@ export class SessionRoutes extends BaseRouteHandler {
     });
     app.post(
       '/api/sessions/init',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/observations',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.observationsByClaudeIdSchema),
       this.handleObservationsByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/summarize',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/session-end',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionEndSchema),
       this.handleSessionEnd.bind(this)
     );
@@ -625,6 +678,18 @@ export class SessionRoutes extends BaseRouteHandler {
       scheduledSessions,
     });
   });
+
+  /**
+   * The event's source time (eventOccurredAtEpochMs on init and observation
+   * bodies). A caller that sends none is a live host posting as events happen
+   * (= now), like enqueuedAtEpochMs. Null, which the transcript watcher sends
+   * for a line without a timestamp, means unknown and proves nothing.
+   */
+  private static eventOccurredAtFromBody(body: Record<string, unknown>): number | null {
+    const value = body.eventOccurredAtEpochMs;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return value === undefined ? Date.now() : null;
+  }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
@@ -705,6 +770,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
       enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
       telemetryToolEpochMs: typeof req.body.telemetryToolEpochMs === 'number' ? req.body.telemetryToolEpochMs : undefined,
+      eventOccurredAtEpochMs: SessionRoutes.eventOccurredAtFromBody(req.body),
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
@@ -731,6 +797,7 @@ export class SessionRoutes extends BaseRouteHandler {
       contentSessionId,
       platformSource: this.getPlatformSourceFromRequest(req),
       lastAssistantMessage: last_assistant_message,
+      enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
       agentId,
       observedModel,
       observedBilling,
@@ -823,7 +890,10 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
+    // Strip tagged private sections before any length cap: cutting first
+    // could sever a </private> closer and leave the rest of the block visible
+    // to storage (the stripper keeps unbalanced tags verbatim by design).
+    let prompt = stripMemoryTags(rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -850,7 +920,22 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    // A prompt in a deleted session counts as new work only when its source
+    // time (the hook's clock, a transcript line's timestamp) is after the deletion.
+    const eventOccurredAtEpochMs = SessionRoutes.eventOccurredAtFromBody(req.body);
+    let sessionDbId: number;
+    try {
+      sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource, eventOccurredAtEpochMs);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'session_deleted') {
+        logDeletedSessionSkip('a user prompt', 'not_newer_than_deletion', platformSource, contentSessionId, {
+          eventOccurredAtEpochMs,
+        });
+        res.json({ skipped: true, reason: 'session_deleted' });
+        return;
+      }
+      throw error;
+    }
 
     // The checkout `project` was resolved from, and how it was derived, so a
     // session that never reports an observation still leaves evidence for

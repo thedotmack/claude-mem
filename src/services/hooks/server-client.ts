@@ -15,6 +15,7 @@ import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { stripMemoryTags, stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -226,6 +227,9 @@ export interface ServerSemanticContextRequest {
   limit?: number;
   platformSource?: string | null;
   folderProjects?: string[];
+  // The Claude Code session id, as on /v1/sessions/start and /v1/events, so
+  // the server can leave out the asking session's own recent observations.
+  contentSessionId?: string | null;
 }
 
 export interface ServerSemanticContextResponse {
@@ -353,6 +357,7 @@ export class ServerClient {
     if (input.folderProjects && input.folderProjects.length > 0) {
       payload.folderProjects = input.folderProjects;
     }
+    if (input.contentSessionId) payload.contentSessionId = input.contentSessionId;
     return this.request<ServerSemanticContextResponse>('POST', '/v1/context/semantic', payload, options);
   }
 
@@ -536,5 +541,5 @@ function normalizePlatformSourceField(value: string | null): string | null {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}…`;
+  return `${retainTextHeadTail(text, max, 0).head}…`;
 }

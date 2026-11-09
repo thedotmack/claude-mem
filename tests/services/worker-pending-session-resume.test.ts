@@ -16,6 +16,7 @@ function fixture() {
     initializationCompleteFlag: false,
     startTime: Date.now(),
     server: { getHttpServer: () => undefined },
+    memoryFeedInvalidation: { close: mock(() => {}) },
   });
   let tick!: () => void;
   const timer = { unref: mock(() => {}) };

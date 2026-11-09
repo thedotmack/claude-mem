@@ -74,6 +74,99 @@ describe('worker Dumb search with real SQLite fixtures', () => {
     expect(result.observations[0].content).toContain('SUMMARY_DETAIL');
   });
 
+  for (const kind of ['observation', 'summary'] as const) for (const limit of [1, 2, 20]) {
+    it(`keeps a matching ${kind} when prompts fill the index limit of ${limit}`, async () => {
+      const title = 'Authentication token expiry';
+      const memory = store.getOrCreateManualSession(project);
+      const observation = store.getObservationById(Number(authId))!;
+      const summaryId = store.storeSummary(memory, project, {
+        request: 'Authentication expiry', investigated: 'SUMMARY_DETAIL', learned: '', completed: '', next_steps: '', notes: null,
+      }, 1, 0, epoch).id;
+      const summary = store.getSessionSummariesByIds([summaryId])[0];
+      const adapterManager = { search: async () => ({
+        observations: kind === 'observation' ? [observation] : [],
+        sessions: kind === 'summary' ? [summary] : [],
+        prompts: Array.from({ length: limit }, (_, i) => ({
+          id: 999 + i, project, prompt_text: title, created_at_epoch: epoch,
+        })),
+      }) } as unknown as SearchManager;
+      const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+        query: title, project, limit, maxDetails: 1, depthBefore: 0, depthAfter: 0,
+      });
+      expect(result.step).toBe(3);
+      expect(result.observations).toHaveLength(1);
+      expect(result.observations[0].id).toBe(kind === 'observation' ? authId : `S${summaryId}`);
+    });
+  }
+
+  it('uses the detail selector prefix rule when protecting a memory from prompts', async () => {
+    const id = seed(project, 'Authenticating requests', 'PREFIX_MATCH_DETAIL', epoch);
+    const adapterManager = { search: async () => ({
+      observations: [store.getObservationById(Number(id))!], sessions: [],
+      prompts: [{ id: 999, project, prompt_text: 'Authentication', created_at_epoch: epoch }],
+    }) } as unknown as SearchManager;
+    const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+      query: 'authentication', project, limit: 1, maxDetails: 1, depthBefore: 0, depthAfter: 0,
+    });
+    expect(result.step).toBe(3);
+    expect(result.observations.map(row => row.id)).toEqual([id]);
+  });
+
+  it('does not prioritize a memory that matches only the query stop words', async () => {
+    const id = seed(project, 'What did we do for the garden', 'STOP_WORD_ONLY_DETAIL', epoch);
+    const adapterManager = { search: async () => ({
+      observations: [store.getObservationById(Number(id))!], sessions: [],
+      prompts: [{ id: 999, project, prompt_text: 'What did we do for the authentication expiry', created_at_epoch: epoch }],
+    }) } as unknown as SearchManager;
+    const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+      query: 'what did we do for the authentication expiry', project, limit: 1,
+    });
+    expect(result.step).toBe(1);
+    expect(result.index.map(row => row.id)).toEqual(['P999']);
+    expect(result.observations).toEqual([]);
+  });
+
+  it('does not prioritize a title match beyond the bounded index title', async () => {
+    const id = seed(project, `${'Garden '.repeat(40)}authentication`, 'TRUNCATED_TITLE_DETAIL', epoch);
+    const adapterManager = { search: async () => ({
+      observations: [store.getObservationById(Number(id))!], sessions: [],
+      prompts: [{ id: 999, project, prompt_text: 'Authentication expiry', created_at_epoch: epoch }],
+    }) } as unknown as SearchManager;
+    const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+      query: 'authentication expiry', project, limit: 1,
+    });
+    expect(result.step).toBe(1);
+    expect(result.index.map(row => row.id)).toEqual(['P999']);
+    expect(result.observations).toEqual([]);
+  });
+
+  it('does not displace a matching prompt with an unrelated observation', async () => {
+    const id = seed(project, 'Gardening notes', 'UNRELATED_BODY', epoch);
+    const adapterManager = { search: async () => ({
+      observations: [store.getObservationById(Number(id))!], sessions: [],
+      prompts: [{ id: 999, project, prompt_text: 'Authentication expiry', created_at_epoch: epoch }],
+    }) } as unknown as SearchManager;
+    const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+      query: 'Authentication expiry', project, limit: 1,
+    });
+    expect(result.step).toBe(1);
+    expect(result.index.map(row => row.id)).toEqual(['P999']);
+    expect(result.observations).toEqual([]);
+  });
+
+  it('keeps prompt-only matches visible without trying to fetch prompt details', async () => {
+    const adapterManager = { search: async () => ({
+      observations: [], sessions: [],
+      prompts: [{ id: 999, project, prompt_text: 'Authentication expiry', created_at_epoch: epoch }],
+    }) } as unknown as SearchManager;
+    const result = await new ProgressiveMemorySearch(adapterManager, store).run({
+      query: 'Authentication expiry', project, limit: 1,
+    });
+    expect(result.step).toBe(1);
+    expect(result.index.map(row => row.id)).toEqual(['P999']);
+    expect(result.observations).toEqual([]);
+  });
+
   it('reranks semantic candidates beyond the requested limit before cutting the index (#4865)', async () => {
     const target = 'candidate-limit-fixture';
     const query = 'Authentication token expiry correction';

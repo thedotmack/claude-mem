@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
+import { useI18n } from '../../i18n';
 import { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
 
 interface PromptCardProps {
   prompt: UserPrompt;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 // A prompt past these bounds renders with a line clamp plus a "Show more"
@@ -15,8 +18,14 @@ interface PromptCardProps {
 const CLAMP_LINES = 8;
 const CLAMP_MIN_CHARS = 600;
 
-export function PromptCard({ prompt }: PromptCardProps) {
-  const [expanded, setExpanded] = useState(false);
+export function PromptCard({ prompt, expanded: controlledExpanded, onExpandedChange }: PromptCardProps) {
+  const { t } = useI18n();
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? localExpanded;
+  const setExpanded = (next: boolean) => {
+    if (controlledExpanded === undefined) setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
   const date = formatDate(prompt.created_at_epoch);
   const isLong =
     prompt.prompt_text.split('\n').length > CLAMP_LINES ||
@@ -27,7 +36,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
     <div className="card prompt-card">
       <div className="card-header">
         <div className="card-header-left">
-          <span className="card-type">Prompt</span>
+          <span className="card-type">{t('Prompt')}</span>
           <span className={`card-source source-${prompt.platform_source || 'claude'}`}>
             {prompt.platform_source || 'claude'}
           </span>
@@ -44,7 +53,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
           aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? 'Show less' : 'Show more'}
+          {expanded ? t('Show less') : t('Show more')}
         </button>
       )}
       <div className="card-meta">

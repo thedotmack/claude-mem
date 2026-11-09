@@ -35,6 +35,7 @@ describe('redactSensitive built-in patterns', () => {
     ['slack_token',     'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop',             "<redacted type='slack_token'/>"],
     ['jwt',             'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789',               "<redacted type='jwt'/>"],
     ['stripe_key',      'Stripe ' + 'sk' + '_live_abcdefghijklmnopqrstuvwx',                         "<redacted type='stripe_key'/>"],
+    ['stripe_key',      'STRIPE_WEBHOOK_SECRET=' + 'wh' + 'sec_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345 tail', "<redacted type='stripe_key'/>"],
     ['google_api_key',  'key=AIzaSyA-0123456789abcdefghijklmnopqrstu',                                "<redacted type='google_api_key'/>"],
   ])('redacts %s', (name, input, marker) => {
     const result = redactSensitive(input, cfg);
@@ -69,6 +70,394 @@ describe('redactSensitive built-in patterns', () => {
     expect(result.redacted).toContain("<redacted type='slack_token'/>");
     expect(result.redacted).not.toMatch(/x(?:app|oxe)-1-/);
     expect(Object.keys(result.counts)).toEqual(['slack_token']);
+  });
+
+  // Access tokens of the registries a coding agent talks to; fixtures are
+  // split so push protection doesn't flag them.
+  it.each([
+    ['gitlab_token', 'GITLAB_TOKEN=' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['gitlab_token', 'token ' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT_-9.01.0abcdefgh1 tail'],
+    ['gitlab_token', 'GITLAB_DEPLOY_TOKEN=' + 'gl' + 'dt-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['gitlab_token', 'GITLAB_RUNNER_TOKEN=' + 'gl' + 'rt-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['huggingface_token', 'HF_TOKEN=' + 'h' + 'f_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+    ['npm_token', '//registry.npmjs.org/:_authToken=' + 'np' + 'm_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+    ['docker_pat', 'DOCKER_PAT=' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
+    ['docker_pat', 'docker login -u user -p ' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/gl(?:pat|dt|rt)-|hf_a|npm_a|dckr_pat_/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // A PyPI token is the macaroon after `pypi-`; split for push protection too.
+  const pypiMacaroon = 'AgE' + 'IcHlwaS5vcmcCJGQ1ZjE2NzBkLTk0NWUtNGNhYS1iMDhkLTI5ZDc2ZTA1MWQ2YwACKlsz-_9';
+  it.each([
+    ['password = ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['UV_PUBLISH_TOKEN=' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['twine upload -u __token__ -p ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+  ])('redacts a pypi_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='pypi_token'/> tail");
+    expect(result.redacted).not.toContain('AgEIcHlwaS5vcmc');
+    expect(Object.keys(result.counts)).toEqual(['pypi_token']);
+  });
+
+  // Databricks PATs (`dapi` + 32 hex) and HashiCorp Vault service/batch
+  // tokens (`hvs.` / `hvb.` + base64url). Fixtures are split for push
+  // protection too.
+  const DATABRICKS_HEX = '0123456789abcdef'.repeat(2);
+  const VAULT_SERVICE_BODY = 'CAESIJ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(2) + 'aBcDeFgHiJkLmNo';
+  const VAULT_BATCH_BODY = 'AAAAAQ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(4);
+  it.each([
+    ['databricks_token', 'DATABRICKS_TOKEN=' + 'da' + 'pi' + DATABRICKS_HEX + ' tail'],
+    ['databricks_token', 'token = ' + 'da' + 'pi' + DATABRICKS_HEX + '-2 tail'],
+    ['databricks_token', '{"token_value": "' + 'da' + 'pi' + DATABRICKS_HEX + '"} tail'],
+    ['vault_token', 'VAULT_TOKEN=' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'token                  ' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'export VAULT_TOKEN=' + 'hv' + 'b.' + VAULT_BATCH_BODY + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/'\/>(?:"\})? tail$/);
+    expect(result.redacted).not.toMatch(/dapi0123|hv[sb]\.[A-Z]/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'dapi' + 'short',
+    'the dapi' + 'deadbeef helper',
+    'da' + 'pi' + DATABRICKS_HEX + 'ff',
+    'hv' + 's.' + 'short',
+    'hv' + 's.' + VAULT_SERVICE_BODY.repeat(2),
+    'hv' + 'b.' + 'aBcDeFgHiJkLmNo',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Two providers claude-mem's own OpenAI-compatible presets onboard users for
+  // (src/shared/openai-compat-presets.ts): the NVIDIA NIM hint says the key
+  // starts with `nvapi-`, Runcrate's says `rc_live_`. Neither prefix was
+  // claimed by openai_key (`sk-`), so such a key pasted into a session was
+  // stored verbatim. Fixtures are split for push protection too.
+  const NVAPI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const RUNCRATE_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeF';
+  it.each([
+    ['nvidia_nim_key', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY=' + 'nva' + 'pi-' + NVAPI_BODY + ' tail'],
+    ['nvidia_nim_key', 'curl -H "Authorization: Bearer ' + 'nva' + 'pi-' + NVAPI_BODY + '" tail'],
+    ['runcrate_key', 'OPENAI_COMPAT_API_KEY=' + 'rc_' + 'live_' + RUNCRATE_BODY + ' tail'],
+    ['runcrate_key', '{"apiKey":"' + 'rc_' + 'live_' + RUNCRATE_BODY + '"} tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // Linear and Notion keys; split for push protection too.
+  const LINEAR_BODY = 'aBcDeFgHiJkLmNoPqRsT' + 'uVwXyZ0123456789aBcD';
+  const NOTION_BODY = '1234567890aBcDeFgHiJkLmNoPqRsT' + 'uVwXyZ0123456789';
+  const NOTION_LEGACY_BODY = 'aBcDeFgHiJkLmNoPqRsTuVw' + 'XyZ0123456789aBcDeFg';
+  it.each([
+    ['linear_key', 'export LINEAR_API_KEY=' + 'lin_' + 'api_' + LINEAR_BODY + ' tail', LINEAR_BODY],
+    ['linear_key', 'curl -H "Authorization: ' + 'lin_' + 'api_' + LINEAR_BODY + '" tail', LINEAR_BODY],
+    ['notion_token', 'NOTION_TOKEN=' + 'nt' + 'n_' + NOTION_BODY + ' tail', NOTION_BODY],
+    ['notion_token', '{"OPENAPI_MCP_HEADERS":"Bearer ' + 'nt' + 'n_' + NOTION_BODY + '"} tail', NOTION_BODY],
+    ['notion_token', 'NOTION_API_KEY=' + 'sec' + 'ret_' + NOTION_LEGACY_BODY + ' tail', NOTION_LEGACY_BODY],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'lin_api_short',
+    'ntn_short',
+    'secret_sauce',
+    'the secret_key_base setting',
+    'lin_api_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Groq and xAI API keys; split for push protection too.
+  const GROQ_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const XAI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcD' + 'eFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgH';
+  it.each([
+    ['groq_key', 'export GROQ_API_KEY=' + 'gs' + 'k_' + GROQ_BODY + ' tail'],
+    ['groq_key', 'curl -H "Authorization: Bearer ' + 'gs' + 'k_' + GROQ_BODY + '" tail'],
+    ['xai_key', 'XAI_API_KEY=' + 'xa' + 'i-' + XAI_BODY + ' tail'],
+    ['xai_key', '{"apiKey":"' + 'xa' + 'i-' + XAI_BODY + '"} tail'],
+  ])('redacts a %s in %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'gsk_short',
+    'xai-short',
+    'the xai-sdk package',
+    'gsk_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Perplexity API keys (`pplx-` + 48 alphanumerics); split for push
+  // protection like the fixtures above.
+  const PPLX_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789' + 'AbCdEfGhIjKl';
+  it.each([
+    ['perplexity_key', 'export PERPLEXITY_API_KEY=' + 'ppl' + 'x-' + PPLX_BODY + ' tail'],
+    ['perplexity_key', 'curl -H "Authorization: Bearer ' + 'ppl' + 'x-' + PPLX_BODY + '" tail'],
+    ['perplexity_key', '{"api_key":"' + 'ppl' + 'x-' + PPLX_BODY + '"} tail'],
+  ])('redacts a %s in %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // Every vendor key printed at the start of a line: the worker scans
+  // JSON.stringify(toolResponse), where that newline (or a tab/CR) arrives as
+  // the two characters `\n`, which a bare `\b` can't match after. Split
+  // literals keep GitHub push protection off these fake fixtures.
+  const A36 = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789';
+  const HEX64 = '0123456789abcdef'.repeat(4);
+  const AFTER_NEWLINE_KEYS: [string, string][] = [
+    ['github_pat', 'gh' + 'p_' + A36],
+    ['openai_key', 's' + 'k-ABCDEFGHIJ1234567890abcdef'],
+    ['anthropic_key', 's' + 'k-ant-api03-abcdef1234567890ABCDEF'],
+    ['slack_token', 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop'],
+    ['jwt', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789'],
+    ['stripe_key', 'sk' + '_live_abcdefghijklmnopqrstuvwx'],
+    ['google_api_key', 'AI' + 'zaSyA-0123456789abcdefghijklmnopqrstu'],
+    ['google_oauth_token', 'ya' + '29.' + A36],
+    ['gitlab_token', 'gl' + 'pat-' + 'aBcDeFgHiJkLmNoPqRsT'],
+    ['huggingface_token', 'h' + 'f_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567'],
+    ['npm_token', 'np' + 'm_' + A36],
+    ['docker_pat', 'dckr' + '_pat_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0'],
+    ['linear_key', 'lin_' + 'api_' + A36 + 'abcd'],
+    ['notion_token', 'nt' + 'n_' + '1234567890' + A36],
+    ['sendgrid_key', 'S' + 'G.' + 'aBcDeFgHiJkLmNoPqRsTuV' + '.' + A36 + 'aBcDeFg'],
+    ['digitalocean_token', 'do' + 'p_v1_' + HEX64],
+    ['shopify_token', 'shp' + 'at_' + HEX64.slice(0, 32)],
+    ['pypi_token', 'py' + 'pi-AgE' + A36 + A36],
+    ['databricks_token', 'da' + 'pi' + HEX64.slice(0, 32)],
+    ['vault_token', 'hv' + 's.' + A36.repeat(3)],
+    ['nvidia_nim_key', 'nv' + 'api-' + A36],
+    ['runcrate_key', 'rc_' + 'live_' + A36],
+    ['groq_key', 'gs' + 'k_' + A36 + 'aBcDeFgHiJkLmNoP'],
+    ['xai_key', 'xa' + 'i-' + A36 + A36 + 'aBcDeFgH'],
+    ['perplexity_key', 'ppl' + 'x-' + A36 + 'AbCdEfGhIjKl'],
+    ['supabase_token', 'sb' + 'p_' + HEX64.slice(0, 40)],
+    ['sentry_token', 'sntr' + 'yu_' + HEX64],
+    ['claude_mem_key', 'cm' + 'em_' + A36 + 'abcdefg'],
+  ];
+  it.each(AFTER_NEWLINE_KEYS)('redacts a %s printed right after a newline, raw and JSON-escaped', (name, key) => {
+    for (const separator of ['\n', '\t', '\r\n']) {
+      const output = `Deployment ready.${separator}${key}`;
+      for (const text of [output, JSON.stringify({ stdout: output })]) {
+        const result = redactSensitive(text, cfg);
+        expect(result.counts[name]).toBe(1);
+        expect(result.redacted).not.toContain(key);
+      }
+      const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
+      expect(JSON.parse(stored).stdout).toBe(`Deployment ready.${separator}<redacted type='${name}'/>`);
+    }
+  });
+
+  it('still leaves a key-shaped run inside a longer word alone', () => {
+    const word = 'xgh' + 'p_' + A36;
+    expect(redactSensitive(word, cfg).redacted).toBe(word);
+    expect(redactSensitive(JSON.stringify({ stdout: `a ${word}` }), cfg).redacted).toBe(JSON.stringify({ stdout: `a ${word}` }));
+  });
+
+  // The worker scans JSON.stringify(toolResponse), so a newline right before
+  // the key arrives as the two characters `\n`; the `n` is a word character,
+  // so a bare `\b` cannot match there and the key survived redaction.
+  it('redacts a perplexity_key printed right after a newline (worker capture path)', () => {
+    const output = `Deployment ready.\n${'ppl' + 'x-' + PPLX_BODY}`;
+    for (const text of [output, JSON.stringify({ stdout: output })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.perplexity_key).toBe(1);
+      expect(result.redacted).not.toContain(PPLX_BODY);
+    }
+    const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
+    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
+  });
+
+  // Perplexity model ids share the `pplx-` prefix; their `-`/`.` separators
+  // and short bodies keep them out of the 48-alphanumeric key pattern.
+  it.each([
+    'pplx-embed-v1-4b',
+    'pplx-decider-v1.2',
+    'the pplx- prefix',
+    'pplx_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKl',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Supabase and Sentry tokens; split for push protection too.
+  const SUPABASE_BODY = '0123456789abcdef0123' + '456789abcdef01234567';
+  const SENTRY_USER_BODY = '0123456789abcdef0123456789abcdef' + '0123456789abcdef0123456789abcdef';
+  const SENTRY_ORG_PAYLOAD = 'eyJpYXQiOjE3MDAwMDAwMDAuMDAwMDAwLCJ1cmwiOiJodHRwczovL3NlbnRyeS5pbyIs' + 'Im9yZyI6ImV4YW1wbGUtb3JnIn0=';
+  const SENTRY_ORG_SECRET = 'aBcDeFgHiJkLmNoPqRsTuVwXy' + 'Z0123456789+/aBcDe';
+  it.each([
+    ['supabase_token', 'export SUPABASE_ACCESS_TOKEN=' + 'sb' + 'p_' + SUPABASE_BODY + ' tail', SUPABASE_BODY],
+    ['supabase_token', '{"env":{"SUPABASE_ACCESS_TOKEN":"' + 'sb' + 'p_' + SUPABASE_BODY + '"}} tail', SUPABASE_BODY],
+    ['sentry_token', 'SENTRY_AUTH_TOKEN=' + 'sntr' + 'yu_' + SENTRY_USER_BODY + ' tail', SENTRY_USER_BODY],
+    ['sentry_token', 'sentry-cli sourcemaps upload --auth-token ' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_SECRET],
+    ['sentry_token', '[auth]\ntoken=' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_PAYLOAD],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'sbp_short',
+    'sntryu_short',
+    'sntrys_short_token',
+    'sbp_' + '0123456789abcdef0123456789abcdef',
+    'sntryu_' + '0123456789abcdef0123456789abcdef',
+    'the sntrys_ prefix',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  it.each([
+    'glpat-short',
+    'gldt-short',
+    'glrt-short',
+    'hf_short',
+    'npm_short',
+    'dckr_pat_short',
+    'the hf_transformers module',
+    'npm_config_cache=/tmp/x',
+    'pypi-AgEshort',
+    'pypi-simple index',
+  ])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
+  // Provider API keys that CLIs and `.env` files print; fixtures are split so
+  // push protection doesn't flag them.
+  it.each([
+    ['sendgrid_key', 'SENDGRID_API_KEY=' + 'S' + 'G.aBcDeFgHiJkLmNoPqRsTuV.aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-aBcDe tail'],
+    ['digitalocean_token', 'DIGITALOCEAN_TOKEN=' + 'do' + 'p_v1_' + '0123456789abcdef'.repeat(4) + ' tail'],
+    ['digitalocean_token', 'refresh_token: ' + 'do' + 'r_v1_' + 'fedcba9876543210'.repeat(4) + ' tail'],
+    ['shopify_token', 'SHOPIFY_ACCESS_TOKEN=' + 'sh' + 'pat_' + '0123456789abcdef'.repeat(2) + ' tail'],
+    ['shopify_token', 'secret ' + 'sh' + 'pss_' + 'ABCDEF0123456789'.repeat(2) + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/SG\.a|_v1_|shp(?:at|ss)_/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // Google OAuth 2.0 access tokens (`ya29.`), what `gcloud auth
+  // print-access-token` and the metadata server print. Split for push
+  // protection like the fixtures above.
+  it.each([
+    ['$ gcloud auth print-access-token\n' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA tail'],
+    ['curl -H "Authorization: Bearer ' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA" tail'],
+    ['{"access_token":"' + 'ya' + '29.c.Elt0BxAbCdEfGhIjKlMnOpQrStUvWxYz0123456789","expires_in":3599} tail'],
+  ])('redacts a google_oauth_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='google_oauth_token'/>");
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toMatch(/a0AfB_|Elt0Bx/);
+    expect(Object.keys(result.counts)).toEqual(['google_oauth_token']);
+  });
+
+  it.each(['ya29.short', 'the ya29. prefix'])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
+  // Incoming webhook URLs hold their secret in the last path segment; only
+  // that segment is replaced. Fixtures are split so push protection doesn't
+  // flag them.
+  const SLACK_SECRET = 'aBcDeFgHiJkLmNoP' + 'qRsTuVwX';
+  const DISCORD_TOKEN = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789_-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234';
+  it.each([
+    ['slack_webhook', 'SLACK_WEBHOOK_URL=https://' + 'hooks.slack' + '.com/services/T01ABCDEF/B02GHIJKL/' + SLACK_SECRET + ' tail',
+      "SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T01ABCDEF/B02GHIJKL/<redacted type='slack_webhook'/> tail"],
+    ['slack_webhook', 'curl -X POST https://' + 'hooks.slack' + '.com/workflows/T01ABCDEF/A02GHIJKL/123456789012345678/' + SLACK_SECRET + ' tail',
+      "curl -X POST https://hooks.slack.com/workflows/T01ABCDEF/A02GHIJKL/123456789012345678/<redacted type='slack_webhook'/> tail"],
+    ['discord_webhook', '{"url":"https://' + 'discord' + '.com/api/webhooks/123456789012345678/' + DISCORD_TOKEN + '"} tail',
+      `{"url":"https://discord.com/api/webhooks/123456789012345678/<redacted type='discord_webhook'/>"} tail`],
+    ['discord_webhook', 'https://' + 'canary.discordapp' + '.com/api/v10/webhooks/123456789012345678/' + DISCORD_TOKEN + ' tail',
+      "https://canary.discordapp.com/api/v10/webhooks/123456789012345678/<redacted type='discord_webhook'/> tail"],
+    // DNS host names are case-insensitive, so an upper-case host still posts.
+    ['slack_webhook', 'https://' + 'HOOKS.Slack' + '.COM/services/T01ABCDEF/B02GHIJKL/' + SLACK_SECRET,
+      "https://HOOKS.Slack.COM/services/T01ABCDEF/B02GHIJKL/<redacted type='slack_webhook'/>"],
+    ['discord_webhook', 'https://' + 'Discord' + '.com/api/webhooks/123456789012345678/' + DISCORD_TOKEN,
+      "https://Discord.com/api/webhooks/123456789012345678/<redacted type='discord_webhook'/>"],
+  ])('redacts the secret of a %s URL', (name, input, expected) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(expected);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'https://hooks.slack.com/services/T01ABCDEF/B02GHIJKL/short',
+    'https://hooks.slack.com/services/',
+    'https://discord.com/api/webhooks/123456789012345678/short',
+    'https://discord.com/api/webhooks/123456789012345678',
+    'https://example.com/services/T01ABCDEF/B02GHIJKL/' + 'aBcDeFgHiJkLmNoPqRsTuVwX',
+    // The provider host inside another URL's path is not a webhook host.
+    'https://example.com/' + 'hooks.slack' + '.com/services/T01ABCDEF/B02GHIJKL/' + 'aBcDeFgHiJkLmNoPqRsTuVwX',
+    'https://example.com/proxy/' + 'discord' + '.com/api/webhooks/123456789012345678/' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789_-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234',
+    'https://mirror.' + 'hooks.slack' + '.com.example.net/x',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // A password in a URL's userinfo is what `git remote -v` and a DATABASE_URL
+  // print; only the password is replaced.
+  it.each([
+    ['postgres://app:hunter2pass@db.internal:5432/prod', "postgres://app:<redacted type='url_credentials'/>@db.internal:5432/prod"],
+    ['origin https://alice:s3cr3t%21x@git.example.com/org/repo.git (fetch)', "origin https://alice:<redacted type='url_credentials'/>@git.example.com/org/repo.git (fetch)"],
+    ['redis://:hunter2pass@localhost:6379/0', "redis://:<redacted type='url_credentials'/>@localhost:6379/0"],
+    // A vendor-shaped start must not split the password and leave the rest visible.
+    ['https://app:' + 'cm_' + 'pro_abcdefgh!suffix@host/repo', "https://app:<redacted type='url_credentials'/>@host/repo"],
+    ['{"url":"mongodb+srv://u:p4ss.w0rd@c0.example.net/db"}', `{"url":"mongodb+srv://u:<redacted type='url_credentials'/>@c0.example.net/db"}`],
+  ])('redacts only the password of %s', (input, expected) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(expected);
+    expect(Object.keys(result.counts)).toEqual(['url_credentials']);
+  });
+
+  it.each([
+    'https://example.com:8080/path',
+    'https://user@example.com/repo.git',
+    'http://localhost:3000/@scope/pkg',
+    'postgres://app:${DB_PASS}@db/prod',
+    'postgres://app:<password>@db/prod',
+  ])('leaves %s alone', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(input);
+    expect(result.counts.url_credentials).toBeUndefined();
   });
 
   it('still requires a Google key to end after its 35 characters', () => {
@@ -197,6 +586,7 @@ text after`;
       'sk-short',                                  // openai_key too short
       'AKIA12345',                                 // aws_access_key too short
       'ghp_short',                                 // github_pat too short
+      'whsec_xxx',                                 // stripe_key webhook placeholder under the 32-char floor
       'eyJhbGciOiJIUzI1NiJ9 some text',            // jwt missing 2nd/3rd segment
       '-----BEGIN PUBLIC KEY-----\nfoo\n-----END PUBLIC KEY-----',  // PEM but not PRIVATE
     ];
@@ -243,6 +633,9 @@ describe('redactSensitive generic built-in patterns', () => {
     ['bare escaped yaml token', String.raw`auth:\n  token: abc12345defghi\n`, 'abc12345defghi'],
     ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
     ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
+    ['prefixed --auth-token flag',    'npm publish --auth-token abc12345defghi',  'abc12345defghi'],
+    ['prefixed --client-secret= flag', 'az login --client-secret=abc12345defghi', 'abc12345defghi'],
+    ['prefixed --hf-token flag',      'cli download --hf-token abc12345defghi',   'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
     // The worker scans tool output as JSON.stringify(response), so each
     // position must also hold as the start of a stringified value.
@@ -262,6 +655,23 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.redacted).not.toContain(secret);
   });
 
+  it.each([
+    ['in a curl header', 'curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://x', 'dXNlcjpodW50ZXIy'],
+    ['lowercase header', 'proxy-authorization: basic YWxhZGRpbjpvcGVuc2VzYW1l',     'YWxhZGRpbjpvcGVuc2VzYW1l'],
+  ])('basic_auth redacts a %s', (_style, input, secret) => {
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.basic_auth).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
+  });
+
+  it('basic_auth leaves prose and short or numeric values alone', () => {
+    for (const text of ['Basic configuration is covered below', 'Authorization: Basic', 'Authorization: Basic 12345678']) {
+      expect(redactSensitive(text, cfg).redacted).toBe(text);
+    }
+  });
+
   it('does NOT redact numeric, short or non-secret lookalikes', () => {
     const inputs = [
       'password=12345678',        // purely numeric
@@ -269,6 +679,8 @@ describe('redactSensitive generic built-in patterns', () => {
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
       'tokens=abcdefghij',        // `tokens`, not `token`
       'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      '--token-file /home/me/token.txt', // the flag names a file, not the token
+      '--max-tokens abcdefghij',  // `tokens`, not `token`
       'nosecret=abcdefghij',
       // Source code that names a bare token/secret: only config-shaped
       // positions (quoted JSON keys, env assignments, flags, yaml lines)
@@ -380,6 +792,26 @@ describe('redactSensitive generic built-in patterns', () => {
     const result = redactJsonStrings({ headers: { Authorization: value } }, cfg) as { headers: { Authorization: string } };
     expect(result.headers.Authorization).toBe(expected);
     expect(redactSensitive(`Authorization: ${value}`, cfg).redacted).toBe(`Authorization: ${expected}`);
+  });
+
+  it('redacts the Basic credentials of an Authorization header object (structured events)', () => {
+    const event = { headers: { Authorization: 'Basic dXNlcjpodW50ZXIy', accept: 'application/json' } };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.headers.Authorization).toBe("Basic <redacted type='basic_auth'/>");
+    expect(result.headers.accept).toBe('application/json');
+    const off = { ...cfg, disabledBuiltinPatterns: ['basic_auth'] };
+    expect(redactJsonStrings(event, off)).toEqual(event);
+    expect(redactJsonStrings(event, { enabled: true })).toEqual(event);
+  });
+
+  it.each([
+    ['Basic',  'Basic dXNlcjpodW50ZXIy',  "Basic <redacted type='basic_auth'/>"],
+    ['Bearer', 'Bearer abc12345defghi',   "Bearer <redacted type='bearer_token'/>"],
+  ])('redacts the %s credentials of a Proxy-Authorization header object (structured events)', (_scheme, value, expected) => {
+    for (const key of ['Proxy-Authorization', 'proxy-authorization']) {
+      expect(redactJsonStrings({ [key]: value }, cfg)).toEqual({ [key]: expected });
+      expect(redactJsonStrings({ [key]: value }, { enabled: true })).toEqual({ [key]: value });
+    }
   });
 
   it('leaves non-secret or opted-out Authorization header values alone', () => {

@@ -5,6 +5,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
+import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
@@ -17,6 +18,7 @@ import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_PROVIDER_BY_SOURCE?: unknown;
   CLAUDE_MEM_CHROMA_ENABLED?: string;
   CLAUDE_MEM_CHROMA_UVX_PATH?: string;
 }
@@ -164,7 +166,10 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
   const provider = options.settings.CLAUDE_MEM_PROVIDER || 'claude';
   const chromaEnabled = options.settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
 
-  if (provider === 'claude') {
+  // A provider mapped per source can need the Claude CLI even when the global one does not.
+  const needsClaudeCli = provider === 'claude' || providersMappedBySource(options.settings.CLAUDE_MEM_PROVIDER_BY_SOURCE).includes('claude');
+
+  if (needsClaudeCli) {
     const findClaudeExecutable = options.findClaudeExecutable ?? (() => defaultFindClaudeExecutable('WORKER'));
     try {
       findClaudeExecutable();

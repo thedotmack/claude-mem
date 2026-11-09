@@ -16,13 +16,29 @@ import {
   getNodeAbsolutePath,
   getWorkerServiceAbsolutePath,
 } from './install-paths.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
 export const KIMI_MARKER_BEGIN = '# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>';
 export const KIMI_MARKER_END = '# <<< claude-mem kimi hooks <<<';
 
+/**
+ * Render a value as a TOML string.
+ *
+ * A literal string (`'...'`) is preferred because it performs no escape
+ * processing at all, which is what Windows paths with backslashes want. It
+ * cannot contain a single quote, though, and a home directory like
+ * `/home/o'brien` would terminate the string early and leave the whole
+ * config.toml unparseable — taking the user's own hooks down with it. Fall back
+ * to a basic string (`"..."`) with escaped backslashes and quotes in that case.
+ */
+function tomlString(value: string): string {
+  if (!value.includes("'")) return `'${value}'`;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 /** Seven rules: the Claude Code hook surface, plus PostToolUseFailure (a failed tool call is still an observation). */
 export function buildKimiHooksBlock(bunPath: string, workerPath: string): string {
-  const run = (suffix: string) => `'"${bunPath}" "${workerPath}" ${suffix}'`;
+  const run = (suffix: string) => tomlString(`"${bunPath}" "${workerPath}" ${suffix}`);
   const rules = [
     { event: 'SessionStart', matcher: 'startup|resume', command: run('start'), timeout: 120 },
     { event: 'UserPromptSubmit', matcher: undefined, command: run('hook kimi session-init-context'), timeout: 120 },
@@ -68,7 +84,9 @@ function backupOnce(configPath: string): void {
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const backupPath = `${configPath}.bak-${stamp}`;
   if (existsSync(configPath) && !existsSync(backupPath)) {
-    writeFileSync(backupPath, readFileSync(configPath, 'utf-8'));
+    // Owner-only: the backup holds every Kimi setting, and the default umask
+    // would make it world-readable even when config.toml is not.
+    writeFileSync(backupPath, readFileSync(configPath, 'utf-8'), { mode: 0o600 });
   }
 }
 
@@ -105,7 +123,7 @@ export function configureKimiMcp(): number {
   try {
     mkdirSync(kimiCodeHome(), { recursive: true });
     const config: { mcpServers?: Record<string, unknown> } = existsSync(mcpPath)
-      ? JSON.parse(readFileSync(mcpPath, 'utf-8'))
+      ? parseJsonWithBom(readFileSync(mcpPath, 'utf-8'))
       : {};
     config.mcpServers ??= {};
     if (config.mcpServers['mcp-search']) {
@@ -134,7 +152,7 @@ export function configureKimiMcp(): number {
 function removeKimiMcpServer(): void {
   const mcpPath = kimiMcpJsonPath();
   if (!existsSync(mcpPath)) return;
-  const config: { mcpServers?: Record<string, { args?: unknown }> } = JSON.parse(readFileSync(mcpPath, 'utf-8'));
+  const config: { mcpServers?: Record<string, { args?: unknown }> } = parseJsonWithBom(readFileSync(mcpPath, 'utf-8'));
   const args = config.mcpServers?.['mcp-search']?.args;
   const isOurs = Array.isArray(args) && args.some((arg) => typeof arg === 'string' && arg.endsWith('mcp-server.cjs'));
   if (!isOurs) return;

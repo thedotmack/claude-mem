@@ -111,6 +111,18 @@ test('a request whose work-state items were all dropped is closed, with no lifec
   assert.equal(request.closed, true)
 })
 
+test('a closed request with a start and no completion does not count up as running', () => {
+  const dropped = baseRequest.items.map((item) => ({ ...item, kind: 'work-state' as const, status: 'dropped' }))
+  const { request } = mapOne({ lifecycle: null, items: dropped, completedAtEpoch: null })
+  assert.equal(request.closed, true)
+  assert.ok(request.startedAtIso, 'the fixture has a recorded start')
+  assert.equal(request.runningLive, undefined)
+  const complete = mapOne({ lifecycle: { explicit: true, complete: true, status: 'done' }, completedAtEpoch: null }).request
+  assert.equal(complete.runningLive, undefined, 'a lifecycle that says complete has finished, even without a time')
+  const open = mapOne({ completedAtEpoch: null }).request
+  assert.equal(open.runningLive, true, 'an open request with a start and no completion still counts up')
+})
+
 const syntheticRequest = (): WorkViewHumanRequest => ({
   id: '["overall-request","g_000000000001"]', contentFingerprint: 'f', title: 'Cards', original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18) },
   scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [], agentIds: [], conversationKeys: [],
@@ -119,6 +131,23 @@ const syntheticRequest = (): WorkViewHumanRequest => ({
 const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<WorkViewSnapshot> = {}): WorkViewSnapshot => ({
   version: 1, generatedAt: '2026-10-22T12:00:00Z', agents: [], humanRequests, unlinkedWork: [], revision: '1',
   source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
+})
+
+test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
+  const raw = syntheticRequest()
+  raw.review = { checked: false, checkedAtEpoch: null, actor: 'shared-user', available: true, mode: 'shared', hash: 'review-hash', version: 2, conflict: true, pending: true, message: 'Choose the current review.' }
+  raw.suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related request', evidence: 'The same change', confidence: 0.8, judge: 'test', at: null, expectedSuggestionHash: 'suggestion-hash', sharedConflict: true }
+  raw.workProduct = [
+    { kind: 'document', title: 'report.pdf', availability: 'origin-only', available: false, fileUrl: '/wrong/download', url: 'https://example.com/wrong' },
+    { kind: 'pull-request', title: 'Published PR', url: 'https://github.com/example/repo/pull/1' },
+  ]
+  const mapped = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.deepEqual(mapped.review, { mode: 'shared', hash: 'review-hash', available: true, version: 2, conflict: true, legacy: undefined, pending: true, message: 'Choose the current review.' })
+  assert.equal(mapped.suggestion?.expectedSuggestionHash, 'suggestion-hash')
+  assert.equal(mapped.suggestion?.sharedConflict, true)
+  assert.equal(mapped.workProduct[0].availability, 'origin-only')
+  assert.equal(mapped.workProduct[0].href, undefined)
+  assert.equal(mapped.workProduct[1].href, 'https://github.com/example/repo/pull/1')
 })
 
 test('a reviewed request shows the review percent, its readings, the measured ETA and its milestones', () => {
@@ -374,3 +403,58 @@ for (const state of ['unavailable', 'current']) {
     assert.equal(model.requests[0].summary, raw.progress!.summary)
   })
 }
+
+test('a group title that repeats the prompt is marked, even past the part the card quotes', () => {
+  const long = `${'Context. '.repeat(60)}\nGOAL: Move billing to the new processor`
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), titleSource: 'request-group', title: 'Move billing to the new processor', original: { text: long, atEpoch: Date.UTC(2026, 9, 18) } }
+  const [copied] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(copied.titleRepeatsPrompt, true)
+  assert.ok(!copied.prompts[0].quote.includes('billing'), 'the card quote alone would have missed it')
+  const [written] = toWorkModel(snapshotWith([{ ...raw, title: 'Billing moves processors' }]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(written.titleRepeatsPrompt, undefined)
+})
+
+
+test('canonical minimal shared progress stays visible without inventing a history or milestones', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'in-progress' as const, percent: 60 } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests.length, 1)
+  const request = model.requests[0]
+  assert.equal(request.title, 'Cards')
+  assert.equal(request.progress.percent, 60)
+  assert.equal(request.progress.readings, 1, 'the current progress record is one assessment')
+  assert.equal(request.progress.history, undefined, 'no historical readings were supplied')
+  assert.deepEqual(request.story, [])
+  assert.equal(request.summary, null)
+  assert.equal(request.estimate, null)
+})
+
+test('minimal shipped progress retains its date and survives mapping without optional detail', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'shipped' as const, percent: 100, shippedAt: '2026-10-21T12:00:00Z' } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].progress.percent, 100)
+  assert.ok(model.requests[0].progress.completedAt)
+  assert.deepEqual(model.requests[0].story, [])
+  assert.equal(model.requests[0].progress.history, undefined)
+})
+
+test('image refs ride through: the card summary to Request.media, each record\'s refs to its granular row', () => {
+  const ref = (n: number) => ({ id: `00000000-0000-4000-8000-00000000000${n}`, label: `image-${n}`, inspection: 'uninspected' as const })
+  const at = Date.UTC(2026, 9, 21)
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(),
+    activity: [
+      { id: 'observation:2', kind: 'observation', title: 'Read the screenshot', detail: null, atEpoch: at, url: '/api/work-view/evidence/observation/2', media: { version: 1, attachments: [ref(1), ref(2)], overflow: true } },
+      { id: 'observation:1', kind: 'observation', title: 'Planned the layout', detail: null, atEpoch: at - 1000, url: '/api/work-view/evidence/observation/1' },
+    ],
+    media: { count: 2, preview: [ref(1), ref(2)] } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.deepEqual(request.media, { count: 2, preview: [ref(1), ref(2)] })
+  assert.deepEqual(request.granular[0].media, { version: 1, attachments: [ref(1), ref(2)], overflow: true })
+  assert.equal('media' in request.granular[1], false, 'an image-free record gains no key')
+  const [plain] = toWorkModel(snapshotWith([syntheticRequest()]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal('media' in plain, false, 'an image-free request gains no key')
+})

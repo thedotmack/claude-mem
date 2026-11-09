@@ -2,8 +2,8 @@
   "extends": "../../../tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "rootDir": "."
+    "rootDir": ".."
   },
-  "include": ["./**/*"],
+  "include": ["./**/*", "../i18n/**/*"],
   "exclude": []
 }

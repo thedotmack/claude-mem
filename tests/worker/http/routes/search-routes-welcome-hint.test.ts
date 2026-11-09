@@ -34,7 +34,6 @@ import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js
 import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { buildWorkStateContextSection } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { TEAM_BRIEF_RESERVE_CHARS } from '../../../../src/shared/teambrain.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../../../src/shared/memory-instructions.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -42,8 +41,6 @@ const observerHealthPath = join(realPaths.paths.dataDir(), OBSERVER_HEALTH_FILEN
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-// What every response leads with while nothing has been written: the rule, then "Nothing open yet."
-const EMPTY_WORK_STATE_SECTION = buildWorkStateContextSection([], 0);
 const workStateEntriesStub = mock((): any[] => []);
 
 interface MockRes {
@@ -118,6 +115,34 @@ describe('SearchRoutes Welcome Hint', () => {
     if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
 
+  it('passes dynamic notice reserves to whole-item rendering without overwriting the ordinary cache', async () => {
+    process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED = 'false';
+    process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+    const recordLiveRender = mock(async () => {});
+    const cache = {
+      recordLiveRender,
+      removalGenerationNow: () => 0,
+      warmVariant: mock(async () => {}),
+    };
+    const routes = new SearchRoutes(mockSearchManager, cache as any);
+    const handler = captureContextInjectHandler(routes);
+    const invoke = async (reserveChars?: string) => {
+      generateContextStub.mockClear();
+      const res = createMockRes();
+      await handler({ query: { projects: 'demo', ...(reserveChars === undefined ? {} : { reserveChars }) } } as any, res as any);
+      await new Promise(resolve => setImmediate(resolve));
+      return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+    };
+    const baseline = (await invoke()).reserveChars;
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('251')).reserveChars).toBe(baseline + 251);
+    expect(cache.warmVariant).toHaveBeenCalledTimes(1);
+    expect(recordLiveRender).toHaveBeenCalledTimes(1);
+    expect((await invoke('-1')).reserveChars).toBe(baseline);
+    expect((await invoke('NaN')).reserveChars).toBe(baseline);
+    expect((await invoke('100000')).reserveChars).toBe(baseline + 10_000);
+  });
+
   afterAll(() => {
     mock.module('../../../../src/services/context-generator.js', () => realContextGeneratorSnapshot);
     mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
@@ -176,8 +201,8 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
     expect(body).toContain('# claude-mem status');
     expect(body).toContain('disappears once the first observation lands');
-    // Hint first, warning second — same order as normal context, so the
-    // warning is the last thing on screen rather than the first thing scrolled off.
+    // Hint first, warning second, so the warning is the last thing on screen
+    // rather than the first thing scrolled off.
     expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('What to do:'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
@@ -213,11 +238,11 @@ describe('SearchRoutes Welcome Hint', () => {
 
     expect(res.send).toHaveBeenCalledTimes(1);
     const body = (res.send as any).mock.calls[0][0] as string;
-    expect(body).toContain('paused while a provider quota cooldown is active');
-    expect(body).toContain('This is not a failure');
+    expect(body).toContain('claude-mem has paused saving memories');
+    expect(body).toContain("Activity during the pause isn't saved");
     expect(body).toContain('# claude-mem status');
     expect(body).not.toContain("can't save memories");
-    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('has paused saving memories'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
@@ -237,7 +262,7 @@ describe('SearchRoutes Welcome Hint', () => {
     await new Promise(resolve => setImmediate(resolve));
 
     expect(generateContextStub).toHaveBeenCalledTimes(1);
-    expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
   it('skips the welcome hint when CLAUDE_MEM_WELCOME_HINT_ENABLED=false', async () => {
@@ -253,10 +278,10 @@ describe('SearchRoutes Welcome Hint', () => {
     await new Promise(resolve => setImmediate(resolve));
 
     expect(generateContextStub).toHaveBeenCalledTimes(1);
-    expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
+  it('trims hand-typed spacing in a comma-separated project list', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
 
@@ -272,6 +297,27 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/worktree',
       '/path/parent',
       '/path/worktree',
+      null,
+      null,
+    );
+  });
+
+  it('keeps exact keys when the project list repeats the query key', async () => {
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: ['/path/parent', ' /path/worktree'] } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    expect(countQueryStub).toHaveBeenCalledWith(
+      '/path/parent',
+      ' /path/worktree',
+      '/path/parent',
+      ' /path/worktree',
       null,
       null,
     );
@@ -430,8 +476,7 @@ describe('SearchRoutes Welcome Hint', () => {
       { id: 1, project: '/path/parent', list_name: 'release', fields: { version: '13.25.3', status: 'active' }, created_at_epoch: Date.now() },
       { id: 2, project: '/path/worktree', list_name: 'release', fields: { task: 'publish', status: 'todo' }, created_at_epoch: Date.now() },
     ];
-
-    it('leads the context with what is still open and takes its length off the memory budget', async () => {
+    it('hands what is still open to the renderer, which measures it with the block it places it in', async () => {
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
       mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
@@ -447,17 +492,17 @@ describe('SearchRoutes Welcome Hint', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(workStateEntriesStub).toHaveBeenCalledWith(['/path/parent', '/path/worktree']);
-      const body = (res.send as any).mock.calls[0][0] as string;
-      expect(body).toStartWith('# Work state: your to-do lists and working state');
-      expect(body).toContain('\n\nStill open:\n- release: version=13.25.3, status=active, updated 1 minute ago\n  - [todo] publish, updated 1 minute ago');
-      expect(body).toEndWith('\n\nCONTEXT_FROM_GENERATOR');
-      // The budget is reserved for the section as rendered with its time
-      // placeholders (cacheable form), which are never shorter than the filled text.
+      // The renderer puts the section under its header, above the timeline, so
+      // the route no longer glues it on top or reserves room for it.
+      expect((res.send as any).mock.calls[0][0]).toBe('CONTEXT_FROM_GENERATOR');
+      // The section goes in with its time placeholders (cacheable form), so the
+      // fitter measures it at least as long as the filled text it becomes.
       const renderedEntries = (workStateEntriesStub.mock.results[0] as { value: any[] }).value;
-      const placeholderSectionLength = buildWorkStateContextSection(renderedEntries, 'placeholders').length;
-      const filledSectionLength = body.length - '\n\nCONTEXT_FROM_GENERATOR'.length;
-      expect(placeholderSectionLength).toBeGreaterThanOrEqual(filledSectionLength);
-      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: placeholderSectionLength + 2 }), false, expect.objectContaining({ execution: 'inline' }));
+      const section = buildWorkStateContextSection(renderedEntries, 'placeholders');
+      expect(section).toStartWith('Work state, still open:\n- release: version=13.25.3, status=active, updated ');
+      expect(section).toContain('\n  - [todo] publish, updated ');
+      expect(section).not.toContain('# Work state: your to-do lists');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ workStateSection: section, reserveChars: 0 }), false, expect.objectContaining({ execution: 'inline' }));
     });
 
     it('leads the welcome hint with what is still open', async () => {
@@ -469,9 +514,9 @@ describe('SearchRoutes Welcome Hint', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       const body = (res.send as any).mock.calls[0][0] as string;
-      expect(body).toStartWith('# Work state: your to-do lists and working state');
+      expect(body).toStartWith('Work state, still open:\n- release');
       expect(body).toContain('  - [todo] publish');
-      expect(body.indexOf('Still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
+      expect(body.indexOf('Work state, still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
     });
 
     // #4606: a host that tracks work its own way can turn the section off, so
@@ -490,10 +535,10 @@ describe('SearchRoutes Welcome Hint', () => {
 
       expect(workStateEntriesStub).not.toHaveBeenCalled();
       expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
-      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0 }), false, expect.objectContaining({ execution: 'inline' }));
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0, workStateSection: '' }), false, expect.objectContaining({ execution: 'inline' }));
     });
 
-    it('leaves room for the TeamBrain brief and the memory instructions the hook appends once the install is in a team', async () => {
+    it('leaves room for the TeamBrain brief the hook puts ahead of the block once the install is in a team', async () => {
       process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
@@ -506,18 +551,40 @@ describe('SearchRoutes Welcome Hint', () => {
       };
       try {
         process.env.CLAUDE_MEM_TEAMBRAIN_URL = 'https://cmem.ai';
-        await render();
-        expect(generateContextStub).toHaveBeenCalledWith(
-          expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2 }),
-          false,
-          expect.objectContaining({ execution: 'inline' }),
-        );
-
-        process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
-        await render();
-        expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false, expect.objectContaining({ execution: 'inline' }));
+        for (const instructions of [undefined, 'false']) {
+          if (instructions === undefined) delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+          else process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = instructions;
+          await render();
+          expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false, expect.objectContaining({ execution: 'inline' }));
+        }
       } finally {
         delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
+        delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+      }
+    });
+
+    // The memory-use block moved from the hook's output to the MCP server's
+    // instructions, so no session's block gives up room for it any more.
+    it('reserves nothing for the memory instructions, with them on or off', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      countQueryStub = mock(() => ({ count: 7 }));
+      prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
+      mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
+      const reserved = async () => {
+        generateContextStub.mockClear();
+        const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+        handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, createMockRes() as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+        return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+      };
+      delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
+      delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+      try {
+        expect((await reserved()).reserveChars).toBe(0);
+
+        process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
+        expect((await reserved()).reserveChars).toBe(0);
+      } finally {
         delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
       }
     });

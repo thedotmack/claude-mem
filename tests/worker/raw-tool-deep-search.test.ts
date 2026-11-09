@@ -22,7 +22,8 @@ beforeEach(() => {
   rawId = store.upsertToolUse({ toolUseId: 'tool-one', contentSessionId: 'session', project: 'shop-api',
     toolName: 'Bash', toolInput: 'diagnose', toolResponse: query + ': pool size 10; increase to 30' })!;
   search = new SessionSearch(store.db, { toolUseIndexEnabled: true });
-  manager = new SearchManager(search, store, null, new FormattingService(), {} as any);
+  manager = new SearchManager(search, store, null, new FormattingService(), {} as any, undefined, null,
+    { search: async (query, options) => search.searchToolUses(query, options) });
 });
 afterEach(() => { mock.restore(); store.close(); (ModeManager as any).instance = previousMode; });
 const args = { query, project: 'shop-api', deep: true, format: 'json' };
@@ -40,7 +41,7 @@ describe('raw-tool search is an explicit deeper tier', () => {
     const deep = await manager.search(args);
     expect(deep.observations).toEqual([]);
     expect(deep.totalResults).toBe(0);
-    expect(deep.deep).toEqual({ status: 'ok', count: 1, hasMore: false });
+    expect(deep.deep).toEqual({ status: 'ok', complete: true, count: 1, hasMore: false });
     expect(deep.toolUses.map((r: any) => r.id)).toEqual([rawId]);
     expect(store.getToolUsesByIds([rawId], { project: 'shop-api' })[0].tool_response).toContain('30');
   });
@@ -56,7 +57,8 @@ describe('raw-tool search is an explicit deeper tier', () => {
 
   it('never builds the index in a request when the capability is disabled', async () => {
     search = new SessionSearch(store.db, { toolUseIndexEnabled: false });
-    manager = new SearchManager(search, store, null, new FormattingService(), {} as any);
+    manager = new SearchManager(search, store, null, new FormattingService(), {} as any, undefined, null,
+    { search: async (query, options) => search.searchToolUses(query, options) });
     expect((await manager.search(args)).deep.status).toBe('disabled');
     expect(store.db.query("SELECT 1 FROM sqlite_master WHERE name='tool_uses_fts'").get()).toBeNull();
   });
@@ -161,11 +163,18 @@ describe('raw-tool search is an explicit deeper tier', () => {
     }
   });
 
-  it('dispatches expensive raw reads through the existing context reader', async () => {
+  it('dispatches expensive raw reads through a separate deep reader', async () => {
     const read = mock(async (q, options) => search.searchToolUses(q, options));
     manager = new SearchManager(search, store, null, new FormattingService(), {} as any, undefined,
-      { searchObservations: async () => [], searchSessions: async () => [], searchUserPrompts: async () => [], searchToolUses: read } as any);
+      { searchObservations: async () => [], searchSessions: async () => [], searchUserPrompts: async () => [], searchToolUses: () => { throw new Error('shared context must not run raw search'); } } as any, { search: read });
     expect((await manager.search(args)).toolUses).toHaveLength(1);
     expect(read).toHaveBeenCalledWith(query, expect.objectContaining({ projects: ['shop-api'] }));
+  });
+
+  it('reports unsupported when no separate executor is available, without inline fallback', async () => {
+    const inline = spyOn(search, 'searchToolUses');
+    manager = new SearchManager(search, store, null, new FormattingService(), {} as any);
+    expect((await manager.search(args)).deep.status).toBe('unsupported');
+    expect(inline).not.toHaveBeenCalled();
   });
 });

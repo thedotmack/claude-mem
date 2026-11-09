@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -157,6 +157,39 @@ describe('claude-mem launcher', () => {
     expect(stubWorkerOutput.originalCwd).toBe(projectDirectory);
     expect(stubWorkerOutput.cwd).not.toBe(projectDirectory);
     expect(stubWorkerOutput.pluginRoot).toBe(path.join(projectDirectory, 'relative-root'));
+    // The neutral directory is the owner-only run dir, not the shared tmpdir
+    // (Bun auto-loads bunfig.toml, and its `preload`, from its cwd).
+    expect(realpathSync(stubWorkerOutput.cwd)).toBe(realpathSync(path.join(temporaryHome, '.claude-mem', 'run')));
+  });
+
+  it('expands a ~-prefixed CLAUDE_MEM_DATA_DIR under home, not inside the project', () => {
+    const temporaryHome = realpathSync(makeTemporaryHome());
+    const projectDirectory = path.join(temporaryHome, 'project');
+    mkdirSync(projectDirectory);
+    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+
+    const result = runObservationHook({
+      temporaryHome,
+      workingDirectory: projectDirectory,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, CLAUDE_MEM_DATA_DIR: '~/mem-data' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(realpathSync(parseStubWorkerOutput(result.stdout).cwd)).toBe(path.join(temporaryHome, 'mem-data', 'run'));
+    expect(existsSync(path.join(projectDirectory, '~'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('tightens a pre-existing 0755 run dir to 0700', () => {
+    const temporaryHome = makeTemporaryHome();
+    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+    const runDirectory = path.join(temporaryHome, '.claude-mem', 'run');
+    mkdirSync(runDirectory, { recursive: true, mode: 0o755 });
+    chmodSync(runDirectory, 0o755);
+
+    const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot } });
+
+    expect(result.status).toBe(0);
+    expect(statSync(runDirectory).mode & 0o777).toBe(0o700);
   });
 
   it('prints the integer LAUNCHER_PROTOCOL for --version', () => {
@@ -187,6 +220,44 @@ describe('claude-mem launcher', () => {
     expect(stubWorkerOutput.argv).toEqual(['start']);
     expect(stubWorkerOutput.stdin).toBe('');
     expect(existsSync(path.join(temporaryHome, '.claude-mem', 'CAPTURE_BROKEN'))).toBe(false);
+  });
+
+  // A hook must not parse the whole worker bundle: it runs the hook-only
+  // hook-service.cjs when the plugin ships it, and worker-service.cjs otherwise.
+  describe('hook routing', () => {
+    const hookServiceStub = `process.stdout.write(JSON.stringify({ script: 'hook-service', argv: process.argv.slice(2) }));`;
+
+    it('runs hook-service.cjs for hook commands when it exists', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      writeFileSync(path.join(pluginRoot, 'scripts', 'hook-service.cjs'), hookServiceStub);
+
+      const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ script: 'hook-service', argv: ['hook', 'claude-code', 'observation'] });
+    });
+
+    it('falls back to worker-service.cjs for hook commands when hook-service.cjs is absent', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+
+      const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['hook', 'claude-code', 'observation']);
+    });
+
+    it('keeps non-hook commands on worker-service.cjs even when hook-service.cjs exists', () => {
+      const temporaryHome = makeTemporaryHome();
+      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      writeFileSync(path.join(pluginRoot, 'scripts', 'hook-service.cjs'), hookServiceStub);
+
+      const result = runLauncher(['start'], { temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
+
+      expect(result.status).toBe(0);
+      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['start']);
+    });
   });
 
   it('accepts a root that has worker-service.cjs but no bun-runner.js', () => {
@@ -383,6 +454,24 @@ describe('claude-mem launcher', () => {
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('empty stdin payload received — issue #2188');
     expect(readFileSync(path.join(temporaryHome, '.claude-mem', 'CAPTURE_BROKEN'), 'utf-8')).toContain('issue #2188');
+  });
+
+  it('records an empty stdin payload under a ~-relative CLAUDE_MEM_DATA_DIR in home, not the project', () => {
+    const temporaryHome = makeTemporaryHome();
+    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+    const project = path.join(temporaryHome, 'project');
+    mkdirSync(project, { recursive: true });
+
+    const result = runLauncher(['hook', 'claude-code', 'observation'], {
+      temporaryHome,
+      stdinPayload: '',
+      workingDirectory: project,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, CLAUDE_MEM_DATA_DIR: '~/tilde-data' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(path.join(temporaryHome, 'tilde-data', 'CAPTURE_BROKEN'), 'utf-8')).toContain('issue #2188');
+    expect(existsSync(path.join(project, '~'))).toBe(false);
   });
 
   // findBun() checks PATH, $BUN/$BUN_PATH/$BUN_INSTALL, ~/.bun/bin/bun, then

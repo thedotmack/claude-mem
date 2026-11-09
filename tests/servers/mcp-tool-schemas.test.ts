@@ -24,7 +24,7 @@ async function withServer(
   app.use((req, _res, next) => { workerRequests.push({ path: req.path, body: req.body, query: req.query }); next(); });
   app.get('/api/search', (req, res) => {
     const result = {observations: [], sessions: [], prompts: [], totalResults: 0,
-      deep: {status: 'ok', count: 1, hasMore: false},
+      deep: {status: 'ok', complete: true, count: 1, hasMore: false},
       toolUses: [{id: 41, tool_name: 'Bash', project: 'test', snippet: 'DB_CONN_1042'}]};
     res.json(req.query.format === 'json' ? result : {...result, content: [
       {type:'text', text:'#S1 ' + 'Matching summary 🧪 '.repeat(5000)},

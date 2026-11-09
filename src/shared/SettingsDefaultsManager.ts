@@ -3,10 +3,12 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { parseEnv } from 'util';
+import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
+import { getDefaultServerPort, getDefaultWorkerPort } from './install-port.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -60,9 +62,51 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
  * deadline migrations treat a hand-written number as the user choosing it, and
  * anything else is passed through untouched so this never rewrites a value it
  * does not understand.
+ *
+ * Exported for the auto-updater, which reads its own keys from the parsed
+ * document the same way (src/services/auto-update/auto-update-check.ts
+ * readAutoUpdateSettings).
  */
-function coercePersistedSettingValue(value: unknown): unknown {
+export function coercePersistedSettingValue(value: unknown): unknown {
   return typeof value === 'boolean' ? String(value) : value;
+}
+
+// Model policy: claude-mem never pins a dated Claude model id. Defaults use
+// Claude Code's aliases (`haiku`, `sonnet`, `opus`), which resolve to the
+// newest model of that tier, because each new Anthropic release is cheaper or
+// better at the same price. Older installs had `claude-haiku-4-5-20251001`
+// written into settings.json by the default or the installer; rewrite exactly
+// those shipped ids to the alias. A gateway install is left alone, since a custom
+// endpoint serves its own model names: either the saved auth method says gateway,
+// or the claude-mem .env next to settings.json sets ANTHROPIC_BASE_URL (how the
+// installer detects one; such installs often never save the auth method).
+const PINNED_SHIPPED_HAIKU_MODELS: ReadonlySet<string> = new Set([
+  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5',
+]);
+
+function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
+  try {
+    if (!existsSync(envFile)) return false;
+    // Parse it the way the worker does (EnvManager's parseEnvFile), so this sees
+    // exactly the base URL the worker will use: BOM stripped, empty means unset.
+    const parsed = parseEnv(stripUtf8Bom(readFileSync(envFile, 'utf-8'))) as Record<string, string>;
+    return Boolean(parsed.ANTHROPIC_BASE_URL);
+  } catch {
+    return true;  // unreadable: assume a gateway and leave the model alone
+  }
+}
+
+function hasPinnedShippedHaiku(flatSettings: Record<string, any>, settingsPath: string): boolean {
+  const model = flatSettings.CLAUDE_MEM_MODEL;
+  if (typeof model !== 'string' || !PINNED_SHIPPED_HAIKU_MODELS.has(model.trim())) {
+    return false;
+  }
+  const authMethod = typeof flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'string'
+    ? flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD.trim()
+    : '';
+  return authMethod !== 'gateway' && !envFileSetsAnthropicBaseUrl(settingsPath);
 }
 
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
@@ -94,8 +138,8 @@ function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean
 export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
 
 /**
- * A per-request deadline whose shipped default was raised after installs had
- * seeded the old one. Every settings.json seeded while 30000 was the default
+ * A shipped default that changed after installs had seeded the old one: two
+ * per-request deadlines (below) and the image capture switch. Every settings.json seeded while 30000 was the default
  * holds it on disk, and persisted values win over DEFAULTS, so a raise could
  * never reach those installs. The move rewrites the exact string the seeders
  * wrote; any other value, including a hand-written number, is a deliberate
@@ -108,19 +152,34 @@ export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
  * request, one that is too short discards work that may be paid for, and any
  * other value (or the env var) keeps a short one.
  */
-interface RaisedDeadlineDefault {
-  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS';
+interface ChangedShippedDefault {
+  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS' | 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
   /** The exact string the seeders wrote while it was the default. */
   legacy: string;
   /** Names this key's marker, so each move gets its own one chance. */
   markerTag: string;
+  /** Printed after both values in the log line ('ms' for deadlines). */
+  unit: string;
+  /**
+   * Use the new default only once settings.json holds it. A read-only load or
+   * a failed rewrite then keeps the old value, so the file always says what
+   * the worker does. Required for a switch a user must be able to keep off
+   * by editing the file, such as image capture.
+   */
+  applyOnlyWhenSaved: boolean;
 }
 
-const RAISED_DEADLINE_DEFAULTS: readonly RaisedDeadlineDefault[] = [
+const CHANGED_SHIPPED_DEFAULTS: readonly ChangedShippedDefault[] = [
   // Seeded from #4125 (13.25.2) until #4278.
-  { key: 'CLAUDE_MEM_LLM_TIMEOUT_MS', legacy: '30000', markerTag: 'llm-timeout-migrated-v1' },
+  { key: 'CLAUDE_MEM_LLM_TIMEOUT_MS', legacy: '30000', markerTag: 'llm-timeout-migrated-v1', unit: 'ms', applyOnlyWhenSaved: false },
   // Seeded from #4136 until the field pass got the same deadline.
-  { key: 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', legacy: '30000', markerTag: 'field-optimize-timeout-migrated-v1' },
+  { key: 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', legacy: '30000', markerTag: 'field-optimize-timeout-migrated-v1', unit: 'ms', applyOnlyWhenSaved: false },
+  // Seeded 'false' from #4341 (image capture, off) until capture became on by
+  // default. No viewer switch existed before then, so a saved 'false' is almost
+  // always the seeded value. A 'false' typed by hand reads the same and moves
+  // too; typing it changed nothing while 'false' was the default. After this
+  // one move, a 'false' saved by the "Keep images" switch or by hand stays.
+  { key: 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED', legacy: 'false', markerTag: 'media-capture-default-on-v1', unit: '', applyOnlyWhenSaved: true },
 ];
 
 // Present ⇔ this settings file has had its one chance at the move for that key.
@@ -129,11 +188,11 @@ const RAISED_DEADLINE_DEFAULTS: readonly RaisedDeadlineDefault[] = [
 // holds a value the move leaves alone: after a saved rewrite, or when there was
 // nothing to move. It is never written after a failed rewrite, so a read-only
 // settings.json keeps getting the new default in memory.
-function raisedDefaultMarkerPath(settingsPath: string, raised: RaisedDeadlineDefault): string {
+function raisedDefaultMarkerPath(settingsPath: string, raised: ChangedShippedDefault): string {
   return join(dirname(settingsPath), `.${basename(settingsPath)}.${raised.markerTag}`);
 }
 
-function markRaisedDefaultDone(settingsPath: string, raised: RaisedDeadlineDefault): void {
+function markRaisedDefaultDone(settingsPath: string, raised: ChangedShippedDefault): void {
   try {
     writeFileSync(raisedDefaultMarkerPath(settingsPath, raised), new Date().toISOString(), {
       encoding: 'utf-8',
@@ -176,6 +235,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_PROJECTS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_URL: string;
   CLAUDE_MEM_WORKER_INGEST_TOKEN: string;
   CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: string;
   CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: string;
@@ -191,6 +251,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
   CLAUDE_MEM_DELIVERABLES_ENABLED: string;        // Stop hook copies the turn's deliverables into ~/.claude-mem/deliverables/<project>/ and My Work links them
   CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_PROVIDER_BY_SOURCE: string;          // JSON object mapping a platform source to a provider, e.g. {"codex":"codex"}; empty = off, global provider for every source
+  CLAUDE_MEM_OBSERVER_ENABLED: string;
+  CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: string;
+  CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
   CLAUDE_MEM_CODEX_PATH: string;
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
@@ -254,6 +318,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_WORK_STATE_ENABLED: string;
+  CLAUDE_MEM_AUTO_CLEAR_ENABLED: string;
+  CLAUDE_MEM_AUTO_CLEAR_PERCENT: string;
   CLAUDE_MEM_FILE_READ_GATE_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
   CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
@@ -304,7 +370,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
-  // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
+  // two-lane sync hub (services/sync-hub); while it is empty, sync is OFF
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
@@ -312,6 +378,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // live updates via Supabase Realtime — 'false' disables live updates (HTTP polling only)
+  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: string;    // 'true' keeps pulling with no local session (cloud viewer replica)
   // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
@@ -338,6 +405,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_TRIAL_AT: string;
   CLAUDE_MEM_PRO_TRIAL_STATE: string;
   CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  // The installer's optional email opt-in (install.ts promptEmailOptIn).
+  // Declared so loadFromFile round-trips them: a dropped email would re-ask
+  // and POST the waitlist again.
+  CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_NOTE: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_AT: string;
+  CLAUDE_MEM_ONLINE_SIGNUP_SENT: string;
   CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_PRO_FALLBACK_AT: string;
   // The gateway's own words for the rejection that set CLAUDE_MEM_PRO_FALLBACK_AT,
@@ -353,8 +427,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
   CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
+  CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: string;
+  CLAUDE_MEM_WORK_VIEW_SHARED_STATE: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_AGENT: string;
+  CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -420,7 +501,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
   CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: string; // opt-in raw-tool full-text index; applied on worker restart
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
+  CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
+  // Daily update to the release the owner promotes (src/services/auto-update/).
+  // SettingsRoutes FILE_ONLY_SETTING_KEYS keeps HTTP from writing them. The
+  // updater reads CLAUDE_MEM_AUTO_UPDATE from the file and the environment,
+  // and the release URL from the file alone (auto-update-check.ts readAutoUpdateSettings).
+  CLAUDE_MEM_AUTO_UPDATE: string;
+  CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
 
@@ -430,12 +518,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
     // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
     CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+    // Never a dated id: `haiku` is Claude Code's alias for the newest Haiku, so the
+    // note-taker moves to each new (cheaper) release on its own. See CLAUDE.md, Model policy.
+    CLAUDE_MEM_MODEL: 'haiku',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
-    CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WORKER_PORT: String(getDefaultWorkerPort()),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_URL: '',
     CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
     CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: '5242880',
     CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'auto',
@@ -465,6 +556,17 @@ export class SettingsDefaultsManager {
     // installs land here — no delivered key exists headlessly, so the settings
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_PROVIDER_BY_SOURCE: '',
+    CLAUDE_MEM_OBSERVER_ENABLED: 'true',  // 'false' disables new observation and session-summary capture calls
+    // Image capture is on: the viewer's "Keep images" switch turns it off.
+    // No total local cap, by the owner's call (2026-11-05): each image is
+    // bounded (MEDIA_LIMITS in media-contract.ts: 3 MiB canonical, 256 KiB
+    // model copy), an event keeps at most 4, and the local database and
+    // transcripts have no total cap either. Images stay until their event is
+    // deleted. Installs seeded with 'false' move once (CHANGED_SHIPPED_DEFAULTS).
+    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'true',
+    // Stays off: sending images to the observer model is separate and paid.
+    CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
     CLAUDE_MEM_CODEX_PATH: 'codex',
     CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low',
@@ -532,6 +634,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_WORK_STATE_ENABLED: 'true',  // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
+    CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false', // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
+    CLAUDE_MEM_AUTO_CLEAR_PERCENT: '33',    // Context window use (1-95) that starts the auto-clear
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: 'true',  // 'false' = never block a full-file Read; the file's observation timeline is still added as context
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
@@ -553,9 +657,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
     CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: '[]',              // JSON array of { name, regex } objects
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
-    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
+    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer, Authorization: Basic)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
-    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns"}: directories matching an environment's globs share one project named after it
+    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
@@ -612,6 +716,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Live updates (Supabase Realtime `advance` broadcasts). 'false' disables live updates — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: 'false',  // 'true' keeps pulling with no sessions running instead of suspending after an hour (the cloud viewer replica, which runs no hooks)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     CLAUDE_MEM_TEAMBRAIN_URL: '',      // TeamBrain base URL (e.g. https://cmem.ai). Empty = TeamBrain OFF
@@ -632,6 +737,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
     CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
     CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
+    // Installer email opt-in: empty until someone shares an email.
+    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: '',
+    CLAUDE_MEM_ONLINE_SIGNUP_SENT: '',  // 'true' once the waitlist accepted it, 'false' to retry next install
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
     CLAUDE_MEM_PRO_FALLBACK_MESSAGE: '', // The gateway's message for that rejection ('' = plan-neutral notice copy)
@@ -641,8 +751,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: '10', // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
+    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+    CLAUDE_MEM_WORK_VIEW_AGENT: '', // Which agent runs the My Work refresh: '' follows CLAUDE_MEM_PROVIDER and stays on one agent; claude-code/codex/gemini pick one; off runs none; all falls through every logged-in agent (#5189)
+    CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
+    CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
+    CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+    CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. Never detected by a model; empty lets the skills pick the owner's language
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
@@ -655,9 +772,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: '{}', // JSON project-to-Telegram-route map; entries may carry bot-token overrides.
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
-    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
-    // Pilot agents: LFG + Orifice. Empty list = no writes.
-    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+    // Opt-in agent IDs. Empty list = no writes.
+    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
     // Optional brainbeat webhook: awareness-trigger matches are POSTed here
@@ -694,16 +811,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
     CLAUDE_MEM_REDIS_PORT: '6379',
     CLAUDE_MEM_REDIS_MODE: 'external',
-    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
+    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(getDefaultWorkerPort())}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
     // Phase 1a (cmem-sdk rename): canonical server settings keys. Hooks read
     // these first; the legacy `*_BETA_*` defaults below remain so existing
     // settings.json files still resolve correctly.
-    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Default server runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_API_KEY: '',                          // Local hook API key, populated by installer when runtime=server
     CLAUDE_MEM_SERVER_PROJECT_ID: '',                       // Default Postgres project_id used by hooks when runtime=server
-    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Legacy server-beta runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort())}`,  // Legacy server-beta runtime URL — aligned with the per-install port fallback
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
     CLAUDE_MEM_DEDUP_ENABLED: 'false',                      // #3038 — opt-in; Tier-0 exact auto-merge + Tier-1 review-only candidates
@@ -715,7 +832,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
     CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: 'false',
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
+    CLAUDE_MEM_LOG_RETENTION_DAYS: '30',                // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
+    // Daily update to the release the owner promotes. On by default; Claude
+    // Code's DISABLE_AUTOUPDATER (unless FORCE_AUTOUPDATE_PLUGINS=1),
+    // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also turn it
+    // off, set in the environment or in the env block of Claude Code's user or
+    // managed settings.
+    CLAUDE_MEM_AUTO_UPDATE: 'true',                         // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
+    CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: '',        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path in settings.json, since the updater never reads its environment variable
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
 
@@ -723,10 +848,29 @@ export class SettingsDefaultsManager {
     return { ...this.DEFAULTS };
   }
 
+  private static defaultsForSettingsPath(settingsPath: string): SettingsDefaults {
+    const defaults = { ...this.DEFAULTS };
+    const dataDir = dirname(settingsPath);
+    const workerPort = String(getDefaultWorkerPort(dataDir));
+    const serverPort = process.env.CLAUDE_MEM_SERVER_PORT ?? String(getDefaultServerPort(dataDir));
+    defaults.CLAUDE_MEM_WORKER_PORT = workerPort;
+    defaults.CLAUDE_MEM_QUEUE_REDIS_PREFIX = `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? workerPort}`;
+    defaults.CLAUDE_MEM_SERVER_URL = `http://127.0.0.1:${serverPort}`;
+    defaults.CLAUDE_MEM_SERVER_BETA_URL = `http://127.0.0.1:${serverPort}`;
+    return defaults;
+  }
+
   static get(key: keyof SettingsDefaults): string {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
       return this.normalizeWorkerHost(value);
+    }
+    // Callers join the data dir into file paths, and fs reads a leading `~` as
+    // a directory name, so expand it the way paths.ts resolves the data dir
+    // (#3350). Otherwise an env value like `~/.claude-mem-work` sends the worker
+    // settings to `<cwd>/~/.claude-mem-work/settings.json`.
+    if (key === 'CLAUDE_MEM_DATA_DIR') {
+      return expandHome(value);
     }
     return value;
   }
@@ -775,13 +919,13 @@ export class SettingsDefaultsManager {
     options: { readOnly?: boolean } = {},
   ): SettingsDefaults {
     try {
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       if (!existsSync(settingsPath)) {
-        const defaults = this.getAllDefaults();
         if (!options.readOnly) {
           try {
             writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
             // A fresh file already holds the raised deadlines: nothing to move.
-            for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
+            for (const raised of CHANGED_SHIPPED_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
             // stderr, never stdout: this fires on the first boot in a fresh data
             // dir, and CLI commands like `start` promise machine-readable JSON
             // on stdout to the hook framework.
@@ -842,6 +986,32 @@ export class SettingsDefaultsManager {
         }
       }
 
+      if (hasPinnedShippedHaiku(flatSettings, settingsPath)) {
+        const pinnedModel = String(flatSettings.CLAUDE_MEM_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_MODEL: this.DEFAULTS.CLAUDE_MEM_MODEL,
+        };
+
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
+        }
+      }
+
       if (hasRetiredOpenRouterDefault(flatSettings)) {
         const retiredModel = String(flatSettings.CLAUDE_MEM_OPENROUTER_MODEL).trim();
         flatSettings = {
@@ -889,12 +1059,16 @@ export class SettingsDefaultsManager {
         }
       }
 
-      for (const raised of RAISED_DEADLINE_DEFAULTS) {
+      for (const raised of CHANGED_SHIPPED_DEFAULTS) {
         if (existsSync(raisedDefaultMarkerPath(settingsPath, raised))) continue;
         if (flatSettings[raised.key] !== raised.legacy) {
           if (!options.readOnly) markRaisedDefaultDone(settingsPath, raised);
           continue;
         }
+        // A read-only load never writes, so a key that must be saved first
+        // keeps its old value until a writable load (the worker's) moves it.
+        if (options.readOnly && raised.applyOnlyWhenSaved) continue;
+        const beforeMove = flatSettings;
         flatSettings = {
           ...flatSettings,
           [raised.key]: this.DEFAULTS[raised.key],
@@ -910,17 +1084,21 @@ export class SettingsDefaultsManager {
             markRaisedDefaultDone(settingsPath, raised);
             // stderr, never stdout — same JSON-on-stdout contract as above.
             console.warn(
-              `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
+              `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}${raised.unit} default to ${this.DEFAULTS[raised.key]}${raised.unit}:`,
               settingsPath,
             );
           } catch (error: unknown) {
-            // Continue with the in-memory migration even if the write fails; with
-            // no marker, the next load tries the rewrite again.
+            // Deadlines continue with the in-memory move even if the write
+            // fails; a key that must be saved first keeps the file's value.
+            // With no marker, the next load tries the rewrite again.
+            if (raised.applyOnlyWhenSaved) flatSettings = beforeMove;
             const reported = `${raised.key}\0${settingsPath}`;
             if (!raisedDefaultFailuresReported.has(reported)) {
               raisedDefaultFailuresReported.add(reported);
               console.warn(
-                `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
+                raised.applyOnlyWhenSaved
+                  ? `[SETTINGS] Failed to migrate ${raised.key}; keeping the saved ${raised.legacy} (reported once per process):`
+                  : `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
                 settingsPath,
                 error instanceof Error ? error.message : String(error),
               );
@@ -929,8 +1107,8 @@ export class SettingsDefaultsManager {
         }
       }
 
-      const result: SettingsDefaults = { ...this.DEFAULTS };
-      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+      const result: SettingsDefaults = { ...defaults };
+      for (const key of Object.keys(defaults) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
           result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
@@ -939,7 +1117,7 @@ export class SettingsDefaultsManager {
       return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      const defaults = this.getAllDefaults();
+      const defaults = this.defaultsForSettingsPath(settingsPath);
       return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }

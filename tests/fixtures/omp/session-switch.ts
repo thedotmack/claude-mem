@@ -45,7 +45,7 @@ try{
  await hooks.get('tool_result')?.({toolName:'read',input:{path:'first.ts'},content:'first owned file'},{cwd});
  if(!delayed)await waitFor('/api/sessions/observations',1);
  else await waitFor('/api/sessions/init',1);
- const firstContext=await hooks.get('context')?.({messages:[]},{cwd});assert.equal(firstContext.messages[0].content,'owned memory 1');
+ const firstContext=await hooks.get('context')?.({messages:[]},{cwd});assert.equal(firstContext.messages[0].role,'custom');assert.ok(firstContext.messages[0].content.endsWith('\n\nowned memory 1'),firstContext.messages[0].content);
  await hooks.get('agent_end')?.({messages:[{role:'assistant',content:'first owned answer'}]},{cwd});
  await hooks.get(eventName)?.(eventName==='session_switch'?{reason:'new',previousSessionFile:'owned-old.jsonl'}:{reason:'branch',entryId:'owned-entry',previousSessionFile:'owned-old.jsonl'},{cwd});
  await hooks.get('before_agent_start')?.({prompt:'second owned prompt'},{cwd});
@@ -57,7 +57,7 @@ try{
  console.log(JSON.stringify({eventName,rows,requests,contextFetches}));
  assert.equal(rows.length,2,'host session transitions need distinct worker sessions');
  assert.deepEqual(rows.map(r=>r.user_prompt),['first owned prompt','second owned prompt']);
- assert.equal(secondContext.messages[0].content,'owned memory 2','session transition must refresh context');
+ assert.ok(secondContext.messages[0].content.endsWith('\n\nowned memory 2'),'session transition must refresh context');
  await waitFor('/api/sessions/summarize',2);
  const summaries=requests.filter(r=>r.path==='/api/sessions/summarize');
  assert.deepEqual(summaries.map(r=>r.body.last_assistant_message),['first owned answer','']);

@@ -21,6 +21,11 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cmem-hook.mjs\" session-init",
             "timeout": 30,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cmem-hook.mjs\" prompt-context",
+            "timeout": 15
           }
         ]
       }

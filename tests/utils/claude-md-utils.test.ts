@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, symlinkSync } from 'fs';
 import path, { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -298,10 +298,26 @@ describe('writeClaudeMdToFolder', () => {
     writeClaudeMdToFolder(folderPath, content);
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    const tempFilePath = `${claudeMdPath}.tmp`;
 
     expect(existsSync(claudeMdPath)).toBe(true);
-    expect(existsSync(tempFilePath)).toBe(false);
+    // The temp name is random, so check the whole folder, not one fixed name.
+    expect(readdirSync(folderPath).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not write through a planted CLAUDE.md.tmp symlink', () => {
+    // A checkout can ship `CLAUDE.md.tmp` as a symlink to a file outside it;
+    // the old fixed temp name was written through that link, clobbering the
+    // target. (Symlinks need extra privilege on Windows.)
+    const folderPath = join(tempDir, 'planted-tmp-symlink');
+    mkdirSync(folderPath, { recursive: true });
+    const outsideFile = join(tempDir, 'outside-target.txt');
+    writeFileSync(outsideFile, 'precious contents');
+    symlinkSync(outsideFile, join(folderPath, 'CLAUDE.md.tmp'));
+
+    writeClaudeMdToFolder(folderPath, 'Generated content');
+
+    expect(readFileSync(outsideFile, 'utf-8')).toBe('precious contents');
+    expect(readFileSync(join(folderPath, 'CLAUDE.md'), 'utf-8')).toContain('Generated content');
   });
 });
 
@@ -814,6 +830,30 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('only checks duplicate segments from the project folder down', async () => {
+    // A project checked out at a path like ~/code/app/app must still get folder CLAUDE.md files.
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+    const projectRoot = join(tempDir, 'app', 'app');
+    mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      projectRoot
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+  });
 });
 
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
@@ -1123,10 +1163,9 @@ describe('CLAUDE.local.md support', () => {
     writeClaudeMdToFolder(folderPath, 'Atomic write test', 'CLAUDE.local.md');
 
     const localMdPath = join(folderPath, 'CLAUDE.local.md');
-    const tempFilePath = `${localMdPath}.tmp`;
 
     expect(existsSync(localMdPath)).toBe(true);
-    expect(existsSync(tempFilePath)).toBe(false);
+    expect(readdirSync(folderPath).filter(name => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('should skip folder when CLAUDE.local.md was read in observation', async () => {
@@ -1274,5 +1313,50 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
     const content = readFileSync(claudeMdPath, 'utf-8');
     expect(content).toContain('PRE-EXISTING');
     expect(content).toContain('<claude-mem-context>');
+  });
+});
+
+describe('observation count setting in updateFolderClaudeMdFiles (#5507)', () => {
+  const ENV_KEY = 'CLAUDE_MEM_CONTEXT_OBSERVATIONS';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = savedEnv;
+    }
+  });
+
+  const apiResponse = {
+    content: [{ text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |' }],
+  };
+
+  it('fetches and writes nothing when the count is 0', async () => {
+    process.env[ENV_KEY] = '0';
+    const folderPath = join(tempDir, 'zero-count');
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('passes a configured nonzero count through as the fetch limit', async () => {
+    process.env[ENV_KEY] = '7';
+    const folderPath = join(tempDir, 'seven-count');
+    const fetchMock = mock((_url: string) => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('&limit=7&');
   });
 });

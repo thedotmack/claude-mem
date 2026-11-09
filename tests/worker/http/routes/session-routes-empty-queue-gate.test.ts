@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../../../src/utils/logger.js';
+import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
 
 /**
  * #3454: `/api/sessions/init` used to start a generator with nothing queued,
@@ -67,11 +68,17 @@ function makeHarness() {
   const session = makeSession();
   let pendingCount = 0;
   const openRouterStartSession = mock(async () => {});
+  const clearUnclaimed = mock(() => {
+    const cleared = pendingCount;
+    pendingCount = 0;
+    return cleared;
+  });
   const sessionManager = {
     getSession: mock((id: number) => (id === session.sessionDbId ? session : undefined)),
     getMessageBuffer: mock(() => ({
       getPendingCount: () => pendingCount,
       peekTypes: () => [] as Array<{ message_type: string }>,
+      clearUnclaimed,
     })),
     removeSessionImmediate: mock(() => {}),
   };
@@ -89,15 +96,21 @@ function makeHarness() {
     session,
     routes,
     openRouterStartSession,
+    clearUnclaimed,
+    pendingCount: () => pendingCount,
     enqueue: () => { pendingCount += 1; },
   };
 }
 
 describe('SessionRoutes.ensureGeneratorRunning — empty-queue start gate (#3454)', () => {
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
+  let settingsSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     providerSelections = 0;
+    settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => SettingsDefaultsManager.getAllDefaults(),
+    );
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -107,6 +120,7 @@ describe('SessionRoutes.ensureGeneratorRunning — empty-queue start gate (#3454
   });
 
   afterEach(() => {
+    settingsSpy.mockRestore();
     loggerSpies.forEach(spy => spy.mockRestore());
   });
 
@@ -131,6 +145,22 @@ describe('SessionRoutes.ensureGeneratorRunning — empty-queue start gate (#3454
 
     expect(providerSelections).toBe(1);
     expect(harness.openRouterStartSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('hard-disabled capture drops buffered work before provider selection', async () => {
+    settingsSpy.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+    }));
+    const harness = makeHarness();
+    harness.enqueue();
+
+    await harness.routes.ensureGeneratorRunning(harness.session.sessionDbId, 'periodic-resume');
+
+    expect(harness.clearUnclaimed).toHaveBeenCalledWith(harness.session.sessionDbId);
+    expect(harness.pendingCount()).toBe(0);
+    expect(providerSelections).toBe(0);
+    expect(harness.openRouterStartSession).not.toHaveBeenCalled();
   });
 
   for (const source of ['overflow-recycle', 'response-stall', 'transport-resume']) {

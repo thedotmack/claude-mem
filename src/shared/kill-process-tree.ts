@@ -18,7 +18,7 @@ import { execFile } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
-import { captureProcessStartToken, isSameProcess } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, startTokenProbeEnv, withUtcStartTokenPrefix } from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -402,7 +402,10 @@ function readProcessTableLinux(): ProcessTableRow[] {
  * Its lstart is byte-identical to `ps -p <pid> -o lstart=`, which is what
  * captureProcessStartToken() uses here. LC_ALL/LANG are pinned for the same
  * reason they are pinned there — a locale-formatted date would not compare
- * equal on the revalidation.
+ * equal on the revalidation — and TZ is pinned with them (#5311), because a
+ * token that shifts with the calling process's zone turns every zone change
+ * into a false PID-reuse verdict. The rows carry the same utc: prefix the
+ * single-PID reader stamps, so the byte-identical agreement survives.
  */
 async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
   let stdout: string;
@@ -410,7 +413,7 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart='], {
       timeout: 10_000,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      env: startTokenProbeEnv(process.env),
     });
     stdout = result.stdout;
   } catch (error) {
@@ -419,7 +422,11 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     });
     return [];
   }
+  return parsePosixProcessTable(stdout);
+}
 
+/** Rows from `ps -eo pid=,ppid=,lstart=` output. Pure and exported for tests. */
+export function parsePosixProcessTable(stdout: string): ProcessTableRow[] {
   const rows: ProcessTableRow[] = [];
   for (const line of stdout.split('\n')) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
@@ -428,7 +435,7 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
-      startToken: startToken.length > 0 ? startToken : null,
+      startToken: startToken.length > 0 ? withUtcStartTokenPrefix(startToken) : null,
     });
   }
   return rows;

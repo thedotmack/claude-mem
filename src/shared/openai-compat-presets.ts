@@ -104,6 +104,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
   },
   {
+    id: 'popnow',
+    label: 'PopNow (popnow.ai)',
+    baseUrl: 'https://api.popnow.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids end in a task suffix and are passed verbatim.
+    defaultModel: 'deepseek/v4-flash/chat',
+    requiresApiKey: true,
+    hint: 'One PopNow key for chat model ids such as deepseek/v4-flash/chat or moonshot/kimi-k3/chat.',
+  },
+  {
     id: 'runcrate',
     label: 'Runcrate (runcrate.ai)',
     baseUrl: 'https://api.runcrate.ai/v1',
@@ -112,6 +122,36 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash',
     requiresApiKey: true,
     hint: 'rc_live_ key from runcrate.ai; vendor-prefixed open model ids such as deepseek-ai/DeepSeek-V4.1-Flash or zai-org/GLM-5.3.',
+  },
+  {
+    id: 'cheapaimodel',
+    label: 'cheapaimodel (cheapaimodel.ai)',
+    baseUrl: 'https://api.cheapaimodel.ai/v1',
+    // A small, fast open model for the same reason as NVIDIA's default:
+    // extraction is high volume. Ids are passed verbatim.
+    defaultModel: 'deepseek-v4-1-flash',
+    requiresApiKey: true,
+    hint: 'Key from console.cheapaimodel.ai; open model ids such as deepseek-v4-1-flash or glm-5.3.',
+  },
+  {
+    id: 'obscurify-ai',
+    label: 'Obscurify.ai (obscurify.ai)',
+    baseUrl: 'https://obscurify.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'sk-obs1_ key from obscurify.ai/account; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. Obscurify says prompts and responses are not stored.',
+  },
+  {
+    id: 'standardcompute',
+    label: 'Standard Compute (standardcompute.com)',
+    baseUrl: 'https://api.stdcmpt.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'Key from standardcompute.com/dashboard/api-keys; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. US endpoint: https://us.stdcmpt.com/v1.',
   },
   {
     id: 'deepseek',

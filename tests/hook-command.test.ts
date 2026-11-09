@@ -11,7 +11,10 @@ import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
 import { HookStdoutError } from '../src/shared/hook-io.js';
+import * as spoolHookEventModule from '../src/cli/spool-hook-event.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { resetHookSettingsCacheForTesting } from '../src/shared/hook-settings.js';
 
 const realStdoutWrite = process.stdout.write;
 
@@ -27,6 +30,7 @@ afterEach(() => {
   restoreStdin();
   process.stdout.write = realStdoutWrite;
   setActiveHookType('');
+  resetHookSettingsCacheForTesting();
 });
 
 describe('hook_failed telemetry type', () => {
@@ -73,6 +77,31 @@ describe('hookCommand tool-hook disable (#3106)', () => {
     process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
     const code = await hookCommand('claude-code', 'file-context', { skipExit: true });
     expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
+
+  it('exits before reading stdin when observer capture is disabled in settings', async () => {
+    const stderr: string[] = [];
+    const realStderrWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stderr.write;
+    const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => {
+      process.stderr.write('settings migration warning\n');
+      return {
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+      };
+    });
+    try {
+      // No stdin JSON: reaching the normal pipeline would hang or time out.
+      const code = await hookCommand('claude-code', 'observation', { skipExit: true });
+      expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+      expect(stderr).toEqual([]);
+    } finally {
+      settings.mockRestore();
+      process.stderr.write = realStderrWrite;
+    }
   });
 });
 
@@ -208,6 +237,33 @@ describe('hookCommand stdout delivery failures', () => {
       expect(output).toEqual(['{}\n']);
       expect(executeSpy).toHaveBeenCalledTimes(1);
     } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
+describe('hookCommand stdout failure while capture handoffs settle', () => {
+  it('reports the closed stdout as a handled delivery error, never an unhandled rejection', async () => {
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockResolvedValue({ continue: true });
+    // The handoff wait outlives the failed write, so an un-awaited stdout promise would reject with no handler.
+    const settleSpy = spyOn(spoolHookEventModule, 'settleHookSpoolNudges').mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+    const unhandledRejections: unknown[] = [];
+    const recordUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+    process.on('unhandledRejection', recordUnhandledRejection);
+    process.stdout.write = ((_chunk: string, callback: (error?: Error | null) => void): boolean => {
+      setTimeout(() => callback(new Error('write EPIPE')), 0);
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'stdout-closed-during-handoff', cwd: process.cwd() }));
+    try {
+      await expect(hookCommand('claude-code', 'session-init', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', recordUnhandledRejection);
+      settleSpy.mockRestore();
       executeSpy.mockRestore();
     }
   });

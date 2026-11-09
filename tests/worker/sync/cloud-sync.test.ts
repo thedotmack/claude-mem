@@ -328,9 +328,9 @@ describe('CloudSync', () => {
       VALUES (?, 'observation', 'device-fixture', '1', '1', ?, 0, 1)
     `).run(priorBody.id, prior.operation_sha256);
 
-    // Content snapshots drain first, so this mutation is also provably
-    // untouched when the content response fails validation.
-    store.createSDKSession('ack-proof-session', 'proj-x', 'prompt', 'queued title', 'claude');
+    // Keep this fixture a two-operation frozen content page. Mutation pages
+    // now have an independent fair turn; their own invalid-ack case below
+    // checks that a frozen mutation remains intact on rejection.
   }
 
   function ackDurabilityState(): Record<string, unknown> {
@@ -396,6 +396,7 @@ describe('CloudSync', () => {
       expect(call.headers['X-User-Id']).toBe('user-42');
       expect(call.headers['X-Device-Id']).toBe('device-fixture');
       expect(call.headers['X-Device-Name']).toBe('test-host');
+      expect(call.headers['X-Sync-Capabilities']).toBe('quarantine-unknown-kinds');
       expect(call.hasSignal).toBe(true); // AbortSignal.timeout on every POST
     }
 
@@ -609,6 +610,77 @@ describe('CloudSync', () => {
     expect(calls.map(c => c.parsed.ops.length)).toEqual([6, 6, 3]);
   });
 
+  it('never stamps rows on a durable 503 that carries no per-op acks', async () => {
+    seedObservation({ title: 'durable-but-unprojected' });
+    const { impl, calls } = makeFetchMock(() => new Response(JSON.stringify({
+      error: 'projection_busy', durable: true, retryable: true, head_seq: '1', projected_seq: '0',
+    }), { status: 503, headers: { 'Retry-After': '30' } }));
+    const sync = makeCloudSync(impl);
+
+    await sync.flush();
+
+    expect(calls.length).toBe(1);
+    expect(pendingCount('observations')).toBe(1);
+    sync.stop();
+  });
+
+  it('restarts the retry ladder when a flush got pages through before the hub refused one', async () => {
+    for (let i = 0; i < 3; i++) seedObservation({ title: `obs ${i}` });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 1, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    // Stand in for the armed retry timer firing, so each flush below is a retry.
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    // Retries that move nothing climb the ladder: 1s, then 2s, so 4s is next.
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    // One page acked, the next refused: the retry waits the initial 1s again.
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    expect(pendingCount('observations')).toBe(2);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
+  });
+
+  it('restarts the retry ladder when a page split across requests got its first request acked', async () => {
+    // ~240 KB rows: one 20-row page exceeds the 4 MB request cap and is sent
+    // as two requests. The first is acked, the second refused.
+    for (let i = 0; i < 20; i++) seedObservation({ title: `big ${i}`, narrative: `${i}`.padEnd(240_000, 'x') });
+    let refuseFromCall = 1;
+    const { impl, calls } = makeFetchMock((call) => call >= refuseFromCall
+      ? new Response(JSON.stringify({ error: 'projection_busy', durable: true, retryable: true }), { status: 503 })
+      : undefined);
+    const sync = makeCloudSync(impl, {}, { contentBatchSize: 20, backoffInitialMs: 1_000, backoffMaxMs: 64_000 });
+    const internals = sync as unknown as { nextBackoffMs: number; retryTimer: ReturnType<typeof setTimeout> | null };
+    const fireRetryTimer = async () => {
+      if (internals.retryTimer) clearTimeout(internals.retryTimer);
+      internals.retryTimer = null;
+      await sync.flush();
+    };
+
+    await sync.flush();
+    await fireRetryTimer();
+    expect(internals.nextBackoffMs).toBe(4_000);
+
+    refuseFromCall = calls.length + 2;
+    await fireRetryTimer();
+    const pending = pendingCount('observations');
+    expect(pending).toBeGreaterThan(0);
+    expect(pending).toBeLessThan(20);
+    expect(internals.nextBackoffMs).toBe(2_000);
+    sync.stop();
+  });
+
   it('falls back to the default content batch when the setting is out of range', async () => {
     for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
 
@@ -674,6 +746,7 @@ describe('CloudSync', () => {
     expect(calls[0].headers.get('X-User-Id')).toBe('user-42');
     expect(calls[0].headers.get('X-Device-Id')).toBe('device-fixture');
     expect(calls[0].headers.get('X-Device-Name')).toBe('test-host');
+    expect(calls[0].headers.get('X-Sync-Capabilities')).toBe('quarantine-unknown-kinds');
     expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, workState: 0, mutations: 0, tombstones: 0 });
     expect(status.hub).toMatchObject({
       reachable: true,

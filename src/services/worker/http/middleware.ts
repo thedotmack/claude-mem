@@ -18,6 +18,7 @@ import {
   type WorkerOriginPolicy,
 } from './origin-policy.js';
 import { redactForLog } from '../../../utils/redaction.js';
+import { scanMediaFields } from '../../../shared/media-ingress.js';
 
 /**
  * Every worker response refuses framing, except Observation TV (`/tv`,
@@ -456,7 +457,7 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
 
   if (path.includes('/observations')) {
     const toolName = body.tool_name || '?';
-    const toolInput = body.tool_input;
+    const toolInput = scanMediaFields(body.tool_input, undefined, 'disabled').toolInput;
     const toolSummary = redactForLog(logger.formatTool(toolName, toolInput));
     return `tool=${toolSummary}`;
   }
