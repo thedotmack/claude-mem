@@ -93,7 +93,7 @@ export function buildRules(state, ledger) {
       source: text(fields.source) || base.source,
       timesSeen: count(fields.times_seen) ?? base.timesSeen,
       latestAt: text(fields.latest_at) || base.latestAt,
-      quotes: savedQuotes.length ? savedQuotes : base.quotes,
+      quotes: Object.hasOwn(fields, 'quotes') ? savedQuotes : base.quotes,
       replacedBy: text(fields.replaced_by) || null,
       replacedAt: text(fields.replaced_at) || null,
       savedAt: task.updatedAt,
