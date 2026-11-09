@@ -153,7 +153,7 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
 | `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts (including `outcomes_aborted_deadline_exceeded`), `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `top_abort_reason` (the most common `abort_reason` among the session's aborted turns; present only when one aborted), `observed_model`, `observed_billing`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`) |
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
-| `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction returns; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
+| `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction handoffs; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `skill_invoked` | A bundled skill is invoked — the host Skill tool loads its instructions, or the user types a first-party `/skill` at session-init. **Not** work completion; no `duration_ms` / outcome. Worker path only. Unknown `/foo` emits nothing. | `skill_id` (closed enum + `other`), `skill_source` (`first_party` / `third_party`), `skill_trigger` (`tool` / `prompt`), `ide` |
 | `work_view_opened` | The local My Work viewer (`http://localhost:37777`) is opened in a browser. The page reports it over `POST /api/work-view/usage` (loopback and same-origin only) and the worker sends it; the page loads no PostHog SDK | `view` (setup / work / rules / suggested / past-focus) |
@@ -175,8 +175,9 @@ is `main`, `subagent`, or `unknown` (using the same subagent predicate as captur
 
 | Counter | What it measures |
 |---|---|
-| `instruction_returned_count` | Hooks returning the complete work-state instruction block, including cached blocks. This is a handoff to the host, **not proof the host accepted it or the model followed it**. |
-| `instruction_disabled_count`, `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Known configuration exclusions, successful returns without the block, or a failed/unknown context read. |
+| `instruction_returned_count` | MCP server connections whose instructions included the work-state rule, counted once the host finishes initializing. This is a handoff to the host, **not proof the host showed it or the model followed it**. Host and agent attribution are `unknown`: an MCP process cannot tell which session it serves. |
+| `instruction_disabled_count` | MCP server connections with work state turned off, so without the rule. |
+| `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Sent by earlier versions, whose SessionStart hook carried the rule. Current versions do not send them: the SessionStart block is the memory timeline alone. |
 | `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts with an original hook timestamp within the 30-day replay window, and their first captured session/agent scope. Untimestamped transcript prompts are omitted. |
 | `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Both require an original event timestamp and a preceding known public-turn boundary. Memory/project/privacy/agent exclusions still apply. |
 | `native_todo_count` | Captured `TodoWrite`, `SetTodoList`, or `update_plan` calls, including those excluded from memory generation. With `instruction_state=returned`, this is a useful competing-todo diagnostic, **not a verdict of noncompliance**. |
@@ -188,8 +189,10 @@ in `_ok_count`, `_error_count`, `_excluded_count`, `_disabled_count`, or
 `_unknown_count`. Only an explicit saved receipt establishes a successful write.
 The two sources can observe **the same call: never add them as distinct usage**.
 
-`instruction_state` describes the last known hook handoff preceding the event
-in that exact local session/agent scope. Delayed activity older than the latest
+`instruction_state` describes the last known handoff preceding the event
+in that exact local session/agent scope. The rule now reaches the host in the MCP
+server's instructions, which carry no session, so current captures report
+`instruction_state=unknown`. Delayed activity older than the latest
 handoff has `instruction_state=unknown`; later instructions are never applied
 retroactively. Captured prompts and tools without original timestamps are omitted.
 Before a handoff is observed, it is `unknown`. Direct MCP calls,

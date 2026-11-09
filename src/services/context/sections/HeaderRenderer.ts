@@ -34,17 +34,12 @@ export function renderHeader(
     output.push(...Agent.renderAgentHeader(projectDisplay, headerTime));
   }
 
+  // How to read the timeline, and nothing more: how to use claude-mem's tools
+  // is in the MCP server's instructions, not in the startup message.
   if (forHuman) {
     output.push(...Human.renderHumanLegend());
   } else {
     output.push(...Agent.renderAgentLegend(fetchByIdSupported));
-  }
-
-  // Agent variants render nothing; only the Human column-key / context-index
-  // arms produce output.
-  if (forHuman) {
-    output.push(...Human.renderHumanColumnKey());
-    output.push(...Human.renderHumanContextIndex(fetchByIdSupported));
   }
 
   if (shouldShowContextEconomics(config)) {

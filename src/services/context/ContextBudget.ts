@@ -9,9 +9,9 @@ import type { ContextConfig } from './types.js';
 export const CONTEXT_OUTPUT_LIMIT = 10_000;
 
 /**
- * Room the terminal preview leaves for the lines a hook adds after it. The
+ * Room the terminal preview leaves for the lines a hook adds above it. The
  * SessionStart hook puts the viewer link, the trial line, the trial countdown
- * and the TeamBrain discovery line under the preview in the same
+ * and the TeamBrain discovery line over the preview in the same
  * `systemMessage`, so a preview fitted to the full limit pushed that field past
  * 10,000 and Claude Code showed the saved-to-disk stub instead (#5079).
  */
