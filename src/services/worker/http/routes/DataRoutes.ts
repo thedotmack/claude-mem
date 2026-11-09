@@ -504,17 +504,26 @@ export class DataRoutes extends BaseRouteHandler {
     return null;
   }
 
+  private chromaCleanupTail: Promise<void> = Promise.resolve();
+
   /**
    * Rows are committed gone — drop their fragments from the vector index too
    * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
    * them. Best-effort and in the background: rows are cleaned one at a time so
    * a large session delete doesn't flood chroma-mcp, and a Chroma failure is
    * logged per row and never blocks or undoes the delete.
+   *
+   * The cleanups also serialize process-wide (#5495): a delete burst used to
+   * start one unawaited loop per request, and thousands of concurrent
+   * `chroma_get_documents` reads piled up on chroma-mcp's single stdio
+   * channel — live sync, health checks and search all waited behind them for
+   * hours. Each request still returns immediately; the cleanups themselves
+   * take turns on one tail, so exactly one batch is ever in flight.
    */
   private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
     const chromaSync = this.dbManager.getChromaSync();
     if (!chromaSync || rows.length === 0) return;
-    void (async () => {
+    const run = async (): Promise<void> => {
       for (const row of rows) {
         try {
           await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
@@ -522,7 +531,8 @@ export class DataRoutes extends BaseRouteHandler {
           logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
         }
       }
-    })();
+    };
+    this.chromaCleanupTail = this.chromaCleanupTail.then(run, run);
   }
 
   /** Production deletion surface: safety check and row delete for a single content row. */

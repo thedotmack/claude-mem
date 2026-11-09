@@ -129,6 +129,11 @@ function nativeProfileDirectory(homeDirectory: string, variable: string, ...fall
   return configured ? resolve(configured) : join(homeDirectory, ...fallback);
 }
 
+/** Claude Code's config directory: CLAUDE_CONFIG_DIR for the current profile, else ~/.claude. */
+export function claudeConfigDirectory(homeDirectory: string): string {
+  return nativeProfileDirectory(homeDirectory, 'CLAUDE_CONFIG_DIR', '.claude');
+}
+
 function source(path: string, holdsPrompts = true): TranscriptSource | null {
   try {
     const stats = statSync(path);
@@ -167,7 +172,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
     label: 'Claude Code',
     platformSource: 'claude',
     locate(homeDirectory) {
-      const projects = join(homeDirectory, '.claude', 'projects');
+      const projects = join(claudeConfigDirectory(homeDirectory), 'projects');
       const sources: Array<TranscriptSource | null> = [];
       for (const project of listDirectory(projects)) {
         const projectPath = join(projects, project);

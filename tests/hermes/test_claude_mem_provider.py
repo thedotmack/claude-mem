@@ -378,6 +378,24 @@ class TagScanTest(unittest.TestCase):
 
 
 class FailSoftTest(unittest.TestCase):
+    def test_truncated_http_response_counts_toward_breaker(self):
+        transport = client_module.Transport(client_module.Config("http://localhost"))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.side_effect = client_module.http.client.IncompleteRead(b"", 2)
+            for _ in range(client_module.BREAKER_FAILURES):
+                with self.assertRaises(client_module.RequestFailed):
+                    transport.worker("GET", "/test")
+        self.assertTrue(transport.breaker.open())
+
+    def test_invalid_configured_url_fails_soft(self):
+        client = client_module.ClaudeMemClient(client_module.Config("invalid"))
+        self.addCleanup(client.close)
+        self.assertEqual(client.recent_context(REPO), "")
+
+    def test_query_stops_at_distinct_term_limit(self):
+        self.assertEqual(client_module.server_query("First first second third", 2), "first or second")
+        self.assertEqual(client_module.server_query("first second", 0), "")
+
     def test_a_stopped_worker_never_raises_and_never_stalls(self):
         config = client_module.Config("http://127.0.0.1:%d" % unused_port())
         client = client_module.ClaudeMemClient(config)
@@ -658,9 +676,9 @@ class ServerModeTest(unittest.TestCase):
         provider.on_session_end([{"role": "assistant", "content": "Deployed"}])
         self.assertTrue(client.flush(5.0))
         self.assertEqual(fake.paths(), ["/v1/sessions/start", "/v1/events", "/v1/events", "/v1/memories",
-                                        "/v1/sessions/start", "/v1/events", "/v1/sessions/srv-1/end"])
+                                        "/v1/events", "/v1/sessions/srv-1/end"])
         self.assertTrue(all(r["authorization"] == "Bearer key-1" for r in fake.requests))
-        start, prompt, tool, note, _, last, _ = (r["body"] for r in fake.requests)
+        start, prompt, tool, note, last, _ = (r["body"] for r in fake.requests)
         self.assertEqual(start["projectId"], "proj-1")
         self.assertEqual(start["metadata"]["prompt"], "deploy the app")
         # Every prompt is its own event; it does not start a generation by itself.
@@ -686,6 +704,18 @@ class ServerModeTest(unittest.TestCase):
         self.assertIn("deploy or application", query)
         provider.shutdown()
 
+    def test_failed_final_event_still_attempts_to_end_session(self):
+        transport = mock.Mock()
+        transport.server.side_effect = [client_module.RequestFailed("bad event"), b"{}"]
+        client = client_module.ClaudeMemClient(client_module.Config("", "https://server", "key", "id"), transport)
+        self.addCleanup(client.close)
+        session = client_module.Session("s")
+        session.anchored = True
+        session.server_session_id = "known/id"
+        client._finish(session, REPO, "last message")
+        self.assertEqual([call.args[1] for call in transport.server.call_args_list],
+                         ["/v1/events", "/v1/sessions/known%2Fid/end"])
+
     def test_a_private_last_turn_still_ends_the_server_session(self):
         fake = FakeClaudeMem()
         self.addCleanup(fake.close)
@@ -702,7 +732,7 @@ class ServerModeTest(unittest.TestCase):
         # The private turn's assistant message is dropped, but the session the
         # public turn opened is still ended on the server.
         self.assertEqual(fake.paths(), ["/v1/sessions/start", "/v1/events",
-                                        "/v1/sessions/start", "/v1/sessions/srv-2/end"])
+                                        "/v1/sessions/srv-2/end"])
         self.assertNotIn("hunter2", json.dumps([r["body"] for r in fake.requests]))
 
 

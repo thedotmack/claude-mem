@@ -137,20 +137,28 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
     globalThis.fetch = originalFetch;
   });
 
+  // Doctor reports its result through process.exitCode (process.exit() trips
+  // a libuv assertion on Windows, nodejs/node#56645). Keep the code it sets
+  // from becoming this test process's exit status.
+  let doctorExitCode: typeof process.exitCode;
+
   async function runDoctor(): Promise<void> {
     const { runDoctorCommand } = await import('../../src/npx-cli/commands/doctor.js');
     // Run from source, there is no npm package root to read a version from.
     const pathsModule = await import('../../src/npx-cli/utils/paths.js');
     const version = spyOn(pathsModule, 'readPluginVersion').mockReturnValue('0.0.0-test');
     const exit = spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('doctor exited');
+      throw new Error('doctor must set process.exitCode, not call process.exit()');
     }) as never);
     const log = spyOn(console, 'log').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
     try {
-      await runDoctorCommand().catch((error: unknown) => {
-        if (!(error instanceof Error) || error.message !== 'doctor exited') throw error;
-      });
+      await runDoctorCommand();
     } finally {
+      doctorExitCode = process.exitCode;
+      // Bun keeps a set exit code when it is assigned undefined, so an unset
+      // code is restored as 0 (a failing test still makes bun test exit 1).
+      process.exitCode = previousExitCode ?? 0;
       doctorOutput = log.mock.calls.flat().join('\n');
       version.mockRestore();
       exit.mockRestore();
@@ -165,6 +173,8 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
 
     expect(requested).toContain('https://worker.example/mem/api/health');
     expect(requested).not.toContain(`http://127.0.0.1:${FILE_PORT}/api/health`);
+    // The exit status must match the verdict doctor printed.
+    expect(doctorExitCode).toBe(doctorOutput.includes('All required checks passed.') ? 0 : 1);
   }, 30_000);
 
   it('reports an invalid CLAUDE_MEM_WORKER_URL instead of probing host and port', async () => {

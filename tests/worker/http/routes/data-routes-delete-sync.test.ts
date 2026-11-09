@@ -150,7 +150,7 @@ describe('DataRoutes synchronized delete APIs', () => {
     expect(broadcasts).toEqual([]);
   });
 
-  it('deletes the removed row\'s fragments from Chroma, scoped by doc_type', () => {
+  it('deletes the removed row\'s fragments from Chroma, scoped by doc_type', async () => {
     // Observation and summary id spaces overlap, so the cleanup must be
     // scoped per doc_type, not by sqlite_id alone.
     const cases = [
@@ -172,6 +172,8 @@ describe('DataRoutes synchronized delete APIs', () => {
       expect(responseBody).toMatchObject({ success: true, id: '1' });
     }
 
+    // Cleanups run in the background on one shared tail (#5495).
+    await new Promise(resolve => setImmediate(resolve));
     expect(chromaCalls).toEqual([
       { docType: 'observation', sqliteId: 1 },
       { docType: 'session_summary', sqliteId: 1 },

@@ -48,6 +48,7 @@ export const viewerZh: Record<string, string> = {
   "Loading more...": "正在加载更多...",
   "Retry": "重试",
   "No more items to load": "已无更多内容可加载",
+  "This list stops at the newest {count} items. Filter by project to see older ones.": "此列表只显示最新的 {count} 条。按项目筛选可查看更早的内容。",
   "Merged into {project}": "已合并至 {project}",
   "merged → {project}": "合并 → {project}",
   "facts": "事实",

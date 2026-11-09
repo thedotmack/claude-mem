@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.12.0",
+  "version": "15.12.1",
   "description": "Persistent memory for Qoder: the next session starts where the last one left off.",
   "author": {
     "name": "Alex Newman",
