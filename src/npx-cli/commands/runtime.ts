@@ -215,7 +215,6 @@ export function runMcpCommand(): void {
 
   const child = spawnHidden(process.execPath, [mcpScript], {
     stdio: 'inherit',
-    cwd: npmPackageRootDirectory(),
     env: sanitizeEnv(process.env),
   });
 
