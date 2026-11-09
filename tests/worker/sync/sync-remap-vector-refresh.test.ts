@@ -136,3 +136,41 @@ describe('remote project remaps refresh vector metadata after commit', () => {
     } finally { f.store.close(); }
   });
 });
+
+describe('a project-wide remap refreshes vectors one row at a time', () => {
+  it('never runs more than one refresh at once and still moves every row', async () => {
+    const store = new SessionStore(':memory:');
+    const docs = new Map<number, string>();
+    let active = 0, maxActive = 0, seeded = false;
+    const chroma = {
+      syncObservation: async (id: number, _memory: string, _project: string, _content: unknown, ...rest: unknown[]) => {
+        const current = (rest[4] as () => { row: { project: string } } | undefined)();
+        if (!current) return;
+        if (!seeded) { docs.set(id, current.row.project); return; }
+        active++; maxActive = Math.max(maxActive, active);
+        await setImmediate();
+        docs.set(id, current.row.project);
+        active--;
+      },
+      syncSummary: async () => {},
+      syncUserPrompt: async () => {},
+    } as unknown as ChromaSyncLike;
+    const apply = new SyncApply(store.db, { deviceId: 'local-device', chromaSync: chroma });
+    try {
+      const rows = Array.from({ length: 200 }, (_, i): SyncOp => ({
+        seq: String(i + 1), kind: 'observation', origin_device: 'remote-device', origin_id: String(1000 + i), rev: '1',
+        body: JSON.stringify({ memory_session_id: 'remote-memory', project: 'checkout', created_at_epoch: NOW + i,
+          prompt_number: 1, type: 'discovery', title: `Memory ${i}`, narrative: `Detail ${i}` }),
+        server_ts: NOW,
+      }));
+      apply.applyOps(rows);
+      for (let i = 0; i < 5; i++) await setImmediate();
+      assert.equal(docs.size, 200);
+      seeded = true;
+      apply.applyOps([remap(201, { project: 'new-project' })]);
+      for (let i = 0; i < 1000 && [...docs.values()].some(project => project !== 'new-project'); i++) await setImmediate();
+      assert.equal(maxActive, 1, 'a remap must not fan out one concurrent vector write per row');
+      assert.deepEqual(new Set(docs.values()), new Set(['new-project']));
+    } finally { store.close(); }
+  });
+});
