@@ -361,6 +361,7 @@ describe('ResponseProcessor', () => {
     // A whole summary, or a skip reason, that mentions the tag is not a cut-off observation.
     expect(hasUnfinishedObservationBlock('<summary><learned>Each result needs an <observation> block</learned></summary>')).toBe(false);
     expect(hasUnfinishedObservationBlock('<skip_summary reason="no <observation> worth storing" />')).toBe(false);
+    expect(hasUnfinishedObservationBlock("<skip_summary reason = 'no <observation> worth storing' />")).toBe(false);
   });
 
   it('does not report a successful observer store when no memory rows were written', async () => {
