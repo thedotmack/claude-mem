@@ -502,7 +502,9 @@ export function cleanSingleFile(file: string, relativePath: string, dryRun: bool
   for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
     remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
   }
-  const stripped = remaining.trim();
+  // Drop whole blank lines a leading managed block leaves behind, but keep the
+  // first authored line's indentation (an indented Markdown code block).
+  const stripped = remaining.replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
 
   if (stripped === '') {
     if (!dryRun) {
