@@ -30,15 +30,13 @@ function parseWorkerPort(rawPort: unknown): number {
   return port;
 }
 
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+async function withWorkerResponse<T>(url: string, read: (response: Response) => Promise<T>, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), WORKER_FETCH_TIMEOUT_MS);
 
   try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return await read(response);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Worker request timed out after ${WORKER_FETCH_TIMEOUT_MS}ms: ${url}`);
@@ -64,11 +62,10 @@ export async function exportMemories(query: string, outputFile: string, project?
   if (project) params.set('project', project);
 
   console.log('📡 Fetching all memories via hybrid search...');
-  const searchResponse = await fetchWithTimeout(`${baseUrl}/api/search?${params.toString()}`);
-  if (!searchResponse.ok) {
-    throw new Error(`Failed to search: ${searchResponse.status} ${searchResponse.statusText}`);
-  }
-  const searchData = await searchResponse.json();
+  const searchData = await withWorkerResponse(`${baseUrl}/api/search?${params.toString()}`, async response => {
+    if (!response.ok) throw new Error(`Failed to search: ${response.status} ${response.statusText}`);
+    return response.json();
+  });
 
   const observations: ObservationRecord[] = searchData.observations || [];
   const summaries: SessionSummaryRecord[] = searchData.sessions || [];
@@ -99,17 +96,15 @@ export async function exportMemories(query: string, outputFile: string, project?
   console.log('📡 Fetching SDK sessions metadata...');
   let sessions: SdkSessionRecord[] = [];
   if (memorySessionIds.size > 0 || promptIds.length > 0) {
-    const sessionsResponse = await fetchWithTimeout(`${baseUrl}/api/sdk-sessions/batch`, {
+    sessions = await withWorkerResponse(`${baseUrl}/api/sdk-sessions/batch`, async response => {
+      if (response.ok) return response.json();
+      const body = await response.text();
+      throw new Error(`Failed to fetch SDK sessions: ${response.status} ${response.statusText} ${body}`.trim());
+    }, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ memorySessionIds: Array.from(memorySessionIds), ...(promptIds.length > 0 ? { promptIds } : {}) })
     });
-    if (sessionsResponse.ok) {
-      sessions = await sessionsResponse.json();
-    } else {
-      const body = await sessionsResponse.text();
-      throw new Error(`Failed to fetch SDK sessions: ${sessionsResponse.status} ${sessionsResponse.statusText} ${body}`.trim());
-    }
   }
   console.log(`✅ Found ${sessions.length} SDK sessions`);
 

@@ -5,7 +5,7 @@
 // touched most; a session that touched no repo joins the "no project" pool.
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { getProjectContext, useGitRemoteProjectNames } from '../../utils/project-name.js';
 
 /** The "no project" pool: a session whose tool calls touched no git repo. */
@@ -40,7 +40,7 @@ export function isAgentScratchFolder(folder) {
   if (typeof folder !== 'string' || !folder) return false;
   if (CODEX_SCRATCH.test(folder)) return true;
   const absolute = resolve(folder);
-  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep}`));
 }
 
 const repoRootCache = new Map();

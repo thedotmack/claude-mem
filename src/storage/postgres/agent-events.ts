@@ -85,6 +85,7 @@ export class PostgresAgentEventsRepository {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
         ON CONFLICT (idempotency_key) DO UPDATE SET
+          server_session_id = COALESCE(agent_events.server_session_id, excluded.server_session_id),
           metadata = agent_events.metadata || excluded.metadata,
           platform_source = COALESCE(excluded.platform_source, agent_events.platform_source)
         RETURNING *

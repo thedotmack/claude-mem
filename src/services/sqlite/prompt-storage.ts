@@ -1,4 +1,5 @@
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_STORED_PROMPT_CHARS = 4000;
@@ -20,5 +21,5 @@ export function normalizeStoredPromptText(promptText: string): string {
     originalLength: preferredPrompt.length,
     storedLength: MAX_STORED_PROMPT_CHARS,
   });
-  return `${preferredPrompt.slice(0, MAX_STORED_PROMPT_CHARS - 1)}…`;
+  return `${retainTextHeadTail(preferredPrompt, MAX_STORED_PROMPT_CHARS - 1, 0).head}…`;
 }
