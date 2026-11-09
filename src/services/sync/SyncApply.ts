@@ -191,6 +191,7 @@ import { getRedactionConfig, redactJsonStrings, redactSensitive, type RedactionC
 import { redactSyncDiagnostic } from './diagnostic-redaction.js';
 import { isSharedWorkList } from '../work-view/shared-records.mjs';
 import { redactSharedInboundRow, saveSharedRedactionReceipt } from '../work-view/shared-redaction.mjs';
+import { scheduleChromaRowCleanup, type IndexedRowKind } from './chroma-row-cleanup.js';
 
 /** sync_state key: replaySetAsideWorkState has run on this database. */
 const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
@@ -306,6 +307,7 @@ export interface SyncOp {
  * it and Phase 3 can pass the real instance.
  */
 export interface ChromaSyncLike {
+  deleteRowDocuments?(docType: string, sqliteId: number): Promise<unknown>;
   syncObservation(
     observationId: number,
     memorySessionId: string,
@@ -985,9 +987,23 @@ export class SyncApply {
           : op.kind === 'work_state'
             ? 'work_state_entries'
             : 'user_prompts';
+      // The origin ID belongs to another database. Capture this replica's
+      // row ID before deletion so only its own fragments are removed.
+      const existing = op.kind === 'work_state' ? undefined : this.findByOrigin(table, op.origin_device, op.origin_id);
       this.db.prepare(
         `DELETE FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
       ).run(op.origin_device, op.origin_id);
+      const chroma = this.chromaSync;
+      if (existing && chroma?.deleteRowDocuments) {
+        const kind = op.kind as IndexedRowKind;
+        const row = { kind, id: existing.id };
+        const deleter = { deleteRowDocuments: chroma.deleteRowDocuments.bind(chroma) };
+        // The normal post-commit dispatch discards this work on rollback.
+        // Follow earlier writes of the same row, then join the cleanup lane
+        // shared with local deletes; neither path can resurrect fragments.
+        chromaJobs.push(() => this.enqueueChromaWrite(`${kind}:${existing.id}`,
+          () => scheduleChromaRowCleanup(deleter, [row])));
+      }
       outcome = 'applied';
     } else {
       outcome = this.applyRowOp(op, chromaJobs);

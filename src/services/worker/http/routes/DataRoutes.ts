@@ -29,15 +29,7 @@ import { emitContextInvalidation } from '../../../../shared/context-invalidation
 import { parseProjectList } from '../../../../shared/project-list.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
-
-// Chroma doc_type per content kind. Observation and summary id spaces overlap,
-// so the delete-route cleanup must be scoped by doc_type, not sqlite_id alone.
-type IndexedRowKind = Exclude<ContentKind, 'work_state'>;
-const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
-  observation: 'observation',
-  summary: 'session_summary',
-  prompt: 'user_prompt',
-};
+import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
 import { withObservationMedia } from '../../../media/feed.js';
 
 // The MCP get_observations schema advertises `number | string` ids, so array
@@ -524,16 +516,7 @@ export class DataRoutes extends BaseRouteHandler {
   private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
     const chromaSync = this.dbManager.getChromaSync();
     if (!chromaSync || rows.length === 0) return;
-    const run = async (): Promise<void> => {
-      for (const row of rows) {
-        try {
-          await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
-        } catch (error: unknown) {
-          logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
-        }
-      }
-    };
-    this.chromaCleanupTail = this.chromaCleanupTail.then(run, run);
+    this.chromaCleanupTail = scheduleChromaRowCleanup(chromaSync, rows);
   }
 
   /** Production deletion surface: safety check and row delete for a single content row. */
