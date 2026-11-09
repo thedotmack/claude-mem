@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
+import { SearchManager } from '../../src/services/worker/SearchManager.js';
+import { TimelineService } from '../../src/services/worker/TimelineService.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import mode from '../../plugin/modes/code.json' with { type: 'json' };
 
@@ -30,4 +32,22 @@ test('prompt truncation counts the normalized title and preserves stored text', 
   assert.ok(row.includes('a'.repeat(30) + ' ' + 'b'.repeat(29)));
   assert.ok(!row.includes('...'));
   assert.equal(prompt_text.length, 61);
+});
+
+test('timeline keeps the complete multiline observation title and anchor in one table row', async () => {
+  const stored = Object.freeze({ ...observation, project: 'timeline-lines', narrative: 'Some context' });
+  const store = {
+    getProjectReadKeys: keys => keys,
+    getObservationsByIds: () => [stored],
+    getTimelineAroundObservation: () => ({ observations: [stored] }),
+  };
+  const manager = new SearchManager({}, store, null, formatter, new TimelineService());
+  const response = await manager.timeline({ anchor: stored.id, depth_before: 0, depth_after: 0 });
+
+  assert.notEqual(response.isError, true);
+  const rows = response.content[0].text.split(/[\r\n\u2028\u2029]+/).filter(line => line.startsWith('| #'));
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].includes('First Second Third Fourth Fifth Last <- **ANCHOR**'));
+  assert.match(rows[0], /\| ~\d+ \|$/);
+  assert.equal(stored.title, observation.title);
 });

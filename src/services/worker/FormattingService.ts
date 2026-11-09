@@ -6,7 +6,7 @@ import { formatTime } from '../../shared/timeline-formatting.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
-const singleLineTitle = (value: string): string => value.replace(/[\r\n\u2028\u2029]+/g, ' ');
+export const singleLineTitle = (value: string): string => value.replace(/[\r\n\u2028\u2029]+/g, ' ');
 
 export class FormattingService {
   formatSearchTips(): string {

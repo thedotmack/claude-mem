@@ -3,7 +3,7 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
-import { FormattingService } from './FormattingService.js';
+import { FormattingService, singleLineTitle } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
@@ -284,7 +284,7 @@ export class SearchManager {
           const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = singleLineTitle(obs.title || 'Untitled');
           const tokens = estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;
