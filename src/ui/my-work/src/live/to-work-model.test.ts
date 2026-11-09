@@ -133,6 +133,17 @@ const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<Work
   source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
 })
 
+test('looks up conversation titles by platform and content-session identity', () => {
+  const raw = syntheticRequest()
+  raw.conversationKeys = ['claude', 'codex'].map(platform => JSON.stringify(['conversation', platform, 'same-id']))
+  const agents = ['claude', 'codex'].map(platform => ({
+    id: platform, label: platform, platformSource: platform, sessionTitle: platform + ' session',
+    project: 'repo', contentSessionId: 'same-id',
+  }))
+  const [request] = toWorkModel(snapshotWith([raw], { agents }), Date.now()).requests
+  assert.deepEqual(request.conversations.map(item => item.title), ['claude session', 'codex session'])
+})
+
 test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
   const raw = syntheticRequest()
   raw.review = { checked: false, checkedAtEpoch: null, actor: 'shared-user', available: true, mode: 'shared', hash: 'review-hash', version: 2, conflict: true, pending: true, message: 'Choose the current review.' }
