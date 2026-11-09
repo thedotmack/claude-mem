@@ -74,10 +74,12 @@ async function observeToolResult(worker: WorkerClient, exec: ToolExecution, resu
   if (text.length === 0) return
   const project = projectName(agent, config)
   try {
+    // /api/memory/save reads the source from metadata (its body schema is strict).
+    const source = platform(config)
     await worker.save({
       text: `[${exec.name}] ${text}`,
       project,
-      ...platform(config),
+      ...(source.platformSource !== undefined ? { metadata: source } : {}),
     })
   } catch {
     // Ingestion is fire-and-forget alongside the real tool's success.
