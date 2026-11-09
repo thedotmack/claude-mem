@@ -287,9 +287,12 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   const REPO_TREE_SITTER_BINARY = join(import.meta.dir, '..', 'node_modules', 'tree-sitter-cli', TREE_SITTER_BINARY_NAME);
   let tempDir: string;
   let previousDataDir: string | undefined;
+  let previousPath: string | undefined;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'tree-sitter-provision-'));
+    previousPath = process.env.PATH;
+    process.env.PATH = tempDir;
     previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'data');
   });
@@ -297,6 +300,8 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   afterEach(() => {
     if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
     else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
