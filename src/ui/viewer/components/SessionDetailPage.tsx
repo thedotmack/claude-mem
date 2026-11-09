@@ -18,13 +18,15 @@ interface SessionDetailPageProps {
   isLoading: boolean;
   hasMore: boolean;
   loadError?: string | null;
+  canRetry?: boolean;
+  offsetCapReachedAt?: number | null;
   onLoadMore: () => void;
   onDeleted: (itemType: DeletableItemType, id: number) => void;
   onBack: () => void;
 }
 
 export function SessionDetailPage({
-  tabs, session, title, items, isLoading, hasMore, loadError, onLoadMore, onDeleted, onBack,
+  tabs, session, title, items, isLoading, hasMore, loadError, canRetry, offsetCapReachedAt, onLoadMore, onDeleted, onBack,
 }: SessionDetailPageProps) {
   const { t } = useI18n();
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
@@ -87,6 +89,8 @@ export function SessionDetailPage({
       isLoading={isLoading}
       hasMore={hasMore}
       loadError={loadError}
+      canRetry={canRetry}
+      offsetCapReachedAt={offsetCapReachedAt}
     />
   );
 }
