@@ -15,6 +15,7 @@ import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constan
 import {
   installHookStderrBuffer,
   emitModelContext,
+  waitForModelContext,
   emitDiagnostic,
   exitGraceful,
   resetHookIoState,
@@ -81,6 +82,9 @@ async function executeHookPipeline(
 
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
   emitModelContext(adapter, result);
+  // Await the write before the handoff wait: a pipe closed meanwhile must reach the
+  // HookStdoutError path, not become an unhandled rejection.
+  await waitForModelContext();
   const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
   // A write hook spooled its event and started a nudge to the worker; let it
   // land (≤ 250 ms) so the drain starts now — process.exit would kill it.
