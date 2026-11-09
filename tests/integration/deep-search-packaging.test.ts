@@ -43,9 +43,10 @@ describe('deep search release artifacts', () => {
           });
           expect(result.status).toBe(0);
           expect(result.stderr).toBe('');
+          if (!result.stdout.trim()) throw new Error(`No probe reply (${format}, status=${result.status}, signal=${result.signal})`);
           return JSON.parse(result.stdout);
         };
-        expect(run('unique_marker').toolUses).toHaveLength(1);
+        for (let attempt = 0; attempt < 3; attempt++) expect(run('unique_marker').toolUses).toHaveLength(1);
         expect(run('中文').toolUses[0].snippet).toContain('中文');
         expect(run('unique_marker', 1).deep.status).toBe('timeout');
         expect(run('unique_marker').deep.complete).toBe(true);

@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, cpSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,27 @@ async function vacantPort(): Promise<number> {
   return port;
 }
 
+// End the seeding scope before opening the long-lived checkpoint connection.
+// SessionStore retains cached statements, which Windows keeps open until GC.
+function seedReleaseData(file: string) {
+  const store = new SessionStore(file);
+  try {
+    const session = store.createSDKSession('context-session', 'app', 'test context');
+    store.ensureMemorySessionIdRegistered(session, 'context-memory');
+    store.storeObservation('context-memory', 'app', { type: 'discovery', title: 'ORDINARY_CONTEXT_RECORD',
+      subtitle: null, narrative: 'ordinary context fixture', facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [] }, 1);
+    store.markSessionCompleted(session); // historical evidence must not resume an observer
+    const terms = Array.from({ length: 400 }, (_, i) => `x${i}`).join(' ');
+    const slowQuery = '一 ' + terms + ' absent';
+    const write = (id: string, project: string, body: string) => store.upsertToolUse({ toolUseId: id,
+      contentSessionId: 'raw-session', project, toolName: 'Read', toolResponse: body });
+    const id = write('hit', 'app', 'RECOVERY_MARKER 中文');
+    store.db.transaction(() => { for (let i = 0; i < 8000; i++) write(`slow-${i}`, 'slow', '一 ' + terms); })();
+    configureToolUseIndex(store.db, true);
+    return { id, slowQuery };
+  } finally { store.close(); }
+}
+
 // CI builds before running this lane. These are the actual release entrypoints,
 // copied out of the checkout; no test replacement for WorkerService or MCP.
 for (const artifact of ['bundle', 'standalone']) {
@@ -24,7 +46,7 @@ for (const artifact of ['bundle', 'standalone']) {
     const root = resolve(process.env.CM_RELEASE_TEST_ROOT ?? '.');
     if (!existsSync(join(root, 'plugin/scripts/mcp-server.cjs'))) throw new Error('Run npm run build before release E2E tests');
     const dir = mkdtempSync(join(tmpdir(), 'cm-release-e2e-'));
-    let ownedStore: SessionStore | undefined;
+    let ownedDb: Database | undefined;
     try {
       const data = join(dir, 'data'); mkdirSync(data);
       const plugin = join(dir, 'plugin'); cpSync(join(root, 'plugin'), plugin, { recursive: true });
@@ -35,19 +57,10 @@ for (const artifact of ['bundle', 'standalone']) {
         CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'false',
         CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: 'true', CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
       writeFileSync(join(data, 'settings.json'), JSON.stringify(settings));
-      const store = ownedStore = new SessionStore(join(data, 'claude-mem.db'));
-      const session = store.createSDKSession('context-session', 'app', 'test context');
-      store.ensureMemorySessionIdRegistered(session, 'context-memory');
-      store.storeObservation('context-memory', 'app', { type: 'discovery', title: 'ORDINARY_CONTEXT_RECORD',
-        subtitle: null, narrative: 'ordinary context fixture', facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [] }, 1);
-      store.markSessionCompleted(session); // historical evidence must not resume an observer
-      const terms = Array.from({ length: 400 }, (_, i) => `x${i}`).join(' ');
-      const slowQuery = '一 ' + terms + ' absent';
-      const write = (id: string, project: string, body: string) => store.upsertToolUse({ toolUseId: id,
-        contentSessionId: 'raw-session', project, toolName: 'Read', toolResponse: body });
-      const id = write('hit', 'app', 'RECOVERY_MARKER 中文');
-      store.db.transaction(() => { for (let i = 0; i < 8000; i++) write(`slow-${i}`, 'slow', '一 ' + terms); })();
-      configureToolUseIndex(store.db, true);
+      const file = join(data, 'claude-mem.db');
+      const { id, slowQuery } = seedReleaseData(file);
+      Bun.gc(true);
+      const db = ownedDb = new Database(file);
       const env = { ...process.env, ...settings, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: join(dir, 'config'),
         CLAUDE_PLUGIN_ROOT: plugin, CLAUDE_MEM_MODES_DIR: join(plugin, 'modes'), CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
         CLAUDE_MEM_RUNTIME: 'worker', DO_NOT_TRACK: '1', BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(dir, 'bun-cache') } as Record<string, string>;
@@ -142,7 +155,7 @@ for (const artifact of ['bundle', 'standalone']) {
         expect(text).toContain('does not mean no raw evidence');
         for (let n = 0; n < 50; n++) { if ((await http('RECOVERY_MARKER')).deep.status === 'ok') break; await Bun.sleep(10); }
         expect((await http('RECOVERY_MARKER')).deep.complete).toBe(true);
-        expect((store.db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as any).busy).toBe(0);
+        expect((db.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as any).busy).toBe(0);
       } catch (error) {
         const logDir = join(data, 'logs');
         const diagnostic = existsSync(logDir) ? readdirSync(logDir).filter(name => name.endsWith('.log'))
@@ -157,7 +170,7 @@ for (const artifact of ['bundle', 'standalone']) {
         await exited; clearTimeout(timer);
       }
     } finally {
-      ownedStore?.close(); ownedStore = undefined;
+      ownedDb?.close(); ownedDb = undefined;
       Bun.gc(true); // Finalize fixture statements before unlinking SQLite files on Windows.
       rmSync(dir, { recursive: true, force: true });
     }
