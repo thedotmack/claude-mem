@@ -34,8 +34,46 @@ function splitSegments(tokens: ParsedToken[]): string[][] {
   return segments;
 }
 
-function normalizeCommand(command: unknown): string | null {
-  if (typeof command === 'string') return command;
+// Expand before shell-quote removes quote/escape information. A quoted or
+// escaped tilde, and every literal argv element, names cwd/~/... instead.
+function expandShellHome(command: string, homeDirectory: string): string {
+  let result = '';
+  let quoting: "'" | '"' | undefined;
+  let wordStart = true;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (char === '\\' && quoting !== "'") {
+      if (command[index + 1] === '\n') { index++; continue; }
+      result += char + (command[++index] ?? '');
+      wordStart = false;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quoting === char) quoting = undefined;
+      else if (quoting === undefined) quoting = char;
+      result += char;
+      wordStart = false;
+      continue;
+    }
+    if (!quoting && wordStart && char === '~') {
+      // Line continuations disappear before the shell identifies a tilde
+      // prefix. Look at the next logical character without altering quoted text.
+      let next = index + 1;
+      while (command[next] === '\\' && command[next + 1] === '\n') next += 2;
+      if (next === command.length || /[\s/|&;()<>]/.test(command[next])) {
+        result += quote([homeDirectory]);
+        wordStart = false;
+        continue;
+      }
+    }
+    result += char;
+    wordStart = !quoting && /[\s|&;()<>]/.test(char);
+  }
+  return result;
+}
+
+function normalizeCommand(command: unknown, homeDirectory: string): string | null {
+  if (typeof command === 'string') return expandShellHome(command, homeDirectory);
   if (Array.isArray(command)) {
     const parts = command.filter((part): part is string => typeof part === 'string');
     return parts.length > 0 ? quote(parts) : null;
@@ -95,7 +133,7 @@ function dedupeAndCap(paths: string[]): string[] {
 }
 
 function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string): string[] {
-  const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
+  const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command, homeDirectory);
   if (!command) return [];
 
   // `parse` throws on substitutions it cannot resolve — `${}` raises
@@ -136,9 +174,8 @@ function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string)
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
-      const candidate = expandHomeDirectory(token, homeDirectory);
-      if (isExistingFile(candidate, cwd)) {
-        paths.push(candidate);
+      if (isExistingFile(token, cwd)) {
+        paths.push(token);
       }
     }
   }
