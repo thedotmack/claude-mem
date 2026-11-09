@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import {
@@ -63,6 +64,23 @@ import { logger } from '../../../src/utils/logger.js';
 // tests/worker/http/routes/setup-state-routes.test.ts.
 const scratchRoot = path.join(import.meta.dir, '..', '..', '..', '.scratch', 'test-runs');
 mkdirSync(scratchRoot, { recursive: true });
+
+/**
+ * Run before a test writes claude-mem's settings.json: it must not be the real
+ * one. Every reader these tests drive (auto-update-switch-readers.ts for the
+ * worker's tick and doctor's row, install.ts registerMarketplace) opens
+ * USER_SETTINGS_PATH, which src/shared/paths.ts froze from CLAUDE_MEM_DATA_DIR
+ * when this bun process first loaded it, so the tests write it there too. The
+ * variable's value now is not compared with it: one `bun test` call runs all
+ * its files in one process, and the file that first loaded paths.ts may have
+ * set the variable to a data dir of its own and put it back since, as
+ * tests/infrastructure/process-manager.test.ts does. On Linux and macOS bun
+ * reads os.homedir() once at startup, so a test that sets HOME does not move
+ * the real data dir checked here.
+ */
+function expectClaudeMemSettingsPathOutsideTheRealDataDir(): void {
+  expect(USER_SETTINGS_PATH).not.toStartWith(path.join(homedir(), '.claude-mem') + path.sep);
+}
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -2550,7 +2568,7 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
 
   it('the installer\'s registerMarketplace reads the idle exit saved in claude-mem\'s settings.json too, as the worker does', async () => {
     silenceLogger();
-    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    expectClaudeMemSettingsPathOutsideTheRealDataDir();
     const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
     mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
     writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_IDLE_EXIT_SEC: '120' }));
@@ -2568,9 +2586,7 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
     silenceLogger();
     const installModule = await import('../../../src/npx-cli/commands/install.js');
     const warned = spyOn(installModule.log, 'warn').mockImplementation(() => {});
-    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
-    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
-    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    expectClaudeMemSettingsPathOutsideTheRealDataDir();
     const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
     mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
     // [the number saved, the autoUpdate registered over an entry with true]: a
@@ -2627,9 +2643,7 @@ describe('turning off Claude Code\'s background update in a real known_marketpla
     silenceLogger();
     const installModule = await import('../../../src/npx-cli/commands/install.js');
     const warned = spyOn(installModule.log, 'warn').mockImplementation(() => {});
-    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
-    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
-    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    expectClaudeMemSettingsPathOutsideTheRealDataDir();
     const files = fixture(asWritten({ thedotmack: claudeMemMarketplaceEntry(true) }));
     const savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
     mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
@@ -3490,9 +3504,7 @@ describe('auto-update settings', () => {
     silenceLogger();
     const { productionAutoUpdateSettingsReaders, productionAutoUpdateSwitchReaders } = await import('../../../src/services/auto-update/auto-update-switch-readers.js');
     const { autoUpdateDoctorSources } = await import('../../../src/npx-cli/commands/doctor.js');
-    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
-    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
-    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    expectClaudeMemSettingsPathOutsideTheRealDataDir();
     // A Claude config of its own, never the real ~/.claude, with claude-mem
     // registered at user scope so gates 1 and 2 read on; Claude Code's managed
     // settings are this folder's.
@@ -3545,9 +3557,7 @@ describe('auto-update settings', () => {
     const { productionAutoUpdateSwitchReaders } = await import('../../../src/services/auto-update/auto-update-switch-readers.js');
     const { autoUpdateDoctorSources } = await import('../../../src/npx-cli/commands/doctor.js');
     const { registerMarketplace } = await import('../../../src/npx-cli/commands/install.js');
-    // Only the test run's own data dir (tests/preload.ts), never the real ~/.claude-mem.
-    expect(process.env.CLAUDE_MEM_DATA_DIR).toBeTruthy();
-    expect(USER_SETTINGS_PATH).toBe(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'settings.json'));
+    expectClaudeMemSettingsPathOutsideTheRealDataDir();
     // A Claude config of its own: none of these may read the real ~/.claude, and Claude Code's managed settings are this folder's.
     const claudeConfig = path.join(tempDir, 'claude-config-for-the-readers');
     mkdirSync(path.join(claudeConfig, 'plugins'), { recursive: true });

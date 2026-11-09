@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { EventEmitter } from 'events';
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import path from 'path';
 import type { AutoUpdateApplyDeps } from '../../../src/services/auto-update/auto-update-apply.js';
 import {
@@ -20,6 +20,7 @@ import {
   type ClaudeMemUpdateInvocation,
   launchAutoUpdateSupervisor,
   parseAutoUpdateApplyArguments,
+  prepareAutoUpdateInstallerWorkingDirectory,
   productionAutoUpdateApplyCommandDeps,
   productionAutoUpdateApplyDeps,
   productionAutoUpdateLaunchDeps,
@@ -37,10 +38,10 @@ import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, WORKER_PID_CAPTURE_TIMEOUT_MS } fro
 import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
 import type { PidInfo } from '../../../src/supervisor/process-registry.js';
-import { getPlatformTimeout, WORKER_BOOT_PROBE_TIMEOUT_MS } from '../../../src/services/infrastructure/ProcessManager.js';
+import { getPlatformTimeout, spawnDaemon, WORKER_BOOT_PROBE_TIMEOUT_MS } from '../../../src/services/infrastructure/ProcessManager.js';
 import { Server, type ServerOptions } from '../../../src/services/server/Server.js';
 import { InitPhaseTracker } from '../../../src/services/server/init-phase.js';
-import { INSTALL_RUN_BY_AUTO_UPDATE_ENV } from '../../../src/shared/auto-update-install-run.js';
+import { INSTALL_RUN_BY_AUTO_UPDATE_ENV, withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun } from '../../../src/shared/auto-update-install-run.js';
 import { paths } from '../../../src/shared/paths.js';
 import { commandInvocation, type CommandInvocation } from '../../../src/shared/spawn.js';
 import * as spawnModule from '../../../src/shared/spawn.js';
@@ -95,17 +96,6 @@ const freshLogPath = (): string => path.join(runDirectory, `attempt-${++logCount
 function readyInvocation(result: ClaudeMemUpdateInvocation): CommandInvocation {
   if (result.kind !== 'ready') throw new Error(`expected an invocation, got ${JSON.stringify(result)}`);
   return result.invocation;
-}
-
-/**
- * The folders npm looks in for the project around `directory`, nearest first:
- * it, then each parent up to the root, each checked for a package.json or a
- * node_modules folder (@npmcli/config loadLocalPrefix, over walk-up-path).
- */
-function foldersNpmChecks(directory: string, pathFlavor: typeof path.posix): string[] {
-  const folders = [directory];
-  for (let parent = pathFlavor.dirname(directory); parent !== folders.at(-1); parent = pathFlavor.dirname(parent)) folders.push(parent);
-  return folders;
 }
 
 describe('the test tripwire: no test can start a real auto-update', () => {
@@ -180,20 +170,33 @@ describe('auto-update-apply arguments', () => {
 });
 
 describe('claudeMemUpdateInvocation', () => {
-  it('is exactly `npx --yes claude-mem@<version> update`: no provider or other flag', () => {
+  it('is exactly `npx --yes --prefix=<installer folder> --package=claude-mem@<version> claude-mem update`: npx\'s three flags before the command, only `update` for the installer', () => {
     expect(claudeMemUpdateInvocation(TARGET, 'linux')).toEqual({
       kind: 'ready',
-      invocation: { command: 'npx', args: ['--yes', `claude-mem@${TARGET}`, 'update'], windowsVerbatimArguments: false },
+      invocation: {
+        command: 'npx',
+        args: ['--yes', `--prefix=${autoUpdateInstallerWorkingDirectory()}`, `--package=claude-mem@${TARGET}`, 'claude-mem', 'update'],
+        windowsVerbatimArguments: false,
+      },
     });
   });
 
-  it('runs the npx .cmd shim through cmd.exe on Windows, found the way the other installers find theirs', () => {
+  it('runs the package\'s own bin, the only one it has, by name', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(import.meta.dir, '..', '..', '..', 'package.json'), 'utf-8')) as { name: string; bin: Record<string, string> };
+    expect(packageJson.name).toBe('claude-mem');
+    expect(Object.keys(packageJson.bin)).toEqual(['claude-mem']);
+    const { args } = readyInvocation(claudeMemUpdateInvocation(TARGET, 'linux'));
+    expect(args.slice(args.indexOf(`--package=claude-mem@${TARGET}`) + 1)).toEqual(['claude-mem', 'update']);
+  });
+
+  it('runs the npx .cmd shim through cmd.exe on Windows, found the way the other installers find theirs, with the folder quoted as one argument', () => {
     const lookups: string[] = [];
-    const invocation = readyInvocation(claudeMemUpdateInvocation(TARGET, 'win32', (command) => { lookups.push(command); return 'C:\\Program Files\\nodejs\\npx.cmd'; }));
+    const folder = 'C:\\Users\\Jane Doe\\.claude-mem\\auto-update-installer';
+    const invocation = readyInvocation(claudeMemUpdateInvocation(TARGET, 'win32', (command) => { lookups.push(command); return 'C:\\Program Files\\nodejs\\npx.cmd'; }, folder));
     expect(lookups).toEqual(['npx']);
     expect(invocation).toEqual({
       command: process.env.ComSpec ?? 'cmd.exe',
-      args: ['/d', '/s', '/c', `""C:\\Program Files\\nodejs\\npx.cmd" "--yes" "claude-mem@${TARGET}" "update""`],
+      args: ['/d', '/s', '/c', `""C:\\Program Files\\nodejs\\npx.cmd" "--yes" "--prefix=${folder}" "--package=claude-mem@${TARGET}" "claude-mem" "update""`],
       windowsVerbatimArguments: true,
     });
   });
@@ -246,37 +249,119 @@ describe('findNpxForTheInstaller', () => {
   });
 });
 
-describe('autoUpdateInstallerWorkingDirectory', () => {
-  it.each([
-    ['POSIX', 'linux', {}, path.posix, '/home/dev'],
-    ['Windows', 'win32', { SystemRoot: 'C:\\Windows' }, path.win32, 'C:\\Users\\dev'],
-  ] as Array<[string, NodeJS.Platform, NodeJS.ProcessEnv, typeof path.posix, string]>)(
-    'on %s paths, is a root, where npm finds no project: no package.json or node_modules in it or any folder above it',
-    (_flavor, platform, env, pathFlavor, home) => {
-      // The sandbox run's layout: the data dir inside a claude-mem source checkout, in a home folder that is an npm project of its own.
-      const checkout = pathFlavor.join(home, 'src', 'claude-mem');
-      const dataDir = pathFlavor.join(checkout, '.scratch', 'claude-mem-data');
-      const projectFiles = new Set([pathFlavor.join(checkout, 'package.json'), pathFlavor.join(home, 'package.json'), pathFlavor.join(home, 'node_modules')]);
-      const holdsProject = (folder: string): boolean => ['package.json', 'node_modules'].some((name) => projectFiles.has(pathFlavor.join(folder, name)));
-      // From the supervisor's own working directory, the data dir, npm finds the checkout first.
-      expect(foldersNpmChecks(dataDir, pathFlavor).filter(holdsProject)).toEqual([checkout, home]);
-
-      const workingDirectory = autoUpdateInstallerWorkingDirectory(platform, env);
-      expect(foldersNpmChecks(workingDirectory, pathFlavor)).toEqual([workingDirectory]);
-      expect(foldersNpmChecks(workingDirectory, pathFlavor).filter(holdsProject)).toEqual([]);
-      // Every way up ends there, the data dir's and the home folder's included, so no folder is checked in fewer places.
-      expect(foldersNpmChecks(dataDir, pathFlavor).at(-1)).toBe(workingDirectory);
-      expect(foldersNpmChecks(home, pathFlavor).at(-1)).toBe(workingDirectory);
-    },
-  );
-
-  it('on Windows, is the root of the drive SystemRoot names, read as the where.exe lookup reads it, and refuses one that names no root', () => {
-    expect(autoUpdateInstallerWorkingDirectory('win32', { SystemRoot: 'D:\\WINDOWS' })).toBe('D:\\');
-    // Windows sets SystemRoot for every process; with none, Windows' default place (spawn.ts windowsSystemRootDirectory).
-    expect(autoUpdateInstallerWorkingDirectory('win32', {})).toBe('C:\\');
-    // Drive-relative: the current folder on C:, which would be the supervisor's own when it is on that drive.
-    expect(() => autoUpdateInstallerWorkingDirectory('win32', { SystemRoot: 'C:Windows' })).toThrow('SystemRoot "C:Windows" is not an absolute path');
+describe('the installer\'s folder (autoUpdateInstallerWorkingDirectory)', () => {
+  it('is auto-update-installer in the data dir, always as an absolute path', () => {
+    expect(autoUpdateInstallerWorkingDirectory()).toBe(path.resolve(paths.dataDir(), 'auto-update-installer'));
+    const dataDir = path.join(runDirectory, 'some-data-dir');
+    expect(autoUpdateInstallerWorkingDirectory(dataDir)).toBe(path.join(dataDir, 'auto-update-installer'));
+    // npm resolves a relative --prefix against its own working directory, which is this folder.
+    expect(path.isAbsolute(autoUpdateInstallerWorkingDirectory(path.join('relative', 'data-dir')))).toBe(true);
   });
+
+  it('is made fresh for each run: whatever was there is removed, and it is created again, empty, readable and writable only by this user', () => {
+    const dataDir = mkdtempSync(path.join(runDirectory, 'data-dir-'));
+    const folder = autoUpdateInstallerWorkingDirectory(dataDir);
+    // What an earlier run, or an `npm install -g` under the npm_config_prefix npx passes on, could leave there,
+    // in a folder whose mode lets anyone in.
+    mkdirSync(path.join(folder, 'node_modules', 'claude-mem'), { recursive: true });
+    writeFileSync(path.join(folder, 'node_modules', 'claude-mem', 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET }));
+    writeFileSync(path.join(folder, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET }));
+    writeFileSync(path.join(folder, '.npmrc'), 'registry=https://registry.attacker.example/\n');
+    chmodSync(folder, 0o777);
+    writeFileSync(path.join(dataDir, 'settings.json'), '{}');
+
+    expect(prepareAutoUpdateInstallerWorkingDirectory(dataDir)).toBe(folder);
+
+    expect(readdirSync(folder)).toEqual([]);
+    // Windows applies no mode; the folder takes the data dir's permissions there.
+    if (process.platform !== 'win32') expect((statSync(folder).mode & 0o777).toString(8)).toBe('700');
+    // Nothing else in the data dir is touched.
+    expect(readdirSync(dataDir).sort()).toEqual(['auto-update-installer', 'settings.json']);
+  });
+
+  // npx itself, run from the folder with the installer's flags, below what a parent folder can hold. Offline, with
+  // an empty scratch cache, so the registry is its only way to the version: it reports the request it could not
+  // make and downloads nothing. Its logs, cache and update check stay out of the real home folder, and its PATH
+  // holds only node, npx and the system folders, so nothing installed on this machine (a claude-mem launcher in
+  // ~/.local/bin) can answer for the planted copy. npx is a .cmd shim on Windows, which this spawn cannot start.
+  const npxOnPath = Bun.which('npx');
+  const nodeOnPath = Bun.which('node');
+  const plantedCopyMarker = 'planted-claude-mem-ran';
+  /** The flags before #5500: no --prefix, so npx takes the first parent with a package.json or node_modules as its project. */
+  const flagsWithoutPrefix = (): string[] => ['--yes', `claude-mem@${TARGET}`, 'update'];
+  it.skipIf(process.platform === 'win32' || npxOnPath === null || nodeOnPath === null).each([
+    {
+      plant: 'node_modules/claude-mem at the promoted version (bin linked)',
+      plantInto: (parent: string) => {
+        const plantedPackage = path.join(parent, 'node_modules', 'claude-mem');
+        mkdirSync(plantedPackage, { recursive: true });
+        mkdirSync(path.join(parent, 'node_modules', '.bin'));
+        writeFileSync(path.join(plantedPackage, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET, bin: { 'claude-mem': 'cli.sh' } }));
+        writeFileSync(path.join(plantedPackage, 'cli.sh'), `#!/bin/sh\necho ${plantedCopyMarker}\n`, { mode: 0o755 });
+        symlinkSync(path.join('..', 'claude-mem', 'cli.sh'), path.join(parent, 'node_modules', '.bin', 'claude-mem'));
+      },
+      // Without --prefix the copy runs, and npx downloads nothing.
+      liveWithFlags: flagsWithoutPrefix,
+      ranOutput: plantedCopyMarker,
+    },
+    {
+      plant: 'a claude-mem checkout\'s package.json at the promoted version',
+      plantInto: (parent: string) => {
+        writeFileSync(path.join(parent, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET, bin: { 'claude-mem': './dist/npx-cli/index.js' } }));
+      },
+      // Without --prefix, the sandbox run's exit 127: the checkout links no bin for its own package.
+      liveWithFlags: flagsWithoutPrefix,
+      ranOutput: 'claude-mem: command not found',
+    },
+    {
+      plant: 'a node_modules/.bin file named claude-mem@<version>',
+      plantInto: (parent: string) => {
+        mkdirSync(path.join(parent, 'node_modules', '.bin'), { recursive: true });
+        writeFileSync(path.join(parent, 'node_modules', '.bin', `claude-mem@${TARGET}`), `#!/bin/sh\necho ${plantedCopyMarker}\n`, { mode: 0o755 });
+      },
+      // Runs even with --prefix while the package is the command: npx looks for a .bin file named like it in every
+      // folder up to the root (libnpmexec localFileExists).
+      liveWithFlags: (folder: string): string[] => ['--yes', `--prefix=${folder}`, `claude-mem@${TARGET}`, 'update'],
+      ranOutput: plantedCopyMarker,
+    },
+  ])('with real npx, nothing in a parent of the folder runs: $plant there is not run, and npx asks the registry', ({ plantInto, liveWithFlags, ranOutput }) => {
+    const parent = mkdtempSync(path.join(runDirectory, 'planted-parent-'));
+    plantInto(parent);
+    const folder = prepareAutoUpdateInstallerWorkingDirectory(path.join(parent, 'claude-mem-data'));
+    const npmScratch = mkdtempSync(path.join(runDirectory, 'npx-scratch-'));
+    const binDirectory = path.join(npmScratch, 'bin');
+    mkdirSync(binDirectory);
+    symlinkSync(nodeOnPath!, path.join(binDirectory, 'node'));
+    symlinkSync(npxOnPath!, path.join(binDirectory, 'npx'));
+    const env = autoUpdateInstallerEnv({
+      ...process.env,
+      PATH: [binDirectory, '/usr/bin', '/bin'].join(path.delimiter),
+      HOME: npmScratch,
+      npm_config_userconfig: path.join(npmScratch, 'user.npmrc'),
+      npm_config_cache: path.join(npmScratch, 'cache'),
+      npm_config_offline: 'true',
+      npm_config_logs_max: '0',
+      npm_config_update_notifier: 'false',
+    });
+    // spawnSync holds the event loop, so bun's per-test limit cannot stop a hung npx: each run gets that limit itself.
+    const runNpx = (args: string[]) => {
+      const run = spawnSync(path.join(binDirectory, 'npx'), args, { cwd: folder, env, encoding: 'utf-8', timeout: REAL_PROCESS_TEST_TIMEOUT_MS });
+      return { status: run.status, output: `${run.stdout}${run.stderr}` };
+    };
+    const registryRequest = `request to ${NPM_PUBLIC_REGISTRY_URL}claude-mem failed`;
+
+    // The plant is live: with these flags npx runs it and asks no registry.
+    const live = runNpx(liveWithFlags(folder));
+    expect(live.output).toContain(ranOutput);
+    expect(live.output).not.toContain(registryRequest);
+
+    const withTheInstallerFlags = runNpx(readyInvocation(claudeMemUpdateInvocation(TARGET, process.platform, () => null, folder)).args);
+    expect(withTheInstallerFlags.output).not.toContain(ranOutput);
+    expect(withTheInstallerFlags.output).toContain(registryRequest);
+    expect(withTheInstallerFlags.status).not.toBe(0);
+    // npx left nothing in the folder for the next run.
+    expect(readdirSync(folder)).toEqual([]);
+  }, REAL_PROCESS_TEST_TIMEOUT_MS);
 });
 
 describe('autoUpdateInstallerEnv', () => {
@@ -352,20 +437,150 @@ describe('autoUpdateInstallerEnv', () => {
   }, REAL_PROCESS_TEST_TIMEOUT_MS);
 });
 
+describe('the worker an installer run starts: no npm prefix, package, globalconfig or yes from the auto-updater\'s npx', () => {
+  const installerFolder = '/home/someone/.claude-mem/auto-update-installer';
+
+  it('leaves out npm_config_prefix, npm_config_package, npm_config_globalconfig and npm_config_yes, in any case, when the run is the auto-updater\'s, and nothing else', () => {
+    const fromNpx: NodeJS.ProcessEnv = {
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1',
+      PATH: '/usr/bin:/bin',
+      npm_config_prefix: installerFolder,
+      NPM_CONFIG_PREFIX: installerFolder,
+      Npm_Config_Prefix: installerFolder,
+      npm_config_package: `claude-mem@${TARGET}`,
+      NPM_CONFIG_PACKAGE: `claude-mem@${TARGET}`,
+      Npm_Config_Package: `claude-mem@${TARGET}`,
+      npm_config_globalconfig: `${installerFolder}/etc/npmrc`,
+      NPM_CONFIG_GLOBALCONFIG: `${installerFolder}/etc/npmrc`,
+      Npm_Config_GlobalConfig: `${installerFolder}/etc/npmrc`,
+      npm_config_yes: 'true',
+      NPM_CONFIG_YES: 'true',
+      Npm_Config_Yes: 'true',
+      // What npx also sets, which nothing the worker starts reads as its prefix: npm's own two names.
+      npm_config_global_prefix: installerFolder,
+      npm_config_local_prefix: installerFolder,
+      // Not one of the four settings, though named like them: npm_config_package_lock is npm's package-lock.
+      npm_config_prefix_note: 'kept',
+      npm_config_package_lock: 'false',
+      npm_config_globalconfig_note: 'kept',
+      npm_config_yes_something: 'kept',
+      PREFIX: '/usr/local',
+    };
+    expect(withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun(fromNpx)).toEqual({
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1',
+      PATH: '/usr/bin:/bin',
+      npm_config_global_prefix: installerFolder,
+      npm_config_local_prefix: installerFolder,
+      npm_config_prefix_note: 'kept',
+      npm_config_package_lock: 'false',
+      npm_config_globalconfig_note: 'kept',
+      npm_config_yes_something: 'kept',
+      PREFIX: '/usr/local',
+    });
+    // The environment it was given is not changed.
+    expect(fromNpx.npm_config_prefix).toBe(installerFolder);
+    expect(fromNpx.npm_config_package).toBe(`claude-mem@${TARGET}`);
+    expect(fromNpx.npm_config_globalconfig).toBe(`${installerFolder}/etc/npmrc`);
+    expect(fromNpx.npm_config_yes).toBe('true');
+  });
+
+  it.each([
+    ['no marker', undefined],
+    ['an empty marker', ''],
+    ['a marker with another value', 'true'],
+  ])('keeps npm_config_prefix, npm_config_package, npm_config_globalconfig and npm_config_yes for a person\'s own install: %s', (_case, marker) => {
+    const env: NodeJS.ProcessEnv = {
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: marker,
+      npm_config_prefix: '/home/someone/.npm-global',
+      npm_config_package: `claude-mem@${TARGET}`,
+      npm_config_globalconfig: '/home/someone/.npm-global/etc/npmrc',
+      npm_config_yes: 'true',
+    };
+    expect(withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun(env)).toEqual(env);
+  });
+
+  /**
+   * The environment spawnDaemon gives the worker, with `variables` set on this process (undefined removes one),
+   * caught where it would start the worker: spawn.ts spawnHidden, which starts nothing here.
+   */
+  function workerEnvironmentFromSpawnDaemon(variables: Record<string, string | undefined>): NodeJS.ProcessEnv {
+    const started: NodeJS.ProcessEnv[] = [];
+    spyOn(spawnModule, 'spawnHidden').mockImplementation(((_command: string, _args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
+      started.push(options.env);
+      return Object.assign(new EventEmitter(), { pid: 4242, unref: () => {} });
+    }) as unknown as typeof spawnModule.spawnHidden);
+    const saved = Object.fromEntries(Object.keys(variables).map((name) => [name, process.env[name]]));
+    const apply = (values: Record<string, string | undefined>): void => {
+      for (const [name, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    };
+    try {
+      apply(variables);
+      expect(spawnDaemon('/never/run/worker-service.cjs', 39999)).toBe(4242);
+    } finally {
+      apply(saved);
+    }
+    expect(started).toHaveLength(1);
+    return started[0]!;
+  }
+
+  it('is what spawnDaemon gives the worker: the auto-updater\'s installer passes on no npm_config_prefix, npm_config_package, npm_config_globalconfig or npm_config_yes, a person\'s own install passes on theirs', () => {
+    const autoUpdateRun = workerEnvironmentFromSpawnDaemon({
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1',
+      npm_config_prefix: installerFolder,
+      npm_config_package: `claude-mem@${TARGET}`,
+      npm_config_globalconfig: `${installerFolder}/etc/npmrc`,
+      npm_config_yes: 'true',
+      // Windows keeps one variable per name in any case; elsewhere another spelling, such as the shell's own, can sit beside npx's.
+      ...(process.platform === 'win32' ? {} : {
+        NPM_CONFIG_PREFIX: '/home/someone/.npm-global',
+        NPM_CONFIG_PACKAGE: 'cowsay@1.6.0',
+        NPM_CONFIG_GLOBALCONFIG: '/home/someone/.npm-global/etc/npmrc',
+        NPM_CONFIG_YES: 'false',
+      }),
+    });
+    expect(Object.keys(autoUpdateRun).filter((name) => /^npm_config_(?:prefix|package|globalconfig|yes)$/i.test(name))).toEqual([]);
+    expect(autoUpdateRun).toMatchObject({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1', CLAUDE_MEM_WORKER_PORT: '39999' });
+
+    const personsOwnInstall = workerEnvironmentFromSpawnDaemon({
+      [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: undefined,
+      npm_config_prefix: '/home/someone/.npm-global',
+      npm_config_package: `claude-mem@${TARGET}`,
+      npm_config_globalconfig: '/home/someone/.npm-global/etc/npmrc',
+      npm_config_yes: 'true',
+    });
+    expect(personsOwnInstall.npm_config_prefix).toBe('/home/someone/.npm-global');
+    expect(personsOwnInstall.npm_config_package).toBe(`claude-mem@${TARGET}`);
+    expect(personsOwnInstall.npm_config_globalconfig).toBe('/home/someone/.npm-global/etc/npmrc');
+    expect(personsOwnInstall.npm_config_yes).toBe('true');
+  });
+});
+
 describe('runAutoUpdateInstaller', () => {
   const bunScript = (source: string) => commandInvocation(process.execPath, ['-e', source]);
 
-  it('runs the installer in that root, never in the supervisor\'s working directory, even a data dir inside a claude-mem checkout', async () => {
+  it('runs the installer in its folder, the one --prefix names, made empty and private first, never in the supervisor\'s working directory', async () => {
+    // A leftover in the folder from an earlier run, with a mode that lets anyone in.
+    const folder = autoUpdateInstallerWorkingDirectory();
+    mkdirSync(path.join(folder, 'node_modules', 'claude-mem'), { recursive: true });
+    writeFileSync(path.join(folder, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET }));
+    chmodSync(folder, 0o777);
     // The sandbox run's supervisor (daemonWorkingDirectory): a data dir inside a source checkout whose package is claude-mem at the target version.
     const checkout = mkdtempSync(path.join(runDirectory, 'checkout-'));
     writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'claude-mem', version: TARGET, bin: { 'claude-mem': './dist/npx-cli/index.js' } }));
-    const dataDir = path.join(checkout, '.scratch', 'claude-mem-data');
-    mkdirSync(dataDir, { recursive: true });
+    const supervisorWorkingDirectory = path.join(checkout, '.scratch', 'claude-mem-data');
+    mkdirSync(supervisorWorkingDirectory, { recursive: true });
     const logPath = freshLogPath();
     const testWorkingDirectory = process.cwd();
-    process.chdir(dataDir);
+    process.chdir(supervisorWorkingDirectory);
     try {
-      expect(await runAutoUpdateInstaller(bunScript("process.stdout.write('installer-cwd=' + process.cwd() + '\\n')"), { logPath, deadlineMs: NEVER_REACHED_DEADLINE_MS }))
+      expect(await runAutoUpdateInstaller(bunScript([
+        "const fs = require('fs');",
+        "const folder = { cwd: process.cwd(), entries: fs.readdirSync('.'), mode: (fs.statSync('.').mode & 0o777).toString(8) };",
+        "process.stdout.write('installer-folder=' + JSON.stringify(folder) + '\\n');",
+      ].join('\n')), { logPath, deadlineMs: NEVER_REACHED_DEADLINE_MS }))
         .toEqual({ kind: 'exited', exitCode: 0, signal: null });
     } finally {
       process.chdir(testWorkingDirectory);
@@ -373,13 +588,15 @@ describe('runAutoUpdateInstaller', () => {
 
     const log = readFileSync(logPath, 'utf-8');
     // Its own output line; the "running:" line before it quotes the script.
-    const installerWorkingDirectory = /^installer-cwd=(.+)$/m.exec(log)?.[1] ?? '(the installer printed no working directory)';
-    expect(installerWorkingDirectory).toBe(autoUpdateInstallerWorkingDirectory());
-    // On this machine npm finds no project there: no package.json or node_modules in it or any folder above it.
-    const projectFolders = foldersNpmChecks(installerWorkingDirectory, path)
-      .filter((folder) => existsSync(path.join(folder, 'package.json')) || existsSync(path.join(folder, 'node_modules')));
-    expect(projectFolders).toEqual([]);
-    expect(log).toContain(` in ${installerWorkingDirectory} (deadline `);
+    const reported = JSON.parse(/^installer-folder=(.+)$/m.exec(log)?.[1] ?? 'null') as { cwd: string; entries: string[]; mode: string } | null;
+    // The child reports its working directory with symlinks resolved (macOS's temp dir is under /private).
+    expect(reported?.cwd).toBe(realpathSync(folder));
+    expect(reported?.entries).toEqual([]);
+    // Windows applies no mode; the folder takes the data dir's permissions there.
+    if (process.platform !== 'win32') expect(reported?.mode).toBe('700');
+    expect(log).toContain(` in ${folder} (deadline `);
+    // The folder npx is told is its project.
+    expect(readyInvocation(claudeMemUpdateInvocation(TARGET, 'linux')).args).toContain(`--prefix=${folder}`);
   }, REAL_PROCESS_TEST_TIMEOUT_MS);
 
   it('gives the installer no stdin and no TTY, so it takes the non-interactive path, and appends its output to the attempt log', async () => {

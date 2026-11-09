@@ -1,6 +1,8 @@
 /**
  * The auto-update supervisor: moves the install to the target version with
- * the installer users run themselves (`npx --yes claude-mem@<version> update`),
+ * the installer users run themselves (`npx claude-mem@<version> update`), as
+ * `npx --yes --prefix=<installer folder> --package=claude-mem@<version>
+ * claude-mem update` (auto-update-launch.ts claudeMemUpdateInvocation),
  * proves the switch, and puts the previous version back when it fails.
  *
  * It runs in its own process, from the worker script of the version being
@@ -219,7 +221,11 @@ export interface AutoUpdateApplyDeps {
   processId: number;
   /** The pid of the worker answering on this install's port, or null when none answers (restart-verify.ts getCurrentWorkerPid). */
   getCurrentWorkerPid: () => Promise<number | null>;
-  /** One run of `npx --yes claude-mem@<version> update`, its output appended to the attempt log, under the installer deadline. */
+  /**
+   * One run of `npx --yes --prefix=<installer folder>
+   * --package=claude-mem@<version> claude-mem update`, its output appended to
+   * the attempt log, under the installer deadline.
+   */
   runInstaller: (version: string) => Promise<AutoUpdateInstallerRun>;
   /**
    * A worker other than `oldPid` (when one is given) reports `version` and

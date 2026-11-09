@@ -2,7 +2,7 @@
  * How an auto-update leaves the worker and reaches the installer, and the
  * production effects of the supervisor (auto-update-apply.ts).
  *
- *   worker ─spawn, detached─▶ hop ─spawn, detached─▶ supervisor ─spawn─▶ npx --yes claude-mem@<version> update
+ *   worker ─spawn, detached─▶ hop ─spawn, detached─▶ supervisor ─spawn─▶ npx --yes --prefix=<installer folder> --package=claude-mem@<version> claude-mem update
  *
  *  1. The worker (launchAutoUpdateSupervisor) writes the attempt in flight,
  *     starts `<its runtime> <its own worker script> auto-update-apply ...
@@ -18,8 +18,9 @@
  *     worker's descendants (kill-process-tree.ts), cannot reach it while the
  *     installer stops and restarts the worker (#3793).
  *  4. The supervisor (applyAutoUpdate) runs the installer as its own child,
- *     so it can tree-kill it at the deadline, from a working directory
- *     outside every npm project (autoUpdateInstallerWorkingDirectory).
+ *     so it can tree-kill it at the deadline, from an empty folder of its own
+ *     in the data dir that npx is told is its npm project
+ *     (autoUpdateInstallerWorkingDirectory).
  *
  * The hop and the supervisor run the worker script the worker was started
  * with, which belongs to the version being replaced, so the supervisor runs
@@ -29,7 +30,7 @@
  * real; see its comment.
  */
 
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, rmSync } from 'fs';
 import path from 'path';
 import type { ChildProcess } from 'child_process';
 import { installedPluginsPath, marketplaceDirectory, pluginCacheDirectory } from '../../npx-cli/utils/paths.js';
@@ -37,7 +38,7 @@ import { readUserScopeRegisteredCacheVersions } from '../../npx-cli/utils/prune-
 import { INSTALL_RUN_BY_AUTO_UPDATE_ENV, INSTALL_RUN_BY_AUTO_UPDATE_VALUE } from '../../shared/auto-update-install-run.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { DB_PATH, paths } from '../../shared/paths.js';
-import { commandInvocation, lookupWindowsCommand, spawnHidden, windowsSystemRootDirectory, type CommandInvocation } from '../../shared/spawn.js';
+import { commandInvocation, lookupWindowsCommand, spawnHidden, type CommandInvocation } from '../../shared/spawn.js';
 import { readPackageVersion, resolvePluginRoot, resolveWorkerScriptPath, type WorkerScriptSearchRoots } from '../../shared/worker-utils.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
@@ -633,20 +634,39 @@ export type ClaudeMemUpdateInvocation =
   | { kind: 'npx-not-found'; message: string };
 
 /**
- * `npx --yes claude-mem@<version> update`: the command users run, with no
- * other flag. `--yes` answers npx's own "Ok to proceed?" for a package it has
- * not cached; the installer's non-interactive path keeps the user's saved
- * provider, and any added flag could change it. On Windows npx is a .cmd
- * shim, which only cmd.exe can start (spawn.ts commandInvocation), found the
- * way the other installers find theirs (lookupWindowsCommand, which drops a
- * match in the current directory). When it finds none the run fails as
- * npx-not-found: a bare `npx.cmd` would let cmd.exe search its working
- * directory before PATH.
+ * `npx --yes --prefix=<installer folder> --package=claude-mem@<version>
+ * claude-mem update`: the installer users run (`npx claude-mem@<version>
+ * update`), with three flags for npx and only `update` for the installer.
+ *  - `--yes` answers npx's own "Ok to proceed?" for a package it has not
+ *    cached.
+ *  - `--prefix` makes the installer's folder npx's npm project
+ *    (autoUpdateInstallerWorkingDirectory says why).
+ *  - `--package` names the package, and `claude-mem` is the command npx runs
+ *    from it: the package's only bin, the same since 10.6.2 (package.json).
+ *    Given the package as the command instead, npx first looks for a file
+ *    named `claude-mem@<version>` in node_modules/.bin of the project and of
+ *    every folder above it, up to the root, and runs the first one it finds
+ *    (libnpmexec lib/index.js, lib/file-exists.js localFileExists); --prefix
+ *    does not stop that walk. With --package npx skips it: it installs the
+ *    version in its own cache (the project's tree is empty), from the
+ *    registry unless the cache already holds it, and runs the command with
+ *    the cache's bin folder first on its PATH (lib/index.js;
+ *    @npmcli/run-script lib/set-path.js).
+ * All three come before the command: npx hands everything from its first
+ * positional argument on to the command it runs (npm bin/npx-cli.js). The
+ * installer's non-interactive path keeps the user's saved provider, and any
+ * flag given to it could change that. On Windows npx is a .cmd shim, which
+ * only cmd.exe can start (spawn.ts commandInvocation, which quotes each
+ * argument, the folder's path included), found the way the other installers
+ * find theirs (lookupWindowsCommand, which drops a match in the current
+ * directory). When it finds none the run fails as npx-not-found: a bare
+ * `npx.cmd` would let cmd.exe search its working directory before PATH.
  */
 export function claudeMemUpdateInvocation(
   version: string,
   platform: NodeJS.Platform = process.platform,
   findWindowsCommand: (command: string) => string | null = lookupWindowsCommand,
+  installerDirectory: string = autoUpdateInstallerWorkingDirectory(),
 ): ClaudeMemUpdateInvocation {
   if (!INSTALLED_VERSION_PATTERN.test(version)) {
     throw new Error(`Refusing to build an installer command for ${JSON.stringify(version)}: not a claude-mem version`);
@@ -657,7 +677,10 @@ export function claudeMemUpdateInvocation(
     if (found === null) return { kind: 'npx-not-found', message: 'npx was not found on PATH' };
     npx = found;
   }
-  return { kind: 'ready', invocation: commandInvocation(npx, ['--yes', `claude-mem@${version}`, 'update'], platform) };
+  return {
+    kind: 'ready',
+    invocation: commandInvocation(npx, ['--yes', `--prefix=${installerDirectory}`, `--package=claude-mem@${version}`, 'claude-mem', 'update'], platform),
+  };
 }
 
 /**
@@ -680,49 +703,98 @@ export function findNpxForTheInstaller(
   return platform === 'win32' ? findWindowsCommand('npx') : findOnPath('npx');
 }
 
+/** The installer's folder, in the data dir. */
+const AUTO_UPDATE_INSTALLER_FOLDER_NAME = 'auto-update-installer';
+
 /**
- * The working directory of every installer run, the target's and the
- * previous version's (runAutoUpdateInstaller): the root of the filesystem,
- * `/`, and on Windows the root of the drive Windows is installed on (C:\),
- * from the folder spawn.ts windowsSystemRootDirectory names.
- *
- * npx runs what the npm project around its working directory provides. That
- * project is the first folder, from the working directory up to the root,
- * that holds a package.json or a node_modules folder (npm's local prefix,
- * @npmcli/config loadLocalPrefix). npx loads its tree, the project's own
- * package included, and when anything in it is claude-mem at the version
- * asked for, it downloads nothing and runs that tree's `claude-mem` bin
- * (libnpmexec missingFromTree; read in npm 11.14). It also reads the
- * project's .npmrc. The supervisor's own working directory is the data dir
- * (daemonWorkingDirectory): one inside a claude-mem source checkout made every
- * update exit 127, because a checkout links no `claude-mem` bin for its own
- * package, and a node_modules holding claude-mem would run that copy instead
- * of the published one.
- *
- * From a root npm checks only the root, and the root is on the way up from
- * every other folder on its drive, so no working directory is checked in
- * fewer places. Only the superuser can write to `/`, and only administrators
- * can create a file at the root of C:\ (any user can create a folder there, a
- * node_modules among them, but the data dir and the home folder reach it on
- * their way up too). The home folder is not used: it can hold a package.json
- * or a node_modules itself. The installer reads nothing from its working
- * directory; it starts npm and the worker in folders it names
- * (npm-install-helper.ts runNpmStrict, setup-runtime.ts,
- * ProcessManager.ts daemonWorkingDirectory).
- *
- * Throws when SystemRoot is not an absolute path: a relative one names no
- * root, and would leave cmd.exe in a folder relative to the supervisor's.
+ * The installer folder's mode: read, write and search for its owner only, so
+ * no other account but root can list it or put anything in it.
+ * claude-mem-launcher.ts neutralBunSpawnCwd gives the data dir's `run` folder
+ * the same mode for the same reason. Windows applies no mode: there the folder
+ * takes the data dir's permissions, and the default data dir, in the user's
+ * profile, is closed to every other account but administrators and SYSTEM.
  */
-export function autoUpdateInstallerWorkingDirectory(
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  if (platform !== 'win32') return path.posix.sep;
-  const systemRoot = windowsSystemRootDirectory(env);
-  if (!path.win32.isAbsolute(systemRoot)) {
-    throw new Error(`Refusing to run the installer: SystemRoot ${JSON.stringify(systemRoot)} is not an absolute path, so it names no drive root to run the installer from`);
-  }
-  return path.win32.parse(systemRoot).root;
+const OWNER_ONLY_FOLDER_MODE = 0o700;
+
+/**
+ * The folder every installer run stands in, the target's and the previous
+ * version's (runAutoUpdateInstaller), and that npx is told is its npm project
+ * (claudeMemUpdateInvocation's --prefix): auto-update-installer in the data
+ * dir. It is absolute, so the working directory and --prefix name the same
+ * folder (npm resolves a relative --prefix against its own working directory).
+ *
+ * npx runs what the npm project around it provides. Without --prefix on its
+ * command line, that project is the first folder, from the working directory
+ * up to the root, that holds a package.json or a node_modules folder
+ * (@npmcli/config lib/index.js loadLocalPrefix). npx reads that project's
+ * .npmrc and loads its tree, the project's own package included; when
+ * anything in it is claude-mem at the version asked for, npx downloads
+ * nothing and runs that copy (libnpmexec lib/index.js missingFromTree), and a
+ * project package.json with a bin named like the package spec runs too
+ * (hasPkgBin). So no working directory is safe on its own: from the data dir,
+ * a claude-mem checkout above it made every update exit 127 (a checkout links
+ * no bin for its own package); from the root of C:\, where any local user can
+ * create a folder, another user could plant C:\node_modules\claude-mem at the
+ * promoted version, and the updater would run it.
+ *
+ * --prefix on the command line ends that search: loadLocalPrefix takes it as
+ * the project and looks at no other folder. It reads the command line's value
+ * only; an npm_config_prefix in the environment leaves the search as it is.
+ * This folder is made fresh before every run
+ * (prepareAutoUpdateInstallerWorkingDirectory) and only this user can write
+ * to it, so the project has no package.json, no .npmrc and an empty tree, and
+ * npx fetches the version from the registry gate 7 read
+ * (autoUpdateInstallerEnv). With the local and global prefixes the same, npx
+ * does not look in the global tree either (npm lib/commands/exec.js). One walk
+ * up from this folder is left that --prefix does not end: given the package as
+ * the command, npx runs a node_modules/.bin file named like it from any folder
+ * above, which claudeMemUpdateInvocation's --package skips.
+ *
+ * npm also takes --prefix as its global prefix (lib/index.js load). It then
+ * reads <folder>/etc/npmrc, which does not exist, in place of the global
+ * npmrc (the user's ~/.npmrc is still read), and npx passes npm_config_prefix
+ * set to this folder on to the installer, where it passed the global prefix
+ * before (lib/set-envs.js). The npm installs the installer runs inherit it
+ * (npm-install-helper.ts runNpmStrict): each still installs into the folder it
+ * runs in, but takes this folder as its global prefix, so it reads
+ * <folder>/etc/npmrc too, and an `npm install -g` under it would install here;
+ * making the folder fresh before each run keeps that out of the next run's
+ * project. The worker the installer starts does not keep it
+ * (auto-update-install-run.ts withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun).
+ *
+ * --package reaches the installer the same way, as
+ * npm_config_package=claude-mem@<version>. Only npx reads it (npm
+ * lib/commands/exec.js): an npx that names no package of its own would run its
+ * command with claude-mem@<version> installed instead of the command's own
+ * package. The one npx claude-mem itself starts is the next update's, and its
+ * own --package outranks the variable, but the worker passes its environment
+ * on to what it starts, an MCP server configured as `npx <package>` included,
+ * so the worker does not keep this one either (the same function).
+ *
+ * Read in npm 11.14.1, and checked with it from this folder below each of
+ * three plants in a parent folder (2026-11-08): node_modules/claude-mem at the
+ * promoted version and a claude-mem package.json there ran without --prefix
+ * (the package.json as exit 127); a node_modules/.bin file named
+ * claude-mem@<version> there ran with --prefix too, as long as the package was
+ * the command; with claudeMemUpdateInvocation's flags none ran, and npx asked
+ * the registry for claude-mem.
+ */
+export function autoUpdateInstallerWorkingDirectory(dataDirectory: string = paths.dataDir()): string {
+  return path.resolve(dataDirectory, AUTO_UPDATE_INSTALLER_FOLDER_NAME);
+}
+
+/**
+ * Make the installer's folder fresh for one run and return it: whatever is
+ * there is removed, then the folder is created again, empty, with
+ * OWNER_ONLY_FOLDER_MODE. Throws when either step fails (on Windows, while a
+ * process still runs in it), so no installer starts from a folder that may
+ * not be empty and private.
+ */
+export function prepareAutoUpdateInstallerWorkingDirectory(dataDirectory: string = paths.dataDir()): string {
+  const folder = autoUpdateInstallerWorkingDirectory(dataDirectory);
+  rmSync(folder, { recursive: true, force: true });
+  mkdirSync(folder, { recursive: true, mode: OWNER_ONLY_FOLDER_MODE });
+  return folder;
 }
 
 /**
@@ -798,9 +870,10 @@ export interface AutoUpdateInstallerOptions {
  * `process.stdin.isTTY === true`); stdout and stderr append to the attempt
  * log; its environment is the supervisor's (which the hop passed through
  * sanitizeEnv) with the registry gate 7 read and INSTALL_RUN_BY_AUTO_UPDATE_ENV
- * (autoUpdateInstallerEnv). Its working
- * directory is autoUpdateInstallerWorkingDirectory, outside every npm
- * project, never the supervisor's own (the data dir).
+ * (autoUpdateInstallerEnv). Its working directory is
+ * autoUpdateInstallerWorkingDirectory, made fresh for the run
+ * (prepareAutoUpdateInstallerWorkingDirectory), never the supervisor's own
+ * (the data dir).
  *
  * At the deadline its tree is killed, and then the installer's own exit is
  * awaited for exitAfterKillWaitMs. One still running then is reported as
@@ -809,14 +882,14 @@ export interface AutoUpdateInstallerOptions {
  * never as killed.
  *
  * Rejects only before anything is started: when FORBID_REAL_AUTO_UPDATE_ENV
- * refuses a claude-mem installer, when autoUpdateInstallerWorkingDirectory
- * names no directory, or when the attempt log cannot be created or opened.
- * Once the promise exists it always settles with how the run ended.
+ * refuses a claude-mem installer, when the installer's folder cannot be made
+ * fresh, or when the attempt log cannot be created or opened. Once the
+ * promise exists it always settles with how the run ended.
  */
 export async function runAutoUpdateInstaller(invocation: CommandInvocation, options: AutoUpdateInstallerOptions): Promise<AutoUpdateInstallerRun> {
   const commandLine = [invocation.command, ...invocation.args].join(' ');
   if (invocationRunsClaudeMem(invocation)) assertRealAutoUpdateAllowed(`run the real installer (${commandLine})`);
-  const workingDirectory = autoUpdateInstallerWorkingDirectory();
+  const workingDirectory = prepareAutoUpdateInstallerWorkingDirectory();
   const spawnImplementation = options.spawnImplementation ?? spawnHidden;
   const killTree = options.killProcessTree ?? ((pid: number) => killProcessTree(pid));
   const exitAfterKillWaitMs = options.exitAfterKillWaitMs ?? INSTALLER_EXIT_AFTER_KILL_WAIT_MS;
