@@ -163,6 +163,7 @@ export async function swapDatabaseFromSnapshot(
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const stagedDb = `${dbPath}.restore-staging-${ts}`;
   let preRestoreCopy: string | null = null;
+  let retainedRawCopy: string | null = null;
   const movedSidecars: string[] = [];
 
   try {
@@ -205,9 +206,15 @@ export async function swapDatabaseFromSnapshot(
         carryAutoincrementCounters(stagedDb, readAutoincrementCounters(dbPath));
       } else {
         // Too damaged to open, so nothing else can be using it either: the
-        // raw pair is the best copy there is.
-        renameWithWindowsRetry(rawCopy, copyPath);
-        if (existsSync(`${rawCopy}-wal`)) renameWithWindowsRetry(`${rawCopy}-wal`, `${copyPath}-wal`);
+        // raw pair is the best copy there is. Backups may be on another
+        // filesystem, so copy both files before discarding either original.
+        // If that transfer fails, keep the pair: SQLite may already have
+        // discarded the live WAL while trying to open the damaged database.
+        retainedRawCopy = rawCopy;
+        await copyFile(rawCopy, copyPath);
+        if (existsSync(`${rawCopy}-wal`)) await copyFile(`${rawCopy}-wal`, `${copyPath}-wal`);
+        retainedRawCopy = null;
+        dropRawCopy();
         logger.warn('BACKUP', 'Restoring over a database that could not be read; new ids may repeat ids it used', { dbPath });
       }
       preRestoreCopy = copyPath;
@@ -232,12 +239,16 @@ export async function swapDatabaseFromSnapshot(
       }
     }
     const rawCopy = `${dbPath}.restore-raw-${ts}`;
-    for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`), rawCopy, `${rawCopy}-wal`]) {
+    const disposableRaw = retainedRawCopy ? [] : [rawCopy, `${rawCopy}-wal`];
+    for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`), ...disposableRaw]) {
       try {
         removeIfPresent(leftover);
       } catch (cleanupError) {
         logger.warn('BACKUP', 'Could not remove restore staging file', { leftover }, cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)));
       }
+    }
+    if (retainedRawCopy) {
+      logger.error('BACKUP', 'Recovery copy transfer failed; raw database and WAL retained', { rawCopy: retainedRawCopy });
     }
     throw error instanceof Error ? error : new Error(String(error));
   }
