@@ -142,27 +142,30 @@ export function isFuzzyReady(db: Database, project: string, minDocs: number): bo
  * post-deletion DF drift is reclaimed. Returns the project doc count.
  */
 export function backfillProjectDedup(db: Database, project: string, maxRows: number = Number.POSITIVE_INFINITY): number {
-  const total = (db.prepare('SELECT COUNT(*) c FROM observations WHERE project = ?').get(project) as { c: number }).c;
-  if (total > maxRows) {
-    logger.warn('DEDUP', `Skipping dedup backfill for project ${project}: ${total} rows exceeds cap ${maxRows} (CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS)`);
-    return 0;
-  }
-  // NOTE: dedup_meta.deleted_since_rebuild / last_rebuild_doc_count are reset here and are
-  // RESERVED for a future delete-hook-driven auto-rebuild; today the scan always does a full
-  // rebuild, so nothing increments deleted_since_rebuild (no runtime observation-delete path).
-  const rows = db.prepare(
-    'SELECT o.id, o.title, o.agent_id, o.agent_type, s.platform_source FROM observations o ' +
-    'LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id WHERE o.project = ?'
-  ).all(project) as {
-    id: number;
-    title: string | null;
-    agent_id: string | null;
-    agent_type: string | null;
-    platform_source: string | null;
-  }[];
-  const updKey = db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
-  const insDf = db.prepare('INSERT INTO token_df (project, token, df) VALUES (?, ?, ?)');
-  const tx = db.transaction(() => {
+  // Reserve the writer before reading the snapshot. A live observer can update
+  // both observations and token_df; a snapshot taken outside this transaction
+  // would overwrite that writer's increments with an older model.
+  return db.transaction(() => {
+    const total = (db.prepare('SELECT COUNT(*) c FROM observations WHERE project = ?').get(project) as { c: number }).c;
+    if (total > maxRows) {
+      logger.warn('DEDUP', `Skipping dedup backfill for project ${project}: ${total} rows exceeds cap ${maxRows} (CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS)`);
+      return 0;
+    }
+    // NOTE: dedup_meta.deleted_since_rebuild / last_rebuild_doc_count are reset here and are
+    // RESERVED for a future delete-hook-driven auto-rebuild; today the scan always does a full
+    // rebuild, so nothing increments deleted_since_rebuild (no runtime observation-delete path).
+    const rows = db.prepare(
+      'SELECT o.id, o.title, o.agent_id, o.agent_type, s.platform_source FROM observations o ' +
+      'LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id WHERE o.project = ?'
+    ).all(project) as {
+      id: number;
+      title: string | null;
+      agent_id: string | null;
+      agent_type: string | null;
+      platform_source: string | null;
+    }[];
+    const updKey = db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
+    const insDf = db.prepare('INSERT INTO token_df (project, token, df) VALUES (?, ?, ?)');
     const dfMap = new Map<string, number>();
     for (const r of rows) {
       updKey.run(computeTitleNormKey(project, r.platform_source, r.title, isSubagentEvent(r.agent_id, r.agent_type)), r.id);
@@ -174,9 +177,8 @@ export function backfillProjectDedup(db: Database, project: string, maxRows: num
       'INSERT INTO dedup_meta (project, doc_count, last_rebuild_doc_count, deleted_since_rebuild) VALUES (?, ?, ?, 0) ' +
       'ON CONFLICT(project) DO UPDATE SET doc_count = excluded.doc_count, last_rebuild_doc_count = excluded.last_rebuild_doc_count, deleted_since_rebuild = 0'
     ).run(project, rows.length, rows.length);
-  });
-  tx();
-  return rows.length;
+    return rows.length;
+  }).immediate();
 }
 
 /**
