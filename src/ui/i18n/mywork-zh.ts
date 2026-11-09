@@ -462,6 +462,7 @@ export const myworkZh: Record<string, string> = {
   'Can’t read your rules right now': '当前无法读取您的规则',
   'No rules yet': '暂无规则',
   'claude-mem learns how you like to work from your requests on its own. You can also add one.': 'claude-mem 会从您的请求中自动学习工作偏好。您也可以手动添加一条。',
+  "Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.": "规则学习正在等待代理。请在工作进程所在的机器上登录受支持的代理，或手动添加规则。",
   'Add rule': '添加规则',
   '{waiting} learned rules are waiting for you. ': '{waiting} 条习得的规则正在等待您处理。',
   '{waiting} learned rule is waiting for you. ': '{waiting} 条习得的规则正在等待您处理。',
