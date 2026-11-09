@@ -279,6 +279,22 @@ export function preservedDataDirectoryHint(
   return { location: dataDirectory, removeCommand: `rm -rf -- '${dataDirectory.replaceAll("'", "'\\''")}'`, shell: 'sh' };
 }
 
+/**
+ * `install --ide cursor` adds claude-mem's hooks to ~/.cursor/hooks.json and
+ * its server to ~/.cursor/mcp.json. uninstallCursorHooks() also removes hooks
+ * and scripts by the legacy script names alone, which the user's own hooks can
+ * share, so it runs only when one of claude-mem's entries is there. Exported
+ * for tests.
+ */
+export async function removeCursorIntegration(): Promise<number> {
+  const { hasCursorIntegration, uninstallCursorHooks } = await import('../../services/integrations/CursorHooksInstaller.js');
+  if (!hasCursorIntegration('user')) {
+    console.log('  Cursor hooks + MCP not installed; nothing to remove.');
+    return 0;
+  }
+  return uninstallCursorHooks('user');
+}
+
 export async function runUninstallCommand(): Promise<void> {
   p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
@@ -454,6 +470,7 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
     }},
+    { label: 'Cursor hooks + MCP', fn: removeCursorIntegration },
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
