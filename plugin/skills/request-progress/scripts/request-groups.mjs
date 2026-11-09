@@ -4751,7 +4751,7 @@ function linkBackwards(candidates) {
   return { proposedGroups: [...groups.values()], skippedLists };
 }
 function readGoals(database) {
-  const rows = database.prepare("SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id").all(OWNER_GOALS_LIST);
+  const rows = database.prepare("SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY created_at_epoch, id").all(OWNER_GOALS_LIST);
   const listState = {}, items = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const fields = JSON.parse(row.fields);
