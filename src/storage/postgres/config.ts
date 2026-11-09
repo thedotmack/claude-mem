@@ -40,7 +40,9 @@ export function parsePostgresConfig(options: ParsePostgresConfigOptions = {}): P
     // its URL SSL parameters replace the separate `ssl` option. Carry the
     // explicit application override into that parse too, retaining any URL
     // certificate paths and unrelated connection settings.
-    connectionString: env.CLAUDE_MEM_POSTGRES_SSL
+    // An unrecognized override (say `true` or a typo) is not a policy: leave
+    // the URL alone so its own sslmode still applies, as before this rewrite.
+    connectionString: env.CLAUDE_MEM_POSTGRES_SSL && isRecognizedSslMode(env.CLAUDE_MEM_POSTGRES_SSL)
       ? connectionStringWithSslOverride(connectionString, ssl)
       : connectionString,
     max: parsePositiveInt(env.CLAUDE_MEM_POSTGRES_POOL_MAX, DEFAULT_POOL_MAX),
@@ -102,6 +104,12 @@ function parseSsl(connectionString: string, env: NodeJS.ProcessEnv): boolean | {
 
   const mode = (urlMode ?? env.PGSSLMODE)?.trim().toLowerCase();
   return mode ? sslForMode(mode) : false;
+}
+
+const RECOGNIZED_SSL_MODES = new Set(['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full']);
+
+export function isRecognizedSslMode(mode: string): boolean {
+  return RECOGNIZED_SSL_MODES.has(mode.trim().toLowerCase());
 }
 
 function sslForMode(mode: string): boolean | { rejectUnauthorized: boolean } {

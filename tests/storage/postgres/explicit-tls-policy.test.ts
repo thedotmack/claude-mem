@@ -119,6 +119,18 @@ describe('explicit PostgreSQL TLS policy at the driver boundary', () => {
     }
   });
 
+  for (const unrecognized of ['true', '1', 'verify_full']) {
+    it(`keeps the URL's verified TLS when the override "${unrecognized}" is not a recognized mode`, async () => {
+      const url = 'postgresql://localhost/db?sslmode=verify-full';
+      const ssl = await driverSsl(url, unrecognized);
+      assert.ok(ssl, 'an unrecognized override must not downgrade the URL to plaintext');
+      assert.notEqual(typeof ssl === 'object' && ssl.rejectUnauthorized, false);
+      assert.equal(parsePostgresConfig({ env: {
+        CLAUDE_MEM_SERVER_DATABASE_URL: url, CLAUDE_MEM_POSTGRES_SSL: unrecognized,
+      } })!.connectionString, url);
+    });
+  }
+
   it('preserves the original driver URL when no explicit override is configured', () => {
     const url = 'postgresql://localhost/db?sslmode=verify-full&application_name=memory';
     assert.equal(parsePostgresConfig({ env: { CLAUDE_MEM_SERVER_DATABASE_URL: url } })!.connectionString, url);
