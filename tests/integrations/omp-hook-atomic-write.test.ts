@@ -23,6 +23,7 @@ function walk(dir: string): string[] {
 describe('OMP installs its hook file atomically', () => {
   let tmp: string;
   let previousDevSource: string | undefined;
+  let previousAgentDir: string | undefined;
   let logSpy: ReturnType<typeof spyOn>;
   let errorSpy: ReturnType<typeof spyOn>;
   let homedirSpy: ReturnType<typeof spyOn>;
@@ -33,6 +34,11 @@ describe('OMP installs its hook file atomically', () => {
     // Resolve the hook bundle from the repository checkout instead of a
     // marketplace install, which a test environment does not have.
     process.env.CLAUDE_MEM_DEV_HOOK_SOURCE = '1';
+    // The installer honours PI_CODING_AGENT_DIR before the home directory, so
+    // point it into the sandbox too; otherwise a developer who has it set would
+    // get their real OMP hook replaced by this test.
+    previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(tmp, '.omp', 'agent');
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     homedirSpy = spyOn(os, 'homedir').mockReturnValue(tmp);
@@ -44,6 +50,8 @@ describe('OMP installs its hook file atomically', () => {
     homedirSpy.mockRestore();
     if (previousDevSource === undefined) delete process.env.CLAUDE_MEM_DEV_HOOK_SOURCE;
     else process.env.CLAUDE_MEM_DEV_HOOK_SOURCE = previousDevSource;
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(tmp, { recursive: true, force: true });
   });
 
