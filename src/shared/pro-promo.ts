@@ -58,6 +58,7 @@ export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get
  * Callers that want ANSI styling should compose from PRO_TRIAL_PITCH and
  * proTrialUrl() instead so the escape codes stay at the presentation layer.
  */
-export function proTrialLine(source: ProPromoSource): string {
+export function proTrialLine(source: ProPromoSource, plan = ''): string {
+  if (plan === 'trial' || plan === 'pro') return '';
   return `${String.fromCodePoint(0x2728)} ${PRO_TRIAL_PITCH} ${proTrialUrl(source)}`;
 }

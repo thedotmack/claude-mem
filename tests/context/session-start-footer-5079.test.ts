@@ -14,6 +14,13 @@ describe('SessionStart systemMessage stays within the field cap (#5079)', () => 
     TEAMBRAIN_DISCOVERY_LINE,
   );
 
+  it('keeps the viewer and countdown without offering a second trial', () => {
+    const countdown = 'claude-mem free trial: 5 days left';
+    expect(sessionStartBannerFooter('http://viewer', countdown, null, 'trial')).toBe(
+      '\n\nView Observations Live @ http://viewer\n' + countdown,
+    );
+  });
+
   it('fits the longest footer the hook composes in the reserved room', () => {
     expect(footer.length).toBeLessThanOrEqual(TERMINAL_BANNER_RESERVE_CHARS);
   });
