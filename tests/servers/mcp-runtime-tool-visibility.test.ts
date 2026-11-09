@@ -22,6 +22,8 @@ const allTools = [
   { name: 'memory_search', description: '', inputSchema: {} },
   { name: 'memory_context', description: '', inputSchema: {} },
   { name: 'smart_search', description: '', inputSchema: {} },
+  { name: 'get_tool_uses', description: '', inputSchema: {} },
+  { name: 'save_memory', description: '', inputSchema: {} },
   { name: 'dumb_search', description: '', inputSchema: {} },
   { name: 'work_state_write', description: '', inputSchema: {} },
   { name: 'work_state_read', description: '', inputSchema: {} },
@@ -56,6 +58,8 @@ describe('MCP runtime-aware tool visibility', () => {
     }
     expect(names.has('search')).toBe(true);
     expect(names.has('observation_search')).toBe(true);
+    expect(names.has('save_memory')).toBe(false);
+    expect(names.has('get_tool_uses')).toBe(false);
   });
 
   it('worker runtime keeps worker-only tools', () => {

@@ -66,9 +66,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): SyncApiEnv {
 	if (!databaseUrl && forwardOrigin === null) {
 		throw new Error("DATABASE_URL is required (unless FORWARD_ORIGIN is set)");
 	}
-	const portRaw = source.PORT ?? "8080";
-	const port = portRaw === "0" ? 0 : Number.parseInt(portRaw, 10);
-	if (!Number.isFinite(port) || port < 0 || port > 65535) {
+	const portRaw = (source.PORT ?? "8080").trim();
+	const port = Number(portRaw);
+	if (!/^\d+$/.test(portRaw) || port > 65535) {
 		throw new Error("PORT must be an integer 0–65535");
 	}
 	return {
