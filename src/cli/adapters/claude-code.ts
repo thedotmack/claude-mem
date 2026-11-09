@@ -41,8 +41,8 @@ const withGrokReadPath = (toolName: string | undefined, toolInput: unknown): unk
  * the stored row and the observer's <outcome>. The error text alone does not say
  * the call was interrupted.
  */
-const failedToolResponse = (r: Record<string, unknown>): { error: unknown; is_interrupt: boolean } | undefined =>
-  r.hook_event_name === 'PostToolUseFailure' ? { error: r.error, is_interrupt: r.is_interrupt === true } : undefined;
+const failedToolResponse = (r: Record<string, unknown>): { is_error: true; error: unknown; is_interrupt: boolean } | undefined =>
+  r.hook_event_name === 'PostToolUseFailure' ? { is_error: true, error: r.error, is_interrupt: r.is_interrupt === true } : undefined;
 
 /**
  * Read Qwen Code's `submitted_prompt` into the three states the handler needs.

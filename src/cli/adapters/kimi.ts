@@ -111,7 +111,9 @@ export const kimiAdapter: PlatformAdapter = {
       // Kimi sends `tool_output` on PostToolUse and `error` on
       // PostToolUseFailure where Claude Code sends `tool_response`, and
       // `tool_call_id` where it sends `tool_use_id`.
-      toolResponse: r.tool_response ?? r.tool_output ?? r.error,
+      toolResponse: r.hook_event_name === 'PostToolUseFailure'
+        ? { is_error: true, error: r.tool_response ?? r.tool_output ?? r.error }
+        : r.tool_response ?? r.tool_output ?? r.error,
       toolUseId: stringOrUndefined(r.tool_call_id),
       transcriptPath: deriveKimiTranscriptPath(sessionId),
       model: stringOrUndefined(r.model),
