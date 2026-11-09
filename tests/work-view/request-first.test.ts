@@ -3,12 +3,13 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildAgentView, readAgentRecords } from '../../src/services/work-view/agent-view.mjs';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { applyGroupDecisions, groupIdFor, groupingInput, linkBackwards, readCandidates, readLedger, runCli, validateGroupingAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
-import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
+import { NO_PROJECT, folderNeedsProject, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
 import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -19,8 +20,8 @@ const prompt = (id: number, sessionId: number, text: string, at: number, number 
 const link = (conversations: string[]) => [{ kind: 'agent-judgment', conversations, evidence: 'the later ask continues the earlier one' }];
 
 /** sdk_sessions and tool_uses with the cwd columns real databases have. */
-function database() {
-  const db = new Database(':memory:');
+function database(path = ':memory:') {
+  const db = new Database(path);
   db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER, cwd TEXT, custom_title TEXT, status TEXT, completed_at_epoch INTEGER);
     CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
     CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, cwd TEXT, created_at_epoch INTEGER);
@@ -332,6 +333,36 @@ describe('the real project of an agent scratch-folder session', () => {
       if (previous === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE; else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = previous;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('derives the project of a deleted temp checkout', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'former-scratch-'));
+    rmSync(folder, { recursive: true });
+    expect(folderNeedsProject(folder, 'generated-task')).toBe(true);
+  });
+
+  it('uses the touched repository in the built request-progress skill after a temp checkout is removed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'skill-project-'));
+    const path = join(dir, 'claude-mem.db');
+    try {
+      const repo = join(dir, 'product');
+      gitRepo(repo);
+      const checkout = join(dir, 'removed');
+      mkdirSync(checkout);
+      const db = database(path);
+      try {
+        addSession(db, 1, 'scratch', 'generated-task', 'Fix the release script', Date.now(), checkout);
+        db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input) VALUES (?, ?, ?)')
+          .run(1, 'Read', JSON.stringify({ file_path: join(repo, 'README.md') }));
+      } finally { db.close(true); }
+      rmSync(checkout, { recursive: true });
+      const cli = fileURLToPath(new URL('../../plugin/skills/request-progress/scripts/request-groups.mjs', import.meta.url));
+      const result = Bun.spawnSync([process.execPath, cli, 'candidates', '--brief'], {
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dir, CLAUDE_MEM_DB: path, CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path' },
+      });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+      expect(JSON.parse(result.stdout.toString()).candidates).toMatchObject([{ project: 'product' }]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('reads native Windows paths and working folders on Windows', () => {

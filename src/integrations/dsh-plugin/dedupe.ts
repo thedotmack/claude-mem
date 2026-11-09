@@ -21,12 +21,6 @@ function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
-/** Join a possibly-undefined list of strings, order-preserved and normalized. */
-function joinList(values: readonly string[] | undefined): string {
-  if (values === undefined || values.length === 0) return ''
-  return values.map(v => normalize(v)).join('\u0000')
-}
-
 /**
  * Content fingerprint of one observation. Duplicate observations (identical
  * narrative/title/facts but different ids) share the same fingerprint.
@@ -37,9 +31,9 @@ export function observationFingerprint(obs: MemObservation): string {
     normalize(obs.subtitle ?? ''),
     normalize(obs.text ?? ''),
     normalize(obs.narrative ?? ''),
-    joinList(obs.facts),
-  ].filter(part => part.length > 0)
-  return parts.join('\u0001')
+  ]
+  const facts = (obs.facts ?? []).map(normalize)
+  return parts.some(Boolean) || facts.some(Boolean) ? JSON.stringify([...parts, facts]) : ''
 }
 
 /**
@@ -87,7 +81,7 @@ export function dedupeRenderedTable(content: string): string {
       continue
     }
     // cells = [id, time, type, title, read, ...] — drop id (0) and time (1).
-    const key = cells.slice(2).map(normalizeCell).join('\u0000')
+    const key = JSON.stringify(cells.slice(2).map(normalize))
     if (seen.has(key)) continue
     seen.add(key)
     out.push(line)
@@ -101,13 +95,4 @@ function splitTableRow(line: string): string[] | null {
   // Strip the leading and trailing pipe, then split on inner pipes.
   const inner = line.slice(1, -1)
   return inner.split('|').map(cell => cell.trim())
-}
-
-/** Normalize a cell's text; a ditto/time marker collapses to empty (time-agnostic). */
-function normalizeCell(cell: string): string {
-  const c = cell.trim().toLowerCase().replace(/\s+/g, ' ')
-  // Ditto / same-as-above markers ("″", "\"", "“", "do.") and standalone time
-  // values are identity-irrelevant — treat them as empty.
-  if (c === '' || c === '″' || c === '"' || c === '“' || /^\d{1,2}:\d{2}\s*(am|pm)?$/.test(c)) return ''
-  return c
 }
