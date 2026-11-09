@@ -12,7 +12,7 @@ const banner = [
 ].join('\n');
 
 describe('context reader packaging', () => {
-  it('serves context from the built reader without a node_modules directory', async () => {
+  it('serves context and saved work from the built reader without a node_modules directory', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'claude-mem-reader-bundle-'));
     try {
       const entry = join(directory, 'http-fixture.cjs');
