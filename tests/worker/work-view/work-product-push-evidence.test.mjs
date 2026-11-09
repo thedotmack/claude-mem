@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gitProductsFromCommand, mergeProducts } from '../../../src/services/work-view/work-product.mjs';
+import { gitProductsFromCommand, mergeProducts, productsFromToolUse } from '../../../src/services/work-view/work-product.mjs';
 
 const repo = 'https://github.com/acme/demo.git';
 const update = '   abcdef0..bcdef01  main -> main';
@@ -53,4 +53,13 @@ test('mixed pushes retain every changed destination branch and omit the tag', ()
   const out = `To ${repo}\n${update}\n   abcdef0..bcdef01  side -> review/side\n * [new tag] v1 -> v1`;
   const rows = gitProductsFromCommand(`git push ${repo} main side:refs/heads/review/side --tags`, {}, out);
   assert.deepEqual(rows.map(row => row.branch), ['main', 'review/side']);
+});
+
+test('mixed real and simulated push reports from separate streams cannot be attributed by order', () => {
+  const command = `git push -n ${repo} dry && git push --porcelain ${repo} real`;
+  const stderr = `To ${repo}\n * [new branch] dry -> dry\n`;
+  const stdout = `To ${repo}\n*\trefs/heads/real:refs/heads/real\t[new branch]\nDone\n`;
+  const products = response => productsFromToolUse({ tool_name: 'Bash', tool_input: { command }, tool_response: response });
+  assert.deepEqual(products({ stdout, stderr }), []);
+  assert.deepEqual(products({ stdout: stderr + stdout, stderr: 'progress' }).map(p => p.branch), ['real']);
 });

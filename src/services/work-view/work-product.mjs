@@ -192,9 +192,11 @@ function pushesFrom(command, response, out) {
   };
   const lines = out.split('\n');
   const mixedSimulation = targets.some(t => t.dryRun) && targets.some(t => !t.dryRun);
-  // Quiet or truncated mixed transcripts may not identify which invocation
-  // produced a ref line. An ambiguous simulated update is not a publication.
-  if (mixedSimulation && lines.filter(line => /^To |^Everything up-to-date$/.test(line)).length !== targets.length) return [];
+  if (mixedSimulation) {
+    const reportsPush = text => typeof text === 'string' && /^(?:To |Everything up-to-date$)/m.test(text);
+    // Missing reports or reports split across streams cannot be paired with commands in order.
+    if (lines.filter(reportsPush).length !== targets.length || (reportsPush(response?.stdout) && reportsPush(response?.stderr))) return [];
+  }
   for (const line of lines) {
     if (line === 'Everything up-to-date') { index++; continue; }
     const remote = line.match(/^To (\S+)$/);
