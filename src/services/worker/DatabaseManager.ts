@@ -155,7 +155,7 @@ export class DatabaseManager {
     this.syncRecoveryReader = null;
     this.syncConflictRecovery = null;
 
-    this.backupManager?.stop();
+    await this.backupManager?.stop();
     this.backupManager = null;
 
     this.sessionStore = null;

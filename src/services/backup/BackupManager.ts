@@ -79,6 +79,7 @@ export class BackupManager {
   private stopped = false;
   /** Single-flight: true while a snapshot cycle is in progress. */
   private running = false;
+  private readonly snapshots = new Map<AbortController, Promise<BackupSnapshotResult>>();
 
   private lastError: string | null = null;
   private nextRunAt: number | null = null;
@@ -107,13 +108,19 @@ export class BackupManager {
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     this.nextRunAt = null;
+    for (const controller of this.snapshots.keys()) {
+      controller.abort(new Error('Backup manager stopped'));
+    }
+    // A restart must not leave a child still writing a partial that the new
+    // manager can remove as crash debris. Wait for exit and partial cleanup.
+    await Promise.allSettled(this.snapshots.values());
   }
 
   /**
@@ -139,7 +146,17 @@ export class BackupManager {
    * connection, made standalone and quick_check-verified. Throws when no
    * verified snapshot could be produced, and leaves no partial file behind.
    */
-  async createSnapshot(): Promise<BackupSnapshotResult> {
+  createSnapshot(): Promise<BackupSnapshotResult> {
+    if (this.stopped) return Promise.reject(new Error('Backup manager stopped'));
+    const controller = new AbortController();
+    const task = this.createOwnedSnapshot(controller.signal);
+    this.snapshots.set(controller, task);
+    const release = () => { this.snapshots.delete(controller); };
+    void task.then(release, release);
+    return task;
+  }
+
+  private async createOwnedSnapshot(signal: AbortSignal): Promise<BackupSnapshotResult> {
     // Committed pages can still live only in the WAL. Counting just the main
     // file substantially underestimates a snapshot until the next checkpoint.
     let sourceBytes = statSync(this.dbPath).size;
@@ -161,11 +178,12 @@ export class BackupManager {
     const partialPath = `${backupPath}.partial`;
     this.removePartialSnapshots();
     try {
-      await runSqliteFileJob({ kind: 'snapshot', source: this.dbPath, target: partialPath });
+      await runSqliteFileJob({ kind: 'snapshot', source: this.dbPath, target: partialPath }, signal);
+      signal.throwIfAborted();
       renameSync(partialPath, backupPath);
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      for (const leftover of [partialPath, `${partialPath}-wal`, `${partialPath}-shm`]) {
+      for (const leftover of [partialPath, `${partialPath}-wal`, `${partialPath}-shm`, `${partialPath}-journal`]) {
         if (existsSync(leftover)) unlinkSync(leftover);
       }
       logger.error('BACKUP', 'Snapshot failed; no snapshot was kept', { backupPath }, error);

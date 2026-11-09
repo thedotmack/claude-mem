@@ -78,10 +78,11 @@ function lastLine(text: string): string {
   return lines[lines.length - 1] ?? '';
 }
 
-export async function runSqliteFileJob(job: SqliteFileJob): Promise<SqliteFileJobResult> {
+export async function runSqliteFileJob(job: SqliteFileJob, signal?: AbortSignal): Promise<SqliteFileJobResult> {
   if (typeof Bun === 'undefined') {
     throw new Error('SQLite file jobs need the Bun runtime (the worker), not Node');
   }
+  signal?.throwIfAborted();
   const child = Bun.spawn([process.execPath, '-e', CHILD_SCRIPT], {
     // BUN_BE_BUN makes a `bun build --compile` worker binary act as the bun
     // CLI for this child, so `-e` runs the script there too.
@@ -90,14 +91,32 @@ export async function runSqliteFileJob(job: SqliteFileJob): Promise<SqliteFileJo
     stderr: 'pipe',
     windowsHide: true,
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    const errorLine = stderr.split('\n').find(line => line.startsWith('ERROR: '));
-    throw new Error(errorLine ? errorLine.slice('ERROR: '.length) : `sqlite ${job.kind} job exited ${exitCode}: ${lastLine(stderr)}`);
+  const abortChild = () => {
+    // This handle names only our SQLite child. A snapshot's live source is
+    // readonly; its disposable partial is removed after the child exits.
+    try { child.kill('SIGKILL'); } catch { /* already exited */ }
+  };
+  signal?.addEventListener('abort', abortChild, { once: true });
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    signal?.throwIfAborted();
+    if (exitCode !== 0) {
+      const errorLine = stderr.split('\n').find(line => line.startsWith('ERROR: '));
+      throw new Error(errorLine ? errorLine.slice('ERROR: '.length) : `sqlite ${job.kind} job exited ${exitCode}: ${lastLine(stderr)}`);
+    }
+    return JSON.parse(lastLine(stdout)) as SqliteFileJobResult;
+  } catch (error) {
+    // Failed pipe reads must not abandon a child either. Reap it before the
+    // caller removes the partial, and keep cancellation's original reason.
+    abortChild();
+    await child.exited.catch(() => {});
+    signal?.throwIfAborted();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abortChild);
   }
-  return JSON.parse(lastLine(stdout)) as SqliteFileJobResult;
 }
