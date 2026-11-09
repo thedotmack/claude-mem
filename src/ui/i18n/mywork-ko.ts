@@ -445,6 +445,7 @@ export const myworkKo: Record<string, string> = {
   'Can’t read your rules right now': '지금은 규칙을 읽을 수 없습니다',
   'No rules yet': '아직 규칙이 없습니다',
   'claude-mem learns how you like to work from your requests on its own. You can also add one.': 'claude-mem은 요청을 바탕으로 선호하는 작업 방식을 스스로 학습합니다. 규칙을 직접 추가할 수도 있습니다.',
+  "Rule learning is waiting for an agent. Sign in to a supported agent on the worker machine, or add a rule yourself.": "규칙 학습이 에이전트를 기다리고 있습니다. 워커가 실행되는 컴퓨터에서 지원되는 에이전트에 로그인하거나 직접 규칙을 추가하세요.",
   'Add rule': '규칙 추가',
   '{waiting} learned rules are waiting for you. ': '학습된 규칙 {waiting}개가 결정을 기다리고 있습니다. ',
   '{waiting} learned rule is waiting for you. ': '학습된 규칙 {waiting}개가 결정을 기다리고 있습니다. ',
