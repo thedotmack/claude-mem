@@ -501,7 +501,7 @@ export function cleanSingleFile(file: string, relativePath: string, dryRun: bool
   for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
     remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
   }
-  const stripped = remaining.trim();
+  const stripped = remaining.trimEnd();
 
   if (stripped === '') {
     if (!dryRun) {
