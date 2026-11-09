@@ -1,11 +1,20 @@
 import type { SearchOptions } from '../sqlite/types.js';
 import type { DeepSearchResult } from '../sqlite/tool-use-search.js';
 
-// Initial synthetic baseline: common-term FTS 3.86 s, global CJK miss up to
-// 6.008 s at 139,304 rows (Bun 1.3.13/macOS ARM64; see ADR capacity table).
-// 1 s is a provisional interactive protection budget, not a real-corpus p95.
-// Includes preparation/startup; expiry is explicit and never means zero hits.
-export const DEEP_SEARCH_DEADLINE_MS = 1000;
+// Set from a real-corpus measurement (2026-11-09, Bun 1.4.4, macOS arm64, a
+// busy machine): 276,904 tool uses, 2.0 GB stored input + response, 21 runs
+// per query through searchToolUses on the built index, plus the real child's
+// startup against the same 3.4 GB file (p95 85 ms).
+//   common term, all projects:   median 993 ms, p95 3,391 ms (half over 1 s)
+//   CJK hit, all projects:       median 1,732 ms, p95 3,508 ms
+//   scoped common term / CJK miss: p95 379 / 449 ms; rare-term miss: ~0 ms
+//   CJK miss, all projects:      median 5,368 ms, p95 12,791 ms (full scan)
+// 4 s covers the all-projects common-term and CJK-hit p95 plus child startup
+// (3,593 ms worst). The query runs in its own disposable read-only process,
+// so the shared context reader is never held for it. A global CJK miss and a
+// first query on a cold page cache (~15 s) still expire: that comes back as
+// an explicit timeout (complete:false), never as zero hits.
+export const DEEP_SEARCH_DEADLINE_MS = 4000;
 export const MAX_REQUEST_BYTES = 64 * 1024;
 export const MAX_REPLY_BYTES = 128 * 1024;
 export interface DeepSearchRequest {

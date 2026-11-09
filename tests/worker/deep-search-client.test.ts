@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { DeepSearchClient } from '../../src/services/deep-search/DeepSearchClient.js';
-import { MAX_REPLY_BYTES } from '../../src/services/deep-search/protocol.js';
+import { DEEP_SEARCH_DEADLINE_MS, MAX_REPLY_BYTES } from '../../src/services/deep-search/protocol.js';
 import { formatMcpPayload } from '../../src/servers/mcp-text-format.js';
 import { deepSearchRuntimeSupported } from '../../src/services/deep-search/runtime-support.js';
 
@@ -112,7 +112,7 @@ describe('deep search process lifecycle', () => {
     let now = 0;
     const child = fakeChild();
     const client = new DeepSearchClient('unused', { now: () => now, program: async () => '', spawn: (() => child) as any });
-    const pending = client.search('x'); await tick(); now = 1000;
+    const pending = client.search('x'); await tick(); now = DEEP_SEARCH_DEADLINE_MS;
     child.stdout.write(JSON.stringify({ version: 1, id: 1, result: ok })); child.emit('close', 0, null);
     expect((await pending).deep.status).toBe('timeout'); await client.close();
   });

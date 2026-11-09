@@ -94,7 +94,8 @@ and long-lived readers that prevent checkpoints matter. These measurements
 precede the subprocess revision: the initial implementation ran expensive raw
 reads on the existing reader and could delay normal context reads. The current
 implementation isolates raw reads in a disposable child and reports timeout
-after a provisional 1-second budget including preparation/startup. A bounded
+after a 4-second budget including preparation/startup, set from the real-corpus
+measurement below. A bounded
 result count does not bound FTS ranking or CJK scan CPU. Project filters greatly help CJK misses but do not
 make common-word FTS ranking cheap.
 
@@ -122,11 +123,42 @@ make common-word FTS ranking cheap.
   green, and the separate browser/grammar integration lane was not run.
 - No installed plugin, production worker, or private memory database was modified.
 
-Keep this PR draft pending representative real-corpus qualification, as requested
-by plan-12. Synthetic scale tests cannot settle real payload distribution, ongoing
-write contention, or the acceptable latency threshold. Maintainer review should
-also confirm the local-only first slice and raw probing when summaries/prompts
-match but observations do not. No native Windows or Linux host run was performed.
+## Real-corpus qualification (2026-11-09)
+
+Measured by the maintainers on a real local memory database (macOS arm64,
+Bun 1.4.4, on a heavily loaded machine: load average 40–130). The database was
+opened read-only and never copied or written; the FTS5 index was built in the
+connection's temp schema as the same external-content table over a temp view of
+`tool_uses`, in the same 64-row batches, and queried through `searchToolUses`.
+Child startup was measured through `DeepSearchClient` against the same file.
+21 runs per query, `limit: 5`.
+
+| Measurement | Value |
+| --- | ---: |
+| Tool-use rows | 276,904 |
+| Stored input + response bytes | 2,002,797,679 (226 MB + 1.78 GB) |
+| `tool_uses` table pages | 2,256,691,200 bytes |
+| FTS5 shadow tables | 863,408,128 bytes (38% of the table) |
+| Backfill, 4,336 batches | 263 s (temp file, no WAL fsync) |
+| Child startup + open + reply, median / p95 | 61 / 85 ms |
+| Common term, all projects, median / p95 / first (cold) | 993 / 3,391 / 14,945 ms |
+| Common term, largest project (33,699 rows), median / p95 | 285 / 379 ms |
+| Two common terms, all projects, median / p95 | 579 / 681 ms |
+| Rare-term miss, all projects | 0–12 ms |
+| CJK hit, all projects, median / p95 | 1,732 / 3,508 ms |
+| CJK miss, all projects, median / p95 | 5,368 / 12,791 ms |
+| CJK miss, largest project, median / p95 | 284 / 449 ms |
+
+At the earlier 1-second budget, 10 of 21 all-project common-term queries timed
+out. The deadline is now 4 s: it covers the all-project common-term and CJK-hit
+p95 plus child startup (3.6 s worst). An all-project CJK miss (a full substring
+scan) and a first query on a cold page cache still expire, visibly as
+`timeout`. The index adds about 0.4x the `tool_uses` table to the database file.
+
+The local-only first slice keeps the existing worker observation contract.
+Server raw search and full cross-runtime parity are out of scope; the
+pre-existing server punctuation and 64-term differences are tracked under
+plan-25 (#3982). No native Windows or Linux host run was performed.
 
 
 ## Maintainer follow-up (2026-11-09)
@@ -146,9 +178,8 @@ match but observations do not. No native Windows or Linux host run was performed
   confirmed-exit cleanup. Preparation is shared without accumulating request
   callbacks. Synthetic tests prove termination/recovery and overlap with an
   exclusively attributable deep-database reader, not real-corpus p95.
-- The 1-second budget is a provisional protective choice motivated by the
-  initial multi-second synthetic measurements above, not a fitted production
-  threshold. The evidence and limitation are also beside the constant.
+- The deadline was a provisional 1 second until the real-corpus measurement
+  above set it to 4 seconds. The evidence is also beside the constant.
 - Real-corpus preflight: with the owner's permission, SQLite's backup API read
   the local database through a read-only connection into a temporary snapshot.
   The snapshot contained **0 tool-use rows and 0 observations**. It is ineligible

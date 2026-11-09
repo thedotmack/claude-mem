@@ -766,7 +766,7 @@ helpers as ordinary memory search. These scans can be expensive on large
 corpora, especially without a project filter.
 
 Raw queries run in a separate, read-only subprocess, with one active query per
-worker and no waiting queue. The 1-second deadline starts when the raw executor
+worker and no waiting queue. The 4-second deadline starts when the raw executor
 accepts the request, including child preparation and startup; ordinary memory
 search happens before this deadline. A second request returns `busy`. On timeout
 the host kills the child and keeps the slot occupied until exit is confirmed.
