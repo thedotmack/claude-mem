@@ -3,6 +3,7 @@ import { getLocale, type Locale } from '@/lib/i18n'
 const WORDS: Partial<Record<Locale, Record<string, string>>> = {
   'zh-CN': { Today: '今天', Yesterday: '昨天', am: '上午', pm: '下午' },
   ko: { Today: '오늘', Yesterday: '어제', am: '오전', pm: '오후' },
+  tr: { Today: 'Bugün', Yesterday: 'Dün', am: 'ÖÖ', pm: 'ÖS' },
 }
 
 /** Localize recorded display dates without changing model timestamps or their sort keys. */
