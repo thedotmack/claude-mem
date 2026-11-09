@@ -18,7 +18,7 @@
 import { execFileSync } from 'child_process';
 import { readFileSync, readdirSync } from 'fs';
 import { captureProcessStartToken, isPidAlive } from '../../../src/supervisor/process-registry.js';
-import { hasMatchingProcessStartToken } from '../../../src/shared/process-identity.js';
+import { hasMatchingProcessStartToken, startTokenProbeEnv, withUtcStartTokenPrefix } from '../../../src/shared/process-identity.js';
 import { sanitizeEnv } from '../../../src/supervisor/env-sanitizer.js';
 
 export interface ProcessIdentity {
@@ -97,20 +97,24 @@ function readProcessTablePosix(): ProcessRow[] {
     encoding: 'utf-8',
     timeout: 30_000,
     maxBuffer: 32 * 1024 * 1024,
-    // The production token reader forces this locale. lstart must have the
-    // same 24-byte shape in both reads or a valid owner looks unrelated.
-    env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' },
+    // The production token reader pins locale AND time zone. lstart must have
+    // the same 24-byte shape in both reads or a valid owner looks unrelated.
+    env: startTokenProbeEnv(sanitizeEnv(process.env)),
   });
 
   const rows: ProcessRow[] = [];
   for (const line of stdout.split('\n')) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.{24})\s+(.*)$/);
     if (!match) continue;
+    // Mirror production: captureProcessStartToken stamps utc: onto the raw
+    // read, so this table-side token must carry the same prefix or every
+    // comparison across the two readers would degrade to "proceed".
+    const startToken = match[3]!.trim();
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
       name: match[4]!.trim(),
-      startToken: match[3]!.trim() || null,
+      startToken: startToken.length > 0 ? withUtcStartTokenPrefix(startToken) : null,
     });
   }
   return rows;
@@ -138,9 +142,10 @@ function isWindowsRunnerNoise(name: string): boolean {
  * readable and the child was created no earlier than its alleged parent.
  * Windows can retain a dead parent's PID in a child's PPID after that PID has
  * been reused. A fresh token on the child alone does not prove ownership.
+ * Return null for unknown chronology, distinct from a proven stale link.
  */
-function childStartedAfterParent(parentToken: string | null, childToken: string | null): boolean {
-  if (!parentToken || !childToken) return false;
+function childStartedAfterParent(parentToken: string | null, childToken: string | null): boolean | null {
+  if (!parentToken || !childToken) return null;
   // Get-CimInstance CreationDate.ToString('yyyyMMddHHmmss.ffffff') has a
   // literal dot between seconds and microseconds. Fixed width makes lexical
   // order identical to creation-time order without losing precision.
@@ -148,14 +153,20 @@ function childStartedAfterParent(parentToken: string | null, childToken: string 
   if (cimToken.test(parentToken) && cimToken.test(childToken)) {
     return childToken >= parentToken;
   }
-  if (/^\d+$/.test(parentToken) && /^\d+$/.test(childToken)) {
+  const linuxToken = /^\d+$/;
+  if (linuxToken.test(parentToken) && linuxToken.test(childToken)) {
     // Linux /proc starttime ticks.
     return BigInt(childToken) >= BigInt(parentToken);
   }
+  // Different token formats are not comparable. Date.parse can interpret a
+  // short Linux tick count as a year, which is not creation-time evidence.
+  if (cimToken.test(parentToken) || cimToken.test(childToken)
+    || linuxToken.test(parentToken) || linuxToken.test(childToken)) return null;
   // macOS/BSD ps lstart is forced to the C locale in readProcessTablePosix.
   const parentTime = Date.parse(parentToken);
   const childTime = Date.parse(childToken);
-  return Number.isFinite(parentTime) && Number.isFinite(childTime) && childTime >= parentTime;
+  if (!Number.isFinite(parentTime) || !Number.isFinite(childTime)) return null;
+  return childTime >= parentTime;
 }
 
 /**
@@ -192,21 +203,26 @@ export function snapshotDescendants(
   const found: ProcessIdentity[] = [];
   const seen = new Set<number>([rootPid]);
   const rootRow = rows.find(row => row.pid === rootPid);
-  const queue = [{ pid: rootPid, trustedToken: rootRow?.startToken ?? null }];
+  const rootToken = rootRow?.startToken ?? null;
+  const queue = [{ pid: rootPid, startToken: rootToken, trustedToken: rootToken, unrelated: false }];
 
   while (queue.length > 0) {
     const current = queue.shift()!;
     for (const child of childrenByParent.get(current.pid) ?? []) {
       if (seen.has(child.pid)) continue;
       seen.add(child.pid);
+      const chronology = childStartedAfterParent(current.trustedToken, child.startToken);
+      // A process older than the fixture cannot belong to it. Its descendants
+      // are also unrelated only while each raw parent-child time is credible.
+      // Still traverse: a deeper reused PID may hide a real fixture orphan.
+      const unrelated = childStartedAfterParent(rootToken, child.startToken) === false
+        || (current.unrelated && childStartedAfterParent(current.startToken, child.startToken) === true);
       // Keep an unproven edge visible as a null-token survivor, but do not
       // authorize killing it or any grandchild below that edge. Validate each
       // edge, not merely each descendant against the fixture's root time.
-      const trustedToken = childStartedAfterParent(current.trustedToken, child.startToken)
-        ? child.startToken
-        : null;
-      queue.push({ pid: child.pid, trustedToken });
-      if (isWindowsRunnerNoise(child.name)) continue;
+      const trustedToken = !unrelated && chronology === true ? child.startToken : null;
+      queue.push({ pid: child.pid, startToken: child.startToken, trustedToken, unrelated });
+      if (unrelated || isWindowsRunnerNoise(child.name)) continue;
       found.push({
         pid: child.pid,
         startToken: trustedToken,

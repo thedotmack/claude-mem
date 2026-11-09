@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
@@ -12,6 +12,8 @@ import {
 } from '../../src/services/integrations/KimiHooksInstaller.js';
 import { kimiHooksBlockBody } from '../../src/services/wire-gateway/library/agent-library-targets.js';
 import { findTextBlock, removeTextBlock, renderTextBlock, upsertTextBlock } from '../../src/services/wire-gateway/library/text-block.js';
+import { libraryBackupsDirectory } from '../../src/services/wire-gateway/library/backups.js';
+import { defaultLibraryDirectory } from '../../src/services/wire-gateway/library/library-record.js';
 
 // Kimi's managed block goes through the Library's marker-block helpers.
 const upsertKimiBlock = (content: string, block: string): string => {
@@ -101,6 +103,20 @@ describe('installKimiHooks', () => {
     expect(again.split(KIMI_MARKER_BEGIN)).toHaveLength(2);
   });
 
+  // The backup holds every Kimi setting (#5290). The Library keeps it under
+  // <DATA_DIR>/wire-gateway/library/backups/<change>/kimi/<absolute path>.
+  test.skipIf(process.platform === 'win32')('writes the backup owner-only, even from a readable config', () => {
+    const home = makeScratchHome();
+    writeFileSync(path.join(home, 'config.toml'), 'default_model = "kimi-code/k3"\n');
+    chmodSync(path.join(home, 'config.toml'), 0o644);
+    expect(installKimiHooks()).toBe(0);
+    const backupsRoot = libraryBackupsDirectory(defaultLibraryDirectory());
+    const configInChange = path.join('kimi', path.join(home, 'config.toml').slice(path.parse(home).root.length));
+    const backups = readdirSync(backupsRoot).map((change) => path.join(backupsRoot, change, configInChange)).filter((file) => existsSync(file));
+    expect(backups).toHaveLength(1);
+    expect(statSync(backups[0]).mode & 0o777).toBe(0o600);
+  });
+
   test('status reports installed state; uninstall removes the block', () => {
     const home = makeScratchHome();
     expect(checkKimiHooksStatus()).toBe(1); // not installed
@@ -168,4 +184,37 @@ describe('renderKimiBlock', () => {
     expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init-context');
     expect(userPromptSubmitMatch![0]).not.toContain('&&');
   });
+
+  test('keeps the command a single valid TOML string when a path contains a quote', () => {
+    // A path with both an apostrophe and backslashes exercises TOML escaping and
+    // quoting at the same time: backslashes must be escaped inside a basic
+    // string, and the apostrophe must not terminate a literal string.
+    const BS = '\\\\';
+    const bunPath = `C:${BS}Users${BS}o'brien${BS}.bun${BS}bin${BS}bun.exe`;
+  const workerPath = `C:${BS}Users${BS}o'brien${BS}cli${BS}worker-service.cjs`;
+  const block = renderKimiBlock(bunPath, workerPath);
+  const commandLines = block.split('\n').filter((line) => line.startsWith('command = '));
+  expect(commandLines).toHaveLength(7);
+
+  // Every emitted line must parse as TOML and decode to the exact command.
+  const decoded = commandLines.map((line) => Bun.TOML.parse(line).command as string);
+
+  const expected = [
+    'start',
+    'hook kimi session-init-context',
+    'hook kimi observation',
+    'hook kimi observation',
+    'hook kimi file-context',
+    'hook kimi summarize',
+    'hook kimi summarize',
+  ].map((suffix) => `"${bunPath}" "${workerPath}" ${suffix}`);
+
+  expect(decoded).toEqual(expected);
 });
+
+test('still uses the escape-free literal form for ordinary paths', () => {
+    const block = renderKimiBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
+    expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/w.cjs\"");
+  });
+});
+

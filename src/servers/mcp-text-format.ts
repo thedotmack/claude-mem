@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { projectMemoryContent } from '../shared/progressive-search.js';
+import { retainTextHeadTail } from '../shared/text-truncation.js';
 
 export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'server-search' | 'server-timeline' | 'context' | 'job'
   | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query';
@@ -12,7 +13,7 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
   ? value as Record<string, unknown> : {};
 const line = (value: unknown, fallback = '', maximum = 240): string => {
   const text = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : fallback;
-  return text.replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').slice(0, maximum);
+  return retainTextHeadTail(text.replace(/[\r\n\u0000-\u001f\u007f]/g, ' '), maximum, 0).head;
 };
 function bounded(text: string, maximum = MAX_TEXT_BYTES): string {
   if (Buffer.byteLength(text, 'utf8') <= maximum) return text;

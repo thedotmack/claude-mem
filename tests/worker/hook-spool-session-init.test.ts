@@ -93,7 +93,8 @@ describe('hook spool session_init', () => {
   it('an init enqueued before an observation of the same session drains first, so the observation lands under its prompt', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     spool.enqueue('session_init', { contentSessionId: 'wire-s', platformSource: 'codex', prompt: 'list the files', nativePromptId: 'turn-1', cwd: '/Users/me/proj' });
-    spool.enqueue('observation', {
+    // The wire gateway's inference input: a live handoff, not a durable hook entry (#5347).
+    spool.enqueueLiveObserverHandoff('observation', {
       contentSessionId: 'wire-s', platformSource: 'codex', toolName: 'shell', toolInput: { cmd: 'ls' }, toolResponse: 'a.ts', toolUseId: 'call_1', cwd: '/Users/me/proj',
     });
 

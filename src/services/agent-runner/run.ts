@@ -6,13 +6,16 @@
  * Owner rules (Oct 22): no permission-bypass or "dangerous" flags, read-only
  * tools only, and no time limits. A run ends when the agent finishes or exits
  * with an error, never because it is slow. The next agent is tried only when
- * a run actually fails.
+ * a run actually fails. An agent that ran and answered, but whose answer
+ * claude-mem's own checks refused, is not a failed agent: the run ends there
+ * and the next scheduled run tries the same agent again (#5189: a too-long
+ * Claude review sent ~230 hidden runs to the owner's Codex account).
  *
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
  *     loaded for its memory-search MCP tools, only the task's allowed tools,
  *     Read/Grep/Glob only inside the task's readable folders (everything else is
  *     denied), `cwd` = the task's folder and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
+ *   - Codex: `codex exec --strict-config -c default_permissions=claude-mem-refresh --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
@@ -26,16 +29,20 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { runtimeReadRoots } from './runtime-read-roots.js';
+import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
+export { GEMINI_NO_MCP_SERVERS };
+
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
@@ -66,9 +73,22 @@ export interface AgentTask {
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives the agent step by step; returns a short result line. */
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
+  prepare?: () => Promise<void>;
+  /** Tried first when it is logged in; the other usable agents keep detect order behind it. Absent: detect
+   * order alone decides. The My Work refresh sets this from CLAUDE_MEM_PROVIDER (#5435). */
+  preferredAgent?: UsableAgentId;
+  /** The only agents this task may run on; absent means every logged-in agent. An empty list runs nothing
+   * and does not even detect agents (#5189: a background refresh must not spend an agent the owner did not pick). */
+  allowedAgents?: UsableAgentId[];
+  /** Never hand a failed run to a second agent: each fallback spends another agent's quota (#5189). */
+  stayOnFirstUsableAgent?: boolean;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
+
+/** A task throws an error carrying `answerRefused: true` when claude-mem's own checks refused the agent's answer. */
+const isAnswerRefusal = (error: unknown) => (error as { answerRefused?: boolean } | null)?.answerRefused === true;
 
 export interface AgentRunResult {
   state: 'ok' | 'failed' | 'waiting-for-agent';
@@ -85,6 +105,8 @@ export interface AgentRunnerDependencies {
    * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
    * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
+  /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
+  platform: () => NodeJS.Platform;
 }
 
 async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
@@ -97,6 +119,7 @@ const defaultDependencies: AgentRunnerDependencies = {
   detect: () => detectUsableAgents(),
   query,
   buildEnv: defaultEnv,
+  platform: () => process.platform,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
@@ -186,20 +209,57 @@ function failure(name: string, result: CommandResult): Error {
 }
 
 /**
- * `-s read-only` sandboxes only shell and files, not MCP tools, and `--ephemeral`
+ * A named permissions profile confines reads to the task workspace and minimal runtime,
+ * with the installed Codex executable reopened so its sandbox helper can start.
+ * Network and writes are denied. Strict config makes unsupported versions fail closed.
+ * `--ephemeral`
  * still loads $CODEX_HOME/config.toml, where the user's write-capable MCP
  * servers (claude-mem's save_memory and work_state_write among them) live.
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
-  'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
+const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '--strict-config', '-c', 'default_permissions="claude-mem-refresh"',
+  '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${runtimeReadRoots(executable).map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
+  '-c', 'permissions.claude-mem-refresh.network.enabled=false', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
-export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
+// The folder trust gate remains intact. System settings below also register
+// no builtin tools, disable hooks/YOLO, and supply Gemini's evidence inline.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
+
+/** How codex exec reports a model this login may not use (Oct 25, codex-cli 0.146.0: a 400 with model_not_found). */
+const CODEX_MODEL_REFUSED = /model_not_found|not supported when using Codex with a ChatGPT account/i;
+
+interface CodexListedModel { slug?: string; visibility?: string; priority?: number; supported_reasoning_levels?: Array<{ effort?: string }> }
+
+/**
+ * The step's Codex model, checked against the models Codex itself lists for this login
+ * ($CODEX_HOME/models_cache.json, which Codex fetches from its server). Oct 25: a ChatGPT-account
+ * login was refused `gpt-6-luna` ("not supported when using Codex with a ChatGPT account",
+ * model_not_found) and every grouping step on Codex failed. A model the login does not list is
+ * replaced by its listed namesake (`gpt-6-luna` → `gpt-5.6-luna`), else left to Codex's default.
+ * Without a readable list the step's model is used as named.
+ */
+export function codexModelForLogin(step: StepModel | undefined, env: NodeJS.ProcessEnv): StepModel | undefined {
+  if (!step?.model) return step;
+  const home = env.CODEX_HOME || (env.HOME ? join(env.HOME, '.codex') : null);
+  if (!home) return step;
+  let listed: CodexListedModel[];
+  try { listed = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')).models; }
+  catch { return step; }
+  if (!Array.isArray(listed) || !listed.length || listed.some(model => model.slug === step.model)) return step;
+  const family = step.model.split('-').pop();
+  const namesake = listed
+    .filter(model => model.visibility !== 'hide' && typeof model.slug === 'string' && model.slug.split('-').pop() === family)
+    .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity))[0];
+  logger.warn('WORKER', `Codex does not list ${step.model} for this login; using ${namesake?.slug ?? 'its default model'}`);
+  if (!namesake) return {};
+  const efforts = namesake.supported_reasoning_levels?.map(level => level.effort);
+  const keepsEffort = step.reasoningEffort && (!efforts || efforts.includes(step.reasoningEffort));
+  return { model: namesake.slug, ...(keepsEffort ? { reasoningEffort: step.reasoningEffort } : {}) };
+}
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
@@ -213,8 +273,25 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
     if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
-      if (result.exitCode !== 0) throw failure('codex exec', result);
+      // macOS sandbox-exec must reopen the actual binary, not its PATH symlink.
+      const executable = realPath(agent.path!);
+      const model = codexModelForLogin(models.codex, env);
+      let result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, model), prompt, { cwd: task.cwd, env });
+      // The models list can be missing or stale, so a login can still refuse the step's model. Then the
+      // step runs once more on the login's default model instead of failing (Oct 25: gpt-6-luna).
+      if (result.exitCode !== 0 && model?.model && CODEX_MODEL_REFUSED.test(`${result.stderr}\n${result.stdout}`)) {
+        logger.warn('WORKER', `Codex refused ${model.model} for this login; retrying on its default model`);
+        result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, {}), prompt, { cwd: task.cwd, env });
+      }
+      if (result.exitCode !== 0) {
+        // Recognize the actual capability refusal rather than disabling Codex
+        // on every Windows machine: elevated/MXC installations may support it.
+        if (dependencies.platform() === 'win32'
+          && /unelevated restricted-token sandbox cannot enforce split filesystem read restrictions/i.test(`${result.stderr}\n${result.stdout}`)) {
+          throw new Error('Codex refused this refresh because its Windows unelevated sandbox cannot enforce the required read restrictions. Use an administrator-provisioned elevated sandbox or a supported MXC sandbox. The existing provider fallback remains available; filesystem restrictions were preserved.');
+        }
+        throw failure('codex exec', result);
+      }
       return readFileSync(answerPath, 'utf8');
     } finally {
       rmSync(answerPath, { force: true });
@@ -227,7 +304,20 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
-    const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
+    const policyDir = mkdtempSync(join(tmpdir(), 'claude-mem-gemini-policy-'));
+    const policyPath = join(policyDir, 'settings.json');
+    // System settings override project/user config. An empty core list registers
+    // no builtin tools: all evidence is inline, so no disk reads or plan exit are needed.
+    writeFileSync(policyPath, JSON.stringify({
+      tools: { core: [] },
+      security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+    }), { mode: 0o600 });
+    let result: CommandResult;
+    try {
+      result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, {
+        cwd: task.cwd, env: { ...env, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyPath },
+      });
+    } finally { rmSync(policyDir, { recursive: true, force: true }); }
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
@@ -239,19 +329,39 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
 }
 
 /**
- * Run the task on the first usable agent, falling through to the next only
- * when a run fails. Never throws. With no logged-in agent it returns
+ * Run the task on the first usable agent — the task's preferred agent when it names one and that agent
+ * is usable, among the task's allowed agents — falling through to the next only
+ * when a run fails, not when the agent's answer was refused, and never when the task stays on its first agent. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
+const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
+
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
-  const usable = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  if (task.allowedAgents?.length === 0) {
+    return { state: 'waiting-for-agent', agent: null, result: null, error: 'No agent is allowed to run this task.', attempts: [] };
+  }
+  const detected = (await dependencies.detect())
+    .filter(agent => agent.authenticated && agent.path)
+    .filter(agent => !task.allowedAgents || task.allowedAgents.includes(agent.id));
+  const usable = task.preferredAgent
+    ? [...detected.filter(agent => agent.id === task.preferredAgent), ...detected.filter(agent => agent.id !== task.preferredAgent)]
+    : detected;
   if (!usable.length) {
-    return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
+    const error = task.allowedAgents
+      ? `None of the allowed agents (${task.allowedAgents.map(agent => agentNames[agent]).join(', ')}) is logged in on this computer.`
+      : 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
+    return { state: 'waiting-for-agent', agent: null, result: null, error, attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
+  try { await task.prepare?.(); }
+  catch (error) {
+    const message = describeError(error).slice(0, 500);
+    logger.warn('WORKER', `Agent run (${task.reason}) could not prepare its input`, { error: message });
+    return { state: 'failed', agent: null, result: null, error: `Preparing the run failed: ${message}`, attempts };
+  }
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
@@ -263,8 +373,18 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
       const message = describeError(error).slice(0, 500);
       logger.warn('WORKER', `Agent run (${task.reason}) failed on ${agent.id}`, { error: message });
       attempts.push({ agent: agent.id, error: message });
+      if (isAnswerRefusal(error)) {
+        logger.info('WORKER', `Agent run (${task.reason}) not handed to another agent: ${agent.id} answered, and its answer was refused`);
+        break;
+      }
+      if (task.stayOnFirstUsableAgent) {
+        logger.info('WORKER', `Agent run (${task.reason}) not handed to another agent: this task stays on ${agent.id}`);
+        break;
+      }
     }
   }
   const last = attempts[attempts.length - 1];
-  return { state: 'failed', agent: last.agent, result: null, error: last.error, attempts };
+  // Every agent's failure, in the order tried: the last fallback's error alone hides why the first ones failed.
+  const error = attempts.map(attempt => `${agentNames[attempt.agent]}: ${attempt.error}`).join(' · ');
+  return { state: 'failed', agent: last.agent, result: null, error, attempts };
 }

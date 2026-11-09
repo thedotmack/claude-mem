@@ -3,7 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';

@@ -6,12 +6,13 @@ import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule, recordTimeEpochMs } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { spoolHookEvent } from '../../cli/spool-hook-event.js';
-import { ingestObservation } from '../worker/http/shared.js';
+import { ingestObservation, ingestSummarize } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
   /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
@@ -43,6 +44,15 @@ export class TranscriptObservationError extends Error {
   constructor(sessionId: string, cause: unknown) {
     super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = 'TranscriptObservationError';
+    this.cause = cause;
+  }
+}
+
+/** A summary declined before the worker accepted it must retain its line. */
+export class TranscriptSummaryError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`summary not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptSummaryError';
     this.cause = cause;
   }
 }
@@ -101,6 +111,8 @@ export interface TranscriptFileContext {
   pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
   /** Real host identity from the header, including non-UUID session IDs. */
   sessionId?: string;
+  /** Every session this file's lines fed, content session id → platform source. */
+  sessions?: Map<string, string>;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
@@ -283,6 +295,7 @@ export class TranscriptEventProcessor {
     const session = this.getOrCreateSession(watch, sessionId);
     const sessionKey = this.getSessionKey(watch, sessionId);
     if (file) {
+      (file.sessions ??= new Map()).set(sessionId, session.platformSource);
       const keys = this.fileSessionKeys.get(file) ?? new Set<string>();
       keys.add(sessionKey);
       this.fileSessionKeys.set(file, keys);
@@ -327,6 +340,9 @@ export class TranscriptEventProcessor {
     }
 
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
+    // The line's own time, not the read's: a restart re-reads old lines now,
+    // and only this tells them from new work in a session the user deleted.
+    const eventOccurredAtEpochMs = recordTimeEpochMs(entry);
 
     if (event.action === 'session_context') this.applySessionContext(session, fields);
     // Whatever directory the session now has is the file's, for the next restart.
@@ -337,7 +353,7 @@ export class TranscriptEventProcessor {
         case 'session_context':
           break;
         case 'session_init':
-          await this.handleSessionInit(session, fields);
+          await this.handleSessionInit(session, fields, eventOccurredAtEpochMs);
           if (watch.context?.updateOn?.includes('session_start')) {
             await this.updateContext(session, watch);
           }
@@ -347,23 +363,23 @@ export class TranscriptEventProcessor {
           // memory, it left the session at prompt 0, so the observer got a
           // continuation with no user request and the batch was dropped (#3653).
           const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
-          if (prompt) await this.anchorUserPrompt(session, prompt);
+          if (prompt) await this.anchorUserPrompt(session, prompt, eventOccurredAtEpochMs);
           break;
         }
         case 'assistant_message':
           session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
           break;
         case 'tool_use':
-          await this.handleToolUse(session, watch, fields, file);
+          await this.handleToolUse(session, watch, fields, eventOccurredAtEpochMs, file);
           break;
         case 'tool_result':
-          await this.handleToolResult(session, watch, fields, file);
+          await this.handleToolResult(session, watch, fields, eventOccurredAtEpochMs, file);
           break;
         case 'observation':
-          await this.sendObservation(session, watch, fields);
+          await this.sendObservation(session, watch, fields, eventOccurredAtEpochMs);
           break;
         case 'file_edit':
-          await this.sendFileEdit(session, fields);
+          await this.sendFileEdit(session, fields, eventOccurredAtEpochMs);
           break;
         case 'session_end':
           await this.handleSessionEnd(session, watch);
@@ -426,9 +442,9 @@ export class TranscriptEventProcessor {
     return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
-  private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleSessionInit(session: SessionState, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
-    await this.anchorUserPrompt(session, prompt);
+    await this.anchorUserPrompt(session, prompt, eventOccurredAtEpochMs);
   }
 
   /**
@@ -438,7 +454,7 @@ export class TranscriptEventProcessor {
    * the watcher then checkpoints at this turn's line and retries it, instead
    * of its observations being filed under no prompt.
    */
-  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
+  private async anchorUserPrompt(session: SessionState, prompt: string, eventOccurredAtEpochMs: number | null): Promise<void> {
     if (prompt) {
       session.lastUserMessage = prompt;
     }
@@ -453,7 +469,8 @@ export class TranscriptEventProcessor {
         sessionId: session.sessionId,
         cwd,
         prompt,
-        platform: session.platformSource
+        platform: session.platformSource,
+        eventOccurredAtEpochMs,
       });
     } catch (error: unknown) {
       throw new TranscriptAnchorError(session.sessionId, error);
@@ -473,7 +490,7 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -485,7 +502,7 @@ export class TranscriptEventProcessor {
         await this.sendFileEdit(session, {
           filePath,
           edits: [{ type: 'apply_patch', patch: toolInput }]
-        });
+        }, eventOccurredAtEpochMs);
       }
     }
 
@@ -495,7 +512,7 @@ export class TranscriptEventProcessor {
         toolInput,
         toolResponse,
         toolUseId: toolId,
-      });
+      }, eventOccurredAtEpochMs);
     } else if (toolName && toolId) {
       if (!session.pendingTools) session.pendingTools = new Map();
       const tool: PendingTool = { toolName, toolInput };
@@ -504,7 +521,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
@@ -541,7 +558,7 @@ export class TranscriptEventProcessor {
         toolInput,
         toolResponse,
         toolUseId: toolId,
-      });
+      }, eventOccurredAtEpochMs);
       if (toolId) {
         if (session.pendingTools && session.pendingTools.get(toolId) === pending) session.pendingTools.delete(toolId);
         const ownerTools = owner?.pendingTools?.[this.getSessionKey(watch, session.sessionId)];
@@ -555,7 +572,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
     if (!session.cwd) {
@@ -572,6 +589,7 @@ export class TranscriptEventProcessor {
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
       agentId: resolveWatchAgentId(watch),
+      eventOccurredAtEpochMs,
     };
     if (this.observationTransport === 'spool') {
       try {
@@ -599,7 +617,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendFileEdit(session: SessionState, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
     const filePath = typeof fields.filePath === 'string' ? fields.filePath : undefined;
     if (!filePath) return;
     if (!session.cwd) {
@@ -613,7 +631,8 @@ export class TranscriptEventProcessor {
         cwd: session.cwd,
         filePath,
         edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-        platform: session.platformSource
+        platform: session.platformSource,
+        eventOccurredAtEpochMs,
       });
     } catch (error) {
       // The inputs are checked above, so what throws is the spool write: the
@@ -685,28 +704,25 @@ export class TranscriptEventProcessor {
       }
       return;
     }
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) return;
-
-    const lastAssistantMessage = session.lastAssistantMessage ?? '';
-    const requestBody = JSON.stringify({
-      contentSessionId: session.sessionId,
-      last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource,
-      // Lets the worker skip a session in an excluded project; sent only when known.
-      ...(session.cwd ? { cwd: session.cwd } : {}),
-    });
-
+    // The worker's watcher shares the ingest context with observations. HTTP
+    // cannot tell a rejected queue operation from a failed generator kick
+    // after acceptance; the synchronous handoff marks that boundary exactly.
+    let accepted = false;
     try {
-      await workerHttpRequest('/api/sessions/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: requestBody
-      });
-    } catch (error: unknown) {
-      logger.warn('TRANSCRIPT', 'Summary request failed', {
-        error: error instanceof Error ? error.message : String(error)
-      });
+      await ingestSummarize({
+        contentSessionId: session.sessionId,
+        platformSource: session.platformSource,
+        lastAssistantMessage: session.lastAssistantMessage ?? '',
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+      }, undefined, { markHandedOff: () => { accepted = true; } });
+    } catch (error) {
+      if (accepted) {
+        logger.warn('TRANSCRIPT', 'Summary accepted before generator kick failed', {
+          sessionId: session.sessionId,
+        }, error instanceof Error ? error : undefined);
+        return;
+      }
+      throw new TranscriptSummaryError(session.sessionId, error);
     }
   }
 
@@ -722,9 +738,9 @@ export class TranscriptEventProcessor {
     if (!cwd) return;
 
     const context = getProjectContext(cwd);
-    const projectsParam = context.allProjects.join(',');
+    const projectsQuery = projectsQueryString(context.allProjects);
 
-    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const contextUrl = `/api/context/inject?${projectsQuery}&platformSource=${encodeURIComponent(session.platformSource)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
     const resolvedAgentsPath = path.resolve(agentsPath);

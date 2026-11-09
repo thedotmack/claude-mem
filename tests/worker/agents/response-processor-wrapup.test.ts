@@ -68,6 +68,7 @@ import type { DatabaseManager } from '../../../src/services/worker/DatabaseManag
 import { SessionManager } from '../../../src/services/worker/SessionManager.js';
 import type { StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../../fixtures/worker/session-db-without-media.js';
 
 afterAll(() => {
   mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
@@ -102,7 +103,7 @@ function createSession(overrides: Partial<ActiveSession> = {}): ActiveSession {
 
 function createDbManager(result: StorageResult): DatabaseManager {
   const sessionStore = {
-    ensureMemorySessionIdRegistered: () => 'memory-session-456',
+    db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: () => 'memory-session-456',
     getSessionById: () => ({ memory_session_id: 'memory-session-456' }),
     storeObservations: mock(() => result),
   };

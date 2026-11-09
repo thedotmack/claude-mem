@@ -18,7 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
-import { replaceObservationFileIndex } from './observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -34,6 +34,13 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import {
+  createDeliverablesSchema,
+  recordDeliverable as recordDeliverableRow,
+  getDeliverable as getDeliverableRow,
+  type DeliverableRow,
+  type RecordDeliverableInput,
+} from './deliverables.js';
 import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
@@ -55,7 +62,9 @@ import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-st
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
+import { ensureSyncRecoverySchema } from '../sync/SyncRecovery.js';
 import {
   assertCanonicalDecimal,
   incrementCanonicalDecimal,
@@ -228,6 +237,12 @@ function positiveIntegerRowLimit(limit: unknown): number | undefined {
   return Number.isSafeInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
 }
 
+/** The projects whose context an imported row changes: its own and the one it is merged into. */
+function importedRowProjects(row: { project: string; merged_into_project?: string | null }): string[] {
+  return typeof row.merged_into_project === 'string' && row.merged_into_project
+    ? [row.project, row.merged_into_project] : [row.project];
+}
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -302,6 +317,8 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
+    this.ensureCommittedToolUsesTable();
+    this.ensureDeletedSessionCutoffTriggers();
     this.ensureTelegramWrapupsTable();
     this.addDedupTables();
     this.refreshUnicodeTitleNormKeys();
@@ -313,11 +330,13 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureDeliverablesTable();
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
     this.ensureObservationFileIndex();
+    ensureMediaSchema(this.db);
   }
 
   /**
@@ -990,6 +1009,7 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
+    ensureSyncRecoverySchema(this.db);
     this.db.run(SYNC_ENTITY_HEADS_DDL);
     this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
     this.db.run(SYNC_CONTENT_OUTBOX_DDL);
@@ -1004,6 +1024,8 @@ export class SessionStore {
       `);
     }
     this.widenSyncKindCheck('sync_content_outbox', SYNC_CONTENT_OUTBOX_DDL);
+    // Per-kind fair pages must not sort/scan the other kinds' frozen backlog.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sync_content_outbox_kind_pending ON sync_content_outbox(kind, deleted DESC, id)');
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_dead_letter (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2091,6 +2113,19 @@ export class SessionStore {
 
   // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
   // DDL like v51, so fresh and migrating databases converge.
+  /** The deliverables bucket's records (deliverables.ts): CREATE IF NOT EXISTS, no version row, so an older worker sharing the database is unaffected. */
+  private ensureDeliverablesTable(): void {
+    createDeliverablesSchema(this.db);
+  }
+
+  recordDeliverable(input: RecordDeliverableInput): { id: number; inserted: boolean } {
+    return recordDeliverableRow(this.db, input);
+  }
+
+  getDeliverable(id: number): DeliverableRow | null {
+    return getDeliverableRow(this.db, id);
+  }
+
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
@@ -2136,6 +2171,201 @@ export class SessionStore {
       )
     `);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
+  }
+
+  // v73: terminal capture and explicit deletion must both survive transcript replay.
+  private ensureCommittedToolUsesTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS committed_observation_tool_uses (
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        committed_at_epoch_ms INTEGER NOT NULL,
+        PRIMARY KEY (platform_source, content_session_id, tool_use_id)
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS deleted_content_sessions (
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        deleted_at_epoch_ms INTEGER NOT NULL,
+        PRIMARY KEY (platform_source, content_session_id)
+      )
+    `);
+    // Memory IDs are globally unique in sdk_sessions and sync row payloads can
+    // arrive with only this identity, without the original content session ID.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS deleted_memory_sessions (
+        memory_session_id TEXT PRIMARY KEY,
+        deleted_at_epoch_ms INTEGER NOT NULL
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(73, new Date().toISOString());
+  }
+
+  // v74: a deleted session's tombstone is a cutoff, not a permanent block.
+  // Content from before the deletion stays out; new work in the same
+  // conversation (a resumed Claude Code session) recreates the session.
+  // Replaces v73's triggers, which blocked the content session id forever.
+  private ensureDeletedSessionCutoffTriggers(): void {
+    this.db.transaction(() => {
+      for (const v73Trigger of [
+        'prevent_deleted_sdk_session_insert',
+        'prevent_deleted_sdk_session_update',
+        'prevent_deleted_tool_use_insert',
+        'prevent_deleted_tool_use_update',
+      ]) {
+        this.db.run(`DROP TRIGGER IF EXISTS ${v73Trigger}`);
+      }
+      // The trigger closes the race between the caller's preflight and INSERT on
+      // another SQLite connection. createSDKSession stamps started_at_epoch
+      // before its preflight, so a row whose preflight ran before a DELETE that
+      // committed in between is never newer than that deletion.
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS block_pre_deletion_sdk_session_insert
+        BEFORE INSERT ON sdk_sessions
+        WHEN EXISTS (
+          SELECT 1 FROM deleted_content_sessions
+          WHERE platform_source = NEW.platform_source
+            AND content_session_id = NEW.content_session_id
+            AND NEW.started_at_epoch <= deleted_at_epoch_ms
+        ) OR EXISTS (
+          SELECT 1 FROM deleted_memory_sessions
+          WHERE memory_session_id = NEW.memory_session_id
+        )
+        BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+      `);
+      // No row may take a deleted memory identity, and no other row may be
+      // re-keyed into a deleted content identity. A recreated row keeps its
+      // own identity and may still record its new memory session id.
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS block_deleted_sdk_session_rekey
+        BEFORE UPDATE OF memory_session_id, content_session_id, platform_source ON sdk_sessions
+        WHEN EXISTS (
+          SELECT 1 FROM deleted_memory_sessions
+          WHERE memory_session_id = NEW.memory_session_id
+        ) OR (
+          (NEW.content_session_id IS NOT OLD.content_session_id OR NEW.platform_source IS NOT OLD.platform_source)
+          AND EXISTS (
+            SELECT 1 FROM deleted_content_sessions
+            WHERE platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          )
+        )
+        BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+      `);
+      // Media conversion can yield after session resolution. Guard the raw side
+      // index at the write boundary as well as at ingest so another connection's
+      // completed DELETE cannot be undone between a preflight and this INSERT.
+      // Only a session row recreated after the deletion (ids are AUTOINCREMENT,
+      // so the deleted row's id never comes back) may hold raw tool data again.
+      for (const [name, event] of [
+        ['block_pre_deletion_tool_use_insert', 'INSERT'],
+        ['block_pre_deletion_tool_use_update', 'UPDATE'],
+      ]) {
+        this.db.run(`
+          CREATE TRIGGER IF NOT EXISTS ${name}
+          BEFORE ${event} ON tool_uses
+          WHEN EXISTS (
+            SELECT 1 FROM deleted_content_sessions
+            WHERE platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          ) AND NOT EXISTS (
+            SELECT 1 FROM sdk_sessions
+            WHERE id = NEW.session_db_id
+              AND platform_source = NEW.platform_source
+              AND content_session_id = NEW.content_session_id
+          )
+          BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+        `);
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(74, new Date().toISOString());
+    })();
+  }
+
+  hasCommittedToolUse(platformSource: string, contentSessionId: string, toolUseId: string): boolean {
+    if (!contentSessionId || !toolUseId) return false;
+    return this.db.prepare(`
+      SELECT 1 FROM committed_observation_tool_uses
+      WHERE platform_source = ? AND content_session_id = ? AND tool_use_id = ?
+    `).get(normalizePlatformSource(platformSource), contentSessionId, toolUseId) != null;
+  }
+
+  markSessionDeleted(platformSource: string, contentSessionId: string, memorySessionId?: string | null): void {
+    // A conversation can be deleted, resumed and deleted again: the cutoff
+    // moves to the newest deletion, so work between the two stays out too.
+    const deletedAtEpochMs = Date.now();
+    this.db.prepare(`
+      INSERT INTO deleted_content_sessions
+        (platform_source, content_session_id, deleted_at_epoch_ms)
+      VALUES (?, ?, ?)
+      ON CONFLICT(platform_source, content_session_id)
+      DO UPDATE SET deleted_at_epoch_ms = MAX(deleted_at_epoch_ms, excluded.deleted_at_epoch_ms)
+    `).run(normalizePlatformSource(platformSource), contentSessionId, deletedAtEpochMs);
+    if (memorySessionId) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO deleted_memory_sessions
+          (memory_session_id, deleted_at_epoch_ms)
+        VALUES (?, ?)
+      `).run(memorySessionId, deletedAtEpochMs);
+    }
+  }
+
+  isSessionDeleted(platformSource: string, contentSessionId: string): boolean {
+    return this.getSessionDeletedAtEpochMs(platformSource, contentSessionId) !== null;
+  }
+
+  /** When the user last deleted this session, or null if they never did. */
+  getSessionDeletedAtEpochMs(platformSource: string, contentSessionId: string): number | null {
+    const row = this.db.prepare(`
+      SELECT deleted_at_epoch_ms FROM deleted_content_sessions
+      WHERE platform_source = ? AND content_session_id = ?
+    `).get(normalizePlatformSource(platformSource), contentSessionId) as { deleted_at_epoch_ms: number } | null;
+    return row?.deleted_at_epoch_ms ?? null;
+  }
+
+  /**
+   * True when this event belongs to a deleted session and cannot prove it
+   * happened after the deletion: content that existed when the user deleted
+   * the session must never come back. Only a source time (the hook's clock,
+   * a transcript line's timestamp) later than the deletion marks new work in
+   * the same conversation. An event without one stays out.
+   */
+  isBeforeSessionDeletion(
+    platformSource: string,
+    contentSessionId: string,
+    eventOccurredAtEpochMs: number | null | undefined,
+  ): boolean {
+    const deletedAtEpochMs = this.getSessionDeletedAtEpochMs(platformSource, contentSessionId);
+    if (deletedAtEpochMs === null) return false;
+    return !(typeof eventOccurredAtEpochMs === 'number'
+      && Number.isFinite(eventOccurredAtEpochMs)
+      && eventOccurredAtEpochMs > deletedAtEpochMs);
+  }
+
+  /**
+   * Its own transaction, which nests as a savepoint inside the result
+   * transaction: a failure there rolls back the stored result too.
+   */
+  markCommittedToolUses(input: {
+    platformSource: string;
+    contentSessionId: string;
+    toolUseIds: string[];
+  }): void {
+    if (!input.contentSessionId) throw new Error('Committed tool uses require a content session');
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO committed_observation_tool_uses
+      (platform_source, content_session_id, tool_use_id, committed_at_epoch_ms)
+      VALUES (?, ?, ?, ?)
+    `);
+    const platformSource = normalizePlatformSource(input.platformSource);
+    const now = Date.now();
+    this.db.transaction(() => {
+      for (const toolUseId of new Set(input.toolUseIds)) {
+        if (!toolUseId) continue;
+        insert.run(platformSource, input.contentSessionId, toolUseId, now);
+      }
+    })();
   }
 
   isHookSpoolEntryConsumed(entryKey: string): boolean {
@@ -3188,7 +3418,7 @@ export class SessionStore {
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
     const entryId = appendWorkStateEntryRow(this.db, entry);
-    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry', 'additive', { kinds: ['work_state'], workStateLists: [entry.listName] });
     return entryId;
   }
 
@@ -3278,12 +3508,12 @@ export class SessionStore {
       const fileArrayJson = (column: string): string =>
         `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
       const fileConditions = filesList.map(() => {
-        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\'))`;
+        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\'))`;
       });
       if (fileConditions.length > 0) {
         filesList.forEach(file => {
-          // The hydration filter receives literal file paths, like SQLite search.
-          const literal = file.replace(/[\\%_]/g, '\\$&');
+          // Match SQLite search's separator normalization and literal LIKE escaping.
+          const literal = file.replace(/\\/g, '/').replace(/[\\%_]/g, '\\$&');
           params.push(`%${literal}%`, `%${literal}%`);
         });
         additionalConditions.push(`(${fileConditions.join(' OR ')})`);
@@ -3585,11 +3815,17 @@ export class SessionStore {
     project: string,
     userPrompt: string,
     customTitle?: string,
-    platformSource?: string
+    platformSource?: string,
+    /** When the event creating or resolving the session happened at its source; see isBeforeSessionDeletion. */
+    eventOccurredAtEpochMs?: number | null,
   ): number {
+    // Stamped before the deletion preflight: the insert trigger relies on it.
     const now = new Date();
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
+    if (this.isBeforeSessionDeletion(normalizedPlatformSource, contentSessionId, eventOccurredAtEpochMs)) {
+      throw new Error('session_deleted');
+    }
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
     if (customTitle) {
       this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
@@ -3706,13 +3942,23 @@ export class SessionStore {
     return mutation;
   }
 
+  /** Notify only at an owned commit boundary. A caller already inside a
+   * transaction must announce its whole committed operation after it returns;
+   * publishing here could otherwise expose a prompt that later rolls back. */
+  private promptCommitted(reason: string, sessionDbId: number | null): void {
+    if (this.db.inTransaction) return;
+    const session = sessionDbId === null ? null : this.db.prepare('SELECT project FROM sdk_sessions WHERE id = ?')
+      .get(sessionDbId) as { project: string } | null;
+    emitContextInvalidation(session ? { projects: [session.project] } : 'all', reason, 'additive', { kinds: ['prompt'] });
+  }
+
   /**
-   * `createdAtEpochMs` is for a prompt ingested after it was said (a hook
+   * `createdAtEpoch` is for a prompt ingested after it was said (a hook
    * spool entry): it is dated when the producer saw it, so observations
    * spooled after it are attributed to it. Omitted, it is now.
    */
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpochMs?: number): number {
-    const now = new Date(createdAtEpochMs ?? Date.now());
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
+    const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
@@ -3724,6 +3970,7 @@ export class SessionStore {
     `);
 
     const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch, nativePromptId ?? null, nativePromptHash ?? null);
+    this.promptCommitted('saveUserPrompt', resolvedSessionDbId);
     return result.lastInsertRowid as number;
   }
 
@@ -3731,7 +3978,8 @@ export class SessionStore {
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
    */
-  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText, createdAtEpochMs?: number): {
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText,
+    options: { createdAtEpoch?: number; reopenSession?: boolean } = {}): {
     id: number; promptNumber: number; duplicate: boolean;
   } {
     if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
@@ -3741,7 +3989,7 @@ export class SessionStore {
     // Compare the entire cleaned ask, before storage/HTTP truncation. Equal
     // 4,000-character previews must not hide different bodies on a stale retry.
     const promptHash = createHash('sha256').update(stripMemoryTags(identityPromptText).trim()).digest('hex');
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const existing = this.db.prepare(`SELECT id, prompt_number, native_prompt_hash FROM user_prompts
         WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId) as
         { id: number; prompt_number: number; native_prompt_hash: string | null } | null;
@@ -3750,10 +3998,89 @@ export class SessionStore {
         return { id: existing.id, promptNumber: existing.prompt_number, duplicate: true };
       }
       const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
-      this.reopenCompletedSession(sessionDbId);
-      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, createdAtEpochMs);
+      if (options.reopenSession !== false) this.reopenCompletedSession(sessionDbId);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+    if (!result.duplicate) this.promptCommitted('saveNativeUserPrompt', sessionDbId);
+    return result;
+  }
+
+  /**
+   * A prompt read back from an agent's own transcript (setup prompt import).
+   * It joins the session claude-mem's hooks recorded for the same conversation,
+   * keeps the transcript's time, and never reopens a finished session.
+   *
+   * Two copies of one prompt count once:
+   * - a re-scan finds the transcript's native key (`transcript:` prefix + the
+   *   agent's message id, compared with its SHA-256 by saveNativeUserPrompt);
+   * - a hook-recorded row carries no native key, so it is matched by session,
+   *   stored text (or one of `hookTextVariants`, e.g. a slash command's short
+   *   form) and the nearest time within `hookMatchWindowMs`. Each hook row is
+   *   claimed by one transcript prompt at most (`claimedHookRowIds`), so a
+   *   prompt typed twice is still two prompts.
+   * A prompt that is entirely private stores nothing.
+   */
+  importTranscriptUserPrompt(prompt: {
+    platformSource: string; contentSessionId: string; project: string;
+    nativePromptId: string; promptText: string; createdAtEpoch: number;
+    hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+    const text = normalizeStoredPromptText(prompt.promptText);
+    if (!text) return { reason: 'private' };
+    const platformSource = normalizePlatformSource(prompt.platformSource);
+    const session = this.db.prepare(`SELECT id FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
+      .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
+    let sessionDbId = session?.id;
+    if (sessionDbId !== undefined) {
+      const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
+      const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
+        WHERE session_db_id = ? AND native_prompt_id IS NULL
+          AND prompt_text IN (${texts.map(() => '?').join(', ')})
+          AND ABS(created_at_epoch - ?) <= ?
+        ORDER BY ABS(created_at_epoch - ?), id`)
+        .all(sessionDbId, ...texts, prompt.createdAtEpoch, prompt.hookMatchWindowMs, prompt.createdAtEpoch) as Array<{ id: number }>;
+      const hookRow = hookRows.find(row => !prompt.claimedHookRowIds.has(row.id));
+      if (hookRow) {
+        prompt.claimedHookRowIds.add(hookRow.id);
+        return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
+      }
+    } else {
+      const at = new Date(prompt.createdAtEpoch).toISOString();
+      const inserted = this.db.prepare(`INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`)
+        .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
+      sessionDbId = Number(inserted.lastInsertRowid);
+    }
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+      prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
+    return { reason: result.duplicate ? 'already-imported' : 'new' };
+  }
+
+  /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */
+  listHookRecordedPrompts(sinceEpochMs: number): Array<{
+    id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+  }> {
+    return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+      FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+      WHERE up.created_at_epoch >= ? AND s.project != ?
+        AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')
+      ORDER BY up.created_at_epoch, up.id`)
+      .all(DEFAULT_PLATFORM_SOURCE, sinceEpochMs, OBSERVER_SESSIONS_PROJECT) as Array<{
+        id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+      }>;
+  }
+
+  /** Every observation's token fields, streamed in id order (setup Token Savings feeds them to calculateTokenEconomics). */
+  streamObservationTokenFields(): Iterable<{
+    title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+  }> {
+    return streamRows(this.db.prepare(`SELECT title, subtitle, narrative, facts, discovery_tokens FROM observations ORDER BY id`)) as Iterable<{
+      title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+    }>;
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {
@@ -3882,7 +4209,10 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string,
-    options: { skipTitleDedup?: boolean } = {}
+    options: {
+      skipTitleDedup?: boolean;
+      committedToolUses?: { platformSource: string; contentSessionId: string; toolUseIds: string[] };
+    } = {}
   ): { id: number; createdAtEpoch: number; mergedIntoExisting: boolean } {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
@@ -3991,7 +4321,10 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string,
-    options: { skipTitleDedup?: boolean } = {}
+    options: {
+      skipTitleDedup?: boolean;
+      committedToolUses?: { platformSource: string; contentSessionId: string; toolUseIds: string[] };
+    } = {}
   ): {
     observationIds: number[];
     /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
@@ -4004,6 +4337,7 @@ export class SessionStore {
     insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
+    summaryUpdated?: boolean;
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -4079,7 +4413,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = obsStmt.get(
+        const inserted = (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4102,7 +4436,7 @@ export class SessionStore {
           titleNormKey,
           reinforcementSeed.dates,
           reinforcementSeed.lastReinforced
-        ) as { id: number } | null;
+        ) as { id: number }[])[0] ?? null;
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
@@ -4127,37 +4461,115 @@ export class SessionStore {
       }
 
       let summaryId: number | null = null;
+      let summaryUpdated = false;
       if (summary) {
         const rolledUp = rollupObservationFileLists(observations);
         const filesRead = summary.files_read ?? rolledUp.files_read;
         const filesEdited = summary.files_edited ?? rolledUp.files_edited;
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          JSON.stringify(filesRead),
-          JSON.stringify(filesEdited),
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+        const existingSummary = promptNumber
+          ? (this.db.prepare(
+              `SELECT id, request, investigated, learned, completed, next_steps,
+                      files_read, files_edited, notes, discovery_tokens, sync_rev
+               FROM session_summaries
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL
+               ORDER BY id DESC LIMIT 1`
+            ).get(memorySessionId, promptNumber) as {
+              id: number;
+              request: string | null;
+              investigated: string | null;
+              learned: string | null;
+              completed: string | null;
+              next_steps: string | null;
+              files_read: string | null;
+              files_edited: string | null;
+              notes: string | null;
+              discovery_tokens: number | null;
+              sync_rev: string | null;
+            } | undefined)
+          : undefined;
+
+        if (existingSummary) {
+          const mergedRequest = (summary.request && summary.request.trim()) ? summary.request : (existingSummary.request ?? '');
+          const mergedInvestigated = (summary.investigated && summary.investigated.trim()) ? summary.investigated : (existingSummary.investigated ?? '');
+          const mergedLearned = (summary.learned && summary.learned.trim()) ? summary.learned : (existingSummary.learned ?? '');
+          const mergedCompleted = (summary.completed && summary.completed.trim()) ? summary.completed : (existingSummary.completed ?? '');
+          // next_steps describes what is left as of this stop, so the latest value wins even when empty.
+          const mergedNextSteps = summary.next_steps ?? '';
+          const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
+
+          const mergedFilesRead = [...new Set([...parseFileList(existingSummary.files_read), ...filesRead])];
+          const mergedFilesEdited = [...new Set([...parseFileList(existingSummary.files_edited), ...filesEdited])];
+
+          const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
+          const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
+
+          this.db.prepare(`
+            UPDATE session_summaries SET
+              request = ?, investigated = ?, learned = ?, completed = ?, next_steps = ?,
+              files_read = ?, files_edited = ?, notes = ?, discovery_tokens = ?,
+              created_at = ?, created_at_epoch = ?,
+              sync_rev = ?, synced_at = NULL
+            WHERE id = ?
+          `).run(
+            mergedRequest,
+            mergedInvestigated,
+            mergedLearned,
+            mergedCompleted,
+            mergedNextSteps,
+            JSON.stringify(mergedFilesRead),
+            JSON.stringify(mergedFilesEdited),
+            mergedNotes,
+            mergedTokens,
+            timestampIso,
+            timestampEpoch,
+            nextRev,
+            existingSummary.id
+          );
+
+          summary.request = mergedRequest;
+          summary.investigated = mergedInvestigated;
+          summary.learned = mergedLearned;
+          summary.completed = mergedCompleted;
+          summary.next_steps = mergedNextSteps;
+          summary.notes = mergedNotes;
+          summary.files_read = mergedFilesRead;
+          summary.files_edited = mergedFilesEdited;
+
+          summaryId = existingSummary.id;
+          summaryUpdated = true;
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            JSON.stringify(filesRead),
+            JSON.stringify(filesEdited),
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
-      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
+      if (options.committedToolUses?.toolUseIds.length) {
+        this.markCommittedToolUses(options.committedToolUses);
+      }
+      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
     const stored = storeTx();
@@ -4178,7 +4590,7 @@ export class SessionStore {
       const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
       for (const id of observationIds) observationStmt.run(discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
       }
     })();
   }
@@ -4285,6 +4697,57 @@ export class SessionStore {
     const rowMap = new Map(rows.map(r => [r.id, r]));
     const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
     return limit ? ordered.slice(0, limit) : ordered;
+  }
+
+  /**
+   * The ids of every row a semantic search with this scope can return, for
+   * ChromaSync's narrowed filtered fallback (#5091). Each category uses the
+   * joins, project scope and platform clause of its get*ByIds hydration, so no
+   * row the hydration would keep is missing. Chroma's `sqlite_id` repeats
+   * across doc types, so the categories share one list. Null when more than
+   * `maxIds` rows match.
+   */
+  getSearchScopeRowIds(
+    categories: { observations: boolean; sessions: boolean; prompts: boolean },
+    options: { project?: string; projects?: string[]; platformSource?: string },
+    maxIds: number
+  ): number[] | null {
+    const projects = scopedProjects(options);
+    const platformSource = options.platformSource ? normalizePlatformSource(options.platformSource) : undefined;
+    const sources = [
+      categories.observations && { alias: 'o', includeMerged: true,
+        from: 'SELECT o.id FROM observations o LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id' },
+      categories.sessions && { alias: 'ss', includeMerged: true,
+        from: 'SELECT ss.id FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id' },
+      categories.prompts && { alias: 's', includeMerged: false,
+        from: 'SELECT up.id FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id' },
+    ].filter((source): source is { alias: string; includeMerged: boolean; from: string } => !!source);
+
+    const ids = new Set<number>();
+    for (const source of sources) {
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (projects.length > 0) {
+        const scope = projectScopeSql(source.alias, projects, { includeMerged: source.includeMerged });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
+      }
+      if (platformSource) {
+        conditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+        params.push(platformSource);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const statement = this.db.prepare(`${source.from} ${where} LIMIT ?`);
+      let rows: Array<{ id: number }>;
+      try {
+        rows = statement.all(...params, maxIds + 1) as Array<{ id: number }>;
+      } finally {
+        statement.finalize();
+      }
+      for (const row of rows) ids.add(row.id);
+      if (ids.size > maxIds) return null;
+    }
+    return [...ids];
   }
 
   getTimelineAroundTimestamp(
@@ -4605,6 +5068,7 @@ export class SessionStore {
     discovery_tokens: number;
     created_at: string;
     created_at_epoch: number;
+    merged_into_project?: string | null;
   }): { imported: boolean; id: number } {
     // Same exposure as importObservation below: an import row can arrive
     // without a usable session id, and session_summaries.memory_session_id is
@@ -4640,8 +5104,8 @@ export class SessionStore {
       INSERT INTO session_summaries (
         memory_session_id, project, request, investigated, learned,
         completed, next_steps, files_read, files_edited, notes,
-        prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        prompt_number, discovery_tokens, created_at, created_at_epoch, merged_into_project
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -4658,9 +5122,10 @@ export class SessionStore {
       summary.prompt_number,
       summary.discovery_tokens || 0,
       summary.created_at,
-      summary.created_at_epoch
+      summary.created_at_epoch,
+      typeof summary.merged_into_project === 'string' ? summary.merged_into_project : null
     );
-    emitContextInvalidation({ projects: [summary.project] }, 'importSessionSummary');
+    emitContextInvalidation({ projects: importedRowProjects(summary) }, 'importSessionSummary');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
@@ -4683,6 +5148,7 @@ export class SessionStore {
     created_at_epoch: number;
     agent_type?: string | null;
     agent_id?: string | null;
+    merged_into_project?: string | null;
   }): { imported: boolean; id: number } {
     // A row from a legacy or hand-edited export can arrive without a session
     // id, and observations.memory_session_id is NOT NULL. /api/import validates
@@ -4722,8 +5188,8 @@ export class SessionStore {
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
-        created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, created_at_epoch, merged_into_project
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // The row and its observation_files mappings commit together: an import
@@ -4748,13 +5214,14 @@ export class SessionStore {
         obs.agent_type ?? null,
         obs.agent_id ?? null,
         obs.created_at,
-        obs.created_at_epoch
+        obs.created_at_epoch,
+        typeof obs.merged_into_project === 'string' ? obs.merged_into_project : null
       );
       const id = result.lastInsertRowid as number;
       replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
       return id;
     })();
-    emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
+    emitContextInvalidation({ projects: importedRowProjects(obs) }, 'importObservation');
 
     return { imported: true, id: importedId };
   }
@@ -4839,6 +5306,7 @@ export class SessionStore {
       prompt.native_prompt_hash ?? null
     );
 
+    this.promptCommitted('importUserPrompt', sessionDbId);
     return { imported: true, id: result.lastInsertRowid as number };
   }
 }

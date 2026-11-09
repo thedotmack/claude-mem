@@ -22,9 +22,11 @@ import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { readObserverHealth } from '../../../../shared/observer-health.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 
 // Chroma doc_type per content kind. Observation and summary id spaces overlap,
@@ -35,13 +37,19 @@ const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
   summary: 'session_summary',
   prompt: 'user_prompt',
 };
+import { withObservationMedia } from '../../../media/feed.js';
+
+// The MCP get_observations schema advertises `number | string` ids, so array
+// elements may arrive as numeric strings; non-numeric strings stay invalid.
+const numericStringToNumber = (item: unknown): unknown =>
+  typeof item === 'string' && /^\d+$/.test(item.trim()) ? Number(item.trim()) : item;
 
 const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.map(numericStringToNumber);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(numericStringToNumber);
     } catch {
       // not JSON, fall through to comma split
     }
@@ -64,8 +72,16 @@ const stringArrayLike = z.preprocess((value) => {
   return value;
 }, z.array(z.string()));
 
+// Layer 3 of progressive disclosure: selected records by explicit id. The id
+// array is bounded because every id is a full row (narrative, facts, concepts,
+// file lists) on the way back — an unbounded list is a way to page the whole
+// table in one request. 100 matches the ceiling the adapters already advertise
+// (`pi-extension` maxItems, `recall-mcp-server` maxItems) and the server
+// `/v1/observations/batch` schema.
+const OBSERVATIONS_BATCH_MAX_IDS = 100;
+
 const observationsBatchSchema = z.object({
-  ids: integerArrayLike,
+  ids: integerArrayLike.pipe(z.array(z.number().int()).max(OBSERVATIONS_BATCH_MAX_IDS)),
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
@@ -84,6 +100,13 @@ const sdkSessionsBatchSchema = z.object({
 // caller may hold either (search/list hands back the former, a transcript or an
 // observation ref the latter). Required and non-empty on purpose — this route
 // must never be a way to page the whole table of raw payloads.
+//
+// The array is capped for the same reason: each id is a separate lookup, and
+// `limit` only trims the rows that come back (`getToolUsesByIds` applies its own
+// default when `limit` is omitted). 100 matches the observation batch ceiling
+// and the adapters' advertised `maxItems`.
+const TOOL_USES_BATCH_MAX_IDS = 100;
+
 const toolUsesBatchSchema = z.object({
   ids: z.preprocess((value) => {
     if (Array.isArray(value)) return value;
@@ -97,7 +120,7 @@ const toolUsesBatchSchema = z.object({
       return value.split(',').map((part) => part.trim()).filter(Boolean);
     }
     return value;
-  }, z.array(z.union([z.number().int(), z.string()]))),
+  }, z.array(z.union([z.number().int(), z.string()])).max(TOOL_USES_BATCH_MAX_IDS)),
   limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
   contentSessionId: z.string().optional(),
@@ -267,7 +290,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(observation);
+    // Same media projection as the paged feed and SSE (media/feed.ts).
+    res.json(withObservationMedia(observation, true));
   });
 
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
@@ -283,8 +307,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projectsParam = req.query.projects as string | undefined;
-    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const listedProjects = parseProjectList(req.query.projects);
+    const projects = listedProjects.length > 0 ? listedProjects : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
@@ -308,7 +332,7 @@ export class DataRoutes extends BaseRouteHandler {
     const readKeys = projectReadKeysFor(store, project, projects);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, projects: readKeys, platformSource });
 
-    res.json(observations);
+    res.json(observations.map(observation => withObservationMedia(observation, true)));
   });
 
   /**
@@ -480,17 +504,26 @@ export class DataRoutes extends BaseRouteHandler {
     return null;
   }
 
+  private chromaCleanupTail: Promise<void> = Promise.resolve();
+
   /**
    * Rows are committed gone — drop their fragments from the vector index too
    * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
    * them. Best-effort and in the background: rows are cleaned one at a time so
    * a large session delete doesn't flood chroma-mcp, and a Chroma failure is
    * logged per row and never blocks or undoes the delete.
+   *
+   * The cleanups also serialize process-wide (#5495): a delete burst used to
+   * start one unawaited loop per request, and thousands of concurrent
+   * `chroma_get_documents` reads piled up on chroma-mcp's single stdio
+   * channel — live sync, health checks and search all waited behind them for
+   * hours. Each request still returns immediately; the cleanups themselves
+   * take turns on one tail, so exactly one batch is ever in flight.
    */
   private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
     const chromaSync = this.dbManager.getChromaSync();
     if (!chromaSync || rows.length === 0) return;
-    void (async () => {
+    const run = async (): Promise<void> => {
       for (const row of rows) {
         try {
           await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
@@ -498,7 +531,8 @@ export class DataRoutes extends BaseRouteHandler {
           logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
         }
       }
-    })();
+    };
+    this.chromaCleanupTail = this.chromaCleanupTail.then(run, run);
   }
 
   /** Production deletion surface: safety check and row delete for a single content row. */
@@ -617,7 +651,9 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Delete one session and everything captured in it. A session is identified
+   * Delete one session and its indexed rows. Bucket copies are retained here:
+   * another session may have copied one before its database row is recorded.
+   * A session is identified
    * by (platform_source, content_session_id): the same content id can exist
    * under two hosts. Sync-safe like the per-row deletes: every local child row
    * is tombstoned for cloud sync, and the session row is removed only after its
@@ -633,76 +669,78 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = normalizePlatformSource(rawPlatformSource);
 
     const store = this.dbManager.getSessionStore();
-    const sessionRow = store.db.prepare(`
-      SELECT id, memory_session_id
-      FROM sdk_sessions
-      WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
-    `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
+    // Claim the SQLite writer lock before reading children. Otherwise another
+    // connection can add a remote child after preflight and the session DELETE
+    // would cascade it without a sync tombstone.
+    const deleted = store.db.transaction(() => {
+      const sessionRow = store.db.prepare(`
+        SELECT id, memory_session_id
+        FROM sdk_sessions
+        WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
+      `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
 
-    if (!sessionRow) {
-      this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
-      return;
-    }
-
-    // Deleting a live session would cascade its pending work out from under
-    // the running generator.
-    if (this.sessionManager.getSession(sessionRow.id)) {
-      res.status(409).json({ error: 'session is still active; delete it after it ends' });
-      return;
-    }
-
-    // Rows synced from another device belong to that device: the FK cascade
-    // would drop them here without a tombstone. Refuse instead.
-    const remoteChildren = store.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
-        + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
-        + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
-    `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
-    if (remoteChildren.n > 0) {
-      res.status(409).json({
-        error: 'session holds memories synced from another device; delete those on that device first',
-        remoteItemCount: remoteChildren.n,
-      });
-      return;
-    }
-
-    type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
-    const childRows: ChildRow[] = [];
-
-    if (sessionRow.memory_session_id) {
-      const observations = store.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
-      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
-
-      const summaries = store.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
-      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
-    }
-
-    const prompts = store.db.prepare(
-      `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
-    ).all(sessionRow.id) as Array<{ id: string }>;
-    childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
-
-    const cloudSync = this.dbManager.getCloudSync();
-
-    // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
-    for (const row of childRows) {
-      const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
-      if (!check.ok) {
-        res.status(check.status).json({ error: check.error });
+      if (!sessionRow) {
+        this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
         return;
       }
-    }
 
-    const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
-    // One transaction for the whole session: queueDelete's own transaction
-    // nests as a savepoint, so a failure part-way rolls back every tombstone
-    // and row delete instead of leaving a half-deleted session.
-    store.db.transaction(() => {
+      // Deleting a live session would cascade its pending work out from under
+      // the running generator.
+      if (this.sessionManager.getSession(sessionRow.id)) {
+        res.status(409).json({ error: 'session is still active; delete it after it ends' });
+        return;
+      }
+
+      // Rows synced from another device belong to that device: the FK cascade
+      // would drop them here without a tombstone. Refuse instead.
+      const remoteChildren = store.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
+      `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
+      if (remoteChildren.n > 0) {
+        res.status(409).json({
+          error: 'session holds memories synced from another device; delete those on that device first',
+          remoteItemCount: remoteChildren.n,
+        });
+        return;
+      }
+
+      type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+      const childRows: ChildRow[] = [];
+
+      if (sessionRow.memory_session_id) {
+        const observations = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
+
+        const summaries = store.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
+        ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+        childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
+      }
+
+      const prompts = store.db.prepare(
+        `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
+      ).all(sessionRow.id) as Array<{ id: string }>;
+      childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
+
+      const cloudSync = this.dbManager.getCloudSync();
+
+      // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
+      for (const row of childRows) {
+        const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
+        if (!check.ok) {
+          res.status(check.status).json({ error: check.error });
+          return;
+        }
+      }
+
+      const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
+      // queueDelete's own transaction nests as a savepoint, so a failure
+      // part-way rolls back every tombstone and row delete.
       for (const row of childRows) {
         this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
         if (row.kind === 'observation') deletedCounts.observations++;
@@ -714,14 +752,28 @@ export class DataRoutes extends BaseRouteHandler {
       deletedCounts.toolUses = store.db.prepare(
         `DELETE FROM tool_uses WHERE session_db_id = ? OR (content_session_id = ? AND platform_source = ?)`
       ).run(sessionRow.id, contentSessionId, platformSource).changes;
+      const deliverableReferencesRemoved = store.db.prepare(`
+        SELECT COUNT(*) AS n FROM deliverables
+        WHERE content_session_id = ? AND platform_source = ?
+      `).get(contentSessionId, platformSource) as { n: number };
+      store.db.prepare(`
+        DELETE FROM deliverables WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.db.prepare(`
+        DELETE FROM committed_observation_tool_uses
+        WHERE content_session_id = ? AND platform_source = ?
+      `).run(contentSessionId, platformSource);
+      store.markSessionDeleted(platformSource, contentSessionId, sessionRow.memory_session_id);
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
-    })();
+      return { childRows, deletedCounts, deliverableReferencesRemoved: deliverableReferencesRemoved.n };
+    }).immediate();
+    if (!deleted) return;
     emitContextInvalidation('all', 'delete-session', 'removal');
-    this.scheduleChromaRowCleanup(childRows);
+    this.scheduleChromaRowCleanup(deleted.childRows);
 
     // Only after the delete committed: open viewer tabs drop the session live.
     this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
-    res.json({ success: true, platformSource, contentSessionId, deletedCounts });
+    res.json({ success: true, platformSource, contentSessionId, deletedCounts: deleted.deletedCounts, deliverableReferencesRemoved: deleted.deliverableReferencesRemoved });
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -730,7 +782,16 @@ export class DataRoutes extends BaseRouteHandler {
     // #2756 — additive: sessions currently parked in waitForSlot, never a
     // breaking change to existing isProcessing/queueDepth consumers.
     const parkedSessions = getParkedSlotWaiterCount();
-    res.json({ isProcessing, queueDepth, parkedSessions });
+    // #5374 — additive: the observer health ledger's last successful store,
+    // so a silently stalled pipeline is visible while isProcessing and
+    // /api/health keep reporting green (one installation went 26 h with no
+    // saves behind an "ok" health check).
+    const lastSuccessfulStoreAt = readObserverHealth()?.lastSuccessAt ?? null;
+    // #5405 — additive: sessions the response-stall pacer abandoned, with the
+    // messages they hold, so a stuck-looking queue can be told apart from a
+    // busy one. Reporting only — nothing here resumes or discards them.
+    const abandonedStallSessions = this.sessionManager.getAbandonedStallSessions();
+    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
@@ -902,6 +963,9 @@ export class DataRoutes extends BaseRouteHandler {
             concepts: safeParseJson(obs.concepts),
             files_read: safeParseJson(obs.files_read),
             files_modified: safeParseJson(obs.files_modified),
+            // Keep the merge target so target-scoped semantic search finds the row.
+            merged_into_project: typeof obs.merged_into_project === 'string' && obs.merged_into_project
+              ? obs.merged_into_project : null,
           };
 
           await chromaSync.syncObservation(

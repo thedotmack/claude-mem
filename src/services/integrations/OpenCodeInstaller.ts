@@ -384,52 +384,6 @@ export function removeContextBlockFromAgentsMd(): boolean {
   }
 }
 
-export function checkOpenCodeStatus(): number {
-  console.log('\nClaude-Mem OpenCode Integration Status\n');
-
-  const configDirectory = getOpenCodeConfigDirectory();
-  const pluginPath = getInstalledPluginPath();
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Plugin: ${pluginPath}`);
-  console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Context: injected by the plugin into each request's system prompt`);
-  if (existsSync(agentsMdPath) && readFileSync(agentsMdPath, 'utf-8').includes(CONTEXT_TAG_OPEN)) {
-    console.log(`  Leftover claude-mem block from an older install in ${agentsMdPath}`);
-    console.log(`  (shown in every OpenCode project): re-run the install to remove it`);
-  }
-  console.log('');
-
-  console.log(`MCP server (opencode.json):`);
-  try {
-    if (existsSync(getOpenCodeConfigPath())) {
-      const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8')) as OpenCodeConfig;
-      const mcpEntry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
-      if (mcpEntry && typeof mcpEntry === 'object') {
-        const command = (mcpEntry as { command?: unknown }).command;
-        console.log(`  Registered: yes`);
-        console.log(`  Command: ${Array.isArray(command) ? command.join(' ') : 'unknown'}`);
-      } else {
-        console.log(`  Registered: no`);
-      }
-    } else {
-      console.log(`  Registered: no (${getOpenCodeConfigPath()} does not exist)`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`  Registered: unknown (could not read config: ${message})`);
-  }
-
-  console.log('');
-  return 0;
-}
-
 export async function installOpenCodeIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem for OpenCode...\n');
 

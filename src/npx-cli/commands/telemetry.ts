@@ -43,7 +43,7 @@ const COLLECTED_FIELDS = [
   'has_summary      whether a compression produced a summary',
   'is_update        whether an install was an update',
   'interactive      whether the installer ran in a TTY',
-  'provider_source  how the installer chose the provider (flag / default / persisted / prompt)',
+  'provider_source  how the installer chose the provider (flag / default / persisted / prompt / browser)',
   'phase            installer OAuth pairing phase (login / enrollment / deferred)',
   'install_method   npm / bun / pnpm / yarn (launcher of the CLI)',
   'bun_version / uv_version / claude_code_version',

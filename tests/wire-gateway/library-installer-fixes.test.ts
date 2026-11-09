@@ -167,7 +167,7 @@ describe('the MCP server\'s Node under npx (P2)', () => {
     expect(libraryChildEnvironment({ PATH: '/usr/bin' }, '/opt/node/bin/node')[INSTALLER_NODE_PATH_ENV]).toBe('/opt/node/bin/node');
     const result = runScenario('copilot-mcp-node-under-npx', { [INSTALLER_NODE_PATH_ENV]: '/opt/node/bin/node' });
     expect(result.exitCodes).toEqual([0]);
-    expect(JSON.parse(result.files.mcp!).servers['claude-mem'].command).toBe('/opt/node/bin/node');
+    expect(JSON.parse(result.files.mcp!).mcpServers['claude-mem'].command).toBe('/opt/node/bin/node');
   });
 
   it('without the npx parent, the installing process\'s own runtime is used, as before', () => {

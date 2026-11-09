@@ -26,10 +26,11 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { isWindowsNativeExecutable } from './spawn.js';
+import { isCurrentDirectoryCandidate, isWindowsNativeExecutable, windowsWhereExecutablePath } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
+import { withNpmClaudeExe } from './windows-npm-claude.js';
 
 /**
  * How long to wait for a probe (`--version` / capability) before giving up (ms).
@@ -58,13 +59,17 @@ export const CAPABILITY_PROBE_ARGS = ['--permission-mode', 'dontAsk', '--version
  * Successful resolutions are cached briefly: findClaudeExecutable() runs once
  * per SDK query, and each cold resolution costs one subprocess spawn per
  * installed candidate. Failures are never cached, so a user who updates their
- * CLI is picked up on the next observation without a worker restart.
+ * CLI is picked up on the next observation without a worker restart. A cached
+ * resolution only answers for the CLAUDE_CODE_PATH it was made under, so
+ * changing that setting takes effect on the next call too.
  */
 const RESOLUTION_CACHE_TTL_MS = 15 * 60_000;
 
 interface CachedResolution {
   path: string;
   version: string;
+  /** The CLAUDE_CODE_PATH setting this was resolved under ('' when discovered). */
+  configuredSetting: string;
   expiresAtMs: number;
 }
 
@@ -287,7 +292,10 @@ function discoverCandidates(): string[] {
     // after dedupe below.
     for (const name of ['claude', 'claude.cmd']) {
       try {
-        const output = _internals.execFileSync('where.exe', [name], {
+        // where.exe itself must come from System32, and its results exclude
+        // the current directory — hooks run with the user's project as cwd,
+        // where a planted claude.exe would otherwise be found and spawned.
+        const output = _internals.execFileSync(windowsWhereExecutablePath(), [name], {
           encoding: 'utf8',
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'ignore'],
@@ -298,12 +306,17 @@ function discoverCandidates(): string[] {
         // path does not exist (#4694, #3865). Keep only lines that resolve on
         // disk — a garbled candidate would only die at the probe with ENOENT.
         candidates.push(
-          ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) => _internals.existsSync(line)),
+          ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+            .filter((line) => !isCurrentDirectoryCandidate(line))
+            .filter((line) => _internals.existsSync(line)),
         );
       } catch {
         // Not found via this lookup — try the next discovery source.
       }
     }
+    // A global npm install's PATH hits are shims the SDK can't spawn: swap in
+    // the package's own claude.exe and drop the extension-less sh script.
+    candidates.splice(0, candidates.length, ...withNpmClaudeExe(candidates, (path) => _internals.existsSync(path)));
     // The native installer puts the CLI at ~/.local/bin/claude.exe (and the
     // legacy local install at ~/.claude/local/claude.exe), which may not be on
     // the worker's PATH at all — or where.exe may only report garbled lines
@@ -412,12 +425,18 @@ function updateInstructions(): string {
  * @throws {Error} when no Claude CLI compatible with claude-mem can be found
  */
 export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
-  if (cachedResolution && cachedResolution.expiresAtMs > Date.now() && _internals.existsSync(cachedResolution.path)) {
+  const settings = _internals.loadSettings();
+  const configuredSetting = settings.CLAUDE_CODE_PATH || '';
+
+  if (
+    cachedResolution &&
+    cachedResolution.configuredSetting === configuredSetting &&
+    cachedResolution.expiresAtMs > Date.now() &&
+    _internals.existsSync(cachedResolution.path)
+  ) {
     return cachedResolution.path;
   }
   cachedResolution = null;
-
-  const settings = _internals.loadSettings();
 
   // --- 1. Explicit configured path ----------------------------------------
   if (settings.CLAUDE_CODE_PATH) {
@@ -441,6 +460,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       cachedResolution = {
         path: configuredPath,
         version: probe.version,
+        configuredSetting,
         expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
       };
       return configuredPath;
@@ -551,6 +571,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     cachedResolution = {
       path: winner.path,
       version: winner.version,
+      configuredSetting,
       expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
     };
     return winner.path;

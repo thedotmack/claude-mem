@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-it('retrieves delayed observations and a Stop summary on their capture day', async () => {
+it('retains capture timestamps on fresh live handoffs and their stored results', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'hook-spool-timestamps-'));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;

@@ -1,11 +1,11 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 import {
@@ -68,7 +68,7 @@ export function readWindsurfRegistry(): WindsurfProjectRegistry {
 export function writeWindsurfRegistry(registry: WindsurfProjectRegistry): void {
   const dir = path.dirname(WINDSURF_REGISTRY_FILE);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(WINDSURF_REGISTRY_FILE, JSON.stringify(registry, null, 2));
+  writeJsonFileAtomic(WINDSURF_REGISTRY_FILE, registry);
 }
 
 export function registerWindsurfProject(workspacePath: string): void {
@@ -92,7 +92,6 @@ export function unregisterWindsurfProject(workspacePath: string): void {
 export function writeWindsurfContextFile(workspacePath: string, context: string): void {
   const rulesDir = path.join(workspacePath, '.windsurf', 'rules');
   const rulesFile = path.join(rulesDir, 'claude-mem-context.md');
-  const tempFile = `${rulesFile}.tmp`;
 
   mkdirSync(rulesDir, { recursive: true });
 
@@ -111,8 +110,7 @@ ${context}
       '\n\n*[Truncated — use MCP search for full history]*\n';
   }
 
-  writeFileSync(tempFile, content);
-  renameSync(tempFile, rulesFile);
+  writeTextFileAtomic(rulesFile, content);
 }
 
 /**
@@ -197,11 +195,10 @@ Next steps:
 
 /** Ask a running worker for this workspace's context; true when it was written to the rules file. */
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<boolean> {
-  const port = getWorkerPort();
   const projectName = getProjectContext(workspaceRoot).primary;
   console.log(`  Generating initial context...`);
   try {
-    return await fetchWindsurfContextFromWorker(port, projectName, workspaceRoot);
+    return await fetchWindsurfContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
     logger.debug('WORKER', 'Worker not running during install', {}, error instanceof Error ? error : new Error(String(error)));
     return false;
@@ -209,11 +206,10 @@ async function setupWindsurfProjectContext(workspaceRoot: string): Promise<boole
 }
 
 async function fetchWindsurfContextFromWorker(
-  port: number,
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const workerUrl = `http://${formatHostForUrl(getWorkerHost())}:${port}`;
+  const workerUrl = getWorkerBaseUrl();
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 

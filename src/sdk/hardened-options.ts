@@ -102,7 +102,8 @@ export const OBSERVER_DISALLOWED_TOOLS = [
 /**
  * The Observer thinking policy for one generation. `disabled` is the shipped
  * default; `'omit'` (the sentinel) drops the field from the request entirely;
- * an `{ type: 'enabled', budgetTokens }` object passes through verbatim.
+ * `{ type: 'adaptive' }` and an `{ type: 'enabled', budgetTokens }` object pass
+ * through verbatim.
  * Behavior-only in every case — none of these touch the lockdown boundary.
  */
 export type ObserverThinkingOption = Options['thinking'] | 'omit';
@@ -116,18 +117,26 @@ export const DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS = 1024;
 
 /**
  * Parse the `CLAUDE_MEM_OBSERVER_THINKING` setting
- * (`disabled | enabled[:budget] | omit`, case-insensitive). The empty/absent
+ * (`disabled | adaptive | enabled[:budget] | omit`, case-insensitive). Models
+ * from Claude Haiku 5.5 on accept only adaptive thinking and reject an
+ * `enabled` budget with HTTP 400, so `adaptive` is how they think. The empty/absent
  * value parses as `disabled` — the historical behavior — and an unrecognized
  * value falls back to `disabled` with a warn rather than guessing (#4732).
  */
 export function resolveObserverThinkingOption(raw: string | undefined): ObserverThinkingOption {
   const value = (raw ?? '').trim().toLowerCase();
   if (value === 'omit') return 'omit';
+  if (value === 'adaptive') return { type: 'adaptive' };
   if (value === 'enabled' || value.startsWith('enabled:')) {
     const budgetRaw = value.slice('enabled:'.length);
     const budget = parseInt(budgetRaw, 10);
-    if (budgetRaw !== '' && Number.isFinite(budget) && budget > 0) {
+    if (budgetRaw !== '' && Number.isFinite(budget) && budget >= DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS) {
       return { type: 'enabled', budgetTokens: budget };
+    }
+    if (budgetRaw !== '' && Number.isFinite(budget) && budget > 0) {
+      // The API rejects a smaller budget with a 400 on every request.
+      logger.warn('SDK', `Raising the CLAUDE_MEM_OBSERVER_THINKING budget "${budgetRaw}" to the API minimum ${DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS}`);
+      return { type: 'enabled', budgetTokens: DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS };
     }
     if (budgetRaw !== '') {
       logger.warn('SDK', `Ignoring the non-positive CLAUDE_MEM_OBSERVER_THINKING budget "${budgetRaw}"; using ${DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS}`);
@@ -135,7 +144,7 @@ export function resolveObserverThinkingOption(raw: string | undefined): Observer
     return { type: 'enabled', budgetTokens: DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS };
   }
   if (value !== '' && value !== 'disabled') {
-    logger.warn('SDK', `Ignoring unrecognized CLAUDE_MEM_OBSERVER_THINKING value "${raw}"; keeping thinking disabled (supported: disabled | enabled[:budget] | omit)`);
+    logger.warn('SDK', `Ignoring unrecognized CLAUDE_MEM_OBSERVER_THINKING value "${raw}"; keeping thinking disabled (supported: disabled | adaptive | enabled[:budget] | omit)`);
   }
   return { type: 'disabled' };
 }

@@ -6,6 +6,7 @@ import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 const mockMode = {
   name: 'code',
@@ -101,7 +102,7 @@ describe('OpenAICompatibleProvider init response', () => {
     dbManager = {
       getSessionStore: () => ({
         storeObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
+        db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: mock(() => {}),
         updateMemorySessionId: mock(() => {}),
       }),
       getChromaSync: () => ({

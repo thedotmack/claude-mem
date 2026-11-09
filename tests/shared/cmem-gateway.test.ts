@@ -335,6 +335,22 @@ describe('cmem-gateway', () => {
   });
 
   describe('one-time notice marker', () => {
+    it('allows exactly one claim across independent hook processes', async () => {
+      const modulePath = join(process.cwd(), 'src/shared/cmem-gateway.ts');
+      const script = `const { markProFallbackNoticeShown } = await import(${JSON.stringify(modulePath)});
+        console.log(JSON.stringify(markProFallbackNoticeShown(process.argv[1])));`;
+      const results = await Promise.all(Array.from({ length: 8 }, async () => {
+        const child = Bun.spawn([process.execPath, '-e', script, tempDir], {
+          env: { ...process.env, DO_NOT_TRACK: '1' }, stdout: 'pipe', stderr: 'pipe',
+        });
+        const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+        expect(await child.exited).toBe(0);
+        return stdout.trim() === 'true';
+      }));
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(markProFallbackNoticeShown(tempDir)).toBe(false);
+    }, 30_000);
+
     it('starts unshown, becomes shown after marking', () => {
       expect(hasShownProFallbackNotice(tempDir)).toBe(false);
       markProFallbackNoticeShown(tempDir);

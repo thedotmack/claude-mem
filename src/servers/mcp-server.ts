@@ -1,3 +1,14 @@
+/**
+ * The MCP server your agent searches memory through.
+ *
+ * Its core is the three-step mem-search workflow: `search` for a compact
+ * index, `timeline` for what happened around a result, `get_observations`
+ * for full details of only the IDs that matter. It also offers code
+ * navigation (smart_*), saving a note on purpose (save_memory) and work
+ * state. The memory tools answer by calling the worker over HTTP
+ * (callWorker in mcp-tool-table.ts); the smart_* code tools read files in
+ * the workspace directly.
+ */
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -15,16 +26,15 @@ import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-loca
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { selectRuntime } from '../services/hooks/runtime-selector.js';
-import { ensureWorkerConnection, registerClaudeMemTools } from './mcp-tool-table.js';
+import { ensureWorkerConnection, MCP_PLUGIN_ROOT, registerClaudeMemTools } from './mcp-tool-table.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
 import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
 /**
  * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
- * `getCwd` returns the project directory of the request carrying a tool call, resolved
- * for every call, so the project-scoped tools see the caller's project. Without it they
- * use process.cwd().
+ * `getCwd` returns the HTTP request's project directory. Stdio asks the client roots/list,
+ * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
   const server = new Server(
@@ -177,6 +187,7 @@ async function main() {
 async function mainHttp(options: McpHttpOptions) {
   const handle = await startMcpHttpServer({
     ...options,
+    pluginRoot: options.pluginRoot ?? MCP_PLUGIN_ROOT,
     originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
     createServer: createMcpServer,
   });

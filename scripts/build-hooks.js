@@ -103,6 +103,11 @@ const CONTEXT_READ_WORKER = {
   source: 'src/services/context/context-read-worker.ts'
 };
 
+const WORK_VIEW_READ_WORKER = {
+  name: 'work-view-read-worker',
+  source: 'src/services/work-view/work-view-read-worker.ts'
+};
+
 const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
@@ -123,6 +128,27 @@ const ENSURE_LAUNCHER = {
   name: 'ensure-launcher',
   source: 'src/launcher/ensure-launcher.ts'
 };
+
+// Claude Code mod (a hooks module named by `modules` in plugin/hooks/hooks.json):
+// at the configured share of the context window, Claude saves its work state,
+// then /clear runs and "continue" is sent.
+const AUTO_CLEAR_MOD = {
+  source: 'src/mods/auto-clear/register.ts',
+  outfile: 'plugin/hooks/auto-clear.js'
+};
+
+// A hooks module runs with no Node: no require, no node: imports, and it must
+// export `register`. vm.Script cannot parse an ES module, so check the text.
+function assertModBundle(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  if (!/^export\s*\{[^}]*\bregister\b[^}]*\}/m.test(content) && !/^export\s+(const|function)\s+register\b/m.test(content)) {
+    throw new Error(`${filePath} does not export register. Claude Code would load no hooks from it.`);
+  }
+  const nodeImport = content.match(/\brequire\(|from\s+["']node:|from\s+["'](fs|os|path|child_process)["']/);
+  if (nodeImport) {
+    throw new Error(`${filePath} reaches for Node (${nodeImport[0]}). A hooks module has no Node APIs: keep src/mods/ free of Node imports.`);
+  }
+}
 
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
@@ -161,8 +187,8 @@ const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
 const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
 
 // PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
-// timeline, plus the tools whose calls the memory-search handler inspects.
-const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+// timeline (read_file is Grok Build's read tool), plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^read_file$|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
 
 export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
@@ -186,9 +212,10 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     // the installer-prepared copies (#4763).
     requireDependencies: true,
   });
-  const codexHookPair = (tail) => ({
+  const codexHookPair = (tail, entryOptions = {}) => ({
     command: codexHook(tail),
     commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+    ...entryOptions,
   });
 
   return {
@@ -237,9 +264,21 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        // Observation capture stays synchronous so a delayed event cannot cross
+        // turn boundaries. Why 5 s: the hook must fit wrapper startup, bundle
+        // load, the 2 s server attempt (SERVER_OBSERVATION_TIMEOUT_MS in
+        // src/cli/handlers/observation.ts) and the local spool write. Measured
+        // on an Apple Silicon Mac (2026-10-25, worker runtime, spool path):
+        // ~0.25-0.29 s warm, ~0.46 s on the first run. So 5 s leaves ~2.5 s of
+        // headroom after the server attempt. Windows (commandWindows) cold
+        // start was not measured. Change both values together.
+        'PostToolUse.0.0': codexHookPair(
+          ['hook', 'codex', 'observation'],
+          { timeout: 5 },
+        ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
+        'SubagentStart.0.0': codexHookPair(['hook', 'codex', 'subagent-context']),
       },
     },
     'plugin/.mcp.json': {
@@ -476,7 +515,18 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // Native decoder must remain external and be installed for each host.
+        // https://sharp.pixelplumbing.com/install/#bundlers
+        'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
+        // better-auth stays external in the bundles below (~3.7MB), so the
+        // worker's /api/auth/* routes (Pro sign-in) resolve it from
+        // plugin/node_modules at request time — the same pattern as sharp.
+        // Without these entries a plugin install has no better-auth at all
+        // and every auth request 500s with "Cannot find module 'better-auth'"
+        // (#5453).
+        'better-auth': packageJson.dependencies['better-auth'],
+        '@better-auth/api-key': packageJson.dependencies['@better-auth/api-key'],
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -506,6 +556,12 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
+        // Exact, not a range: tree-sitter-delphi has one maintainer and one
+        // published version, and its package.json points at a repository that
+        // does not exist (the sources match github.com/sammedhi/tree-sitter-delphi).
+        // Its C sources are compiled and loaded whenever a Pascal file is parsed,
+        // so a new version must arrive as a reviewed bump, never through a range.
+        'tree-sitter-delphi': '0.1.0',
         'shell-quote': '1.9.0',
       },
       // The server's embedder, about 300 MB, which only server mode runs. The
@@ -517,12 +573,12 @@ async function buildHooks() {
       // from the bundles below — so a server needs them in the plugin's own
       // runtime closure or the lazy path dies with "Cannot find module
       // 'onnxruntime-node'".
-      // sharp is deliberately NOT declared here: it is a hard dependency of
-      // @huggingface/transformers, so it installs and hoists into
-      // plugin/node_modules with it — and declaring it directly would trip
-      // scripts/check-postinstall-allowlist.js (sharp carries an `install`
-      // script), which prepublishOnly enforces. It is still marked external in
-      // the bundles below so the trio resolves at runtime, never at build time.
+      // sharp is declared above as a direct dependency (the media decoder);
+      // @huggingface/transformers depends on it too and shares the hoisted copy
+      // in plugin/node_modules when their ranges overlap. sharp 0.35
+      // ships no install/preinstall/postinstall script, so it passes
+      // scripts/check-postinstall-allowlist.js. It is still marked external in
+      // the bundles below so it resolves at runtime, never at build time.
       optionalDependencies: {
         '@huggingface/transformers': '^4.2.0',
       },
@@ -597,6 +653,7 @@ async function buildHooks() {
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'sharp',
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
@@ -607,13 +664,15 @@ async function buildHooks() {
         // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
         // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
         // inlines that dynamic-import target into the worker bundle, dragging in the full
-        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
-        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
-        // and the route handler already wraps the import in try/catch → graceful 500).
-        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
+        // better-auth library (kysely, oauth, nanoid, …). Keeping it external strips
+        // the dead weight from worker-service.cjs. The routes DO exercise it (Pro
+        // sign-in), so plugin/package.json ships better-auth + @better-auth/api-key
+        // (see the generated manifest above) and the imports resolve from
+        // plugin/node_modules. See #2584, #5453.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
+        'better-auth/db/migration',
         '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
@@ -662,7 +721,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite', 'bun:ffi', 'cohere-ai', 'ollama', '@chroma-core/default-embed', 'onnxruntime-node',
-        'better-auth', 'better-auth/node', 'better-auth/plugins', '@better-auth/api-key',
+        'better-auth', 'better-auth/node', 'better-auth/plugins', 'better-auth/db/migration', '@better-auth/api-key',
         ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
@@ -678,6 +737,30 @@ async function buildHooks() {
       }
     });
     assertBundleIntegrity(`${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`);
+
+    await build({
+      entryPoints: [WORK_VIEW_READ_WORKER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+    assertBundleIntegrity(`${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`);
 
     // Advisory only — a sudden jump usually means a heavy server-only dependency
     // (better-auth, kysely, a database driver) leaked into the worker bundle via a
@@ -722,6 +805,7 @@ async function buildHooks() {
           'better-auth',
           'better-auth/node',
           'better-auth/plugins',
+          'better-auth/db/migration',
           '@better-auth/api-key',
         ],
         define: {
@@ -876,6 +960,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml',
         '@derekstride/tree-sitter-sql',
         '@tree-sitter-grammars/tree-sitter-markdown',
+        'tree-sitter-delphi',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -960,7 +1045,9 @@ async function buildHooks() {
       // plugin/node_modules instead of being inlined (keeps the bundle slim). The
       // worker and MCP server inline zod because a Codex or Claude Desktop copy of
       // the plugin may have no node_modules.
-      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
+      // processor.ts reaches ingestObservation's lazy media converter; keep
+      // the native decoder external exactly as the worker bundle does.
+      external: ['sharp', 'bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
@@ -1030,6 +1117,28 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`, 0o755);
     const ensureLauncherStats = fs.statSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
     console.log(`✓ ensure-launcher built (${(ensureLauncherStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building auto-clear mod...`);
+    await build({
+      entryPoints: [AUTO_CLEAR_MOD.source],
+      bundle: true,
+      // A Claude Code hooks module is an ES module with no Node APIs, read as
+      // source (Claude Code lists its hooks and $ calls off the text), so it is
+      // neither minified nor given Node shims.
+      platform: 'neutral',
+      target: 'es2022',
+      format: 'esm',
+      outfile: AUTO_CLEAR_MOD.outfile,
+      minify: false,
+      legalComments: 'none',
+      logLevel: 'error',
+      banner: {
+        js: '// Built from src/mods/auto-clear/ by scripts/build-hooks.js. Edit the source, not this file.'
+      }
+    });
+    assertModBundle(AUTO_CLEAR_MOD.outfile);
+    const autoClearStats = fs.statSync(AUTO_CLEAR_MOD.outfile);
+    console.log(`✓ auto-clear mod built (${(autoClearStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
@@ -1157,6 +1266,7 @@ async function buildHooks() {
       'PostToolUse',
       'Stop',
       'PostCompact',
+      'SubagentStart',
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
@@ -1167,12 +1277,15 @@ async function buildHooks() {
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
+      'plugin/hooks/auto-clear.js',
       'plugin/hooks/codex-hooks.json',
       'plugin/hooks/qoder-hooks.json',
       'plugin/hooks/qoder-repo-hooks.json',
       'plugin/scripts/bun-runner.js',
       'plugin/scripts/context-read-worker.cjs',
       'plugin/scripts/context-read-worker.cjs.map',
+      'plugin/scripts/work-view-read-worker.cjs',
+      'plugin/scripts/work-view-read-worker.cjs.map',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',

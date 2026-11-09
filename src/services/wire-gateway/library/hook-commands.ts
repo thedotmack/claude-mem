@@ -27,7 +27,8 @@ export const NATIVE_HOOK_EVENTS: Readonly<Record<'claude-code' | 'codex' | 'gemi
  *  - `shell-quoted`: through a shell (Windsurf); PowerShell needs `& ` before a quoted path.
  *  - `shell-quoted-json-escaped`: through a shell, with backslashes doubled (Cursor).
  *  - `split-on-spaces`: split on spaces with no quote handling (agy): bare, forward-slashed paths.
- *  - `toml-literal`: a shell command inside a TOML literal string (Kimi).
+ *  - `toml-literal`: a shell command inside a TOML literal string (Kimi), or a
+ *    basic string when a path has a single quote.
  */
 export type HookCommandStyle = 'shell-quoted' | 'shell-quoted-json-escaped' | 'split-on-spaces' | 'toml-literal';
 
@@ -44,15 +45,18 @@ export interface WorkerHookCommandInput {
  * `agy` splits a command on spaces and does not strip quotes, so a path with
  * a space cannot be quoted: on Windows the 8.3 short path removes the space;
  * elsewhere (or when 8.3 names are off) the path is kept and a warning logged.
+ * `%I`, not `%~I`: this runs at the cmd command line, where `%~I` is a syntax
+ * error ("%~I was unexpected at this time"), so every lookup failed and paths
+ * with spaces were never shortened (#5099).
  */
-function toSpaceFreePath(filePath: string, platform: NodeJS.Platform): string {
+export function toSpaceFreePath(filePath: string, platform: NodeJS.Platform = process.platform): string {
   if (!filePath.includes(' ')) return filePath;
   if (platform !== 'win32') {
     logger.warn('LIBRARY', 'Antigravity CLI hook path contains spaces; agy splits commands on spaces, so hooks may fail to launch. Move bun or the plugin to a path without spaces.', { path: filePath });
     return filePath;
   }
   try {
-    const shortPath = execSync(`for %~I in ("${filePath}") do @echo %~sI`, { shell: 'cmd.exe', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    const shortPath = execSync(`for %I in ("${filePath}") do @echo %~sI`, { shell: 'cmd.exe', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     if (shortPath && !shortPath.includes(' ')) return shortPath;
   } catch (error) {
     logger.error('LIBRARY', 'Failed to resolve Windows 8.3 short path', { path: filePath }, error instanceof Error ? error : new Error(String(error)));
@@ -78,8 +82,23 @@ export function buildWorkerHookCommand(input: WorkerHookCommandInput): string {
       return `${bun} ${worker} ${input.args}`;
     }
     case 'toml-literal':
-      return `'"${input.bunPath}" "${input.workerServicePath}" ${input.args}'`;
+      return tomlString(`"${input.bunPath}" "${input.workerServicePath}" ${input.args}`);
   }
+}
+
+/**
+ * Render a value as a TOML string (#5363).
+ *
+ * A literal string (`'...'`) is preferred because it performs no escape
+ * processing at all, which is what Windows paths with backslashes want. It
+ * cannot contain a single quote, though, and a home directory like
+ * `/home/o'brien` would terminate the string early and leave the whole
+ * config.toml unparseable — taking the user's own hooks down with it. Fall back
+ * to a basic string (`"..."`) with escaped backslashes and quotes in that case.
+ */
+function tomlString(value: string): string {
+  if (!value.includes("'")) return `'${value}'`;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** Whether a hook command is one claude-mem's unified CLI wrote for `platform` (`worker-service … hook <platform> …`). */

@@ -150,7 +150,8 @@ const scenarios: Record<string, Scenario> = {
     seedPlugin();
     const { MCP_IDE_INSTALLERS } = await import('../../../src/services/integrations/McpIntegrations.js');
     const exitCodes = [await MCP_IDE_INSTALLERS['copilot-cli']()];
-    return { exitCodes, files: { mcp: readOrNull(join(home, '.github', 'copilot', 'mcp.json')) } };
+    // Copilot CLI reads ~/.copilot/mcp-config.json (#5305).
+    return { exitCodes, files: { mcp: readOrNull(join(home, '.copilot', 'mcp-config.json')) } };
   },
   'kimi-install-mcp-step-fails': async () => {
     seedPlugin({ mcp: false });

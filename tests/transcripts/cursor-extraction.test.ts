@@ -13,8 +13,8 @@
  *      skipped.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { join, win32 } from 'path';
 import { tmpdir, homedir } from 'os';
 import { extractLastMessage, extractLastMessageFromJsonl } from '../../src/shared/transcript-parser.js';
 import { cursorAdapter, deriveCursorTranscriptPath } from '../../src/cli/adapters/cursor.js';
@@ -102,40 +102,56 @@ describe('cursor-extraction: extractLastMessage Cursor JSONL compatibility', () 
 
 describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
   const sessionId = `c0ffee${Date.now()}`;
-  const fakeCwd = join(tmpdir(), 'fake.workspace', 'subdir');
-  const slug = fakeCwd.replace(/^\//, '').replace(/[/.]/g, '-');
-  const transcriptDir = join(homedir(), '.cursor', 'projects', slug, 'agent-transcripts', sessionId);
-  const transcriptPath = join(transcriptDir, `${sessionId}.jsonl`);
+  const projectsDir = join(homedir(), '.cursor', 'projects');
+  // Workspace paths as Cursor sends them in workspace_roots, each with the
+  // folder Cursor names after it under ~/.cursor/projects.
+  const workspaces: Array<[string, string]> = [
+    ['/Users/foo.bar/workspaces', 'Users-foo-bar-workspaces'],
+    ['/home/alice/code/my_app', 'home-alice-code-my-app'],
+    ['/Users/alice/Code/My App', 'Users-alice-Code-My-App'],
+    ['/Users/alice/.dotfiles', 'Users-alice-dotfiles'],
+    ['/c:/Users/alice/code/proj', 'c-Users-alice-code-proj'],
+    [win32.join('C:/', 'Users', 'Some One', 'my-repo'), 'C-Users-Some-One-my-repo'],
+  ];
+  // Every workspace gets this suffix, so each case writes a projects folder
+  // of its own and removes only that folder.
+  const suffix = `-${sessionId}`;
 
-  beforeEach(() => {
-    mkdirSync(fakeCwd, { recursive: true });
+  function writeTranscript(folder: string): string {
+    const transcriptDir = join(projectsDir, folder + suffix, 'agent-transcripts', sessionId);
     mkdirSync(transcriptDir, { recursive: true });
+    const transcriptPath = join(transcriptDir, `${sessionId}.jsonl`);
     writeFileSync(
       transcriptPath,
       JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }) + '\n'
     );
-  });
+    return transcriptPath;
+  }
 
   afterEach(() => {
-    if (existsSync(transcriptPath)) rmSync(transcriptPath);
-    if (existsSync(transcriptDir)) rmSync(transcriptDir, { recursive: true, force: true });
-    if (existsSync(fakeCwd)) rmSync(fakeCwd, { recursive: true, force: true });
+    for (const [, folder] of workspaces) {
+      rmSync(join(projectsDir, folder + suffix), { recursive: true, force: true });
+    }
   });
 
-  it('derives transcriptPath from cwd + conversation_id when the file exists (Bug A regression)', () => {
-    const normalized = cursorAdapter.normalizeInput({
-      cwd: fakeCwd,
-      conversation_id: sessionId,
+  for (const [workspace, folder] of workspaces) {
+    it(`derives transcriptPath for ${workspace} from the folder Cursor names ${folder} (Bug A regression)`, () => {
+      const transcriptPath = writeTranscript(folder);
+      const normalized = cursorAdapter.normalizeInput({
+        workspace_roots: [workspace + suffix],
+        conversation_id: sessionId,
+      });
+
+      expect(normalized.sessionId).toBe(sessionId);
+      expect(normalized.transcriptPath).toBe(transcriptPath);
     });
-
-    expect(normalized.sessionId).toBe(sessionId);
-    expect(normalized.transcriptPath).toBe(transcriptPath);
-  });
+  }
 
   it('returns transcriptPath: undefined when the file does not exist', () => {
-    rmSync(transcriptPath);
+    const [workspace, folder] = workspaces[0];
+    rmSync(writeTranscript(folder));
     const normalized = cursorAdapter.normalizeInput({
-      cwd: fakeCwd,
+      workspace_roots: [workspace + suffix],
       conversation_id: sessionId,
     });
 
@@ -144,7 +160,7 @@ describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
   });
 
   it('returns undefined when sessionId is missing (deriveCursorTranscriptPath direct call)', () => {
-    expect(deriveCursorTranscriptPath(fakeCwd, undefined)).toBeUndefined();
+    expect(deriveCursorTranscriptPath(workspaces[0][0] + suffix, undefined)).toBeUndefined();
   });
 
   it('returns undefined when cwd is missing (deriveCursorTranscriptPath direct call)', () => {

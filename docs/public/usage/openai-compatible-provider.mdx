@@ -99,6 +99,11 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `popnow` | `https://api.popnow.ai/v1` | yes |
+| `runcrate` | `https://api.runcrate.ai/v1` | yes |
+| `cheapaimodel` | `https://api.cheapaimodel.ai/v1` | yes |
+| `obscurify-ai` | `https://obscurify.ai/v1` | yes |
+| `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -144,6 +149,7 @@ work.
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued tool events per observer request (1–32); see [Observation batching](#observation-batching) |
 | `CLAUDE_MEM_OPENAI_COMPAT_REASONING` | `''` (= off) | `off` sends `reasoning: { enabled: false }` on every request. `on` leaves reasoning to the endpoint |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `''` | API key. Also read from `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env` |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | `''` | Extra keys for rotation — see [multi-key rotation](/usage/multi-key-rotation) |
@@ -154,6 +160,40 @@ are read during status polling and a typo should not crash a poll.
 The viewer's **Settings → Advanced** panel edits the provider, preset, base URL
 and model. The API key is set in `~/.claude-mem/settings.json` or
 `~/.claude-mem/.env` only, never through the viewer.
+
+## Observation batching
+
+If tool events arrive faster than a local observer can process them, opt into
+batching in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE": "4"
+}
+```
+
+Keep your existing endpoint and model settings. An environment variable with the
+same name overrides the file. The default is `1`; values outside the integer
+range 1–32 use that default. This setting applies only to `openai-compatible`.
+Claude and Codex retain their own batch settings, and Gemini/OpenRouter are
+unchanged.
+
+The observer takes up to that many events already waiting in the session's queue,
+without waiting to fill a batch. A different prompt number, agent ID/type, working
+directory, or a summary request ends the batch. Appended events must fit within
+twice the model's per-field character cap (32,000 characters at most, lower for
+small context windows). A large event that needs condensation waits for its own
+turn. The first event still uses the normal field-condensation path; the batching
+budget does not further truncate it or bound the entire conversation history.
+
+For example, eight small queued events in the same context can use two requests
+with a batch size of four instead of eight requests. The model may combine
+related findings, so batching does not guarantee identical summaries. As with
+Claude/Codex batching, returned observations share the batch's file evidence and
+attribution. The existing invalid-output policy applies to the whole batch: one
+retry, then discard if the reply is still invalid. Transport/quota failures and
+cancellation do not confirm the claimed events as processed.
 
 ## MiniMax
 
@@ -305,6 +345,104 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atlascloud",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Atlas Cloud key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
+}
+```
+
+## PopNow
+
+[PopNow](https://popnow.ai/api) serves chat models from DeepSeek, Moonshot, Google,
+OpenAI and other vendors behind one OpenAI-compatible API key, billed per token in
+USD. Model ids end in a task suffix, such as `deepseek/v4-flash/chat` (the preset's
+default) or `moonshot/kimi-k3/chat`, and are passed verbatim. The chat model list
+is at `https://api.popnow.ai/v1/models` (it needs the key), and keys come from
+[popnow.ai/api/console/keys](https://popnow.ai/api/console/keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "popnow",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your PopNow key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/v4-flash/chat"
+}
+```
+
+## Runcrate
+
+[Runcrate](https://www.runcrate.ai) is a GPU cloud that also serves open
+models such as DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash and gpt-oss 120B
+behind one OpenAI-compatible API key. Model ids are vendor-prefixed, such as `deepseek-ai/DeepSeek-V4.1-Flash` (the preset's default) or
+`zai-org/GLM-5.3`, and are passed verbatim. The model list is public at
+`https://api.runcrate.ai/v1/models`, and keys come from
+[the Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "runcrate",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Runcrate key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/DeepSeek-V4.1-Flash"
+}
+```
+
+## cheapaimodel
+
+[cheapaimodel](https://cheapaimodel.ai) is a pay-per-token gateway for open
+models such as DeepSeek V4.1 Flash, GLM-5.3 and Kimi K3, plus Grok 4.7, behind
+one OpenAI-compatible API key. Model ids are plain, such as `deepseek-v4-1-flash`
+(the preset's default) or `glm-5.3`, and are passed verbatim. The model list is
+at `https://api.cheapaimodel.ai/v1/models` (it needs the key), and keys come
+from [the cheapaimodel console](https://console.cheapaimodel.ai/keys).
+`glm-5.3` and `glm-5.3-flash` always think and reject `reasoning: { enabled:
+false }` on streamed requests, so set `CLAUDE_MEM_OPENAI_COMPAT_REASONING` to
+`on` to use them. `kimi-k3` only accepts a temperature of 0.6 or 1, so it
+rejects the requests this provider sends; pick another model.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "cheapaimodel",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your cheapaimodel key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4-1-flash"
+}
+```
+
+## Obscurify.ai
+
+[Obscurify.ai](https://obscurify.ai) is an OpenAI-compatible API for 200+
+models. Accounts are a random account number with no email, and Obscurify says
+prompts and responses are not stored on its servers. Model ids are
+vendor-prefixed, such as `deepseek/deepseek-v4-flash` (the preset's default) or
+`z-ai/glm-5.3`, and are passed verbatim. The model list is public at
+`https://obscurify.ai/v1/models`, and the key (`sk-obs1_...`) is under "Show API
+Key" on [your account page](https://obscurify.ai/account).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "obscurify-ai",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Obscurify.ai key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
+}
+```
+
+## Standard Compute
+
+[Standard Compute](https://standardcompute.com) is an OpenAI-compatible API
+gateway that routes requests across open and frontier models behind one key.
+Model ids are vendor-prefixed, such as `deepseek/deepseek-v4-flash` (the
+preset's default) or `z-ai/glm-5.3`, and are passed verbatim. The model list is
+public at `https://api.stdcmpt.com/v1/models`, and keys come from the
+[Standard Compute dashboard](https://standardcompute.com/dashboard/api-keys). For the US
+endpoint, set `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to
+`https://us.stdcmpt.com/v1`. Setup notes are in
+[the Standard Compute docs](https://docs.standardcompute.com).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "standardcompute",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Standard Compute key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
 }
 ```
 

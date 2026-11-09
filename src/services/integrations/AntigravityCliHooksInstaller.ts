@@ -192,16 +192,23 @@ export function describeAntigravityHooks(
   let hasStalePreInvocation = false;
   const namedHook = config[ANTIGRAVITY_HOOK_NAME];
   if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
+    // PreInvocation is current when it routes to session-init; only the
+    // pre-#4911 handler that routed it to `context` is stale, and that one is
+    // not the mapped event, so it isn't listed as installed.
+    const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
+    if (
+      Array.isArray(preInvocation) &&
+      preInvocation.some((h: any) => typeof h?.command === 'string' && /\bcontext\s*$/.test(h.command))
+    ) {
+      hasStalePreInvocation = true;
+    }
+
     for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+      if (event === 'PreInvocation' && hasStalePreInvocation) continue;
       const value = (namedHook as Record<string, unknown>)[event];
       if (Array.isArray(value) && value.length > 0) {
         installedEvents.push(event);
       }
-    }
-
-    const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
-    if (Array.isArray(preInvocation) && preInvocation.length > 0) {
-      hasStalePreInvocation = true;
     }
   }
 

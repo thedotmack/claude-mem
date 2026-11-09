@@ -317,7 +317,8 @@ const SNAPSHOT_EXCLUDES = [
   join(dataDir, 'wire-gateway'),
   join(dataDir, 'settings.json'),
 ];
-const SNAPSHOT_EXCLUDED_NAME = /^\.settings\.json\..*-migrated-v\d+$/;
+// The settings file's one-time default-move markers (`.settings.json.<tag>-v1`, SettingsDefaultsManager CHANGED_SHIPPED_DEFAULTS).
+const SNAPSHOT_EXCLUDED_NAME = /^\.settings\.json\..+-v\d+$/;
 
 function collect(directory: string, into: Record<string, string>): void {
   if (!existsSync(directory) || SNAPSHOT_EXCLUDES.includes(directory)) return;

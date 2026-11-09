@@ -46,6 +46,32 @@ export const GOLDEN_DEVIATION_REASONS: readonly GoldenDeviationReason[] = [
     path: /^home\/\.openclaw\/openclaw\.json$/,
     reason: 'Uninstall restores the exact bytes (verification): no empty `slots: {}` that claude-mem created is left behind.',
   },
+  // Behavior main changed after the goldens were taken (merged into the Library port).
+  {
+    scenario: /^cursor-(fresh|existing|reinstall|project)$/,
+    path: /^(home|workspace)\/\.cursor\/hooks\.json$/,
+    reason: 'Cursor also records reads, searches and failed calls through postToolUse (matcher Read|Grep|Task) and postToolUseFailure (Read|Grep|Task|Write) (#5399). The Library appends them after stop so the recorded ids of the older rows never move.',
+  },
+  {
+    scenario: /^antigravity-(fresh|existing|reinstall)$/,
+    path: /^home\/\.gemini\/config\/hooks\.json$/,
+    reason: 'agy no longer gets a PreToolUse hook, whose "allow" auto-approved every tool call, and PreInvocation runs session-init to record the prompt (#5078).',
+  },
+  {
+    scenario: /^dsh-(fresh|uninstall)$/,
+    path: /^(data|home\/\.claude-mem)\/transcript-watch\.json$/,
+    reason: 'The transcript-watch config resolves under CLAUDE_MEM_DATA_DIR, not the home install\'s ~/.claude-mem, when a custom data dir is set (#5070).',
+  },
+  {
+    scenario: /^mcp-(fresh|existing)$/,
+    path: /^home\/(\.copilot\/mcp-config\.json|\.github\/copilot\/mcp\.json)$/,
+    reason: 'Copilot CLI loads user-level MCP servers from mcpServers in ~/.copilot/mcp-config.json (or $COPILOT_HOME), not ~/.github/copilot/mcp.json (#5305).',
+  },
+  {
+    scenario: /^windsurf-(fresh|existing|reinstall|uninstall)$/,
+    path: /^data\/windsurf-projects\.json$/,
+    reason: 'The Windsurf project registry is written atomically through writeJsonFileAtomic, which ends the file with a newline (#5542).',
+  },
 ];
 
 export function deviationReasonFor(scenario: string, path: string): string | null {

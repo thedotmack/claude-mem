@@ -9,6 +9,7 @@ import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
@@ -47,12 +48,14 @@ import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { parseProjectList, projectsQueryValues } from '../shared/project-list.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import type { CwdResolver } from './mcp-http.js';
+import { createStdioCwdResolver } from './mcp-project-cwd.js';
 
 /**
  * Where the table's tools reach the worker and which folder they work for.
@@ -104,6 +107,8 @@ const mcpServerDir = (() => {
 // would otherwise auto-spawn a stale worker. The own-dir resolution stays as
 // the fallback for installs without a marketplace copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
+/** The plugin root this bundle runs from (plugin/scripts/..): a PWD inside it is never a project. */
+export const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -352,19 +357,11 @@ interface SessionStartContextArgs {
 }
 
 function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
-  if (Array.isArray(args.projects)) {
-    return args.projects
-      .map(project => typeof project === 'string' ? project.trim() : '')
-      .filter(Boolean);
-  }
-  if (typeof args.projects === 'string') {
-    return args.projects
-      .split(',')
-      .map(project => project.trim())
-      .filter(Boolean);
+  if (args.projects !== undefined) {
+    return parseProjectList(args.projects);
   }
   if (typeof args.project === 'string' && args.project.trim().length > 0) {
-    return [args.project.trim()];
+    return [args.project];
   }
   return [];
 }
@@ -478,7 +475,9 @@ function toolScopeFor(environment: ClaudeMemToolEnvironment) {
       const searchParams = new URLSearchParams();
       for (const [key, value] of Object.entries(opts.query ?? {})) {
         if (value !== undefined && value !== null) {
-          searchParams.append(key, String(value));
+          for (const entry of Array.isArray(value) ? value : [value]) {
+            searchParams.append(key, String(entry));
+          }
         }
       }
       response = await environment.requestWorker(`${endpoint}?${searchParams}`);
@@ -533,7 +532,7 @@ function toolScopeFor(environment: ClaudeMemToolEnvironment) {
 
     return callWorker('/api/context/inject', {
       query: {
-        projects: projects.join(','),
+        projects: projectsQueryValues(projects),
         ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
         ...(args.full !== undefined ? { full: args.full } : {}),
         ...(args.colors !== undefined ? { colors: args.colors } : {}),
@@ -743,14 +742,15 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server). At most 100 ids per call; split larger selections across several calls.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+          description: 'Array of selected observation IDs to fetch (at most 100; split larger selections). String IDs in server runtime.'
         },
         projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
@@ -770,16 +770,17 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_tool_uses',
-    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId. At most 100 ids per call; split larger selections.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+          description: 'Tool-use ids to fetch (required, at most 100; split larger selections). Numeric tool_uses.id or opaque tool_use_id strings.'
         },
-        limit: { type: 'number', description: 'Max rows to return' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 200)' },
         project: { type: 'string', description: 'Filter by project name' },
         contentSessionId: { type: 'string', description: 'Filter to one content session' }
       },
@@ -1289,6 +1290,9 @@ async function callClaudeMemTool(tools: ClaudeMemTools, name: string, args: Reco
   }
 }
 
+/** The project directory of one tool call, from the request that carries it. */
+type CallCwdResolver = (extra?: Parameters<CwdResolver>[0]) => string | Promise<string>;
+
 export interface ClaudeMemToolTable {
   tools: ClaudeMemTools;
   listTools(): ReturnType<typeof advertisedClaudeMemTools>;
@@ -1298,7 +1302,7 @@ export interface ClaudeMemToolTable {
    * given, resolves the project directory of the request carrying each tool call
    * (the stdio server's HTTP mode); the handlers then read it via getRequestCwd().
    */
-  registerOn(server: Server, getCwd?: CwdResolver): void;
+  registerOn(server: Server, getCwd?: CallCwdResolver): void;
   /** Whether this table's worker answers, starting it when this table may. */
   ensureWorkerConnection(): Promise<boolean>;
 }
@@ -1320,7 +1324,7 @@ export function buildClaudeMemToolTable(serverEnvironment: ClaudeMemToolEnvironm
     registerOn(server, getCwd) {
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
       server.setRequestHandler(CallToolRequestSchema, async (request, extra) => getCwd
-        ? runWithCwd(getCwd(extra), () => callTool(request.params.name, request.params.arguments))
+        ? runWithCwd(await getCwd(extra), () => callTool(request.params.name, request.params.arguments))
         : callTool(request.params.name, request.params.arguments));
     },
     ensureWorkerConnection: scope.ensureWorkerConnection,
@@ -1334,9 +1338,20 @@ function stdioToolTable(): ClaudeMemToolTable {
   return stdioTable;
 }
 
-/** Answer tools/list and tools/call on a stdio-server `server` (one per HTTP session in `--http` mode). */
+/**
+ * Answer tools/list and tools/call on a stdio-server `server` (one per HTTP
+ * session in `--http` mode, where `getCwd` reads the request). Over stdio
+ * each call asks the client roots/list, then uses the process launch
+ * directory or a verified PWD fallback from the plugin root (#5105).
+ */
 export function registerClaudeMemTools(server: Server, getCwd?: CwdResolver): void {
-  stdioToolTable().registerOn(server, getCwd);
+  if (getCwd) {
+    stdioToolTable().registerOn(server, getCwd);
+    return;
+  }
+  const stdioCwd = createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
+  server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());
+  stdioToolTable().registerOn(server, () => stdioCwd.resolve());
 }
 
 /** Whether the stdio server's worker answers, starting it when it does not. */

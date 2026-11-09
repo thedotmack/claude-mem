@@ -81,7 +81,7 @@ export interface SweepResult {
   skipped: 'windows' | 'unreadable' | null;
 }
 
-/** Parse `ps -eo pid=,ppid=,command=` output. Exported for tests. */
+/** Parse headerless ps output containing PID, parent PID and arguments. Exported for tests. */
 export function parseProcessTable(stdout: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const line of stdout.split('\n')) {
@@ -97,12 +97,13 @@ export function parseProcessTable(stdout: string): ProcessRow[] {
 }
 
 /**
- * `ps -eo pid=,ppid=,command=`, one snapshot. No `env:` is passed, so the child inherits the
+ * One process-table snapshot. No `env:` is passed, so the child inherits the
  * parent's environment untouched (spawn-env discipline applies to env blocks handed to children;
- * `ps` gets none). `command=` is locale-independent.
+ * `ps` gets none). Use `args` for BusyBox compatibility, and separate `-o` options:
+ * BusyBox treats commas after `=` as part of the column header, not column separators.
  */
 export async function readProcessTablePosix(): Promise<ProcessRow[]> {
-  const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,command='], {
+  const result = await execFileAsync('ps', ['-e', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='], {
     timeout: 10_000,
     maxBuffer: 32 * 1024 * 1024,
   });

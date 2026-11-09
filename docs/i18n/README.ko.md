@@ -16,50 +16,50 @@
 </h1>
 
 <p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a>를 위해 구축된 지속적인 메모리 압축 시스템.</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -329,16 +329,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | 모드 | 설명 |
 |------------|-------------------------|
 | `code` | 기본 영어 모드 |
-| `code--zh` | 중국어 간체 모드 |
-| `code--ja` | 일본어 모드 |
+| `code--chill` | 관찰을 더 적게 기록합니다. 나중에 다시 알아내기 번거로운 내용만 남깁니다 |
+| `code--[lang]` | `code`와 같지만 관찰과 요약을 다른 언어로 작성합니다 |
 
-언어별 모드는 `code--[lang]` 패턴을 따르며, 여기서 `[lang]`은 ISO 639-1 언어 코드입니다 (예: 중국어는 `zh`, 일본어는 `ja`, 스페인어는 `es`).
+내장 언어 코드: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. 예를 들어 `code--ko`로 설정하면 메모리가 한국어로 작성됩니다.
 
-> 참고: `code--zh` (중국어 간체)는 이미 내장되어 있습니다 — 추가 설치나 플러그인 업데이트가 필요하지 않습니다.
+언어별 이름, 이메일 조사 모드, 사용자 정의 모드는 [모드 문서](https://docs.claude-mem.ai/modes)를 참고하세요.
+
+> 참고: 위 모드는 모두 내장되어 있습니다. 추가 설치나 플러그인 업데이트가 필요하지 않습니다.
 
 #### 모드 변경 후
 
 새 모드 설정을 적용하려면 Claude Code를 재시작하세요.
+
 ---
 
 ## 개발
@@ -386,17 +389,16 @@ Claude-Mem은 Apache License 2.0에 따라 라이선스가 부여됩니다.
 시스템, 로보틱스 스택, 그리고 프로덕션 에이전트 하네스에 쉽게 내장될 수 있어야
 한다는 이유로 Apache-2.0을 선택했습니다.
 
-전체 세부 사항은 [LICENSE](LICENSE) 파일을 참조하세요. 라이선스 범위와
-오픈/상업적 경계에 대해서는 [docs/license.md](docs/license.md)와
-[docs/ip-boundary.md](docs/ip-boundary.md)를 참조하세요.
+전체 세부 사항은 [LICENSE](../../LICENSE) 파일을 참조하세요. 라이선스 범위와
+오픈/상업적 경계에 대해서는 [docs/license.md](../license.md)와
+[docs/ip-boundary.md](../ip-boundary.md)를 참조하세요.
 
-**Ragtime 관련 참고 사항**: `ragtime/` 디렉토리는 **Apache License 2.0**에 따라 라이선스가 부여됩니다. 자세한 내용은 [ragtime/LICENSE](ragtime/LICENSE)를 참조하세요.
 
 ---
 
 ## 지원
 
-- **문서**: [docs/](docs/)
+- **문서**: [docs/](../)
 - **이슈**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **저장소**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **공식 X 계정**: [@Claude_Memory](https://x.com/Claude_Memory)

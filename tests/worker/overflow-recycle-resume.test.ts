@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import * as observerHealth from '../../src/shared/observer-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const { SessionManager } = await import('../../src/services/worker/SessionManager.js');
 const { OBSERVER_TEXT_QUOTA_MESSAGE, quotaPauseForExit } = await import('../../src/services/worker/session/GeneratorRunner.js');
 const {
   MAX_CONSECUTIVE_STALL_RESUMES,
@@ -46,10 +48,17 @@ function buildRoutes(session: ActiveSession, startSession: () => Promise<void>) 
   let finalizeCalls = 0;
   let removed = 0;
   let active: ActiveSession | undefined = session;
+  // One buffered message until something discards it.
+  let pendingCount = 1;
 
   const sessionManager = {
     getSession: () => active,
-    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    getMessageBuffer: () => ({ getPendingCount: () => pendingCount, getParkedMessages: () => [], peekTypes: () => [] }),
+    discardBufferedWork: () => {
+      const cleared = pendingCount;
+      pendingCount = 0;
+      return cleared;
+    },
     removeSessionImmediate: () => {
       removed += 1;
       active = undefined;
@@ -67,7 +76,12 @@ function buildRoutes(session: ActiveSession, startSession: () => Promise<void>) 
     { finalizeSession: async () => { finalizeCalls += 1; } } as any,
   );
 
-  return { routes, stats: () => ({ finalizeCalls, removed, active }) };
+  return {
+    routes,
+    stats: () => ({ finalizeCalls, removed, active, pendingCount }),
+    /** A newly captured event buffers one more message. */
+    capture: () => { pendingCount += 1; },
+  };
 }
 
 describe('observer resumes itself after recycling its conversation (#3800)', () => {
@@ -177,6 +191,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
+    expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'unknown' });
   });
 
   // The guard aborts with 'quota:<window>:<kind>' (ClaudeProvider); the exit
@@ -203,6 +218,12 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(observerHealth.renderObserverHealthWarning(health)).toContain('paused to preserve your Claude allowance');
       expect(getQuotaCooldown('claude')?.message).toBe(health.lastErrorMessage);
       expect(getQuotaCooldown('claude')?.window).toBe('seven_day');
+      expect(getQuotaCooldown('claude')?.reason).toEqual({
+        kind: 'limit_guard',
+        window: 'seven_day',
+        usagePercent: 95,
+        thresholdPercent: 93,
+      });
       expect(session.abortReason).toBeNull();
       expect(stats().finalizeCalls).toBe(0);
       expect(stats().removed).toBe(0);
@@ -231,6 +252,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       const health = observerHealth.readObserverHealth()!;
       expect(health.lastErrorKind).toBe('quota_exhausted');
       expect(health.lastErrorMessage).not.toBe(observerHealth.AMBIGUOUS_QUOTA_MESSAGE);
+      expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'used_up', window: 'seven_day' });
     } finally {
       globalRateLimitStore.restoreForTesting('seven_day', savedSevenDay);
       observerHealth.recordObserverSuccess();
@@ -250,6 +272,33 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       lastSuccessAt: null,
       lastErrorAt: Date.now(),
     } as never)).toContain('used up');
+  });
+
+  it.each([
+    ['api-key', null, 'api_key_limit'],
+    ['subscription', null, 'used_up'],
+    ['api-key', 'subscription', 'used_up'],
+    ['subscription', 'api-key', 'api_key_limit'],
+  ] as const)('records the billed Claude credential for %s with stand-in %s', async (auth, override, expectedReason) => {
+    for (const throwsRefusal of [false, true]) {
+      resetQuotaCooldownsForTesting();
+      const session = makeSession();
+      const { routes } = buildRoutes(session, async () => {
+        session.observerAuth = auth;
+        session.claudeAuthOverride = override;
+        session.abortController.abort();
+        if (throwsRefusal) {
+          throw new ClassifiedProviderError('Usage limit reached', { kind: 'quota_exhausted', cause: null });
+        }
+        session.abortReason = 'quota:observer_text';
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: expectedReason });
+      expect(getQuotaCooldown('claude')?.auth).toBe(override ? undefined : auth);
+      observerHealth.recordObserverSuccess();
+    }
   });
 
   it('does not resume on an auth pause', async () => {
@@ -344,7 +393,12 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(stats().finalizeCalls).toBe(0);
     });
 
-    it('stops resuming once the consecutive stall cap is reached', async () => {
+    it('discards the buffered work once the consecutive stall cap is reached (#5405)', async () => {
+      // The failure this guards: at the cap the session used to hold its
+      // buffer for the next captured event. When the content session had
+      // already ended no event came, so the work sat in RAM (and in
+      // queueDepth) until a worker restart. Now it is discarded at once, and
+      // no timer is left to replay it.
       const session = makeSession();
       session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
       let starts = 0;
@@ -360,10 +414,72 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
 
       expect(requestedDelays).toEqual([]);
       expect(starts).toBe(1);
-      expect(session.pausedReason).toBe('transport');
-      // Still preserved for the next hook event rather than finalized.
+      expect(stats().pendingCount).toBe(0);
+      expect(session.stallResumeTimer).toBeUndefined();
+      expect(session.scheduledResumeTimer).toBeUndefined();
+      // Not finalized: the session stays for its next captured event, which
+      // starts fresh work.
       expect(stats().finalizeCalls).toBe(0);
       expect(stats().active).toBe(session);
+      // #5405: the exhaust branch marks the session so /api/processing-status can report it.
+      expect(typeof session.stallResumesExhaustedAt).toBe('number');
     });
+
+    it('clears the exhausted-stall mark when the next generator starts (#5405)', async () => {
+      const session = makeSession();
+      session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      let starts = 0;
+
+      const { routes, capture } = buildRoutes(session, async () => {
+        starts += 1;
+        if (starts === 1) {
+          session.abortReason = 'transport:response_stall';
+          return;
+        }
+        await new Promise<void>(() => {});
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      await nextTick();
+      expect(typeof session.stallResumesExhaustedAt).toBe('number');
+
+      // The next captured event restarts the observer on its fresh work: the
+      // mark goes, even though the stall counter stays above the cap until a
+      // turn is answered.
+      capture();
+      void routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await nextTick();
+      expect(starts).toBe(2);
+      expect(session.stallResumesExhaustedAt).toBeUndefined();
+      expect(session.consecutiveResponseStalls).toBeGreaterThan(MAX_CONSECUTIVE_STALL_RESUMES);
+    });
+  });
+});
+
+describe('session teardown cancels a pending stall resume (#5405)', () => {
+  it('removeSessionImmediate clears the stall and scheduled resume timers', async () => {
+    const db = {
+      getSessionById: mock((id: number) => ({
+        content_session_id: `content-${id}`, project: 'test', user_prompt: 'original prompt',
+      })),
+      getSessionStore: mock(() => { throw new Error('Teardown must not access the session store'); }),
+    };
+    const manager = new SessionManager(db as any);
+    const session = manager.initializeSession(1, 'original prompt', 1);
+
+    let stallFired = false;
+    let scheduledFired = false;
+    session.stallResumeTimer = setTimeout(() => { stallFired = true; }, 5);
+    session.scheduledResumeTimer = setTimeout(() => { scheduledFired = true; }, 5);
+
+    manager.removeSessionImmediate(1);
+
+    expect(session.stallResumeTimer).toBeUndefined();
+    expect(session.scheduledResumeTimer).toBeUndefined();
+    expect(manager.getSession(1)).toBeUndefined();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(stallFired).toBe(false);
+    expect(scheduledFired).toBe(false);
   });
 });

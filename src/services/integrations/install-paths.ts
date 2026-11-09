@@ -116,3 +116,17 @@ export const INSTALLER_NODE_PATH_ENV = 'CLAUDE_MEM_INSTALLER_NODE_PATH';
 export function getNodeAbsolutePath(): string {
   return process.env[INSTALLER_NODE_PATH_ENV] || process.execPath;
 }
+
+/**
+ * claude-mem's stdio MCP server as a `{command, args}` entry, for an installer
+ * outside the Library (DevinHooksInstaller). Here, not in McpIntegrations:
+ * that module fixes its per-project config paths from process.cwd() when it
+ * loads, and worker-service imports the Devin installer before a command
+ * returns to the caller's directory.
+ */
+export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
+  return {
+    command: getNodeAbsolutePath(),
+    args: [mcpServerPath],
+  };
+}

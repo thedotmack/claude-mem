@@ -7,10 +7,21 @@
 // functions as its HTTP routes, exactly once. Every payload is scrubbed
 // before it is spooled (plan Phase 6 task 2): the spool file is on disk.
 
-import { HookSpool, type HookSpoolKind, type HookSpoolPayloadByKind } from '../../../shared/hook-spool.js';
+import { HookSpool, type DurableHookSpoolKind, type HookSpoolKind, type HookSpoolPayloadByKind } from '../../../shared/hook-spool.js';
+import { isLiveObserverEvent } from '../../../shared/observer-work-policy.js';
 import { workerHttpRequest } from '../../../shared/worker-utils.js';
 import { logger } from '../../../utils/logger.js';
 import { scrubWireSpoolPayload } from '../privacy/secret-scrub.js';
+
+/**
+ * One wire event into the spool. Inference inputs (observation, file_edit,
+ * summarize) go as a live handoff the drain takes once while fresh, never a
+ * backlog (#5347); everything else is a durable entry like a hook's.
+ */
+export function enqueueWireSpoolEvent<K extends HookSpoolKind>(spool: HookSpool, kind: K, payload: HookSpoolPayloadByKind[K]): string {
+  if (isLiveObserverEvent(kind)) return spool.enqueueLiveObserverHandoff(kind, payload as HookSpoolPayloadByKind[typeof kind]);
+  return spool.enqueue(kind as DurableHookSpoolKind, payload as HookSpoolPayloadByKind[DurableHookSpoolKind]);
+}
 
 /** The nudge is a hint; the spool file is already durable (copied from src/cli/spool-hook-event.ts SPOOL_NUDGE_TIMEOUT_MS). */
 const WORKER_NUDGE_TIMEOUT_MS = 250;
@@ -61,7 +72,7 @@ export function createHookSpoolCaptureEventSink(options: HookSpoolCaptureEventSi
   return {
     emit(kind, payload) {
       try {
-        const entryPath = spool.enqueue(kind, scrubWireSpoolPayload(kind, payload));
+        const entryPath = enqueueWireSpoolEvent(spool, kind, scrubWireSpoolPayload(kind, payload));
         wireCaptureEventActivity.eventsSpooled++;
         logger.debug('WIRE', 'Wire capture event spooled for the worker', { kind, entryPath });
       } catch (error) {

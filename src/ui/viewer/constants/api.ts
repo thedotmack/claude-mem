@@ -4,6 +4,7 @@ export const API_ENDPOINTS = {
   PROMPTS: '/api/prompts',
   SETTINGS: '/api/settings',
   SESSIONS: '/api/sessions',
+  BACKUP_STATUS: '/api/backup/status',
   STREAM: '/stream',
   // The Wire page (plan Phase 15). The worker forwards status, routes, trace
   // and call to the wire gateway over loopback; the page never calls the

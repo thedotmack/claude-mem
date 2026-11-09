@@ -1,7 +1,22 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
-import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
-import { NO_PROJECT, projectRoot, upgradedGroupRoot } from './session-project.mjs';
+import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
+import { NO_PROJECT, projectRoot } from './session-project.mjs';
+
+// The card shows at most four thumbnails: the card strip in both existing
+// galleries shows four (MAX_CARD_THUMBNAILS in src/ui/viewer/utils/media.ts,
+// THUMBNAIL_LIMIT in claude-mem-pro's observation-media/media.ts).
+export const REQUEST_MEDIA_PREVIEW_LIMIT = 4;
+
+/** The request's images for its card: how many distinct images its observations
+ * link, and the newest few by observation recency. `activity` is newest first.
+ * An image several observations link counts once. No images, no summary. */
+export function requestMediaSummary(activity) {
+  const refs = new Map();
+  for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
+  if (!refs.size) return null;
+  return { count: refs.size, preview: [...refs.values()].slice(0, REQUEST_MEDIA_PREVIEW_LIMIT) };
+}
 
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
@@ -82,9 +97,10 @@ export function originalFor(session, prompts) {
   const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id)
     .sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
   const first = ordered.find((prompt) => isHumanActionRequest(prompt.prompt_text));
-  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return { text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}`, promptNumber: 1, atEpoch: session.started_at_epoch ?? null };
+  const initial = () => ({ text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}`, ...(session.sharedOnly ? { sourceIdentity: { kind: 'session', conversation: conversationKey(session) } } : {}), promptNumber: 1, atEpoch: session.started_at_epoch ?? null });
+  if (isHumanActionRequest(session.user_prompt) && (!first || first.prompt_number > 1)) return initial();
   if (first) return { text: requestText(first.prompt_text), source: 'user-prompt', sourceId: first.id, url: `/api/work-view/evidence/prompt/${first.id}`, promptNumber: first.prompt_number, atEpoch: first.created_at_epoch ?? null };
-  if (isHumanActionRequest(session.user_prompt)) return { text: requestText(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}`, promptNumber: 1, atEpoch: session.started_at_epoch ?? null };
+  if (isHumanActionRequest(session.user_prompt)) return initial();
   return null;
 }
 
@@ -93,7 +109,9 @@ export function originalFor(session, prompts) {
 // ungrouped conversation with a substantive human ask, built from its prompts.
 // Recorded work, activity, work product and progress attach beneath it when
 // they exist. An explicit work-state request_id still wins because the
-// producer recorded it directly. Requests stay inside one project root.
+// producer recorded it directly. A group with a recorded project root keeps
+// every conversation the ledger assigned to it; a group whose root is unknown
+// stays inside the one its members show.
 export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
@@ -141,7 +159,8 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       .map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
     return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
   };
-  // A group's root is stored at apply time; older groups take their anchor's.
+  // The root of a group whose stored root is unknown: a group decided before roots were recorded takes
+  // its anchor's.
   const derivedRoots = new Map();
   const groupRoot = (groupId) => {
     const group = ledger?.groups?.groups?.[groupId];
@@ -149,25 +168,19 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
       return derivedRoots.get(groupId);
     }
-    const anchorRoot = projectRoot(sessionsByKey.get(group?.anchor)?.project);
-    if (typeof group?.projectRoot === 'string') {
-      if (!derivedRoots.has(groupId)) {
-        const memberRoots = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId)
-          .map(([key]) => projectRoot(sessionsByKey.get(key)?.project));
-        derivedRoots.set(groupId, upgradedGroupRoot(group.projectRoot, anchorRoot, memberRoots));
-      }
-      return derivedRoots.get(groupId);
-    }
-    return anchorRoot;
+    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
   };
-  // A conversation joins its group only from the group's own project root; in a group decided before
-  // its project was known, a member that still shows no project stays too.
+  // A group with a recorded project root keeps every conversation the ledger assigned to it: `apply`
+  // decided that membership against the root, and a decision may name a root its members did not all
+  // work from. A group whose root is unknown joins a conversation only from the root the group shows
+  // now; in a group decided before its project was known, a member that still shows no project stays too.
   const groupFor = (key, session) => {
     const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
     if (!groupId) return null;
+    const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
+    if (typeof storedRoot === 'string' && storedRoot !== NO_PROJECT) return groupId;
     const own = projectRoot(session?.project), expected = groupRoot(groupId);
-    const rootWasUnknown = ledger.groups.groups[groupId]?.projectRoot === NO_PROJECT;
-    return own == null || expected == null || own === expected || (rootWasUnknown && own === NO_PROJECT) ? groupId : null;
+    return own == null || expected == null || own === expected || (storedRoot === NO_PROJECT && own === NO_PROJECT) ? groupId : null;
   };
   const requests = new Map(), unlinkedWork = [];
   const requestFor = (id, { key, original, groupId = null, explicit = null, explicitText = null }) => {
@@ -261,6 +274,12 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   };
   for (const call of records.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
   for (const observation of records.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
+  // A deliverables row names its conversation itself (platform + content session), so it needs no loaded session row.
+  for (const row of records.productDeliverables ?? []) attach(row, productsFromDeliverable(row));
+  for (const record of records.sharedProducts ?? []) {
+    const session = sessionsByKey.get(record.conversationKey);
+    if (session) attach(session, record.products ?? []);
+  }
 
   const sessionIdsByKey = new Map(), promptsBySession = new Map();
   for (const session of sessions.values()) {
@@ -272,8 +291,13 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     promptsBySession.get(prompt.session_db_id).push(prompt);
   }
   for (const request of requests.values()) {
-    request.workProduct = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])])
-      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : true }));
+    const merged = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])]);
+    // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
+    // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
+    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
+    request.workProduct = merged.filter((product) => !covered(product))
+      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
     // A new ask is activity on its request, even before any agent records work.
@@ -295,6 +319,9 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
     for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
     request.activity = activityFor(request.items, request.id, 40);
+    // Counted over the same rows the drawer lists, so the card's count is the number of images the drawer can show.
+    const media = requestMediaSummary(request.activity);
+    if (media) request.media = media;
     const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
     const lifecycleRecords = request.items.flatMap((item) => [
       ...(typeof item.requestStatus === 'string' && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: 'request_status', sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : []),

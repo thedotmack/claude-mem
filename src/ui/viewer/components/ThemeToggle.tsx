@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../i18n';
 import { ThemePreference } from '../hooks/useTheme';
 
 interface ThemeToggleProps {
@@ -7,6 +8,7 @@ interface ThemeToggleProps {
 }
 
 export function ThemeToggle({ preference, onThemeChange }: ThemeToggleProps) {
+  const { t } = useI18n();
   const cycleTheme = () => {
     const cycle: ThemePreference[] = ['system', 'light', 'dark'];
     const currentIndex = cycle.indexOf(preference);
@@ -51,12 +53,12 @@ export function ThemeToggle({ preference, onThemeChange }: ThemeToggleProps) {
   const getTitle = () => {
     switch (preference) {
       case 'light':
-        return 'Theme: Light (click for Dark)';
+        return t('Theme: Light (click for Dark)');
       case 'dark':
-        return 'Theme: Dark (click for System)';
+        return t('Theme: Dark (click for System)');
       case 'system':
       default:
-        return 'Theme: System (click for Light)';
+        return t('Theme: System (click for Light)');
     }
   };
 

@@ -146,6 +146,19 @@ export function writeJsonFileAtomic(
 }
 
 /**
+ * Write a text file (YAML, TOML, plain text) to disk atomically via
+ * writeFileAtomic, writing exactly the bytes given: no serialization, no
+ * added trailing newline.
+ */
+export function writeTextFileAtomic(
+  filepath: string,
+  text: string,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeFileAtomic(filepath, Buffer.from(text, 'utf-8'), options);
+}
+
+/**
  * A temp file a crashed or failed write left beside its target is removed by
  * the next successful write once it is this old. A write takes milliseconds,
  * so a temp file this old belongs to no write still going on (magpie
@@ -218,6 +231,9 @@ function writeSyncedTempFile(resolvedTargetPath: string, payload: Uint8Array, mo
   let fd: number | undefined;
   try {
     fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    // open(2) masks the mode with the umask (0660 under 022 lands as 0640), so
+    // set it exactly before the first byte: the rename must keep the file's mode.
+    if (mode !== undefined && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
     writeAllBytes(fd, payload, null);
     fsyncSync(fd);
     closeSync(fd);

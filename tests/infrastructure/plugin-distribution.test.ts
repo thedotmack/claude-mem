@@ -247,6 +247,32 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(codexHooks.hooks.PostToolUse[0].matcher).toBe('.*');
   });
 
+  it('gives a subagent Codex starts its memory timeline', () => {
+    // Codex starts a spawned subagent with SubagentStart instead of SessionStart
+    // (run_pending_session_start_hooks in codex-rs/core/src/hook_runtime.rs).
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const subagentStart = codexHooks.hooks.SubagentStart;
+
+    expect(subagentStart).toHaveLength(1);
+    // No matcher: Codex matches it against the agent type, and every type gets memory.
+    expect(subagentStart[0].matcher).toBeUndefined();
+    expect(subagentStart[0].hooks).toHaveLength(1);
+    expect(subagentStart[0].hooks[0].command).toContain('hook codex subagent-context');
+  });
+
+  it('bounds the synchronous Codex observation hook to a short fail-open wait', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const observation = codexHooks.hooks.PostToolUse[0].hooks[0];
+
+    expect(observation.command).toContain('hook codex observation');
+    expect(observation.timeout).toBe(5);
+    expect(observation).not.toHaveProperty('async');
+
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'PostCompact', 'SubagentStart']) {
+      expect(codexHooks.hooks[event][0].hooks[0]).not.toHaveProperty('async');
+    }
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -528,7 +554,9 @@ describe('Plugin Distribution - package.json Files Field', () => {
 
     expect(result.status).toBe(0);
     const packed = JSON.parse(result.stdout);
-    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
+    // npm 12 keys pack results by package name; older npm returns an array.
+    const artifact = Array.isArray(packed) ? packed[0] : packed[readJson('package.json').name];
+    const filePaths = new Set(artifact.files.map((file: { path: string }) => file.path));
 
     expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
@@ -651,7 +679,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Spawn-contract templating (plans/02-spawn-contract-templating.md)
+// Spawn-contract templating
 // ---------------------------------------------------------------------------
 
 const ccTrailing = (...tail: string[]) => [
@@ -667,9 +695,10 @@ const codexHook = (tail: string[]) => buildShellCommand({
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   requireDependencies: true,
 });
-const codexHookPair = (tail: string[]) => ({
+const codexHookPair = (tail: string[], entryOptions: Record<string, unknown> = {}) => ({
   command: codexHook(tail),
   commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+  ...entryOptions,
 });
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
@@ -715,9 +744,13 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+    'PostToolUse.0.0': codexHookPair(
+      ['hook', 'codex', 'observation'],
+      { timeout: 5 },
+    ),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
     'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
+    'SubagentStart.0.0': codexHookPair(['hook', 'codex', 'subagent-context']),
   },
 };
 
@@ -752,6 +785,9 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
         expect(entry?.command ?? null).toBe(expectedCommand);
         if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
+        }
+        if (typeof expected !== 'string' && expected.timeout !== undefined) {
+          expect(entry?.timeout ?? null).toBe(expected.timeout);
         }
       });
     }

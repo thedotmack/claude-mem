@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import type { spawn } from 'child_process';
-import { GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -33,8 +33,10 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
   }) as unknown as typeof spawn;
 }
 
+const CODEX_PATH = join(realpathSync(tmpdir()), 'agent-runner-tools', 'codex');
+
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
-  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? `/bin/${id}` : null, authenticated: ids.includes(id), reason: 'test' }));
+  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
 
 const LIGHT_MODELS = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 
@@ -59,7 +61,7 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
  /** runAgentTask with `spawn` installed as child_process.spawn for the run. */
 function runTask(agentTask: AgentTask, { spawn: fake, ...overrides }: { spawn: typeof spawn } & Parameters<typeof runAgentTask>[1]) {
   setFakeSpawn(fake);
-  return runAgentTask(agentTask, overrides);
+  return runAgentTask(agentTask, { platform: () => 'linux', ...overrides });
 }
 afterEach(() => setFakeSpawn(null));
 
@@ -74,7 +76,12 @@ describe('agent runner', () => {
       mkdirSync(ledger);
       writeFileSync(join(dataDir, '.env'), 'ANTHROPIC_API_KEY=secret');
       writeFileSync(join(ledger, 'show.json'), '{}');
-      symlinkSync(join(dataDir, '.env'), join(ledger, 'env-link'));
+      // A directory junction exercises the same escape without requiring
+      // Windows' optional file-symlink privilege.
+      const linkedSecret = process.platform === 'win32'
+        ? join(ledger, 'private-data', '.env') : join(ledger, 'env-link');
+      if (process.platform === 'win32') symlinkSync(dataDir, dirname(linkedSecret), 'junction');
+      else symlinkSync(join(dataDir, '.env'), linkedSecret);
       const seen: any[] = [];
       const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
       const readTask: AgentTask = { ...task(ledger), claudeCode: { plugins: [], tools: ['Read', 'Grep', 'Glob'], allowedTools: [], readableFolders: [ledger] } };
@@ -85,7 +92,7 @@ describe('agent runner', () => {
       expect(await decide('Read', { file_path: 'show.json' })).toBe('allow');
       expect(await decide('Read', { file_path: join(dataDir, '.env') })).toBe('deny');
       expect(await decide('Read', { file_path: join(ledger, '..', '.env') })).toBe('deny');
-      expect(await decide('Read', { file_path: join(ledger, 'env-link') })).toBe('deny');
+      expect(await decide('Read', { file_path: linkedSecret })).toBe('deny');
       expect(await decide('Grep', { pattern: 'KEY' })).toBe('allow');
       expect(await decide('Grep', { pattern: 'KEY', path: dataDir })).toBe('deny');
       expect(await decide('Glob', { pattern: '*.json' })).toBe('allow');
@@ -142,15 +149,51 @@ describe('agent runner', () => {
       expect(result.result).toBe('inline done: {"ok":true}');
       expect(calls).toHaveLength(1);
       const { command, args, options, child } = calls[0];
-      expect(command).toBe('/bin/codex');
-      expect(args.slice(0, 8)).toEqual(['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd]);
-      expect(args[8]).toBe('-o');
-      expect(args[9].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args[10]).toBe('-');
+      expect(command).toBe(CODEX_PATH);
+      expect(args[0]).toBe('exec');
+      expect(args).toContain('--strict-config');
+      expect(args).not.toContain('-s'); // legacy sandbox flags would override the scoped profile
+      expect(args).toContain('default_permissions="claude-mem-refresh"');
+      const policy = args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))!;
+      expect(policy).toContain('":root"="deny"');
+      expect(policy).toContain('":workspace_roots"={"."="read"}');
+      expect(policy).toContain(`${JSON.stringify(dirname(CODEX_PATH))}="read"`);
+      expect(args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(args).toContain('--ephemeral');
+      expect(args).toContain('--ignore-user-config');
+      expect(args[args.indexOf('-C') + 1]).toBe(cwd);
+      expect(args[args.indexOf('-o') + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.at(-1)).toBe('-');
       expect(args.join(' ')).not.toMatch(/bypass|dangerous|full-auto|yolo/i);
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
       expect((options.env as Record<string, string>).CLAUDE_MEM_INTERNAL).toBe('1');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex launches the real executable behind a symlink without weakening the sandbox', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-link-'));
+    try {
+      const binary = join(cwd, 'native', 'codex-native');
+      const launcher = process.platform === 'win32'
+        ? join(cwd, 'linked-native', 'codex-native') : join(cwd, 'codex-link');
+      mkdirSync(dirname(binary));
+      writeFileSync(binary, 'fixture');
+      if (process.platform === 'win32') symlinkSync(dirname(binary), dirname(launcher), 'junction');
+      else symlinkSync(binary, launcher);
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok');
+        call.child.emit('close', 0);
+      });
+      const result = await runTask(task(cwd), {
+        detect: async () => [{ id: 'codex', path: launcher, authenticated: true, reason: 'fixture' }],
+        query: neverQuery, spawn: spawnImpl, buildEnv: env,
+      });
+      expect(result.state).toBe('ok');
+      expect(calls[0].command).toBe(realpathSync(binary));
+      expect(calls[0].args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(calls[0].args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))).toContain('\":root\"=\"deny\"');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
@@ -169,24 +212,131 @@ describe('agent runner', () => {
       const result = await runTask(schemaTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(result).toMatchObject({ state: 'ok', agent: 'codex', result: '{"ok":true}' });
       const { args } = calls[0];
-      expect(args.slice(10, 12)).toEqual(['--output-schema', args[11]]);
-      expect(args[11].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args.slice(12)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      const schemaIndex = args.indexOf('--output-schema');
+      expect(args[schemaIndex + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.slice(schemaIndex + 2)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(schemaSeen).toEqual(schema);
-      expect(existsSync(args[11])).toBe(false);
+      expect(existsSync(args[schemaIndex + 1])).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
-  it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
+  it('Codex: a model this login does not list is replaced by its listed namesake, else left to Codex (Oct 25: gpt-6-luna on a ChatGPT login)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-runner-codex-home-'));
+    try {
+      const low = [{ effort: 'low' }, { effort: 'medium' }];
+      const writeList = (models: unknown[]) => writeFileSync(join(home, 'models_cache.json'), JSON.stringify({ fetched_at: '2026-10-27T05:50:35Z', models }));
+      // The models Codex 0.154.0 listed for a ChatGPT login on Oct 27.
+      writeList([
+        { slug: 'gpt-6-astra', visibility: 'list', priority: 3, supported_reasoning_levels: low },
+        { slug: 'gpt-reserve', visibility: 'hide', priority: 4 },
+        { slug: 'gpt-5.6-sol', visibility: 'list', priority: 6, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-terra', visibility: 'list', priority: 7, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low },
+      ]);
+      const light = LIGHT_MODELS.codex;
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-luna', reasoningEffort: 'low' });
+      expect(codexModelForLogin(light, { HOME: join(home, 'nowhere') })).toEqual(light);
+      expect(codexModelForLogin(light, {})).toEqual(light);
+      expect(codexModelForLogin({}, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-7-nova' }, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-5.6-sol', reasoningEffort: 'high' }, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+      writeList([{ slug: 'gpt-6-luna', visibility: 'list', priority: 1 }]);
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual(light);
+
+      // The substitute reaches codex exec.
+      writeList([{ slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low }]);
+      const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-model-'));
+      try {
+        const calls: SpawnCall[] = [];
+        const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+        const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+        const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: home }) });
+        expect(result.state).toBe('ok');
+        expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-5.6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('Codex: a model the login refuses at run time is retried once on the login default model (Oct 25: model_not_found)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-refused-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.args.includes('-m')) {
+          call.child.stderr.emit('data', Buffer.from(`ERROR: {"detail":"The '${LIGHT_MODELS.codex.model}' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}`));
+          call.child.emit('close', 1);
+          return;
+        }
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}');
+        call.child.emit('close', 0);
+      });
+      // No models list in CODEX_HOME, so the step's model is sent as named and refused.
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('ok');
+      expect(calls).toHaveLength(2);
+      expect(calls[0].args).toContain('-m');
+      expect(calls[1].args).not.toContain('-m');
+      expect(calls[1].args.join(' ')).not.toContain('model_reasoning_effort');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: any other failure is not retried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-other-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { call.child.stderr.emit('data', Buffer.from('ERROR: stream disconnected')); call.child.emit('close', 1); });
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('failed');
+      expect(calls).toHaveLength(1);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Windows reports an actual Codex sandbox refusal and falls back without broadening access', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-windows-refusal-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.command === CODEX_PATH) {
+          call.child.stderr.emit('data', 'windows unelevated restricted-token sandbox cannot enforce split filesystem read restrictions directly; refusing to run unsandboxed');
+          call.child.emit('close', 1);
+          return;
+        }
+        call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}' }));
+        call.child.emit('close', 0);
+      });
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env, platform: () => 'win32',
+      });
+      expect(result).toMatchObject({ state: 'ok', agent: 'gemini' });
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts[0]).toMatchObject({ agent: 'codex' });
+      expect(result.attempts[0].error).toMatch(/Windows unelevated sandbox cannot enforce the required read restrictions/i);
+      expect(result.attempts[0].error).toMatch(/elevated sandbox or a supported MXC/i);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH, '/bin/gemini']);
+      expect(calls[0].args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(calls[0].args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))).toContain('":root"="deny"');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Gemini: gemini -p in plan (read-only) mode, never --skip-trust, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
+      const policyPath = (call.options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+      expect(JSON.parse(readFileSync(policyPath, 'utf8'))).toEqual({
+        tools: { core: [] },
+        security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+      });
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
       call.child.emit('close', 0);
     });
     const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
+    expect(existsSync((calls[0].options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH)).toBe(false);
     expect(calls[0].command).toBe('/bin/gemini');
     expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
+    expect(calls[0].args).not.toContain('--skip-trust');
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 
@@ -194,7 +344,7 @@ describe('agent runner', () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'quota' }; })()) as never;
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
-      if (call.command === '/bin/codex') { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
+      if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
       call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
       call.child.emit('close', 0);
     });
@@ -209,6 +359,92 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('allowedAgents confines the run: a failed agent does not fall through to unallowed ones (#5189)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'rate limit' }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => {
+      call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
+      call.child.emit('close', 0);
+    });
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.agent).toBe('claude-code');
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(result.error).toMatch(/^Claude Code: .*rate limit/);
+    expect(calls).toEqual([]);
+  });
+
+  it('allowedAgents reports waiting-for-agent when none of the allowed agents are available (#5189)', async () => {
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('codex'), query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('waiting-for-agent');
+    expect(result.agent).toBeNull();
+    expect(result.error).toBe('None of the allowed agents (Claude Code) is logged in on this computer.');
+  });
+
+  it('an empty allowedAgents list runs nothing and never detects agents (#5189: CLAUDE_MEM_WORK_VIEW_AGENT=off)', async () => {
+    let detectCalls = 0;
+    const result = await runTask({ ...task('/data'), allowedAgents: [] }, {
+      detect: async () => { detectCalls++; return agents('claude-code', 'codex'); }, query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env,
+    });
+    expect(result).toEqual({ state: 'waiting-for-agent', agent: null, result: null, error: 'No agent is allowed to run this task.', attempts: [] });
+    expect(detectCalls).toBe(0);
+  });
+
+  it('stayOnFirstUsableAgent: a Claude Code session limit is not handed to Codex (#5189)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: "You've hit your session limit" }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => { call.child.emit('close', 0); });
+    const result = await runTask({ ...task('/data'), stayOnFirstUsableAgent: true }, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result).toMatchObject({ state: 'failed', agent: 'claude-code' });
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(calls).toEqual([]);
+  });
+
+  it('stayOnFirstUsableAgent still runs the only logged-in agent, whichever it is', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-stay-first-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const result = await runTask({ ...task(cwd), stayOnFirstUsableAgent: true }, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'codex' });
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('an answer claude-mem refused is not handed to another agent (#5189: a too-long Claude review ran on the owner\'s Codex)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: '{"narrative":"far too long"}' }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => { call.child.stdout.emit('data', JSON.stringify({ response: 'fine' })); call.child.emit('close', 0); });
+    const refusing: AgentTask = {
+      ...task('/data'),
+      run: async ask => {
+        await ask('review these groups', {});
+        throw Object.assign(new Error('reviews: g_1: narrative is 1467 characters; it must be 1–1200.'), { answerRefused: true });
+      },
+    };
+    const result = await runTask(refusing, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result).toMatchObject({ state: 'failed', agent: 'claude-code' });
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(result.error).toMatch(/^Claude Code: reviews: g_1: narrative is 1467 characters/);
+    expect(calls).toEqual([]);
+  });
+
+  it('when every agent fails, the error names each one\'s failure in the order tried', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'narrative is 22000 characters' }; })()) as never;
+    const spawnImpl = fakeSpawn([], call => {
+      if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'story refused'); call.child.emit('close', 1); return; }
+      call.child.stderr.emit('data', 'not running in a trusted directory'); call.child.emit('close', 55);
+    });
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-all-fail-'));
+    try {
+      const result = await runTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'failed', agent: 'gemini' });
+      expect(result.error).toMatch(/^Claude Code: .*narrative is 22000 characters.* · Codex: codex exec exited 1: story refused · Gemini: gemini exited 55: not running in a trusted directory$/);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it('each step runs on the model its table names, per backend; no entry keeps the CLI default', async () => {
     const seen: any[] = [];
     const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
@@ -218,7 +454,7 @@ describe('agent runner', () => {
     try {
       const calls: SpawnCall[] = [];
       const spawnImpl = fakeSpawn(calls, call => {
-        if (call.command === '/bin/codex') { writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok'); call.child.emit('close', 0); return; }
+        if (call.command === CODEX_PATH) { writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok'); call.child.emit('close', 0); return; }
         call.child.stdout.emit('data', JSON.stringify({ response: 'ok' }));
         call.child.emit('close', 0);
       });
@@ -265,5 +501,63 @@ describe('agent runner', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
     expect(result.state).toBe('ok');
     expect(calls[0].child.killed).toBe(false);
+  });
+});
+
+describe('agent runner: a task\'s preferred agent (#5435)', () => {
+  it('runs on the preferred agent first, not the first in detect order', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const preferred: AgentTask = { ...task(cwd), preferredAgent: 'codex' };
+      const result = await runTask(preferred, { detect: async () => agents('claude-code', 'codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toEqual({ state: 'ok', agent: 'codex', result: 'inline done: {"ok":true}', error: null, attempts: [] });
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('a preferred agent that is not logged in leaves the detect order in charge', async () => {
+    const query = ((input: any) => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })()) as never;
+    const preferred: AgentTask = { ...task('/data'), preferredAgent: 'codex' };
+    const result = await runTask(preferred, { detect: async () => agents('claude-code', 'gemini'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result).toMatchObject({ state: 'ok', agent: 'claude-code', attempts: [] });
+  });
+
+  it('when the preferred agent\'s run fails, the next agent in detect order is tried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-fail-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
+        call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
+        call.child.emit('close', 0);
+      });
+      const preferred: AgentTask = { ...task(cwd), preferredAgent: 'codex' };
+      const result = await runTask(preferred, { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'gemini' });
+      expect(result.attempts.map(attempt => attempt.agent)).toEqual(['codex']);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH, '/bin/gemini']);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('an answer refused on the preferred agent is not handed to another agent (#5189)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-preferred-refused-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+      const refusing: AgentTask = {
+        ...task(cwd),
+        preferredAgent: 'codex',
+        run: async ask => {
+          await ask('review these groups', {});
+          throw Object.assign(new Error('reviews: g_1: narrative is too long.'), { answerRefused: true });
+        },
+      };
+      const result = await runTask(refusing, { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'failed', agent: 'codex' });
+      expect(result.attempts.map(attempt => attempt.agent)).toEqual(['codex']);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });

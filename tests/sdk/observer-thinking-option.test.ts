@@ -32,12 +32,23 @@ describe('resolveObserverThinkingOption (#4732)', () => {
     expect(resolveObserverThinkingOption('OMIT')).toBe('omit');
   });
 
+  it('parses "adaptive" for models that accept no thinking budget', () => {
+    expect(resolveObserverThinkingOption('adaptive')).toEqual({ type: 'adaptive' });
+    expect(resolveObserverThinkingOption(' Adaptive ')).toEqual({ type: 'adaptive' });
+  });
+
   it('parses "enabled" with the 1024 default budget', () => {
     expect(resolveObserverThinkingOption('enabled')).toEqual({ type: 'enabled', budgetTokens: 1024 });
   });
 
   it('parses "enabled:<budget>" with an explicit positive budget', () => {
     expect(resolveObserverThinkingOption('enabled:2048')).toEqual({ type: 'enabled', budgetTokens: 2048 });
+  });
+
+  it('raises a budget below the API minimum to 1024, with a warning', () => {
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    expect(resolveObserverThinkingOption('enabled:500')).toEqual({ type: 'enabled', budgetTokens: 1024 });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the default budget for a non-positive or non-numeric budget', () => {

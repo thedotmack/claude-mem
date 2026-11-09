@@ -23,6 +23,7 @@ import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, paths } from '../../../s
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { logger } from '../../../utils/logger.js';
 import { scrubWireSpoolPayload } from '../privacy/secret-scrub.js';
+import { enqueueWireSpoolEvent } from '../capture/capture-event-sink.js';
 import { parseJsonText } from './foreign-exchange.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS, decodeRequestBodyCopy, readBoundedRequestBody } from '../relay/request-body.js';
 
@@ -303,7 +304,7 @@ export function createHookSpoolPushEventSpool(options: { spool?: HookSpool; nudg
   const spool = options.spool ?? new HookSpool();
   return {
     enqueue(event) {
-      spool.enqueue(event.kind, scrubWireSpoolPayload(event.kind, spooledPayloadOf(event) as never));
+      enqueueWireSpoolEvent(spool, event.kind, scrubWireSpoolPayload(event.kind, spooledPayloadOf(event) as never));
       options.nudgeWorker();
     },
   };

@@ -1,3 +1,9 @@
+/**
+ * Builds the context a new session starts with: a compact index of the
+ * observations and summaries that matter for this project, fitted to the
+ * delivery limit. The same rows render two ways: terse for the agent, and a
+ * readable preview for the person (forHuman).
+ */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -7,13 +13,13 @@ import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { SQLITE_BUSY_TIMEOUT_MS, openReaderDatabase } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
-import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -38,6 +44,8 @@ import {
   readObserverHealth,
   isObserverUnhealthy,
   isObserverQuotaCooldownActive,
+  isQuotaFailure,
+  isQuotaGuardPause,
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
@@ -67,7 +75,7 @@ const VERSION_MARKER_PATH = path.join(
 function initializeDatabase(): Database | null {
   try {
     if (!existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH, { readonly: true, create: false });
+    const db = openReaderDatabase(DB_PATH);
     try {
       db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       return db;
@@ -248,19 +256,26 @@ export function withObserverHealthWarning(text: string, forHuman: boolean = fals
  */
 export function observerHealthWarning(forHuman: boolean = false): string {
   const health = readObserverHealth();
-  // Failure banner wins when both are set: the quota-exhausted copy already
-  // says capture is paused, and a cooldown is not a second outage. Cooldown
-  // alone (consecutiveFailures still below the unhealthy threshold) is the
-  // gap this notice exists to close — the breaker withholds the generator
-  // without ever incrementing the failure streak. A Claude breaker pauses only
-  // the account it was armed under; after a switch to another account it
-  // withholds nothing, so announcing it would be false.
-  const cooldown = health?.quotaCooldown;
+  // The structured quota notice knows whether the main provider or its backup
+  // is saving, so it supersedes the failure that armed that hold, including
+  // when the notice is silent. Unrelated failures still get their own banner.
+  // A Claude hold only applies to the account it was armed under.
+  //
+  // The notice was mirrored under whichever account was selected then, so a
+  // Claude hold is dropped here unless it pauses the account selected now. A
+  // hold mirrored before holds carried their own account uses the ledger's.
+  const mirrored = health?.quotaCooldown;
+  const cooldown = mirrored?.notice
+    ? { ...mirrored, notice: { ...mirrored.notice, holds: mirrored.notice.holds.filter(hold =>
+      cooldownAppliesToCurrentAccount({ provider: hold.provider, profile: hold.profile ?? mirrored.profile })) } }
+    : mirrored;
   let notice: string | null = null;
-  if (isObserverUnhealthy(health)) {
+  if (health && isObserverQuotaCooldownActive(health) && cooldown
+    && (cooldown.notice ? cooldown.notice.holds.length > 0 : cooldownAppliesToCurrentAccount(cooldown))
+    && (!isObserverUnhealthy(health) || (cooldown.notice && (isQuotaFailure(health) || isQuotaGuardPause(health))))) {
+    notice = renderObserverQuotaCooldownNotice({ ...health, quotaCooldown: cooldown });
+  } else if (isObserverUnhealthy(health)) {
     notice = renderObserverHealthWarning(health);
-  } else if (isObserverQuotaCooldownActive(health) && cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
-    notice = renderObserverQuotaCooldownNotice(health);
   }
   // Cloud sync health rides the same slot: a paused (401/403) or long-failing
   // sync is the other outage users otherwise discover only by missing memories.
@@ -273,7 +288,7 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   }
   // Colors only on the human render: the agent copy is fetched separately
   // (colors=false) and ANSI escapes there are noise in the model's context.
-  return forHuman ? paintRed(notice) : notice;
+  return forHuman && notice.includes('⚠') ? paintRed(notice) : notice;
 }
 
 /**
@@ -403,7 +418,7 @@ export function fitContextForDelivery(
     const warningLength = warning ? warning.length + 2 : 0;
     text = appendObserverHealthWarning(warning, truncateTerminalPreview(
       renderPreview(selected, budget.config),
-      limit - warningLength
+      limit - warningLength - TERMINAL_BANNER_RESERVE_CHARS
     ));
   }
 

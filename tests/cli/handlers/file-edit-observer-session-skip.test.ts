@@ -103,7 +103,7 @@ describe('fileEditHandler internal observer sessions', () => {
 
     expect(result.continue).toBe(true);
     expect(workerCallLog).toEqual([]);
-    expect(nudgeLog).toEqual(['/api/spool/nudge']);
+    expect(nudgeLog).toEqual([]);
     expect(spooledEntries()).toEqual([{
       kind: 'file_edit',
       payload: {
@@ -113,6 +113,7 @@ describe('fileEditHandler internal observer sessions', () => {
         toolInput: { filePath: '/tmp/file-edit-project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] },
         toolResponse: { success: true },
         cwd: '/tmp/file-edit-project',
+        eventOccurredAtEpochMs: expect.any(Number),
       },
       enqueuedAtEpochMs: expect.any(Number),
     }]);

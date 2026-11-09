@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { dirname, join, win32 } from 'path';
@@ -58,10 +58,19 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
   });
 
   it('uses a shell-free Windows where-bun lookup with hidden windows', () => {
-    const windowsCallMatch = source.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    const windowsCallMatch = source.match(/spawnSync\(whereExe,\s*\['bun'\],\s*\{([^}]+)\}/);
     expect(windowsCallMatch).not.toBeNull();
     expect(windowsCallMatch![1]).toContain('windowsHide: true');
     expect(windowsCallMatch![1]).not.toContain('shell');
+  });
+
+  it('runs the System32 where.exe and drops current-directory hits', () => {
+    // The binary itself must come from SystemRoot — a bare 'where' spawn can
+    // execute a planted where.exe from the project dir — and its results must
+    // exclude that same dir, or a planted bun.exe still wins.
+    expect(source).toContain("'System32'");
+    expect(source).toContain("'where.exe'");
+    expect(source).toContain('notInCwd');
   });
 
   it('uses no shell option for Unix which-bun lookup', () => {
@@ -380,9 +389,13 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
       );
       // Launched with node, as the hooks do: launching the runner itself with
       // Bun from the project would read that tsconfig before the runner runs.
+      // The neutral cwd is the owner-controlled run dir, not tmpdir(): Bun
+      // loads bunfig.toml from cwd, and a shared /tmp lets another local user
+      // plant a `preload` there.
+      const dataDir = join(root, 'data');
       const res = spawnSync('node', [BUN_RUNNER_PATH, join('..', 'scripts', 'report-cwd.js')], {
         cwd: projectDir,
-        env: { ...process.env, CLAUDE_CONFIG_DIR: projectDir },
+        env: { ...process.env, CLAUDE_CONFIG_DIR: projectDir, CLAUDE_MEM_DATA_DIR: dataDir },
         input: '{"dummy": true}',
         encoding: 'utf-8',
         windowsHide: true,
@@ -390,8 +403,57 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
       expect(res.status).toBe(0);
       expect(res.stderr).not.toContain('moduleSuffixes');
       const reported = JSON.parse(res.stdout.trim().split('\n').pop() as string);
-      expect(realpathSync(reported.cwd)).toBe(realpathSync(tmpdir()));
+      expect(realpathSync(reported.cwd)).toBe(realpathSync(join(dataDir, 'run')));
       expect(realpathSync(reported.launch)).toBe(realpathSync(projectDir));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function runReportCwd(root: string, dataDirSetting: string): { cwd: string; launch: string } {
+    const projectDir = join(root, 'project');
+    const scriptsDir = join(root, 'scripts');
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(scriptsDir, { recursive: true });
+    writeFileSync(
+      join(scriptsDir, 'report-cwd.js'),
+      'console.log(JSON.stringify({ cwd: process.cwd(), launch: process.env.CLAUDE_MEM_HOOK_ORIGINAL_CWD }));\n',
+    );
+    const res = spawnSync('node', [BUN_RUNNER_PATH, join('..', 'scripts', 'report-cwd.js')], {
+      cwd: projectDir,
+      // HOME/USERPROFILE point at the temp root, which hides the usual
+      // ~/.bun install (Windows CI has Bun only there), so name this Bun.
+      env: {
+        ...process.env, HOME: root, USERPROFILE: root, BUN_PATH: process.execPath,
+        CLAUDE_CONFIG_DIR: projectDir, CLAUDE_MEM_DATA_DIR: dataDirSetting,
+      },
+      input: '{"dummy": true}',
+      encoding: 'utf-8',
+      windowsHide: true,
+    });
+    expect(res.status).toBe(0);
+    return JSON.parse(res.stdout.trim().split('\n').pop() as string);
+  }
+
+  it('expands a ~-prefixed CLAUDE_MEM_DATA_DIR under home, not inside the project', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'bun-runner-tilde-')));
+    try {
+      const reported = runReportCwd(root, '~/mem-data');
+      expect(realpathSync(reported.cwd)).toBe(join(root, 'mem-data', 'run'));
+      expect(existsSync(join(root, 'project', '~'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('tightens a pre-existing 0755 run dir to 0700', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'bun-runner-mode-')));
+    try {
+      const dataDir = join(root, 'data');
+      mkdirSync(join(dataDir, 'run'), { recursive: true, mode: 0o755 });
+      chmodSync(join(dataDir, 'run'), 0o755);
+      runReportCwd(root, dataDir);
+      expect(statSync(join(dataDir, 'run')).mode & 0o777).toBe(0o700);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

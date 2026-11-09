@@ -18,9 +18,11 @@ import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
+import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 import { validateWireGatewayListenSettings } from '../../../wire-gateway/config.js';
+import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -56,6 +58,12 @@ const SECRET_SETTING_KEYS = new Set([
   // or query tokens). Both are file/env only — never on the POST whitelist.
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
+  // Contact details, not credentials, but this GET answers any localhost page.
+  // The viewer never shows them, and HTTP cannot write them.
+  'CLAUDE_MEM_ONLINE_SIGNUP_EMAIL',
+  'CLAUDE_MEM_ONLINE_SIGNUP_NOTE',
+  'CLAUDE_MEM_PRO_TRIAL_EMAIL',
 ]);
 
 function maskSecretString(value: string): string {
@@ -118,12 +126,19 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
   );
 }
 
-// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
-// the HTTP write list below, this set keeps it from being persisted via POST.
+// Spawn-binary paths and filesystem/listen redirects: file/env only. Even if
+// a key is accidentally re-added to the HTTP write list below, this set keeps
+// it from being persisted via POST. CLAUDE_MEM_DATA_DIR is where memories and
+// every secret live — an HTTP-writable redirect hands them to any caller that
+// reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
+// it remotely could re-expose the worker on a non-loopback address without
+// the Observation TV guard's token ever being written.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_HOST',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -245,8 +260,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_PROVIDER_BY_SOURCE',
+      'CLAUDE_MEM_OBSERVER_ENABLED',
+      // The viewer's "Keep images" switch. Inference stays file/env only: it
+      // sends images to a paid model and has no switch.
+      'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -272,7 +291,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
-      'CLAUDE_MEM_DATA_DIR',
+      'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
+      'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_AGENT',
+      'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
@@ -281,6 +305,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
@@ -290,7 +315,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
     ];
 
     // Every rule runs inside the settings-document boundary's mutate callback,
@@ -353,6 +383,12 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    for (const key of ['CLAUDE_MEM_OBSERVER_ENABLED', 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'] as const) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
+      }
+    }
+
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
       if (settings[key] !== undefined && typeof settings[key] !== 'string') {
         return { valid: false, error: `${key} must be a string` };
@@ -368,6 +404,11 @@ export class SettingsRoutes extends BaseRouteHandler {
         valid: false,
         error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
       };
+    }
+
+    if (settings.CLAUDE_MEM_PROVIDER_BY_SOURCE !== undefined) {
+      const bySource = parseProviderBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+      if (!bySource.ok) return { valid: false, error: bySource.error };
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {
@@ -407,8 +448,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
       const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      if (obsCount === undefined || obsCount < 0 || obsCount > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 0 and 200' };
       }
     }
 
@@ -505,14 +546,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      // Presence, not truthiness: a falsy value (0, "", null) is still a
+      // posted value, and readers only honor the strings "true"/"false",
+      // so saving one verbatim would report success and change nothing.
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }
@@ -526,8 +574,26 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
       const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
-      if (count === undefined || count < 1 || count > 50) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      if (count === undefined || count < 0 || count > 50) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 0 and 50' };
+      }
+    }
+
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
       }
     }
 
@@ -545,6 +611,24 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
       && parseOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === undefined) {
       return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
+    }
+
+    if (settings.CLAUDE_MEM_WORK_VIEW_AGENT !== undefined
+      && !(WORK_VIEW_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_WORK_VIEW_AGENT)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "off", or "all"' };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
+      && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== undefined
+      && (typeof settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== 'string' || settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL.length > 200)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL must be a string of at most 200 characters' };
+    }
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL', 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL', 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL'] as const) {
+      if (settings[key] !== undefined && (typeof settings[key] !== 'string' || settings[key].length > 200)) {
+        return { valid: false, error: `${key} must be a string of at most 200 characters` };
+      }
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {

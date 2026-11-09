@@ -25,13 +25,21 @@
  * cmem-gateway branch keeps its own marker and runs first, untouched.
  */
 
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { readFileSync } from 'fs';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { isCmemGatewayUrl, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
-import { scrubErrorMessage } from '../../shared/observer-health.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { PROVIDER_BY_SOURCE_SETTING, parseProviderBySource } from '../../shared/provider-by-source.js';
+import { isCmemGatewayUrl, setSessionProviderResolver, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
+import { cmemCapProbeAllowed } from '../../shared/cmem-cap-probe.js';
+import { scrubErrorMessage, type ObserverQuotaNoticeHold } from '../../shared/observer-health.js';
+import { hasAnthropicApiKey } from '../../shared/EnvManager.js';
+import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
-import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
+import { isOpenRouterAvailable, isOpenRouterSelected, resolveOpenRouterConfig } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
@@ -47,6 +55,7 @@ import {
   setUnservableProviderRouter,
   tryAdmitCmemGatewayProbe,
   type QuotaCooldownState,
+  type QuotaFallbackResolver,
   type QuotaProvider,
 } from '../../shared/quota-cooldown.js';
 
@@ -242,9 +251,10 @@ type QuotaFallbackState = 'primary' | 'fallback' | 'credential' | 'probing' | 'b
 /**
  * Last state logged by `selectProviderForGenerator`. Module-level because
  * dispatch runs on every generator start and on the Telegram wrap-up: the log
- * is one line per CHANGE, never one per call.
+ * is one line per CHANGE per primary, never one per call. Kept per primary because
+ * per-source dispatch runs several primaries side by side.
  */
-let quotaFallbackState: QuotaFallbackState = 'primary';
+const quotaFallbackStates = new Map<SelectableProvider, QuotaFallbackState>();
 
 function noteQuotaFallbackTransition(primary: SelectableProvider, routed: RoutedProvider, nowMs: number): void {
   let next: QuotaFallbackState;
@@ -253,8 +263,8 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
   else if (isHeldForQuota(primary, nowMs)) next = standIn ? 'credential' : 'blocked';
   else if (quotaBreakerOf(primary) !== null) next = 'probing';
   else next = 'primary';
-  if (next === quotaFallbackState) return;
-  quotaFallbackState = next;
+  if (next === (quotaFallbackStates.get(primary) ?? 'primary')) return;
+  quotaFallbackStates.set(primary, next);
 
   switch (next) {
     case 'fallback':
@@ -324,7 +334,7 @@ function selectWithQuotaFallback(primary: SelectableProvider): ProviderSelection
 
 /** Test seam: forget the last logged quota-fallback state. */
 export function resetQuotaFallbackStateForTesting(): void {
-  quotaFallbackState = 'primary';
+  quotaFallbackStates.clear();
 }
 
 /**
@@ -332,9 +342,13 @@ export function resetQuotaFallbackStateForTesting(): void {
  * is safe to call from anywhere — but a caller about to actually SEND must use
  * `selectProviderForGenerator` instead, or it becomes part of the herd.
  */
-export function getSelectedProvider(): SelectableProvider {
-  if (isCodexSelected()) return applyQuotaFallback('codex').provider;
-  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+export function getSelectedProvider(platformSource?: string): SelectableProvider {
+  return routedProviderFor(primaryFor(platformSource));
+}
+
+/** The read-only counterpart of `selectForPrimary`: where `primary`'s work goes right now. */
+function routedProviderFor(primary: SelectableProvider): SelectableProvider {
+  if (primary === 'openrouter') {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (
       settings.CLAUDE_MEM_PRO_FALLBACK_AT
@@ -343,11 +357,8 @@ export function getSelectedProvider(): SelectableProvider {
     ) {
       return 'claude';
     }
-    return applyQuotaFallback('openrouter').provider;
   }
-  if (isGeminiSelected() && isGeminiAvailable()) return applyQuotaFallback('gemini').provider;
-  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return applyQuotaFallback('openai-compatible').provider;
-  return applyQuotaFallback('claude').provider;
+  return applyQuotaFallback(primary).provider;
 }
 
 /**
@@ -370,17 +381,105 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
   // The primary Claude credential is held, but runs go on the other one meanwhile.
   if (held === 'claude' && claudeQuotaStandIn()) return 'claude';
   if (readQuotaFallbackProvider() === null) return null;
-  const serving = getSelectedProvider();
-  if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;
-  return serving;
+  // The held provider's own routing when it is a primary here (the global one
+  // or a mapped one). Otherwise it is only a fallback, and capture continues
+  // only if every route still has a provider serving: a primary that was
+  // counting on it may now be waiting.
+  const primaries = [globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured);
+  const routes = (primaries.includes(held as SelectableProvider) ? [held as SelectableProvider] : primaries).map(routedProviderFor);
+  if (routes.some(serving => serving === held || isQuotaCooldownHolding(serving, nowMs))) return null;
+  return routes[0];
 }
+
+function quotaProviderDisplayName(provider: string, settings: SettingsDefaults, auth?: string): string {
+  switch (provider) {
+    case 'claude': return auth === 'api-key' ? 'your Anthropic API key' : 'your Claude plan';
+    case 'openrouter': return isCmemGatewayUrl(resolveOpenRouterConfig().apiUrl) ? 'cmem.ai' : 'OpenRouter';
+    case 'gemini': return 'Gemini';
+    case 'codex': return 'Codex';
+    case 'openai-compatible': {
+      const preset = resolveOpenAICompatPreset(settings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+      return preset.id === 'custom' ? 'your OpenAI-compatible endpoint' : preset.label;
+    }
+    default: throw new Error(`Cannot name quota notice provider: ${provider}`);
+  }
+}
+
+/** Defaults are merged by the settings reader; inspect the actual choice for the opt-out hint. */
+function usesDefaultClaudeBackup(): boolean {
+  const override = process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER;
+  if (override !== undefined) return override.trim() === '';
+  try {
+    const document = parseJsonWithBom<Record<string, unknown>>(readFileSync(paths.settings(), 'utf8'));
+    return !String(settingsTarget(document).CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
+/** Display-only snapshot: dispatch still owns every routing and admission decision. */
+const quotaNoticeResolution: QuotaFallbackResolver = (held, nowMs, activeHolds) => {
+  // Roles are per route. When CLAUDE_MEM_PROVIDER_BY_SOURCE sends sessions to
+  // different primaries, no single main/backup pair describes them all, so the
+  // notice stays role-free: it names only who is serving, and
+  // quotaServingProvider names one only when every route still has one.
+  const primaries = new Set([globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured));
+  if (primaries.size > 1) return quotaServingProvider(held, nowMs);
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const selected = settings.CLAUDE_MEM_PROVIDER;
+  const main = (['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'] as string[]).includes(selected)
+    ? selected : 'claude';
+  const backup = readQuotaFallbackProvider();
+  // Where main's runs actually go: Claude while cmem.ai's trial-expiry
+  // fallback stands, so a hold on it is a hold on the provider doing the work.
+  const routed = routedProviderFor(main as SelectableProvider);
+  const mainAuth = hasAnthropicApiKey() ? 'api-key' : 'subscription';
+  const displayName = (provider: string, auth?: string) => quotaProviderDisplayName(provider, settings, auth);
+  const retryName = (provider: string, auth?: string) => provider === 'claude' && auth !== 'api-key'
+    ? 'Claude' : displayName(provider, auth);
+  const holds: ObserverQuotaNoticeHold[] = activeHolds
+    .filter(hold => cooldownAppliesToCurrentAccount(hold) && (hold.provider === main || hold.provider === backup || hold.provider === routed))
+    .map(hold => ({
+      provider: hold.provider,
+      ...(hold.profile ? { profile: hold.profile } : {}),
+      displayName: displayName(hold.provider, hold.auth ?? mainAuth),
+      retryName: retryName(hold.provider, hold.auth ?? mainAuth),
+      role: hold.provider === main && !(main === 'claude' && hold.auth && hold.auth !== mainAuth) ? 'main' : 'backup',
+      until: hold.until,
+      ...(hold.auth ? { auth: hold.auth } : {}),
+      ...(hold.reason ? { reason: hold.reason } : {}),
+    }));
+  const selectedProvider = getSelectedProvider();
+  const standIn = selectedProvider === 'claude' && isQuotaCooldownHolding('claude', nowMs) ? claudeQuotaStandIn() : null;
+  const serving = !isQuotaCooldownHolding(selectedProvider, nowMs) || standIn
+    ? selectedProvider : undefined;
+  const servingAuth = serving === 'claude' ? standIn ?? mainAuth : undefined;
+  const servingDisplayName = serving === 'claude' && standIn === 'api-key'
+    ? 'your backup API key (ANTHROPIC_FALLBACK_API_KEY)'
+    : serving ? displayName(serving, servingAuth) : undefined;
+  return {
+    servingProvider: quotaServingProvider(held, nowMs),
+    notice: {
+      mainProvider: main,
+      mainDisplayName: displayName(main, mainAuth),
+      mainRetryName: retryName(main, mainAuth),
+      ...(backup && backup !== main ? { backupProvider: backup, backupDisplayName: displayName(backup, mainAuth) } : {}),
+      defaultClaudeBackup: usesDefaultClaudeBackup(),
+      ...(serving ? { servingProvider: serving, servingDisplayName } : {}),
+      ...(servingAuth ? { servingAuth } : {}),
+      holds,
+    },
+  };
+};
 
 // The session-start notice reads the serving provider from the mirrored
 // cooldown in observer-health.json. See setQuotaFallbackResolver for why the
 // answer is injected from here rather than imported there.
-setQuotaFallbackResolver(quotaServingProvider);
+setQuotaFallbackResolver(quotaNoticeResolution);
 setUnservableProviderRouter((provider, message, window, profile) =>
   provider === 'cmem-gateway' ? null : routeAroundUnservableProvider(provider, message, window, profile));
+setSessionProviderResolver(configuredProviderForSource);
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single
@@ -403,28 +502,100 @@ setUnservableProviderRouter((provider, message, window, profile) =>
  * because while the fallback stands memory runs on the Anthropic plan, which
  * is not a pause.
  */
-export function selectProviderForGenerator(): ProviderSelection {
-  if (isCodexSelected()) return selectWithQuotaFallback('codex');
-  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-    if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
-      if (staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
-        return { provider: 'claude', gatewayProbeClaimId: null };
-      }
-      // Window elapsed: exactly one caller re-probes the gateway, the rest stay
-      // on the Anthropic plan until that probe resolves — any failure re-stamps
-      // the marker, a success clears it, and every exit releases the claim.
-      const admission = tryAdmitCmemGatewayProbe();
-      if (!admission.admitted) {
-        return { provider: 'claude', gatewayProbeClaimId: null };
-      }
-      return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
-    }
-    return selectWithQuotaFallback('openrouter');
+export function selectProviderForGenerator(platformSource?: string): ProviderSelection {
+  return selectForPrimary(primaryFor(platformSource));
+}
+
+/**
+ * The provider the global settings name, by the same order getSelectedProvider
+ * reads: codex, openrouter, gemini and openai-compatible each when selected
+ * and configured, else claude.
+ */
+function globalPrimary(): SelectableProvider {
+  if (isCodexSelected()) return 'codex';
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) return 'openrouter';
+  if (isGeminiSelected() && isGeminiAvailable()) return 'gemini';
+  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return 'openai-compatible';
+  return 'claude';
+}
+
+/** Whether `provider` has what it needs to be a primary (claude and codex have no key to check). */
+function isProviderConfigured(provider: SelectableProvider): boolean {
+  switch (provider) {
+    case 'openrouter': return isOpenRouterAvailable();
+    case 'gemini': return isGeminiAvailable();
+    case 'openai-compatible': return isOpenAICompatAvailable();
+    case 'claude':
+    case 'codex':
+      return true;
   }
-  if (isGeminiSelected() && isGeminiAvailable()) return selectWithQuotaFallback('gemini');
-  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return selectWithQuotaFallback('openai-compatible');
-  return selectWithQuotaFallback('claude');
+}
+
+/** Dispatch for an already-chosen primary: the cmem-gateway branch, then the quota fallback. */
+function selectForPrimary(primary: SelectableProvider): ProviderSelection {
+  if (primary !== 'openrouter') return selectWithQuotaFallback(primary);
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  // A spent cmem allowance is one probe a day. Selecting the gateway again
+  // on the immediate fallback resume is what re-sent pro_inference_cap_exhausted.
+  if (isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL) && !cmemCapProbeAllowed()) {
+    return { provider: 'claude', gatewayProbeClaimId: null };
+  }
+  if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+    if (staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
+      return { provider: 'claude', gatewayProbeClaimId: null };
+    }
+    // Window elapsed: exactly one caller re-probes the gateway, the rest stay
+    // on the Anthropic plan until that probe resolves — any failure re-stamps
+    // the marker, a success clears it, and every exit releases the claim.
+    const admission = tryAdmitCmemGatewayProbe();
+    if (!admission.admitted) {
+      return { provider: 'claude', gatewayProbeClaimId: null };
+    }
+    return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
+  }
+  return selectWithQuotaFallback('openrouter');
+}
+
+/** The last malformed value logged, so a bad setting warns once, not on every generator start. */
+let warnedProviderBySource: string | null = null;
+
+/**
+ * The provider mapped to `platformSource`, or null when the feature is off,
+ * the value is malformed (the whole map is then ignored), or the source has no
+ * entry.
+ */
+function providerForSource(platformSource: string | undefined): SelectableProvider | null {
+  if (platformSource === undefined) return null;
+  const map = readProviderBySource();
+  return map.get(normalizePlatformSource(platformSource)) ?? null;
+}
+
+function readProviderBySource(): ReadonlyMap<string, SelectableProvider> {
+  const raw = SettingsDefaultsManager.loadFromFile(paths.settings())[PROVIDER_BY_SOURCE_SETTING] as unknown;
+  const parsed = parseProviderBySource(raw);
+  if (parsed.ok) return parsed.map;
+  const key = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  if (warnedProviderBySource !== key) {
+    warnedProviderBySource = key;
+    logger.warn('SESSION', `${parsed.error}; ignoring it and using the global provider`);
+  }
+  return new Map();
+}
+
+/** The provider mapped to `platformSource` when it is configured, else null: the global provider serves that session. */
+function configuredProviderForSource(platformSource: string | undefined): SelectableProvider | null {
+  const mapped = providerForSource(platformSource);
+  return mapped !== null && isProviderConfigured(mapped) ? mapped : null;
+}
+
+/** The primary for a session of `platformSource`: its mapped provider when configured, else the global one. */
+function primaryFor(platformSource?: string): SelectableProvider {
+  return configuredProviderForSource(platformSource) ?? globalPrimary();
+}
+
+/** Test seam: forget the malformed value already logged. */
+export function resetProviderBySourceWarningForTesting(): void {
+  warnedProviderBySource = null;
 }
 
 /** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */

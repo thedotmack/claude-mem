@@ -228,6 +228,25 @@ This ownership check also applies to session summaries and does not hold a
 database lock during the provider call. Recovery may still require another paid
 provider call; it does not guarantee exactly-once provider execution.
 
+### Claude provider through a gateway
+
+With `CLAUDE_MEM_SERVER_PROVIDER=claude`, the generation worker calls
+api.anthropic.com. To send its calls through an Anthropic-compatible gateway
+(Cloudflare AI Gateway, LiteLLM, a corporate proxy) for per-call logs, cost and
+rate limits, set these on the generation worker:
+
+| Setting | Description |
+|---------|-------------|
+| `CLAUDE_MEM_ANTHROPIC_BASE_URL` | The gateway's Anthropic-compatible base URL; `/v1/messages` is appended |
+| `CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS` | Extra headers on each request, such as the gateway's own auth header, in the format of Claude Code's `ANTHROPIC_CUSTOM_HEADERS`: one `Name: Value` per line. They can't replace the API key, version or content type. A line that isn't a valid header is skipped with a warning that gives its line number, never its text |
+
+Claude Code's own `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` are not
+read, so a server started from a shell that sets them for Claude Code doesn't
+send its key to that gateway.
+
+A cmem.ai memory key (`cm_pro_…`) is refused on this provider, as the API key
+or inside a custom header; it only works on the cmem.ai gateway.
+
 ### Custom generation provider (advanced)
 
 The generation worker ships with `claude`, `gemini` and `openrouter` providers, and

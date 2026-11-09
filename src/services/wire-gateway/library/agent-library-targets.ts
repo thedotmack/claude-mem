@@ -156,6 +156,21 @@ export const CURSOR_HOOK_TABLE: readonly HookTableRow[] = [
   { event: 'afterShellExecution', args: 'hook cursor observation' },
   { event: 'afterFileEdit', args: 'hook cursor file-edit' },
   { event: 'stop', args: 'hook cursor summarize' },
+  // After stop so the recorded ids of the rows above (by index) never move.
+  // afterFileEdit records writes only. Cursor's generic postToolUse event is
+  // the one that fires for reads, searches and subagent runs, so it is
+  // matched narrowly: shell, MCP and file-edit calls keep their own hooks
+  // above and are never recorded twice (#5399).
+  { event: 'postToolUse', args: 'hook cursor observation', matcher: 'Read|Grep|Task' },
+  // Denied, failed and timed-out calls. Their payload carries error_message
+  // instead of a result; the adapter turns that into an is_error response,
+  // so the worker does not read the attempted paths as completed work.
+  // Matched to the tools postToolUse and afterFileEdit cover (Cursor's
+  // file-edit tool is `Write`). Shell and MCP calls stay on
+  // afterShellExecution / afterMCPExecution: Cursor's hooks reference does
+  // not say whether those fire for failed calls, so an unmatched
+  // postToolUseFailure could record one call twice.
+  { event: 'postToolUseFailure', args: 'hook cursor observation', matcher: 'Read|Grep|Task|Write' },
 ];
 
 // Older installers copied these scripts into <target>/hooks/ and pointed
@@ -197,7 +212,10 @@ export function cursorHookItems(environment: LibraryInstallEnvironment, targetDi
     place: 'json-array-entry',
     file,
     arrayKeyPath: ['hooks', row.event],
-    entry: { command: buildWorkerHookCommand({ bunPath: environment.bunPath, workerServicePath: environment.workerServicePath!, args: row.args, style: 'shell-quoted-json-escaped', platform: environment.platform }) },
+    entry: {
+      ...(row.matcher ? { matcher: row.matcher } : {}),
+      command: buildWorkerHookCommand({ bunPath: environment.bunPath, workerServicePath: environment.workerServicePath!, args: row.args, style: 'shell-quoted-json-escaped', platform: environment.platform }),
+    },
     isPreLibraryEntry: (entry) => isUnifiedClaudeMemCursorHook(entry) || isLegacyClaudeMemCursorHook(entry),
   }));
   return { items: [version, ...hooks], jsonStyles: { [file]: NO_FINAL_NEWLINE } };
@@ -298,16 +316,23 @@ export function kimiMcpItem(mcpJsonPath: string, nodePath: string, mcpServerPath
 
 export const ANTIGRAVITY_HOOK_NAME = 'claude-mem';
 
-// The 5 hook events `agy` fires, mapped to claude-mem's internal handlers:
-//   - SessionStart   → context     (inject startup memory once per session;
-//                                    PreInvocation busted the prefix cache, #4911)
-//   - PreToolUse     → observation (adapter emits `{"decision":"allow"}`)
+// The 5 hook events claude-mem registers in `agy`, mapped to its internal handlers:
+//   - SessionStart   → context      (inject startup memory once per session;
+//                                     context on PreInvocation busted the prefix cache, #4911)
+//   - PreInvocation  → session-init (agy has no prompt-submit hook. Records the
+//                                     prompt on the first model call of a user turn
+//                                     only; a follow-up call after a tool step gets
+//                                     file-context for the files that step read, #5078)
 //   - PostToolUse    → observation
-//   - PostInvocation → observation (the assistant response)
+//   - PostInvocation → observation  (the assistant response)
 //   - Stop           → summarize
+// PreToolUse is not registered. A PreToolUse hook must answer with a decision,
+// and agy treats "allow" as auto-approval, so a `*`-matched observation hook
+// there skipped agy's own permission prompt for every tool and recorded each
+// call twice (#5078). Observations come from PostToolUse, as on Claude Code.
 export const ANTIGRAVITY_HOOK_TABLE: readonly HookTableRow[] = [
   { event: 'SessionStart', args: 'hook antigravity-cli context' },
-  { event: 'PreToolUse', args: 'hook antigravity-cli observation' },
+  { event: 'PreInvocation', args: 'hook antigravity-cli session-init' },
   { event: 'PostToolUse', args: 'hook antigravity-cli observation' },
   { event: 'PostInvocation', args: 'hook antigravity-cli observation' },
   { event: 'Stop', args: 'hook antigravity-cli summarize' },
@@ -366,7 +391,12 @@ export function antigravityLegacyEventHookEdits(document: unknown): Array<{ op: 
   return edits;
 }
 
-/** Migrations for agy's hooks.json: the pre-#4196 event-keyed entries, and the pre-#4911 PreInvocation context hook. */
+/**
+ * Migrations for agy's hooks.json: the pre-#4196 event-keyed entries, and the
+ * PreToolUse event of claude-mem's named hook, which auto-approved every tool
+ * call (#5078). A pre-#4911 PreInvocation context handler needs no migration:
+ * PreInvocation is claude-mem's (session-init) again, and its item replaces it.
+ */
 export function antigravityHooksMigration(hooksPath: string): LibraryMigration {
   return {
     file: hooksPath,
@@ -374,8 +404,8 @@ export function antigravityHooksMigration(hooksPath: string): LibraryMigration {
     compute: (document) => {
       const edits = antigravityLegacyEventHookEdits(document);
       const named = (document as Record<string, unknown> | null)?.[ANTIGRAVITY_HOOK_NAME];
-      if (named && typeof named === 'object' && !Array.isArray(named) && Object.hasOwn(named, 'PreInvocation')) {
-        edits.push({ op: 'delete', keyPath: [ANTIGRAVITY_HOOK_NAME, 'PreInvocation'] });
+      if (named && typeof named === 'object' && !Array.isArray(named) && Object.hasOwn(named, 'PreToolUse')) {
+        edits.push({ op: 'delete', keyPath: [ANTIGRAVITY_HOOK_NAME, 'PreToolUse'] });
       }
       return edits;
     },
