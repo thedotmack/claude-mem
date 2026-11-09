@@ -16,50 +16,50 @@
 </h1>
 
 <p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">為 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 打造的持久記憶壓縮系統。</h4>
 
 <p align="center">
-  <a href="LICENSE">
+  <a href="../../LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
-  <a href="package.json">
+  <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
@@ -339,6 +339,7 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 #### 變更模式後
 
 重新啟動 Claude Code 以套用新的模式設定。
+
 ---
 
 ## 開發
@@ -386,15 +387,15 @@ Claude-Mem 採用 Apache License 2.0 授權。
 開發工具、本機代理、MCP 伺服器、企業系統、機器人技術堆疊，
 以及生產環境代理框架中。
 
-完整詳情請參閱 [LICENSE](LICENSE) 檔案。授權範圍與開源／商業界線
-請參閱 [docs/license.md](docs/license.md) 與 [docs/ip-boundary.md](docs/ip-boundary.md)。
+完整詳情請參閱 [LICENSE](../../LICENSE) 檔案。授權範圍與開源／商業界線
+請參閱 [docs/license.md](../license.md) 與 [docs/ip-boundary.md](../ip-boundary.md)。
 
 
 ---
 
 ## 支援
 
-- **文件**：[docs/](docs/)
+- **文件**：[docs/](../)
 - **Issues**：[GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **儲存庫**：[github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
 - **官方 X 帳號**：[@Claude_Memory](https://x.com/Claude_Memory)
