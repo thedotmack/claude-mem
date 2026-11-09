@@ -109,7 +109,10 @@ describe('POST /v1/context/semantic limits', () => {
     // creates only where pgvector 0.8+ is usable, not merely installable.
     const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
     const vectors = table.rows[0]?.present === true;
-    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
+    // Probe the model only where vectors exist, in the order the route checks
+    // them: without pgvector the route never embeds, and loading the model here
+    // (a network download on a cold runner) only spends the test's timeout.
+    const model = vectors && await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
     // The search CI job (CLAUDE_MEM_TEST_PGVECTOR=1) has both; there a
     // missing one fails these tests instead of passing them untested.
     if (process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
