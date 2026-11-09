@@ -23,7 +23,7 @@ it.skipIf(process.platform === 'win32')('does not report a signaled MCP process 
       ['process.exit(0)', 0], ['process.exit(7)', 7], ["process.kill(process.pid, 'SIGTERM')", 1],
     ] as const) {
       writeFileSync(server, code);
-      const child = spawnSync(process.execPath, [cli], { encoding: 'utf8' });
+      const child = spawnSync('node', [cli], { encoding: 'utf8' });
       expect(child.status).toBe(expected);
     }
   } finally {
