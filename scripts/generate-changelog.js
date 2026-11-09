@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { execSync } from 'child_process';
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 
 const CHANGELOG_PATH = 'docs/CHANGELOG.md';
@@ -13,23 +14,27 @@ const HEADER_LINES = [
   '',
 ];
 
-function exec(command) {
+async function listReleases() {
+  // One page includes the bodies. Never turn a release tag into a shell command.
+  const gh = spawn('gh', ['api', '--paginate', 'repos/{owner}/{repo}/releases?per_page=100',
+    '--jq', '.[] | select(.draft | not) | {tagName: .tag_name, publishedAt: .published_at, body} | @json'],
+    { stdio: ['ignore', 'pipe', 'inherit'] });
+  const finished = new Promise((resolve, reject) => {
+    gh.once('error', reject);
+    gh.once('close', (code) => code === 0 ? resolve() : reject(new Error(`gh api exited with ${code}`)));
+  });
+  const releases = [];
+  const lines = createInterface({ input: gh.stdout, crlfDelay: Infinity });
+  const read = async () => {
+    for await (const line of lines) if (line) releases.push(JSON.parse(line));
+  };
   try {
-    return execSync(command, { encoding: 'utf-8' });
-  } catch (error) {
-    console.error(`Error executing command: ${command}`);
-    console.error(error.message);
-    process.exit(1);
+    await Promise.all([finished, read()]);
+  } finally {
+    lines.close();
+    if (gh.exitCode === null) gh.kill();
   }
-}
-
-function listReleases() {
-  const releasesJson = exec('gh release list --limit 1000 --json tagName,publishedAt,name');
-  return JSON.parse(releasesJson);
-}
-
-function fetchReleaseBody(tagName) {
-  return exec(`gh release view ${tagName} --json body --jq '.body'`).trim();
+  return releases;
 }
 
 function formatDate(isoDate) {
@@ -37,9 +42,10 @@ function formatDate(isoDate) {
 }
 
 function cleanReleaseBody(body) {
-  return body
-    .replace(/🤖 Generated with \[Claude Code\].*$/s, '')
-    .replace(/---\n*$/s, '')
+  // Only the trailing attribution block is boilerplate. Mentions inside notes
+  // and a hyphenated last line belong to the release author.
+  return (body ?? '').trim()
+    .replace(/(?:^|\r?\n)(?:---[ \t]*\r?\n(?:[ \t]*\r?\n)*)?🤖 Generated with \[Claude Code\]\([^\r\n]*\)[ \t]*$/, '')
     .trim();
 }
 
@@ -53,7 +59,9 @@ function renderEntry(release) {
   const body = cleanReleaseBody(release.body);
   const lines = [`## [${version}] - ${date}`, ''];
   if (body) {
-    const bodyWithoutHeader = body.replace(/^##?\s+v?[\d.]+.*?\n\n?/m, '');
+    const firstHeading = /^#{1,2}[ \t]+v?([^\s:]+)(?:[ \t:].*)?(?:\r?\n|$)/.exec(body);
+    const bodyWithoutHeader = firstHeading?.[1] === version
+      ? body.slice(firstHeading[0].length).trimStart() : body;
     lines.push(bodyWithoutHeader);
     lines.push('');
   }
@@ -76,7 +84,7 @@ function readExistingChangelog() {
   return { knownVersions, body };
 }
 
-function main() {
+async function main() {
   const fullRegen = process.argv.includes('--full');
 
   console.log('🔧 Generating CHANGELOG.md from GitHub releases...\n');
@@ -86,7 +94,7 @@ function main() {
     : readExistingChangelog();
 
   console.log('📋 Fetching release list from GitHub...');
-  const allReleases = listReleases();
+  const allReleases = await listReleases();
 
   if (allReleases.length === 0) {
     console.log('⚠️  No releases found');
@@ -100,15 +108,6 @@ function main() {
   if (newReleases.length === 0) {
     console.log('✅ CHANGELOG.md is already up to date.');
     return;
-  }
-
-  console.log(
-    `📥 Fetching bodies for ${newReleases.length} new release(s)` +
-      (fullRegen ? '' : ` (${knownVersions.size} already in CHANGELOG)`) +
-      '...',
-  );
-  for (const release of newReleases) {
-    release.body = fetchReleaseBody(release.tagName);
   }
 
   newReleases.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
@@ -126,4 +125,7 @@ function main() {
   console.log(`   ${newReleases.length} new release(s) prepended`);
 }
 
-main();
+main().catch(error => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

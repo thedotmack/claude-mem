@@ -320,15 +320,24 @@ var init_atomic_json = __esm({
   }
 });
 
-// src/shared/settings-document.ts
-import { existsSync as existsSync4, renameSync as renameSync2 } from "fs";
+// src/shared/settings-document-shape.ts
 function classifySettingsDocument(document) {
   const env = document.env;
-  return isRecord(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_")) ? "nested" : "flat";
+  return isSettingsRecord(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_")) ? "nested" : "flat";
 }
 function settingsTarget(document) {
   return classifySettingsDocument(document) === "nested" ? document.env : document;
 }
+var isSettingsRecord;
+var init_settings_document_shape = __esm({
+  "src/shared/settings-document-shape.ts"() {
+    "use strict";
+    isSettingsRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+});
+
+// src/shared/settings-document.ts
+import { existsSync as existsSync4, renameSync as renameSync2 } from "fs";
 function withoutStaleRootCopies(document) {
   if (classifySettingsDocument(document) !== "nested") return document;
   return Object.fromEntries(Object.entries(document).filter(([key]) => !key.startsWith("CLAUDE_MEM_")));
@@ -340,7 +349,7 @@ function loadDocument(path4) {
   if (!existsSync4(path4)) return { exists: false };
   try {
     const parsed = readJsonFileWithBom(path4);
-    if (!isRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
+    if (!isSettingsRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
     return { exists: true, document: parsed };
   } catch (error) {
     return { exists: true, error };
@@ -366,7 +375,7 @@ function updateSettingsDocument(path4, updates, seed = {}, mutate, options = {})
     loaded = { exists: false };
   }
   const cloned = cloneDocument(loaded.document ?? seed);
-  if (!isRecord(cloned)) return { status: "refused", error: new Error("settings seed must be an object") };
+  if (!isSettingsRecord(cloned)) return { status: "refused", error: new Error("settings seed must be an object") };
   const document = withoutStaleRootCopies(cloned);
   const target = settingsTarget(document);
   Object.assign(target, updates);
@@ -391,12 +400,12 @@ function restoreQuarantined(quarantinedTo, path4) {
     return false;
   }
 }
-var isRecord, SETTINGS_FILE_MODE;
+var SETTINGS_FILE_MODE;
 var init_settings_document = __esm({
   "src/shared/settings-document.ts"() {
     "use strict";
     init_atomic_json();
-    isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    init_settings_document_shape();
     SETTINGS_FILE_MODE = 384;
   }
 });
@@ -1141,6 +1150,10 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_WELCOME_HINT_ENABLED: "true",
         CLAUDE_MEM_WORK_STATE_ENABLED: "true",
         // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
+        CLAUDE_MEM_AUTO_CLEAR_ENABLED: "false",
+        // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
+        CLAUDE_MEM_AUTO_CLEAR_PERCENT: "33",
+        // Context window use (1-95) that starts the auto-clear
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",
         // 'false' = never block a full-file Read; the file's observation timeline is still added as context
         CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: "false",
@@ -1711,9 +1724,11 @@ function commitSubjects(command2) {
   const starts = [...command2.matchAll(gitPattern(String.raw`commit\b`, "g"))].map((match) => match.index);
   return starts.map((start, index) => {
     const invocation = command2.slice(start, starts[index + 1]);
+    const substituted = invocation.match(/\s-[a-zA-Z]*m\s+"\$\(\s*cat\s+<<-?\s*['"]?\w+['"]?[^\n]*\n([^\n]*)/);
+    if (substituted) return short(substituted[1]);
     const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
-    const text5 = inline ? (inline[1] ?? inline[2]).replace(/\\(.)/g, "$1") : heredoc?.[1];
+    const text5 = inline ? (inline[1] ?? inline[2]).replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") : heredoc?.[1];
     return short(text5?.split("\n")[0]);
   });
 }
@@ -1783,8 +1798,9 @@ function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRe
   const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
   const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
   if (!url) return [];
-  const title = command2.match(/--title\s+(?:"([^"]+)"|'([^']+)')/);
-  return [{ kind: "pull-request", title: short(title?.[1] ?? title?.[2]) ?? `PR #${url.split("/").at(-1)}`, url, atEpoch, sourceRef: sourceRef2 }];
+  const title = command2.match(/(?:--title(?:=|\s+)|\s-t\s+)(?:"((?:[^"\\]|\\.)+)"|'([^']+)'|([^\s"'-][^\s]*))/);
+  const titleText = title?.[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? title?.[2] ?? title?.[3];
+  return [{ kind: "pull-request", title: short(titleText) ?? `PR #${url.split("/").at(-1)}`, url, atEpoch, sourceRef: sourceRef2 }];
 }
 function gitProductsFromCommand(command2, response, out, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
   const pushes = pushesFrom(command2, response, out);
@@ -1975,7 +1991,7 @@ function readProductRecords(read, sinceEpoch, limit = 2e3, { database } = {}) {
     FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   return { productCalls, productObservations, productDeliverables };
 }
-var FILE_KINDS, PUBLISHING_TOOLS, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
+var FILE_KINDS, PUBLISHING_TOOLS, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, BASH_DOUBLE_QUOTE_ESCAPE, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
 var init_work_product = __esm({
   "src/services/work-view/work-product.mjs"() {
     "use strict";
@@ -2016,6 +2032,7 @@ var init_work_product = __esm({
     GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
     SHA = "[0-9a-f]{7,40}";
     unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
+    BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
     productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha.slice(0, 7)}` : product.kind === "branch" && product.branch ? `branch:${product.branch}` : product.productId ?? product.url ?? product.path;
     FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
     PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
@@ -2987,6 +3004,10 @@ function webhookHost(host) {
 function keyedLookbehind(key) {
   return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
 }
+function matchAfterEscapedWhitespace(pattern) {
+  const source = pattern.regex.source.replace(/(^|\||\(\?:)\\b/g, `$1${ESCAPED_WHITESPACE_OR_WORD_BOUNDARY}`);
+  return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
+}
 function redactSensitive(input, config) {
   if (!config.enabled || input.length === 0) {
     return { redacted: input, counts: {}, oversize: false };
@@ -3151,7 +3172,7 @@ function redactJsonStrings(value, config = getRedactionConfig()) {
   };
   return walk(value);
 }
-var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE;
+var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE;
 var init_redaction = __esm({
   "src/utils/redaction.ts"() {
     "use strict";
@@ -3176,6 +3197,7 @@ var init_redaction = __esm({
       String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
       `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`
     ].join("|"), "gi");
+    ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
     BUILTIN_REDACTION_PATTERNS = [
       // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
       // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
@@ -3282,12 +3304,8 @@ var init_redaction = __esm({
       // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
       // "Authorization: Bearer …"` commands print. The prefix is not claimed by
       // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
-      // the fixed 48-char alphanumeric body keeps the model ids out. The worker
-      // scans JSON.stringify(toolResponse), where a newline right before the key
-      // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
-      // there and the lookbehind also accepts the escaped whitespace pair, like
-      // generic_token's ASSIGNMENT_START.
-      { name: "perplexity_key", regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, "g") },
+      // the fixed 48-char alphanumeric body keeps the model ids out.
+      { name: "perplexity_key", regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
       // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
       // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
       // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
@@ -3309,7 +3327,7 @@ var init_redaction = __esm({
       // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
       // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
       { name: "claude_mem_key", regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g }
-    ];
+    ].map(matchAfterEscapedWhitespace);
     GENERIC_REDACTION_PATTERNS = [
       // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
       // `OLDPWD` environment variables hold a working directory, not a secret.

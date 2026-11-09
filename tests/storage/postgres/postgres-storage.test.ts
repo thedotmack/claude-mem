@@ -189,6 +189,18 @@ describe('server beta postgres observation storage', () => {
     expect(duplicateNativeId.id).toBe(withNativeId.id);
   });
 
+  it('keeps completed generation state when a session creation is replayed', async () => {
+    const { project } = await createFixtureScope(storage);
+    const request = { projectId: project.id, teamId: project.teamId, contentSessionId: 'replay' };
+    const first = await storage.sessions.create(request);
+    await storage.sessions.markGenerationCompleted({ ...request, id: first.id });
+    const replay = await storage.sessions.create(request);
+    expect(replay.id).toBe(first.id);
+    expect(replay.generationStatus).toBe('completed');
+    const explicit = await storage.sessions.create({ ...request, generationStatus: 'processing' });
+    expect(explicit.generationStatus).toBe('processing');
+  });
+
   it('links an initially unscoped event when its session becomes known on redelivery', async () => {
     const { project, session } = await createFixtureScope(storage);
     const scope = { projectId: project.id, teamId: project.teamId };

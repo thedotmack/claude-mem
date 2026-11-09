@@ -93,15 +93,15 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(visible).toEqual(records(model.text).slice(-visible.length));
     expect(visible).toContain('RECORD_049');
     expect(visible).not.toContain('RECORD_000');
-    // Header count still describes the model selection, and trailing context
-    // remains after the newest timeline entry.
+    // Header count still describes the model selection, and the newest
+    // timeline entry ends the preview: no closing lines follow it.
     const noticeStart = preview.text.indexOf('\x1b[0m\n\n[Terminal preview truncated');
     expect(noticeStart).toBeGreaterThan(0);
     expect(fullPreview.text.startsWith(preview.text.slice(0, noticeStart))).toBe(true);
     expect(preview.text.indexOf('RECORD_049')).toBeGreaterThan(noticeStart);
-    expect(preview.text).toContain('Access ');
-    expect(preview.text.slice(preview.text.lastIndexOf('Access ')))
-      .toBe(fullPreview.text.slice(fullPreview.text.lastIndexOf('Access ')));
+    expect(preview.text.split('\n').at(-1)).toContain('RECORD_049');
+    expect(fullPreview.text.split('\n').at(-1)).toContain('RECORD_049');
+    expect(preview.text).not.toContain('Access ');
     for (const line of preview.text.split('\n').filter(line => line.includes('RECORD_'))) {
       expect(fullPreview.text.split('\n')).toContain(line);
     }
@@ -180,7 +180,9 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('Previously');
     expect(preview.text).toContain('PRIOR_MESSAGE');
     expect(preview.text).not.toContain('m'.repeat(7_000));
-    expect(preview.text).toContain('Access ');
+    // The prior reply sits above the timeline, which ends the preview.
+    expect(preview.text.indexOf('PRIOR_MESSAGE')).toBeLessThan(preview.text.indexOf(records(preview.text)[0]));
+    expect(preview.text.split('\n').at(-1)).toContain(records(model.text).at(-1)!);
   }, 15_000);
 
   it('drops a prior message too long for the delivery limit and keeps every observation', () => {

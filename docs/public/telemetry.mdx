@@ -130,6 +130,9 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `skill_trigger` | `tool` | How the skill was invoked: `tool` (host Skill tool) or `prompt` (typed `/skill` at session-init). Never the prompt body. |
 | `view` | `suggested` | Which My Work viewer page is on screen — the viewer's own closed page ids: setup / work / rules / suggested / past-focus. A focus area counts as `work`, never by its name. Never a request title, prompt, observation, file path, or search text |
 | `previous_view` | `work` | On `work_view_switched`, the page the viewer switched away from (same closed list) |
+| `from_version` / `to_version` | `15.12.0` / `15.13.0` | On the auto-update events: the claude-mem version an automatic update started from, and the promoted version it tried to install |
+| `failure_stage` | `installer-exit` | On the auto-update events: where an automatic update failed — a closed enum: install-moved-before-start / npx-not-found / installer-folder / installer-spawn / installer-exit / installer-timeout / installer-still-running / prove-install / superseded-by-another-update / restore-blocked-by-schema / schema-stamp-unreadable / supervisor-exception, or, when the worker recorded the attempt itself, supervisor-vanished / supervisor-never-started / launch-supervisor. Never an error message |
+| `restore_result` | `restored` | On `auto_update_failed`: what became of the previous version — a closed enum: not-needed / previous-worker-unproven / not-attempted / restored / previous-not-published / previous-publication-unknown / restore-installer-failed / restore-unproven / unknown |
 
 One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
 
@@ -137,13 +140,15 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 
 | Event | When | Extra properties |
 |---|---|---|
-| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `provider_source`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `install_completed` | `npx claude-mem install` finishes. Not sent for the installer runs claude-mem's auto-updater starts, which send `auto_update_applied` or `auto_update_failed` instead | `ide`, `provider`, `provider_source`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
 | `installer_oauth_started` | The installer opened the browser sign-in link | `version` — never the link, pairing id, secret, or device code |
 | `installer_oauth_completed` | Browser sign-in finished | `version` |
 | `installer_oauth_timeout` | Sign-in polling reached the pairing's expiry (the server's `expires_in`, capped at 30 minutes; 4 minutes when the server reports none) | `version`, `phase` (login / enrollment), `duration_ms` |
 | `installer_oauth_start_failed` | `POST /api/installer/oauth/start` did not return a usable pairing | `version`, `outcome` (http_error / network / timeout / bad_body), `interactive`, `phase` (login / deferred) |
 | `installer_oauth_deferred` | A non-interactive install that skipped sign-in printed the optional sign-in link at the end | `version`, `interactive` (always `false`) |
-| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
+| `install_failed` | The installer aborts. Not sent for the installer runs claude-mem's auto-updater starts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
+| `auto_update_applied` | An automatic update installed the promoted version and a worker on it finished starting (see [Auto-update](/auto-update)) | `from_version`, `to_version`; `failure_stage` (`supervisor-vanished`) when the worker recorded an update whose supervisor was gone but whose install already reported the new version |
+| `auto_update_failed` | An automatic update did not install the promoted version | `from_version`, `to_version`, `failure_stage`, `restore_result` |
 | `pro_offer_viewed` | A CMEM Pro offer is displayed in the installer | `trial_days`, `trial_variant`, `offer_surface` (`installer`), `funnel_source` (`installer`) |
 | `trial_email_submitted` | The user submits an email to start the installer trial flow | `version` only — never the email |
 | `trial_link_sent` | The trial start API accepts the request and sends a sign-in link | `version`, `duration_ms` — never the email, link, pairing secret, or device code |
@@ -153,7 +158,7 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
 | `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts (including `outcomes_aborted_deadline_exceeded`), `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `top_abort_reason` (the most common `abort_reason` among the session's aborted turns; present only when one aborted), `observed_model`, `observed_billing`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`) |
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
-| `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction returns; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
+| `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction handoffs; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `skill_invoked` | A bundled skill is invoked — the host Skill tool loads its instructions, or the user types a first-party `/skill` at session-init. **Not** work completion; no `duration_ms` / outcome. Worker path only. Unknown `/foo` emits nothing. | `skill_id` (closed enum + `other`), `skill_source` (`first_party` / `third_party`), `skill_trigger` (`tool` / `prompt`), `ide` |
 | `work_view_opened` | The local My Work viewer (`http://localhost:37777`) is opened in a browser. The page reports it over `POST /api/work-view/usage` (loopback and same-origin only) and the worker sends it; the page loads no PostHog SDK | `view` (setup / work / rules / suggested / past-focus) |
@@ -175,8 +180,9 @@ is `main`, `subagent`, or `unknown` (using the same subagent predicate as captur
 
 | Counter | What it measures |
 |---|---|
-| `instruction_returned_count` | Hooks returning the complete work-state instruction block, including cached blocks. This is a handoff to the host, **not proof the host accepted it or the model followed it**. |
-| `instruction_disabled_count`, `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Known configuration exclusions, successful returns without the block, or a failed/unknown context read. |
+| `instruction_returned_count` | MCP server connections whose instructions included the work-state rule, counted once the host finishes initializing. This is a handoff to the host, **not proof the host showed it or the model followed it**. Host and agent attribution are `unknown`: an MCP process cannot tell which session it serves. |
+| `instruction_disabled_count` | MCP server connections with work state turned off, so without the rule. |
+| `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Sent by earlier versions, whose SessionStart hook carried the rule. Current versions do not send them: the SessionStart block is the memory timeline alone. |
 | `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts with an original hook timestamp within the 30-day replay window, and their first captured session/agent scope. Untimestamped transcript prompts are omitted. |
 | `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Both require an original event timestamp and a preceding known public-turn boundary. Memory/project/privacy/agent exclusions still apply. |
 | `native_todo_count` | Captured `TodoWrite`, `SetTodoList`, or `update_plan` calls, including those excluded from memory generation. With `instruction_state=returned`, this is a useful competing-todo diagnostic, **not a verdict of noncompliance**. |
@@ -188,8 +194,10 @@ in `_ok_count`, `_error_count`, `_excluded_count`, `_disabled_count`, or
 `_unknown_count`. Only an explicit saved receipt establishes a successful write.
 The two sources can observe **the same call: never add them as distinct usage**.
 
-`instruction_state` describes the last known hook handoff preceding the event
-in that exact local session/agent scope. Delayed activity older than the latest
+`instruction_state` describes the last known handoff preceding the event
+in that exact local session/agent scope. The rule now reaches the host in the MCP
+server's instructions, which carry no session, so current captures report
+`instruction_state=unknown`. Delayed activity older than the latest
 handoff has `instruction_state=unknown`; later instructions are never applied
 retroactively. Captured prompts and tools without original timestamps are omitted.
 Before a handoff is observed, it is `unknown`. Direct MCP calls,

@@ -23,7 +23,6 @@ import { clipUtf16 } from '../../shared/relayed-text.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { providersMappedBySource } from '../../shared/provider-by-source.js';
-import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
   hasShownProFallbackNotice,
@@ -31,7 +30,7 @@ import {
   proFallbackNotice,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
-import { resolveRuntimeContext, selectRuntime, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
@@ -67,52 +66,55 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 }
 
 /**
- * The lines under the SessionStart terminal preview. The preview leaves
- * TERMINAL_BANNER_RESERVE_CHARS for them, and composeSessionStartSystemMessage
- * keeps the whole `systemMessage` within Claude Code's 10,000-character field
- * cap (#5079).
+ * The viewer lines at the top of the SessionStart terminal banner: the live
+ * viewer link, the trial line, the trial countdown and the TeamBrain discovery
+ * line. They go above the preview, which ends on its newest timeline entry with
+ * no closing lines after it. The preview leaves TERMINAL_BANNER_RESERVE_CHARS
+ * for them, and composeSessionStartSystemMessage keeps the whole
+ * `systemMessage` within Claude Code's 10,000-character field cap (#5079).
  */
-export function sessionStartBannerFooter(
+export function sessionStartBannerHeader(
   viewerUrl: string,
   trialDaysLine: string | null,
   teamBrainDiscoveryLine: string | null,
 ): string {
-  return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+  return `View Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
 }
 
 /**
  * The user-visible SessionStart `systemMessage`: the once-per-session
- * worker-outage notice, the terminal preview, then the footer. Claude Code
- * replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
- * (#5079), and neither the notice nor a server-runtime viewer URL is bounded
- * by TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it
- * is over, the preview is cut at a line boundary until it fits. The notice and
- * the footer are never cut. With no preview (banner off) the notice is the
- * whole message.
+ * worker-outage notice, the viewer lines, then the terminal preview, which ends
+ * on its newest timeline entry. Claude Code replaces a field over
+ * CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub (#5079), and neither the
+ * notice nor a server-runtime viewer URL is bounded by
+ * TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it is
+ * over, whole lines are dropped from the preview's oldest end until it fits,
+ * so it still ends on its newest entry. The notice and the viewer lines are
+ * never cut. With no preview (banner off) the notice is the whole message.
  */
 export function composeSessionStartSystemMessage(
   preview: string | null,
-  footer: string,
+  bannerHeader: string,
   workerOutageNotice: string | null,
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string | undefined {
   if (preview === null) return workerOutageNotice ?? undefined;
-  const noticePrefix = workerOutageNotice ? `${workerOutageNotice}\n\n` : '';
-  const previewRoom = limit - noticePrefix.length - footer.length;
-  let fittedPreview = preview;
-  if (preview.length > previewRoom) {
-    const previewCutToRoom = previewRoom > 0 ? preview.slice(0, previewRoom) : '';
-    const lastLineBreak = previewCutToRoom.lastIndexOf('\n');
-    fittedPreview = lastLineBreak > 0 ? previewCutToRoom.slice(0, lastLineBreak) : '';
-    logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary to keep systemMessage within the field cap', {
-      previewChars: preview.length,
-      keptPreviewChars: fittedPreview.length,
-      noticeChars: noticePrefix.length,
-      footerChars: footer.length,
+  const top = `${workerOutageNotice ? `${workerOutageNotice}\n\n` : ''}${bannerHeader}\n\n`;
+  const previewRoom = limit - top.length;
+  let fittedPreview = preview.replace(/^\n+/, '');
+  if (fittedPreview.length > previewRoom) {
+    const previewCutToRoom = previewRoom > 0 ? fittedPreview.slice(fittedPreview.length - previewRoom) : '';
+    const firstLineBreak = previewCutToRoom.indexOf('\n');
+    const keptPreview = firstLineBreak >= 0 ? previewCutToRoom.slice(firstLineBreak + 1) : '';
+    logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary, oldest lines first, to keep systemMessage within the field cap', {
+      previewChars: fittedPreview.length,
+      keptPreviewChars: keptPreview.length,
+      topChars: top.length,
       limit,
     });
+    fittedPreview = keptPreview;
   }
-  const systemMessage = `${noticePrefix}${fittedPreview}${footer}`;
+  const systemMessage = `${top}${fittedPreview}`.trimEnd();
   if (systemMessage.length > limit) {
     logger.warn('HOOK', 'SessionStart systemMessage is over the field cap even with no preview', {
       systemMessageChars: systemMessage.length,
@@ -130,6 +132,7 @@ export function composeSessionStartSystemMessage(
  * the brief is cut to the room `otherChars` leaves, or, with too little room
  * to be useful, replaced by one line saying it was left out. A block with no
  * room even for that line is logged, since nothing more can be added to it.
+ * `otherChars` is everything else in the block, wherever the brief sits in it.
  */
 export function fitTeamBriefSection(section: string, otherChars: number, limit: number = CONTEXT_OUTPUT_LIMIT): string {
   if (!section) return '';
@@ -150,22 +153,24 @@ export function fitTeamBriefSection(section: string, otherChars: number, limit: 
 }
 
 /**
- * Cached bodies can predate the current instruction reserve, and the OAuth
- * and gateway notices are added only in this process. Measure the final model
- * field here as well. Never truncate opaque rendered entries: an old worker
- * or irreducible body falls back to an explicit omission notice. TeamBrain
+ * The model-bound SessionStart field: the notices, the TeamBrain brief, then
+ * the memory body last. The body is the timeline and ends on its newest entry,
+ * so nothing is added after it: a later update can append timeline rows.
+ *
+ * Cached bodies can predate the current reserve, and the OAuth and gateway
+ * notices are added only in this process. Measure the final model field here
+ * as well. Never truncate opaque rendered entries: an old worker or
+ * irreducible body falls back to an explicit omission notice. TeamBrain
  * retains its existing fit/omission policy.
  */
 export function composeSessionStartContext(
   body: string,
   notices: string,
-  instructions: string,
   teamSection: string,
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string {
   const join = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
-  const fixed = join(notices, instructions);
-  const room = Math.max(0, limit - fixed.length - (fixed ? 2 : 0));
+  const room = Math.max(0, limit - notices.length - (notices ? 2 : 0));
   if (body.length > room) {
     // Older workers may ignore reserveChars; irreducible renderer output may
     // also exceed its limit. Never cut a rendered entry, code fence, or newest
@@ -174,8 +179,8 @@ export function composeSessionStartContext(
     body = omitted.length <= room ? omitted : '';
     logger.warn('HOOK', 'SessionStart body omitted because it exceeds the available field budget', { room });
   }
-  const fittedTeam = fitTeamBriefSection(teamSection, join(notices, body, instructions).length, limit);
-  return join(notices, body, fittedTeam, instructions);
+  const fittedTeam = fitTeamBriefSection(teamSection, join(notices, body).length, limit);
+  return join(notices, fittedTeam, body);
 }
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
@@ -253,7 +258,6 @@ export const contextHandler: EventHandler = {
     // hookEventName is not the event that fired.
     const hookEventName = input.hookEventName === 'PostCompaction' ? 'PostCompaction' : 'SessionStart';
     const emptyResult: HookResult = {
-      workStateTelemetry: 'measure',
       hookSpecificOutput: { hookEventName, additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
@@ -269,7 +273,6 @@ export const contextHandler: EventHandler = {
     // A fresh timeline would change its prompt prefix and invalidate the cache.
     // Also guard direct calls from older hook registrations that include resume.
     if (input.platform === 'claude-code' && input.sessionSource === 'resume') {
-      delete emptyResult.workStateTelemetry;
       return emptyResult;
     }
 
@@ -280,16 +283,15 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
-      emptyResult.workStateTelemetry = 'excluded';
       return emptyResult;
     }
 
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    // How to use claude-mem's tools is in the MCP server's instructions
+    // (shared/memory-instructions.ts), not in this block: it is the timeline.
     const settings = loadFromFileOnce();
-    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : memoryInstructionsForRuntime(selectRuntime());
-    emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
 
     const notices: string[] = [];
 
@@ -421,7 +423,7 @@ export const contextHandler: EventHandler = {
       const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
       // A notice or settings change can outgrow the reserve of an older cache.
       // Re-render whole entries instead of cutting an opaque cached string.
-      if (!colors && [noticeText, filled, memoryInstructions].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
+      if (!colors && [noticeText, filled].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
       return filled;
     };
     const cachedModelContext = showLastMessage ? null : readCachedRender(false);
@@ -443,7 +445,6 @@ export const contextHandler: EventHandler = {
       }
     }
     if (isWorkerFallback(contextResult)) {
-      emptyResult.workStateTelemetry = 'unknown';
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
@@ -457,7 +458,6 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-      emptyResult.workStateTelemetry = 'unknown';
       return emptyResult;
     }
 
@@ -481,9 +481,7 @@ export const contextHandler: EventHandler = {
     // fallback notice. Waiting until all reads finish keeps failed attempts
     // retryable. A lost claim merely leaves a little unused render budget.
     if (showFallbackNotice && !markProFallbackNoticeShown()) notices.shift();
-    additionalContext = composeSessionStartContext(
-      additionalContext, notices.join('\n\n'), memoryInstructions, teamSection,
-    );
+    additionalContext = composeSessionStartContext(additionalContext, notices.join('\n\n'), teamSection);
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
@@ -513,12 +511,11 @@ export const contextHandler: EventHandler = {
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
     const systemMessage = composeSessionStartSystemMessage(
       showsBanner ? displayContent : null,
-      sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      sessionStartBannerHeader(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
       workerOutageNotice,
     );
 
     return {
-      workStateTelemetry: 'measure',
       hookSpecificOutput: {
         hookEventName,
         additionalContext

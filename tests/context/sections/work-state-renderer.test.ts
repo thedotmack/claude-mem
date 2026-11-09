@@ -5,7 +5,9 @@ import {
   foldWorkStateList,
   renderWorkStateLines,
   renderWorkStateList,
+  WORK_STATE_SECTION_HEADING,
 } from '../../../src/services/context/sections/WorkStateRenderer.js';
+import { WORK_STATE_RULE } from '../../../src/shared/memory-instructions.js';
 
 const NOW_EPOCH = Date.UTC(2026, 9, 2, 12, 0, 0);
 const MINUTE_MS = 60_000;
@@ -102,15 +104,13 @@ describe('renderWorkStateLines', () => {
 });
 
 describe('buildWorkStateContextSection', () => {
-  it('gives the rule, naming the tools, then what is still open', () => {
+  it('lists what is still open and leaves the rule to the MCP server instructions', () => {
     const section = buildWorkStateContextSection(releaseEntries(), NOW_EPOCH);
 
-    expect(section).toStartWith("# Work state: your to-do lists and working state\nUse claude-mem's work_state_write tool to track all to-do lists and multi-step work.");
-    expect(section).toContain('It is your canonical to-do list: use it instead of any built-in to-do tool.');
-    // A bare work_state_read shows only what is open, so the hint for closed items names the flag.
-    expect(section).toContain('\n- Read every list, closed items included: work_state_read with includeClosed=true\n');
-    expect(section).toContain('\n\nStill open:\n- release: version=13.25.3');
+    expect(section).toStartWith(`${WORK_STATE_SECTION_HEADING}\n- release: version=13.25.3`);
     expect(section).toEndWith('  - [todo] timeout-decision, updated about 3 days ago');
+    expect(section).not.toContain('# Work state: your to-do lists');
+    expect(section).not.toContain(WORK_STATE_RULE.split('\n')[1]);
   });
 
   it('leaves the owner-goals snapshot to the Goals panel in My Work', () => {
@@ -128,8 +128,10 @@ describe('buildWorkStateContextSection', () => {
     expect(section).toContain('- release: version=13.25.3');
   });
 
-  it('says nothing is open when nothing has been written', () => {
-    expect(buildWorkStateContextSection([], NOW_EPOCH)).toEndWith('\n\nNothing open yet.');
+  it('renders nothing when nothing is open', () => {
+    expect(buildWorkStateContextSection([], NOW_EPOCH)).toBe('');
+    const closed = [entry('release', { task: 'ship', status: 'done' }, MINUTE_MS)];
+    expect(buildWorkStateContextSection(closed, NOW_EPOCH)).toBe('');
   });
 
   it('stays within its character limit and says how many lines it left out', () => {

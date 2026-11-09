@@ -169,6 +169,16 @@ describe('setup state endpoints', () => {
     for (phase of ['idle', 'done', 'failed', 'awaiting-consent']) expect(testRoutes.setupIsActive()).toBe(false);
   });
 
+  it('report a setup scan as extraction in every phase until it ends, the upload question included (the installer holds any restart for it)', async () => {
+    await start();
+    // A scan in a given phase, set the way the setupIsActive test above sets one.
+    const testRoutes = routes as unknown as { setupScan: unknown };
+    let phase = 'reading';
+    testRoutes.setupScan = { state: () => ({ phase }) };
+    for (phase of ['reading', 'checking', 'saving', 'awaiting-consent', 'uploading']) expect((await state()).backgroundWorkRunning).toEqual(['extraction']);
+    for (phase of ['idle', 'done', 'failed']) expect((await state()).backgroundWorkRunning).toEqual([]);
+  });
+
   it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {
     let status: Record<string, unknown> | null = { state: 'running', pid: process.pid };
     await start({ status: () => status, start() {}, close() {}, async runNow() { return 'idle'; } });

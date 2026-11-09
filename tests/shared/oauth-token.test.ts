@@ -915,6 +915,15 @@ describe('readClaudeCredentialsFile (#4348) — on-disk credentials file', () =>
     expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
   });
 
+  it('rejects non-string access tokens with and without an explicit expiry', () => {
+    for (const accessToken of [42, true, {}, []]) {
+      for (const expiresAt of [undefined, Date.now() + 3_600_000]) {
+        writeCredentials({ claudeAiOauth: { accessToken, expiresAt } });
+        expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
+      }
+    }
+  });
+
   it('returns expired when the file token is past the grace window', () => {
     const pastMs = Date.now() - 10 * 60 * 1000; // 10 minutes ago, past 60s grace
     writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: pastMs } });

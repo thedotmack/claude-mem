@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
+import fs, { closeSync, constants, copyFileSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
 import { basename, extname, join, relative, isAbsolute } from 'path';
 import { resolveDataDir } from './paths.js';
 
@@ -132,8 +132,34 @@ export function copyDeliverableIntoBucket(sourcePath: string, projectKey: string
       throw new Error(`${sourcePath} grew to ${bytes} bytes while it was copied, over the ${DELIVERABLE_MAX_BYTES}-byte limit for one bucket copy`);
     }
     const sha256 = sha256OfFile(partial);
-    const bucketPath = join(bucketDir, deliverableBucketFileName(sourcePath, sha256));
-    if (existsSync(bucketPath)) {
+    const name = deliverableBucketFileName(sourcePath, sha256);
+    let bucketPath = join(bucketDir, name);
+    try {
+      // Publish only if absent. Two concurrent writers with colliding short
+      // hashes cannot replace one another after a check-then-rename race.
+      fs.linkSync(partial, bucketPath);
+      unlinkSync(partial);
+      return { bucketPath, sha256, bytes, reused: false };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!['EEXIST', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS', 'EMLINK'].includes(code ?? '')) throw error;
+    }
+
+    const matchesCopy = (file: string) => {
+      const entry = lstatSync(file, { throwIfNoEntry: false });
+      return entry?.isFile() && entry.size === bytes && sha256OfFile(file) === sha256;
+    };
+    if (matchesCopy(bucketPath)) {
+      unlinkSync(partial);
+      return { bucketPath, sha256, bytes, reused: true };
+    }
+    // Preserve the original short name and its recorded URL. A digest
+    // directory also permits atomic rename on filesystems without hard links
+    // without consuming any of the filename's extension/NAME_MAX budget.
+    const digestDir = join(bucketDir, sha256);
+    mkdirSync(digestDir, { recursive: true });
+    bucketPath = join(digestDir, name);
+    if (matchesCopy(bucketPath)) {
       unlinkSync(partial);
       return { bucketPath, sha256, bytes, reused: true };
     }

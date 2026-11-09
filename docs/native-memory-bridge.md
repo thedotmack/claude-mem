@@ -1,6 +1,6 @@
 # Native memory lookup and note bridge
 
-The plugin now supplements supported native memory lookups with a compact Smart search index, and its startup instructions ask the agent to use
+The plugin now supplements supported native memory lookups with a compact Smart search index, and its MCP server instructions ask the agent to use
 `save_memory` for local-worker durable preferences, corrections, decisions, and
 lessons. Server-runtime notes use `observation_add` for the selected server
 project; `save_memory` refuses server-mode writes before calling the worker.
@@ -95,6 +95,11 @@ Optional plugin settings:
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED": "true"
 }
 ```
+
+`CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED=false` leaves the memory-use guidance
+out of the MCP server's instructions. The SessionStart context never carries it:
+that block is the memory timeline. Start a new session after changing it, so the
+MCP server reads it.
 
 ## Local development activation and rollback
 

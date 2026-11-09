@@ -1,5 +1,5 @@
 import React from 'react';
-import { useI18n } from '../../i18n';
+import { LOCALES, LOCALE_NAMES, useI18n, type Locale } from '../../i18n';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
@@ -137,9 +137,8 @@ export function Header({
             <option key={project} value={project}>{project}</option>
           ))}
         </select>
-        <select aria-label={t('Language')} value={locale} onChange={e => setLocale(e.target.value as 'en' | 'zh-CN')}>
-          <option value="en">English</option>
-          <option value="zh-CN">简体中文</option>
+        <select aria-label={t('Language')} value={locale} onChange={e => setLocale(e.target.value as Locale)}>
+          {LOCALES.map(code => <option key={code} value={code}>{LOCALE_NAMES[code]}</option>)}
         </select>
         <ThemeToggle
           preference={themePreference}
