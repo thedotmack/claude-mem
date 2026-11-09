@@ -14,6 +14,8 @@ const compiled = buildSync({
       export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
+      export { SAMPLE_REQUESTS } from './src/data';
+      export { SAMPLE_FOCUS_AREAS } from './src/data-goals';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
         <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
@@ -117,6 +119,18 @@ describe('hosted setup scan control', () => {
     expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your work is starting to connect.');
+  });
+
+  it('counts requests already linked to an area while other work is still connecting or unreadable', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
+    const running = { state: 'running', step: 'work' };
+    const linked = app.renderReveal(agents, { goals: [], work: null, rules: null, focusAreas: app.SAMPLE_FOCUS_AREAS, requests: app.SAMPLE_REQUESTS, requestReadErrorCount: 1 }, running, ['codex']);
+    expect(linked).toMatch(/>[1-9]\d* requests?</);
+    expect(linked).toContain('Some work could not be read');
+    const unlinked = app.renderReveal(agents, { goals: [], work: null, rules: null, focusAreas: app.SAMPLE_FOCUS_AREAS, requests: [], requestReadErrorCount: 0 }, running, ['codex']);
+    expect(unlinked).toContain('Connecting work…');
+    expect(unlinked).not.toContain('Some work could not be read');
   });
 
   it('lets people continue after capacity refusal without claiming results or a voluntary skip', () => {

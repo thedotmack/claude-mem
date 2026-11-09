@@ -59,7 +59,9 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
                 <div className="focus-area-signals">
                   {waiting > 0 && <span className="focus-signal-attention">{interpolate(t(waiting === 1 ? '{count} needs you' : '{count} need you'), { count: waiting })}</span>}
                   {moving > 0 && <span className="focus-signal-working">{interpolate(t('{count} working'), { count: moving })}</span>}
-                  {workLoading ? <span>{t('Connecting work…')}</span> : incomplete ? <span>{t('Some work could not be read')}</span> : <span>{interpolate(t(active.length === 1 ? '{count} request' : '{count} requests'), { count: active.length })}</span>}
+                  {/* Requests already linked to this area count even while others are still being connected or could not be read. */}
+                  {workLoading && active.length === 0 ? <span>{t('Connecting work…')}</span> : <span>{interpolate(t(active.length === 1 ? '{count} request' : '{count} requests'), { count: active.length })}</span>}
+                  {incomplete && <span>{t('Some work could not be read')}</span>}
                 </div>
                 {next && <p className="focus-area-next">{onOpenRequest ? <button type="button" onClick={() => onOpenRequest(next)}>{next.next.text}<ArrowRightIcon aria-hidden="true" /></button> : next.next.text}</p>}
                 <div className="focus-area-actions"><button type="button" className="focus-area-open" aria-expanded={onOpenArea ? undefined : open} aria-controls={onOpenArea ? undefined : `${id}-${area.id}`} aria-label={interpolate(t(onOpenArea ? 'Open {name} focus area' : 'Explore {name} focus area'), { name: area.name })} onClick={() => onOpenArea ? onOpenArea(area.id) : setExpanded(open ? null : area.id)}>{t(onOpenArea ? 'Open focus area' : 'Explore this focus')}<ArrowRightIcon aria-hidden="true" /></button>
