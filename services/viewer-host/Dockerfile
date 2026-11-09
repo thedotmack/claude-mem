@@ -16,6 +16,8 @@ COPY services/viewer-host/src ./viewer-host/src
 ENV PORT=8080
 ENV CLAUDE_MEM_DATA_DIR=/data/claude-mem
 ENV CLAUDE_MEM_WORKER_SCRIPT=/app/plugin/scripts/worker-service.cjs
+# The worker this host runs is updated by redeploying the image, never in place.
+ENV CLAUDE_MEM_AUTO_UPDATE=false
 EXPOSE 8080
 
 CMD ["bun", "run", "viewer-host/src/index.ts"]

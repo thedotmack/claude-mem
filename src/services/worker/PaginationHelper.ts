@@ -1,4 +1,5 @@
 
+import { isAbsolute, win32 } from 'node:path';
 import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
@@ -15,6 +16,7 @@ export class PaginationHelper {
   }
 
   private stripProjectPath(filePath: string, projectName: string): string {
+    if (!isAbsolute(filePath) && !win32.isAbsolute(filePath)) return filePath;
     const leaf = projectName.includes('/') ? projectName.split('/').pop()! : projectName;
     const marker = `/${leaf}/`;
     const index = filePath.indexOf(marker);

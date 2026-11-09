@@ -54,7 +54,9 @@ describe('parseHttpArgs', () => {
   });
 
   it('rejects invalid ports from flags or environment', () => {
-    for (const port of ['abc', '-1', '65536', '1.5', 'NaN', 'Infinity']) {
+    expect(() => parseHttpArgs(['--http', '--port'], { CLAUDE_MEM_MCP_HTTP_PORT: '4321' }))
+      .toThrow('Invalid MCP HTTP port');
+    for (const port of ['', ' ', 'abc', '-1', '65536', '1.5', 'NaN', 'Infinity']) {
       expect(() => parseHttpArgs(['--http', `--port=${port}`], {})).toThrow('Invalid MCP HTTP port');
       expect(() => parseHttpArgs(['--http'], { CLAUDE_MEM_MCP_HTTP_PORT: port }))
         .toThrow('Invalid MCP HTTP port');

@@ -42,7 +42,9 @@ export const devinAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('missing_session_id');
     }
     const rawToolName = stringOrUndefined(r.tool_name);
-    const toolName = rawToolName ? DEVIN_TOOL_NAMES[rawToolName] ?? rawToolName : undefined;
+    const toolName = rawToolName && Object.hasOwn(DEVIN_TOOL_NAMES, rawToolName)
+      ? DEVIN_TOOL_NAMES[rawToolName]
+      : rawToolName;
     const source = stringOrUndefined(r.source);
     return {
       sessionId,

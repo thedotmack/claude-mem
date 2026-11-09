@@ -44,6 +44,15 @@ export const ENV_PRESERVE = new Set([
   // SDK child from recovering it from user settings. Keep this as a single
   // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+  // One of Claude Code's documented "no background updates" switches (the
+  // other two, DISABLE_AUTOUPDATER and DISABLE_UPDATES, have no CLAUDE_CODE_
+  // prefix and pass already). The worker's auto-update check reads it from its
+  // own env to stay off (src/services/auto-update/auto-update-check.ts), and
+  // every worker spawn passes through sanitizeEnv, so stripping it left the
+  // updater running for a user who set it. The Observer's SDK child inherits
+  // it too, which keeps the user's choice there as well. Keep this as a single
+  // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
   // path to the claude binary, documented as settable from the file OR the
   // env. Every daemon spawn passes through sanitizeEnv, and the worker reads

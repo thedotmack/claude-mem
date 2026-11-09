@@ -13,10 +13,17 @@ import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
-const INSTALL_TIMEOUT_MS = (() => {
+/** Each slow install step's budget when CLAUDE_MEM_INSTALL_TIMEOUT_MS is not set. */
+export const DEFAULT_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Each slow install step's budget. Exported for the auto-updater, whose
+ * deadlines are built from it (src/services/auto-update/auto-update-deadlines.ts).
+ */
+export const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
-  return 5 * 60 * 1000;
+  return DEFAULT_INSTALL_TIMEOUT_MS;
 })();
 
 /**

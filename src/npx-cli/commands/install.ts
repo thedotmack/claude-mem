@@ -163,12 +163,14 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { prunePluginCacheSafely } from '../utils/prune-cache.js';
+import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
+import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -176,7 +178,14 @@ import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
 import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
 
-function registerMarketplace(): void {
+/**
+ * Records the thedotmack marketplace in Claude Code's known_marketplaces.json
+ * on every install and update. Exported, as registerPlugin is, so tests pin
+ * what it writes (tests/services/auto-update/auto-update-check.test.ts). The
+ * auto-updater leaves an entry this would not write as it is
+ * (auto-update-check.ts claudeMemMarketplaceEntryDifference).
+ */
+export function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
 
   knownMarketplaces['thedotmack'] = {
@@ -186,14 +195,47 @@ function registerMarketplace(): void {
     },
     installLocation: marketplaceDirectory(),
     lastUpdated: new Date().toISOString(),
-    autoUpdate: true,
+    autoUpdate: claudeCodeBackgroundUpdateToRegister(knownMarketplaces['thedotmack']),
   };
 
   ensureDirectoryExists(pluginsDirectory());
   writeJsonFileAtomic(knownMarketplacesPath(), knownMarketplaces);
 }
 
-function registerPlugin(version: string): void {
+/**
+ * The autoUpdate registerMarketplace records for Claude Code's background
+ * update of the thedotmack marketplace: an existing entry's autoUpdate as it
+ * is, unset included, and true for a new entry, what every install recorded
+ * before claude-mem had its own updater. The installer never turns it off.
+ * Only the worker does (auto-update-check.ts settleClaudeCodeBackgroundUpdate),
+ * once its own updater has shown it works on this machine: a check read the
+ * promoted file and npm's metadata from here, and npx is on the worker's PATH.
+ * Nothing the installer can read shows either, and turning Claude Code's update
+ * off where claude-mem's cannot work would leave the install with no updater.
+ * Keeping an existing value also keeps a false the worker wrote, so an update,
+ * the auto-updater's own installer run included, never turns Claude Code's
+ * update back on.
+ */
+function claudeCodeBackgroundUpdateToRegister(existingEntry: unknown): unknown {
+  const isEntry = typeof existingEntry === 'object' && existingEntry !== null && !Array.isArray(existingEntry);
+  return isEntry ? (existingEntry as Record<string, unknown>).autoUpdate : true;
+}
+
+/**
+ * Every install writes this entry, for every host (the task list in
+ * runInstallCommandInner registers the plugin whatever --ide selects). The
+ * auto-updater reads its presence as "still installed" (auto-update-check.ts
+ * readClaudeCodePluginState), which tests pin against this function.
+ *
+ * Only the user-scope entry is this installer's (claude-code-plugin-paths.ts
+ * isUserScopeRegistration): it replaces that one, where it was, or adds it
+ * when there is none. Every other entry of claude-mem@thedotmack, a project's
+ * or a local install Claude Code registered at a version of its own, is kept
+ * exactly as read and in its place, so an update, including an unattended
+ * one the auto-updater runs, never unregisters it. Any further user-scope
+ * entry is dropped, as before: an install has one.
+ */
+export function registerPlugin(version: string): void {
   const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
 
   if (!installedPlugins.version) installedPlugins.version = 2;
@@ -201,16 +243,23 @@ function registerPlugin(version: string): void {
 
   const cachePath = pluginCacheDirectory(version);
   const now = new Date().toISOString();
+  const userScopeEntry = {
+    scope: 'user',
+    installPath: cachePath,
+    version,
+    installedAt: now,
+    lastUpdated: now,
+  };
 
-  installedPlugins.plugins['claude-mem@thedotmack'] = [
-    {
-      scope: 'user',
-      installPath: cachePath,
-      version,
-      installedAt: now,
-      lastUpdated: now,
-    },
-  ];
+  const registered: unknown = installedPlugins.plugins['claude-mem@thedotmack'];
+  const entriesAsRead: unknown[] = Array.isArray(registered) ? registered : [];
+  const userScopeIndex = entriesAsRead.findIndex(isUserScopeRegistration);
+  installedPlugins.plugins['claude-mem@thedotmack'] = userScopeIndex === -1
+    ? [...entriesAsRead, userScopeEntry]
+    : entriesAsRead.flatMap((entry, index) => {
+        if (index === userScopeIndex) return [userScopeEntry];
+        return isUserScopeRegistration(entry) ? [] : [entry];
+      });
 
   writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
 }
@@ -1128,11 +1177,11 @@ async function setupServerRuntimeNonInteractive(options: InstallOptions): Promis
       + `(pg + redis/valkey). The server listens at ${serverBaseUrl}.`,
   );
 
-  // The server mounts its MCP endpoint at `<baseUrl>/mcp` over HTTP (vs. the
+  // The server mounts its MCP endpoint at `<baseUrl>/v1/mcp` over HTTP (vs. the
   // worker's stdio transport); trailing slashes are trimmed so we never emit
-  // `http://host//mcp`.
+  // `http://host//v1/mcp`.
   log.info(
-    `IDE MCP config target for the server runtime: http ${serverBaseUrl.replace(/\/+$/, '')}/mcp`,
+    `IDE MCP config target for the server runtime: http ${serverBaseUrl.replace(/\/+$/, '')}/v1/mcp`,
   );
 
   await maybeBootstrapServerApiKey();
@@ -2223,6 +2272,9 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   if (isInteractive) return;
   if (providerNeedsAccount(options.provider)) return;
   if (process.env.CI) return;
+  // Nobody reads an auto-update run's output, and each offer starts a cmem.ai
+  // pairing (shared/auto-update-install-run.ts).
+  if (isInstallRunByAutoUpdate()) return;
 
   const pairing = await startInstallerOAuthPairing({
     source: 'npx-installer-deferred',
@@ -2975,12 +3027,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     const err = error instanceof Error ? error : new Error(String(error));
     if (err instanceof InstallAbortError) {
       // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
-      await captureCliEvent('install_failed', {
+      await captureInstallFailed({
         error_category: err.category.id,
         interactive: isInteractive,
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
-      }, { person: true });
+      });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
@@ -3673,7 +3725,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // After promptTelemetryOptIn so a just-made consent choice is honored.
   // ide/provider/runtime_mode/install_method are installer enums, the
   // *_version values are tool version strings — never user data.
-  await captureCliEvent('install_completed', {
+  await captureInstallCompleted({
     ide: selectedIDEs.join(','),
     provider: selectedProvider,
     provider_source: options.providerSource ?? 'prompt',
@@ -3686,7 +3738,29 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     bun_version: installedBunVersion,
     uv_version: installedUvVersion,
     claude_code_version: detectClaudeCodeVersion(),
-  }, { person: true });
+  });
+}
+
+/**
+ * The install funnel's last event. An installer run the auto-updater started
+ * sends none: it is not a person installing, and the supervisor's
+ * auto_update_applied / auto_update_failed events report it
+ * (shared/auto-update-install-run.ts).
+ */
+export async function captureInstallCompleted(properties: Record<string, unknown>): Promise<void> {
+  if (isInstallRunByAutoUpdate()) return;
+  await captureCliEvent('install_completed', properties, { person: true });
+}
+
+/**
+ * The install funnel's event for an aborted install. Skipped for an installer
+ * run the auto-updater started, as install_completed is: the supervisor's
+ * auto_update_failed reports that run, with the stage it failed at
+ * (shared/auto-update-install-run.ts).
+ */
+export async function captureInstallFailed(properties: Record<string, unknown>): Promise<void> {
+  if (isInstallRunByAutoUpdate()) return;
+  await captureCliEvent('install_failed', properties, { person: true });
 }
 
 async function runRepairCommandInner(summary: InstallSummary): Promise<void> {

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
 import { execFileSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
+import { withoutNpmSettingsFromAutoUpdateNpxFlags } from '../../shared/auto-update-install-run.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
@@ -467,6 +468,16 @@ export function pinDaemonWorkingDirectory(
 export const WORKER_BOOT_PROBE_TIMEOUT_MS = 5000;
 const WORKER_BOOT_PROBE_MAX_LINES = 8;
 
+// The bind must happen within this window. server.listen() is the first ref'd
+// handle in the boot path, so a stall before it lets the event loop empty and
+// the process exit 0 with no trace. A ref'd watchdog (worker-service.ts start)
+// holds the loop open and exits loudly if the bind never lands. 60s clears the
+// slowest healthy Windows cold boot with margin (the spawner's own readiness
+// wait is 30s). It lives here, not in worker-service.ts, so the auto-updater's
+// startup ceiling (auto-update-deadlines.ts) can count it without importing
+// the worker.
+export const WORKER_BOOT_BIND_DEADLINE_MS = 60_000;
+
 /**
  * Did the probe "time out" too early for that timeout to be real?
  *
@@ -669,11 +680,12 @@ export function spawnDaemon(
 ): number | undefined {
   getSupervisor().assertCanSpawn('worker daemon');
 
-  const env = sanitizeEnv({
+  // The worker an auto-update's installer starts does not keep the npm package and yes settings npx set from the auto-updater's flags.
+  const env = withoutNpmSettingsFromAutoUpdateNpxFlags(sanitizeEnv({
     ...process.env,
     CLAUDE_MEM_WORKER_PORT: String(port),
     ...extraEnv
-  });
+  }));
 
   const runtimePath = resolveWorkerRuntimePath();
   if (!runtimePath) {

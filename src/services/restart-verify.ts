@@ -13,9 +13,20 @@
  * Verification reads only the `pid` and `version` fields of GET /api/health
  * (src/services/server/Server.ts), which the worker reports from its own
  * baked __DEFAULT_PACKAGE_VERSION__ constant.
+ *
+ * The auto-updater needs more than an answering worker: one that finished
+ * starting. verifyWorkerFinishedStarting reads GET /api/ready for that.
  */
 
-import { formatHostForUrl, getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
+import { readSseEvents } from '../shared/sse-reader.js';
+import {
+  fetchStreamWithIdleTimeout,
+  fetchWithTimeout,
+  formatHostForUrl,
+  getWorkerHost,
+  READY_STREAM_IDLE_TIMEOUT_MS,
+  type IdleFetchStreamResult,
+} from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
 interface HealthSnapshot {
@@ -133,4 +144,123 @@ export async function verifyRestartedWorker(
   }
 
   return { ok: false, lastObserved, lastPollSawHealth };
+}
+
+export type WorkerStartupProof =
+  | { ok: true; pid: number; version: string }
+  /** The expected worker reported that its startup failed: phase `failed`, with its message. */
+  | { ok: false; startupFailed: true; pid: number; message: string }
+  /** No such worker reported `ready` before the ceiling; `lastObserved` says what answered last. */
+  | { ok: false; startupFailed: false; lastObserved: string };
+
+export interface WorkerStartupProofOptions {
+  /** Pause between two reads of the stream (ms). Default 500, the restart proof's poll interval. */
+  pollIntervalMs?: number;
+  /** Silence that ends one read of the stream (ms). Default READY_STREAM_IDLE_TIMEOUT_MS, the hooks' own. */
+  idleTimeoutMs?: number;
+}
+
+/** The pause verifyRestartedWorker takes between health polls by default (its pollIntervalMs). */
+const DEFAULT_POLL_INTERVAL_MS = 500;
+
+/**
+ * Wait until a worker other than `oldPid` reports `expectedVersion` and that
+ * it finished starting. GET /api/ready sends the worker's startup phase with
+ * its pid and baked version at once, then each change, and ends after `ready`
+ * or `failed` (Server.ts handleReadyStream, phases in server/init-phase.ts):
+ *  - `ready` from the expected worker proves it;
+ *  - `failed` from it ends the wait at once, with the worker's message: its
+ *    startup died and it never becomes ready;
+ *  - a starting phase (starting, db_ready, routes_ready) keeps the read open
+ *    for the next one.
+ * Nothing else ends the wait before `ceilingMs`: a refused connection (the
+ * worker has not bound yet), silence past `idleTimeoutMs` (a synchronous
+ * migration holds its event loop), or another worker answering (the old pid,
+ * or another version) only start the next read. The worker's pid on the
+ * stream is the process that answers, so a worker that restarts mid-wait is
+ * judged by its own phases.
+ */
+export async function verifyWorkerFinishedStarting(
+  port: number,
+  oldPid: number | null,
+  expectedVersion: string,
+  ceilingMs: number,
+  options: WorkerStartupProofOptions = {},
+): Promise<WorkerStartupProof> {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? READY_STREAM_IDLE_TIMEOUT_MS;
+  const url = `http://${formatHostForUrl(getWorkerHost())}:${port}/api/ready`;
+  const deadline = Date.now() + ceilingMs;
+  let lastObserved = 'no /api/ready answer before the ceiling';
+  while (Date.now() < deadline) {
+    const read = await readStartupPhase(url, oldPid, expectedVersion, idleTimeoutMs, deadline - Date.now());
+    if (read.kind === 'ready') return { ok: true, pid: read.pid, version: expectedVersion };
+    if (read.kind === 'failed') return { ok: false, startupFailed: true, pid: read.pid, message: read.message };
+    lastObserved = read.observed;
+    const pauseMs = Math.min(pollIntervalMs, deadline - Date.now());
+    if (pauseMs > 0) await new Promise(resolve => setTimeout(resolve, pauseMs));
+  }
+  return { ok: false, startupFailed: false, lastObserved };
+}
+
+type StartupPhaseRead =
+  | { kind: 'ready'; pid: number }
+  | { kind: 'failed'; pid: number; message: string }
+  | { kind: 'not-yet'; observed: string };
+
+/** One read of GET /api/ready, capped at what is left of the ceiling. */
+async function readStartupPhase(
+  url: string,
+  oldPid: number | null,
+  expectedVersion: string,
+  idleTimeoutMs: number,
+  budgetMs: number,
+): Promise<StartupPhaseRead> {
+  let stream: IdleFetchStreamResult;
+  try {
+    // The cap is applied only when positive (worker-utils.ts createIdleWatchdog), so the last read keeps a 1 ms one.
+    stream = await fetchStreamWithIdleTimeout(url, { method: 'GET' }, { idleTimeoutMs, absoluteCapMs: Math.max(1, budgetMs) });
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'No /api/ready answer while waiting for a worker to finish starting', { url }, error instanceof Error ? error : new Error(String(error)));
+    return { kind: 'not-yet', observed: `connection error: ${errorMessageOf(error)}` };
+  }
+  // Releasing the body once the answer is known must not change the answer.
+  const releaseStream = (): Promise<void> => stream.cancel().catch((error: unknown) => {
+    logger.debug('SYSTEM', 'Releasing the /api/ready body failed', { url }, error instanceof Error ? error : new Error(String(error)));
+  });
+  const contentType = stream.headers.get('content-type') ?? '';
+  if (!stream.ok || !contentType.includes('text/event-stream')) {
+    await releaseStream();
+    return { kind: 'not-yet', observed: `HTTP ${stream.status} without the /api/ready stream` };
+  }
+
+  let observed = 'the /api/ready stream sent no phase';
+  try {
+    for await (const event of readSseEvents(stream.chunks)) {
+      if (event.event !== 'phase') continue;
+      const payload = JSON.parse(event.data) as { phase?: unknown; message?: unknown; version?: unknown; pid?: unknown };
+      const pid = payload.pid;
+      observed = `last /api/ready phase: ${JSON.stringify({ phase: payload.phase, pid, version: payload.version })}`;
+      if (typeof pid !== 'number' || pid === oldPid || payload.version !== expectedVersion) {
+        await releaseStream();
+        return { kind: 'not-yet', observed };
+      }
+      if (payload.phase === 'ready') {
+        await releaseStream();
+        return { kind: 'ready', pid };
+      }
+      if (payload.phase === 'failed') {
+        await releaseStream();
+        return { kind: 'failed', pid, message: typeof payload.message === 'string' ? payload.message : 'the worker sent no message' };
+      }
+    }
+    return { kind: 'not-yet', observed: `${observed}, then the stream ended` };
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'The /api/ready stream stopped while waiting for a worker to finish starting', { url, observed }, error instanceof Error ? error : new Error(String(error)));
+    return { kind: 'not-yet', observed: `${observed}, then ${errorMessageOf(error)}` };
+  }
+}
+
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

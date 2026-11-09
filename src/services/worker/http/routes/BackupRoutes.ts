@@ -1,10 +1,10 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { paths } from '../../../../shared/paths.js';
-import { SNAPSHOT_FILE_PATTERN, readLastRestoreResult } from '../../../backup/snapshot-files.js';
+import { listSnapshotNames, readLastRestoreResult } from '../../../backup/snapshot-files.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
@@ -87,10 +87,7 @@ export class BackupRoutes extends BaseRouteHandler {
       res.json({ backupsDir, snapshots: [] });
       return;
     }
-    const snapshots = readdirSync(backupsDir)
-      .filter(name => SNAPSHOT_FILE_PATTERN.test(name))
-      .sort()
-      .reverse() // sanitized ISO filenames: lexicographic order is timestamp order
+    const snapshots = listSnapshotNames(backupsDir)
       .map(name => {
         const stats = statSync(path.join(backupsDir, name));
         return { name, bytes: stats.size, mtime: stats.mtimeMs };

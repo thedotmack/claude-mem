@@ -163,7 +163,7 @@ git merge --no-edit origin/main                                   # a merge comm
 ```
 
 **Generated bundles never land from a PR**; they're rebuilt at release. The generated set is what `scripts/build-hooks.js` and `scripts/build-viewer.js` write. If the list below looks stale, re-read those two scripts:
-- `plugin/scripts/{worker-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
+- `plugin/scripts/{worker-service,hook-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
 - `plugin/sqlite/**`;
 - `plugin/ui/viewer-bundle.js`, `plugin/ui/viewer.html`, `plugin/ui/tv.html`, `plugin/ui/work-view/**` (the Vite build of `src/ui/my-work`), and the fonts and icons copied into `plugin/ui/`;
 - `plugin/package.json`;
@@ -221,7 +221,7 @@ If the push is rejected as non-fast-forward, they pushed meanwhile. Run `git pul
 
 The author on main must be the contributor. If it isn't, stop merging and record it as an incident in the report. Then comment (step 6), ledger the merge with the full SHA, and close any issue the PR fixed that GitHub didn't auto-close (step 5).
 
-**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Run it from a fresh worktree of main (`git fetch origin`, then `git worktree add --detach "$MAIN_CHECKOUT/.claude/worktrees/community-release" origin/main`), never from a PR landing worktree, whose HEAD is a PR branch. Hold `merge.lock` from the fetch until the release commit and tag are pushed, so no merge lands mid-release, then release it and remove the worktree. This is the one hold allowed past 5 minutes. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. The release includes the X post from `@Claude_Memory` (version-bump step 12). Post it at any hour without asking. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges ride along in the next release.
+**Ship critical fixes.** Once a critical fix (philosophy 7) is merged and main's CI is green, cut a patch release with the `claude-mem:release` skill. Run it from a fresh worktree of main (`git fetch origin`, then `git worktree add --detach "$MAIN_CHECKOUT/.claude/worktrees/community-release" origin/main`), never from a PR landing worktree, whose HEAD is a PR branch. Hold `merge.lock` from the fetch until the release commit and tag are pushed, so no merge lands mid-release, then release it and remove the worktree. This is the one hold allowed past 5 minutes. Don't wait for the run to end or for the owner. If more critical fixes are landing in the same run, release once after the last of them. The release includes the X post from `@Claude_Memory` (version-bump step 14). Post it at any hour without asking. Then follow the release with `claude-mem:childhood` until the published package carries the fix. Tell the reporter which version has it (step 5). Non-critical merges ride along in the next release.
 
 ## 4. Help the PRs that aren't ready
 

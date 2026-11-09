@@ -728,8 +728,12 @@ function inspectExistingLauncherBinary(binaryPath: string): ExistingLauncherBina
 const TEMPORARY_OUTFILE_PATTERN = /^\.claude-mem-.*\.tmp/;
 const RENAMED_ASIDE_WINDOWS_BINARY_PATTERN = /^claude-mem\.old-(\d+)\.exe$/;
 
-/** True while `processId` is running (EPERM: it exists but belongs to someone else). */
-function isProcessRunning(processId: number): boolean {
+/**
+ * True while `processId` is running (EPERM: it exists but belongs to someone
+ * else). Exported for the SessionStart self-heal (ensure-launcher.ts), whose
+ * auto-update notice needs a liveness probe without process-registry.ts.
+ */
+export function isProcessRunning(processId: number): boolean {
   try {
     process.kill(processId, 0);
     return true;
