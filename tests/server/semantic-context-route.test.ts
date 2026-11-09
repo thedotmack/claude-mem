@@ -123,12 +123,17 @@ describe('POST /v1/context/semantic limits', () => {
     const storage = createPostgresStorageRepositories(client);
     const team = (await client.query<{ team_id: string }>('SELECT team_id FROM projects WHERE id = $1', [projectId])).rows[0]!.team_id;
     const embeddings = new PostgresObservationEmbeddingsRepository(pool);
+    const observations = [];
     for (const row of rows) {
-      const observation = await storage.observations.create({ projectId, teamId: team, ...row });
-      // With vectors, so the search finds them by meaning on any Postgres
-      // with pgvector, not only where bm25 matches any keyword.
-      const [embedded] = (await embedObservationRows(pool, [observation])) ?? [];
-      if (embedded) await embeddings.upsert({ observationId: observation.id, model: getSharedEmbedder().modelId, ...embedded });
+      observations.push(await storage.observations.create({ projectId, teamId: team, ...row }));
+    }
+    // With vectors, so the search finds them by meaning on any Postgres with
+    // pgvector, not only where bm25 matches any keyword. One embed call for the
+    // whole seed: one call per row made the 30-row clamp test pass the default
+    // 5 s timeout on loaded CI runners.
+    const embedded = (await embedObservationRows(pool, observations)) ?? [];
+    for (const [index, parts] of embedded.entries()) {
+      await embeddings.upsert({ observationId: observations[index]!.id, model: getSharedEmbedder().modelId, ...parts });
     }
   }
 
