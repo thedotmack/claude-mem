@@ -255,9 +255,10 @@ export function productsFromObservation(observation) {
   if (!Array.isArray(files)) return [];
   return files.flatMap((path, index) => {
     const kind = fileKind(path);
+    if (!kind) return [];
     // A generic entry file is named by its folder (…/launch-review/index.html).
     const title = /^index\.\w+$/i.test(basename(path)) ? basename(path.slice(0, -basename(path).length - 1)) || basename(path) : basename(path);
-    return kind ? [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }] : [];
+    return [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }];
   });
 }
 
