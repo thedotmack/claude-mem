@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildNotionChildren, buildNotionProperties, loadOrCreateNotionSourceId, normalizeNotionId, NotionExporter } from '../../src/services/integrations/NotionExporter.js';
+import { batchEnd, buildNotionChildren, buildNotionProperties, loadOrCreateNotionSourceId, normalizeNotionId, NotionExporter } from '../../src/services/integrations/NotionExporter.js';
 
 const observation = { type: 'discovery', title: 'note', subtitle: null, narrative: '',
   facts: [], concepts: [], files_read: [], files_modified: [] } as any;
@@ -26,7 +26,8 @@ test('a damaged install identity cannot deduplicate unrelated devices against an
   try {
     const path = join(dir, 'id');
     writeFileSync(path, ' \n');
-    assert.throws(() => loadOrCreateNotionSourceId(path), /empty/i);
+    assert.throws(() => loadOrCreateNotionSourceId(path), (error: Error) =>
+      /empty/i.test(error.message) && error.message.includes(path));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -34,6 +35,16 @@ test('a mistyped longer database identifier is not truncated to a different dest
   const id = '0123456789abcdef0123456789abcdef';
   assert.equal(normalizeNotionId('f' + id), null);
   assert.equal(normalizeNotionId('https://www.notion.so/team/Page-' + id + '?view=other'), normalizeNotionId(id));
+  for (const schemeless of ['www.notion.so/team/Page-' + id, 'notion.so/' + id + '?v=1', 'team.notion.site/Page-' + id]) {
+    assert.equal(normalizeNotionId(schemeless), normalizeNotionId(id), schemeless);
+  }
+  assert.equal(normalizeNotionId('www.notion.so/team/Page-f' + id), null);
+});
+
+test('an entry that alone exceeds the request limit fails instead of looping without progress', () => {
+  assert.throws(() => batchEnd(['x'.repeat(600_000)], 0, { children: [] }), /exceeds the request limit/);
+  assert.equal(batchEnd(['small'], 0, { children: [] }), 1);
+  assert.equal(batchEnd([], 0, { children: [] }), 0);
 });
 
 test('multibyte long paragraphs fit the wire budget across page creation and appends', async () => {

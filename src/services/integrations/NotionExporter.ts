@@ -48,6 +48,7 @@ const RICH_TEXT_CHUNK = 2_000;
 const MAX_ARRAY_ENTRIES = 100;
 /** Notion API limit: select and multi_select option names are at most 100 characters, no commas. */
 const MAX_OPTION_NAME = 100;
+/** Notion API limit: a request payload is at most 500 KB (https://developers.notion.com/reference/request-limits). */
 const MAX_REQUEST_BYTES = 500_000;
 
 /**
@@ -115,13 +116,14 @@ export class NotionHttpError extends Error {
   }
 }
 
-/** Accepts a bare id (dashed or not) or a Notion database URL; returns the dashed UUID, or null. */
+/** Accepts a bare id (dashed or not) or a Notion database URL, with or without its scheme; returns the dashed UUID, or null. */
 export function normalizeNotionId(value: string): string | null {
   const raw = value.trim();
   let candidate = raw;
-  if (/^https?:\/\//i.test(raw)) {
+  const schemeless = /^[\w.-]*notion\.(?:so|site)\//i.test(raw);
+  if (schemeless || /^https?:\/\//i.test(raw)) {
     let url: URL;
-    try { url = new URL(raw); } catch { return null; }
+    try { url = new URL(schemeless ? `https://${raw}` : raw); } catch { return null; }
     const segment = url.pathname.replace(/\/+$/, '').split('/').pop() ?? '';
     const id = segment.match(/(?:^|-)([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     if (!id) return null;
@@ -231,14 +233,19 @@ function fitPageProperties(payload: { properties: Record<string, unknown> }, obs
   });
 }
 
-/** Fit array entries to both Notion limits, including commas and the JSON envelope. */
-function batchEnd(entries: unknown[], start: number, envelope: object): number {
+/**
+ * Fit array entries to both Notion limits, including commas and the JSON envelope.
+ * Throws when the entry at `start` alone exceeds the request limit, so callers
+ * that advance by the returned end can never loop without progress.
+ */
+export function batchEnd(entries: unknown[], start: number, envelope: object): number {
   let bytes = Buffer.byteLength(JSON.stringify(envelope));
   let end = start;
   for (; end < entries.length && end - start < MAX_ARRAY_ENTRIES; end++) {
     bytes += Buffer.byteLength(JSON.stringify(entries[end])) + (end === start ? 0 : 1);
     if (bytes > MAX_REQUEST_BYTES) break;
   }
+  if (end === start && start < entries.length) throw new Error('Notion block exceeds the request limit');
   return end;
 }
 
@@ -568,7 +575,7 @@ export class NotionExporter {
 export function loadOrCreateNotionSourceId(path = join(DATA_DIR, 'notion-export-source-id')): string {
   try {
     const existing = readFileSync(path, 'utf8').trim();
-    if (!existing) throw new Error('Notion export source ID is empty');
+    if (!existing) throw new Error(`Notion export source ID file is empty: ${path}`);
     return existing;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -582,7 +589,7 @@ export function loadOrCreateNotionSourceId(path = join(DATA_DIR, 'notion-export-
     // Another worker created it first: use that one.
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       const winner = readFileSync(path, 'utf8').trim();
-      if (!winner) throw new Error('Notion export source ID is empty');
+      if (!winner) throw new Error(`Notion export source ID file is empty: ${path}`);
       return winner;
     }
     throw error;
