@@ -1834,8 +1834,9 @@ function productsFromObservation(observation) {
   if (!Array.isArray(files)) return [];
   return files.flatMap((path4, index) => {
     const kind = fileKind(path4);
+    if (!kind) return [];
     const title = /^index\.\w+$/i.test(basename4(path4)) ? basename4(path4.slice(0, -basename4(path4).length - 1)) || basename4(path4) : basename4(path4);
-    return kind ? [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }] : [];
+    return [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }];
   });
 }
 function isWorkProductField(field) {
