@@ -24,7 +24,10 @@ describe('npx claude-mem search output', () => {
       const modulePath = join(import.meta.dir, '../../src/npx-cli/commands/runtime.ts');
       const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_MEM_DATA_DIR: root, CLAUDE_CONFIG_DIR: root,
         CLAUDE_MEM_TELEMETRY: '0', DO_NOT_TRACK: '1', CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(port) };
-      if (freshClient) env.CLAUDE_MEM_WORKER_URL = `http://127.0.0.1:${port}`;
+      if (freshClient) {
+        delete env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+        env.CLAUDE_MEM_WORKER_URL = `http://127.0.0.1:${port}`;
+      }
       const child = Bun.spawn({
         cmd: [process.execPath, '-e', `import { runSearchCommand } from ${JSON.stringify(modulePath)};
           await runSearchCommand(['auth']);`],
