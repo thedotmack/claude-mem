@@ -3840,7 +3840,7 @@ function reduceWorkState(entries, { currentProject, currentProjectScope = [], ev
       inCurrentScope: scope.has(normalizedKey(row.project))
     });
   }
-  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list2) => {
+  const lists = [...listsById.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch || b.latestEntryId - a.latestEntryId).map((list2) => {
     const tasks2 = [...list2.tasksByName.values()].map((task) => ({
       ...task,
       status: effectiveStatus(task.fields.status),
