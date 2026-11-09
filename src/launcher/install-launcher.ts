@@ -165,7 +165,17 @@ export function launcherSignatureFixHint(
   probe: LauncherVersionProbe,
   bunVersion: string | null,
 ): string {
-  if (platform !== 'darwin' || probe.signal !== 'SIGKILL') return '';
+  if (probe.signal !== 'SIGKILL') return '';
+  return bunSignatureUpgradeHint(platform, bunVersion);
+}
+
+/**
+ * The `bun upgrade` line for a launcher macOS rejects, when the Bun that built
+ * it is too old to produce one it accepts. Shared by the killed-probe error and
+ * the signing-failure messages, which fire before any probe runs (#5247).
+ */
+export function bunSignatureUpgradeHint(platform: NodeJS.Platform, bunVersion: string | null): string {
+  if (platform !== 'darwin') return '';
   if (bunVersion === null || bunVersionHonoursMacosSignatureFix(bunVersion)) return '';
   return `; Bun ${bunVersion} cannot produce a launcher macOS 27 accepts, so reinstalling cannot fix this: run \`bun upgrade\` (${MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN} or newer), then \`npx claude-mem install\``;
 }
@@ -842,7 +852,9 @@ function moveCompiledLauncherIntoPlace(
  * A foreign `claude-mem` at the launcher path is never replaced; a launcher of
  * ours that a signal killed on exec is rebuilt (#5247).
  * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a Windows Bun
- * path with no ASCII form (#5038), a failed compile or an unusable result.
+ * path with no ASCII form (#5038), a failed compile or an unusable result,
+ * and on macOS when signing fails while an older launcher of ours still runs
+ * (that launcher is kept, #5247).
  */
 export function ensureLauncherOnPath(options: {
   pluginRoot: string;
@@ -926,12 +938,23 @@ export function ensureLauncherOnPath(options: {
       throw new Error(`bun build --compile failed (exit ${compileResult.status}): ${compileResult.stderr.trim().split('\n').pop() ?? ''}`);
     }
     if (host.platform !== 'win32') chmodSync(temporaryOutfilePath, 0o755);
-    // A protocol probe can pass on an OS that tolerates an invalid signature.
-    // Require valid signing before placing a launcher that must survive OS updates.
+    // A protocol probe can pass on an OS that tolerates an invalid signature
+    // (macOS 26 and older), but macOS 27 kills that launcher on exec (#5247).
+    let codesignFailure: string | null = null;
     if (host.platform === 'darwin') {
       const codesignResult = runCodesign(temporaryOutfilePath);
       if (codesignResult.status !== 0) {
-        throw new Error(`launcher signing or strict verification failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}`);
+        codesignFailure = `launcher signing or strict verification failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}`;
+        const bunSignFix = bunSignatureUpgradeHint(host.platform, bunVersion);
+        // A launcher of ours that still runs stays: swapping it for one macOS
+        // 27 will kill trades a working install for a later break.
+        if (existingBinary.kind === 'launcher') {
+          throw new Error(`${codesignFailure}; kept the existing launcher at ${binaryPath} (protocol ${existingBinary.protocol})${bunSignFix}`);
+        }
+        // Nothing that runs is at the launcher path, so the probe decides, as
+        // before: a fresh install on macOS 26 keeps working instead of getting
+        // no launcher at all.
+        logger.warn(`${codesignFailure}; the launcher may not start on macOS versions that enforce valid code signatures${bunSignFix}`);
       }
     }
     // Verified before the move: after it, a concurrent session may already
@@ -939,8 +962,14 @@ export function ensureLauncherOnPath(options: {
     const compiledProbe = probeCompiledLauncher(temporaryOutfilePath, host.platform);
     if (compiledProbe.protocol !== LAUNCHER_PROTOCOL) {
       const probeFailure = compiledProbe.failure ? ` (--version ${compiledProbe.failure})` : '';
-      const bunSignFix = launcherSignatureFixHint(host.platform, compiledProbe, bunVersion);
-      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${bunSignFix}`);
+      // An unusable signature is the usual reason the probe cannot run the
+      // binary (macOS SIGKILLs it on exec), and its stderr is the actionable
+      // half: the protocol message alone reads like a broken build.
+      const signFailure = codesignFailure ? `; ${codesignFailure}` : '';
+      const bunSignFix = codesignFailure
+        ? bunSignatureUpgradeHint(host.platform, bunVersion)
+        : launcherSignatureFixHint(host.platform, compiledProbe, bunVersion);
+      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}${bunSignFix}`);
     }
     moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform, placementFileOperations);
   } finally {

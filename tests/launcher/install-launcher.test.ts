@@ -606,16 +606,25 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     ]);
   });
 
-  it('does not place a launcher whose signing fails even when its protocol probe would pass (#5247)', () => {
+  it('still installs on a fresh machine when signing fails but the launcher runs, and names bun upgrade (#5247)', () => {
+    // A fresh install on macOS 26 with Bun < 1.4.1: signing fails, but the OS
+    // still runs the binary. Refusing it would leave the hooks with no launcher.
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
-    expect(() => ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host,
+    const logger = recordingLogger();
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => '1.3.13', logger, host,
       runCompile: fakeCompile(),
-      runCodesign: () => ({ status: 1, stderr: 'invalid page hash' }),
+      runCodesign: () => ({ status: 1, stderr: 'main executable failed strict validation' }),
       invocationContext: 'npx-installer',
-    })).toThrow('invalid page hash');
-    expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(spawnSync(resolveLauncherBinaryPath(host), ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+    expect(logger.lines.some((line) => line.startsWith('warn:')
+      && line.includes('launcher signing or strict verification failed (exit 1): main executable failed strict validation')
+      && line.includes('run `bun upgrade` (1.4.1 or newer)'))).toBe(true);
   });
 
   it('clears the old signature before re-signing, and reports only the sign step (#4947)', () => {
@@ -703,8 +712,10 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
       runCompile: compileCrashingLauncher, runCodesign: failingCodesign, invocationContext: 'npx-installer',
     }));
 
+    // The protocol message still says what the probe saw ...
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    // ... and the actionable half names the signing failure, last stderr line only.
     expect(message).toContain('launcher signing or strict verification failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
-    expect(message).not.toContain('compiled launcher printed protocol');
     expect(message).not.toContain('warning: first line');
   });
 
@@ -743,12 +754,29 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const failingCodesign: LauncherCodesignRunner = () => ({ status: 1, stderr: 'fake codesign failure\n' });
     const logger = recordingLogger();
 
-    expect(() => ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host,
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => '1.3.13', logger, host,
       runCompile: compile, runCodesign: failingCodesign, invocationContext: 'npx-installer',
-    })).toThrow('launcher signing or strict verification failed');
+    }));
+    expect(message).toContain('launcher signing or strict verification failed (exit 1): fake codesign failure');
+    expect(message).toContain(`kept the existing launcher at ${binaryPath} (protocol 1)`);
+    expect(message).toContain('Bun 1.3.13 cannot produce a launcher macOS 27 accepts');
+    expect(message).toContain('run `bun upgrade` (1.4.1 or newer), then `npx claude-mem install`');
     expect(readFileSync(binaryPath)).toEqual(original);
     expect(readdirSync(path.dirname(binaryPath))).toEqual(['claude-mem']);
+  });
+
+  it('does not suggest bun upgrade when a new enough Bun still fails to sign (#5247)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    writeFakeLauncher(resolveLauncherBinaryPath(host), '1');
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => '1.4.4', logger: recordingLogger(), host,
+      runCompile: fakeCompile(), runCodesign: () => ({ status: 1, stderr: 'fake codesign failure\n' }),
+      invocationContext: 'npx-installer',
+    }));
+    expect(message).toContain('launcher signing or strict verification failed (exit 1): fake codesign failure');
+    expect(message).not.toContain('bun upgrade');
   });
 
   it('only signs on darwin', () => {
