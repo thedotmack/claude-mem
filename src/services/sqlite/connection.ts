@@ -19,7 +19,12 @@ export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
 export const LATEST_SCHEMA_VERSION = 74;
 
 export function readSchemaWriterStamp(db: Database): number {
-  return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  const statement = db.prepare('PRAGMA user_version');
+  try {
+    return (statement.get() as { user_version: number }).user_version;
+  } finally {
+    statement.finalize();
+  }
 }
 
 export class SchemaNewerThanBinaryError extends Error {
@@ -92,14 +97,18 @@ export interface SqlitePragmaOptions {
 }
 
 function hasUserTables(db: Database): boolean {
-  const row = db.prepare(`
+  const statement = db.prepare(`
     SELECT name
     FROM sqlite_master
     WHERE type = 'table'
       AND name NOT LIKE 'sqlite_%'
     LIMIT 1
-  `).get() as { name: string } | undefined;
-  return row != null;
+  `);
+  try {
+    return statement.get() != null;
+  } finally {
+    statement.finalize();
+  }
 }
 
 function runRequiredPragma(db: Database, sql: string, name: string): void {
@@ -135,14 +144,31 @@ export function applySqliteConnectionPragmas(
   }
 }
 
+/** Until initialization succeeds, no caller has a handle it can close. */
+function initializeOwnedDatabase(db: Database, initialize: () => void): Database {
+  try {
+    initialize();
+    return db;
+  } catch (error) {
+    try {
+      // Guard/probe statements finalize themselves before this point. Older
+      // supported Bun versions reject strict close while statements remain.
+      db.close(true);
+    } catch (closeError) {
+      logger.warn('DB', 'Could not close SQLite after initialization failed', {},
+        closeError instanceof Error ? closeError : new Error(String(closeError)));
+    }
+    throw error;
+  }
+}
+
 export function openConfiguredSqliteDatabase(
   dbPath: string,
   options?: DatabaseOptions,
   pragmas?: SqlitePragmaOptions,
 ): Database {
   const db = new Database(dbPath, options);
-  applySqliteConnectionPragmas(db, pragmas);
-  return db;
+  return initializeOwnedDatabase(db, () => applySqliteConnectionPragmas(db, pragmas));
 }
 
 /**
@@ -154,9 +180,10 @@ export function openConfiguredSqliteDatabase(
  */
 export function openGuardedSqliteDatabase(dbPath: string): Database {
   const db = new Database(dbPath);
-  assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION);
-  applySqliteConnectionPragmas(db);
-  return db;
+  return initializeOwnedDatabase(db, () => {
+    assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION);
+    applySqliteConnectionPragmas(db);
+  });
 }
 
 /**
