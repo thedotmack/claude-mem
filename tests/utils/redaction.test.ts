@@ -1046,5 +1046,76 @@ describe('cookie header values', () => {
       disabledBuiltinPatterns: ['cookie_header'],
     });
     expect(result.redacted).toBe('Cookie: sessionid=abc123def456ghi789');
+    expect(redactJsonStrings({ headers: { Cookie: 'sessionid=abc123def456ghi789' } }, {
+      enabled: true,
+      disabledBuiltinPatterns: ['cookie_header'],
+    })).toEqual({ headers: { Cookie: 'sessionid=abc123def456ghi789' } });
+  });
+
+  // The worker scans tool output as JSON.stringify(...), where a line break is
+  // the two characters `\n` and a quote is `\"`.
+  it('stops at an escaped line break, so the rest of a stringified response survives', () => {
+    const text = JSON.stringify('Set-Cookie: sid=abc123def\nContent-Type: text/plain\n\nBuild succeeded');
+    const result = redactSensitive(text, cfg);
+    expect(result.redacted).not.toContain('abc123def');
+    expect(JSON.parse(result.redacted)).toBe("Set-Cookie: <redacted type='cookie_header'/>\nContent-Type: text/plain\n\nBuild succeeded");
+  });
+
+  it('redacts a header object that was stringified twice', () => {
+    const text = JSON.stringify(JSON.stringify({ headers: { Cookie: 'sessionid=abc123def456ghi789' } }));
+    const result = redactSensitive(text, cfg);
+    expect(result.redacted).not.toContain('abc123def456ghi789');
+    expect(JSON.parse(JSON.parse(result.redacted))).toEqual({ headers: { Cookie: "<redacted type='cookie_header'/>" } });
+  });
+
+  it('keeps a stringified curl command valid JSON', () => {
+    const text = JSON.stringify('curl -H "Cookie: sessionid=abc123def456ghi789" https://example.com');
+    const result = redactSensitive(text, cfg);
+    expect(result.redacted).not.toContain('abc123def456ghi789');
+    expect(JSON.parse(result.redacted)).toBe(`curl -H "Cookie: <redacted type='cookie_header'/>" https://example.com`);
+  });
+
+  it('pairs Cookie and Set-Cookie keys in structured payloads', () => {
+    const redacted = redactJsonStrings({
+      headers: {
+        Cookie: 'sessionid=abc123def456ghi789',
+        'Set-Cookie': 'sid=Zx9Yw8Vu7Ts6Rq5Po4Nn3Mm2',
+        'set-cookie': ['sid=Aa1Bb2Cc3Dd4', 'csrftoken=Ee5Ff6Gg7Hh8'],
+        accept: 'application/json',
+      },
+    }, { enabled: true });
+    expect(redacted).toEqual({
+      headers: {
+        Cookie: "<redacted type='cookie_header'/>",
+        'Set-Cookie': "<redacted type='cookie_header'/>",
+        'set-cookie': ["<redacted type='cookie_header'/>", "<redacted type='cookie_header'/>"],
+        accept: 'application/json',
+      },
+    });
+  });
+
+  it('leaves no cookie readable when a vendor token sits in the same header', () => {
+    const ghToken = 'ghp_' + 'G'.repeat(36);
+    const header = `Cookie: gh=${ghToken}; sessionid=abc123def456ghi789`;
+    for (const redacted of [
+      redactSensitive(header, cfg).redacted,
+      JSON.stringify(redactJsonStrings({ Cookie: `gh=${ghToken}; sessionid=abc123def456ghi789` }, { enabled: true })),
+    ]) {
+      expect(redacted).not.toContain(ghToken);
+      expect(redacted).not.toContain('abc123def456ghi789');
+    }
+  });
+
+  it('is idempotent: a second pass leaves its own marker alone', () => {
+    for (const input of [
+      'Cookie: sessionid=abc123def456ghi789',
+      JSON.stringify({ headers: { Cookie: 'sessionid=abc123def456ghi789' } }),
+      JSON.stringify('curl -H "Cookie: sessionid=abc123def456ghi789" https://example.com'),
+    ]) {
+      const once = redactSensitive(input, cfg).redacted;
+      const twice = redactSensitive(once, cfg);
+      expect(twice.redacted).toBe(once);
+      expect(twice.counts).toEqual({});
+    }
   });
 });
