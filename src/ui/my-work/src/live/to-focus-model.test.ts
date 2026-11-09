@@ -56,6 +56,12 @@ test('the owner\'s order wins over the suggested priority; unordered areas follo
   assert.deepEqual(model.focusAreas.map((entry) => entry.name), ['Owner first', 'Owner second', 'A', 'B', 'No rank'])
 })
 
+test('recorded area scope reaches the work view; older workers have no scope text', () => {
+  const model = mapFocus([area('fa_scoped', { about: 'Viewer cards and onboarding.' }), area('fa_old')], [])
+  assert.equal(model.focusAreas.find((entry) => entry.id === 'fa_scoped')!.about, 'Viewer cards and onboarding.')
+  assert.equal(model.focusAreas.find((entry) => entry.id === 'fa_old')!.about, null)
+})
+
 test('a placement in a merged area resolves to the area it was merged into, through a chain', () => {
   const areas = [area('fa_old', { mergedInto: 'fa_mid' }), area('fa_mid', { mergedInto: 'fa_new' }), area('fa_new', { name: 'New' })]
   const model = mapFocus(areas, [placed('r1', 'fa_old')])
