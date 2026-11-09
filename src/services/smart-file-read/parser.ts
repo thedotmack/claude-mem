@@ -166,7 +166,7 @@ const QUERIES: Record<string, string> = {
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
 (impl_item trait: (_)? @implemented_trait type: (_) @name) @impl_def
-(function_signature_item name: (identifier) @name) @func
+(function_signature_item name: (identifier) @name) @rust_signature
 (associated_type name: (type_identifier) @name) @tdef
 (type_item name: (type_identifier) @name) @tdef
 (trait_item body: (declaration_list (const_item name: (identifier) @name) @const_def))
@@ -596,6 +596,7 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
+  rust_signature: "function",
   const_func: "function",
   cls: "class",
   method: "method",
@@ -896,7 +897,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
-    if (language === "markdown" && kind === "section") {
+    if (language === "rust" && ["rust_signature", "tdef", "const_def"].includes(kindCapture.tag)) {
+      // These declarations end at their semicolon; there is no function body
+      // from which the generic signature extractor could infer a boundary.
+      const declaration = captureText(lines, kindCapture);
+      signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
+    } else if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
       if (nameCapture && !nameCapture.text) {

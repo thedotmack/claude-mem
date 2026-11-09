@@ -40,3 +40,12 @@ test('Rust enum payload variants can be located through the enum', () => {
 test('Rust module type aliases retain a qualified unfoldable identity', () => {
   assert.match(unfoldSymbol(source, 'lib.rs', 'api.Packet') ?? '', /Result<Vec<u8>, Error>/);
 });
+
+test('required trait signatures show multiline parameters, return types and where clauses', () => {
+  const text = ['trait Read {', ' fn read<T>(', '  &self, input: T,', ' ) -> Self::Output',
+    ' where T: AsRef<[u8]>;', '}', 'type Alias =', ' CrossLineOnlyMarker;'].join('\n');
+  const parsed = parseFile(text, 'lib.rs');
+  const method = parsed.symbols[0].children?.[0];
+  assert.match(parsed.symbols[1].signature, /type Alias = CrossLineOnlyMarker;/);
+  assert.match(method?.signature ?? '', /input: T,.*-> Self::Output.*T: AsRef<\[u8\]>/);
+});
