@@ -149,7 +149,11 @@ describe('POST /v1/context/semantic limits', () => {
     const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
     expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
-  });
+    // Timeout: with the batched seed this test measured 3.1 s (server search job)
+    // and 4.4 s (sync-api job) on CI, most of it the first embed loading the
+    // model. The 5 s default left under 1 s of headroom; 15 s is about 3x the
+    // slowest measured run.
+  }, 15_000);
 
   it('renders the content of a memory or summary that has no narrative', async () => {
     if (!(await canAnswer())) return;
