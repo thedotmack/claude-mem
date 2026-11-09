@@ -9,9 +9,17 @@ import { build } from 'esbuild';
 import { spawnVersionProbe } from '../../src/npx-cli/install/tool-path.js';
 
 test('a responsive version command still reports its output', () => {
-  const result = spawnVersionProbe(process.execPath, ['--version']);
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /\d+\.\d+/);
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const result = spawnVersionProbe(process.execPath, ['--version']);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /\d+\.\d+/);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, [], 'A probe that answered in time must not warn.');
 });
 
 test('a stuck version command cannot indefinitely block runtime discovery', { skip: process.platform === 'win32', timeout: 15_000 }, async () => {
@@ -50,6 +58,7 @@ test('a stuck version command cannot indefinitely block runtime discovery', { sk
     assert.equal(result.error, 'ETIMEDOUT');
     assert.equal(result.status, null);
     assert.equal(result.signal, 'SIGKILL');
+    assert.match(errors, /claude-mem: .+ -e .+ did not answer within 5s; treating it as unavailable/);
   } finally {
     if (watchdog) clearTimeout(watchdog);
     stopOwnedProcessGroup();
