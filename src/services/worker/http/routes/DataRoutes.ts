@@ -355,7 +355,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
-    const rows = store.queryToolUses({
+    const rows = store.queryToolUseIndex({
       project: asString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
@@ -388,8 +388,8 @@ export class DataRoutes extends BaseRouteHandler {
         created_at: row.created_at,
         created_at_epoch: row.created_at_epoch,
         // Size hints so a caller can budget tokens before disclosing a body.
-        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
-        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+        tool_input_bytes: row.tool_input_bytes,
+        tool_response_bytes: row.tool_response_bytes,
       })),
     });
   });
