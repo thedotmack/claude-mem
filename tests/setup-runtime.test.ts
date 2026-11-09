@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { tmpdir } from 'os';
 import {
   readInstallMarker,
@@ -292,7 +292,8 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'tree-sitter-provision-'));
     previousPath = process.env.PATH;
-    process.env.PATH = tempDir;
+    // Hide any tree-sitter already on this machine's PATH, but keep node reachable for `#!/usr/bin/env node` fixtures.
+    process.env.PATH = (previousPath ?? '').split(delimiter).filter(dir => dir && !existsSync(join(dir, TREE_SITTER_BINARY_NAME))).join(delimiter);
     previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'data');
   });
@@ -485,7 +486,7 @@ echo 'tree-sitter 0.26.9'
     mkdirSync(binDir);
     writeFileSync(join(binDir, TREE_SITTER_BINARY_NAME), "#!/bin/sh\nprintf 'tree-sitter 0.26.9\\n'\n", { mode: 0o755 });
     const oldPath = process.env.PATH;
-    process.env.PATH = binDir + ':' + (oldPath ?? '');
+    process.env.PATH = binDir + delimiter + (oldPath ?? '');
     try {
       await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary())).resolves.toBe(true);
       expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
