@@ -251,12 +251,19 @@ export class ServerService {
         }
         this.server = null;
       }
-      await Promise.all([
-        this.graph.queueManager.close(),
-        this.graph.generationWorkerManager.close(),
-        this.graph.stopBackgroundWork?.(),
+      // Each owner must finish releasing its database work before the pool
+      // closes, even if a sibling close fails. Keep the original failure for
+      // the caller, but do not let it skip remaining resource cleanup.
+      const boundaries = await Promise.allSettled([
+        () => this.graph.queueManager.close(),
+        () => this.graph.generationWorkerManager.close(),
+        () => this.graph.stopBackgroundWork?.(),
+      ].map(close => Promise.resolve().then(close)));
+      const pool = await Promise.allSettled([
+        Promise.resolve().then(() => this.graph.postgres.pool.end()),
       ]);
-      await this.graph.postgres.pool.end();
+      const failure = [...boundaries, ...pool].find(result => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
     } finally {
       if (this.persistRuntimeState) {
         removeServerState();
