@@ -215,7 +215,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     })).filter((record) => record.text),
     conversations: raw.conversationKeys.map((key) => {
       const [, platform, sessionId] = parseRecordKey(key)
-      const session = agents.find((agent) => agent.contentSessionId === sessionId && agent.sessionTitle)
+      const session = agents.find((agent) => agent.platformSource === platform && agent.contentSessionId === sessionId && agent.sessionTitle)
       return {
         tool: PLATFORM_LABEL[platform] ?? 'Agent',
         at: key === raw.id && raw.original.atEpoch ? formatDateTime(raw.original.atEpoch) : 'Time not recorded',
