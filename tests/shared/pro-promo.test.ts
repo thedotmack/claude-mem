@@ -22,11 +22,11 @@ describe('pro trial promo copy', () => {
     expect(proTrialLine('welcome-hint')).toContain('https://cmem.ai/pro?from=welcome-hint');
   });
 
-  it('offers trials only to users without a Pro plan', () => {
-    for (const plan of ['trial', 'pro']) {
+  it('offers trials only to installs with no plan (#5540)', () => {
+    for (const plan of ['trial', 'pro', 'teambrain_seat', ' trial ']) {
       expect(proTrialLine('context-banner', plan)).toBe('');
     }
-    for (const plan of ['', 'none', 'teambrain_seat']) {
+    for (const plan of ['', 'none']) {
       expect(proTrialLine('context-banner', plan)).toContain(PRO_TRIAL_PITCH);
     }
   });

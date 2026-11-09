@@ -460,7 +460,7 @@ describe('SearchRoutes Welcome Hint', () => {
     const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
     const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
     try {
-      for (const plan of ['none', 'trial', 'pro']) {
+      for (const plan of ['none', 'trial', 'pro', 'teambrain_seat']) {
         process.env.CLAUDE_MEM_PRO_PLAN = plan;
         const res = createMockRes();
         handler(req, res as unknown as Response);
