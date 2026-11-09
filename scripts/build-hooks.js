@@ -749,6 +749,9 @@ async function buildHooks() {
     // Hard budget, unlike the worker's advisory one: the point of this bundle is
     // to stay cheap to parse. A jump means a worker-sized dependency was pulled
     // into the hook path; fix the import instead of raising the number.
+    // Basis: measured 782 KB at 96bb200f7 (2026-11-09, #5541); 1200 KB is ~50%
+    // headroom and still a quarter of worker-service.cjs (4.7 MB), whose parse
+    // cost this bundle exists to avoid.
     const HOOK_SERVICE_MAX_BYTES = 1200 * 1024;
     if (hookServiceStats.size > HOOK_SERVICE_MAX_BYTES) {
       throw new Error(
