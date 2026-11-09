@@ -17,6 +17,11 @@ describe('What\'s next? search', () => {
     ])
     assert.equal(results[2].body, 'make the scan screen show each agent\nand the counts')
   })
+  it('attributes imported prompts to their stored platform, including integrations outside the display table', () => {
+    const platforms = ['cursor', 'hermes', 'local-agent', 'constructor', null]
+    const rows = toMemoryResults({ prompts: platforms.map((platform_source, id) => ({ id, prompt_text: 'search me', platform_source })) })
+    assert.deepEqual(rows.map(row => row.agent), ['Cursor', 'Hermes', 'local-agent', 'constructor', 'Claude-Mem'])
+  })
   it('asks the worker for JSON, and a kept note is a new memory under the same project', () => {
     assert.equal(searchUrl('ship it'), '/api/search?query=ship+it&format=json&limit=10')
     assert.deepEqual(noteFor({ id: 'prompt-9', title: 'Ship it', body: 'x', project: 'alpha', agent: 'Codex', session: 's', date: '2026-10-22' }, 'edited'), { title: 'Note: Ship it', text: 'edited', project: 'alpha' })

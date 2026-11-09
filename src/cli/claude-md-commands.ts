@@ -424,7 +424,7 @@ function processAllFoldersForGeneration(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
@@ -494,7 +494,7 @@ function processFilesForCleanup(
     dryRun
   });
 
-  return 0;
+  return errorCount > 0 ? 1 : 0;
 }
 
 export function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
@@ -502,7 +502,9 @@ export function cleanSingleFile(file: string, relativePath: string, dryRun: bool
   for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
     remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
   }
-  const stripped = remaining.trim();
+  // Drop whole blank lines a leading managed block leaves behind, but keep the
+  // first authored line's indentation (an indented Markdown code block).
+  const stripped = remaining.replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
 
   if (stripped === '') {
     if (!dryRun) {

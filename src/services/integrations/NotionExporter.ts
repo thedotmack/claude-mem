@@ -48,6 +48,8 @@ const RICH_TEXT_CHUNK = 2_000;
 const MAX_ARRAY_ENTRIES = 100;
 /** Notion API limit: select and multi_select option names are at most 100 characters, no commas. */
 const MAX_OPTION_NAME = 100;
+/** Notion API limit: a request payload is at most 500 KB (https://developers.notion.com/reference/request-limits). */
+const MAX_REQUEST_BYTES = 500_000;
 
 /**
  * The database properties the exporter writes, besides the database's own
@@ -114,18 +116,33 @@ export class NotionHttpError extends Error {
   }
 }
 
-/** Accepts a bare id (dashed or not) or a Notion database URL; returns the dashed UUID, or null. */
+/** Accepts a bare id (dashed or not) or a Notion database URL, with or without its scheme; returns the dashed UUID, or null. */
 export function normalizeNotionId(value: string): string | null {
-  const path = value.trim().split(/[?#]/)[0].replace(/\/+$/, '').replace(/-/g, '');
-  const match = path.match(/([0-9a-f]{32})$/i);
-  if (!match) return null;
-  const hex = match[1].toLowerCase();
+  const raw = value.trim();
+  let candidate = raw;
+  const schemeless = /^[\w.-]*notion\.(?:so|site)\//i.test(raw);
+  if (schemeless || /^https?:\/\//i.test(raw)) {
+    let url: URL;
+    try { url = new URL(schemeless ? `https://${raw}` : raw); } catch { return null; }
+    const segment = url.pathname.replace(/\/+$/, '').split('/').pop() ?? '';
+    const id = segment.match(/(?:^|-)([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+    if (!id) return null;
+    candidate = id[1];
+  } else if (!/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(raw)) {
+    return null;
+  }
+  const hex = candidate.replace(/-/g, '').toLowerCase();
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function chunkText(text: string, size = RICH_TEXT_CHUNK): string[] {
   const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(start + size, text.length);
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
   return chunks;
 }
 
@@ -154,7 +171,7 @@ function richText(text: string, property: string, observationId: number): RichTe
 }
 
 function optionName(value: string): string {
-  return value.replace(/,/g, ' ').trim().slice(0, MAX_OPTION_NAME);
+  return Array.from(value.replace(/,/g, ' ').trim()).slice(0, MAX_OPTION_NAME).join('');
 }
 
 export function notionExportKey(sourceId: string, observationId: number): string {
@@ -193,12 +210,55 @@ export function buildNotionProperties(record: NotionObservationRecord, titleProp
   };
 }
 
-/** One block per 100 text chunks, so a very long paragraph spans several blocks instead of being cut. */
+/** Trim the longest property previews by complete rich-text chunks. Keep the dedupe key intact. */
+function fitPageProperties(payload: { properties: Record<string, unknown> }, observationId: number): void {
+  let bytes = Buffer.byteLength(JSON.stringify(payload));
+  if (bytes <= MAX_REQUEST_BYTES) return;
+
+  const fields = Object.entries(payload.properties).flatMap(([name, value]) => {
+    const { title, rich_text } = value as { title?: RichText; rich_text?: RichText };
+    const parts = title ?? rich_text;
+    if (!parts || (rich_text && name === NOTION_PROPERTIES.exportKey.name)) return [];
+    return [{ name, parts }];
+  });
+  const trimmed = new Set<string>();
+  while (bytes > MAX_REQUEST_BYTES) {
+    const largest = fields.sort((a, b) => b.parts.length - a.parts.length)[0];
+    if (!largest || largest.parts.length < 2) throw new Error('Notion page properties exceed the request limit');
+    bytes -= Buffer.byteLength(JSON.stringify(largest.parts.pop())) + 1; // includes the preceding comma
+    trimmed.add(largest.name);
+  }
+  logger.warn('NOTION', 'Notion page exceeds the request limit, truncating property text', {
+    observationId, properties: [...trimmed],
+  });
+}
+
+/** Fit array entries to both Notion limits, including commas and the JSON envelope. */
+function fittingBatchEnd(entries: unknown[], start: number, envelope: object): number {
+  let bytes = Buffer.byteLength(JSON.stringify(envelope));
+  let end = start;
+  for (; end < entries.length && end - start < MAX_ARRAY_ENTRIES; end++) {
+    bytes += Buffer.byteLength(JSON.stringify(entries[end])) + (end === start ? 0 : 1);
+    if (bytes > MAX_REQUEST_BYTES) break;
+  }
+  return end;
+}
+
+/** Require a nonempty batch when there are entries left to send. */
+export function batchEnd(entries: unknown[], start: number, envelope: object): number {
+  const end = fittingBatchEnd(entries, start, envelope);
+  if (end === start && start < entries.length) throw new Error('Notion block exceeds the request limit');
+  return end;
+}
+
 function textBlocks(type: 'paragraph' | 'bulleted_list_item', text: string): unknown[] {
-  const chunks = chunkText(text);
+  const rich = toRichText(chunkText(text));
   const blocks: unknown[] = [];
-  for (let i = 0; i < chunks.length; i += MAX_ARRAY_ENTRIES) {
-    blocks.push({ object: 'block', type, [type]: { rich_text: toRichText(chunks.slice(i, i + MAX_ARRAY_ENTRIES)) } });
+  for (let start = 0; start < rich.length;) {
+    const frame = { children: [{ object: 'block', type, [type]: { rich_text: [] } }] };
+    const end = batchEnd(rich, start, frame);
+    blocks.push({ object: 'block', type, [type]: { rich_text: rich.slice(start, end) } });
+    start = end;
   }
   return blocks;
 }
@@ -212,7 +272,7 @@ export function buildNotionChildren(observation: ParsedObservation): unknown[] {
   const blocks: unknown[] = [];
   const narrative = observation.narrative?.trim();
   if (narrative) {
-    for (const paragraph of narrative.split(/\n{2,}/)) {
+    for (const paragraph of narrative.split(/(?:\r?\n){2,}/)) {
       if (paragraph.trim()) blocks.push(...textBlocks('paragraph', paragraph.trim()));
     }
   }
@@ -374,12 +434,14 @@ export class NotionExporter {
     }
 
     const children = buildNotionChildren(record.observation);
+    const payload = { parent: { database_id: this.databaseId }, properties, children: [] };
+    fitPageProperties(payload, record.observationId);
+    // If the properties leave no room for the first block, append it after the page exists.
+    const firstEnd = fittingBatchEnd(children, 0, payload);
     const page = await this.request('POST', '/pages', {
-      parent: { database_id: this.databaseId },
-      properties,
-      children: children.slice(0, MAX_ARRAY_ENTRIES),
+      ...payload, children: children.slice(0, firstEnd),
     }) as { id?: string };
-    if (children.length > MAX_ARRAY_ENTRIES) await this.appendRemainingChildren(record, page.id, children);
+    if (firstEnd < children.length) await this.appendRemainingChildren(record, page.id, children, firstEnd);
     return 'created';
   }
 
@@ -391,13 +453,14 @@ export class NotionExporter {
    * fails is logged with how much of the body is missing. A batch that timed
    * out but landed can be appended twice; a repeated block beats a missing one.
    */
-  private async appendRemainingChildren(record: NotionObservationRecord, pageId: string | undefined, children: unknown[]): Promise<void> {
-    let sent = MAX_ARRAY_ENTRIES;
+  private async appendRemainingChildren(record: NotionObservationRecord, pageId: string | undefined, children: unknown[], sent: number): Promise<void> {
     try {
       if (!pageId) throw new Error('Notion create response had no page id');
-      for (; sent < children.length; sent += MAX_ARRAY_ENTRIES) {
-        const batch = children.slice(sent, sent + MAX_ARRAY_ENTRIES);
+      while (sent < children.length) {
+        const end = batchEnd(children, sent, { children: [] });
+        const batch = children.slice(sent, end);
         await this.withRetry(() => this.request('PATCH', `/blocks/${pageId}/children`, { children: batch }));
+        sent = end;
       }
     } catch (error) {
       logger.error('NOTION', 'Notion page created, but the rest of its body could not be appended', {
@@ -515,7 +578,8 @@ export class NotionExporter {
 export function loadOrCreateNotionSourceId(path = join(DATA_DIR, 'notion-export-source-id')): string {
   try {
     const existing = readFileSync(path, 'utf8').trim();
-    if (existing) return existing;
+    if (!existing) throw new Error(`Notion export source ID file is empty: ${path}`);
+    return existing;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
@@ -526,7 +590,11 @@ export function loadOrCreateNotionSourceId(path = join(DATA_DIR, 'notion-export-
     return created;
   } catch (error) {
     // Another worker created it first: use that one.
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return readFileSync(path, 'utf8').trim();
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      const winner = readFileSync(path, 'utf8').trim();
+      if (!winner) throw new Error(`Notion export source ID file is empty: ${path}`);
+      return winner;
+    }
     throw error;
   }
 }
