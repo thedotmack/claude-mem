@@ -72,6 +72,16 @@ describe('postCorpusRequestOverSse (MCP callWorker corpus path)', () => {
       .rejects.toThrow(`Worker API error (404): ${JSON.stringify(notFoundBody)}`);
   });
 
+  it('uses the media type rather than case or parameter text to select the stream parser', async () => {
+    const body = { answer: 'done' };
+    const event = `event: result\ndata: ${JSON.stringify(body)}\n\n`;
+    useScript({ headers: { 'content-type': 'TEXT/Event-Stream; charset=utf-8' }, body: [{ chunk: event }] });
+    expect(await postCorpusRequestOverSse('/api/corpus/c/query', {}, SCALED_TIMING)).toEqual(body);
+    useScript({ headers: { 'content-type': 'application/json; profile="text/event-stream"' },
+      body: [{ chunk: JSON.stringify(body) }] });
+    expect(await postCorpusRequestOverSse('/api/corpus/c/query', {}, SCALED_TIMING)).toEqual(body);
+  });
+
   it('keeps the JSON error text for a request rejected before the stream opened', async () => {
     useScript({ status: 400, headers: { 'content-type': 'application/json' }, body: [{ chunk: '{"error":"bad"}' }] });
 

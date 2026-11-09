@@ -116,7 +116,7 @@ export class CorpusBuilder {
       type: row.type,
       title: row.title || '',
       subtitle: row.subtitle || null,
-      narrative: row.narrative || null,
+      narrative: row.narrative || row.text || null,
       facts: safeParseJsonArray(row.facts),
       concepts: safeParseJsonArray(row.concepts),
       files_read: safeParseJsonArray(row.files_read),
@@ -128,7 +128,7 @@ export class CorpusBuilder {
   }
 
   private calculateStats(observations: CorpusObservation[]): CorpusStats {
-    const typeBreakdown: Record<string, number> = {};
+    const typeBreakdown: Record<string, number> = Object.create(null);
     let earliestEpoch = Infinity;
     let latestEpoch = -Infinity;
 
