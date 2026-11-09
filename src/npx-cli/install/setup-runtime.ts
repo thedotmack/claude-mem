@@ -10,7 +10,8 @@ import { IS_WINDOWS } from '../utils/paths.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { settingsTarget } from '../../shared/settings-document.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
-import { ensureTreeSitterCliBinary } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -466,6 +467,12 @@ export async function provisionTreeSitterCli(
   summary: InstallSummary,
   installTimeoutMs: number = INSTALL_TIMEOUT_MS,
 ): Promise<boolean> {
+  const searchPath = process.env.PATH ?? '';
+  const packageBinary = treeSitterCliBinaryPath(targetDir);
+  const resolvedBinary = resolveTreeSitterBinPathFor(packageBinary, searchPath);
+  if (resolvedBinary !== packageBinary && checkTreeSitterCliLoadable(resolvedBinary, searchPath).loadable) {
+    return true;
+  }
   try {
     await ensureTreeSitterCliBinary(targetDir, installTimeoutMs);
     return true;

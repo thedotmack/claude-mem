@@ -474,6 +474,22 @@ echo 'tree-sitter 0.26.9'
     expect(caught).toMatchObject({ cause: { killed: true } });
   });
 
+  it.skipIf(process.platform === 'win32')('uses a compatible PATH CLI without running the package installer', async () => {
+    writeCliPackage('process.exitCode = 2;');
+    const binDir = join(tempDir, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, TREE_SITTER_BINARY_NAME), "#!/bin/sh\nprintf 'tree-sitter 0.26.9\\n'\n", { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = binDir + ':' + (oldPath ?? '');
+    try {
+      await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary())).resolves.toBe(true);
+      expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
+  });
+
   it('reports nothing when the CLI already works', async () => {
     copyRealBinaryInto(writeCliPackage());
     const summary = createInstallSummary();
