@@ -1,9 +1,10 @@
 /**
  * The auto-update supervisor: moves the install to the target version with
  * the installer users run themselves (`npx claude-mem@<version> update`), as
- * `npx --yes --prefix=<installer folder> --package=claude-mem@<version>
- * claude-mem update` (auto-update-launch.ts claudeMemUpdateInvocation),
- * proves the switch, and puts the previous version back when it fails.
+ * `npx --yes --no-workspaces --package=claude-mem@<version> claude-mem update`
+ * run from a new folder of its own (auto-update-launch.ts
+ * claudeMemUpdateInvocation, makeAutoUpdateInstallerRunFolder), proves the
+ * switch, and puts the previous version back when it fails.
  *
  * It runs in its own process, from the worker script of the version being
  * replaced, and never as the worker's descendant: the worker starts a detached
@@ -95,6 +96,8 @@ export type AutoUpdateApplyFailureStage =
   | 'install-moved-before-start'
   /** Windows: no npx was found on PATH, so no installer could be run. */
   | 'npx-not-found'
+  /** The installer's own folder could not be made, or its package.json not written, so no installer was started. */
+  | 'installer-folder'
   /** The installer process could not be started (a throw from spawn, or an 'error' event before it exited). */
   | 'installer-spawn'
   /** It exited non-zero, or a signal it did not get from the supervisor ended it. */
@@ -128,7 +131,7 @@ export type AutoUpdateRestoreResult =
   | 'previous-not-published'
   /** npm's metadata for the previous version could not be read, so its installer was not run. */
   | 'previous-publication-unknown'
-  /** The previous version's installer could not start, exited non-zero, ran past its deadline, or was still running after it. */
+  /** The previous version's installer could not start (its folder included), exited non-zero, ran past its deadline, or was still running after it. */
   | 'restore-installer-failed'
   /** Its installer exited 0, but the install does not resolve to the previous version, or no worker on it finished starting. */
   | 'restore-unproven'
@@ -141,6 +144,8 @@ export type AutoUpdateInstallerRun =
   | { kind: 'spawn-failed'; message: string }
   /** Windows only: npx is not on PATH (auto-update-launch.ts claudeMemUpdateInvocation). Nothing was started. */
   | { kind: 'npx-not-found'; message: string }
+  /** The run's own folder could not be made (auto-update-launch.ts makeAutoUpdateInstallerRunFolder). Nothing was started. */
+  | { kind: 'folder-failed'; message: string }
   /**
    * Ran past its deadline and its tree was killed. killError: why the
    * tree-kill threw, when it did. installerStillRunning: the installer's own
@@ -222,9 +227,10 @@ export interface AutoUpdateApplyDeps {
   /** The pid of the worker answering on this install's port, or null when none answers (restart-verify.ts getCurrentWorkerPid). */
   getCurrentWorkerPid: () => Promise<number | null>;
   /**
-   * One run of `npx --yes --prefix=<installer folder>
-   * --package=claude-mem@<version> claude-mem update`, its output appended to
-   * the attempt log, under the installer deadline.
+   * One run of `npx --yes --no-workspaces --package=claude-mem@<version>
+   * claude-mem update` from a new folder of its own, its output appended to
+   * the attempt log, under the installer deadline. A folder that cannot be
+   * made comes back as folder-failed, never as a throw.
    */
   runInstaller: (version: string) => Promise<AutoUpdateInstallerRun>;
   /**
@@ -409,7 +415,7 @@ async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: Aut
 
   const installFailure = installerFailure(install, targetVersion);
   let failure: AttemptFailure;
-  if (install.kind === 'spawn-failed' || install.kind === 'npx-not-found') {
+  if (installerNeverStarted(install)) {
     // Nothing ran, so there is nothing to prove.
     failure = installFailure!;
   } else {
@@ -447,10 +453,18 @@ async function installProveAndRestore(attempt: AutoUpdateApplyAttempt, deps: Aut
   return restorePreviousVersion(attempt, failure, afterInstall, deps);
 }
 
+/** No installer process was started, so nothing of the version was written and there is nothing to prove. */
+function installerNeverStarted(run: AutoUpdateInstallerRun): run is Extract<AutoUpdateInstallerRun, { kind: 'spawn-failed' | 'npx-not-found' | 'folder-failed' }> {
+  return run.kind === 'spawn-failed' || run.kind === 'npx-not-found' || run.kind === 'folder-failed';
+}
+
 /** Why an installer run failed, or null when it exited 0. */
 function installerFailure(run: AutoUpdateInstallerRun, version: string): AttemptFailure | null {
   if (run.kind === 'npx-not-found') {
     return { stage: 'npx-not-found', message: `the installer for ${version} could not be run: ${run.message}` };
+  }
+  if (run.kind === 'folder-failed') {
+    return { stage: 'installer-folder', message: `the installer for ${version} could not be run: ${run.message}` };
   }
   if (run.kind === 'spawn-failed') {
     return { stage: 'installer-spawn', message: `the installer for ${version} could not be started: ${run.message}` };
@@ -714,7 +728,7 @@ async function restorePreviousVersion(
     };
   }
   const restoreInstallFailure = installerFailure(restoreInstall, previousVersion);
-  if (restoreInstall.kind === 'spawn-failed' || restoreInstall.kind === 'npx-not-found') {
+  if (installerNeverStarted(restoreInstall)) {
     return restoreFailed('restore-installer-failed', restoreInstallFailure!.message, previousFix);
   }
   const proven = await proveInstalledVersion(previousVersion, workerPidBeforeRestore, deps);

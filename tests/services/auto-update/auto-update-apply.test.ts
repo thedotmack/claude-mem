@@ -15,7 +15,7 @@ import {
   type MarketplaceCopyRead,
 } from '../../../src/services/auto-update/auto-update-apply.js';
 import type { NpmPublicationRead } from '../../../src/services/auto-update/auto-update-check.js';
-import { readDatabaseSchemaStamp, readInstallVersions, runAutoUpdateInstaller } from '../../../src/services/auto-update/auto-update-launch.js';
+import { autoUpdateInstallerFolder, autoUpdateInstallerRunFolderName, readDatabaseSchemaStamp, readInstallVersions, runAutoUpdateInstaller } from '../../../src/services/auto-update/auto-update-launch.js';
 import { registerPlugin } from '../../../src/npx-cli/commands/install.js';
 import { defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
@@ -1127,7 +1127,7 @@ describe('applyAutoUpdate', () => {
           [TARGET]: async (world) => {
             // The hung run had already written the target before it stopped making progress.
             stopsHalfWritten(TARGET)(world);
-            return runAutoUpdateInstaller(commandInvocation(process.execPath, ['-e', hungInstaller]), { logPath, deadlineMs });
+            return runAutoUpdateInstaller(commandInvocation(process.execPath, ['-e', hungInstaller]), { logPath, deadlineMs, runFolderName: autoUpdateInstallerRunFolderName(STARTED_AT, TARGET) });
           },
           [PREVIOUS]: installsCompletely(PREVIOUS),
         },
@@ -1270,7 +1270,7 @@ describe('applyAutoUpdate', () => {
           // The deadline is never reached: the spawn error settles the run first.
           [TARGET]: async () => runAutoUpdateInstaller(
             commandInvocation(path.join(spawnDirectory, 'no-such-installer'), ['update']),
-            { logPath, deadlineMs: 60_000 },
+            { logPath, deadlineMs: 60_000, runFolderName: autoUpdateInstallerRunFolderName(STARTED_AT, TARGET) },
           ),
         },
       });
@@ -1289,6 +1289,68 @@ describe('applyAutoUpdate', () => {
     } finally {
       rmSync(spawnDirectory, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * The real runner, when the run's folder cannot be made: a file stands where the installer folder goes in the
+   * data dir (tests/preload.ts points that at a scratch folder), so mkdir fails before anything starts, as a
+   * leftover a process still holds can make it fail on Windows. The file is removed again afterwards.
+   */
+  async function runWithAnInstallerFolderThatCannotBeMade(logPath: string, version: string) {
+    const installerFolder = autoUpdateInstallerFolder();
+    rmSync(installerFolder, { recursive: true, force: true });
+    writeFileSync(installerFolder, 'not a folder');
+    try {
+      return await runAutoUpdateInstaller(
+        commandInvocation(process.execPath, ['-e', 'process.exit(0)']),
+        { logPath, deadlineMs: 60_000, runFolderName: autoUpdateInstallerRunFolderName(STARTED_AT, version) },
+      );
+    } finally {
+      rmSync(installerFolder, { force: true });
+    }
+  }
+
+  it('folder failure: a target installer whose folder cannot be made fails at installer-folder, starts nothing, and is tried again', async () => {
+    silenceLogger();
+    const logPath = path.join(runDirectory, 'auto-update-folder-failure.log');
+    const harness = buildApplyHarness({ installers: { [TARGET]: () => runWithAnInstallerFolderThatCannotBeMade(logPath, TARGET) } });
+
+    expect(await applyAutoUpdate(attempt, harness.deps)).toMatchObject({ kind: 'finished', recorded: 'recorded', restoreResult: 'not-needed' });
+
+    const folderNotMade = `the folder ${autoUpdateInstallerFolder()} could not be made`;
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({
+      result: 'failed',
+      failureStage: 'installer-folder',
+      message: expect.stringContaining(`The installer for ${TARGET} could not be run: ${folderNotMade}`),
+    });
+    expect(harness.stored().versionsThatFailedToApply).toEqual([]);
+    // Nothing ran, so only the previous version's worker was proven.
+    expect(harness.proofs).toEqual([{ oldPid: null, version: PREVIOUS }]);
+    expect(readFileSync(logPath, 'utf-8')).toContain(`not running: ${process.execPath} -e process.exit(0): ${folderNotMade}`);
+    expectFailureTelemetry(harness, 'installer-folder', 'not-needed');
+  });
+
+  it('folder failure on the restore: restore_failed with the previous version\'s fix, never a supervisor exception', async () => {
+    silenceLogger();
+    const logPath = path.join(runDirectory, 'auto-update-restore-folder-failure.log');
+    const harness = buildApplyHarness({
+      installers: { [TARGET]: stopsHalfWritten(TARGET), [PREVIOUS]: () => runWithAnInstallerFolderThatCannotBeMade(logPath, PREVIOUS) },
+    });
+
+    expect(await applyAutoUpdate(attempt, harness.deps)).toMatchObject({ kind: 'finished', recorded: 'recorded', restoreResult: 'restore-installer-failed' });
+
+    expect(harness.installerRuns).toEqual([TARGET, PREVIOUS]);
+    expect(harness.stored().lastAttemptOutcome).toMatchObject({
+      result: 'restore_failed',
+      failureStage: 'installer-exit',
+      message: expect.stringContaining(`Could not restore ${PREVIOUS}: the installer for ${PREVIOUS} could not be run: the folder ${autoUpdateInstallerFolder()} could not be made`),
+      fixCommand: autoUpdateFixCommand(PREVIOUS),
+      fixCommandWhen: 'now',
+    });
+    expect(harness.stored().lastAttemptOutcome!.message).toMatch(new RegExp(`Run: npx claude-mem@${PREVIOUS} update$`));
+    expect(harness.stored().inFlightAttempt).toBeNull();
+    expect(harness.stored().versionsThatFailedToApply).toEqual([TARGET]);
+    expectFailureTelemetry(harness, 'installer-exit', 'restore-installer-failed');
   });
 
   it('npx not found (Windows): fails at npx-not-found, nothing switched, the previous version running', async () => {

@@ -37,11 +37,14 @@ It is on by default.
 - **The same installer you would run.** It runs
   `npx claude-mem@<version> update` outside the worker, so a worker restart
   cannot cut it off. The exact command is
-  `npx --yes --prefix=<folder> --package=claude-mem@<version> claude-mem update`,
-  where `<folder>` is `~/.claude-mem/auto-update-installer`, an empty folder
-  claude-mem makes fresh before every update. That way npx installs the
-  published release and never runs a copy of claude-mem it finds in a folder
-  above.
+  `npx --yes --no-workspaces --package=claude-mem@<version> claude-mem update`,
+  run from a new folder claude-mem makes for each run in
+  `~/.claude-mem/auto-update-installer/`. The folder holds only a small
+  `package.json`, and only you can open it. That way npx installs the
+  published release: it never runs a copy of claude-mem it finds in a folder
+  above, and takes no npm settings from one. Your own npm settings apply as
+  when you run the command yourself: your `~/.npmrc` and npm's global npmrc,
+  with any proxy or certificate set there.
 
 ## Turn it off
 

@@ -22,8 +22,8 @@ import { SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { getPlatformTimeout, WORKER_BOOT_BIND_DEADLINE_MS } from '../infrastructure/ProcessManager.js';
 
 /**
- * Steps of `npx --yes --prefix=<installer folder>
- * --package=claude-mem@<version> claude-mem update` that can each take the
+ * Steps of `npx --yes --no-workspaces --package=claude-mem@<version>
+ * claude-mem update` that can each take the
  * installer's INSTALL_TIMEOUT_MS, in the order they run:
  *  1. npx downloads the package (28.5 MB unpacked for 15.10.1) and its
  *     dependencies before any installer code runs, so no installer timer
@@ -142,7 +142,7 @@ export const WORKER_PID_CAPTURE_TIMEOUT_MS = 2_000;
 export const AUTO_UPDATE_FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * The longest one `npx --yes --prefix=<installer folder>
+ * The longest one `npx --yes --no-workspaces
  * --package=claude-mem@<version> claude-mem update` can run while every
  * step stays inside its own budget: the six INSTALL_TIMEOUT_MS steps, the
  * fixed install.ts steps (both worker stops included), and the wait for the

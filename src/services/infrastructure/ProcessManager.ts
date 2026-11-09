@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
 import { execFileSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
-import { withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun } from '../../shared/auto-update-install-run.js';
+import { withoutNpmSettingsFromAutoUpdateNpxFlags } from '../../shared/auto-update-install-run.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
@@ -680,8 +680,8 @@ export function spawnDaemon(
 ): number | undefined {
   getSupervisor().assertCanSpawn('worker daemon');
 
-  // The worker an auto-update's installer starts does not keep the npm prefix, package, globalconfig and yes settings npx set for that run.
-  const env = withoutNpmSettingsNpxAddsForAutoUpdateInstallerRun(sanitizeEnv({
+  // The worker an auto-update's installer starts does not keep the npm package and yes settings npx set from the auto-updater's flags.
+  const env = withoutNpmSettingsFromAutoUpdateNpxFlags(sanitizeEnv({
     ...process.env,
     CLAUDE_MEM_WORKER_PORT: String(port),
     ...extraEnv

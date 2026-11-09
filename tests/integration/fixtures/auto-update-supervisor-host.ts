@@ -38,6 +38,7 @@ import { writeOrphanedMarker, type AutoUpdateApplyAttempt, type AutoUpdateApplyD
 import {
   autoUpdateApplyArgv,
   autoUpdateAttemptLogPath,
+  autoUpdateInstallerRunFolderName,
   autoUpdateLaunchDeps,
   launchAutoUpdateSupervisor,
   runAutoUpdateApplyCommand,
@@ -107,7 +108,7 @@ function fixtureApplyDeps(attempt: AutoUpdateApplyAttempt): AutoUpdateApplyDeps 
     runInstaller: (version) => runAutoUpdateInstaller(
       commandInvocation(process.execPath, ['-e', harmlessInstallerSource(version)]),
       // Far past the stand-in installer's own run, so only a real hang would reach it.
-      { logPath: autoUpdateAttemptLogPath(attempt.startedAt), deadlineMs: 120_000 },
+      { logPath: autoUpdateAttemptLogPath(attempt.startedAt), deadlineMs: 120_000, runFolderName: autoUpdateInstallerRunFolderName(attempt.startedAt, version) },
     ),
     proveWorkerOnVersion: async (_oldPid, version) => readInstalledVersion() === version
       ? { ok: true, pid: process.pid }
