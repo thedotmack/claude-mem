@@ -242,8 +242,17 @@ export async function swapDatabaseFromSnapshot(
     throw error instanceof Error ? error : new Error(String(error));
   }
 
-  // The swap is done; the old sidecars belong to the replaced database.
-  for (const ext of movedSidecars) removeIfPresent(`${stagedDb}.live${ext}`);
+  // The swap has committed. A cleanup failure must not report that the old
+  // database is still live or prevent the semantic index from being rebuilt.
+  // The parked sidecars cannot be mistaken for the new database's sidecars.
+  for (const ext of movedSidecars) {
+    const leftover = `${stagedDb}.live${ext}`;
+    try {
+      removeIfPresent(leftover);
+    } catch (error) {
+      logger.warn('BACKUP', 'Database restored; could not remove a parked old sidecar', { leftover }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
   logger.info('BACKUP', 'Database swapped from snapshot', { snapshot: snapshotPath, preRestoreCopy });
   return { preRestoreCopy };
 }
