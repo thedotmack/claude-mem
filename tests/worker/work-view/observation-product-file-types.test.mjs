@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { productsFromObservation, recordedFile } from '../../../src/services/work-view/work-product.mjs';
 
 test('malformed file-list entries cannot interrupt valid observation products', () => {
@@ -18,8 +21,15 @@ test('rejected strings leave valid file positions and generic-page titles intact
 });
 
 test('recorded-file lookup can reach a valid original index after a malformed entry', () => {
-  const row = { id: 9, files_modified: JSON.stringify([null, '/work/report.pdf']) };
-  const read = sql => sql.includes('PRAGMA') ? [] : [row];
-  assert.equal(recordedFile(read, 'observation', 9, 1), '/work/report.pdf');
-  assert.equal(recordedFile(read, 'observation', 9, 0), null);
+  const dir = mkdtempSync(join(tmpdir(), 'observation-products-'));
+  try {
+    const file = join(dir, 'report.pdf');
+    writeFileSync(file, 'test report');
+    const row = { id: 9, files_modified: JSON.stringify([null, file]) };
+    const read = sql => sql.includes('PRAGMA') ? [] : [row];
+    assert.equal(recordedFile(read, 'observation', 9, 1), file);
+    assert.equal(recordedFile(read, 'observation', 9, 0), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
