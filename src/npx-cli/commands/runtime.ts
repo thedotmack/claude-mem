@@ -77,7 +77,7 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
@@ -246,7 +246,7 @@ export function runMcpCommand(): void {
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
@@ -270,13 +270,11 @@ export function runHookCommand(extraArgs: string[] = []): void {
   });
 
   child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
+    process.exit(exitCode ?? 1);
   });
 }
 
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
-  pluginRootOrExit();
-
   const query = queryParts.join(' ').trim();
   if (!query) {
     console.error(styleText('red', 'Usage: npx claude-mem search <query>'));

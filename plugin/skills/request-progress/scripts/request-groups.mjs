@@ -2669,7 +2669,7 @@ var init_project_name = __esm({
 // src/services/work-view/session-project.mjs
 import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
 import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3 } from "node:path";
+import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
 function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
   if (typeof project !== "string") return null;
   return gitRemoteNames ? project : project.split("/")[0];
@@ -2685,7 +2685,7 @@ function isAgentScratchFolder(folder) {
   if (typeof folder !== "string" || !folder) return false;
   if (CODEX_SCRATCH.test(folder)) return true;
   const absolute = resolve3(folder);
-  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
 }
 function repoRootOf(path4) {
   const visited = [];
