@@ -18,6 +18,8 @@ test('strips tracked comments without rewriting unrelated bytes or consuming exe
     ['tokens.js', 'let x = 1 +/* gap */+ 2;\n', 'let x = 1 + + 2;\n'],
     ['asi.js', 'function f(){ return /*line\nbreak*/ 1; }\n', 'function f(){ return \n 1; }\n'],
     ['directives.js', '/* @license MIT */\n// discarded\n//# sourceMappingURL=map.js\n', '/* @license MIT */\n//# sourceMappingURL=map.js\n'],
+    ['license.js', '/**\n * Package notice.\n * @license MIT\n */\n// discarded\n', '/**\n * Package notice.\n * @license MIT\n */\n'],
+    ['preserve.js', '/**\r\n * @preserve original terms\r\n */\r\n', '/**\r\n * @preserve original terms\r\n */\r\n'],
     ['island.md', '<!--before-->important<!--after-->\n', '<!--before-->important<!--after-->\n'],
     ['expressions.mdx', '{/* before */ 42 /* after */}\n\n{/* discarded */}\n', '{/* before */ 42 /* after */}\n\n'],
     ['template.html', '<template><!--remove--><b>text</b></template>\n', '<template><b>text</b></template>\n'],
@@ -55,4 +57,22 @@ test('strips tracked comments without rewriting unrelated bytes or consuming exe
     assert.equal(readFileSync(join(dir, 'outside.js'), 'utf8'), '// preserve\n42;\n');
     assert.equal(readFileSync(join(dir, 'behind.js'), 'utf8'), '// external\n');
   }
+});
+
+test('skips undecodable Git paths without touching an untracked UTF-8 namesake', {
+  skip: process.platform === 'win32',
+}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'strip-paths-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const rawPath = Buffer.concat([Buffer.from(join(root, 'bad-')), Buffer.from([0xff]), Buffer.from('.js')]);
+  const namesake = join(root, 'bad-\uFFFD.js');
+  const contents = '// keep\n42;\n';
+  writeFileSync(rawPath, contents);
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', '.'], { cwd: root });
+  writeFileSync(namesake, contents);
+
+  execFileSync(process.execPath, [script, root]);
+  assert.equal(readFileSync(rawPath, 'utf8'), contents);
+  assert.equal(readFileSync(namesake, 'utf8'), contents);
 });

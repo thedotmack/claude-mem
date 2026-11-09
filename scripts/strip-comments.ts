@@ -111,7 +111,8 @@ function isDirectiveJs(text: string): boolean {
     .replace(/^\/\*+\s*/, '')
     .replace(/\s*\*+\/$/, '')
     .trim();
-  return /^(@ts-(?:ignore|expect-error|nocheck|check)\b|eslint-(?:disable|enable)|biome-ignore|prettier-ignore|@vitest-|c8\s+ignore|istanbul\s+ignore|@__PURE__|#__PURE__|[@#]\s*source(?:Mapping)?URL=|@(?:license|preserve)\b|webpack(?:ChunkName|Prefetch|Preload|Include|Exclude|Mode|Ignore))/.test(inner);
+  if (/^[ \t]*(?:\*[ \t]*)?@(?:license|preserve)\b/m.test(inner)) return true;
+  return /^(@ts-(?:ignore|expect-error|nocheck|check)\b|eslint-(?:disable|enable)|biome-ignore|prettier-ignore|@vitest-|c8\s+ignore|istanbul\s+ignore|@__PURE__|#__PURE__|[@#]\s*source(?:Mapping)?URL=|webpack(?:ChunkName|Prefetch|Preload|Include|Exclude|Mode|Ignore))/.test(inner);
 }
 
 function scriptKindFor(ext: string): ts.ScriptKind {
@@ -455,8 +456,14 @@ function main(): void {
   let files: string[];
   try {
     opts.root = realpathSync(opts.root);
-    files = execFileSync('git', ['ls-files', '-z', '--deduplicate'], { cwd: opts.root, encoding: 'utf-8' })
-      .split('\0').filter(Boolean);
+    const paths = execFileSync('git', ['ls-files', '-z', '--deduplicate'], { cwd: opts.root });
+    files = [];
+    let start = 0;
+    for (let end = paths.indexOf(0); end !== -1; end = paths.indexOf(0, start)) {
+      const name = paths.subarray(start, end);
+      if (isUtf8(name)) files.push(name.toString('utf8'));
+      start = end + 1;
+    }
   } catch (e) {
     console.error(`git ls-files failed in ${opts.root}: ${(e as Error).message}`);
     process.exit(2);
