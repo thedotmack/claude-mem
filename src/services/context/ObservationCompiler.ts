@@ -3,7 +3,7 @@ import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
-import { stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
@@ -314,7 +314,9 @@ function parseAssistantTextFromLine(line: string): string | null {
     for (const block of entry.message.content) {
       if (block.type === 'text') text += block.text;
     }
-    text = stripSystemReminderBlocks(text).trim();
+    // This text bypasses observation storage and comes from the host's raw
+    // transcript, so apply the same privacy boundary as captured messages.
+    text = stripMemoryTags(text).trim();
     if (text) return text;
   }
   return null;
