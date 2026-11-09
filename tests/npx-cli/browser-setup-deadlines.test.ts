@@ -130,14 +130,38 @@ test('an installer report cannot wait indefinitely for response headers', async 
   });
 });
 
-test('a stalled background-work body fails visibly without allowing a restart', async () => {
+test('a stalled background-work read is retried instead of failing the restart wait', async () => {
+  let reads = 0;
+  const warnings: string[] = [];
   await withWorker((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.write('{"backgroundWorkRunning":');
+    if (++reads === 1) { response.write('{"backgroundWorkRunning":'); return; }
+    response.end('{"backgroundWorkRunning":[]}');
   }, async (workerBaseUrl, request, watchdogFired) => {
-    await assert.rejects(waitForBackgroundWorkToFinish({ workerBaseUrl, fetch: request, log }), /Could not read the worker's background work state/);
-    assert.equal(watchdogFired(), false);
+    await waitForBackgroundWorkToFinish({
+      workerBaseUrl, fetch: request, sleep: async () => {},
+      log: { info: () => {}, warn: message => { warnings.push(message); } },
+    });
+    assert.equal(watchdogFired(), false, 'The restart wait depended on an external watchdog.');
+    assert.equal(reads, 2);
+    assert.deepEqual(warnings, ['Waiting for the worker to answer…']);
   });
+});
+
+test('malformed background-work JSON still fails visibly without allowing a restart', async () => {
+  await withWorker((_request, response) => { response.end('{"backgroundWorkRunning":'); }, async (workerBaseUrl, request) => {
+    await assert.rejects(waitForBackgroundWorkToFinish({
+      workerBaseUrl, fetch: request, log,
+      sleep: async () => { throw new Error('Malformed state was silently retried.'); },
+    }), /Could not read the worker's background work state/);
+  });
+});
+
+test('a refused connection to the worker still fails the restart wait', async () => {
+  await assert.rejects(waitForBackgroundWorkToFinish({
+    workerBaseUrl: 'http://127.0.0.1:9', log,
+    sleep: async () => { throw new Error('A lost worker was silently retried.'); },
+  }), /Could not read the worker's background work state/);
 });
 
 test('an explicit setup-state refusal remains an error rather than a poll retry', async () => {

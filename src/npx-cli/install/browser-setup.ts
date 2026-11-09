@@ -6,6 +6,9 @@ import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateVi
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
 
+// Every request here goes to the local worker on loopback, and these routes answer from a small local JSON file
+// (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer. Same
+// budget as READ_TIMEOUT_MS in usage-summary.ts for the installer's other loopback reads.
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 /** On The Go checkout on the existing pairing path (funnel Phase 8). */
@@ -239,27 +242,41 @@ export const BACKGROUND_WORK_LABELS: Record<NonNullable<SetupStateView['backgrou
 
 /**
  * Waits, with no time limit, until the worker runs no extraction or history import, so a restart cannot kill one.
- * Losing contact cannot prove work finished: fail visibly and leave the worker running.
+ * A read that hits the per-request deadline is a busy worker, not a finished one: poll again. Losing contact
+ * (a refused connection), a refusal or malformed state cannot prove work finished: fail visibly and leave the
+ * worker running.
  */
 export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'>): Promise<void> {
   const request = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let announced = '';
+  let slowNoted = false;
+  const readFailed = (error: unknown) =>
+    new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+  // A late answer means the worker is busy (goal extraction, history import), not that its work finished.
+  const waitForSlowWorker = async () => {
+    if (!slowNoted) deps.log.warn('Waiting for the worker to answer…');
+    slowNoted = true;
+    await sleep(deps.pollIntervalMs ?? 1000);
+  };
   for (;;) {
     const signal = AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS);
     let response: Response;
     try {
       response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store', signal });
     } catch (error) {
-      throw new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+      if (signal.aborted) { await waitForSlowWorker(); continue; }
+      throw readFailed(error);
     }
     if (!response.ok) throw await workerResponseError(response, 'The worker refused the background work state');
     let state: SetupStateView;
     try {
       state = await response.json() as SetupStateView;
     } catch (error) {
-      throw new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+      if (signal.aborted) { await waitForSlowWorker(); continue; }
+      throw readFailed(error);
     }
+    slowNoted = false;
     const running = state.backgroundWorkRunning ?? [];
     if (!running.length) return;
     const doing = running.map(work => BACKGROUND_WORK_LABELS[work]).join(' and ');
