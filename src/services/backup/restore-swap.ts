@@ -5,6 +5,7 @@ import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { renameWithWindowsRetry } from '../../shared/atomic-json.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
+import { LATEST_SCHEMA_VERSION } from '../sqlite/connection.js';
 import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import {
   clearPendingRestore,
@@ -167,7 +168,10 @@ export async function swapDatabaseFromSnapshot(
   try {
     await copyFile(snapshotPath, stagedDb);
     if (existsSync(`${snapshotPath}-wal`)) await copyFile(`${snapshotPath}-wal`, `${stagedDb}-wal`);
-    await runSqliteFileJob({ kind: 'standalone', target: stagedDb });
+    // Refuse snapshots this binary cannot open before checkpointing or
+    // replacing the healthy live database. The startup writer guard would
+    // otherwise discover the incompatibility only after the swap committed.
+    await runSqliteFileJob({ kind: 'standalone', target: stagedDb, maxSchemaVersion: LATEST_SCHEMA_VERSION });
 
     if (existsSync(dbPath)) {
       // Keep a byte-for-byte copy of the live db and its -wal before anything
