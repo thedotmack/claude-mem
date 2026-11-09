@@ -232,41 +232,26 @@ function findObservationsByFolder(
   );
 }
 
-function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
-  if (obs.files_modified) {
+// The heading uses the same predicate that selected the row, so an observation
+// that also touched a same-named folder elsewhere is filed under this folder's file.
+function extractRelevantFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): string {
+  for (const [column, filesJson] of [['files_modified', obs.files_modified], ['files_read', obs.files_read]] as const) {
+    if (!filesJson) continue;
     try {
-      const modified = JSON.parse(obs.files_modified);
-      if (Array.isArray(modified)) {
-        for (const file of modified) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
+      const files = JSON.parse(filesJson);
+      if (Array.isArray(files)) {
+        const file = files.find((entry): entry is string => typeof entry === 'string' && isFolderChild(entry));
+        if (file) return path.posix.basename(normalizePath(file));
       }
     } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_modified JSON', { error: error instanceof Error ? error.message : String(error) });
-    }
-  }
-
-  if (obs.files_read) {
-    try {
-      const read = JSON.parse(obs.files_read);
-      if (Array.isArray(read)) {
-        for (const file of read) {
-          if (isDirectChild(file, relativeFolder)) {
-            return path.basename(file);
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn('CLAUDE_MD', 'Failed to parse files_read JSON', { error: error instanceof Error ? error.message : String(error) });
+      logger.warn('CLAUDE_MD', `Failed to parse ${column} JSON`, { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
   return 'General';
 }
 
-function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
+function formatObservationsForClaudeMd(observations: ObservationRow[], isFolderChild: (file: string) => boolean): string {
   const lines: string[] = [];
   lines.push('# Recent Activity');
   lines.push('');
@@ -287,7 +272,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 
     const byFile = new Map<string, ObservationRow[]>();
     for (const obs of dayObs) {
-      const file = extractRelevantFile(obs, folderPath);
+      const file = extractRelevantFile(obs, isFolderChild);
       if (!byFile.has(file)) byFile.set(file, []);
       byFile.get(file)!.push(obs);
     }
@@ -375,7 +360,7 @@ function regenerateFolder(
   }
 
   try {
-    const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
+    const formatted = formatObservationsForClaudeMd(observations, makeFolderChildMatcher(relativeFolder, resolvedWorkingDir));
     writeClaudeMdToFolder(absoluteFolder, formatted);
     return { success: true, observationCount: observations.length };
   } catch (error) {

@@ -149,6 +149,14 @@ describe('installer OAuth start failure classification', () => {
     expect(lastOAuthStartFailure()).toBe('http_error');
   });
 
+  it('falls back to the HTTP status when a non-2xx body carries no message (#5493)', async () => {
+    expect(await withFetch(async () => new Response('Too Many Requests', { status: 429 }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('http_error');
+    // #5493 — a refusal used to surface as "run again when cmem.ai is
+    // reachable", sending the user hunting for a network problem.
+    expect(lastOAuthStartErrorMessage()).toBe('cmem.ai answered HTTP 429');
+  });
+
   it('retains the server error message for the caller to show', async () => {
     expect(await withFetch(async () => Response.json({
       error: 'intent_credentials_invalid', message: 'This installation credential was not accepted.',
@@ -356,7 +364,9 @@ describe('installer trial-ready contract', () => {
     expect(output).toContain('__FETCH_CALLED__');
     expect(output).not.toContain('Sign-in link:');
     expect(output).not.toContain('AGENT:');
-    expect(output).toContain('Could not start the optional claude-mem sign-in.');
+    // #5493 — the reason is appended after the prefix, so a refusal no longer
+    // reads as a network problem.
+    expect(output).toContain('Could not start the optional claude-mem sign-in: cmem.ai answered HTTP 503');
     expect(output).toContain('__DEFERRED_DONE__');
   });
 
