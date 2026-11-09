@@ -4790,12 +4790,8 @@ function readJson(path4, fallback) {
 }
 function writeJsonAtomic(path4, value) {
   const finish = beforeSharedFileWrite(path4, value);
-  mkdirSync5(join10(path4, ".."), { recursive: true });
-  const temp = `${path4}.tmp`;
   const stored = finish && Object.hasOwn(finish, "value") ? finish.value : value;
-  writeFileSync3(temp, `${JSON.stringify(stored, null, 2)}
-`, { mode: 384 });
-  renameSync3(temp, path4);
+  writeJsonFileAtomic(path4, stored, { mode: 384 });
   finish?.();
 }
 function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map() } = {}) {
@@ -5447,6 +5443,7 @@ var init_request_groups = __esm({
     init_session_project();
     init_my_focus();
     init_shared_file_hooks();
+    init_atomic_json();
     DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join10(homedir8(), ".claude-mem");
     LEDGER_DIR = join10(DATA_DIR2, "work-view");
     AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
