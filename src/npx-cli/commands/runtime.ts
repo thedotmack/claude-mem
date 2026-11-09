@@ -254,8 +254,6 @@ export function runHookCommand(extraArgs: string[] = []): void {
 }
 
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
-  pluginRootOrExit();
-
   const query = queryParts.join(' ').trim();
   if (!query) {
     console.error(styleText('red', 'Usage: npx claude-mem search <query>'));
