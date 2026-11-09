@@ -1004,3 +1004,47 @@ describe('loadRedactionConfig', () => {
     expect(cfg.customPatterns).toEqual([]);
   });
 });
+
+// A Cookie/Set-Cookie header value is a session credential whatever the cookie
+// is named. The Cowork shim has redacted these since the plugin landed
+// (COOKIE_RE), so the same session text was redacted on its way to cmem.ai and
+// stored verbatim by the local worker.
+describe('cookie header values', () => {
+  const cfg = { enabled: true };
+
+  it.each([
+    ['a Cookie header line',   'Cookie: sessionid=abc123def456ghi789'],
+    ['a lowercase set-cookie', 'set-cookie: sid=Zx9Yw8Vu7Ts6Rq5Po4Nn3Mm2'],
+    ['a JSON-escaped newline', '\\nCookie: sessionid=abc123def456ghi789'],
+  ])('redacts %s', (_label, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='cookie_header'/>");
+    expect(result.redacted).not.toContain('abc123def456ghi789');
+    expect(result.redacted).not.toContain('Zx9Yw8Vu7Ts6Rq5Po4Nn3Mm2');
+    expect(Object.keys(result.counts)).toEqual(['cookie_header']);
+  });
+
+  it('redacts a JSON header object the same way', () => {
+    const text = JSON.stringify({ headers: { Cookie: 'sessionid=abc123def456ghi789', accept: 'application/json' } });
+    const result = redactSensitive(text, cfg);
+    expect(result.redacted).toContain("<redacted type='cookie_header'/>");
+    expect(result.redacted).not.toContain('abc123def456ghi789');
+  });
+
+  it('keeps the key readable and leaves prose about cookies alone', () => {
+    const result = redactSensitive('Cookie: sessionid=abc123def456ghi789', cfg);
+    expect(result.redacted).toBe("Cookie: <redacted type='cookie_header'/>");
+
+    for (const prose of ['we send a cookie with every request', 'cookie: x', 'cookies: are tasty']) {
+      expect(redactSensitive(prose, cfg).redacted).toBe(prose);
+    }
+  });
+
+  it('can be turned off by name like every other built-in', () => {
+    const result = redactSensitive('Cookie: sessionid=abc123def456ghi789', {
+      enabled: true,
+      disabledBuiltinPatterns: ['cookie_header'],
+    });
+    expect(result.redacted).toBe('Cookie: sessionid=abc123def456ghi789');
+  });
+});

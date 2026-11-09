@@ -238,6 +238,16 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
+  // A `Cookie`/`Set-Cookie` header value is a session credential whatever the
+  // cookie is named (`Cookie: sessionid=...`, `set-cookie: sid=...`), as printed
+  // by `curl -v`, a proxy log or a captured response dump. Only the value is
+  // replaced, so the key stays readable, and it runs to the line or quote
+  // delimiter. The Cowork shim has redacted these unconditionally since the
+  // plugin landed (its COOKIE_RE, #3733), so the same session text was redacted
+  // on the way to cmem.ai and stored verbatim by the local worker. The 4-char
+  // floor keeps a bare `Cookie: x` placeholder out, and the value may not start
+  // with a space so the header's own separator survives.
+  { name: 'cookie_header',   regex: /(?<=(?:\\[nrt]|\b)(?:set-)?cookie["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)(?![ \t])[^\n\r"'`]{4,}/gi },
 ].map(matchAfterEscapedWhitespace);
 
 // Generic, lower-confidence built-ins (issue #4745): credentials that carry no
