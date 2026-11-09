@@ -22,6 +22,15 @@ describe('pro trial promo copy', () => {
     expect(proTrialLine('welcome-hint')).toContain('https://cmem.ai/pro?from=welcome-hint');
   });
 
+  it('offers trials only to installs with no plan (#5540)', () => {
+    for (const plan of ['trial', 'pro', 'teambrain_seat', ' trial ']) {
+      expect(proTrialLine('context-banner', plan)).toBe('');
+    }
+    for (const plan of ['', 'none']) {
+      expect(proTrialLine('context-banner', plan)).toContain(PRO_TRIAL_PITCH);
+    }
+  });
+
   it('keeps the viewer mirror in sync with the Node-side copy', () => {
     expect(viewerPromo.PRO_TRIAL_MAX_DAYS).toBe(PRO_TRIAL_MAX_DAYS);
     expect(viewerPromo.PRO_TRIAL_LABEL).toBe(PRO_TRIAL_LABEL);
