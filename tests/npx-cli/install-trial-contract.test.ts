@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { INSTALL_RUN_BY_AUTO_UPDATE_ENV } from '../../src/shared/auto-update-install-run';
 import {
   buildTrialReadySettings,
   lastOAuthStartErrorMessage,
@@ -80,13 +81,17 @@ const validStartBody = {
   poll_interval: 3,
 };
 
+/** Project-local scratch (gitignored) for the auto-update cases below, never the system temp folder. */
+const scratchRoot = join(repoRoot, '.scratch', 'test-runs');
+
 function runDeferredLoginChild(
   status: number,
   extraEnv: Record<string, string> = {},
   unsetEnv: string[] = [],
   fixture: { responseBody?: Record<string, unknown>; credentials?: Record<string, unknown> } = {},
 ): { output: string; exitCode: number } {
-  const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-deferred-'));
+  mkdirSync(scratchRoot, { recursive: true });
+  const dataDir = mkdtempSync(join(scratchRoot, 'claude-mem-installer-deferred-'));
   try {
     if (fixture.credentials) writeFileSync(join(dataDir, 'intent-install.json'), JSON.stringify(fixture.credentials), { mode: 0o600 });
     const body = fixture.responseBody ?? (status === 200 ? validStartBody : '');
@@ -388,6 +393,88 @@ describe('installer trial-ready contract', () => {
     expect(output).toContain('Hosted intent credentials are invalid');
     expect(output).not.toContain('__FETCH_CALLED__');
     expect(output).not.toContain('Sign-in link:');
+  });
+
+  it('never starts the deferred sign-in for an installer run the auto-updater started', () => {
+    const { output, exitCode } = runDeferredLoginChild(200, { [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1' }, ['CI']);
+    expect(exitCode, output).toBe(0);
+    expect(output).not.toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).toContain('__DEFERRED_DONE__');
+    // Any other value is a person's own install, which still gets the offer.
+    expect(runDeferredLoginChild(200, { [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '0' }, ['CI']).output).toContain('Sign-in link:');
+  });
+
+  it('sends install_completed for a person\'s install, and none for an installer run the auto-updater started', () => {
+    const runCaptureInstallCompleted = (extraEnv: Record<string, string>): string => {
+      mkdirSync(scratchRoot, { recursive: true });
+      const dataDir = mkdtempSync(join(scratchRoot, 'claude-mem-installer-completed-'));
+      try {
+        const script = `
+          globalThis.fetch = async () => { console.log('__FETCH_CALLED__'); return new Response('{}', { status: 200 }); };
+          const { captureInstallCompleted } = await import('./src/npx-cli/commands/install.ts');
+          await captureInstallCompleted({ ide: 'claude-code', is_update: true, outcome: 'ok' });
+          console.log('__CAPTURE_DONE__');
+        `;
+        const env: Record<string, string | undefined> = {
+          ...process.env,
+          CLAUDE_MEM_DATA_DIR: dataDir,
+          // Consent on, and debug mode prints the event instead of sending it (cli-telemetry.ts).
+          CLAUDE_MEM_TELEMETRY: '1',
+          CLAUDE_MEM_TELEMETRY_DEBUG: '1',
+          ...extraEnv,
+        };
+        delete env.DO_NOT_TRACK;
+        const result = Bun.spawnSync([process.execPath, '--eval', script], { cwd: repoRoot, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+        const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
+        expect(result.exitCode, output).toBe(0);
+        expect(output).toContain('__CAPTURE_DONE__');
+        expect(output).not.toContain('__FETCH_CALLED__');
+        return output;
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    };
+
+    expect(runCaptureInstallCompleted({})).toContain('[telemetry] {"event":"install_completed"');
+    expect(runCaptureInstallCompleted({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1' })).not.toContain('"event":"install_completed"');
+  });
+
+  it('sends install_failed for a person\'s aborted install, and none for an installer run the auto-updater started', () => {
+    const runCaptureInstallFailed = (extraEnv: Record<string, string>): string => {
+      mkdirSync(scratchRoot, { recursive: true });
+      const dataDir = mkdtempSync(join(scratchRoot, 'claude-mem-installer-failed-'));
+      try {
+        const script = `
+          globalThis.fetch = async () => { console.log('__FETCH_CALLED__'); return new Response('{}', { status: 200 }); };
+          const { captureInstallFailed } = await import('./src/npx-cli/commands/install.ts');
+          await captureInstallFailed({ error_category: 'marketplace-dir-not-writable', interactive: false });
+          console.log('__CAPTURE_DONE__');
+        `;
+        const env: Record<string, string | undefined> = {
+          ...process.env,
+          CLAUDE_MEM_DATA_DIR: dataDir,
+          // Consent on, and debug mode prints the event instead of sending it (cli-telemetry.ts).
+          CLAUDE_MEM_TELEMETRY: '1',
+          CLAUDE_MEM_TELEMETRY_DEBUG: '1',
+          ...extraEnv,
+        };
+        delete env.DO_NOT_TRACK;
+        const result = Bun.spawnSync([process.execPath, '--eval', script], { cwd: repoRoot, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+        const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
+        expect(result.exitCode, output).toBe(0);
+        expect(output).toContain('__CAPTURE_DONE__');
+        expect(output).not.toContain('__FETCH_CALLED__');
+        return output;
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    };
+
+    expect(runCaptureInstallFailed({})).toContain('[telemetry] {"event":"install_failed"');
+    // Any other value is a person's own install, which still reports its failure.
+    expect(runCaptureInstallFailed({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '0' })).toContain('[telemetry] {"event":"install_failed"');
+    expect(runCaptureInstallFailed({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1' })).not.toContain('"event":"install_failed"');
   });
 
   it('never contacts cmem.ai for the deferred offer under CI', () => {
