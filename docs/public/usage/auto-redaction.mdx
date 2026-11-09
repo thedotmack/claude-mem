@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 35 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
+That is all you need for the 36 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -68,6 +68,7 @@ That is all you need for the 35 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
 | `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
+| `cookie_header` | the value of a `Cookie:` or `Set-Cookie:` header, whatever the cookie is named (`curl -v` output, proxy logs, JSON header objects); the header name is kept |
 | `url_credentials` | the password in `scheme://user:password@host` URLs (database URLs, `git remote -v`); the scheme, user and host are kept |
 
 ## Generic patterns

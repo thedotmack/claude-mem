@@ -24,6 +24,10 @@ const rep = (char: string, count: number) => char.repeat(count);
 interface Sample { text: string; secret?: string }
 
 const SAMPLES: Record<string, Sample[]> = {
+  cookie_header: [
+    { text: 'Cookie: sessionid=abc123def456ghi789', secret: 'abc123def456ghi789' },
+    { text: 'set-cookie: sid=Zx9Yw8Vu7Ts6Rq5Po4Nn3Mm2', secret: 'Zx9Yw8Vu7Ts6Rq5Po4Nn3Mm2' },
+  ],
   url_credentials: [{ text: 'postgres://app:hunter2parity@db.internal/prod', secret: 'hunter2parity' }],
   aws_access_key: [{ text: 'AKIA' + rep('Q', 16) }],
   aws_secret_key: [{ text: 'AWS_SECRET_ACCESS_KEY=' + rep('w', 40), secret: rep('w', 40) }],
