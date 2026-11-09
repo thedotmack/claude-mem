@@ -106,12 +106,19 @@ describe('Phase 12 — server jobs CLI', () => {
         summary: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, stalled: 0 },
       }),
     });
-    await runServerJobsCommand(['status', '--team', 'team-1']);
+    await runServerJobsCommand(['status']);
     const printed = consoleLogSpy.mock.calls.map(c => String(c[0])).join('\n');
     expect(printed).toMatch(/"queuedMismatch"/);
     expect(printed).toMatch(/"postgres": 5/);
     expect(printed).toMatch(/"bullmq": 1/);
     expect(printed).toMatch(/"failedMismatch"/);
+
+    // A single project's Postgres rows cannot be compared with every Redis lane.
+    consoleLogSpy.mockClear();
+    await runServerJobsCommand(['status', '--project', 'p-1']);
+    const scoped = JSON.parse(String(consoleLogSpy.mock.calls[0][0]));
+    expect(scoped.postgres.queued).toBe(5);
+    expect(scoped.divergence).toEqual({ reason: 'queue_counts_are_global' });
   });
 
   it('failed: lists failed jobs with last_error.message extracted', async () => {

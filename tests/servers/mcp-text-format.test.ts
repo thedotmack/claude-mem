@@ -134,3 +134,13 @@ describe('purpose-specific model responses', () => {
     expect(formatWorkerMcpResponse('search', { content: [{ type: 'text', text: 'Existing readable Markdown' }] }).content[0].text).toBe('Existing readable Markdown');
   });
 });
+
+it('displays the same UTC minute for legacy seconds, SQLite milliseconds and server timestamps', () => {
+  const instant = Date.UTC(2025, 9, 3, 9, 20);
+  for (const timestamp of [
+    { created_at_epoch: instant / 1000 }, { created_at_epoch: instant }, { createdAtEpoch: instant },
+  ]) {
+    const result = formatMcpPayload('observations', [{ id: 1, title: 'Recorded', ...timestamp }]);
+    expect(result.content[0].text).toContain('2025-10-03 09:20 UTC');
+  }
+});
