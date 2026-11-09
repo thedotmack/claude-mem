@@ -52,7 +52,10 @@ describe('install --runtime server help text (#4131)', () => {
   });
 
   it('does not claim to inject the IDE MCP config, which the installer only prints', () => {
-    expect(functionBody('setupServerRuntimeNonInteractive')).toContain('IDE MCP config target for the server runtime');
+    const setup = functionBody('setupServerRuntimeNonInteractive');
+    const target = setup.split('IDE MCP config target for the server runtime:')[1]?.split('`')[0];
+    expect(target).toBeDefined();
+    expect(target).toEndWith('/v1/mcp');
 
     expect(helpLine).not.toContain('injects the IDE MCP config');
   });
