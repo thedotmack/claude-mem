@@ -67,12 +67,14 @@ describe('server-runtime session start reads the shared store', () => {
     await storage.observations.create({
       projectId, teamId, serverSessionId: session.id, kind: 'bugfix',
       content: 'Fixed the import batch abort',
-      metadata: { title: 'Import no longer aborts on a bad row', project: 'this-repo' },
+      // SessionStart uses the active mode's type AND concept selections, as
+      // local SQLite does. Generated observations carry matching concepts.
+      metadata: { title: 'Import no longer aborts on a bad row', project: 'this-repo', concepts: ['problem-solution'] },
     });
     await storage.observations.create({
       projectId, teamId, serverSessionId: session.id, kind: 'discovery',
       content: 'Another repo entirely',
-      metadata: { title: 'Work in a different repo', project: 'other-repo' },
+      metadata: { title: 'Work in a different repo', project: 'other-repo', concepts: ['what-changed'] },
     });
     await storage.observations.create({
       projectId, teamId, serverSessionId: session.id, kind: 'summary',
@@ -152,6 +154,23 @@ describe('server-runtime session start reads the shared store', () => {
     expect(stats).toBeNull();
   });
 
+  it('excludes observations without selected concepts while retaining a conceptless summary', async () => {
+    await storage.observations.create({
+      projectId, teamId, kind: 'bugfix', content: 'A memory without concepts',
+      metadata: { title: 'Conceptless observation stays outside the context', project: 'this-repo' },
+    });
+
+    const { text, stats } = await generateServerContextWithStats(runtime(), {
+      projects: ['this-repo'], cwd: process.cwd(),
+    });
+
+    expect(text).toContain('Import no longer aborts on a bad row');
+    expect(text).not.toContain('Conceptless observation stays outside the context');
+    expect(text).toContain('Stop one bad row from aborting the restore');
+    expect(stats!.observation_count).toBe(1);
+    expect(stats!.has_session_summary).toBe(true);
+  });
+
   for (const kind of ['discovery', 'summary']) {
     it(`keeps both context categories when recent ${kind} rows exceed the combined limit`, async () => {
       // Default context asks for 50 observations and 10 summaries (+1 lookahead).
@@ -161,7 +180,10 @@ describe('server-runtime session start reads the shared store', () => {
       for (let index = 0; index < 65; index++) {
         await storage.observations.create({
           projectId, teamId, kind, content: `Recent ${kind} ${index}`,
-          metadata: { title: `Recent ${kind} ${index}`, request: `Task ${index}`, project: 'this-repo' },
+          metadata: {
+            title: `Recent ${kind} ${index}`, request: `Task ${index}`, project: 'this-repo',
+            ...(kind === 'summary' ? {} : { concepts: ['what-changed'] }),
+          },
         });
       }
       const { text, stats } = await generateServerContextWithStats(runtime(), {

@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
-import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
@@ -273,7 +273,7 @@ export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, work
     ...grokWatches,
   ];
 
-  writeFileSync(resolvedConfigPath, JSON.stringify(config, null, 2) + '\n');
+  writeJsonFileAtomic(resolvedConfigPath, config);
   console.log(`  Configured Grok Bot transcript watcher: ${resolvedConfigPath}`);
   for (const watch of grokWatches) {
     console.log(`  Watching: ${watch.path}`);

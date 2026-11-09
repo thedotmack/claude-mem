@@ -360,4 +360,58 @@ describe('POST /v1/context recency mode (no query)', () => {
     });
     expect(response.status).toBe(400);
   });
+
+  async function seedModeFilteredRows(): Promise<void> {
+    const rows = [
+      { content: 'allowed mode memory', kind: 'decision', concepts: ['pattern'], minutesAgo: 20 },
+      { content: 'excluded type memory', kind: 'bugfix', concepts: ['pattern'], minutesAgo: 1 },
+      { content: 'excluded concept memory', kind: 'decision', concepts: ['other'], minutesAgo: 2 },
+      { content: 'malformed concept memory', kind: 'decision', concepts: { pattern: true }, minutesAgo: 3 },
+      { content: 'retained summary', kind: 'summary', concepts: null, minutesAgo: 10 },
+    ];
+    for (const row of rows) {
+      const created = await storage.observations.create({
+        projectId, teamId, kind: row.kind, content: row.content,
+        metadata: { project: 'mode-filtered', concepts: row.concepts },
+      });
+      await client.query("UPDATE observations SET created_at = now() - ($2::int * interval '1 minute') WHERE id = $1", [created.id, row.minutesAgo]);
+    }
+  }
+
+  it('applies observation mode filters before LIMIT without filtering the summary allowance', async () => {
+    await seedModeFilteredRows();
+    const result = await context({
+      folderProjects: ['mode-filtered'], limit: 2, summaryLimit: 1,
+      observationTypes: ['decision'], observationConcepts: ['pattern'],
+    });
+    expect(result.status).toBe(200);
+    expect(result.contents).toEqual(['retained summary', 'allowed mode memory']);
+  });
+
+  it('treats an empty type or concept selection as no observations and preserves omitted-filter compatibility', async () => {
+    await seedModeFilteredRows();
+    for (const filters of [{ observationTypes: [] }, { observationConcepts: [] }]) {
+      const result = await context({ folderProjects: ['mode-filtered'], ...filters });
+      expect(result.status).toBe(200);
+      expect(result.contents).toEqual(['retained summary']);
+    }
+    expect((await context({ folderProjects: ['mode-filtered'] })).contents).toHaveLength(5);
+  });
+
+  it('applies mode filters to relevance context before the ranked result limit', async () => {
+    await seedModeFilteredRows();
+    const result = await context({
+      folderProjects: ['mode-filtered'], query: 'memory', limit: 1,
+      observationTypes: ['decision'], observationConcepts: ['pattern'],
+    });
+    expect(result.status).toBe(200);
+    expect(result.contents).toEqual(['allowed mode memory']);
+  });
+
+  it('validates mode filter arrays instead of silently ignoring malformed selections', async () => {
+    for (const filters of [
+      { observationTypes: 'decision' }, { observationTypes: [''] },
+      { observationConcepts: 'pattern' }, { observationConcepts: [1] },
+    ]) expect((await context(filters)).status).toBe(400);
+  });
 });

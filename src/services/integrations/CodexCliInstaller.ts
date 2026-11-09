@@ -11,12 +11,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
 } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
-import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
@@ -488,7 +487,7 @@ function writeCodexPluginConfig(enabled: boolean, configPath = CODEX_CONFIG_PATH
   next = setTomlPluginEnabled(next, CODEX_PLUGIN_ID, enabled);
 
   if (next === current) return false;
-  writeFileSync(configPath, next);
+  writeTextFileAtomic(configPath, next);
   return true;
 }
 
@@ -553,9 +552,9 @@ export function readAndStripContextTags(agentsMdPath = CODEX_AGENTS_MD_PATH): vo
   const finalContent = (before + (after ? '\n\n' + after : '')).trim();
 
   if (finalContent) {
-    writeFileSync(agentsMdPath, finalContent + '\n');
+    writeTextFileAtomic(agentsMdPath, finalContent + '\n');
   } else {
-    writeFileSync(agentsMdPath, '');
+    writeTextFileAtomic(agentsMdPath, '');
   }
 
   console.log(`  Removed legacy global context from ${agentsMdPath}`);
@@ -620,7 +619,7 @@ export function stripLegacyTranscriptWatchContexts(configPath = CODEX_TRANSCRIPT
   }
 
   if (changed) {
-    writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+    writeJsonFileAtomic(configPath, parsed);
     console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${configPath}`);
   }
 }

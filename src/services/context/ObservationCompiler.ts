@@ -54,7 +54,7 @@ const PROJECT_KEYS_PER_QUERY = 250;
 function newestUniqueRows<T extends { id: number; created_at_epoch: number }>(batches: T[][], limit: number): T[] {
   const rows = new Map<number, T>();
   for (const batch of batches) for (const row of batch) rows.set(row.id, row);
-  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch).slice(0, limit);
+  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch || b.id - a.id).slice(0, limit);
 }
 
 function newestIdsPerProjectKeySql(
@@ -70,7 +70,7 @@ function newestIdsPerProjectKeySql(
   }
   return `
     SELECT id FROM (${parts.join(' UNION ')})
-    ORDER BY created_at_epoch DESC
+    ORDER BY created_at_epoch DESC, id DESC
     LIMIT ?`;
 }
 
@@ -171,7 +171,7 @@ export function queryObservationsNewest(
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE ${filterSql}
-      ORDER BY o.created_at_epoch DESC
+      ORDER BY o.created_at_epoch DESC, o.id DESC
       LIMIT ?
     `);
     try {
@@ -186,7 +186,7 @@ export function queryObservationsNewest(
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE ${keyPredicate} AND ${filterSql}
-      ORDER BY o.created_at_epoch DESC
+      ORDER BY o.created_at_epoch DESC, o.id DESC
       LIMIT ?`);
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...filterParams, options.limit]));
@@ -197,7 +197,7 @@ export function queryObservationsNewest(
     FROM (${winnersSql}) w
     JOIN observations o ON o.id = w.id
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    ORDER BY o.created_at_epoch DESC
+    ORDER BY o.created_at_epoch DESC, o.id DESC
   `);
   try {
     return statement.all(...perKeyParams, options.limit) as LocalObservation[];
@@ -247,7 +247,7 @@ export function querySummariesMulti(
       FROM session_summaries ss
       LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
       WHERE ${keyPredicate} AND (? IS NULL OR s.platform_source = ?)
-      ORDER BY ss.created_at_epoch DESC
+      ORDER BY ss.created_at_epoch DESC, ss.id DESC
       LIMIT ?`);
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...platformParams, limit]));
@@ -269,7 +269,7 @@ export function querySummariesMulti(
     FROM (${winnersSql}) w
     JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    ORDER BY ss.created_at_epoch DESC
+    ORDER BY ss.created_at_epoch DESC, ss.id DESC
   `);
   try {
     return statement.all(...perKeyParams, limit) as LocalSessionSummary[];

@@ -29,15 +29,7 @@ import { emitContextInvalidation } from '../../../../shared/context-invalidation
 import { parseProjectList } from '../../../../shared/project-list.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
-
-// Chroma doc_type per content kind. Observation and summary id spaces overlap,
-// so the delete-route cleanup must be scoped by doc_type, not sqlite_id alone.
-type IndexedRowKind = Exclude<ContentKind, 'work_state'>;
-const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
-  observation: 'observation',
-  summary: 'session_summary',
-  prompt: 'user_prompt',
-};
+import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
 import { withObservationMedia } from '../../../media/feed.js';
 
 // The MCP get_observations schema advertises `number | string` ids, so array
@@ -131,12 +123,12 @@ const toolUsesBatchSchema = z.object({
 }).passthrough();
 
 // The cloud/export shape (CloudSync `toCloud`) carries columns that are stored
-// locally as JSON strings — facts, concepts, files_read/modified — as real
-// arrays. Re-stringify them at the boundary so every downstream consumer
-// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) sees the
-// canonical JSON-string shape rather than a raw array. Without this, the array
-// crashes bun:sqlite ("Binding expected string…") and silently drops from Chroma.
-const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified'] as const;
+// locally as JSON strings — facts, concepts, files_read/modified, metadata — as
+// arrays or objects. Re-stringify them at the boundary so downstream consumers
+// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) receive
+// their canonical JSON-string shape. Object metadata otherwise fails the store's
+// string-column validation, rejecting an otherwise valid cloud observation.
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified', 'metadata'] as const;
 const SUMMARY_JSON_FIELDS = ['files_read', 'files_edited'] as const;
 
 const jsonStringifyFields = (fields: readonly string[]) =>
@@ -356,7 +348,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
-    const rows = store.queryToolUses({
+    const rows = store.queryToolUseIndex({
       project: asString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
@@ -389,8 +381,8 @@ export class DataRoutes extends BaseRouteHandler {
         created_at: row.created_at,
         created_at_epoch: row.created_at_epoch,
         // Size hints so a caller can budget tokens before disclosing a body.
-        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
-        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+        tool_input_bytes: row.tool_input_bytes,
+        tool_response_bytes: row.tool_response_bytes,
       })),
     });
   });
@@ -526,16 +518,7 @@ export class DataRoutes extends BaseRouteHandler {
   private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
     const chromaSync = this.dbManager.getChromaSync();
     if (!chromaSync || rows.length === 0) return;
-    const run = async (): Promise<void> => {
-      for (const row of rows) {
-        try {
-          await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
-        } catch (error: unknown) {
-          logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
-        }
-      }
-    };
-    this.chromaCleanupTail = this.chromaCleanupTail.then(run, run);
+    this.chromaCleanupTail = scheduleChromaRowCleanup(chromaSync, rows);
   }
 
   /** Production deletion surface: safety check and row delete for a single content row. */

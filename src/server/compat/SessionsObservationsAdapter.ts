@@ -24,6 +24,7 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
+import { serverUsageGuards } from '../middleware/usage-guards.js';
 import { IngestEventsService } from '../services/IngestEventsService.js';
 import type { CreatePostgresAgentEventInput } from '../../storage/postgres/agent-events.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
@@ -55,11 +56,11 @@ export class SessionsObservationsAdapter implements RouteHandler {
   constructor(private readonly options: SessionsObservationsAdapterOptions) {}
 
   setupRoutes(app: Application): void {
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const writeAuth = [requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
-    });
+    }), ...serverUsageGuards(this.options.pool, { write: true })];
 
     app.post('/api/sessions/observations', writeAuth, this.asyncHandler(async (req, res) => {
       const parsed = observationsSchema.safeParse(req.body);

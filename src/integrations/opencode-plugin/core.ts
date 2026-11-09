@@ -19,6 +19,7 @@ import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
 import { retryWhileRefused } from "./worker-retry.js";
+import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
 
 export interface OpenCodeClient {
   session?: {
@@ -128,6 +129,20 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
   });
   // Retries reuse the fetch of the first attempt.
   const fetchImpl = fetch;
+  if (path === '/api/sessions/observations' || path === '/api/sessions/summarize') {
+    try {
+      await deliverLiveObserverHandoff(timeoutMs => fetchImpl(`${WORKER_BASE_URL}${path}`, {
+        method: 'POST', headers: JSON_HEADERS, body: payload,
+        signal: AbortSignal.timeout(timeoutMs),
+      }));
+    } catch (error) {
+      // Ambiguous or refused inference inputs are never retained for replay.
+      if (!isConnectionRefusedError(error)) {
+        console.warn(`[claude-mem] Live observer handoff ${path} skipped: ${errorMessage(error)}`);
+      }
+    }
+    return;
+  }
   if (await postToWorker(fetchImpl, path, payload)) {
     // The worker may still be starting (see worker-retry.ts): retry in the
     // background so no hook waits on it.
