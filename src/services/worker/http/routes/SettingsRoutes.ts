@@ -132,13 +132,21 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // every secret live — an HTTP-writable redirect hands them to any caller that
 // reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
 // it remotely could re-expose the worker on a non-loopback address without
-// the Observation TV guard's token ever being written.
+// the Observation TV guard's token ever being written. The auto-update pair
+// decides what the installer runs on this machine:
+// CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL names the file that picks the
+// version `npx claude-mem@<version> update` installs (the updater reads it
+// from the file alone, never the environment: auto-update-check.ts
+// readAutoUpdateSettings), and CLAUDE_MEM_AUTO_UPDATE decides whether that
+// runs at all.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
   'CLAUDE_MEM_DATA_DIR',
   'CLAUDE_MEM_WORKER_HOST',
+  'CLAUDE_MEM_AUTO_UPDATE',
+  'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);

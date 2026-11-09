@@ -4,8 +4,16 @@ import { logger } from '../../utils/logger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Only the logger's own daily files. `runner-errors.log`, legacy `worker-*.log`, `.bak` copies and anything else in the directory are never touched. */
+/** Only the logger's own daily files and the auto-updater's attempt logs. `runner-errors.log`, legacy `worker-*.log`, `.bak` copies and anything else in the directory are never touched. */
 const DAILY_LOG_NAME = /^claude-mem-(\d{4})-(\d{2})-(\d{2})\.log$/;
+
+/**
+ * One auto-update attempt's log: `auto-update-<epoch ms the attempt started>.log`
+ * (auto-update-launch.ts autoUpdateAttemptLogPath; tests/worker/log-retention.test.ts
+ * builds its names with that function). Named by an instant, not a day, so its
+ * day is the UTC day it started.
+ */
+const AUTO_UPDATE_ATTEMPT_LOG_NAME = /^auto-update-(\d+)\.log$/;
 
 export interface LogPruneResult {
   removed: string[];
@@ -16,8 +24,9 @@ export type RemoveFile = (path: string) => Promise<void>;
 
 /**
  * Deletes `claude-mem-YYYY-MM-DD.log` files dated more than `retentionDays`
- * UTC days before today. The logger names files with `toISOString()`, so the
- * comparison is in UTC. Today's file and yesterday's are never candidates for
+ * UTC days before today, and `auto-update-<epoch ms>.log` attempt logs started
+ * that long ago, by the same rules. The logger names files with
+ * `toISOString()`, so the comparison is in UTC. Today's file and yesterday's are never candidates for
  * any positive retention: `/api/logs` and the viewer read today's file, and a
  * process that has not logged since midnight still holds yesterday's open.
  *
@@ -55,10 +64,8 @@ export async function pruneOldLogs(
   const windowMs = retentionDays * DAY_MS;
 
   for (const name of names) {
-    const match = DAILY_LOG_NAME.exec(name);
-    if (!match) continue;
-    const fileDayEpoch = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-    if (Number.isNaN(fileDayEpoch) || todayEpoch - fileDayEpoch <= windowMs) continue;
+    const fileDayEpoch = logFileDayEpoch(name);
+    if (fileDayEpoch === null || Number.isNaN(fileDayEpoch) || todayEpoch - fileDayEpoch <= windowMs) continue;
 
     const path = join(logsDir, name);
     try {
@@ -74,11 +81,23 @@ export async function pruneOldLogs(
   }
 
   if (result.removed.length > 0) {
-    logger.info('SYSTEM', 'Pruned daily log files past retention', {
+    logger.info('SYSTEM', 'Pruned log files past retention', {
       files: result.removed.length,
       bytes: result.bytes,
       retentionDays,
     });
   }
   return result;
+}
+
+/** The UTC day (epoch ms of its midnight) a retained log file is dated, or null for a name retention never touches. */
+function logFileDayEpoch(name: string): number | null {
+  const daily = DAILY_LOG_NAME.exec(name);
+  if (daily) return Date.UTC(Number(daily[1]), Number(daily[2]) - 1, Number(daily[3]));
+  const attempt = AUTO_UPDATE_ATTEMPT_LOG_NAME.exec(name);
+  if (!attempt) return null;
+  const startedAt = Number(attempt[1]);
+  if (!Number.isSafeInteger(startedAt)) return null;
+  const started = new Date(startedAt);
+  return Date.UTC(started.getUTCFullYear(), started.getUTCMonth(), started.getUTCDate());
 }

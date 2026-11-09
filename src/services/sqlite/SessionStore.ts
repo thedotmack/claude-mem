@@ -3810,6 +3810,39 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
+  /**
+   * Epoch ms of this device's newest user prompt or captured tool use, or null
+   * when the database holds neither. It is the auto-updater's durable "quiet"
+   * signal (src/services/auto-update/auto-update-check.ts
+   * isWorkerQuietBySignals): every host's prompts are saved to user_prompts
+   * (SessionRoutes) and every captured tool use to tool_uses (the one
+   * choke point in http/shared.ts), and unlike the in-memory session map it
+   * survives a worker restart.
+   *
+   * Prompts synced from another device (origin_device_id set by SyncApply) are
+   * activity on that device, so they are left out; tool_uses is never synced.
+   * Each half reads its created_at_epoch index from the newest end
+   * (idx_user_prompts_created, idx_tool_uses_created_at_epoch), and the prompt
+   * half stops at the first local row. So it is quick when the newest prompt is
+   * local, and otherwise steps past every synced prompt newer than the newest
+   * local one: the cost grows with that count, with no fixed worst case.
+   * Measured 2026-11-08 with bun:sqlite on an in-memory database holding
+   * 200,000 tool uses: 0.01 ms when the newest prompt is local; 35 ms past
+   * 200,000 synced prompts, 90 ms past 500,000 and 176 ms past 1,000,000 (a
+   * second measurement of 1,000,000 synced prompts and no local one: 256 ms).
+   * The auto-updater calls it at most twice per hourly tick.
+   */
+  getNewestCapturedActivityEpoch(): number | null {
+    const row = this.db.prepare(`
+      SELECT MAX(newest) AS newest FROM (
+        SELECT MAX(created_at_epoch) AS newest FROM user_prompts WHERE origin_device_id IS NULL
+        UNION ALL
+        SELECT MAX(created_at_epoch) AS newest FROM tool_uses
+      )
+    `).get() as { newest: number | null } | null;
+    return row?.newest ?? null;
+  }
+
   createSDKSession(
     contentSessionId: string,
     project: string,

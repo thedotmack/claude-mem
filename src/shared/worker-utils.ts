@@ -67,7 +67,7 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
  * much silence means the worker is wedged (alive socket, dead event loop or a
  * stalled init), not slow. Booting time itself is never a reason to recycle.
  */
-const READY_STREAM_IDLE_TIMEOUT_MS = 5000;
+export const READY_STREAM_IDLE_TIMEOUT_MS = 5000;
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = {
@@ -607,7 +607,8 @@ export function cacheWorkerScriptCandidates(
   }
 }
 
-function readPackageVersion(packageJsonPath: string): string | null {
+/** A package.json's version, as the resolver reads it for the marketplace and cwd candidates; null when there is none. */
+export function readPackageVersion(packageJsonPath: string): string | null {
   try {
     const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: unknown };
     return typeof parsed.version === 'string' ? parsed.version : null;

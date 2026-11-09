@@ -937,21 +937,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          const embedded = await embedObservationRows(this.options.pool, [createInput]);
           const observation = await repo.create(createInput);
           if (observation.id === createInput.id) {
-            if (embedded) {
-              // The memory is saved; its vectors are best-effort. A failed write
-              // is logged and left to the backfill, rather than answering 500
-              // for a memory that exists, which a retry would duplicate.
-              await new PostgresObservationEmbeddingsRepository(this.options.pool)
-                .upsert({ observationId: observation.id, ...embedded[0]! })
-                .catch((error: unknown) => {
-                  logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
-                    observationId: observation.id,
-                    error: error instanceof Error ? error.message : String(error),
-                  });
-                });
+            // Only the winning insert has new text to embed. A generation-key
+            // replay returns the existing observation without invoking the model.
+            try {
+              const embedded = await embedObservationRows(this.options.pool, [createInput]);
+              if (embedded) {
+                await new PostgresObservationEmbeddingsRepository(this.options.pool)
+                  .upsert({ observationId: observation.id, ...embedded[0]! });
+              }
+            } catch (error) {
+              logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
+                observationId: observation.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
             await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
             res.status(201).json({ memory: serializeObservation(observation) });

@@ -172,19 +172,27 @@
   // empty so an idle worker still leaves something on screen.
   // Follow the same explicit preference as My Work and the classic viewer.
   const languageKey = ['claude', 'mem', 'ui', 'language'].join('-');
+  const tvText = {
+    en: { title: 'claude-mem · Observation TV', idle: 'waiting for observations', dot: 'stream status', pip: 'PiP', fs: 'Full screen', now: 'just now', min: 'm ago', hr: 'h ago', day: 'd ago' },
+    'zh-CN': { title: 'claude-mem · 观察电视墙', idle: '等待观察记录', dot: '实时流状态', pip: '画中画', fs: '全屏', now: '刚刚', min: ' 分钟前', hr: ' 小时前', day: ' 天前' },
+    ko: { title: 'claude-mem · 관찰 TV', idle: '관찰을 기다리는 중', dot: '스트림 상태', pip: 'PiP', fs: '전체 화면', now: '방금', min: '분 전', hr: '시간 전', day: '일 전' },
+  };
+  let labels = tvText.en;
   function applyLanguage() {
-    let zh = false;
+    let lang = 'en';
     try {
-      zh = localStorage.getItem(languageKey) === 'zh-CN';
+      lang = localStorage.getItem(languageKey);
     } catch {
       // Privacy settings can deny storage; TV playback must still start.
     }
-    document.documentElement.lang = zh ? 'zh-CN' : 'en';
-    document.title = zh ? 'claude-mem · 观察电视墙' : 'claude-mem · Observation TV';
-    els.idle.textContent = zh ? '等待观察记录' : 'waiting for observations';
-    els.dot.title = zh ? '实时流状态' : 'stream status';
-    els.pipBtn.textContent = zh ? '画中画' : 'PiP';
-    els.fsBtn.textContent = zh ? '全屏' : 'Full screen';
+    if (!Object.hasOwn(tvText, lang)) lang = 'en';
+    labels = tvText[lang];
+    document.documentElement.lang = lang;
+    document.title = labels.title;
+    els.idle.textContent = labels.idle;
+    els.dot.title = labels.dot;
+    els.pipBtn.textContent = labels.pip;
+    els.fsBtn.textContent = labels.fs;
   }
   applyLanguage();
   window.addEventListener('storage', event => {
@@ -268,13 +276,12 @@
 
   function relTime(epoch) {
     const secs = Math.max(0, Math.round((Date.now() - epoch) / 1000));
-    const zh = document.documentElement.lang === 'zh-CN';
-    if (secs < 60) return zh ? '刚刚' : 'just now';
+    if (secs < 60) return labels.now;
     const mins = Math.round(secs / 60);
-    if (mins < 60) return mins + (zh ? ' 分钟前' : 'm ago');
+    if (mins < 60) return mins + labels.min;
     const hrs = Math.round(mins / 60);
-    if (hrs < 24) return hrs + (zh ? ' 小时前' : 'h ago');
-    return Math.round(hrs / 24) + (zh ? ' 天前' : 'd ago');
+    if (hrs < 24) return hrs + labels.hr;
+    return Math.round(hrs / 24) + labels.day;
   }
 
   function render(item) {

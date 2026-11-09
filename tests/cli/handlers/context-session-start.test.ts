@@ -172,22 +172,17 @@ describe('contextHandler SessionStart path', () => {
       expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
     });
   });
-  it('steers note-taking to available plugin tools by default and still injects instructions during a worker outage', async () => {
+  it('leaves the memory instructions to the MCP server: the block is the timeline alone, and empty during a worker outage', async () => {
     memoryInstructions = undefined;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');
     const input = { sessionId: 'memory-instructions', cwd: '/tmp/repo', platform: 'codex' };
     const result = await contextHandler.execute(input);
-    expect(result.hookSpecificOutput?.additionalContext).toContain('context from worker');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('concise purpose-specific text');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('internal metadata out of model context');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('observation_add for the selected server project');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory is local-worker only');
-    expect(result.hookSpecificOutput?.additionalContext).toContain('hosted read-only connector');
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(result.hookSpecificOutput?.additionalContext).not.toContain('# claude-mem memory use');
     workerUnreachable = true;
     try {
       const fallback = await contextHandler.execute(input);
-      expect(fallback.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+      expect(fallback.hookSpecificOutput?.additionalContext).toBe('');
     } finally { workerUnreachable = false; }
   });
   it('explicitly omits an oversized old-worker body without cutting its records', async () => {
@@ -202,7 +197,7 @@ describe('contextHandler SessionStart path', () => {
     expect(output).toContain('Recent context omitted');
     const url = new URL(String(calls.at(-1)![0]), 'http://worker');
     expect(Number(url.searchParams.get('reserveChars'))).toBeGreaterThan(0);
-    expect(output).toContain('save_memory tool is available');
+    expect(output).not.toContain('save_memory tool is available');
   });
 
   it('keeps a budgeted body under the cap when only the OAuth notice is added', async () => {
@@ -222,7 +217,7 @@ describe('contextHandler SessionStart path', () => {
     expect(result.hookSpecificOutput!.additionalContext).toContain('claude auth login');
   });
 
-  it('keeps the gateway notice and instructions when the body fills the budget', async () => {
+  it('keeps the gateway notice when the body fills the budget', async () => {
     const marker = path.join(paths.dataDir(), PRO_FALLBACK_NOTICE_MARKER);
     rmSync(marker, { force: true });
     providerBySource = '{"codex":"openrouter"}';
@@ -238,32 +233,34 @@ describe('contextHandler SessionStart path', () => {
       expect(output.length).toBeLessThanOrEqual(10_000);
       expect(output).toContain('Memory is using your Anthropic plan for now.');
       expect(output).toContain('claude auth login');
-      expect(output).toContain('save_memory tool is available');
     } finally { rmSync(marker, { force: true }); }
   });
 
   it('preserves exact fits and fits TeamBrain after accounting for every separator', async () => {
     const { composeSessionStartContext } = await import('../../../src/cli/handlers/context.js');
-    expect(composeSessionStartContext('body', 'notice', 'instructions', 'team', 32))
-      .toBe('notice\n\nbody\n\nteam\n\ninstructions');
-    const output = composeSessionStartContext('row\n'.repeat(300), 'notice', 'instructions', 'brief '.repeat(300), 1_000);
+    // The timeline body comes last, so later updates can append rows to it.
+    expect(composeSessionStartContext('body', 'notice', 'team', 18))
+      .toBe('notice\n\nteam\n\nbody');
+    const body = Array.from({ length: 200 }, () => 'row').join('\n');
+    const output = composeSessionStartContext(body, 'notice', 'brief '.repeat(300), 1_000);
     expect(output.length).toBeLessThanOrEqual(1_000);
     expect(output.startsWith('notice\n\n')).toBe(true);
-    expect(output.endsWith('instructions')).toBe(true);
-    expect(composeSessionStartContext('x'.repeat(1_100), 'notice', 'instructions', '', 1_000))
+    expect(output).toContain('TeamBrain brief left out');
+    expect(output.endsWith(body)).toBe(true);
+    expect(composeSessionStartContext('x'.repeat(1_100), 'notice', '', 1_000))
       .toContain('Recent context omitted');
   });
 
   it('preserves complete records and code fences when they fit, and never cuts them when they do not', async () => {
     const { composeSessionStartContext } = await import('../../../src/cli/handlers/context.js');
     const body = '# old\n# newest\n```js\nconst emoji = "😀";\n```';
-    expect(composeSessionStartContext(body, 'notice', 'instructions', '', 200))
-      .toBe('notice\n\n' + body + '\n\ninstructions');
-    const omitted = composeSessionStartContext(body.repeat(100), 'notice', 'instructions', '', 200);
+    expect(composeSessionStartContext(body, 'notice', '', 200))
+      .toBe('notice\n\n' + body);
+    const omitted = composeSessionStartContext(body.repeat(100), 'notice', '', 200);
     expect(omitted).toContain('Recent context omitted');
     expect(omitted).not.toContain('```');
     expect(omitted).not.toContain('# old');
-    expect(omitted.endsWith('instructions')).toBe(true);
+    expect(omitted.startsWith('notice\n\n')).toBe(true);
   });
 
   it('skips the model and terminal timeline on Claude resume before contacting the worker', async () => {

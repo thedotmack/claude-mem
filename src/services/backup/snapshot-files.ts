@@ -3,7 +3,7 @@
  * through. Plain fs only: the npx CLI (Node) stages restores with it, and
  * the worker (Bun) applies them.
  */
-import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, unlinkSync } from 'fs';
 import path from 'path';
 import { paths } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
@@ -13,6 +13,14 @@ import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.
  * order. The trailing `.db` anchor keeps staging leftovers and sidecars out.
  */
 export const SNAPSHOT_FILE_PATTERN = /^claude-mem-.*\.db$/;
+
+/** Only finished regular files participate in listing and retention. */
+export function listSnapshotNames(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter(entry => entry.isFile() && SNAPSHOT_FILE_PATTERN.test(entry.name))
+    .map(entry => entry.name).sort().reverse();
+}
 
 /**
  * Resolve a snapshot name to a path strictly inside `backupsDir`, or null for
@@ -24,7 +32,8 @@ export function resolveSnapshotInside(backupsDir: string, name: string): string 
   const resolved = path.resolve(root, name);
   if (path.dirname(resolved) !== root) return null;
   if (!SNAPSHOT_FILE_PATTERN.test(path.basename(resolved))) return null;
-  return resolved;
+  const entry = lstatSync(resolved, { throwIfNoEntry: false });
+  return entry && !entry.isFile() ? null : resolved;
 }
 
 export interface PendingRestore {

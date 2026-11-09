@@ -1,4 +1,5 @@
-// The worker's data-directory rule (resolveDataDir in src/shared/paths.ts) for
+// The worker's data-directory rule (resolveDataDir in src/shared/data-dir.ts,
+// re-exported by src/shared/paths.ts) for
 // standalone Node scripts such as worker-logs.cjs, which run without a build.
 //
 // This is a deliberate second copy. TypeScript modules must not import it:

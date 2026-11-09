@@ -14,6 +14,9 @@ declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
+import { spoolWorkStateMcpInstruction } from '../cli/work-state-telemetry.js';
+import { mcpServerInstructions } from '../shared/memory-instructions.js';
+import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -31,12 +34,25 @@ import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
 import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
+function workStateEnabled(): boolean {
+  return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
+}
+
 /**
  * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
  * `getCwd` returns the HTTP request's project directory. Stdio asks the client roots/list,
  * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
+  // How to use these tools: the work-state rule and the memory-use guidance.
+  // They are sent here, at initialize, so the SessionStart context can be the
+  // memory timeline alone. Each part follows the setting that turns it off.
+  const workStateRuleIncluded = workStateEnabled();
+  const instructions = mcpServerInstructions({
+    runtime: selectRuntime(),
+    workStateEnabled: workStateRuleIncluded,
+    memoryInstructionsEnabled: loadFromFileOnce().CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED !== 'false',
+  });
   const server = new Server(
     {
       name: 'claude-mem',
@@ -46,8 +62,10 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       capabilities: {
         tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
       },
+      ...(instructions ? { instructions } : {}),
     }
   );
+  server.oninitialized = () => spoolWorkStateMcpInstruction(workStateRuleIncluded);
 
   // The tools, their handlers and their visibility rules live in mcp-tool-table.ts,
   // shared with the wire gateway's MCP over HTTP.
