@@ -1315,3 +1315,48 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
     expect(content).toContain('<claude-mem-context>');
   });
 });
+
+describe('observation count setting in updateFolderClaudeMdFiles (#5507)', () => {
+  const ENV_KEY = 'CLAUDE_MEM_CONTEXT_OBSERVATIONS';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = savedEnv;
+    }
+  });
+
+  const apiResponse = {
+    content: [{ text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |' }],
+  };
+
+  it('fetches and writes nothing when the count is 0', async () => {
+    process.env[ENV_KEY] = '0';
+    const folderPath = join(tempDir, 'zero-count');
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('passes a configured nonzero count through as the fetch limit', async () => {
+    process.env[ENV_KEY] = '7';
+    const folderPath = join(tempDir, 'seven-count');
+    const fetchMock = mock((_url: string) => Promise.resolve({ ok: true, json: () => Promise.resolve(apiResponse) } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([join(folderPath, 'test.ts')], 'test-project', 37777);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('&limit=7&');
+  });
+});

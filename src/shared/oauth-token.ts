@@ -555,7 +555,7 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   const accessToken = payload.claudeAiOauth?.accessToken;
   const expiresAt = payload.claudeAiOauth?.expiresAt;
 
-  if (!accessToken) {
+  if (typeof accessToken !== 'string' || !accessToken) {
     return { kind: 'absent', reason: 'Keychain payload has no claudeAiOauth.accessToken field' };
   }
 

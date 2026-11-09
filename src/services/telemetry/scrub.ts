@@ -241,6 +241,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // plus a hostname (no path, no user). Local is the worker; hosted is work.cmem.ai.
   'viewer_host',
   'hostname',
+  // auto_update_applied / auto_update_failed (src/services/auto-update/auto-update-apply.ts):
+  // from_version and to_version are claude-mem release versions, failure_stage
+  // and restore_result the supervisor's own closed enums
+  // (AutoUpdateApplyFailureStage, AutoUpdateRestoreResult). Never a path, a
+  // log line or an error message.
+  'from_version',
+  'to_version',
+  'failure_stage',
+  'restore_result',
 ]);
 
 const MAX_STRING_LENGTH = 200;

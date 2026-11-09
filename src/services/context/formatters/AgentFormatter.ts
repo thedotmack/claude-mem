@@ -137,13 +137,11 @@ export function renderAgentSummaryField(label: string, value: string | null): st
   return [`**${label}**: ${value}`, ''];
 }
 
+/** The prior session's last reply; it goes above the timeline, which ends the agent block. */
 export function renderAgentPreviouslySection(priorMessages: PriorMessages): string[] {
   if (!priorMessages.assistantMessage) return [];
 
   return [
-    '',
-    '---',
-    '',
     `**Previously**`,
     '',
     `A: ${priorMessages.assistantMessage}`,
@@ -151,21 +149,15 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
   ];
 }
 
-export function renderAgentFooter(
-  totalDiscoveryTokens: number,
-  totalReadTokens: number,
-  fetchByIdSupported: boolean = true
-): string[] {
-  const workTokensK = Math.round(totalDiscoveryTokens / 1000);
-  const accessPath = fetchByIdSupported
-    ? 'get_observations([IDs]) or mem-search skill'
-    : 'observation_search';
+/** The header, then each lead section (health warning, open work state), then the empty timeline. */
+export function renderAgentEmptyState(
+  project: string,
+  headerTime: string = formatHeaderDateTime(),
+  leadSections: string[] = [],
+): string {
   return [
-    '',
-    `Access ${workTokensK}k tokens of past work via ${accessPath}.`
-  ];
-}
-
-export function renderAgentEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
-  return `# [${project}] recent context, ${headerTime}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
+    ...renderAgentHeader(project, headerTime),
+    ...leadSections.filter(Boolean).flatMap(section => [section, '']),
+    'No previous sessions found.',
+  ].join('\n');
 }

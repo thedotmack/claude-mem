@@ -8,6 +8,7 @@ const {
   readlinkSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   symlinkSync,
   utimesSync,
 } = require('fs');
@@ -34,8 +35,13 @@ function globToRegExpSource(pattern) {
     const char = pattern[index];
     if (char === '*') {
       if (pattern[index + 1] === '*') {
-        source += '.*';
-        index++;
+        if ((index === 0 || pattern[index - 1] === '/') && pattern[index + 2] === '/') {
+          source += '(?:.*/)?';
+          index += 2;
+        } else {
+          source += '.*';
+          index++;
+        }
       } else {
         source += '[^/]*';
       }
@@ -148,27 +154,60 @@ function copySymlink(sourcePath, destPath, sourceStat, stats) {
   stats.copied++;
 }
 
-function mirrorInto(sourceDir, destDir, relativeBase, rules, stats) {
-  mkdirSync(destDir, { recursive: true });
+// A stale directory can contain receiver-only data (e.g. node_modules or a
+// nested .git). Omit stats to check what can be removed without changing it.
+function pruneReceiver(destPath, relativePath, entry, rules, stats) {
+  if (isExcluded(rules, relativePath, entry.isDirectory())) return false;
+  if (!entry.isDirectory()) {
+    if (stats) rmSync(destPath);
+    return true;
+  }
+  const children = readdirSync(destPath, { withFileTypes: true });
+  let removableChildren = 0;
+  for (const child of children) {
+    if (pruneReceiver(path.join(destPath, child.name), joinRelative(relativePath, child.name), child, rules, stats)) {
+      removableChildren++;
+    }
+  }
+  const empty = removableChildren === children.length;
+  if (stats) {
+    // A removed subtree counts once at its parent. Only a retained directory
+    // needs to report the separate children that were removed beneath it.
+    if (empty) rmdirSync(destPath);
+    else stats.deleted += removableChildren;
+  }
+  return empty;
+}
 
+function mirrorInto(sourceDir, destDir, relativeBase, rules, stats) {
   const sourceEntries = readdirSync(sourceDir, { withFileTypes: true }).filter(
     entry => !isExcluded(rules, joinRelative(relativeBase, entry.name), entry.isDirectory())
   );
+  for (const entry of sourceEntries) {
+    if (!entry.isFile() && !entry.isDirectory() && !entry.isSymbolicLink()) {
+      throw new Error(`Cannot mirror special file: ${path.join(sourceDir, entry.name)}`);
+    }
+  }
+  mkdirSync(destDir, { recursive: true });
   const sourceNames = new Set(sourceEntries.map(entry => entry.name));
 
   // `--delete`, including its receiver-side protection: excluded paths (.git,
   // node_modules, plugin/data, ...) are left alone rather than wiped.
   for (const entry of readdirSync(destDir, { withFileTypes: true })) {
     if (sourceNames.has(entry.name)) continue;
-    if (isExcluded(rules, joinRelative(relativeBase, entry.name), entry.isDirectory())) continue;
-    rmSync(path.join(destDir, entry.name), { recursive: true, force: true });
-    stats.deleted++;
+    if (pruneReceiver(path.join(destDir, entry.name), joinRelative(relativeBase, entry.name), entry, rules, stats)) stats.deleted++;
   }
 
   for (const entry of sourceEntries) {
     const sourcePath = path.join(sourceDir, entry.name);
     const destPath = path.join(destDir, entry.name);
 
+    if (!entry.isDirectory()) {
+      const destStat = lstatSync(destPath, { throwIfNoEntry: false });
+      if (destStat?.isDirectory() && !pruneReceiver(destPath, joinRelative(relativeBase, entry.name), destStat, rules)) {
+        throw new Error(`Cannot replace directory containing excluded data: ${destPath}`);
+      }
+    }
     if (entry.isSymbolicLink()) {
       copySymlink(sourcePath, destPath, lstatSync(sourcePath), stats);
       continue;

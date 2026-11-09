@@ -230,13 +230,16 @@ export class HumanCopyWorker {
     }).sort((a, b) => b.updated - a.updated);
     for (const job of ready) {
       if (this.running.size >= this.concurrency) break;
-      this.running.add(job.id); void this.run(job);
+      void this.run(job);
     }
   }
 
   async run(job) {
     if (this.closed || this.shouldPause()) return;
     const configKeyAtStart = this.refreshProviderConfigKey();
+    // Counted from here, so the finally below takes it out on every path: a pause or close seen above starts nothing.
+    // Added before the first await, so pump() sees it at once. The auto-updater reads the count as busy (status().generating).
+    this.running.add(job.id);
     try {
       if (!providerIsAvailable(this.provider)) {
         if (this.pending.get(job.id)?.fingerprint === job.fingerprint) this.pending.delete(job.id);

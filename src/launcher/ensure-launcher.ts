@@ -23,22 +23,51 @@
  *   only because this hook is synchronous: an async hook's systemMessage goes
  *   to the model on the next turn instead (see the #3303 test in
  *   tests/infrastructure/plugin-distribution.test.ts).
+ * - Also prints that one object when an automatic update may have left the
+ *   install not working (plan Decision 7: the one case a session hears about
+ *   an update), read from the auto-updater's state file
+ *   (auto-update-state-file.ts autoUpdateBrokenInstall): a restore_failed
+ *   outcome no ready worker has resolved since, with the fix and when to run
+ *   it as the outcome recorded; or an attempt whose supervisor is gone without
+ *   an outcome, only while cheap file checks find the install half-written
+ *   (auto-update-install-shape.ts), with the target's own installer as the
+ *   fix. When the launcher check fails too, this notice is the one printed:
+ *   its fix runs the whole installer, which places the launcher again, and the
+ *   launcher failure still goes to stderr.
  * - Never exits non-zero. Diagnostics go to stderr, which for an exit-0 hook
  *   "goes to the debug log only, never the transcript" (same page).
  * - Fast when current: one `claude-mem --version` spawn plus the POSIX rc-file
- *   read and a PATH walk (no spawn), no Bun lookup and no PowerShell spawn.
- * - Runs under plain `node`, so it imports only the light launcher modules and
- *   the installer's Bun discovery (tool-path.ts), never the worker.
+ *   read and a PATH walk (no spawn), one small JSON read for the auto-update
+ *   state (the install-shape checks run only for an attempt whose supervisor
+ *   is gone), no Bun lookup and no PowerShell spawn.
+ * - Runs under plain `node`, so it imports only the light launcher modules,
+ *   the installer's Bun discovery (tool-path.ts), the data-dir rule
+ *   (data-dir.ts), Claude Code's install locations
+ *   (claude-code-plugin-paths.ts), the install-shape checks and the
+ *   auto-update state file's reader, never the worker.
  */
 import { existsSync, readFileSync, realpathSync, writeSync } from 'fs';
 import { dirname, join } from 'path';
 import {
   ensureLauncherOnPath,
   findExecutableOnPath,
+  isProcessRunning,
   type LauncherEnsureResult,
   type LauncherInstallLogger,
 } from './install-launcher.js';
 import { findBunExecutablePath } from '../npx-cli/install/tool-path.js';
+import { installedPluginsPath, marketplaceDirectory } from '../shared/claude-code-plugin-paths.js';
+import { resolveDataDir } from '../shared/data-dir.js';
+import { readClaudeMemInstallShape } from '../services/auto-update/auto-update-install-shape.js';
+import {
+  AUTO_UPDATE_STATE_FILENAME,
+  autoUpdateBrokenInstall,
+  autoUpdateFixInstruction,
+  describeAutoUpdateBrokenInstall,
+  describeAutoUpdateStateFileProblem,
+  readAutoUpdateStateFile,
+  targetVersionOf,
+} from '../services/auto-update/auto-update-state-file.js';
 
 // Captured before the ensure step: PATH setup prepends the bin dir to this
 // process's PATH, but the other hooks run with the PATH Claude Code started with.
@@ -58,9 +87,33 @@ function writeStderrLine(message: string): void {
 }
 
 /** Synchronous write so the line is flushed before process.exit(0). */
-function printUserVisibleSystemMessage(failure: EnsureLauncherFailure): void {
-  const systemMessage = `claude-mem: memory hooks are not active: ${failure.reason}. ${failure.fix}`;
+function printUserVisibleSystemMessage(systemMessage: string): void {
   writeSync(1, `${JSON.stringify({ systemMessage })}\n`);
+}
+
+function launcherFailureMessage(failure: EnsureLauncherFailure): string {
+  return `claude-mem: memory hooks are not active: ${failure.reason}. ${failure.fix}`;
+}
+
+/**
+ * The auto-update notice, or null when there is none. The state file is read
+ * from the data dir the worker uses (data-dir.ts), and a file with a problem
+ * reads as the defaults, as everywhere; the problem goes to stderr. The
+ * install's shape is read from Claude Code's config directory, as the
+ * installer writes it; an installed_plugins.json that cannot be read shows no
+ * notice, and why goes to stderr.
+ */
+function readAutoUpdateNotice(): string | null {
+  const statePath = join(resolveDataDir(), AUTO_UPDATE_STATE_FILENAME);
+  const read = readAutoUpdateStateFile(statePath);
+  if (read.problem !== null) writeStderrLine(describeAutoUpdateStateFileProblem(statePath, read.problem));
+  const broken = autoUpdateBrokenInstall(read.state, Date.now(), isProcessRunning, () => {
+    const shape = readClaudeMemInstallShape({ installedPluginsPath: installedPluginsPath(), marketplaceDirectory: marketplaceDirectory() });
+    if (shape.kind === 'registration-unreadable') writeStderrLine(`could not check the install for an interrupted update: ${shape.problem}`);
+    return shape;
+  });
+  if (broken === null) return null;
+  return `claude-mem may not work: ${describeAutoUpdateBrokenInstall(broken)}. ${autoUpdateFixInstruction(broken.fix, targetVersionOf(broken))}`;
 }
 
 const stderrLogger: LauncherInstallLogger = {
@@ -175,8 +228,17 @@ try {
   // reported to the user, and session start is never blocked.
   failure = { reason: error instanceof Error ? error.message : String(error), fix: REINSTALL_FIX };
 }
-if (failure !== null) {
-  writeStderrLine(failure.reason);
-  printUserVisibleSystemMessage(failure);
+let autoUpdateNotice: string | null;
+try {
+  autoUpdateNotice = readAutoUpdateNotice();
+} catch (error: unknown) {
+  // Fail-open boundary: a state file that cannot be read says nothing about
+  // whether the install works, so session start goes on without a notice, and
+  // why goes to the debug log.
+  writeStderrLine(`could not read the auto-update state: ${error instanceof Error ? error.message : String(error)}`);
+  autoUpdateNotice = null;
 }
+if (failure !== null) writeStderrLine(failure.reason);
+const systemMessage = autoUpdateNotice ?? (failure === null ? null : launcherFailureMessage(failure));
+if (systemMessage !== null) printUserVisibleSystemMessage(systemMessage);
 process.exit(0);

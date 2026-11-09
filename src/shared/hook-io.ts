@@ -175,7 +175,7 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
 let moduleHasEmitted = false;
 let pendingModelContext: Promise<void> = Promise.resolve();
 
-/** Wait for the already formatted payload to reach stdout before measuring a handoff. */
+/** Wait for the emitted payload to reach stdout; a closed pipe rejects here as HookStdoutError. */
 export function waitForModelContext(): Promise<void> { return pendingModelContext; }
 
 export interface ExitOptions {

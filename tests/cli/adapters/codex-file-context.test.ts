@@ -42,6 +42,19 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md']);
   });
 
+  it.skipIf(process.platform === 'win32')('extracts plus-prefixed operands that cat actually reads', () => {
+    writeFileSync(join(tmpDir, '+page.svelte'), 'synthetic page');
+    const child = Bun.spawnSync({ cmd: ['cat', '+page.svelte'], cwd: tmpDir });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout.toString()).toBe('synthetic page');
+    expect(extractFilePaths('Bash', { command: 'cat +page.svelte' }, tmpDir)).toEqual(['+page.svelte']);
+  });
+
+  it('still excludes plus-prefixed positioning options for tail', () => {
+    writeFileSync(join(tmpDir, '+2'), 'not an operand');
+    expect(extractFilePaths('Bash', { command: 'tail +2 README.md' }, tmpDir)).toEqual(['README.md']);
+  });
+
   it('honors the option terminator before a hyphen-prefixed filename', () => {
     writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
     expect(extractFilePaths('Bash', { command: 'cat -- -notes.md' }, tmpDir)).toEqual(['-notes.md']);
