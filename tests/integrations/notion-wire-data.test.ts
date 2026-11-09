@@ -1,0 +1,56 @@
+import { test } from 'bun:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildNotionChildren, buildNotionProperties, loadOrCreateNotionSourceId, normalizeNotionId, NotionExporter } from '../../src/services/integrations/NotionExporter.js';
+
+const observation = { type: 'discovery', title: 'note', subtitle: null, narrative: '',
+  facts: [], concepts: [], files_read: [], files_modified: [] } as any;
+const row = { observationId: 1, project: 'p', memorySessionId: 's', createdAtEpoch: 1000, observation };
+
+test('rich text boundaries never send isolated surrogate code units', () => {
+  const title = 'x'.repeat(1999) + '🌉 complete';
+  const p = buildNotionProperties({ ...row, observation: { ...observation, title } }, 'Name', 'install') as any;
+  assert.ok(p.Name.title.every((part: any) => part.text.content.isWellFormed()));
+  assert.equal(p.Name.title.map((part: any) => part.text.content).join(''), title);
+});
+
+test('Windows paragraph breaks produce the same block structure as Unix breaks', () => {
+  const blocks = (narrative: string) => buildNotionChildren({ ...observation, narrative });
+  assert.deepEqual(blocks('one\r\n\r\ntwo'), blocks('one\n\ntwo'));
+});
+
+test('a damaged install identity cannot deduplicate unrelated devices against an empty prefix', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'notion-source-id-'));
+  try {
+    const path = join(dir, 'id');
+    writeFileSync(path, ' \n');
+    assert.throws(() => loadOrCreateNotionSourceId(path), /empty/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a mistyped longer database identifier is not truncated to a different destination', () => {
+  const id = '0123456789abcdef0123456789abcdef';
+  assert.equal(normalizeNotionId('f' + id), null);
+  assert.equal(normalizeNotionId('https://www.notion.so/team/Page-' + id + '?view=other'), normalizeNotionId(id));
+});
+
+test('multibyte long paragraphs fit the wire budget across page creation and appends', async () => {
+  const writes: any[] = [];
+  const exporter = new NotionExporter({ token: 'test', databaseId: 'db', sourceId: 'source',
+    autoCreateProperties: false, minRequestIntervalMs: 0,
+    fetchImpl: async (url, init) => {
+      if (init.method === 'GET') return Response.json({ properties: { Name: { type: 'title' } } });
+      assert.ok(url.endsWith('/pages') || url.endsWith('/blocks/page/children'));
+      const body = String(init.body);
+      assert.ok(Buffer.byteLength(body) <= 500_000, 'serialized JSON exceeds 500 KB');
+      const { children } = JSON.parse(body);
+      assert.ok(children.length <= 100);
+      writes.push(...children);
+      return Response.json({ id: 'page' });
+    } });
+  const narrative = '戦'.repeat(510_000);
+  await exporter.upsert({ ...row, observation: { ...observation, narrative } });
+  assert.equal(writes.flatMap(b => b.paragraph.rich_text.map((t: any) => t.text.content)).join(''), narrative);
+});
