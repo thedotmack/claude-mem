@@ -7,6 +7,7 @@ import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../../../../utils/red
 import { logger } from '../../../../utils/logger.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
+import { retainTextHeadTail } from '../../../../shared/text-truncation.js';
 
 // Fallback list mirrors the default observation types used by claude-mem
 // modes. The server-beta prompt does not strictly need a loaded mode file —
@@ -151,7 +152,8 @@ function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
   const stripResult = stripTags(rawPayload);
   const hadPrivate = (stripResult.counts.private ?? 0) > 0;
   const truncatedPayload = stripResult.stripped.length > MAX_PAYLOAD_CHARS
-    ? stripResult.stripped.slice(0, MAX_PAYLOAD_CHARS) + '\n[...truncated]'
+    // Never split a surrogate pair: a lone surrogate makes the provider reject the request.
+    ? retainTextHeadTail(stripResult.stripped, MAX_PAYLOAD_CHARS, 0).head + '\n[...truncated]'
     : stripResult.stripped;
 
   if (truncatedPayload.trim().length === 0) {

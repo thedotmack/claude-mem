@@ -234,6 +234,12 @@ function positiveIntegerRowLimit(limit: unknown): number | undefined {
   return Number.isSafeInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
 }
 
+/** The projects whose context an imported row changes: its own and the one it is merged into. */
+function importedRowProjects(row: { project: string; merged_into_project?: string | null }): string[] {
+  return typeof row.merged_into_project === 'string' && row.merged_into_project
+    ? [row.project, row.merged_into_project] : [row.project];
+}
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -3490,12 +3496,12 @@ export class SessionStore {
       const fileArrayJson = (column: string): string =>
         `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
       const fileConditions = filesList.map(() => {
-        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\'))`;
+        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND replace(value, '\\', '/') LIKE ? ESCAPE '\\'))`;
       });
       if (fileConditions.length > 0) {
         filesList.forEach(file => {
-          // The hydration filter receives literal file paths, like SQLite search.
-          const literal = file.replace(/[\\%_]/g, '\\$&');
+          // Match SQLite search's separator normalization and literal LIKE escaping.
+          const literal = file.replace(/\\/g, '/').replace(/[\\%_]/g, '\\$&');
           params.push(`%${literal}%`, `%${literal}%`);
         });
         additionalConditions.push(`(${fileConditions.join(' OR ')})`);
@@ -4390,7 +4396,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = obsStmt.get(
+        const inserted = (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4413,7 +4419,7 @@ export class SessionStore {
           titleNormKey,
           reinforcementSeed.dates,
           reinforcementSeed.lastReinforced
-        ) as { id: number } | null;
+        ) as { id: number }[])[0] ?? null;
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
@@ -5045,6 +5051,7 @@ export class SessionStore {
     discovery_tokens: number;
     created_at: string;
     created_at_epoch: number;
+    merged_into_project?: string | null;
   }): { imported: boolean; id: number } {
     // Same exposure as importObservation below: an import row can arrive
     // without a usable session id, and session_summaries.memory_session_id is
@@ -5080,8 +5087,8 @@ export class SessionStore {
       INSERT INTO session_summaries (
         memory_session_id, project, request, investigated, learned,
         completed, next_steps, files_read, files_edited, notes,
-        prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        prompt_number, discovery_tokens, created_at, created_at_epoch, merged_into_project
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -5098,9 +5105,10 @@ export class SessionStore {
       summary.prompt_number,
       summary.discovery_tokens || 0,
       summary.created_at,
-      summary.created_at_epoch
+      summary.created_at_epoch,
+      typeof summary.merged_into_project === 'string' ? summary.merged_into_project : null
     );
-    emitContextInvalidation({ projects: [summary.project] }, 'importSessionSummary');
+    emitContextInvalidation({ projects: importedRowProjects(summary) }, 'importSessionSummary');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
@@ -5123,6 +5131,7 @@ export class SessionStore {
     created_at_epoch: number;
     agent_type?: string | null;
     agent_id?: string | null;
+    merged_into_project?: string | null;
   }): { imported: boolean; id: number } {
     // A row from a legacy or hand-edited export can arrive without a session
     // id, and observations.memory_session_id is NOT NULL. /api/import validates
@@ -5162,8 +5171,8 @@ export class SessionStore {
         memory_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
-        created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, created_at_epoch, merged_into_project
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // The row and its observation_files mappings commit together: an import
@@ -5188,13 +5197,14 @@ export class SessionStore {
         obs.agent_type ?? null,
         obs.agent_id ?? null,
         obs.created_at,
-        obs.created_at_epoch
+        obs.created_at_epoch,
+        typeof obs.merged_into_project === 'string' ? obs.merged_into_project : null
       );
       const id = result.lastInsertRowid as number;
       replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
       return id;
     })();
-    emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
+    emitContextInvalidation({ projects: importedRowProjects(obs) }, 'importObservation');
 
     return { imported: true, id: importedId };
   }

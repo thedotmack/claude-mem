@@ -235,7 +235,11 @@ function collectStdin(): Promise<Buffer | null> {
  * hint reads. Exit 0: the marker file, not the exit code, is the durable signal.
  */
 function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: string, pluginRoot: string): never {
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  // expandHome, as in neutralBunSpawnCwd: a `~/x` data dir must not become a
+  // literal `~` directory inside the user's project (the launch directory).
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
   const payloadType = stdinData === null
     ? 'null (no data event or stream error)'
     : 'empty Buffer (zero bytes received)';

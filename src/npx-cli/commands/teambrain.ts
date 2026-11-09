@@ -281,17 +281,22 @@ function syncConnectionChanged(existing: SettingsDefaults, ready: Pick<TrialRead
 }
 
 function startFailureMessage(): string {
-  const detail = lastOAuthStartErrorMessage();
-  if (detail) return detail;
   switch (lastOAuthStartFailure()) {
-    case 'http_error':
-      return 'cmem.ai did not accept the join request. The invite may have expired or run out of uses: ask the team owner for a new invite link.';
+    case 'http_error': {
+      // #5493 puts the HTTP status in lastOAuthStartErrorMessage; keep this
+      // join-specific recovery advice alongside it instead of hiding it.
+      const detail = lastOAuthStartErrorMessage();
+      const advice = 'The invite may have expired or run out of uses: ask the team owner for a new invite link.';
+      return detail ? `${detail} ${advice}` : `cmem.ai did not accept the join request. ${advice}`;
+    }
     case 'bad_body':
       return 'cmem.ai sent an unexpected answer to the join request. Update claude-mem (npx claude-mem update) and try again.';
     case 'timeout':
       return `${cmemProOrigin()} did not answer in time. Check your connection and run the join again.`;
-    default:
-      return `Could not reach ${cmemProOrigin()}. Check your connection and run the join again.`;
+    default: {
+      const detail = lastOAuthStartErrorMessage();
+      return detail ?? `Could not reach ${cmemProOrigin()}. Check your connection and run the join again.`;
+    }
   }
 }
 

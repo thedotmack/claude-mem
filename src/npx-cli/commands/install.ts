@@ -1613,8 +1613,28 @@ function hasPairingAndTrialParams(url: URL, pairingId: string): boolean {
   return days >= 1 && days <= 365;
 }
 
-/** Pure parser used by the mock-server contract tests. */
-export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairing | null {
+/**
+ * cmem.ai copies the setup episode the installer sent (`setup_flow_id`) into
+ * both claim URLs so checkout can be tied to the setup that started it. The
+ * strict shape checks below predate that, so every start that sent an episode
+ * was rejected as `bad_body` (#5493). Accept the parameter only when it equals
+ * the episode this installer sent, then check the rest of the URL as before.
+ * Returns null when the URL carries an episode we did not send.
+ */
+function withoutEchoedSetupFlowId(url: URL, sentSetupFlowId: string | undefined): URL | null {
+  const echoed = url.searchParams.getAll('setup_flow_id');
+  if (echoed.length === 0) return url;
+  if (echoed.length !== 1 || !sentSetupFlowId || echoed[0] !== sentSetupFlowId) return null;
+  const stripped = new URL(url.toString());
+  stripped.searchParams.delete('setup_flow_id');
+  return stripped;
+}
+
+/**
+ * Pure parser used by the mock-server contract tests. `sentSetupFlowId` is
+ * the `setup_flow_id` this installer put in the start request, if any.
+ */
+export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: string): InstallerOAuthPairing | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as {
     pairing_id?: unknown;
@@ -1650,11 +1670,14 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
     || !hasExactSearchParams(authorizationUrl, { next: loginNext })
   ) return null;
 
-  const loginClaim = parseBrowserUrl(`${expectedOrigin}${loginNext}`, '/api/pro/trial/claim');
+  const parsedLoginClaim = parseBrowserUrl(`${expectedOrigin}${loginNext}`, '/api/pro/trial/claim');
+  const loginClaim = parsedLoginClaim ? withoutEchoedSetupFlowId(parsedLoginClaim, sentSetupFlowId) : null;
+  const checkoutClaim = withoutEchoedSetupFlowId(checkoutUrl, sentSetupFlowId);
   if (
     !loginClaim
+    || !checkoutClaim
     || !hasExactSearchParams(loginClaim, { pairing: pairingId, login_only: '1' })
-    || !hasPairingAndTrialParams(checkoutUrl, pairingId)
+    || !hasPairingAndTrialParams(checkoutClaim, pairingId)
   ) return null;
 
   const pollIntervalS =
@@ -1750,14 +1773,16 @@ export async function startInstallerOAuthPairing(
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
+  const startBody = buildInstallerOAuthStartBody(source, hostname(), {
+    ...signupContext,
+    ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
+  }, opts.teamInvite);
+  const sentSetupFlowId = typeof startBody.setup_flow_id === 'string' ? startBody.setup_flow_id : undefined;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...installHeaders },
-      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), {
-        ...signupContext,
-        ...(isSetupId(opts.setupFlowId) && resolveTelemetryConsent(process.env, loadTelemetryConfig()) ? { setupFlowId: opts.setupFlowId } : {}),
-      }, opts.teamInvite)),
+      body: JSON.stringify(startBody),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -1769,6 +1794,12 @@ export async function startInstallerOAuthPairing(
         }
       } catch (error: unknown) {
         if (error instanceof Error && error.name === 'AbortError') throw error;
+      }
+      // Without a server-supplied message, at least name the HTTP answer
+      // (#5493): the caller's fallback says "when cmem.ai is reachable", which
+      // sent a user with an HTTP 429 refusal hunting for a network problem.
+      if (!lastStartErrorMessage) {
+        lastStartErrorMessage = `cmem.ai answered HTTP ${response.status}`;
       }
       return null;
     }
@@ -1783,7 +1814,7 @@ export async function startInstallerOAuthPairing(
       lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'bad_body';
       return null;
     }
-    const pairing = parseInstallerOAuthStartBody(body);
+    const pairing = parseInstallerOAuthStartBody(body, sentSetupFlowId);
     if (!pairing) lastStartFailure = 'bad_body';
     return pairing;
   } catch (error: unknown) {
@@ -2158,7 +2189,9 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
       phase: 'login',
     });
     spinner?.stop(styleText('red', 'Could not start OAuth login.'));
-    log.error(lastOAuthStartErrorMessage() ?? 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
+    log.error(lastOAuthStartErrorMessage()
+      ? `OAuth login is required. Could not start it: ${lastOAuthStartErrorMessage()}`
+      : 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
   }
   spinner?.stop('OAuth login ready.');
@@ -2202,7 +2235,9 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
       interactive: false,
       phase: 'deferred',
     });
-    log.error(lastOAuthStartErrorMessage() ?? 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+    log.error(lastOAuthStartErrorMessage()
+      ? `Could not start the optional claude-mem sign-in: ${lastOAuthStartErrorMessage()}`
+      : 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
     return;
   }
 
@@ -2905,7 +2940,9 @@ async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairi
       phase: 'enrollment',
     });
     spinner?.stop(styleText('red', 'Could not start the CMEM Pro sign-in.'));
-    throw new Error(lastOAuthStartErrorMessage() ?? 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+    throw new Error(lastOAuthStartErrorMessage()
+      ? `Could not start the CMEM Pro sign-in: ${lastOAuthStartErrorMessage()}`
+      : 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
   }
   spinner?.stop('CMEM Pro sign-in ready; checkout continues in the browser.');
   return pairing;

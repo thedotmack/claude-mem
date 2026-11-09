@@ -195,6 +195,7 @@ import { applyPendingRestore } from './backup/restore-swap.js';
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
+import { cliFlagValue } from '../shared/cli-flag-value.js';
 
 export interface StatusOutput {
   continue: true;
@@ -1507,6 +1508,13 @@ function printWorkerAliasHelp(): never {
   process.exit(1);
 }
 
+function printWorkerServiceUsage(): void {
+  console.error('Usage: worker-service <command>');
+  console.error('Commands: start, stop, restart, status, hook <platform> <event>, worker <command>, server <command>,');
+  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, memory, kimi, devin, antigravity-cli,');
+  console.error('  --daemon, --version, --help');
+}
+
 function runServerServiceCli(command: string, extraArgs: string[] = []): void {
   // Plan §1c line 149: try the post-rename script first, then fall back
   // to the legacy `server-beta-service.cjs` so users running against an
@@ -1547,6 +1555,11 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
   for (let i = 0; i < args.length; i++) {
     const item = args[i];
     if (!item.startsWith('--')) {
+      continue;
+    }
+    const equals = item.indexOf('=');
+    if (equals !== -1) {
+      options[item.slice(2, equals)] = item.slice(equals + 1) || 'true';
       continue;
     }
     const key = item.slice(2);
@@ -2063,16 +2076,14 @@ async function main() {
 
     case 'adopt': {
       const dryRun = process.argv.includes('--dry-run');
-      const branchIndex = process.argv.indexOf('--branch');
-      const branchValue = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
-      if (branchIndex !== -1 && (!branchValue || branchValue.startsWith('--'))) {
+      const branchValue = cliFlagValue(process.argv, '--branch');
+      if (branchValue === null) {
         console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
         process.exit(1);
       }
       const onlyBranch = branchValue;
-      const cwdIndex = process.argv.indexOf('--cwd');
-      const cwdValue = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : undefined;
-      if (cwdIndex !== -1 && (!cwdValue || cwdValue.startsWith('--'))) {
+      const cwdValue = cliFlagValue(process.argv, '--cwd');
+      if (cwdValue === null) {
         console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
         process.exit(1);
       }
@@ -2138,8 +2149,16 @@ async function main() {
       process.exit(0);
     }
 
-    case '--daemon':
-    default: {
+    case '--help':
+    case '-h': {
+      printWorkerServiceUsage();
+      process.exit(0);
+    }
+
+    // No command is a daemon boot too; anything unrecognised is a usage error,
+    // never a foreground worker (#5490).
+    case undefined:
+    case '--daemon': {
       // Before anything below spawns a child (the reclaim probes, the
       // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
       // whatever cwd this daemon was launched with (#3706; EPERM on
@@ -2240,6 +2259,13 @@ async function main() {
         // supervising caller see a dead boot instead of a silent "success".
         process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
       });
+      break;
+    }
+
+    default: {
+      console.error(`Unknown command: ${command}`);
+      printWorkerServiceUsage();
+      process.exit(1);
     }
   }
 }
