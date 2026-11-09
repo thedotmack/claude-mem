@@ -34,6 +34,12 @@ afterEach(() => {
 });
 
 describe('parseAgentXml — observations', () => {
+  it('reads a single-quoted skip reason with XML attribute whitespace', () => {
+    const result = parseAgentXml("<skip_summary reason = 'No change &amp; no new result' />");
+    if (!result.valid) throw new Error('Expected a valid skip sentinel');
+    expect(result.summary?.skip_reason).toBe('No change & no new result');
+  });
+
   it('treats a whitespace-padded standalone <skip_summary/> as a valid no-op with no observations', () => {
     const result = parseAgentXml('\n  <skip_summary reason="agent bookkeeping"/>  \n');
 
