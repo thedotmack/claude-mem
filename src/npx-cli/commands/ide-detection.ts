@@ -161,7 +161,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'roo-code',
       label: 'Roo Code',
-      detected: hasVscodeExtension('roo-code'),
+      detected: hasVscodeExtension('rooveterinaryinc.roo-cline'),
       hint: 'MCP-based integration',
     },
     {
