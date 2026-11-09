@@ -47,6 +47,9 @@ const shapes = [
   ['google oauth access token', 'ya29.' + rep('A', 30)],
   ['gitlab deploy token', 'gldt-' + rep('A', 20)],
   ['claude-mem server key', 'cmem_' + rep('A', 32)],
+  ['slack refresh token', 'xoxe-1-' + rep('A', 20)],
+  ['slack app-level token', 'xapp-1-' + rep('A', 20)],
+  ['stripe webhook signing secret', 'whsec_' + rep('A', 32)],
 ];
 
 test('cmem-hook redacts every vendor key shape the worker redacts', async (t) => {

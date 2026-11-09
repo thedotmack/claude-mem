@@ -269,15 +269,15 @@ function webhookHost(host) {
   return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${caseInsensitive}`;
 }
 const SECRET_PATTERNS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM key blocks
+  /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g, // PEM key blocks, incl. PGP's PRIVATE KEY BLOCK armor
   /(?<=\\[nrt]|\b)(?:Bearer|Basic|Token)[ \t]+[A-Za-z0-9._~+/=-]{16,512}(?!\w)/gi, // auth scheme credentials
   /(?<=\\[nrt]|\b)eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, // JWTs
   /(?<=\\[nrt]|\b)sk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                           // OpenAI/Anthropic-style keys
-  /(?<=\\[nrt]|\b)[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                   // Stripe-style keys
+  /(?<=\\[nrt]|\b)(?:[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{32,})\b/g, // Stripe-style keys and webhook signing secrets
   /(?<=\\[nrt]|\b)gh[pousr]_[A-Za-z0-9]{20,}\b/g,                               // GitHub tokens
   /(?<=\\[nrt]|\b)github_pat_[A-Za-z0-9_]{20,}\b/g,                             // GitHub fine-grained PATs
   /(?<=\\[nrt]|\b)glpat-[A-Za-z0-9_-]{20,}\b/g,                                 // GitLab PATs
-  /(?<=\\[nrt]|\b)xox[baprs]-[A-Za-z0-9-]{10,}\b/g,                             // Slack tokens
+  /(?<=\\[nrt]|\b)(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g,              // Slack tokens, incl. refresh (xoxe-) and app-level (xapp-)
   /(?<=\\[nrt]|\b)(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g, // AWS access key ids
   /(?<=\\[nrt]|\b)AIza[0-9A-Za-z_-]{35}\b/g,                                    // Google API keys
   /(?<=\\[nrt]|\b)npm_[A-Za-z0-9]{36}\b/g,                                      // npm tokens
