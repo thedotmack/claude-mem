@@ -47,24 +47,36 @@ test('an entry that alone exceeds the request limit fails instead of looping wit
   assert.equal(batchEnd([], 0, { children: [] }), 0);
 });
 
-test('multibyte long paragraphs fit the wire budget across page creation and appends', async () => {
+async function assertLongParagraphExport(subtitle: string | null): Promise<void> {
   const writes: any[] = [];
+  let creates = 0;
   const exporter = new NotionExporter({ token: 'test', databaseId: 'db', sourceId: 'source',
     autoCreateProperties: false, minRequestIntervalMs: 0,
     fetchImpl: async (url, init) => {
-      if (init.method === 'GET') return Response.json({ properties: { Name: { type: 'title' } } });
+      if (init.method === 'GET') return Response.json({ properties: { Name: { type: 'title' }, Subtitle: { type: 'rich_text' } } });
       assert.ok(url.endsWith('/pages') || url.endsWith('/blocks/page/children'));
       const body = String(init.body);
       assert.ok(Buffer.byteLength(body) <= 500_000, 'serialized JSON exceeds 500 KB');
       const { children } = JSON.parse(body);
       assert.ok(children.length <= 100);
+      if (init.method === 'POST') {
+        creates++;
+        assert.equal(children.length === 0, subtitle !== null, 'only defer the first block when it cannot fit');
+      } else {
+        assert.equal(creates, 1);
+        assert.ok(children.length > 0);
+      }
       writes.push(...children);
       return Response.json({ id: 'page' });
     } });
   const narrative = '戦'.repeat(510_000);
-  await exporter.upsert({ ...row, observation: { ...observation, narrative } });
+  assert.equal(await exporter.upsert({ ...row, observation: { ...observation, narrative, subtitle } }), 'created');
+  assert.equal(creates, 1);
   assert.equal(writes.flatMap(b => b.paragraph.rich_text.map((t: any) => t.text.content)).join(''), narrative);
-});
+}
+
+test('multibyte long paragraphs fit the wire budget across page creation and appends', () => assertLongParagraphExport(null));
+test('a block too large for page creation is appended to the empty page', () => assertLongParagraphExport('s'.repeat(10_000)));
 
 for (const { label, title, characters } of [
   { label: 'a writable multibyte subtitle', title: 'note', characters: 170_000 },

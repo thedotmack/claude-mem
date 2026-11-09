@@ -233,18 +233,20 @@ function fitPageProperties(payload: { properties: Record<string, unknown> }, obs
   });
 }
 
-/**
- * Fit array entries to both Notion limits, including commas and the JSON envelope.
- * Throws when the entry at `start` alone exceeds the request limit, so callers
- * that advance by the returned end can never loop without progress.
- */
-export function batchEnd(entries: unknown[], start: number, envelope: object): number {
+/** Fit array entries to both Notion limits, including commas and the JSON envelope. */
+function fittingBatchEnd(entries: unknown[], start: number, envelope: object): number {
   let bytes = Buffer.byteLength(JSON.stringify(envelope));
   let end = start;
   for (; end < entries.length && end - start < MAX_ARRAY_ENTRIES; end++) {
     bytes += Buffer.byteLength(JSON.stringify(entries[end])) + (end === start ? 0 : 1);
     if (bytes > MAX_REQUEST_BYTES) break;
   }
+  return end;
+}
+
+/** Require a nonempty batch when there are entries left to send. */
+export function batchEnd(entries: unknown[], start: number, envelope: object): number {
+  const end = fittingBatchEnd(entries, start, envelope);
   if (end === start && start < entries.length) throw new Error('Notion block exceeds the request limit');
   return end;
 }
@@ -434,7 +436,8 @@ export class NotionExporter {
     const children = buildNotionChildren(record.observation);
     const payload = { parent: { database_id: this.databaseId }, properties, children: [] };
     fitPageProperties(payload, record.observationId);
-    const firstEnd = batchEnd(children, 0, payload);
+    // If the properties leave no room for the first block, append it after the page exists.
+    const firstEnd = fittingBatchEnd(children, 0, payload);
     const page = await this.request('POST', '/pages', {
       ...payload, children: children.slice(0, firstEnd),
     }) as { id?: string };
