@@ -19,6 +19,7 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
+import { serverUsageGuards } from '../middleware/usage-guards.js';
 import { EndSessionService } from '../services/EndSessionService.js';
 import { resolveServerSession } from './SessionsObservationsAdapter.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
@@ -41,11 +42,11 @@ export class SessionsSummarizeAdapter implements RouteHandler {
   constructor(private readonly options: SessionsSummarizeAdapterOptions) {}
 
   setupRoutes(app: Application): void {
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const writeAuth = [requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
-    });
+    }), ...serverUsageGuards(this.options.pool, { write: true })];
 
     app.post('/api/sessions/summarize', writeAuth, this.asyncHandler(async (req, res) => {
       const parsed = summarizeSchema.safeParse(req.body);

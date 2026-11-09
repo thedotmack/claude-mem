@@ -3,12 +3,12 @@ import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
 const OPENCODE_MCP_SERVER_KEY = 'claude-mem';
@@ -246,7 +246,7 @@ export function registerOpenCodePluginInConfig(api: OpenCodePluginApi = 1): numb
       : addOpenCodePluginReference(config);
     const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    writeJsonFileAtomic(configPath, updatedConfig);
 
     // Warn conservatively whenever this run could not resolve its own MCP
     // server script. The final config is deliberately NOT consulted: a retained
@@ -284,7 +284,7 @@ export function deregisterOpenCodePluginFromConfig(): number {
     const config = parseJsonWithBom<OpenCodeConfig>(readFileSync(configPath, 'utf-8'));
     const updatedConfig = removeOpenCodeMcpReference(removeOpenCodePluginReference(config));
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    writeJsonFileAtomic(configPath, updatedConfig);
     console.log(`  Plugin deregistered from: ${configPath}`);
     logger.info('OPENCODE', 'Plugin deregistered from config', { path: configPath });
 
@@ -362,7 +362,7 @@ function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: stri
     unlinkSync(agentsMdPath);
     console.log(`  Removed empty AGENTS.md`);
   } else {
-    writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
+    writeTextFileAtomic(agentsMdPath, trimmedContent + '\n');
     console.log(`  Cleaned context from AGENTS.md`);
   }
 }

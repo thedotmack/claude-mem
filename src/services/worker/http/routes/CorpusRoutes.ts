@@ -77,6 +77,19 @@ interface CorpusOutcome {
 /** Comment-line heartbeat cadence for SSE mode (the MCP client's idle window is 30 s). */
 const DEFAULT_CORPUS_SSE_HEARTBEAT_INTERVAL_MS = 10_000;
 
+// A prime/query can persist the whole corpus after awaiting the SDK. Keep
+// every mutation of that corpus out until it settles, so an older snapshot
+// cannot replace a rebuild or recreate a corpus the owner just deleted.
+// Shared across route instances in the same worker; different names proceed.
+const activeCorpusOperations = new Set<string>();
+
+function corpusOperationKey(name: string): string {
+  // Case sensitivity belongs to the volume: macOS and mounted filesystems
+  // can resolve Alpha and alpha to one file too. Conservatively serialize
+  // these ASCII-name aliases everywhere, including before a file exists.
+  return name.trim().toLowerCase();
+}
+
 export interface CorpusRoutesOptions {
   sseHeartbeatIntervalMs?: number;
 }
@@ -169,6 +182,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   private async runLongCorpusWork(
     req: Request,
     res: Response,
+    name: string,
     work: (abortController: AbortController) => Promise<CorpusOutcome>
   ): Promise<void> {
     // Every mutating corpus route (build, rebuild, prime, query, reprime) runs
@@ -179,6 +193,28 @@ export class CorpusRoutes extends BaseRouteHandler {
       res.status(403).json({ error: 'Corpus work from a different localhost origin is not allowed' });
       return;
     }
+    if (this.rejectBusyCorpus(res, name)) return;
+    const key = corpusOperationKey(name);
+    activeCorpusOperations.add(key);
+    try {
+      await this.runAdmittedCorpusWork(req, res, work);
+    } finally {
+      // Client disconnect is not completion: a build may still be writing.
+      activeCorpusOperations.delete(key);
+    }
+  }
+
+  private rejectBusyCorpus(res: Response, name: string): boolean {
+    if (!activeCorpusOperations.has(corpusOperationKey(name))) return false;
+    res.status(409).json({ error: `Corpus "${name}" already has an operation in progress`, code: 'CORPUS_BUSY' });
+    return true;
+  }
+
+  private async runAdmittedCorpusWork(
+    req: Request,
+    res: Response,
+    work: (abortController: AbortController) => Promise<CorpusOutcome>
+  ): Promise<void> {
     const abortController = new AbortController();
     let workSettled = false;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -261,7 +297,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     // strategies, whose error handling turns it into a failed or unfiltered build.
     if (dateStart) resolveDateBound(dateStart, 'start');
     if (dateEnd) resolveDateBound(dateEnd, 'end');
-    return this.runLongCorpusWork(req, res, () => this.countCorpusBuild(() => this.buildCorpus(body, dateStart, dateEnd)));
+    return this.runLongCorpusWork(req, res, body.name, () => this.countCorpusBuild(() => this.buildCorpus(body, dateStart, dateEnd)));
   });
 
   private async buildCorpus(
@@ -310,6 +346,7 @@ export class CorpusRoutes extends BaseRouteHandler {
 
   private handleDeleteCorpus = this.wrapHandler((req: Request, res: Response): void => {
     const name = this.toStringParam(req.params.name);
+    if (this.rejectBusyCorpus(res, name)) return;
     const existed = this.corpusStore.delete(name);
 
     if (!existed) {
@@ -320,7 +357,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json({ success: true });
   });
 
-  private handleRebuildCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, () => this.countCorpusBuild(async () => {
+  private handleRebuildCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, this.toStringParam(req.params.name), () => this.countCorpusBuild(async () => {
     const name = this.toStringParam(req.params.name);
     const previousCorpus = this.corpusStore.read(name);
 
@@ -361,7 +398,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     return previousCount >= 4 && newCount <= previousCount / 2;
   }
 
-  private handlePrimeCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, async (abortController) => {
+  private handlePrimeCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, this.toStringParam(req.params.name), async (abortController) => {
     const name = this.toStringParam(req.params.name);
     const corpus = this.corpusStore.read(name);
 
@@ -371,7 +408,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     return { status: 200, body: { session_id: sessionId, name: corpus.name } };
   }));
 
-  private handleQueryCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, async (abortController) => {
+  private handleQueryCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, this.toStringParam(req.params.name), async (abortController) => {
     const name = this.toStringParam(req.params.name);
     const corpus = this.corpusStore.read(name);
 
@@ -382,7 +419,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     return { status: 200, body: { answer: result.answer, session_id: result.session_id } };
   }));
 
-  private handleReprimeCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, async (abortController) => {
+  private handleReprimeCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, this.toStringParam(req.params.name), async (abortController) => {
     const name = this.toStringParam(req.params.name);
     const corpus = this.corpusStore.read(name);
 

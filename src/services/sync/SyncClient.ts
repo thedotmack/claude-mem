@@ -103,13 +103,29 @@ function localPayload(payload: Record<string, unknown> | null): Record<string, u
 /** Hub changes as SyncApply takes them; one that cannot be decoded is returned as UndecodableOp. */
 export function decodeChanges(values: unknown[]): Array<SyncOp | UndecodableOp> {
   return values.map((value): SyncOp | UndecodableOp => {
-    let decoded: ReturnType<typeof decodeHubChange>;
     try {
-      decoded = decodeHubChange(value as CanonicalHubChange);
+      const decoded = decodeHubChange(value as CanonicalHubChange);
+      const body = decoded.body;
+      return {
+        seq: decoded.seq,
+        kind: body.kind,
+        origin_device: body.origin_device_id,
+        origin_id: body.origin_local_id ?? body.id.slice('mutation:'.length),
+        rev: body.entity_rev,
+        body: canonicalJson(body.kind === 'mutation' ? body.mutation : localPayload(body.payload)),
+        server_ts: decoded.server_ts,
+        entity_id: body.id,
+        entity_rev: body.entity_rev,
+        operation_sha256: decoded.operation_sha256,
+        deleted: body.deleted,
+        deleted_at: body.deleted_at,
+      };
     } catch (error) {
       // One change we cannot decode must not fail the whole page forever:
       // keep its seq (the page stays contiguous) and let SyncApply set it
-      // aside. A change without a valid seq is a broken page — that throws.
+      // aside. This includes valid wire uint64s that cannot be represented
+      // by local numeric columns. A change without a valid seq is a broken
+      // page — that throws.
       const seq = assertCanonicalDecimal((value as { seq?: unknown } | null)?.seq, { positive: true });
       return {
         seq,
@@ -117,21 +133,6 @@ export function decodeChanges(values: unknown[]): Array<SyncOp | UndecodableOp> 
         raw: JSON.stringify(value),
       };
     }
-    const body = decoded.body;
-    return {
-      seq: decoded.seq,
-      kind: body.kind,
-      origin_device: body.origin_device_id,
-      origin_id: body.origin_local_id ?? body.id.slice('mutation:'.length),
-      rev: body.entity_rev,
-      body: canonicalJson(body.kind === 'mutation' ? body.mutation : localPayload(body.payload)),
-      server_ts: decoded.server_ts,
-      entity_id: body.id,
-      entity_rev: body.entity_rev,
-      operation_sha256: decoded.operation_sha256,
-      deleted: body.deleted,
-      deleted_at: body.deleted_at,
-    };
   });
 }
 

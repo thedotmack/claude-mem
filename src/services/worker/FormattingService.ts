@@ -6,6 +6,8 @@ import { formatTime } from '../../shared/timeline-formatting.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
+export const singleLineTitle = (value: string): string => value.replace(/[\r\n\u2028\u2029]+/g, ' ');
+
 export class FormattingService {
   formatSearchTips(): string {
     return `\n---
@@ -32,7 +34,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = singleLineTitle(obs.title || 'Untitled');
     const readTokens = this.estimateReadTokens(obs);
     const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
     const workTokens = obs.discovery_tokens || 0;
@@ -45,7 +47,7 @@ Tips:
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = singleLineTitle(session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`);
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
@@ -54,9 +56,10 @@ Tips:
     const id = `#P${prompt.id}`;
     const time = formatTime(prompt.created_at_epoch);
     const icon = '💬';
-    const title = prompt.prompt_text.length > 60
-      ? prompt.prompt_text.substring(0, 57) + '...'
-      : prompt.prompt_text;
+    const text = singleLineTitle(prompt.prompt_text);
+    const title = text.length > 60
+      ? text.substring(0, 57) + '...'
+      : text;
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
@@ -75,7 +78,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = singleLineTitle(obs.title || 'Untitled');
     const readTokens = this.estimateReadTokens(obs);
 
     const timeDisplay = time === lastTime ? '″' : time;
@@ -90,7 +93,7 @@ Tips:
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = singleLineTitle(session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`);
 
     const timeDisplay = time === lastTime ? '″' : time;
 
@@ -104,9 +107,10 @@ Tips:
     const id = `#P${prompt.id}`;
     const time = formatTime(prompt.created_at_epoch);
     const icon = '💬';
-    const title = prompt.prompt_text.length > 60
-      ? prompt.prompt_text.substring(0, 57) + '...'
-      : prompt.prompt_text;
+    const text = singleLineTitle(prompt.prompt_text);
+    const title = text.length > 60
+      ? text.substring(0, 57) + '...'
+      : text;
 
     const timeDisplay = time === lastTime ? '″' : time;
 

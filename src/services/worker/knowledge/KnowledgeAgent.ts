@@ -167,6 +167,9 @@ export class KnowledgeAgent {
 
     try {
       const result = await this.executeQuery(corpus, question, callOptions);
+      // The SDK may end quietly after cancellation, including after a success
+      // result. Check at the commit boundary before changing the saved session.
+      callOptions.abortController?.signal.throwIfAborted();
       if (result.session_id !== corpus.session_id) {
         corpus.session_id = result.session_id;
         this.corpusStore.write(corpus);
@@ -192,6 +195,7 @@ export class KnowledgeAgent {
         throw new Error(`Auto-reprime failed for corpus "${corpus.name}"`);
       }
       const result = await this.executeQuery(refreshedCorpus, question, callOptions);
+      callOptions.abortController?.signal.throwIfAborted();
       if (result.session_id !== refreshedCorpus.session_id) {
         refreshedCorpus.session_id = result.session_id;
         this.corpusStore.write(refreshedCorpus);

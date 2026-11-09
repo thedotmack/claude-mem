@@ -11,7 +11,7 @@ const server = Bun.serve({
     if (path !== '/context') return new Response('Not found', { status: 404 });
     console.log('CONTEXT_READ_STARTED');
     try {
-      const input = { projects: ['app'], includePriorMessage: false, timePlaceholders: true };
+      const input = { projects: ['app'], includePriorMessage: false, timePlaceholders: true, workStateSection: 'KEEP_SAVED_WORK_STATE' };
       const result = await generateContextWithStats(input, false, { execution: 'worker' });
       const inline = await generateContextWithStats(input, false);
       if (result.text !== inline.text) {

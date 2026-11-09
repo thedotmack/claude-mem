@@ -1,6 +1,7 @@
 import path from 'path';
 import { homedir } from 'os';
-import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync } from 'fs';
+import { writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 import { replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
@@ -94,12 +95,13 @@ function readConfig(): string {
 function writeConfig(text: string): void {
   const target = hermesConfigPath();
   // config.yaml can hold credentials: the replacement keeps the file's own
-  // permissions, and is never readable by others while it is being written.
+  // permissions, and it is never readable by others while it is being written.
+  // writeTextFileAtomic applies the mode to the temp file before any content
+  // lands, resolves a symlinked target, fsyncs the file and its directory, and
+  // retries the rename on Windows — all of which this hand-rolled sequence did
+  // not do.
   const mode = existsSync(target) ? statSync(target).mode & 0o777 : 0o600;
-  const staging = `${target}.claude-mem-${process.pid}.tmp`;
-  writeFileSync(staging, text, { encoding: 'utf-8', mode: 0o600 });
-  chmodSync(staging, mode);
-  renameSync(staging, target);
+  writeTextFileAtomic(target, text, { mode });
 }
 
 function mcpEntry(mcpServerPath: string) {
@@ -155,7 +157,7 @@ export function installHermesIntegration(): number {
 
     const files = OWNED_FILES.map(name => ({ name, contents: readFileSync(path.join(source, name)) }));
     replaceOwnedFiles(hermesPluginDirectory(), files);
-    writeFileSync(path.join(hermesPluginDirectory(), RECEIPT_FILE), JSON.stringify(receipt, null, 2) + '\n', 'utf-8');
+    writeJsonFileAtomic(path.join(hermesPluginDirectory(), RECEIPT_FILE), receipt);
     if (text !== original) writeConfig(text);
 
     console.log(`  Hermes plugin installed to: ${hermesPluginDirectory()}`);

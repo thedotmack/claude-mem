@@ -14,14 +14,6 @@ import { logger } from '../../../../utils/logger.js';
 export class SQLiteSearchStrategy {
   constructor(private sessionSearch: SessionSearch) {}
 
-  private emptyResult(strategy: 'sqlite'): StrategySearchResult {
-    return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy
-    };
-  }
-
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
       query,
@@ -62,7 +54,7 @@ export class SQLiteSearchStrategy {
     } catch (error) {
       const errorObj = error instanceof Error ? error : new Error(String(error));
       logger.error('WORKER', 'SQLiteSearchStrategy: Search failed', {}, errorObj);
-      return this.emptyResult('sqlite');
+      throw errorObj;
     }
   }
 
