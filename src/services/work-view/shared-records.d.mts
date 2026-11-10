@@ -6,6 +6,7 @@ export const SHARED_WORK_MAX_ROW_BYTES: number;
 export const SHARED_WORK_MAX_UPDATES: number;
 export const SHARED_WORK_MAX_PARTS: number;
 export function isSharedWorkList(value: unknown): boolean;
+export function sharedWorkListSql(expression: string): string;
 export function sharedRecordKey(kind: string, key: string): string;
 export function sharedIdentity(kind: string, key: string): string;
 export function sharedWriter(value: string): string;

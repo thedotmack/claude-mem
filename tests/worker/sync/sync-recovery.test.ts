@@ -48,6 +48,21 @@ describe('selected historical recovery', () => {
   }
   function resume(id: string) { recovery.transition(id, 'resume', '1'); }
   function state(id: string) { return recovery.get(id) as any; }
+  it('recovers selected authored version-like lists without enabling shared work writes', async () => {
+    const id = historicalWorkState('__my_work_v1draft:notes');
+    historicalWorkState('__my_work_v12:request');
+    await sync.statusWithHubProbe();
+    const scope = { ...SCOPE, kinds: ['work_state'] as const };
+    const preview = recovery.preview({ ...scope, kinds: [...scope.kinds] });
+    expect(preview.items.map(item => item.originLocalId)).toEqual([id]);
+    const job = recovery.create({ scope: { ...scope, kinds: [...scope.kinds] }, previewToken: preview.previewToken });
+    resume(job.id);
+    expect(recovery.hasSelectedWorkState()).toBe(true);
+    await sync.flush();
+    expect(pages.flat().map(op => JSON.parse(op.body).payload.list_name)).toEqual(['__my_work_v1draft:notes']);
+    expect(state(job.id).status).toBe('complete');
+  });
+
   it('preview and inventory write nothing, upload nothing, expose no content, and distinguish extant/ledger/conflicts', () => {
     historical(); historical('other');
     db.prepare("INSERT INTO sync_launch_exclusions(kind,origin_local_id,through_rev) VALUES ('observation','999','1')").run();

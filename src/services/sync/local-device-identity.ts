@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
+import { sharedWorkListSql } from '../work-view/shared-records.mjs';
 
 function validIdentity(value: string): string {
   if (!value.trim() || Buffer.byteLength(value, 'utf8') > 128 || value.includes('\0')) {
@@ -26,7 +27,7 @@ export function ensureLocalDeviceIdentity(db: Database, settingsPath: string, co
     // imported rows belonging to other machines.
     try {
       const writers = db.query(`SELECT DISTINCT json_extract(fields, '$.writer') AS writer FROM work_state_entries
-        WHERE origin_device_id IS NULL AND list_name GLOB '__my_work_v[0-9]*:*' AND json_valid(fields)`).all() as Array<{ writer: unknown }>;
+        WHERE origin_device_id IS NULL AND ${sharedWorkListSql('list_name')} AND json_valid(fields)`).all() as Array<{ writer: unknown }>;
       for (const { writer } of writers) {
         if (typeof writer !== 'string') throw new Error('Native shared work has an invalid device identity');
         identities.add(validIdentity(writer));

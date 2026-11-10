@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import { isSharedWorkList } from '../work-view/shared-records.mjs';
 import { CONTENT_KIND_SPECS } from './CloudSync.js';
 import { assertCanonicalDecimal, buildContentOperation, canonicalJson, parseCanonicalOperation, stableDocumentId, type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
 
@@ -54,7 +55,7 @@ export function readLocalConflictEvidence(db: Database, deviceId: string, kind: 
     assertCanonicalDecimal(originLocalId);
     const row = db.prepare(spec.selectOneSql).get(originLocalId) as Record<string, unknown> | null;
     if (row && row.origin_device_id != null) throw new SyncRecoveryError('native_origin_required', 403);
-    if (row && kind === 'work_state' && /^__my_work_v[0-9].*:/.test(String(row.list_name ?? ''))) {
+    if (row && kind === 'work_state' && isSharedWorkList(row.list_name)) {
       throw new SyncRecoveryError('shared_work_repair_unsupported');
     }
     const entityId = stableDocumentId(kind, deviceId, originLocalId);
