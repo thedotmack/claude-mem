@@ -11,6 +11,9 @@ import { paths } from '../../src/shared/paths.js';
 
 function createDatabase(file: string, value: string, schemaVersion: number) {
   const db = new Database(file);
+  db.run('CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY)');
+  db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY)');
+  db.run('CREATE TABLE session_summaries (id INTEGER PRIMARY KEY)');
   db.run('CREATE TABLE memories (value TEXT)');
   db.run('INSERT INTO memories VALUES (?)', [value]);
   db.run(`PRAGMA user_version = ${schemaVersion}`);
