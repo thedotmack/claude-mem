@@ -362,9 +362,20 @@ export function getProjectContext(
   cwd: string | null | undefined,
   platform: NodeJS.Platform = process.platform,
 ): ProjectContext {
+  return getProjectContextWithRoot(cwd, platform).context;
+}
+
+/** Reuse the resolved Git root when a caller also needs project-relative file paths. */
+export function getProjectContextWithRoot(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): { context: ProjectContext; repoRoot: string | null } {
   if (!cwd || cwd.trim() === '') {
     const fallback = getProjectName(cwd, platform);
-    return { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: 'path' };
+    return {
+      context: { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: 'path' },
+      repoRoot: null,
+    };
   }
 
   const expandedCwd = expandHome(cwd, platform);
@@ -388,7 +399,10 @@ export function getProjectContext(
   // derived keys stay readable by default. An explicit inherit list replaces
   // them, letting a child project choose its own read boundary (#4782).
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment.name, 'environment', environment.inherit) : derivedContext;
+  return {
+    context: environment ? withPrimaryKey(derivedContext, environment.name, 'environment', environment.inherit) : derivedContext,
+    repoRoot,
+  };
 }
 
 /** Re-key a context, retaining its read keys unless an explicit scope replaces them. */

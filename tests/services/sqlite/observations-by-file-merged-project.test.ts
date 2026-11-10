@@ -31,6 +31,18 @@ describe('file context for merged projects', () => {
     expect(getObservationsByFilePath(store.db, 'src/missing.ts', { projects: ['repo'] })).toEqual([]);
   });
 
+  it('follows a whole project merge while excluding unadopted rows from a partial merge', () => {
+    store = new SessionStore(':memory:');
+    const feature = seed('repo/feature', 'repo', 'claude');
+    const repo = seed('repo', 'parent', 'claude');
+    const adopted = seed('partial', 'parent', 'claude');
+    seed('partial', null, 'codex');
+
+    const ids = getObservationsByFilePath(store.db, 'src/main.ts', { projects: ['parent'] })
+      .map(row => row.id).sort((a, b) => a - b);
+    expect(ids).toEqual([feature, repo, adopted]);
+  });
+
   it('still reads the original worktree key and unscoped file context', () => {
     store = new SessionStore(':memory:');
     const adopted = seed('repo/feature', 'repo', 'claude');

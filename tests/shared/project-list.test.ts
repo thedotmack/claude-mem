@@ -14,12 +14,15 @@ describe('parseProjectList', () => {
 
   it('keeps list entries exactly', () => {
     expect(parseProjectList(['topic ', 'parent'])).toEqual(['topic ', 'parent']);
+    expect(parseProjectList(['api,web', 'parent'])).toEqual(['api,web', 'parent']);
+    expect(parseProjectList('["api,web","parent"]')).toEqual(['api,web', 'parent']);
   });
 
   it('drops blank entries and anything that is not text', () => {
     expect(parseProjectList(' ')).toEqual([]);
     expect(parseProjectList(['', '\t', 7, null, 'api'])).toEqual(['api']);
     expect(parseProjectList(undefined)).toEqual([]);
+    expect(parseProjectList('[null]')).toEqual(['[null]']);
   });
 
   // Same two characters, two meanings: in a list ' api' is a different checkout
@@ -45,5 +48,13 @@ describe('projectsQueryValues', () => {
   it('round-trips a single key with whitespace', () => {
     const [only] = new URLSearchParams(projectsQueryString(['topic '])).getAll('projects');
     expect(parseProjectList(only)).toEqual(['topic ']);
+  });
+
+  it('round-trips exact comma and JSON-looking keys through a single query value', () => {
+    for (const projects of [['api,web'], ['parent', ' api,web '], ['["api"]'], ['[api]'], ['[,]', '"quoted",key']]) {
+      const values = new URLSearchParams(projectsQueryString(projects)).getAll('projects');
+      expect(values).toHaveLength(1);
+      expect(parseProjectList(values[0])).toEqual(projects);
+    }
   });
 });

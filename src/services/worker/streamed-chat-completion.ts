@@ -188,7 +188,8 @@ interface StreamChunk {
   usage?: unknown;
   error?: { code?: unknown; message?: unknown } | null;
   choices?: Array<{
-    delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown; tool_calls?: unknown } | null;
+    index?: unknown;
+    delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown; tool_calls?: unknown } | null;
     finish_reason?: unknown;
   }>;
 }
@@ -420,17 +421,25 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
       if (model === undefined && typeof chunk.model === 'string' && chunk.model) model = chunk.model;
       if (chunk.usage && typeof chunk.usage === 'object') usage = chunk.usage as Record<string, unknown>;
 
-      const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
-      if (!choice) continue;
-      const delta = choice.delta ?? undefined;
-      const text = deltaText(delta?.content);
-      content += text;
-      // Reasoning and tool-call deltas are billed output too: once any arrived,
-      // a resend would pay for them again.
-      if (text || isNonEmpty(delta?.reasoning) || isNonEmpty(delta?.reasoning_content) || isNonEmpty(delta?.tool_calls)) {
-        outputStarted = true;
+      const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+      for (const [position, choice] of choices.entries()) {
+        if (!choice) continue;
+        const delta = choice.delta ?? undefined;
+        const text = deltaText(delta?.content);
+        // Every choice's generated output was billed, including alternatives
+        // that are not selected for the observation. Reasoning and tool-call
+        // deltas are billed output too: once any arrived, a resend would pay
+        // for them again.
+        if (text || isNonEmpty(delta?.reasoning) || isNonEmpty(delta?.reasoning_content)
+          || isNonEmpty(delta?.reasoning_details) || isNonEmpty(delta?.tool_calls)) {
+          outputStarted = true;
+        }
+        // Stream frames can interleave or reorder alternatives. Keep the first
+        // completion by its identity, with the existing index-less compatibility.
+        if (choice.index !== 0 && !(choice.index === undefined && position === 0)) continue;
+        content += text;
+        if (typeof choice.finish_reason === 'string' && choice.finish_reason) finishReason = choice.finish_reason;
       }
-      if (typeof choice.finish_reason === 'string' && choice.finish_reason) finishReason = choice.finish_reason;
     }
   } catch (streamError: unknown) {
     if (streamError instanceof ClassifiedProviderError) throw streamError;

@@ -131,6 +131,24 @@ function Quote({ quote, rule }: { quote: RuleQuote; rule: OwnerRule }) {
   )
 }
 
+/** Saving a long rule can omit evidence even while this computer still has the original story. */
+export function RuleEvidenceNotice({ rule }: { rule: OwnerRule }) {
+  const count = rule.quotesOmitted ?? 0
+  if (count === 0) return null
+  return <p className="text-xs text-review-foreground">{interpolate(t(count === 1
+    ? '{count} supporting quote could not fit in this saved rule. Other devices may show fewer quotes.'
+    : '{count} supporting quotes could not fit in this saved rule. Other devices may show fewer quotes.'), { count })}</p>
+}
+
+export function RuleEvidence({ rule }: { rule: OwnerRule }) {
+  return <div className="space-y-2">
+    {rule.quotes.length ? rule.quotes.map((quote) => <Quote key={quote.quote} quote={quote} rule={rule} />)
+      : <p className="text-xs text-muted-foreground">{t(rule.source === 'you'
+        ? 'You wrote this rule in My Rules, so there are no quotes behind it.'
+        : 'No supporting quotes are available on this computer.')}</p>}
+  </div>
+}
+
 /** Third layer of disclosure: the records the rule was built from (§14: request-progress reviews, owner-goals runs, prompts). */
 function SourceRecords({ rule }: { rule: OwnerRule }) {
   return (
@@ -209,8 +227,9 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, actions }: { rul
             </div>
           </div>
 
+          <RuleEvidenceNotice rule={rule} />
           <CollapsibleContent className="mt-2 space-y-3 border-t pt-3 sm:ml-[3.25rem]">
-            <div className="space-y-2">{rule.quotes.length ? rule.quotes.map((quote) => <Quote key={quote.quote} quote={quote} rule={rule} />) : <p className="text-xs text-muted-foreground">{t("You wrote this rule in My Rules, so there are no quotes behind it.")}</p>}</div>
+            <RuleEvidence rule={rule} />
             {replaces.length > 0 && (
               <Req ids={['R14.4']}>
                 <div className="space-y-1">
@@ -284,6 +303,7 @@ function SuggestionCard({ rule, decision, saving, onDecide, onEdit, onUndo, onSh
         <button type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="-my-2 inline-flex min-h-11 w-fit items-center text-xs text-muted-foreground hover:text-foreground sm:min-h-0 sm:my-0">{displayScope(scope)}</button>
 
         <div className={cn(decision === 'rejected' && 'line-through opacity-60')}><RuleSentence rule={rule} large /></div>
+        <RuleEvidenceNotice rule={rule} />
 
         <ConfirmationRequest>
           <Req ids={['R11.1']}>

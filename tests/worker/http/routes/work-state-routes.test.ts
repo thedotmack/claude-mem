@@ -3,7 +3,7 @@
 // reads every key the checkout reads. These are what the work_state_write and
 // work_state_read MCP tools call with the session's cwd.
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -91,6 +91,37 @@ function read(query: Record<string, string>): Promise<Response> {
 }
 
 describe('WorkStateRoutes', () => {
+  // Windows does not support these distinct trailing-whitespace directories.
+  const posixIt = process.platform === 'win32' ? it.skip : it;
+  posixIt('writes to the literal checkout without changing a plain-named sibling', async () => {
+    mkdirSync(join(checkout, 'topic'));
+    for (const [index, name] of ['topic ', 'topic\t', 'topic\n'].entries()) {
+      const cwd = join(checkout, name);
+      mkdirSync(cwd);
+      const response = await write({ cwd, list: 'release', fields: { task: `literal-${index}`, status: 'todo' } });
+      expect(response.status).toBe(200);
+      expect(store.getWorkStateEntries([getProjectContext(cwd).primary]).map(entry => entry.fields))
+        .toEqual([{ task: `literal-${index}`, status: 'todo' }]);
+    }
+    expect(store.getWorkStateEntries([getProjectContext(join(checkout, 'topic')).primary])).toEqual([]);
+  });
+
+  posixIt('reads the literal checkout without exposing a plain-named sibling list', async () => {
+    const sibling = join(checkout, 'topic');
+    mkdirSync(sibling);
+    store.appendWorkStateEntry({ project: getProjectContext(sibling).primary, listName: 'release', fields: { task: 'plain-sibling', status: 'todo' } });
+    for (const [index, name] of ['topic ', 'topic\t', 'topic\n'].entries()) {
+      const cwd = join(checkout, name);
+      mkdirSync(cwd);
+      store.appendWorkStateEntry({ project: getProjectContext(cwd).primary, listName: 'release', fields: { task: `literal-${index}`, status: 'todo' } });
+      const response = await read({ cwd, list: 'release' });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain(`literal-${index}`);
+      expect(text).not.toContain('plain-sibling');
+    }
+  });
+
   it('reads open work state from a project adopted into the checkout', async () => {
     const adoptedProject = `${project}-merged-worktree`;
     const session = store.createSDKSession('adopted-host', adoptedProject, 'prompt');
@@ -182,6 +213,7 @@ describe('WorkStateRoutes', () => {
       { cwd: checkout, list: 'release', fields: { note: { nested: true } } },
       { cwd: checkout, list: 'release', fields: { note: 'x'.repeat(MAX_WORK_STATE_FIELDS_JSON_CHARS) } },
       { cwd: checkout, list: '  ', fields: { task: 'publish' } },
+      { cwd: ' \t\n', list: 'release', fields: { task: 'publish' } },
       { list: 'release', fields: { task: 'publish' } },
     ];
 
@@ -192,6 +224,7 @@ describe('WorkStateRoutes', () => {
     const emptyFields = await (await write(refused[0])).json() as { issues: Array<{ message: string }> };
     expect(emptyFields.issues.map(issue => issue.message)).toContain('fields must set at least one key');
     expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect((await read({ cwd: ' \t\n' })).status).toBe(400);
   });
 
   it('does not save for a project the user excluded', async () => {

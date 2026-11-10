@@ -13,6 +13,7 @@ import { viewerKo } from '../src/ui/i18n/viewer-ko.ts';
 import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { setupKo } from '../src/ui/i18n/setup-ko.ts';
 import { settingsKo } from '../src/ui/i18n/settings-ko.ts';
+import { myworkTr } from '../src/ui/i18n/mywork-tr.ts';
 
 describe('UI language catalogs', () => {
   it('keeps English as the default and accepts each supported locale', () => {
@@ -20,6 +21,7 @@ describe('UI language catalogs', () => {
     assert.equal(parseLocale('fr'), 'en');
     assert.equal(parseLocale('zh-CN'), 'zh-CN');
     assert.equal(parseLocale('ko'), 'ko');
+    assert.equal(parseLocale('tr'), 'tr');
     assert.equal(parseLocale('toString'), 'en');
   });
 
@@ -28,7 +30,7 @@ describe('UI language catalogs', () => {
     assert.equal(interpolate('{unknown}', {}), '{unknown}');
   });
 
-  for (const [name, catalog] of Object.entries({ viewerZh, myworkZh, setupZh, settingsZh, viewerKo, myworkKo, setupKo, settingsKo })) {
+  for (const [name, catalog] of Object.entries({ viewerZh, myworkZh, setupZh, settingsZh, viewerKo, myworkKo, setupKo, settingsKo, myworkTr })) {
     it(`${name} has nonempty translations and preserves interpolation placeholders`, () => {
       assert.ok(Object.keys(catalog).length > 0);
       for (const [english, translated] of Object.entries(catalog)) {
@@ -47,6 +49,10 @@ describe('UI language catalogs', () => {
       assert.deepEqual(Object.keys(korean).sort(), Object.keys(chinese).sort());
     });
   }
+
+  it('the Turkish My Work catalog covers the same strings as the Chinese catalog', () => {
+    assert.deepEqual(Object.keys(myworkTr).sort(), Object.keys(myworkZh).sort());
+  });
 
   it('every literal t() call has a catalog entry', () => {
     const catalog = { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh };

@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from 'bun:test';
 import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   detectUsableAgents,
   GEMINI_NO_MCP_SERVERS,
@@ -311,6 +311,29 @@ describe('detectUsableAgents', () => {
     it('logged in through GEMINI_API_KEY', async () => {
       const agent = await detectOne('gemini', { spawn: fakeSpawn(WHICH_GEMINI), environment: { GEMINI_API_KEY: 'key' } });
       expect(agent).toMatchObject({ authenticated: true, reason: 'GEMINI_API_KEY is set' });
+    });
+
+    it('uses the selected Gemini home and keeps a relative profile stable when the probe changes cwd', async () => {
+      const selected = resolve('owned-gemini-profile');
+      const launches: any[] = [];
+      const scripted = fakeSpawn({ ...WHICH_GEMINI, [PROBE]: { exitCode: 42, stderr: NO_INPUT } });
+      const agent = await detectOne('gemini', {
+        environment: { GEMINI_CLI_HOME: 'owned-gemini-profile' },
+        fileExists: path => [join(selected, '.gemini', 'settings.json'), join(selected, '.gemini', 'oauth_creds.json')].includes(path),
+        readTextFile: path => path.endsWith('settings.json') ? settings : JSON.stringify({ refresh_token: 'owned-token' }),
+        spawn: ((command, args, options) => { launches.push({ command, options }); return scripted(command, args, options); }) as typeof spawn,
+      });
+      expect(agent.authenticated).toBe(true);
+      expect(launches.find(call => call.command === GEMINI_PATH)?.options.env.GEMINI_CLI_HOME).toBe(selected);
+    });
+
+    it('does not borrow the default login when the selected Gemini profile has no credentials', async () => {
+      const selected = resolve('owned-missing-profile');
+      const agent = await detectOne('gemini', { ...signedIn({ exitCode: 42, stderr: NO_INPUT }),
+        environment: { GEMINI_CLI_HOME: selected },
+      });
+      expect(agent.authenticated).toBe(false);
+      expect(agent.reason).toContain(join(selected, '.gemini', 'settings.json'));
     });
 
     it('a slow `which gemini` is waited for and still reports logged in', async () => {

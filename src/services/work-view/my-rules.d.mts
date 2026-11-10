@@ -6,6 +6,10 @@ export interface SavedRule {
   when: string; then: string; setBy: 'owner' | 'approved' | 'learned';
   status: 'on' | 'off' | 'suggested' | 'replaced' | 'dismissed'; kind: string; source: string;
   timesSeen: number; latestAt: string | null; quotes: { at: string | null; quote: string; kind: string }[];
+  /** Known quote count before saving, retained when a device only has a partial row. */
+  quotesTotal?: number;
+  /** Quotes omitted from the saved row, even if the local story still supplies them. */
+  quotesOmitted?: number;
   replacedBy: string | null; replacedAt: string | null; savedAt: string | null;
 }
 export function ruleRowFields(rule: Omit<SavedRule, 'scopeId' | 'kind' | 'savedAt'>): Record<string, string | number | null>;

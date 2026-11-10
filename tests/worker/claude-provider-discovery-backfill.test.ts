@@ -62,6 +62,7 @@ function createHarness(session: ActiveSession) {
     createdAtEpoch: 1700000000000,
   }));
   const updateDiscoveryTokens = mock((_ids: number[], _summaryId: number | null, _tokens: number) => {});
+  const syncNudges: number[] = [];
 
   const sessionManager = {
     confirmClaimedMessages: mock(async () => {
@@ -84,11 +85,12 @@ function createHarness(session: ActiveSession) {
       updateDiscoveryTokens,
     }),
     getChromaSync: () => null,
-    getCloudSync: () => null,
+    getCloudSync: () => ({ notify: () => syncNudges.push(updateDiscoveryTokens.mock.calls.length) }),
   };
   return {
     storeObservations,
     updateDiscoveryTokens,
+    syncNudges,
     provider: new ClaudeProvider(dbManager as never, sessionManager as never),
   };
 }
@@ -114,6 +116,7 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     expect((harness.storeObservations.mock.calls[0] as unknown[])[5]).toBe(1);
     expect(harness.updateDiscoveryTokens).toHaveBeenCalledTimes(1);
     expect(harness.updateDiscoveryTokens).toHaveBeenCalledWith([41], null, 900 + 100 + 40);
+    expect(harness.syncNudges).toContain(1); // Notify after the corrected payload is stored.
     expect(session.cumulativeInputTokens).toBe(1000);
     expect(session.cumulativeCacheReadTokens).toBe(50);
   });
