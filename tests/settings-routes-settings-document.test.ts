@@ -96,24 +96,6 @@ describe('SettingsRoutes settings document writes', () => {
     }
   });
 
-  it('refuses and reports a corrupt settings.json without touching its bytes (worker path never quarantines)', async () => {
-    const corrupt = '{"CLAUDE_MEM_MODEL":"keep-me"';
-    writeFileSync(settingsPath, corrupt);
-    const { server, url } = await startServer();
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ CLAUDE_MEM_MODEL: 'new-model' }),
-      });
-      expect(response.status).toBe(500);
-      expect(readFileSync(settingsPath, 'utf-8')).toBe(corrupt);
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    }
-  });
-
   it('keeps an object-valued flat env setting at the root', async () => {
     const envValue = { enabled: true, sources: ['local'] };
     writeFileSync(settingsPath, JSON.stringify({
@@ -138,8 +120,10 @@ describe('SettingsRoutes settings document writes', () => {
     }
   });
 
-  it('refuses a root array without replacing its bytes', async () => {
-    const original = '["sentinel"]';
+  it.each([
+    '{"CLAUDE_MEM_MODEL":"keep-me"',
+    '["sentinel"]',
+  ])('refuses invalid settings %s without touching its bytes (worker path never quarantines)', async (original) => {
     writeFileSync(settingsPath, original);
     const { server, url } = await startServer();
 

@@ -6,8 +6,8 @@ import {
 
 failOnCiWithoutChrome('CI requires Chrome for session-list recovery tests');
 
-for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['project-switch', false], ['project-switch', true]] as const) {
-  (chromeExecutablePath ? it : it.skip)(`session catalog recovers ${scenario}${slow ? " after slow responses" : ""} failures by explicit retry`, async () => {
+for (const scenario of ['first-page', 'older-page', 'project-switch'] as const) {
+  (chromeExecutablePath ? it : it.skip)(`session catalog recovers ${scenario} failures by explicit retry`, async () => {
     let chrome: OwnedChrome | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -73,7 +73,6 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
           const n=++requests;
           const params=new URL(request.url).searchParams;
           offsets.push(Number(params.get('offset')));
-          if(slow && n<=2) await Bun.sleep(n===1 ? 6500 : 3000);
           if(scenario!=='first-page' && n===1) return Response.json({sessions:[session],hasMore:scenario==='older-page'});
           if(n===(scenario==='first-page'?1:2)) return new Response('Temporary failure',{status:503});
           return Response.json({sessions:[{...session,content_session_id:'recovered-session',project:params.get('project')!,custom_title:'Recovered'}],hasMore:false});

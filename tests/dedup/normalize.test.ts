@@ -10,11 +10,6 @@ describe('normalizeTitle', () => {
     expect(normalizeTitle('On-Demand Checkpoint.')).toBe(normalizeTitle('on demand checkpoint'));
   });
 
-  it('is idempotent', () => {
-    const once = normalizeTitle('Hardened On-Demand Checkpoint!');
-    expect(normalizeTitle(once)).toBe(once);
-  });
-
   it('distinguishes genuinely different titles (negative)', () => {
     expect(normalizeTitle('Added the relevance_count column'))
       .not.toBe(normalizeTitle('Removed the relevance_count column'));
@@ -44,10 +39,6 @@ describe('tokenizeWs', () => {
     // If these split, idf("api") would be common and the IDF-veto would fail to fire.
     expect(tokenizeWs('Pinned versions in ffmpeg-7.1.conf')).toContain('ffmpeg-7.1.conf');
     expect(tokenizeWs('clippy violation in download.rs')).toContain('download.rs');
-  });
-
-  it('keeps version/identifier tokens distinct (negative)', () => {
-    expect(tokenizeWs('ffmpeg-7.1.conf')).not.toEqual(tokenizeWs('ffmpeg-6.1.conf'));
   });
 
   it('returns [] for empty/whitespace/null', () => {

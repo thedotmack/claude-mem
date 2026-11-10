@@ -15,6 +15,8 @@ import { WorkStateRoutes } from '../../src/services/worker/http/routes/WorkState
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 function modelText(result: CallToolResult): string {
   expect(result.structuredContent).toBeUndefined();
@@ -68,9 +70,10 @@ describe('built local MCP Dumb search stdio integration', () => {
     const server = app.listen(0, '127.0.0.1');
     await new Promise<void>(resolve => server.once('listening', resolve));
     const address = server.address() as { port: number };
+    const dataDir = mkdtempSync(join(tmpdir(), 'progressive-memory-stdio-'));
     const transport = new StdioClientTransport({
       command: 'node', args: [join(process.cwd(), 'plugin/scripts/mcp-server.cjs')], cwd: process.cwd(), stderr: 'pipe',
-      env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_RUNTIME: 'worker' } as Record<string, string>,
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_RUNTIME: 'worker' } as Record<string, string>,
     });
     const client = new Client({ name: 'progressive-stdio-fixture', version: '1' });
     transport.stderr?.on('data', () => {});
@@ -128,6 +131,7 @@ describe('built local MCP Dumb search stdio integration', () => {
       await transport.close();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       db.close();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   }, 15_000);
 
@@ -156,9 +160,10 @@ describe('built local MCP Dumb search stdio integration', () => {
     const server = app.listen(0, '127.0.0.1');
     await new Promise<void>(resolve => server.once('listening', resolve));
     const address = server.address() as { port: number };
+    const dataDir = mkdtempSync(join(tmpdir(), 'progressive-memory-stdio-'));
     const transport = new StdioClientTransport({
       command: 'node', args: [join(process.cwd(), 'plugin/scripts/mcp-server.cjs')], cwd: process.cwd(), stderr: 'pipe',
-      env: { ...process.env, CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${address.port}`, CLAUDE_MEM_SERVER_API_KEY: 'owned-fixture-key', CLAUDE_MEM_SERVER_PROJECT_ID: 'project-fixture', CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_AUTOSTART: 'false' } as Record<string, string>,
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${address.port}`, CLAUDE_MEM_SERVER_API_KEY: 'owned-fixture-key', CLAUDE_MEM_SERVER_PROJECT_ID: 'project-fixture', CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_AUTOSTART: 'false' } as Record<string, string>,
     });
     const client = new Client({ name: 'server-model-text-fixture', version: '1' });
     transport.stderr?.on('data', () => {});
@@ -232,6 +237,7 @@ describe('built local MCP Dumb search stdio integration', () => {
     } finally {
       await client.close(); await transport.close();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      rmSync(dataDir, { recursive: true, force: true });
     }
   }, 15_000);
 });

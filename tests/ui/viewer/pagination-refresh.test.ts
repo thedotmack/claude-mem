@@ -125,13 +125,11 @@ it('does not let a superseded page publish after an authoritative refresh', asyn
   expect(await pages.loadMore()).toEqual([]);
 });
 
-it('bounds and deduplicates transient live rows without changing separately retained pages', () => {
-  const loaded = [row(1)];
+it('bounds and deduplicates transient live rows', () => {
   let live: Array<ReturnType<typeof row>> = [];
   for (let id = 1; id <= 5000; id++) live = retainLiveRow(live, row(id));
   expect(live).toHaveLength(LIVE_ITEMS_PER_KIND);
   live = retainLiveRow(live, row(5000, 99_999));
   expect(live).toHaveLength(LIVE_ITEMS_PER_KIND);
   expect(live[0].created_at_epoch).toBe(99_999);
-  expect(loaded).toEqual([row(1)]);
 });

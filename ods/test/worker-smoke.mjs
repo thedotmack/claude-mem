@@ -79,7 +79,10 @@ try {
   console.log(JSON.stringify({ status: 'passed', capture: true, localObserver: true, recall: true, activeDeleteRefused: true, observerRequests }));
 } finally {
   worker.kill('SIGTERM');
-  await Promise.race([new Promise(resolve => worker.once('exit', resolve)), delay(3000)]);
+  let exitTimer;
+  await Promise.race([new Promise(resolve => worker.once('exit', resolve)),
+    new Promise(resolve => { exitTimer = setTimeout(resolve, 3000); })]);
+  clearTimeout(exitTimer);
   if (worker.exitCode === null) worker.kill('SIGKILL');
   observer.closeAllConnections();
   await new Promise(resolve => observer.close(resolve));

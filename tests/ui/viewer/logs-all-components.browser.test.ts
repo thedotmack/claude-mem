@@ -32,6 +32,7 @@ import {
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={() => {}} />);
         async function settle() { for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame); }
         function messages() { return [...document.querySelectorAll('.log-message')].map(x => x.textContent); }
+        function chips(section) { return { active: section.querySelectorAll('.console-filter-chip.active').length, action: section.querySelector('.console-filter-action').title }; }
         function section(label) { return [...document.querySelectorAll('.console-filter-section')].find(x => x.textContent.startsWith(label)); }
         (async () => {
           try {
@@ -55,9 +56,15 @@ import {
             report.all = messages();
             components.querySelector('[title="Hook"]').click(); await settle();
             report.withoutHook = messages();
-            components.querySelector('[title="Hook"]').click(); await settle();
-            section('Levels:').querySelector('[title="Info"]').click(); await settle();
+            report.componentsPartial = chips(components);
+            components.querySelector('.console-filter-action').click(); await settle();
+            report.componentsAll = chips(components);
+            const levels = section('Levels:');
+            levels.querySelector('[title="Info"]').click(); await settle();
             report.error = messages();
+            report.levelsPartial = chips(levels);
+            levels.querySelector('.console-filter-action').click(); await settle();
+            report.levelsAll = chips(levels);
             section('Quick:').querySelector('button').click(); await settle();
             report.alignment = messages();
             await fetch('/result', { method: 'POST', body: JSON.stringify(report) });
@@ -81,6 +88,8 @@ import {
       initial: all, none: [], worker: ['OWNED_WORKER', 'OWNED_ALIGNMENT'],
       // Components without a chip of their own sit under Other, and stay visible while another chip is off.
       other: ['OWNED_SEARCH', 'OWNED_QUEUE', 'OWNED_INGEST'],
+      componentsPartial: { active: 9, action: 'Select all' }, componentsAll: { active: 10, action: 'Select none' },
+      levelsPartial: { active: 3, action: 'Select all' }, levelsAll: { active: 4, action: 'Select none' },
       all, withoutHook: all, error: ['OWNED_INGEST'], alignment: ['OWNED_ALIGNMENT'],
     });
   } finally {

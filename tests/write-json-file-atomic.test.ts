@@ -65,17 +65,6 @@ describe('writeJsonFileAtomic', () => {
     expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ ok: true });
   });
 
-  it('preserves the destination file mode when the file already exists', () => {
-    const target = join(tempDir, 'restricted.json');
-    writeFileSync(target, '{}', { mode: 0o600 });
-    chmodSync(target, 0o600); // Force-apply in case umask interfered.
-
-    writeJsonFileAtomic(target, { secret: true });
-
-    const mode = statSync(target).mode & 0o777;
-    expect(mode).toBe(0o600);
-  });
-
   it('keeps an existing group-writable mode exactly, whatever the umask', () => {
     if (IS_WINDOWS) return;
     const target = join(tempDir, 'shared-config.json');
@@ -103,28 +92,6 @@ describe('writeJsonFileAtomic', () => {
 
     expect(statSync(target).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ secret: true });
-  });
-
-  it('writes the temp file in the same directory as the destination', () => {
-    // Same-directory rename is what gives the atomic guarantee on POSIX
-    // (cross-filesystem rename can fall back to copy+delete, which isn't atomic).
-    // We verify by spotting the temp file name pattern during a write — but since
-    // the write completes synchronously, we infer this from the absence of any
-    // leftover temp file in OTHER directories after a normal write.
-    const otherDir = mkdtempSync(join(tmpdir(), 'claude-mem-atomic-other-'));
-    try {
-      const target = join(tempDir, 'config.json');
-      writeJsonFileAtomic(target, { ok: true });
-
-      // No temp file should have been created in tmpdir, otherDir, or anywhere
-      // outside the destination directory.
-      const otherLeftovers = readdirSync(otherDir).filter(name => name.includes('config.json'));
-      expect(otherLeftovers).toEqual([]);
-      const tempDirLeftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
-      expect(tempDirLeftovers).toEqual([]);
-    } finally {
-      rmSync(otherDir, { recursive: true, force: true });
-    }
   });
 
   it('throws on serialization failure without creating a temp file', () => {

@@ -188,7 +188,7 @@ describe('memory folder watcher', () => {
     expect(nudged).toBe(1);
   });
 
-  it('deduplicates the same file fingerprint across concurrent processes', async () => {
+  it('waits for an uncommitted file fingerprint before deduplicating across processes', async () => {
     const root = temp();
     const database = path.join(root, 'race.db');
     const db = new Database(database);
@@ -198,11 +198,42 @@ describe('memory folder watcher', () => {
     writeFileSync(worker, `import {Database} from 'bun:sqlite';
 import {saveMemory} from ${JSON.stringify(module)};
 const db = new Database(${JSON.stringify(database)}); db.exec('PRAGMA busy_timeout=5000');
-const manager = {getConnection:()=>db,getSessionStore:()=>({getOrCreateManualSession:()=> 'manual',storeObservation:(_s,p,o)=>{const r=db.query('INSERT INTO observations (title, project, metadata) VALUES (?,?,?)').run(o.title,p,o.metadata);return {id:Number(r.lastInsertRowid),createdAtEpoch:0};}}),getCloudSync:()=>null,getChromaSync:()=>null};
-saveMemory(manager,'p',{text:'note',metadata:{sourceFingerprint:'shared-race-fingerprint'}}); db.close();`);
-    const children = Array.from({length: 4}, () => Bun.spawn([process.execPath, worker], { stdout: 'pipe', stderr: 'pipe' }));
-    expect(await Promise.all(children.map(child => child.exited))).toEqual([0, 0, 0, 0]);
-    expect((db.query('SELECT COUNT(*) AS n FROM observations').get() as {n: number}).n).toBe(1);
-    db.close();
+const manager = {getConnection:()=>({
+  transaction:fn=>{
+    const transaction=db.transaction(fn);
+    const deferred=(...args)=>transaction(...args);
+    deferred.immediate=(...args)=>{console.log('ready');return transaction.immediate(...args);};
+    return deferred;
+  },
+  query:sql=>({get:(...args)=>{const row=db.query(sql).get(...args);console.log('ready');return row;}}),
+}),getSessionStore:()=>({getOrCreateManualSession:()=> 'manual',storeObservation:(_s,p,o)=>{const r=db.query('INSERT INTO observations (title, project, metadata) VALUES (?,?,?)').run(o.title,p,o.metadata);return {id:Number(r.lastInsertRowid),createdAtEpoch:0};}}),getCloudSync:()=>null,getChromaSync:()=>null};
+const result=saveMemory(manager,'p',{text:'note',metadata:{sourceFingerprint:'shared-race-fingerprint'}}); console.log(JSON.stringify(result)); db.close();`);
+    db.exec('BEGIN IMMEDIATE');
+    const existing = db.query('INSERT INTO observations (title, project, metadata) VALUES (?, ?, ?)')
+      .run('existing note', 'p', JSON.stringify({sourceFingerprint:'shared-race-fingerprint'}));
+    const child = Bun.spawn([process.execPath, worker], { stdout: 'pipe', stderr: 'pipe' });
+    let committed = false;
+    try {
+      const reader = child.stdout.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('ready');
+      db.exec('COMMIT'); committed = true;
+      let output = '';
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        output += new TextDecoder().decode(chunk.value);
+      }
+      expect(await new Response(child.stderr).text()).toBe('');
+      expect(await child.exited).toBe(0);
+      expect(output).toContain('"duplicate":true');
+      expect(output).toContain(`"id":${existing.lastInsertRowid}`);
+      expect((db.query('SELECT COUNT(*) AS n FROM observations').get() as {n: number}).n).toBe(1);
+    } finally {
+      if (!committed) db.exec('ROLLBACK');
+      child.kill();
+      await child.exited;
+      db.close();
+    }
   });
 });

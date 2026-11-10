@@ -1,7 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { drainProjection } from "../src/projection";
 import { PROJECTION_LEASE_MS, type HubStore, type PushOp } from "../src/store";
-import { observationOp, pushRequest, trackedApp, uniqueUser } from "./helpers";
+import { observationOp, pushRequest, trackedApp, uniqueUser, stopTrackedApps } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 async function pushTwo(store: HubStore, userId: string): Promise<string> {
 	const ops = [await observationOp("1", "1", "dev-a"), await observationOp("2", "1", "dev-a")] as PushOp[];
