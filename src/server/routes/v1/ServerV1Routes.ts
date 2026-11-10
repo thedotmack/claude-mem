@@ -16,7 +16,7 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
-import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS } from '../../../storage/sqlite/memory-items.js';
+import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS, sanitizeMemoryItemContent } from '../../../storage/sqlite/memory-items.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -188,7 +188,7 @@ export class ServerV1Routes implements RouteHandler {
       // A row with NONE of the searchable text columns populated is invisible to
       // search — it looks "frozen". Reject it LOUDLY here instead of silently
       // persisting an unsearchable record.
-      if (!hasSearchableContent(body)) {
+      if (!hasSearchableContent(sanitizeMemoryItemContent(body))) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field (narrative, text, title, subtitle, facts, or concepts) so the FTS index is populated; refusing to persist an empty record',
@@ -228,7 +228,7 @@ export class ServerV1Routes implements RouteHandler {
       // PATCH omission preserves stored values, while explicit null/[] clears
       // them. Reject losing searchable content, while allowing unrelated edits
       // to existing empty records that predate the public creation check.
-      if (hasSearchableContent(existing) && !hasSearchableContent({ ...existing, ...body })) {
+      if (hasSearchableContent(existing) && !hasSearchableContent(sanitizeMemoryItemContent({ ...existing, ...body }))) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
