@@ -18,6 +18,7 @@ export class SharedWorkSync {
   private readonly adapter: SharedLedgerAdapter | null;
   private worker: Worker | null = null;
   private pending: Promise<void> | null = null;
+  private nextPass: Promise<void> | null = null;
   private finish: (() => void) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopWriter: (() => void) | null = null;
@@ -118,7 +119,15 @@ export class SharedWorkSync {
 
   reconcile(): Promise<void> {
     if (!this.adapter || this.closed) return Promise.resolve();
-    if (this.pending) return this.pending;
+    if (this.pending) {
+      // The active worker may already have captured its snapshot. Callers
+      // arriving now need one shared pass that starts after their writes.
+      this.nextPass ??= this.pending.then(() => {
+        this.nextPass = null;
+        return this.reconcile();
+      });
+      return this.nextPass;
+    }
     this.pending = new Promise(resolve => { this.finish = resolve; });
     try {
       const worker = this.worker ?? createWorkViewReadWorker({ kind: 'shared-work-sync', databasePath: this.options.databasePath,

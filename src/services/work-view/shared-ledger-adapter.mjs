@@ -103,14 +103,14 @@ export class SharedLedgerAdapter {
     }
   }
 
-  signature(captureActivity) {
+  signature(captureActivity, dataVersion = this.db.prepare('PRAGMA data_version').get()) {
     const names = [...fixedFiles, 'human-copy.json'];
     try { names.push(...readdirSync(join(this.directory, 'progress')).filter(name => /^g_[a-f0-9]{12}\.json$/.test(name)).map(name => `progress/${name}`)); } catch { /* Missing directory. */ }
     const files = names.sort().map(name => {
       try { const stat = statSync(join(this.directory, name)); return [name, stat.ino, stat.size, stat.mtimeMs]; }
       catch { return [name, 'missing']; }
     });
-    return JSON.stringify([this.db.prepare('PRAGMA data_version').get(), captureActivity, files]);
+    return JSON.stringify([dataVersion, captureActivity, files]);
   }
 
   updatesForFile(name, value) {
@@ -307,7 +307,8 @@ export class SharedLedgerAdapter {
   }
 
   reconcile({ captureActivity = true } = {}) {
-    const signature = this.signature(captureActivity);
+    const dataVersion = this.db.prepare('PRAGMA data_version').get();
+    const signature = this.signature(captureActivity, dataVersion);
     if (signature === this.lastSignature && this.lastDiagnostic) return this.lastDiagnostic;
     this.errors = [];
     const names = [...new Set([...fixedFiles, ...this.db.prepare('SELECT name FROM my_work_file_state').all().map(row => row.name)])];
@@ -391,9 +392,10 @@ export class SharedLedgerAdapter {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    // A skipped projection still has newer records to write, even though this
-    // signature already includes them; the next reconcile must not return early.
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity);
+    // Keep the database version from before capture. A concurrent connection
+    // may have committed after our snapshot and still needs the next pass.
+    // A skipped projection also has newer records left to materialize.
+    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;
