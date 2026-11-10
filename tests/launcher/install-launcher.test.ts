@@ -1018,7 +1018,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     const scratchHome = makeScratchHome();
     const binDirectory = path.join(scratchHome, '.local', 'bin');
     writeFakeLauncher(path.join(binDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
-    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${binDirectory}:/usr/bin` }));
+    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${binDirectory}:/usr/bin` }), undefined, codesignNoop);
     expect(row).toMatchObject({ status: 'ok', required: true });
     expect(row.detail).toMatch(new RegExp(`^${path.join(binDirectory, 'claude-mem')} \\(protocol ${LAUNCHER_PROTOCOL}, --version \\d+ ms\\)$`));
   });
@@ -1039,7 +1039,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     symlinkSync(cliScript, path.join(cliBin, 'claude-mem'));
     writeFakeLauncher(path.join(launcherDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
 
-    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${cliBin}:${launcherDirectory}` }), cliScript);
+    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${cliBin}:${launcherDirectory}` }), cliScript, codesignNoop);
 
     expect(row).toMatchObject({ status: temporary ? 'ok' : 'fail', required: true });
     expect(row.detail).toContain(path.join(temporary ? launcherDirectory : cliBin, 'claude-mem'));
