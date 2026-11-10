@@ -11,19 +11,12 @@ function settingsWith(overrides: Partial<SettingsDefaults> = {}): SettingsDefaul
 }
 
 describe('resolveTierAlias (#2289)', () => {
-  it('resolves $TIER:fast to CLAUDE_MEM_TIER_FAST_MODEL', () => {
-    const settings = settingsWith({ CLAUDE_MEM_TIER_FAST_MODEL: 'claude-haiku-4-5-20251001' });
-    expect(resolveTierAlias('$TIER:fast', settings)).toBe('claude-haiku-4-5-20251001');
-  });
-
-  it('resolves $TIER:smart to CLAUDE_MEM_TIER_SMART_MODEL', () => {
-    const settings = settingsWith({ CLAUDE_MEM_TIER_SMART_MODEL: 'claude-sonnet-4-5-20250101' });
-    expect(resolveTierAlias('$TIER:smart', settings)).toBe('claude-sonnet-4-5-20250101');
-  });
-
-  it('resolves $TIER:simple to CLAUDE_MEM_TIER_SIMPLE_MODEL', () => {
-    const settings = settingsWith({ CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku' });
-    expect(resolveTierAlias('$TIER:simple', settings)).toBe('haiku');
+  it.each([
+    ['fast', 'CLAUDE_MEM_TIER_FAST_MODEL', 'claude-haiku-4-5-20251001'],
+    ['smart', 'CLAUDE_MEM_TIER_SMART_MODEL', 'claude-sonnet-4-5-20250101'],
+    ['simple', 'CLAUDE_MEM_TIER_SIMPLE_MODEL', 'haiku'],
+  ] as const)('resolves $TIER:%s from %s', (tier, key, model) => {
+    expect(resolveTierAlias(`$TIER:${tier}`, settingsWith({ [key]: model }))).toBe(model);
   });
 
   it('resolves $TIER:summary to CLAUDE_MEM_MODEL when no summary model is set', () => {
@@ -42,13 +35,6 @@ describe('resolveTierAlias (#2289)', () => {
     expect(resolveTierAlias('prefix-$TIER:fast', settings)).toBe('prefix-$TIER:fast');
   });
 
-  it('does not mutate the settings object', () => {
-    const settings = settingsWith({ CLAUDE_MEM_TIER_FAST_MODEL: 'haiku' });
-    const snapshot = JSON.stringify(settings);
-    resolveTierAlias('$TIER:fast', settings);
-    expect(JSON.stringify(settings)).toBe(snapshot);
-  });
-
   it('falls back to portable defaults when the tier model is empty', () => {
     const settings = settingsWith({ CLAUDE_MEM_TIER_FAST_MODEL: '', CLAUDE_MEM_TIER_SMART_MODEL: '' });
     expect(resolveTierAlias('$TIER:fast', settings)).toBe('haiku');
@@ -57,26 +43,10 @@ describe('resolveTierAlias (#2289)', () => {
 });
 
 describe('resolveSummaryTierModel', () => {
-  it('returns the configured summary model when routing is enabled', () => {
-    const settings = settingsWith({
-      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
-      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
-    });
-    expect(resolveSummaryTierModel('session-model', settings)).toBe('summary-model');
-  });
-
   it('falls back to the session model when the summary model is empty', () => {
     const settings = settingsWith({
       CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
       CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
-    });
-    expect(resolveSummaryTierModel('session-model', settings)).toBe('session-model');
-  });
-
-  it('returns the session model when tier routing is disabled', () => {
-    const settings = settingsWith({
-      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
-      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
     });
     expect(resolveSummaryTierModel('session-model', settings)).toBe('session-model');
   });

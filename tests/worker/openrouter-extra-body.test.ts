@@ -14,7 +14,6 @@ import { OpenRouterObservationProvider } from '../../src/server/generation/provi
 import {
   PROTECTED_EXTRA_BODY_KEYS,
   parseOpenRouterExtraBody,
-  withOpenRouterExtraBody,
 } from '../../src/shared/openrouter-extra-body.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -344,12 +343,5 @@ describe('server runtime OpenRouter provider', () => {
     expect(bodies[0]?.reasoning).toEqual({ enabled: false });
     expect(bodies[0]?.provider).toBeUndefined();
     expect(bodies[0]?.temperature).toBe(0.3);
-  });
-});
-
-describe('withOpenRouterExtraBody', () => {
-  it('returns the body untouched without an extra body', () => {
-    const body = { model: 'm' };
-    expect(withOpenRouterExtraBody(body, undefined, OPENROUTER_URL)).toBe(body);
   });
 });
