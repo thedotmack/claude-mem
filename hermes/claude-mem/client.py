@@ -555,6 +555,8 @@ class ClaudeMemClient:
                 if reply.get("reason") == "project_excluded":
                     session.excluded = True
                     return
+                if reply.get("skipped") is True and reply.get("reason") != "duplicate":
+                    return
         except RequestFailed:
             return
         session.anchored = True
