@@ -128,6 +128,9 @@ export class PostgresObservationGenerationJobRepository {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
         ON CONFLICT (idempotency_key) DO UPDATE SET
+          -- Redelivery can link an event that arrived before its session.
+          -- Generation reads this row's session, not just the repaired event.
+          server_session_id = COALESCE(observation_generation_jobs.server_session_id, excluded.server_session_id),
           -- The conflicting INSERT carries a freshly generated job id in both $1
           -- and payload.generation_job_id. ON CONFLICT keeps the existing row, so
           -- $1 is discarded -- but the merge below would otherwise let the new
