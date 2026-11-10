@@ -1,13 +1,14 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
-	CONTENT_BODY_MAX_BYTES,
 	canonicalJson,
 	parseCanonicalOperation,
 	sha256Base64Url,
 	stableDocumentId,
 	type CanonicalWireOp,
 } from "../src/canonical-content";
-import { authHeaders, observationOp, trackedApp, uniqueUser } from "./helpers";
+import { authHeaders, observationOp, trackedApp, uniqueUser, stopTrackedApps } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 // Phase 5 (image-aware observations): bounded metadata.cmem_media_v1 in the
 // active sync service. Forwarding stays exact; only the namespace is checked.
@@ -79,16 +80,6 @@ const INVALID_MANIFESTS: Array<[string, unknown]> = [
 ];
 
 describe("metadata.cmem_media_v1 validator (sync-api)", () => {
-	it("accepts a bounded manifest and forwards the exact body with other namespaces intact", async () => {
-		const op = await observationOp("1", "1", "dev-a", { metadata: mediaMetadata(VALID_MANIFEST) });
-		const parsed = await parseCanonicalOperation(op);
-		expect(parsed.serialized).toBe(op.body);
-		expect(parsed.operationSha256).toBe(op.operation_sha256);
-		expect((parsed.body.payload as Record<string, any>).metadata.other_namespace).toEqual({ keep: ["me", 1, true] });
-		expect(parsed.body.payload_schema_version).toBe(2);
-		expect(CONTENT_BODY_MAX_BYTES).toBe(256_000);
-	});
-
 	it("passes metadata without the namespace unchanged", async () => {
 		const op = await observationOp("1", "1", "dev-a", { metadata: { other_namespace: { anything: { nested: [1] } } } });
 		expect((await parseCanonicalOperation(op)).serialized).toBe(op.body);

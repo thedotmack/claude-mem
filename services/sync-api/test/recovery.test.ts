@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'bun:test';
-import { authHeaders, observationOp, pushRequest, trackedApp, uniqueUser } from './helpers';
+import { afterAll, describe, expect, it } from 'bun:test';
+import { authHeaders, observationOp, pushRequest, trackedApp, uniqueUser, stopTrackedApps } from './helpers';
+
+afterAll(stopTrackedApps);
 
 describe('origin-only conditional conflict repair', () => {
   it('reads without device/cursor writes, appends higher revisions, retains originals and retries exactly', async () => {

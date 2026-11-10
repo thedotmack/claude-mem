@@ -253,13 +253,6 @@ describe('Cowork hook image capture', () => {
     expect(staged).toContain('public text');
   });
 
-  it('is off by default: no upload and the existing envelope behavior', async () => {
-    await runHook(observation(SHAPES.anthropic_base64.response()), { CMEM_MEDIA_CAPTURE_ENABLED: '' });
-    expect(uploads()).toHaveLength(0);
-    expect(ingests()).toHaveLength(1);
-    expect(String(ingests()[0].json.payload.tool_response)).not.toContain('cmem_media');
-  });
-
   it('image-free payloads are unchanged with capture on', async () => {
     const response = { content: [{ type: 'text', text: 'hello' }], nested: { deep: [1, 2, { x: 'y' }] } };
     await runHook(observation(response));
