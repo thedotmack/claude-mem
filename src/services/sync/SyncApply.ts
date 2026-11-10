@@ -1629,15 +1629,19 @@ export class SyncApply {
         promptNumber,
         createdAtEpoch,
         fieldString(op, body, 'platform_source') ?? undefined,
-        () => this.db.query(`
-          SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
-            COALESCE(s.project, 'unknown') AS project,
-            COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
-          FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-          WHERE up.id = ?
-        `).get(normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined), id) as StoredUserPrompt | undefined
+        () => this.loadPromptForChroma(id, fieldString(op, body, 'platform_source') ?? undefined)
       )));
     }
+  }
+
+  private loadPromptForChroma(id: number, platformSource?: string): StoredUserPrompt | undefined {
+    return this.db.query(`
+      SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+        COALESCE(s.project, 'unknown') AS project,
+        COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+      FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE up.id = ?
+    `).get(normalizePlatformSource(platformSource), id) as StoredUserPrompt | undefined;
   }
 
   // -------------------------------------------------------------------------
@@ -1651,7 +1655,7 @@ export class SyncApply {
       case 'set_title':
         return this.applySetTitle(op, body);
       case 'set_prompt_session':
-        return this.applySetPromptSession(op, body);
+        return this.applySetPromptSession(op, body, chromaJobs);
       case 'remap_project':
         return this.applyRemapProject(op, body, chromaJobs);
       default:
@@ -1741,7 +1745,7 @@ export class SyncApply {
     return 'applied';
   }
 
-  private applySetPromptSession(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+  private applySetPromptSession(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const target = body.target as Record<string, unknown> | undefined;
     const fields = body.fields as Record<string, unknown> | undefined;
     const targetDevice = target ? fieldString(op, target, 'origin_device_id') : null;
@@ -1783,6 +1787,13 @@ export class SyncApply {
     this.db.prepare(
       'UPDATE user_prompts SET session_db_id = ?, sync_rev = ? WHERE id = ?'
     ).run(sessionDbId, op.rev, row.id);
+    // The same-revision prompt echo is stale after this repair, so it cannot
+    // refresh indexed session/project metadata. Use the normal post-commit
+    // writer and current-row loader, behind any earlier write for this prompt.
+    if (this.chromaSync) {
+      const prompt = this.loadPromptForChroma(row.id, fields ? fieldString(op, fields, 'platform_source') ?? undefined : undefined)!;
+      this.forwardPrompt(row.id, op, { ...prompt }, chromaJobs);
+    }
     return 'applied';
   }
 
