@@ -13,6 +13,10 @@ export type MediaVariantName = 'viewer' | 'llm';
 export const MEDIA_CLEANUP_MAX_ATTEMPTS = 8;
 const CLEANUP_RETRY_BASE_MS = 30_000;
 const CLEANUP_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
+// Bounds the synchronous rmSync work one cleanup job does per reconcile() pass,
+// which runs on the worker's thread at start and every 30 s; the rest waits for
+// the next pass. 128 is the per-pass value main used since #4341, not a measurement.
+const MAX_TEMP_CLEANUPS_PER_JOB = 128;
 /**
  * How long a 'converting' row is protected from reconcile(), which fails rows
  * whose lease has passed (a worker that died mid-conversion). It must outlast a
@@ -306,13 +310,16 @@ export class MediaStore {
         assertMediaId(job.directory);
         const target = join(this.root,job.directory);
         if (existsSync(target)) { assertNoSymlinks(this.root,target); rmSync(target,{recursive:true,force:true}); }
-        for (const name of readdirSync(join(this.root,'.tmp')).slice(0,128)) {
-          if (name.startsWith(job.attachment_id+'-')) {
-            const temp = join(this.root,'.tmp',name);
-            assertNoSymlinks(this.root,temp); rmSync(temp,{recursive:true,force:true});
-          }
+        // Limit this attachment's work, not the unrelated entries preceding
+        // it. Retain the durable job until every staged directory is removed.
+        const temporaryNames = readdirSync(join(this.root,'.tmp')).filter(name => name.startsWith(job.attachment_id+'-'));
+        for (const name of temporaryNames.slice(0,MAX_TEMP_CLEANUPS_PER_JOB)) {
+          const temp = join(this.root,'.tmp',name);
+          assertNoSymlinks(this.root,temp); rmSync(temp,{recursive:true,force:true});
         }
-        this.db.prepare('DELETE FROM media_cleanup_jobs WHERE attachment_id=?').run(job.attachment_id);
+        if (temporaryNames.length <= MAX_TEMP_CLEANUPS_PER_JOB) {
+          this.db.prepare('DELETE FROM media_cleanup_jobs WHERE attachment_id=?').run(job.attachment_id);
+        }
       } catch (error) {
         this.recordCleanupFailure(job, now, error instanceof MediaError ? error.code : 'storage_unavailable');
       }
