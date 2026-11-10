@@ -24,8 +24,13 @@ function harnessSetting(dataDir = dataDirectory()): (key: string, fallback: stri
   } catch {
     // Settings are optional; environment overrides and per-user defaults remain usable.
   }
-  return (key: string, fallback: string): string =>
-    process.env[key] || (typeof settings[key] === 'string' && settings[key] ? String(settings[key]) : fallback);
+  return (key: string, fallback: string): string => {
+    const value = settings[key];
+    // The worker accepts numeric JSON ports and timeouts as well as strings.
+    const saved = typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))
+      ? String(value) : '';
+    return process.env[key] || saved || fallback;
+  };
 }
 
 /** Resolve the same per-install address as the worker, including persisted settings. */
