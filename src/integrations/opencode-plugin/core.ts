@@ -169,9 +169,10 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
-// Memory context per OpenCode session: fetched on the session's first system
-// prompt build and reused for its later turns, as Claude Code injects once per
-// session. Compaction clears it, so the next build carries fresh context.
+// Memory context per checkout and OpenCode session: fetched on the session's
+// first system prompt build and reused for later turns. V1 also calls system
+// transform without a session ID; that shared empty ID must never lend one
+// checkout's memory to another. Compaction clears only its own checkout.
 interface CachedMemoryContext {
   request: Promise<string | null>;
   /** When the fetch came back with nothing; set only for a failed fetch. */
@@ -310,12 +311,15 @@ export interface ClaudeMemCore {
 }
 
 export function createCore(ctx: CoreContext): ClaudeMemCore {
+  const contextKeyFor = (sessionID: string): string => JSON.stringify([ctx.directory, sessionID]);
+
   function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
-    const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
+    const key = contextKeyFor(openCodeSessionId);
+    const cached = contextByOpenCodeSessionId.get(key);
     if (cached && (cached.failedAt === undefined || Date.now() - cached.failedAt < FAILED_CONTEXT_RETRY_MS)) {
       return cached.request;
     }
-    contextByOpenCodeSessionId.delete(openCodeSessionId);
+    contextByOpenCodeSessionId.delete(key);
 
     while (contextByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
       const oldestKey = contextByOpenCodeSessionId.keys().next().value;
@@ -332,7 +336,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
         `/api/context/inject?cwd=${encodeURIComponent(cwd)}${platformSourceParam}`,
       ),
     };
-    contextByOpenCodeSessionId.set(openCodeSessionId, entry);
+    contextByOpenCodeSessionId.set(key, entry);
     void entry.request.then((context) => {
       if (!context) entry.failedAt = Date.now();
     });
@@ -401,11 +405,11 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     captureSummary,
 
     forgetMemoryContext(sessionID) {
-      contextByOpenCodeSessionId.delete(sessionID);
+      contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     forgetSession(sessionID) {
-      contextByOpenCodeSessionId.delete(sessionID);
+      contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     memoryContext(sessionID) {
