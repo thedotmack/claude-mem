@@ -239,7 +239,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       // PostToolUse, the only tool event claude-mem registers (#5078). agy
       // sends `error` only when the tool failed.
       toolResponse = typeof r.error === 'string' && r.error
-        ? { error: r.error }
+        ? { is_error: true, error: r.error }
         : { status: 'completed' };
     }
 

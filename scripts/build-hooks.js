@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { deepSearchBuildPlugin } from './deep-search-build.js';
 import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
@@ -640,6 +641,7 @@ async function buildHooks() {
     console.log(`\n🔧 Building worker service...`);
     await build({
       entryPoints: [WORKER_SERVICE.source],
+      plugins: [deepSearchBuildPlugin()],
       bundle: true,
       platform: 'node',
       target: 'node18',
@@ -779,11 +781,17 @@ async function buildHooks() {
       define: {
         '__DEFAULT_PACKAGE_VERSION__': JSON.stringify(version),
         ...DIRNAME_DEFINE,
+        // Bun 1.3.13 inlines process.env.KEY when transpiling Worker entries,
+        // then reuses those values from its content-keyed disk cache in another
+        // process. Keep the environment object dynamic so a relocated bundle
+        // never opens a previous run's database/config directory.
+        'process.env': '__CM_RUNTIME_ENV__',
         'import.meta.url': '__IMPORT_META_URL__'
       },
       banner: {
         js: [
           ...DIRNAME_BANNER,
+          'var __CM_RUNTIME_ENV__ = process.env;',
           'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
         ].join('\n')
       }

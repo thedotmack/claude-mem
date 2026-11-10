@@ -175,6 +175,7 @@ import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
 import { getContextReadWorker, closeContextReadWorker } from './context/ContextReadWorkerClient.js';
+import { DeepSearchClient } from './deep-search/DeepSearchClient.js';
 import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient, keepPullingOptions } from './sync/SyncClient.js';
 
@@ -312,6 +313,7 @@ function readAndClearCleanShutdownSentinel(): string | null {
 }
 
 export class WorkerService implements WorkerRef {
+  private readonly deepSearchClient = new DeepSearchClient(DB_PATH);
   private server: Server;
   private startTime: number = Date.now();
   // Crash detection (worker_started telemetry): derived once at startup from
@@ -1224,7 +1226,8 @@ export class WorkerService implements WorkerRef {
         formattingService,
         timelineService,
         searchRecencyWindowMs,
-        contextReader
+        contextReader,
+        this.deepSearchClient
       );
       // Precomputed SessionStart context (liveness plan, Phase 6): the route
       // records each live render, the service re-renders on writes.
@@ -1278,6 +1281,9 @@ export class WorkerService implements WorkerRef {
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+      // Optional raw-tool indexing yields between committed batches. Start only
+      // after core routes are usable; shutdown preserves the committed cursor.
+      void this.dbManager.initializeToolUseSearch();
       this.resolveAutoUpdateFailuresNowThatThisWorkerIsReady();
 
       // Lifecycle telemetry. Profile-less: a person on this id would make every
@@ -1552,6 +1558,7 @@ export class WorkerService implements WorkerRef {
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
         this.memoryFeedInvalidation.close();
+        void this.deepSearchClient.close();
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
         this.sharedWorkSync?.close();
@@ -1603,7 +1610,7 @@ export class WorkerService implements WorkerRef {
         server: this.server.getHttpServer(),
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
-        contextReader: { close: closeContextReadWorker },
+        contextReader: { close: async () => { await Promise.all([closeContextReadWorker(), this.deepSearchClient.close()]); } },
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),

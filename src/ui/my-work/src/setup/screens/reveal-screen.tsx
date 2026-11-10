@@ -1,7 +1,4 @@
 import { ArrowRightIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
-import { useReducedMotion } from 'motion/react'
-import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { AgentMark } from '@/components/brand'
 import { formatPromptDay } from '@/lib/prompt-time'
 import { interpolate, useI18n } from '@/lib/i18n'
@@ -9,30 +6,8 @@ import { agentToolFor, type RevealSets, type SetupExtraction, type SetupRecentPr
 import { promptStamp } from '../setup-reveal'
 import { joinNames } from '../format'
 import { PageHeading } from './shared'
-
-const timesLabel = (times: number, t: (s: string) => string) =>
-  times === 1 ? t('asked once') : interpolate(t('asked {times}×'), { times })
-
-/** A landed card's title decrypts from scramble into the words read from the prompts. Reduced motion: plain text.
- *  Screen readers get only the final words (sr-only); the scrambling span is hidden from them. */
-function LandedTitle({ text }: { text: string }) {
-  if (useReducedMotion()) return text
-  return <><span className="sr-only">{text}</span><span aria-hidden="true"><EncryptedText text={text} /></span></>
-}
-
-/** One of the three sets. `null` items: still being extracted, so it shows placeholders until they land. */
-function RevealSet<T>({ title, items, render }: { title: string; items: T[] | null; render: (item: T) => ReactNode }) {
-  const { t } = useI18n()
-  if (items && items.length === 0) return null
-  return (
-    <section className={items ? 'reveal-set is-landed' : 'reveal-set'} aria-labelledby={`reveal-${title}`} aria-busy={!items}>
-      <h2 id={`reveal-${title}`}>{t(title)}</h2>
-      <ol>
-        {items ? items.map(render) : [0, 1, 2].map((index) => <li key={index} className="reveal-card is-pending" aria-hidden="true" />)}
-      </ol>
-    </section>
-  )
-}
+import { FocusOverview } from '@/components/focus-overview'
+import '@/components/focus-overview.css'
 
 /** No logged-in agent yet: the prompts themselves, counted per agent and quoted as typed. The cards follow in My Work. */
 function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; recentPrompts: SetupRecentPrompt[] }) {
@@ -73,7 +48,7 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
   )
 }
 
-/** Step 2: Work, Goals and Rules read from the person's own prompts. Live: each set lands as its extraction finishes; Continue never waits. */
+/** The first payoff is the same saved focus areas as My Work. Areas and their work land independently. */
 export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, hostedNotice, onContinue }: {
   agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; hostedNotice?: string | null; onContinue: () => void
 }) {
@@ -81,10 +56,11 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   // The results came only from the tools the person chose to upload.
   const withPrompts = agents.filter((agent) => agent.prompts > 0 && (!uploadedAgents || uploadedAgents.includes(agent.id)))
   const promptCount = withPrompts.reduce((sum, agent) => sum + agent.prompts, 0)
-  const promptsOnly = extraction?.state === 'waiting-for-agent' && !reveal.goals && !reveal.work && !reveal.rules
   // The person kept everything local and no earlier run left results: say that instead of promising knowledge that
   // was never built. This reads the recorded answer, because an upload can also come back with nothing to show.
-  const hasResults = !!(reveal.goals?.length || reveal.work?.length || reveal.rules?.length)
+  const hasResults = !!(reveal.focusAreas?.length || reveal.goals?.length || reveal.work?.length || reveal.rules?.length)
+  const promptsOnly = extraction?.state === 'waiting-for-agent' && !hasResults
+  const finished = extraction?.state === 'ok' || extraction?.state === 'failed'
   const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !hasResults
   if (keptLocal || (hostedNotice && !hasResults)) {
     return (
@@ -104,7 +80,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
     : joinNames(agentNames)
 
   const leadText = promptCount > 0
-    ? interpolate(t('From {count} messages across {agents}: what you’re working on, what you’re after, and how you like things done.'), {
+    ? interpolate(t('From {count} messages across {agents}: the bigger picture of what you’re working toward.'), {
         count: promptCount.toLocaleString('en-US'),
         agents: agentsJoined,
       })
@@ -112,40 +88,25 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
 
   return (
     <section aria-labelledby="reveal-title">
-      <PageHeading id="reveal-title" title={hostedNotice ? t('Continue setup.') : t('Claude-Mem already knows your work.')}
+      <PageHeading id="reveal-title" title={hostedNotice ? t('Continue setup.') : t('Your work is starting to connect.')}
         lead={hostedNotice ? undefined : leadText} />
       {hostedNotice && <p className="scan-status" role="status">{t(hostedNotice)}</p>}
-      {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <div className="reveal-sets">
-        <RevealSet title="Work" items={reveal.work} render={(work) => (
-          <li key={work.id} className="reveal-card">
-            <span className="lead-icon" aria-hidden="true"><AgentMark tool={work.agent} /></span>
-            <div>
-              <p className="title"><LandedTitle text={work.title} /></p>
-              <p className="meta">{interpolate(t('Last active {time}'), { time: formatPromptDay(work.lastActiveAt) })}</p>
-              {work.progressPercent !== undefined && <div className="bar" role="img" aria-label={interpolate(t('{percent}% done'), { percent: work.progressPercent })}><span style={{ width: `${work.progressPercent}%` }} /></div>}
-            </div>
-          </li>
-        )} />
-        <RevealSet title="Goals" items={reveal.goals} render={(goal) => (
-          <li key={goal.id} className="reveal-card">
-            <span className="lead-icon" aria-hidden="true">{goal.rank}</span>
-            <div>
-              <p className="title"><LandedTitle text={goal.title} /></p>
-              <p className="meta">{interpolate(t('{times}, last {time}'), { times: timesLabel(goal.timesAsked, t), time: formatPromptDay(goal.latestAt) })}</p>
-            </div>
-          </li>
-        )} />
-        <RevealSet title="Rules" items={reveal.rules} render={(rule) => (
-          <li key={rule.id} className="reveal-card">
-            <span className="lead-icon" aria-hidden="true">“</span>
-            <div>
-              <p className="title"><LandedTitle text={rule.text} /></p>
-              <p className="quote">“{rule.quote}” · {formatPromptDay(rule.quotedAt)}</p>
-            </div>
-          </li>
-        )} />
-      </div>}
-      <div className="actions is-centered">
+      {extraction?.state === 'failed' && <p className="focus-reveal-notice" role="status">{t('Couldn’t finish connecting your work. You can continue with what’s here.')}</p>}
+      {promptsOnly && <p className="focus-reveal-notice" role="status">{t('Your conversations are saved. Focus areas need an available agent; you can continue setup now.')}</p>}
+      {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <>
+        <FocusOverview areas={reveal.focusAreas ?? []} requests={reveal.requests ?? []} discovering loading={reveal.focusAreas == null && !finished}
+          workLoading={reveal.work === null && !finished} incomplete={(reveal.requestReadErrorCount ?? 0) > 0}
+          emptyMessage={finished ? t(extraction?.state === 'failed' ? 'No focus areas were saved before this stopped. Continue setup to use your saved conversations.' : 'No focus areas found in this scan. You can continue setup and review your work later.') : undefined} />
+        <details className="reveal-supporting">
+          <summary>{t('What else came through')}</summary>
+          <p>{t('A selection of requests and preferences from your conversations.')}</p>
+          {(reveal.requestReadErrorCount ?? 0) > 0 && <p role="status">{t('Some requests could not be read. The work shown may be incomplete.')}</p>}
+          {reveal.work?.map((work) => <p key={work.id}>{work.title}</p>)}
+          {reveal.rules?.map((rule) => <blockquote key={rule.id}>{rule.text}<p>“{rule.quote}” · {formatPromptDay(rule.quotedAt)}</p></blockquote>)}
+          {!reveal.focusAreas?.length && reveal.goals?.map((goal) => <p key={goal.id}>{goal.title}</p>)}
+        </details>
+      </>}
+      <div className="actions is-centered focus-reveal-continue">
         <button type="button" className="primary" onClick={onContinue}>{t('Continue')} <ArrowRightIcon aria-hidden="true" /></button>
       </div>
     </section>

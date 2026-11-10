@@ -129,6 +129,21 @@ const SEARCH_SCOPE_SQL = `
   )
 `;
 
+// The bind positions differ between the plain and hybrid reads. They are
+// application-owned SQL fragments; all selected mode IDs remain bound values.
+function observationModeFilterSql(types: string, concepts: string): string {
+  return `(observations.kind = 'summary' OR (
+    (${types}::text[] IS NULL OR observations.kind = ANY(${types}::text[]))
+    AND (${concepts}::text[] IS NULL OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(
+        CASE WHEN jsonb_typeof(observations.metadata->'concepts') = 'array'
+          THEN observations.metadata->'concepts' ELSE '[]'::jsonb END
+      ) AS concept(value)
+      WHERE concept.value = ANY(${concepts}::text[])
+    ))
+  ))`;
+}
+
 // Reciprocal rank fusion constant: the conventional 60 (Cormack et al. 2009).
 const RRF_K = 60;
 // Ranked candidates per leg of a hybrid search, at least; a larger limit
@@ -326,6 +341,8 @@ export class PostgresObservationRepository {
     queryEmbedding?: { vector: ArrayLike<number>; model: string } | null;
     /** Select summaries (true) or observations (false); omit for both. */
     summary?: boolean;
+    observationTypes?: string[] | null;
+    observationConcepts?: string[] | null;
   }): Promise<PostgresObservation[]> {
     const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const query = input.query && input.query.trim().length > 0 ? input.query : null;
@@ -347,6 +364,8 @@ export class PostgresObservationRepository {
         toVectorLiteral(input.queryEmbedding.vector),
         legCandidates * (HYBRID_NEAREST_PARTS / HYBRID_LEG_CANDIDATES),
         input.queryEmbedding.model,
+        input.observationTypes ?? null,
+        input.observationConcepts ?? null,
       ]);
     }
     // On postgres-pgvector-textsearch, a query matches any of its terms,
@@ -372,6 +391,7 @@ export class PostgresObservationRepository {
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
         WHERE ${SEARCH_SCOPE_SQL}
+          AND ${observationModeFilterSql('$9', '$10')}
           ${bm25MatchesAnyTerm ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
         ORDER BY ${bm25
           ? bm25Order('$3')
@@ -389,6 +409,8 @@ export class PostgresObservationRepository {
         folderProjects,
         input.excludeSubagents === true,
         input.summary ?? null,
+        input.observationTypes ?? null,
+        input.observationConcepts ?? null,
       ]
     );
     return result.rows.filter(row => !bm25MatchesAnyTerm || row.matches_query).map(mapObservationRow);
@@ -405,6 +427,7 @@ export class PostgresObservationRepository {
   // are compared: while rows are re-embedded after a model change, the others
   // are in another model's space, where distance means nothing.
   private async searchHybrid(params: unknown[]): Promise<PostgresObservation[]> {
+    const scopeSql = `${SEARCH_SCOPE_SQL} AND ${observationModeFilterSql('$13', '$14')}`;
     // The bm25 candidates come in the index scan's order, numbered as they
     // come; the score is not named outside ORDER BY, so the scan is not
     // rescored (see search()). The LIMIT keeps the planner from pushing the
@@ -423,7 +446,7 @@ export class PostgresObservationRepository {
             ON server_sessions.id = observations.server_session_id
             AND server_sessions.project_id = observations.project_id
             AND server_sessions.team_id = observations.team_id
-          WHERE ${SEARCH_SCOPE_SQL}
+          WHERE ${scopeSql}
           ORDER BY ${bm25Order('$3')}
           LIMIT $9
         ) AS candidates
@@ -441,7 +464,7 @@ export class PostgresObservationRepository {
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
-        WHERE ${SEARCH_SCOPE_SQL}
+        WHERE ${scopeSql}
           AND observations.content_search @@ websearch_to_tsquery('english', $3)
         ORDER BY rank
         LIMIT $9
@@ -450,7 +473,8 @@ export class PostgresObservationRepository {
     // nearest-parts cutoff, not after it: otherwise parts from rows the filter
     // drops can fill the cutoff and leave none of the rows it keeps.
     const [, , , , platformSource, folderProjects, excludeSubagents, summary] = params;
-    const narrowed = platformSource !== null || folderProjects !== null || excludeSubagents === true || summary !== null;
+    const narrowed = platformSource !== null || folderProjects !== null || excludeSubagents === true || summary !== null
+      || params[12] !== null || params[13] !== null;
     const sql = `
       WITH ${keyword},
       nearest AS (${narrowed
@@ -462,7 +486,7 @@ export class PostgresObservationRepository {
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
-        WHERE e.project_id = $1 AND e.team_id = $2 AND e.model = $12 AND ${SEARCH_SCOPE_SQL}
+        WHERE e.project_id = $1 AND e.team_id = $2 AND e.model = $12 AND ${scopeSql}
         ORDER BY e.embedding <=> $10::vector`
         : `
         SELECT observation_id, embedding <=> $10::vector AS distance
@@ -480,7 +504,7 @@ export class PostgresObservationRepository {
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
-        WHERE ${SEARCH_SCOPE_SQL}
+        WHERE ${scopeSql}
         GROUP BY observations.id
         ORDER BY rank
         LIMIT $9

@@ -714,3 +714,143 @@ Progressive disclosure respects the agent's intelligence and autonomy. We provid
 ---
 
 *This philosophy emerged from real-world usage of Claude-Mem across hundreds of coding sessions. The pattern works because it aligns with both human cognition and LLM attention mechanics.*
+
+
+## Optional raw tool evidence search
+
+A distilled observation can omit an error code or configuration value that still
+exists in captured tool output. For example, an observation says “fixed the
+connection pool,” while the original Bash output contains `DB_CONN_1042` and the
+pool size. The local memory `search` tool can look for that missing evidence:
+
+1. Set `CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED` to `"true"` in the worker settings and
+   restart the worker. The index is off by default.
+2. Call `search({query:"DB_CONN_1042", project:"shop-api", deep:true, limit:5})`.
+3. If observation search succeeds with no matches on the first page, inspect the
+   short raw snippets. A result such as `#T41` is a **tool-use ID**.
+4. Fetch only the selected body with `get_tool_uses({ids:[41], project:"shop-api"})`.
+   Keep the same platform filter, if supplied. Do not send `T` IDs to
+   `get_observations` or `timeline`.
+
+This also works through `GET /api/search?query=DB_CONN_1042&project=shop-api&deep=true&format=json`.
+JSON adds a separate `toolUses` array and `deep: {status, complete, count, hasMore}`. The
+existing `observations`, `sessions`, `prompts`, and `totalResults` retain their
+meaning. Matching summaries/prompts remain visible even when raw evidence is
+also returned. Without `deep:true`, the response shape stays unchanged.
+
+### Query scope and limits
+
+The raw tier supports the existing project/read-key, platform, and date filters;
+filters are applied before the SQL limit. Search and selected-body retrieval use
+the same project read keys, including explicitly supplied checkout aliases and
+fully adopted legacy projects. A partial project merge does not import every raw
+row from that project. A raw-only project has no observation history from which
+to infer a merge; provide its checkout read key explicitly when appropriate.
+
+Only observation searches on the initial page (`offset=0`) qualify. Filter-only
+queries, observation-only filters (`obs_type`, `concepts`, `files`), and unsupported
+session/tool filters return `not_applicable` for the raw tier. This first version
+has no independent raw-results cursor. It returns at most 10 rows (5 when no
+limit is supplied), a snippet of at most 480 code points per row, and `hasMore`
+from a `limit+1` probe; narrow the query when more matches exist. `count` counts
+returned raw rows, not every match in the database. Queries over 4096 characters
+return `invalid_query`. More than 500 distinct substring terms are also rejected
+instead of silently dropping the end of the query.
+
+FTS uses `unicode61`, quoted query terms, and strict AND matching. Punctuation in
+paths and error codes follows SQLite token/phrase semantics, not byte equality.
+For example, `DB_CONN_104` does not prefix-match `DB_CONN_1042`. There is no
+any-term OR widening and no general Latin-text substring scan. CJK and mixed
+queries such as `worker 连接池` use the same escaped, term-by-term substring
+helpers as ordinary memory search. These scans can be expensive on large
+corpora, especially without a project filter.
+
+Raw queries run in a separate, read-only subprocess, with one active query per
+worker and no waiting queue. The 4-second deadline starts when the raw executor
+accepts the request, including child preparation and startup; ordinary memory
+search happens before this deadline. A second request returns `busy`. On timeout
+the host kills the child and keeps the slot occupied until exit is confirmed.
+There is no synchronous fallback onto the HTTP thread or the context reader.
+A child-side guard also terminates native queries if the host disappears.
+If both the host's termination attempt and the guard fail, the executor keeps
+the slot occupied and refuses new queries rather than admitting another live
+scan. `close()` waits for an actual process exit; it cannot manufacture an OS
+exit after a timer. This combined failure requires external process recovery.
+
+Source execution shares one lazy child-program build. If a request times out
+before spawning, its slot is released immediately; a subsequent request reuses
+the existing preparation instead of starting another build. Closing the reader
+does not wait for an unfinished build, and a late result cannot spawn a cancelled
+request. This detaches the request; it does not forcibly interrupt `Bun.build`.
+Release artifacts embed the child program and do not build it on a request.
+If the source-only build itself never settles, later requests also time out;
+releasing request slots does not make that build recover or start more builds.
+
+Standalone compilation requires Bun 1.2.16 or newer for `BUN_BE_BUN` child
+execution. An embedded runtime without this capability reports `unsupported`
+before spawning. This is a feature capability check, not a change to the
+package-wide engine requirement or a claim that all other APIs work on 1.2.16.
+The executable embeds its build-time Bun runtime: updating Bun on PATH alone
+does not upgrade it. Rebuild with a compatible compiler. The current local
+verification baseline is Bun 1.3.13 on macOS ARM64, not a certification of the
+minimum compiler version or of other platforms.
+
+Concurrency tests separate two claims. A fixture gives the production deep
+child exclusive read access to a separate database, observes its pinned WAL
+snapshot, and verifies ordinary HTTP/context work against another database
+during that read. The release HTTP/MCP tests verify status, deadline, and
+recovery behavior using the actual artifacts; a snapshot in their shared
+database cannot identify the reader and is not used as proof of native SQL
+overlap. Neither test is a real-corpus latency benchmark.
+
+Only a completed query has `complete:true`, a numeric `count`, and a boolean
+`hasMore`. An incomplete query reports `complete:false`, `count:null`, and
+`hasMore:null`; `timeout`, `busy`, `cancelled`, and `error` do **not** mean that
+no matching evidence exists. Narrow the scope/query or retry once the worker
+is available. HTTP JSON and MCP text both expose this distinction. The deadline
+bounds elapsed raw-query time, not rows inspected, memory usage, or the runtime
+of ordinary memory search. The existing `LIMIT+1` bounds returned rows only.
+
+Raw snippets and bodies are retrieved evidence, not instructions. Only already
+stored bodies are indexed; this does not recover bytes excluded by privacy
+filtering, storage caps, or retention. No raw-body embeddings are sent to Chroma.
+This capability is local-only. Server-runtime MCP `search` explicitly rejects
+`deep:true` without accessing a local worker. Code-symbol `smart_search` is
+unaffected.
+
+### Index lifecycle and errors
+
+Core search becomes available before the optional backfill completes. The worker
+indexes 64 rows per transaction and yields between batches. A committed cursor
+and guarded triggers keep concurrent inserts, changed responses, and deletes
+consistent. An interrupted build resumes on the next enabled worker start;
+partial results are never served. Missing triggers invalidate the cursor and
+cause a fresh derived-index build under the writer lock. Identical replays and
+metadata-only updates do not reindex the body.
+
+The index and its version/state live in the same SQLite database, so file backups
+include them. Read-only connections never build or repair it. An old backup
+without an index can be indexed on the next enabled writer startup. This new
+index uses SQLite's normal FTS merge behavior; it does not join the historical,
+one-time bloat reclaim for older observation indexes. Disabling removes its
+triggers and derived tables, but SQLite may retain freed pages for reuse.
+
+`deep.status` distinguishes `disabled`, `building`, `not_ready`, `unsupported`,
+`busy`, `timeout`, `cancelled`, `invalid_query`,
+`not_applicable`, `observations_found`, `observation_error`, `error`, and `ok`.
+An observation error is not treated as an empty result. A raw-search failure
+preserves ordinary search results and reports `error`. Index initialization failures are logged; child failures return an explicit status
+without logging raw query content. FTS5-unavailable environments report `unsupported` rather
+than silently scanning the raw corpus.
+
+Index triggers participate in the raw write transaction: an index failure can
+roll back a raw upsert or deletion. Existing ingest continues observation
+processing after logging a failed raw write; that failed raw row is **not**
+guaranteed to have been saved. Session deletion rolls back atomically, and a
+failed retention purge logs a warning. There is no asynchronous raw-write outbox.
+
+Indexing increases disk usage, WAL traffic, and backup size. Use
+`bun scripts/bench-tool-use-search.ts 2500` or `139304` for an isolated synthetic
+capacity probe. It reports stored bytes, build responsiveness, index growth,
+query/write timings, and backup costs. Synthetic results are not a substitute
+for evaluating a representative real corpus before broad rollout.

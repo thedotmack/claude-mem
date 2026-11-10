@@ -17,6 +17,7 @@ function fixture() {
     startTime: Date.now(),
     server: { getHttpServer: () => undefined },
     memoryFeedInvalidation: { close: mock(() => {}) },
+    deepSearchClient: { close: mock(async () => {}) },
   });
   let tick!: () => void;
   const timer = { unref: mock(() => {}) };
@@ -54,6 +55,7 @@ describe('WorkerService pending session resume timer', () => {
     worker.startPendingSessionResume(routes);
     spyOn(telemetry, 'shutdownTelemetry').mockResolvedValue(undefined);
     const graceful = spyOn(gracefulShutdown, 'performGracefulShutdown').mockImplementation(async () => {
+      expect(worker.deepSearchClient.close).toHaveBeenCalledTimes(1);
       expect(clear).toHaveBeenCalledWith(timer);
       expect(worker.pendingSessionResumeTimer).toBeNull();
     });
