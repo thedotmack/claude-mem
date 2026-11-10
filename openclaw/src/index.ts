@@ -272,7 +272,10 @@ function workerBaseUrl(port: number): string {
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 // Covers both response headers and body reads; optional memory must not leave
-// an OpenClaw hook waiting indefinitely on an unresponsive worker.
+// an OpenClaw hook waiting indefinitely on an unresponsive worker. 5 s is the
+// bound the Hermes plugin, the other in-process host, already uses for the same
+// worker endpoints (WRITE_TIMEOUT_S in hermes/claude-mem/client.py; its context
+// reads use READ_TIMEOUT_S = 3 s), so context injection fits inside it too.
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
