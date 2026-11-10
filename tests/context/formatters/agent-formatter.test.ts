@@ -92,8 +92,6 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     sessionCount: 3,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery', 'decision', 'bugfix']),
     observationConcepts: new Set(['concept1', 'concept2']),
     fullObservationField: 'narrative',

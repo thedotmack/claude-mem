@@ -13,7 +13,6 @@ import type { ContextConfig } from '../../src/services/context/types.js';
 const config: ContextConfig = {
   totalObservationCount: 3, fullObservationCount: 0, sessionCount: 1,
   showReadTokens: false, showWorkTokens: false,
-  showSavingsAmount: false, showSavingsPercent: false,
   observationTypes: new Set(['discovery']),
   observationConcepts: new Set(['how-it-works']),
   fullObservationField: 'narrative', showLastSummary: true,

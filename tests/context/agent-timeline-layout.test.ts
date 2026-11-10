@@ -21,7 +21,7 @@ const WORK_STATE = 'Work state, still open:\n- release: status=active, updated 1
 
 const config: ContextConfig = {
   totalObservationCount: 10, fullObservationCount: 0, sessionCount: 3,
-  showReadTokens: false, showWorkTokens: false, showSavingsAmount: false, showSavingsPercent: true,
+  showReadTokens: false, showWorkTokens: false,
   // The query keeps only these; the fixture rows are all discovery / how-it-works.
   observationTypes: new Set(['discovery']), observationConcepts: new Set(['how-it-works']), fullObservationField: 'narrative',
   showLastSummary: true, showLastMessage: false,

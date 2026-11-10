@@ -17,8 +17,6 @@ const config: ContextConfig = {
   sessionCount: 1,
   showReadTokens: false,
   showWorkTokens: false,
-  showSavingsAmount: false,
-  showSavingsPercent: false,
   observationTypes: new Set(['discovery']),
   observationConcepts: new Set(['newest']),
   fullObservationField: 'narrative',

@@ -18,8 +18,6 @@ function makeConfig(overrides: Partial<ContextConfig> = {}): ContextConfig {
     sessionCount: 10,
     showReadTokens: false,
     showWorkTokens: false,
-    showSavingsAmount: false,
-    showSavingsPercent: false,
     observationTypes: new Set<string>(),
     observationConcepts: new Set<string>(),
     fullObservationField: 'narrative',

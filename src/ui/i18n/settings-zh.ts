@@ -98,8 +98,6 @@ export const settingsZh: Record<string, string> = {
   'Tokens to read this observation': '读取此条观察记录所需的 Token 数',
   'Work investment': '生成投入',
   'Tokens spent creating this observation': '创建此条观察记录消耗的 Token 数',
-  'Savings': '节省量',
-  'Total tokens saved by reusing context': '复用上下文节省的 Token 总数',
   'Interval (hours)': '间隔（小时）',
   'Hours between automatic snapshots (1-168)': '自动快照的间隔小时数（1–168）',
   'Snapshots to keep': '保留的快照数',
