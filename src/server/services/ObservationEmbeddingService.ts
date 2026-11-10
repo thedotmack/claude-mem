@@ -280,7 +280,7 @@ export async function backfillMissingEmbeddings(
   let closeLockClient: (() => Promise<void>) | null = null;
   const ownershipLost = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, ownershipLost.signal]) : ownershipLost.signal;
-  let connectLockClient: (() => Promise<void>) | null = null;
+  let connectLockClient: (() => Promise<unknown>) | null = null;
   if (isPool(client)) {
     const dedicated = new pg.Client(client.options);
     let closing = false;
