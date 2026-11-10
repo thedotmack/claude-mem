@@ -240,6 +240,42 @@ describe('capture at the common ingest boundary', () => {
 describe('trusted Read file locators', () => {
   const readEvent = (filePath: string, toolName = 'Read') => ingest({ type: 'image', file: { path: filePath } }, { toolName, toolInput: { file_path: filePath } });
 
+  for (const spelling of ['absolute-input', 'absolute-result', 'normalized-relative']) {
+    it(`keeps an unchanged Read redelivery with equivalent path spellings (${spelling})`, async () => {
+      const source = join(dir, 'project', 'same.png');
+      writeFileSync(source, png);
+      const inputPath = spelling === 'absolute-input' ? source : 'same.png';
+      const resultPath = spelling === 'absolute-result' ? source
+        : spelling === 'normalized-relative' ? './same.png' : 'same.png';
+      const deliver = () => ingest({ type: 'image', file: { path: resultPath } },
+        { toolName: 'Read', toolInput: { file_path: inputPath } });
+      const first = await deliver();
+      expect(first.mediaRefs).toHaveLength(1);
+
+      const repeated = await deliver();
+      expect(repeated.mediaRefs).toEqual(first.mediaRefs);
+      expect(repeated.mediaFailures).toBeUndefined();
+      expect(JSON.parse(repeated.tool_response).media_status).toMatchObject({
+        state: 'retained', id: first.mediaRefs[0].id,
+      });
+      expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(1);
+      const stored = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      expect(stored.tool_response).toContain(first.mediaRefs[0].id);
+      expect(stored.tool_response).not.toContain('unsupported_source');
+    });
+  }
+
+  it('rejects a Read redelivery that names a different file with identical bytes', async () => {
+    writeFileSync(join(dir, 'project', 'first.png'), png);
+    writeFileSync(join(dir, 'project', 'other.png'), png);
+    const first = (await readEvent('first.png')).mediaRefs[0];
+    const repeated = await readEvent('other.png');
+    expect(repeated.mediaRefs).toBeUndefined();
+    expect(repeated.mediaFailures[0]).toMatchObject({ code: 'unsupported_source' });
+    expect(media.getMetadata(first.id).state).toBe('ready');
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(1);
+  });
+
   it('captures a regular project file, and the canonical survives source removal with a rebuildable derivative', async () => {
     const source = join(dir, 'project', 'shot.png');
     writeFileSync(source, png);
