@@ -147,7 +147,7 @@ import {
   handleAntigravityCliCommand,
   healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
-import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
+import { notifyGrokBotIndex, watchGrokBotIndexChanges, stopGrokBotIndexChanges } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
@@ -1359,8 +1359,8 @@ export class WorkerService implements WorkerRef {
       // Seed Grok Bot Memory INDEX files from current observations so seats
       // do not wait for the next store before the mid-attach file exists.
       notifyGrokBotIndex();
-      // Standing line / project-map edits must reach idle seats too.
-      watchGrokBotIndexSettings();
+      // Imports, sync, deletions and settings edits must reach idle seats too.
+      watchGrokBotIndexChanges();
 
       if (this.chromaMcpManager) {
         ChromaSync.registerBackfillStore(this.dbManager.getSessionStore());
@@ -1559,6 +1559,7 @@ export class WorkerService implements WorkerRef {
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
         this.memoryFeedInvalidation.close();
+        stopGrokBotIndexChanges();
         void this.deepSearchClient.close();
         this.workViewRoutes?.close();
         this.workViewRoutes = null;

@@ -5,6 +5,7 @@ import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { DB_PATH, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { expandHome } from '../../shared/expand-home.js';
+import { onContextInvalidation } from '../../shared/context-invalidation.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { loadContextConfig } from '../context/ContextConfigLoader.js';
 import { queryObservationsNewest } from '../context/ObservationCompiler.js';
@@ -363,6 +364,14 @@ export function indexSettingsFingerprint(cfg: GrokBotIndexConfig): string {
 
 let settingsWatchPath: string | null = null;
 let lastSettingsFingerprint: string | null = null;
+let unsubscribeMemoryChanges: (() => void) | null = null;
+
+// Local writers predate the content-kind metadata carried by sync events.
+// Prompts, summaries, work-state and health changes do not alter this index.
+const OBSERVATION_CHANGES = new Set([
+  'storeObservations', 'importObservation', 'delete-observation', 'delete-session',
+  'project-merge', 'import', 'worktree-adoption',
+]);
 
 /**
  * Returns true (and schedules a refresh) when the INDEX-relevant settings
@@ -385,21 +394,30 @@ export function checkGrokBotIndexSettings(settingsPath: string = USER_SETTINGS_P
 }
 
 /**
- * Poll settings.json (cheap stat, covers hand edits and POST /api/settings)
- * so adding, changing or clearing the standing line or project map refreshes
- * idle seats without waiting for the next observation or a worker restart.
+ * Keep the derived INDEX current after committed memory changes, including
+ * imports, remote writes and deletes that do not use the observer save path.
+ * Also poll settings.json for hand edits that must reach idle seats.
  */
-export function watchGrokBotIndexSettings(settingsPath: string = USER_SETTINGS_PATH, intervalMs = 5000): void {
+export function watchGrokBotIndexChanges(settingsPath: string = USER_SETTINGS_PATH, intervalMs = 5000): void {
   if (settingsWatchPath) return;
   settingsWatchPath = settingsPath;
+  unsubscribeMemoryChanges = onContextInvalidation(change => {
+    const affectsObservations = change.changes
+      ? change.changes.kinds.some(kind => kind === 'observation' || kind === 'mutation')
+      : OBSERVATION_CHANGES.has(change.reason)
+        || (change.reason.startsWith('SyncApply.') && change.reason !== 'SyncApply.replaySetAsideWorkState');
+    if (affectsObservations) notifyGrokBotIndex();
+  });
   checkGrokBotIndexSettings(settingsPath);
   watchFile(settingsPath, { interval: intervalMs, persistent: false }, () => {
     checkGrokBotIndexSettings(settingsPath);
   });
 }
 
-/** Test helper: drop in-flight debounce so unit tests do not leak timers. */
-export function resetGrokBotIndexWriterForTests(): void {
+/** Stop listeners and pending reads before the worker closes its database. */
+export function stopGrokBotIndexChanges(): void {
+  unsubscribeMemoryChanges?.();
+  unsubscribeMemoryChanges = null;
   if (settingsWatchPath) {
     unwatchFile(settingsWatchPath);
     settingsWatchPath = null;
@@ -409,8 +427,13 @@ export function resetGrokBotIndexWriterForTests(): void {
     clearTimeout(debounceTimer);
     debounceTimer = null;
   }
-  refreshInFlight = false;
   refreshQueued = false;
+}
+
+/** Test helper: drop in-flight debounce so unit tests do not leak timers. */
+export function resetGrokBotIndexWriterForTests(): void {
+  stopGrokBotIndexChanges();
+  refreshInFlight = false;
 }
 
 /** Used by installer printout / --status-style checks. */
