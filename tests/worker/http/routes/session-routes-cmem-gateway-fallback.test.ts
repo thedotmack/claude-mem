@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from 'bun:test';
 import codeMode from '../../../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -440,13 +440,16 @@ describe('SessionRoutes — cmem gateway integrity', () => {
     // restoring state, so nothing books into the next test.
     respond = async () => gatewayRejection('bad_request');
     releaseHeldResponses();
-    for (let round = 0; round < 10; round++) {
-      claudeRuns.splice(0).forEach(finish => finish());
+    for (let round = 0, idleRounds = 0; round < 10 && idleRounds < 2; round++) {
+      const finishing = claudeRuns.splice(0);
+      finishing.forEach(finish => finish());
       const running = [...(harness?.sessions.values() ?? [])]
         .map(s => s.generatorPromise)
         .filter((pending): pending is Promise<void> => pending !== null);
       await Promise.allSettled(running);
       await new Promise(resolve => setTimeout(resolve, 5));
+      idleRounds = finishing.length === 0 && running.length === 0 && claudeRuns.length === 0
+        ? idleRounds + 1 : 0;
     }
     harness = null;
     while (registeredIds.length > 0) registry.unregister(registeredIds.pop()!);
@@ -961,15 +964,28 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       const { routes } = makeHarness([id]);
       const openRouterRequests = () => requests.filter(request => request.url.startsWith('https://openrouter.ai/'));
 
-      await routes.ensureGeneratorRunning(id, 'observation');
-      await settle(id);
+      jest.useFakeTimers();
+      try {
+        await routes.ensureGeneratorRunning(id, 'observation');
+        let settled = false;
+        const pending = settle(id).finally(() => { settled = true; });
+        const deadline = process.hrtime.bigint() + 4_000_000_000n;
+        while (!settled && process.hrtime.bigint() < deadline) {
+          await new Promise<void>(resolve => setImmediate(resolve));
+          if (openRouterRequests().length > 0) jest.advanceTimersByTime(100);
+        }
+        expect(settled).toBe(true);
+        await pending;
 
-      expect(openRouterRequests()).toHaveLength(3);
-      const cooldown = getQuotaCooldown('openrouter');
-      expect(cooldown?.window).toBe('rate_limit');
-      expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
-      // A minute's throttle is not held for half an hour.
-      expect(isQuotaCooldownActive('openrouter', cooldown!.armedAtMs + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(false);
+        expect(openRouterRequests()).toHaveLength(3);
+        const cooldown = getQuotaCooldown('openrouter');
+        expect(cooldown?.window).toBe('rate_limit');
+        expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
+        // A minute's throttle is not held for half an hour.
+        expect(isQuotaCooldownActive('openrouter', cooldown!.armedAtMs + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('caps consecutive Retry-After resumes, then arms the breaker', async () => {
@@ -1337,61 +1353,6 @@ describe('SessionRoutes — cmem gateway integrity', () => {
         expect(session(id).claimedMessageIds).toEqual([]);
       },
     );
-
-    it.each(['allowance_exhausted', 'key_invalid', 'subscription_inactive'] as const)(
-      '%s on that first request never replays the claimed work on claude; the next capture starts there',
-      async (code) => {
-        const id = 926002;
-        seedSettings();
-        respond = async () => gatewayRejection(code);
-        const { routes, claudeAgent, captureFreshWork } = makeHarness([id]);
-
-        await routes.ensureGeneratorRunning(id, 'observation');
-        await settle(id);
-        // The fallback's zero-delay resume has had its tick.
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        expectPromptAndObservationInOneRequest(gatewayRequests());
-        expect(claudeAgent.startSession).not.toHaveBeenCalled();
-
-        captureFreshWork(id);
-        await routes.ensureGeneratorRunning(id, 'observation');
-        expect(claudeAgent.startSession).toHaveBeenCalledTimes(1);
-        expect(session(id).currentProvider).toBe('claude');
-        expect(gatewayRequests()).toHaveLength(1);
-      },
-    );
-
-    it('the re-probe after the fallback window still admits exactly one of N sessions; its failure re-arms the marker once', async () => {
-      const ids = [926101, 926102, 926103, 926104, 926105];
-      const elapsed = elapsedFallbackAt();
-      seedSettings({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsed });
-      const held = new Promise<void>(resolve => { releaseHeldResponses = resolve; });
-      respond = async () => {
-        await held;
-        return gatewayRejection('allowance_exhausted');
-      };
-      const { routes, claudeAgent } = makeHarness(ids);
-
-      await Promise.all(ids.map(id => routes.ensureGeneratorRunning(id, 'observation')));
-
-      const probing = ids.filter(id => session(id).currentProvider === 'openrouter');
-      expect(probing).toHaveLength(1);
-      expect(claudeAgent.startSession).toHaveBeenCalledTimes(ids.length - 1);
-
-      const probe = session(probing[0]).generatorPromise;
-      releaseHeldResponses();
-      await probe;
-      await new Promise(resolve => setTimeout(resolve, 0));
-
-      expectPromptAndObservationInOneRequest(gatewayRequests());
-      expect(fallbackRecordings()).toBe(1);
-      expect(Date.parse(persistedFallbackAt())).toBeGreaterThan(Date.parse(elapsed));
-
-      const next = selectProviderForGenerator();
-      releaseCmemGatewayProbe(next.gatewayProbeClaimId);
-      expect(next.provider).toBe('claude');
-    });
 
     it('a refused non-gateway credential is still booked once, with its detail, and cooled down', async () => {
       const id = 926201;

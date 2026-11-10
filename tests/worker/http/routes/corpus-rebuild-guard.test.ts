@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import type { Request, Response } from 'express';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
 
@@ -84,50 +84,26 @@ describe('rebuild_corpus shrink guard', () => {
     expect(jsonSpy.mock.calls[0][0]).toMatchObject({ previous_count: 74, rebuilt_count: 11 });
   });
 
-  it('treats a rebuild that keeps exactly half as destructive', async () => {
-    const handler = setup(createCorpus('big', 74), createCorpus('big', 37));
-    const { req, res, statusSpy } = createMockReqRes('big', {});
+  it.each<[number, number, boolean, boolean]>([
+    [74, 37, false, true],
+    [74, 11, true, false],
+    [74, 70, false, false],
+    [3, 0, false, false],
+  ])('rebuilds %i observations to %i with force=%s and blocked=%s', async (previousCount, rebuiltCount, force, blocked) => {
+    const name = previousCount === 3 ? 'tiny' : 'big';
+    const rebuilt = createCorpus(name, rebuiltCount);
+    const handler = setup(createCorpus(name, previousCount), rebuilt);
+    const { req, res, statusSpy } = createMockReqRes(name, force ? { force: true } : {});
 
     handler(req, res);
     await flushPromises();
 
-    expect(statusSpy).toHaveBeenCalledWith(409);
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('writes the smaller corpus when force is set', async () => {
-    const rebuilt = createCorpus('big', 11);
-    const handler = setup(createCorpus('big', 74), rebuilt);
-    const { req, res, statusSpy } = createMockReqRes('big', { force: true });
-
-    handler(req, res);
-    await flushPromises();
-
-    expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(rebuilt);
-  });
-
-  it('writes a routine refresh that keeps most observations', async () => {
-    const rebuilt = createCorpus('big', 70);
-    const handler = setup(createCorpus('big', 74), rebuilt);
-    const { req, res, statusSpy } = createMockReqRes('big', {});
-
-    handler(req, res);
-    await flushPromises();
-
-    expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(rebuilt);
-  });
-
-  it('does not trip the guard on a tiny corpus below the floor', async () => {
-    const rebuilt = createCorpus('tiny', 0);
-    const handler = setup(createCorpus('tiny', 3), rebuilt);
-    const { req, res, statusSpy } = createMockReqRes('tiny', {});
-
-    handler(req, res);
-    await flushPromises();
-
-    expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(rebuilt);
+    if (blocked) {
+      expect(statusSpy).toHaveBeenCalledWith(409);
+      expect(write).not.toHaveBeenCalled();
+    } else {
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledWith(rebuilt);
+    }
   });
 });
