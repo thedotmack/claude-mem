@@ -337,7 +337,10 @@ function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerD
     let result: CommandResult;
     try {
       result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, {
-        cwd: task.cwd, env: { ...env, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyPath },
+        cwd: task.cwd, env: { ...env, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyPath,
+          // Changing cwd must not select another relative Gemini profile.
+          ...(env.GEMINI_CLI_HOME ? { GEMINI_CLI_HOME: resolve(env.GEMINI_CLI_HOME) } : {}),
+        },
       });
     } finally { rmSync(policyDir, { recursive: true, force: true }); }
     if (result.exitCode !== 0) throw failure('gemini', result);

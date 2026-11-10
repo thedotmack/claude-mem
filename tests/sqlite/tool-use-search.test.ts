@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -208,6 +208,44 @@ describe('optional raw-tool content index (#4060)', () => {
       expect(Array.from(hit.snippet).length).toBeLessThanOrEqual(480);
       expect(hit.snippet.isWellFormed()).toBe(true);
     }
+  });
+
+  it('preserves complete Unicode context beside matches in near-limit raw payloads', () => {
+    const h = fixture(); h.enable();
+    const before = '🧪'.repeat(60), after = '🚀'.repeat(60);
+    h.write('large-unicode', 'x'.repeat(30_000) + before + '连接池' + after + 'y'.repeat(30_000));
+    const hit = h.find('连接池').toolUses[0];
+    expect(hit.snippet).toBe(before + '连接池' + after);
+    expect(hit.snippet.isWellFormed()).toBe(true);
+    h.write('mixed-boundary', 'x'.repeat(1000) + '🧪'.repeat(60) + 'a连接池b' + '🚀'.repeat(60) + 'y'.repeat(1000));
+    const mixed = h.find('连接池').toolUses.find(row => row.tool_use_id === 'mixed-boundary')!;
+    expect(mixed.snippet).toBe('🧪'.repeat(59) + 'a连接池b' + '🚀'.repeat(59));
+    expect(mixed.snippet.isWellFormed()).toBe(true);
+  });
+
+  it('does not expand more code points when irrelevant raw context grows', () => {
+    const h = fixture(); h.enable();
+    const originalFrom = Array.from;
+    const measure = (padding: number) => {
+      const project = `payload-${padding}`;
+      h.write(project, 'x'.repeat(padding) + '连接池' + 'y'.repeat(padding), { project });
+      let expandedCodeUnits = 0;
+      const fromSpy = spyOn(Array, 'from').mockImplementation(((input: unknown, ...args: unknown[]) => {
+        if (typeof input === 'string') expandedCodeUnits += input.length;
+        return Reflect.apply(originalFrom, Array, [input, ...args]);
+      }) as typeof Array.from);
+      try {
+        const hit = h.find('连接池', { project }).toolUses[0];
+        return { snippet: hit.snippet, expandedCodeUnits };
+      } finally {
+        fromSpy.mockRestore();
+      }
+    };
+    const small = measure(1000);
+    const large = measure(30_000);
+    expect(small.snippet).toBe('x'.repeat(60) + '连接池' + 'y'.repeat(60));
+    expect(large.snippet).toBe(small.snippet);
+    expect(large.expandedCodeUnits).toBe(small.expandedCodeUnits);
   });
 
   it('keeps orphan evidence indexed while retention removes only live-linked old rows', () => {

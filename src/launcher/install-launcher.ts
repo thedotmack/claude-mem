@@ -580,6 +580,13 @@ const runCodesignCommand = (codesignArguments: readonly string[]): ReturnType<La
   };
 };
 
+export function verifyLauncherSignature(
+  binaryPath: string,
+  runCommand: (args: readonly string[]) => ReturnType<LauncherCodesignRunner> = runCodesignCommand,
+): ReturnType<LauncherCodesignRunner> {
+  return runCommand(['--verify', '--strict', binaryPath]);
+}
+
 /** The `codesign` argv lists that ad-hoc sign `binaryPath`, in the order they must run. */
 const adhocCodesignArguments = (binaryPath: string): [clearSignature: string[], sign: string[]] => [
   ['--remove-signature', binaryPath],
@@ -617,7 +624,7 @@ export function createAdhocCodesigner(
     runCommand(clearSignature);
     const signed = runCommand(sign);
     if (signed.status !== 0) return signed;
-    return runCommand(['--verify', '--strict', binaryPath]);
+    return verifyLauncherSignature(binaryPath, runCommand);
   };
 }
 

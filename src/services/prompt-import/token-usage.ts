@@ -5,7 +5,8 @@
  *
  * - Claude Code: assistant lines carry `message.usage`. One API message is
  *   written once per content block with the same `message.id`, so each id
- *   counts once. Tokens = input + cache creation + cache read + output.
+ *   counts once, keeping its largest recorded usage as the output completes.
+ *   Tokens = input + cache creation + cache read + output.
  *   claude-mem's own observer sessions (OBSERVER_SESSIONS_DIR) are not the
  *   person's usage and are left out.
  * - Codex: `event_msg` lines with `payload.type: "token_count"` carry the
@@ -36,7 +37,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { claudeConfigDirectory, codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { claudeConfigDirectory, codexForkThreadId, createPromptReaders, isoToEpochMs, openCodeHistoryLayout, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -128,7 +129,7 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
   return {
     retentionDays: claudeRetentionDays,
     async read(sources, sinceEpochMs, usage, skip) {
-      const seenMessages = new Set<string>();
+      const messages = new Map<string, { at: number; tokens: number }>();
       for (const source of sources) {
         const projectFolder = basename(source.holdsPrompts ? dirname(source.path) : dirname(dirname(dirname(source.path))));
         if (excludedFolders.has(projectFolder)) continue;
@@ -139,13 +140,19 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
             const message = record?.message;
             if (record?.type !== 'assistant' || !message?.usage) continue;
             const key = typeof message.id === 'string' && message.id ? message.id : `${record.requestId ?? ''}\u0000${record.uuid ?? ''}`;
-            if (seenMessages.has(key)) continue;
-            seenMessages.add(key);
+            const at = isoToEpochMs(record.timestamp);
+            if (at === null) continue;
             const { input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens } = message.usage;
-            tally(usage, isoToEpochMs(record.timestamp), count(input_tokens) + count(cache_creation_input_tokens) + count(cache_read_input_tokens) + count(output_tokens), sinceEpochMs);
+            const tokens = count(input_tokens) + count(cache_creation_input_tokens) + count(cache_read_input_tokens) + count(output_tokens);
+            const previous = messages.get(key);
+            // A later content block can carry the completed output count. Keep
+            // one whole usage total, not a sum of repeated blocks or per-field
+            // maxima, and do not let a copied early block lower that count.
+            messages.set(key, { at: Math.min(previous?.at ?? at, at), tokens: Math.max(previous?.tokens ?? 0, tokens) });
           }
         } catch (error) { skip(source, error); }
       }
+      for (const message of messages.values()) tally(usage, message.at, message.tokens, sinceEpochMs);
     },
   };
 }
@@ -232,8 +239,14 @@ const openCodeUsage: UsageReader = {
       try {
         const database = new Database(source.path, { readonly: true });
         try {
-          const rows = database.prepare(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
-            FROM message WHERE json_extract(data, '$.role') = 'assistant'`).all() as Array<{ createdAt: number; tokens: string | null }>;
+          const layout = openCodeHistoryLayout(database);
+          const queries: string[] = [];
+          if (layout.legacy) queries.push(`SELECT m.time_created AS createdAt, json_extract(m.data, '$.tokens') AS tokens
+            FROM message m WHERE json_extract(m.data, '$.role') = 'assistant'
+            ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
+          if (layout.current) queries.push(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
+            FROM session_message WHERE type = 'assistant'`);
+          const rows = database.prepare(queries.join('\nUNION ALL\n')).all() as Array<{ createdAt: number; tokens: string | null }>;
           for (const row of rows) {
             const tokens = row.tokens ? parseLine(row.tokens) : null;
             if (!tokens) continue;

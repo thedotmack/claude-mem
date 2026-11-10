@@ -400,6 +400,33 @@ describe('Telegram wrap-up notifier', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(['constructor', 'toString', '__proto__', 'constructor/worktree'])('does not format or deliver an unconfigured literal project %s', async project => {
+    const { sessionDbId, memorySessionId } = createSession(project, 'literal-unconfigured');
+    storeSummary(memorySessionId, project);
+    const fetchMock = successfulFetch();
+
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('no_route');
+    expect(formatSummary).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.db.query('SELECT * FROM telegram_wrapups').all()).toEqual([]);
+  });
+
+  it('delivers an explicitly configured __proto__ project to its own chat', async () => {
+    const { sessionDbId, memorySessionId } = createSession('__proto__', 'literal-configured');
+    storeSummary(memorySessionId, '__proto__');
+    const fetchMock = successfulFetch();
+    const config = settings({
+      CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: JSON.stringify({ ['__proto__']: { chat_id: 'literal-chat', key: 'literal-route' } }),
+    });
+    const input = { sessionStore: store, sessionDbId, formatSummary, settings: config, fetchImpl: fetchMock };
+
+    await expect(deliverSessionWrapup(input)).resolves.toBe('sent');
+    await expect(deliverSessionWrapup(input)).resolves.toBe('already_sent');
+    expect(formatSummary).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).chat_id).toBe('literal-chat');
+  });
+
   it('releases a failed claim so a later delivery can retry', async () => {
     const { sessionDbId, memorySessionId } = createSession('project-a', 'content-retry');
     storeSummary(memorySessionId, 'project-a');

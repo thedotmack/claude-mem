@@ -3,9 +3,15 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 import { SyncApply, type SyncOp, type ChromaSyncLike } from '../../../src/services/sync/SyncApply.js';
+import { CloudSync } from '../../../src/services/sync/CloudSync.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
+import type { CanonicalHubChange, CanonicalWireOp } from '../../../src/services/sync/CanonicalContent.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
@@ -258,6 +264,123 @@ describe('SyncApply', () => {
     expect(count('user_prompts')).toBe(0);
     expect(count('sync_pull_quarantine')).toBe(0);
   });
+
+  for (const memorySessionId of [null, 'memory-after-deletion']) {
+    it(`applies a post-deletion prompt with ${memorySessionId ?? 'no memory id yet'} before advancing the cursor`, () => {
+      const store = new SessionStore(db);
+      store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+      const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+      db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+      const apply = makeApply();
+      const result = apply.applyOps([{
+        ...op(1, 'prompt', 'new-prompt', promptBody({
+          content_session_id: 'sess-abc', memory_session_id: memorySessionId,
+          created_at_epoch: cutoff + 1, created_at: new Date(cutoff + 1).toISOString(),
+        })),
+        entity_id: 'prompt:new-prompt', entity_rev: '1', operation_sha256: 'post-deletion-prompt',
+      }]);
+      expect(result.applied).toBe(1);
+      expect(result.skippedStale).toBe(0);
+      expect(result.quarantined).toBe(0);
+      expect(apply.getCursor()).toBe('1');
+      const prompt = db.prepare('SELECT prompt_text, session_db_id, synced_at FROM user_prompts').get() as any;
+      expect(prompt).toMatchObject({ prompt_text: 'remote prompt text', synced_at: FIXED_NOW });
+      expect(db.prepare('SELECT content_session_id, memory_session_id, started_at_epoch FROM sdk_sessions WHERE id = ?').get(prompt.session_db_id))
+        .toEqual({ content_session_id: 'sess-abc', memory_session_id: memorySessionId, started_at_epoch: cutoff + 1 });
+      expect(db.prepare('SELECT entity_rev, deleted FROM sync_entity_heads').get())
+        .toEqual({ entity_rev: '1', deleted: 0 });
+    });
+  }
+
+  it('keeps old, untimed, and deleted-memory rows out despite later hub delivery', () => {
+    const store = new SessionStore(db);
+    store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+    const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+    db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+    const apply = makeApply();
+    const result = apply.applyOps([
+      ...[cutoff - 1, cutoff, null].map((createdAtEpoch, index) => ({
+        ...op(index + 1, 'prompt', `old-prompt-${index}`, promptBody({
+          content_session_id: 'sess-abc', memory_session_id: null, created_at_epoch: createdAtEpoch,
+        })),
+        server_ts: cutoff + 1000,
+      })),
+      op(4, 'observation', 'old-observation', obsBody({ memory_session_id: 'mem-1', created_at_epoch: cutoff + 1 })),
+      op(5, 'summary', 'old-summary', sumBody({ memory_session_id: 'mem-1', created_at_epoch: cutoff + 1 })),
+      op(6, 'prompt', 'old-memory-prompt', promptBody({
+        content_session_id: 'sess-abc', memory_session_id: 'mem-1', created_at_epoch: cutoff + 1,
+      })),
+    ]);
+    expect(result.skippedStale).toBe(6);
+    expect(result.quarantined).toBe(0);
+    expect(apply.getCursor()).toBe('6');
+    for (const table of ['sdk_sessions', 'observations', 'session_summaries', 'user_prompts']) expect(count(table)).toBe(0);
+  });
+
+  for (const includeMemories of [false, true]) {
+    it(`receives post-deletion work through the real push mapping (${includeMemories ? 'observations first' : 'prompt only'})`, async () => {
+      const store = new SessionStore(db);
+      store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+      const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+      db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+      const origin = new Database(':memory:');
+      new SessionStore(origin, { syncOpsEnabled: false });
+      const dir = mkdtempSync(join(tmpdir(), 'cmem-sync-cutoff-'));
+      const changes: CanonicalHubChange[] = [];
+      const sync = new CloudSync(origin, {
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'test-user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: REMOTE, CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test',
+      }, {
+        settingsPath: join(dir, 'settings.json'),
+        fetchImpl: (async (_input, init) => {
+          const { ops } = JSON.parse(String(init?.body)) as { ops: CanonicalWireOp[] };
+          const acked = ops.map(wire => {
+            const envelope = JSON.parse(wire.body);
+            const seq = String(changes.length + 1);
+            changes.push({ ...wire, seq, server_ts: String(cutoff + 5000) });
+            return { id: envelope.id, kind: envelope.kind, origin_local_id: envelope.origin_local_id,
+              entity_rev: envelope.entity_rev, operation_sha256: wire.operation_sha256, seq };
+          });
+          return Response.json({ acked, head_seq: String(changes.length), projected_seq: String(changes.length) });
+        }) as typeof fetch,
+      });
+      try {
+        const createdAt = new Date(cutoff + 1).toISOString();
+        origin.prepare(`INSERT INTO sdk_sessions
+          (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+          VALUES ('sess-abc', 'memory-after-deletion', 'proj-remote', ?, ?, 'completed')`).run(createdAt, cutoff + 1);
+        if (includeMemories) {
+          origin.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+            VALUES ('memory-after-deletion', 'proj-remote', 'discovery', 'new observation', ?, ?)`).run(createdAt, cutoff + 1);
+          origin.prepare(`INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+            VALUES ('memory-after-deletion', 'proj-remote', 'new summary', ?, ?)`).run(createdAt, cutoff + 1);
+        }
+        origin.prepare(`INSERT INTO user_prompts
+          (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+          VALUES (1, 'sess-abc', 1, 'resumed prompt', ?, ?)`).run(createdAt, cutoff + 1);
+        await sync.flush();
+        // Exercise CloudSync's actual kind order and canonical decoder, not a
+        // hand-built SyncOp whose field types/order could differ from the wire.
+        expect(changes.map(change => JSON.parse(change.body).kind))
+          .toEqual(includeMemories ? ['observation', 'summary', 'prompt'] : ['prompt']);
+        const apply = makeApply();
+        const result = apply.applyOps(decodeChanges(changes), { requireContiguous: true });
+        expect(result.applied).toBe(changes.length);
+        expect(result.quarantined).toBe(0);
+        expect(apply.getCursor()).toBe(String(changes.length));
+        expect(db.prepare(`SELECT up.prompt_text, s.memory_session_id FROM user_prompts up
+          JOIN sdk_sessions s ON s.id = up.session_db_id`).get())
+          .toEqual({ prompt_text: 'resumed prompt', memory_session_id: 'memory-after-deletion' });
+        expect(count('observations')).toBe(includeMemories ? 1 : 0);
+        expect(count('session_summaries')).toBe(includeMemories ? 1 : 0);
+      } finally {
+        sync.stop();
+        origin.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('does not park title or prompt-link mutations for a deleted session', () => {
     const store = new SessionStore(db);
@@ -945,7 +1068,7 @@ describe('SyncApply', () => {
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });
 
-  it('set_title in reverse order (row ops first) lands via the replicated prompt fallback', () => {
+  it('set_title in reverse order (row ops first) lands on the adopted content identity', () => {
     const apply = makeApply();
     apply.applyOps([
       op(1, 'observation', '11', obsBody()),
@@ -957,10 +1080,10 @@ describe('SyncApply', () => {
       }),
     ]);
 
-    // The obs-created stub carries a synthetic content id (mem-remote-1), so
-    // the direct content match misses — the replicated prompt resolves it.
+    // The prompt supplied the real content identity to the observation-created
+    // stub, so the later title addresses that same session directly.
     const session = db.prepare(`SELECT custom_title, content_session_id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
-    expect(session.content_session_id).toBe('mem-remote-1');
+    expect(session.content_session_id).toBe('sess-remote-1');
     expect(session.custom_title).toBe('Late title');
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });

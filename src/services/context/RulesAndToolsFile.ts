@@ -4,7 +4,8 @@ import { join } from 'path';
 import { ModeManager } from '../domain/ModeManager.js';
 import { resolveDataDir } from '../../shared/data-dir.js';
 import { writeTextFileAtomic } from '../../shared/atomic-json.js';
-import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isWorkStateEnabled } from '../../shared/work-state-setting.js';
 import { mcpServerInstructions } from '../../shared/memory-instructions.js';
 import { logger } from '../../utils/logger.js';
@@ -40,7 +41,9 @@ export function renderRulesAndToolsFile(fetchByIdSupported: boolean): string {
   const fetchLine = fetchByIdSupported
     ? 'Fetch details: get_observations([IDs]) | Search: mem-search skill'
     : 'Fetch details: observation_search by title (short refs are display-only)';
-  const settings = loadFromFileOnce();
+  // This renderer also lives in the persistent context-reader thread. A
+  // hook-lifetime snapshot would keep disabled guidance until worker restart.
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
   const rules = mcpServerInstructions({
     runtime: fetchByIdSupported ? 'worker' : 'server',
     workStateEnabled: isWorkStateEnabled(settings.CLAUDE_MEM_WORK_STATE_ENABLED),

@@ -158,7 +158,7 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
       const input = block.input && typeof block.input === 'object' ? block.input as Record<string, unknown> : {};
       if (FILE_WRITING_TOOLS.has(block.name)) {
         const path = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : null;
-        if (path && path.trim()) writes.push({ path: path.trim(), toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine });
+        if (path && path.trim()) writes.push({ path, toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine });
         continue;
       }
       if (WORK_STATE_WRITE_TOOL.test(block.name)) {
