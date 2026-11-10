@@ -19,13 +19,35 @@ function lastLoggedLineFor(marker: string): string {
 }
 
 describe('logger context formatting', () => {
-  it('should render an object context value as JSON, not [object Object]', () => {
-    const marker = 'ctx-test-object-1';
-    logger.info('SYSTEM', marker, { synced: { observationDocs: 3, summaryDocs: 1, promptDocs: 2 } });
+  const circular: Record<string, unknown> = { a: 1 };
+  circular.self = circular;
+  const when = new Date(0);
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ['object', { synced: { observationDocs: 3, summaryDocs: 1, promptDocs: 2 } }, '{synced={"observationDocs":3,"summaryDocs":1,"promptDocs":2}}'],
+    ['number array', { items: [1, 2, 3] }, '{items=[1,2,3]}'],
+    ['string array', { args: ['--version', '--foo'] }, '{args=["--version","--foo"]}'],
+    ['object array', { records: [{ a: 1 }, { b: 2 }] }, '{records=[{"a":1},{"b":2}]}'],
+    ['empty array', { items: [] }, '{items=[]}'],
+    ['circular array', { items: [circular] }, '{items=[{"a":1,"self":"[Circular]"}]}'],
+    ['string', { project: 'my-project' }, '{project=my-project}'],
+    ['number', { count: 42 }, '{count=42}'],
+    ['boolean', { enabled: true }, '{enabled=true}'],
+    ['null', { value: null }, '{value=null}'],
+    ['undefined', { value: undefined }, '{value=undefined}'],
+    ['Error', { err: new Error('boom') }, '{err=Error: boom}'],
+    ['Date', { when }, `{when=${when}}`],
+    ['circular object', { circular }, '{circular={"a":1,"self":"[Circular]"}}'],
+    ['BigInt', { withBigInt: { n: BigInt(5) } }, '{withBigInt={"n":"5n"}}'],
+  ])('renders %s context', (name, context, expected) => {
+    const marker = `ctx-table-${name}`;
+    expect(() => logger.info('SYSTEM', marker, context)).not.toThrow();
     const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{synced={"observationDocs":3,"summaryDocs":1,"promptDocs":2}}');
+    expect(line).toContain(expected);
     expect(line).not.toContain('[object Object]');
+    expect(line.split('\n').length).toBe(1);
   });
+
 
   it('should render each Keychain command diagnostic in a warning line', () => {
     const marker = 'oauth-keychain-diagnostic-1';
@@ -62,110 +84,5 @@ describe('logger context formatting', () => {
     expect(line).toContain('searchListExitCode=44');
     expect(line).toContain('searchListStderr=The specified item could not be found in the keychain.');
     expect(line).not.toContain('keys:');
-  });
-
-  it('should render an array of numbers context value as JSON', () => {
-    const marker = 'ctx-test-array-1';
-    logger.info('SYSTEM', marker, { items: [1, 2, 3] });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{items=[1,2,3]}');
-    expect(line).not.toContain('[object Object]');
-  });
-
-  it('should render an array of strings context value as JSON', () => {
-    const marker = 'ctx-test-array-strings-1';
-    logger.info('SYSTEM', marker, { args: ['--version', '--foo'] });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{args=["--version","--foo"]}');
-  });
-
-  it('should render an array of objects context value as JSON', () => {
-    const marker = 'ctx-test-array-objects-1';
-    logger.info('SYSTEM', marker, { records: [{ a: 1 }, { b: 2 }] });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{records=[{"a":1},{"b":2}]}');
-  });
-
-  it('should render an empty array context value as []', () => {
-    const marker = 'ctx-test-array-empty-1';
-    logger.info('SYSTEM', marker, { items: [] });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{items=[]}');
-  });
-
-  it('should not throw on an array containing a circular-reference element, and mark the cycle', () => {
-    const circular: Record<string, unknown> = { a: 1 };
-    circular.self = circular;
-    const marker = 'ctx-test-array-circular-1';
-    expect(() => logger.info('SYSTEM', marker, { items: [circular] })).not.toThrow();
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{items=[{"a":1,"self":"[Circular]"}]}');
-  });
-
-  it('should leave string context values unchanged', () => {
-    const marker = 'ctx-test-string-1';
-    logger.info('SYSTEM', marker, { project: 'my-project' });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{project=my-project}');
-  });
-
-  it('should leave number context values unchanged', () => {
-    const marker = 'ctx-test-number-1';
-    logger.info('SYSTEM', marker, { count: 42 });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{count=42}');
-  });
-
-  it('should leave boolean context values unchanged', () => {
-    const marker = 'ctx-test-boolean-1';
-    logger.info('SYSTEM', marker, { enabled: true });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{enabled=true}');
-  });
-
-  it('should leave null context values unchanged', () => {
-    const marker = 'ctx-test-null-1';
-    logger.info('SYSTEM', marker, { value: null });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{value=null}');
-  });
-
-  it('should leave undefined context values unchanged', () => {
-    const marker = 'ctx-test-undefined-1';
-    logger.info('SYSTEM', marker, { value: undefined });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{value=undefined}');
-  });
-
-  it('should render an Error instance in context unchanged (single-line)', () => {
-    const marker = 'ctx-test-error-1';
-    logger.info('SYSTEM', marker, { err: new Error('boom') });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{err=Error: boom}');
-    expect(line.split('\n').length).toBe(1);
-  });
-
-  it('should render a Date context value in its string form, not {}', () => {
-    const marker = 'ctx-test-date-1';
-    const when = new Date(0);
-    logger.info('SYSTEM', marker, { when });
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain(`{when=${when}}`);
-  });
-
-  it('should not throw on a circular-reference context value, and mark the cycle', () => {
-    const circular: Record<string, unknown> = { a: 1 };
-    circular.self = circular;
-    const marker = 'ctx-test-circular-1';
-    expect(() => logger.info('SYSTEM', marker, { circular })).not.toThrow();
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{circular={"a":1,"self":"[Circular]"}}');
-  });
-
-  it('should not throw on a BigInt-containing context value, and print the BigInt', () => {
-    const marker = 'ctx-test-bigint-1';
-    expect(() => logger.info('SYSTEM', marker, { withBigInt: { n: BigInt(5) } })).not.toThrow();
-    const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{withBigInt={"n":"5n"}}');
   });
 });
