@@ -15,6 +15,7 @@ import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { MEDIA_LIMITS, MediaError } from '../../src/shared/media-contract.js';
 import { captureObservationMedia } from '../../src/services/media/capture.js';
 import { logger } from '../../src/utils/logger.js';
+import { boundObservationDispatch, LOCAL_EVENT_MAX_BYTES } from '../../src/shared/media-ingress.js';
 
 const SCRATCH = join(import.meta.dir, '../../.scratch');
 const FLAG = 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
@@ -136,6 +137,30 @@ describe('capture at the common ingest boundary', () => {
     expect(observation.tool_response).toContain('Took a screenshot of the viewport.');
     expect(observation.tool_input).toContain('screenshot');
   });
+
+  for (const unsupported of [false, true]) {
+    it(`captures the valid screenshot after a rejected first image (unsupported=${unsupported})`, async () => {
+      const rejectedBytes = 'A'.repeat(MEDIA_LIMITS.maxInlineEncodedBytes + (unsupported ? 0 : 4));
+      const body = boundObservationDispatch({ tool_name: 'mcp__browser__screenshot', tool_input: {}, tool_response: { content: [
+        { type: 'image', data: rejectedBytes, mimeType: unsupported ? 'image/gif' : 'image/png' },
+        { type: 'text', text: 'The second image is the useful screenshot.' },
+        { type: 'image', data: pngB64, mimeType: 'image/png' },
+      ] } });
+      const wire = JSON.stringify(body);
+      expect(Buffer.byteLength(wire)).toBeLessThan(LOCAL_EVENT_MAX_BYTES);
+      expect(wire).not.toContain(rejectedBytes);
+      expect(wire).toContain(pngB64);
+      const observation = await ingest(body.tool_response);
+      expect(observation.mediaRefs).toHaveLength(1);
+      const [ref] = observation.mediaRefs;
+      expect((await sharp(await media.readVariant(ref.id, 'viewer')).metadata()).format).toBe('webp');
+      expect(observation.tool_response).toContain('The second image is the useful screenshot.');
+      const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      noBytes(row.tool_response);
+      expect(row.tool_response).not.toContain(rejectedBytes);
+      expect(row.tool_response).toContain(ref.id);
+    });
+  }
 
   it('disabled capture (the default) stores nothing and leaves an honest disabled descriptor', async () => {
     process.env[FLAG] = 'false';
