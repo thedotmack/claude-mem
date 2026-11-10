@@ -11,16 +11,29 @@ const FLAGS_WITH_VALUES_BY_COMMAND: Record<string, Set<string>> = {
 };
 const NO_FLAGS_WITH_VALUES = new Set<string>();
 
-function isOperatorToken(token: ParsedToken): boolean {
+function isOperatorToken(token: ParsedToken): token is { op: string } {
   return typeof token === 'object' && token !== null && 'op' in token;
 }
 
 function splitSegments(tokens: ParsedToken[]): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
+  let outputTarget = false;
 
   for (const token of tokens) {
+    if (outputTarget) {
+      // shell-quote emits >| as two operator tokens.
+      if (isOperatorToken(token) && token.op === '|') continue;
+      outputTarget = false;
+      if (typeof token === 'string') continue;
+    }
     if (isOperatorToken(token)) {
+      // Output redirections remove an output target from argv; they do not
+      // end the command. Read operands can occur on either side of them.
+      if (['>', '>>', '>&', '>|'].includes(token.op)) {
+        outputTarget = true;
+        continue;
+      }
       if (current.length > 0) segments.push(current);
       current = [];
       continue;
