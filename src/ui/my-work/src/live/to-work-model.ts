@@ -378,6 +378,7 @@ function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
     when: rule.when,
     then: rule.then,
     quotes,
+    quotesOmitted: rule.quotesOmitted ?? 0,
     timesSeen: rule.timesSeen,
     latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : 'not recorded',
     // Only orders rules by strength; an unrecorded date counts as a year old rather than as recent.
