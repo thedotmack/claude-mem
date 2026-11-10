@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { executableFingerprint } from '../../shared/executable-fingerprint.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { ENV_PROXY_VARS, sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
 
@@ -1019,6 +1019,7 @@ export class CodexAppServerClient {
 }
 
 const APP_SERVER_ENV_ALLOWLIST = new Set([
+  ...ENV_PROXY_VARS,
   'APPDATA',
   'CODEX_HOME',
   'HOME',
