@@ -399,7 +399,8 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
     // The singular parameter names one exact key, even when it contains a comma.
-    let projectsParam: unknown = req.query.projects || (req.query.project ? [req.query.project] : undefined);
+    // Repeated `project=` values arrive as an array; each one is an exact key.
+    let projectsParam: unknown = req.query.projects || (req.query.project ? [req.query.project].flat() : undefined);
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
     // session that asks, so only then is its id used, and that answer stays live.

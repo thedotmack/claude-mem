@@ -74,6 +74,8 @@ try {
   const single = await read('/api/context/inject?platformSource=claude&' + new URLSearchParams({ project: 'alpha,beta' }));
   const combined = await read('/api/context/inject?platformSource=claude&' + projectsQueryString(['parent', 'alpha,beta']));
   const repeated = await read('/api/context/inject?platformSource=claude&projects=parent&projects=alpha%2Cbeta');
+  const repeatedSingularResponse = await fetch(url + '/api/context/inject?platformSource=claude&project=parent&project=alpha%2Cbeta');
+  const repeatedSingular = { status: repeatedSingularResponse.status, text: await repeatedSingularResponse.text() };
   const byFile = JSON.parse(await read('/api/observations/by-file?path=src%2Fapp.ts&' + projectsQueryString(['alpha,beta'])));
   const search = await read('/api/search?format=json&query=NATIVE&' + projectsQueryString(['alpha,beta']));
   const cacheOwn = readContextCache(contextCacheKeys(['alpha,beta'], 'claude', false), Date.now())?.body;
@@ -84,7 +86,7 @@ try {
     mcp.push(mcpText(await client.callTool({ name: 'session_start_context', arguments: args })));
   }
   const typedMcp = mcpText(await client.callTool({ name: 'session_start_context', arguments: { projects: 'alpha, beta' } }));
-  console.log(JSON.stringify({ checkout, typed, foreignBefore, hook, own, single, combined, repeated, byFile, search, cacheOwn, cacheOther, mcp, typedMcp,
+  console.log(JSON.stringify({ checkout, typed, foreignBefore, hook, own, single, combined, repeated, repeatedSingular, byFile, search, cacheOwn, cacheOther, mcp, typedMcp,
     distinctCache: contextCacheVariantId(contextCacheKeys(['alpha,beta'], 'claude', false)) !== contextCacheVariantId(contextCacheKeys(['alpha', 'beta'], 'claude', false)) }));
 } finally {
   await client.close(); cache.stop(); server.closeAllConnections();
@@ -138,6 +140,12 @@ describe('literal project lists across context and recall', () => {
 
   it('preserves exact entries alongside another project', () => {
     for (const text of [result.combined, result.repeated]) { expectOwn(text); expect(text).toContain('PARENT_RECORD'); }
+  });
+
+  it('reads every exact key from a repeated singular project parameter', () => {
+    expect(result.repeatedSingular.status).toBe(200);
+    expectOwn(result.repeatedSingular.text);
+    expect(result.repeatedSingular.text).toContain('PARENT_RECORD');
   });
 
   it('keeps the file and search read scopes on the same recorded project', () => {
