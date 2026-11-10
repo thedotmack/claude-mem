@@ -581,6 +581,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
             }
           }
         } catch (error) {
+          signal?.throwIfAborted();
           logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; disabling thinking failed, so this turn stores no observations', {
             model,
           }, error instanceof Error ? error : new Error(String(error)));

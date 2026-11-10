@@ -816,6 +816,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
             logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), { model: config.model });
           }
         } catch (error) {
+          signal?.throwIfAborted();
           logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
             model: config.model,
           }, error instanceof Error ? error : new Error(String(error)));
