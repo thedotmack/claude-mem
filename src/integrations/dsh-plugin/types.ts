@@ -94,6 +94,7 @@ export interface MemSaveRequest {
   readonly text: string
   readonly title?: string
   readonly project?: string
+  readonly cwd?: string
   readonly metadata?: Readonly<Record<string, unknown>>
 }
 

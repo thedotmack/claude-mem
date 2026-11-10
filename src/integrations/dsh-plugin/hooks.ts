@@ -72,13 +72,17 @@ async function observeToolResult(worker: WorkerClient, exec: ToolExecution, resu
   if (agent === undefined) return
   const text = resultContentText(result.content)
   if (text.length === 0) return
-  const project = projectName(agent, config)
+  const cwd = agent.session.header.cwd
+  // Let the worker resolve the checkout's project and apply exclusions, even
+  // when an explicit project override is present. Keep path whitespace intact.
+  const project = config.project?.trim() ? config.project : cwd?.trim() ? undefined : 'dsh'
   try {
     // /api/memory/save reads the source from metadata (its body schema is strict).
     const source = platform(config)
     await worker.save({
       text: `[${exec.name}] ${text}`,
-      project,
+      ...(project !== undefined ? { project } : {}),
+      ...(cwd?.trim() ? { cwd } : {}),
       ...(source.platformSource !== undefined ? { metadata: source } : {}),
     })
   } catch {
