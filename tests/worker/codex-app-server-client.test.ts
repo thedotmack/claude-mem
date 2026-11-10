@@ -15,6 +15,9 @@ import {
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
 import { logger } from '../../src/utils/logger.js';
+import { accumulateObserverUsage } from '../../src/services/worker/observer-usage.js';
+import { shouldRecycleConversation } from '../../src/shared/observer-recycle.js';
+import type { ActiveSession } from '../../src/services/worker-types.js';
 
 const itPosix = process.platform === 'win32' ? it.skip : it;
 
@@ -27,6 +30,7 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   authHomeName?: string;
+  usage?: Record<string, number>;
   instructionSources?: string[];
   writeOnShutdown?: boolean;
   networkUrl?: string;
@@ -50,7 +54,7 @@ const FAKE_CODEX_SOURCE = [
   "import { dirname, join } from 'node:path';",
   "const authHome = dirname(realpathSync(join(process.env.CODEX_HOME, 'auth.json')));",
   `const config = JSON.parse(readFileSync(join(dirname(authHome), ${JSON.stringify(FAKE_CODEX_CONFIG_FILE)}), 'utf8'));`,
-  'const { trace, instructionSources, mode, writeOnShutdown } = config;',
+  'const { trace, instructionSources, mode, writeOnShutdown, usage } = config;',
   "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
   "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
   // hold-first-turn: turn 1 finishes only when the test sends SIGUSR1.
@@ -100,7 +104,7 @@ const FAKE_CODEX_SOURCE = [
   "      const turnId = 'turn-' + turn;",
   "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
   "      const finish = () => {",
-  "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
+  "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: usage ?? { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 13 } } } });",
   "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
   "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
   '      };',
@@ -152,6 +156,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     mode: options.mode ?? 'normal',
     writeOnShutdown: options.writeOnShutdown === true,
     networkUrl: options.networkUrl,
+    usage: options.usage,
   }));
   let executable = sharedFakeCodexExecutable();
   if (options.privateExecutable) {
@@ -539,7 +544,7 @@ describe('CodexAppServerClient transport', () => {
       const trace = readTrace(fake.trace);
 
       expect(first.content).toContain('<title>Turn 1</title>');
-      expect(first).toMatchObject({ inputTokens: 12, outputTokens: 4, tokensUsed: 16 });
+      expect(first).toMatchObject({ inputTokens: 10, outputTokens: 3, tokensUsed: 13 });
       expect(second.content).toContain('<title>Turn 2</title>');
       expect(trace.filter(entry => entry.method === 'process/start')).toHaveLength(1);
       expect(trace.find(entry => entry.method === 'process/start').codexHome).not.toBe(fake.authHome);
@@ -561,6 +566,40 @@ describe('CodexAppServerClient transport', () => {
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
+
+  for (const usage of [
+    // The native app-server turn_start.rs fixture: both detail counts are
+    // already included in the parent's input/output count (30 + 7 = 37).
+    { inputTokens: 30, cachedInputTokens: 11, outputTokens: 7, reasoningOutputTokens: 3, totalTokens: 37 },
+    { inputTokens: 60_000, cachedInputTokens: 55_000, outputTokens: 2_000, reasoningOutputTokens: 1_500, totalTokens: 62_000 },
+  ]) {
+    itPosix(`keeps native token totals inclusive (${usage.totalTokens} tokens)`, async () => {
+      const fake = createFakeCodex({ usage });
+      const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+      try {
+        const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Return one observation.', timeoutMs: 5_000 });
+        const session = { cumulativeInputTokens: 0, cumulativeOutputTokens: 0 } as ActiveSession;
+        accumulateObserverUsage(session, result);
+        // A 60k-token prompt is below the existing 100k-token generation
+        // boundary, even when nearly all of its input was a cache hit.
+        expect({
+          tokensUsed: result.tokensUsed,
+          cumulativeInputTokens: session.cumulativeInputTokens,
+          cumulativeOutputTokens: session.cumulativeOutputTokens,
+          retireGeneration: shouldRecycleConversation([], 400_000, result.inputTokens),
+        }).toEqual({
+          tokensUsed: usage.totalTokens,
+          cumulativeInputTokens: usage.inputTokens,
+          cumulativeOutputTokens: usage.outputTokens,
+          retireGeneration: false,
+        });
+      } finally {
+        await client.close();
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
 
   itPosix('rejects any instruction source loaded by Codex', async () => {
     const fake = createFakeCodex({ instructionSources: ['/unexpected/AGENTS.md'] });

@@ -407,19 +407,17 @@ function normalizeUsage(usage: JsonObject | null): Omit<CodexAppServerTurnResult
   if (!usage) return {};
 
   const total = isObject(usage.total) ? usage.total : usage;
+  // Codex's input/output totals already include their cache/reasoning
+  // breakdowns. Adding those details again inflates usage and context size.
   const inputTokens = tokenNumber(total.inputTokens ?? total.input_tokens);
-  const cachedInputTokens = tokenNumber(total.cachedInputTokens ?? total.cached_input_tokens) ?? 0;
   const outputTokens = tokenNumber(total.outputTokens ?? total.output_tokens);
-  const reasoningTokens = tokenNumber(total.reasoningOutputTokens ?? total.reasoning_output_tokens) ?? 0;
-  const normalizedInput = inputTokens === undefined ? undefined : inputTokens + cachedInputTokens;
-  const normalizedOutput = outputTokens === undefined ? undefined : outputTokens + reasoningTokens;
-  const tokensUsed = normalizedInput === undefined && normalizedOutput === undefined
+  const tokensUsed = inputTokens === undefined && outputTokens === undefined
     ? undefined
-    : (normalizedInput ?? 0) + (normalizedOutput ?? 0);
+    : (inputTokens ?? 0) + (outputTokens ?? 0);
 
   return {
-    ...(normalizedInput !== undefined ? { inputTokens: normalizedInput } : {}),
-    ...(normalizedOutput !== undefined ? { outputTokens: normalizedOutput } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(tokensUsed !== undefined ? { tokensUsed } : {}),
   };
 }
