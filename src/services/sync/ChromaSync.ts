@@ -2151,27 +2151,34 @@ export class ChromaSync {
     const keptIds: string[] = [];
     const keptMetadatas: any[] = [];
     const keptDistances: number[] = [];
-    for (let i = 0; i < rawIds.length && keptIds.length < limit; i++) {
+    for (let i = 0; i < rawIds.length; i++) {
       if (!predicate(rawMetadatas[i] ?? {})) continue;
       keptIds.push(rawIds[i]);
       keptMetadatas.push(rawMetadatas[i]);
       keptDistances.push(rawDistances[i]);
     }
 
-    // The plain `where` ranks the same matches in the same order; the only ones
-    // missing here belong to rows outside the SQLite scope, which hydration
-    // drops anyway. So `limit` kept fragments are its top `limit`. A window
-    // shorter than n_results held every candidate. Otherwise more matches may
-    // sit past the window, and only the plain `where` can find them.
+    const filtered = this.deduplicateQueryResults({
+      ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+    });
+    // Count rows, not fragments: one observation's facts can fill the raw
+    // limit while later memories already present in this window are lost.
+    // A full window with enough matching fragments already contains the
+    // plain fallback's first `limit` fragments. Keep its distinct rows and
+    // report that the caller may widen; another query cannot improve that
+    // same fragment prefix. Fall through only when filtering removed too
+    // many fragments to establish that prefix.
     const windowExhausted = rawIds.length < nResults;
     if (keptIds.length < limit && !windowExhausted) return null;
     logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
-      rows: rowIds.length, fragments: rawIds.length, kept: keptIds.length
+      rows: rowIds.length, fragments: rawIds.length, kept: filtered.ids.length
     });
-    if (progress) progress.exhausted = windowExhausted && keptIds.length < limit;
-    return this.deduplicateQueryResults({
-      ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
-    });
+    if (progress) progress.exhausted = windowExhausted && filtered.ids.length <= limit;
+    return {
+      ids: filtered.ids.slice(0, limit),
+      metadatas: filtered.metadatas.slice(0, limit),
+      distances: filtered.distances.slice(0, limit)
+    };
   }
 
   /**

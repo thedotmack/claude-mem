@@ -9,6 +9,7 @@
  */
 import { Type, type TSchema } from 'typebox';
 import { createHarnessWorkerClient } from '../harness-worker.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 
 interface PiMessage {
   role?: string;
@@ -248,7 +249,9 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     const telemetryToolEpochMs = Date.now();
     const session = current;
     if (!session || !event.toolName || event.toolName.startsWith('mem_')) return;
-    const text = extractTextContent(event.content);
+    // Strip complete private/context regions before the size cap can remove
+    // their closing tag and make the worker see an ordinary unclosed tag.
+    const text = stripMemoryTags(extractTextContent(event.content));
     const toolName = CAPTURE_TOOL_NAMES.get(event.toolName) ?? event.toolName;
     const toolInput = captureToolInput(event.toolName, event.input);
     return enqueue(session, ctx, async () => {

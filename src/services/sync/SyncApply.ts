@@ -1032,6 +1032,7 @@ export class SyncApply {
       fieldString(op, body, 'memory_session_id'),
       fieldString(op, body, 'content_session_id'),
       fieldString(op, body, 'platform_source'),
+      fieldNumber(op, body, 'created_at_epoch'),
     )) return 'stale';
     switch (op.kind) {
       case 'observation':
@@ -1051,14 +1052,21 @@ export class SyncApply {
     memorySessionId: string | null,
     contentSessionId: string | null,
     platformSource: string | null,
+    createdAtEpoch: number | null = null,
   ): boolean {
     if (memorySessionId && this.db.prepare(`
       SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?
     `).get(memorySessionId)) return true;
-    if (contentSessionId && this.db.prepare(`
-      SELECT 1 FROM deleted_content_sessions
-      WHERE platform_source = ? AND content_session_id = ?
-    `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId)) return true;
+    if (contentSessionId) {
+      const deleted = this.db.prepare(`
+        SELECT deleted_at_epoch_ms FROM deleted_content_sessions
+        WHERE platform_source = ? AND content_session_id = ?
+      `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId) as { deleted_at_epoch_ms: number } | null;
+      // v74 permits new work in the same conversation, while an old memory
+      // identity above remains permanently deleted. Hub arrival time is not
+      // evidence that the source row was created after the deletion.
+      if (deleted && (createdAtEpoch === null || createdAtEpoch <= deleted.deleted_at_epoch_ms)) return true;
+    }
     return false;
   }
 

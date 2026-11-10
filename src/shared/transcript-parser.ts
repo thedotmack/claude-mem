@@ -298,7 +298,7 @@ const ANTIGRAVITY_TYPE_TO_ROLE: Record<string, 'user' | 'assistant'> = {
  * Handles a top-level string, a Claude-style content array (`{type:'text',text}`),
  * and a generic `{text}` array (Antigravity, when content isn't a bare string).
  */
-function contentToText(msgContent: unknown): string | null {
+export function contentToText(msgContent: unknown): string | null {
   if (typeof msgContent === 'string') return msgContent;
   if (Array.isArray(msgContent)) {
     return msgContent
