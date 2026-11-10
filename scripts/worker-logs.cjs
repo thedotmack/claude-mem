@@ -8,6 +8,13 @@ const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
 const CHUNK_SIZE = 64 * 1024;
 
+function fileIdentity(fd) {
+  // Filesystem IDs can exceed Number's exact integer range (notably on NTFS).
+  // Keep identity exact while the byte offsets used by readSync stay Numbers.
+  const { ino, dev, size } = fstatSync(fd, { bigint: true });
+  return { ino, dev, size: Number(size) };
+}
+
 function todaysLogPath() {
   const stamp = new Date().toISOString().slice(0, 10);
   return path.join(resolveDataDir(), 'logs', `claude-mem-${stamp}.log`);
@@ -51,7 +58,7 @@ async function main() {
   let followedIdentity;
   let offset;
   try {
-    followedIdentity = fstatSync(fd);
+    followedIdentity = fileIdentity(fd);
     const size = followedIdentity.size;
     offset = await writeRange(fd, findTailStart(fd, size, LINE_COUNT), size);
   } finally { closeSync(fd); }
@@ -71,7 +78,7 @@ async function main() {
         catch (error) { if (error.code === 'ENOENT') continue; throw error; }
         try {
           // Stat the opened descriptor: rotation may happen after the poll.
-          const current = fstatSync(appended);
+          const current = fileIdentity(appended);
           if (current.ino !== followedIdentity.ino || current.dev !== followedIdentity.dev || current.size < offset) offset = 0;
           followedIdentity = current;
           offset = await writeRange(appended, offset, current.size);
@@ -88,8 +95,8 @@ async function main() {
       unwatchFile(logPath);
     });
   }
-  watchFile(logPath, { interval: POLL_INTERVAL_MS }, (current) => {
-    if (current.size === offset && current.ino === followedIdentity.ino && current.dev === followedIdentity.dev) return;
+  watchFile(logPath, { interval: POLL_INTERVAL_MS, bigint: true }, (current) => {
+    if (Number(current.size) === offset && current.ino === followedIdentity.ino && current.dev === followedIdentity.dev) return;
     scheduleDrain();
   });
   // An append while the snapshot was flushing may already be in the watcher's
