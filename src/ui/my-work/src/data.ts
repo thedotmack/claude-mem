@@ -39,6 +39,9 @@ export interface Request {
   /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
   titleRepeatsPrompt?: boolean
   summary: string | null
+  /** Full-prompt checks for text that shared pages omit, even when the local quote is shortened. */
+  summaryRepeatsPrompt?: boolean
+  nextRepeatsPrompt?: boolean
   /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
   focusAreaId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
