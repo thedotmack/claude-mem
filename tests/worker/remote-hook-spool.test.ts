@@ -34,37 +34,6 @@ const entry: HookSpoolEntry = {
     toolUseId: 'host-tool-1', cwd: '/repo' },
 };
 
-beforeEach(async () => {
-  directory = mkdtempSync(join(tmpdir(), 'claude-mem-remote-spool-'));
-  store = new SessionStore(join(directory, 'worker.db'));
-  spool = new HookSpool(join(directory, 'server-spool'));
-  token = 'test-ingest-token';
-  drains = 0;
-  queueObservation = mock(() => {});
-  startGenerator = mock(async () => {});
-  setIngestContext({ sessionManager: { queueObservation, queueSummarize: mock(() => {}) } as any,
-    dbManager: { getSessionStore: () => store } as any,
-    eventBroadcaster: { broadcastObservationQueued() {}, broadcastSummarizeQueued() {} } as any,
-    ensureGeneratorRunning: startGenerator });
-  const app = express();
-  app.use(...createMiddleware());
-  new HookSpoolRoutes(spool, () => hookSpoolConsumedMarkers(store), () => { drains++; }, () => token).setupRoutes(app);
-  server = await new Promise<Server>(resolve => {
-    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
-  });
-  const bound = server.address();
-  if (!bound || typeof bound === 'string') throw new Error('server did not bind');
-  address = `http://127.0.0.1:${bound.port}/api/spool/ingest`;
-});
-
-afterEach(async () => {
-  server.closeAllConnections();
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  store.close();
-  Bun.gc(true);
-  rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
-});
-
 function send(value: unknown = entry, authorization: string = 'Bearer test-ingest-token') {
   return fetch(address, { method: 'POST', headers: {
     'Content-Type': 'application/json', Authorization: authorization,
@@ -72,6 +41,36 @@ function send(value: unknown = entry, authorization: string = 'Bearer test-inges
 }
 
 describe('remote hook spool receipts', () => {
+  beforeEach(async () => {
+    directory = mkdtempSync(join(tmpdir(), 'claude-mem-remote-spool-'));
+    store = new SessionStore(join(directory, 'worker.db'));
+    spool = new HookSpool(join(directory, 'server-spool'));
+    token = 'test-ingest-token';
+    drains = 0;
+    queueObservation = mock(() => {});
+    startGenerator = mock(async () => {});
+    setIngestContext({ sessionManager: { queueObservation, queueSummarize: mock(() => {}) } as any,
+      dbManager: { getSessionStore: () => store } as any,
+      eventBroadcaster: { broadcastObservationQueued() {}, broadcastSummarizeQueued() {} } as any,
+      ensureGeneratorRunning: startGenerator });
+    const app = express();
+    app.use(...createMiddleware());
+    new HookSpoolRoutes(spool, () => hookSpoolConsumedMarkers(store), () => { drains++; }, () => token).setupRoutes(app);
+    server = await new Promise<Server>(resolve => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    const bound = server.address();
+    if (!bound || typeof bound === 'string') throw new Error('server did not bind');
+    address = `http://127.0.0.1:${bound.port}/api/spool/ingest`;
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+    Bun.gc(true);
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  });
 
   it('accepts a fresh live event once without persisting its payload, even after redelivery', async () => {
     const fresh = { ...entry, enqueuedAtEpochMs: Date.now() };
@@ -263,6 +262,16 @@ describe('remote hook spool receipts', () => {
     for (const value of entries) expect((await send(value)).status).toBe(202);
     expect(spool.entries()).toHaveLength(2);
     expect(remoteSpoolEnvelopeSchema.safeParse({ protocolVersion: 1, entry, filename: '../outside.json' }).success).toBe(false);
+  });
+});
+
+describe('client hook spool receipts', () => {
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'claude-mem-client-spool-'));
+  });
+
+  afterEach(() => {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
 
   it('does not remove a concurrently replaced client event after an older receipt', async () => {

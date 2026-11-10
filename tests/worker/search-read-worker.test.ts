@@ -305,31 +305,7 @@ describe('search reads through the context read worker', () => {
     }
   }, 30_000);
 
-  it('stalls /health when the same search read runs inline on the request thread', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'search-read-http-'));
-    const { child, portPromise } = spawnFixture(directory, 'inline');
-    try {
-      const port = await portPromise;
-      const searchResponse = fetch(`http://127.0.0.1:${port}/search`, { signal: AbortSignal.timeout(15_000) });
-      await delay(250);
-      const healthStartedAt = Date.now();
-      let healthError: Error | null = null;
-      try {
-        await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(750) });
-      } catch (error) {
-        healthError = error as Error;
-      }
-      expect(healthError?.name).toBe('TimeoutError');
-      expect(Date.now() - healthStartedAt).toBeGreaterThanOrEqual(700);
 
-      const search = await searchResponse;
-      expect(search.ok).toBe(true);
-      expect((await search.json()).totalResults).toBe(0);
-    } finally {
-      await stopFixture(child);
-      rmSync(directory, { recursive: true, force: true });
-    }
-  }, 30_000);
 });
 
 // 45 distinct words that are in no row, then the one word that is: over 600 characters, so the

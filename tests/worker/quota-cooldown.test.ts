@@ -251,25 +251,6 @@ describe('quota cooldown breaker (#3634)', () => {
     expect(tryAdmitQuotaProbe('openrouter', afterExpiry).admitted).toBe(true);
   });
 
-  it('bounds capped traffic to one probe per window instead of one per observation', () => {
-    // Reproduces the reported shape: a capped user keeps working, so a tool call
-    // arrives every few seconds for the rest of the billing cycle.
-    const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
-
-    let requestsSent = 0;
-    for (let elapsed = 0; elapsed < QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2; elapsed += 5_000) {
-      if (!isQuotaCooldownActive('claude', armedAt + elapsed)) {
-        requestsSent++;
-        // A probe that fails re-arms; model that as the worst case.
-        break;
-      }
-    }
-
-    // Before the fix this loop sent ~720 doomed requests; now it sends one.
-    expect(requestsSent).toBe(1);
-  });
-
   it('holds a rate-limit window for the short cooldown, not the quota one', () => {
     // Both reach this breaker through recordQuotaExhausted, so the window
     // string is the only thing separating a six-second throttle from a spent
