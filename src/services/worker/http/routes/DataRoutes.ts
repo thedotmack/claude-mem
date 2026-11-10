@@ -348,8 +348,9 @@ export class DataRoutes extends BaseRouteHandler {
 
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
+    const project = req.query.project;
     const rows = store.queryToolUseIndex({
-      project: asString(req.query.project),
+      project: typeof project === 'string' && project.trim() ? project : undefined,
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
       toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
