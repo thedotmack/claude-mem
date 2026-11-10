@@ -772,51 +772,65 @@ export class SyncApply {
    */
   private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): boolean {
     let applied = false;
-    const rows = this.db.prepare(`
+    // Keep only identities while waiting for each retry. Constraint failures
+    // can accumulate across many pull pages, so loading every raw_body here
+    // makes each new page retain the entire historical backlog in memory.
+    const rowIds = this.db.query(
+      'SELECT id FROM sync_pull_quarantine WHERE retryable = 1 ORDER BY id'
+    ).all() as Array<{ id: number }>;
+    if (rowIds.length === 0) return false;
+    const readRow = this.db.prepare(`
       SELECT id, epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
              entity_rev, operation_sha256, raw_body, reason
-      FROM sync_pull_quarantine WHERE retryable = 1 ORDER BY id
-    `).all() as Array<{
+      FROM sync_pull_quarantine WHERE id = ? AND retryable = 1
+    `);
+    type RetryableRow = {
       id: number; epoch: string; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
       origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string; reason: string;
-    }>;
-    for (const row of rows) {
-      const safe = redactSyncDiagnostic(row);
-      if (JSON.stringify(safe) !== JSON.stringify(row)) {
-        const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq && safe.kind === row.kind
-          && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
-          && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
-          && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
-        this.db.prepare(`UPDATE sync_pull_quarantine SET epoch=?, seq=?, kind=?, entity_id=?,
-          origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, raw_body=?, reason=?, retryable=? WHERE id=?`)
-          .run(safe.epoch, safe.seq, safe.kind, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
-            safe.entity_rev, safe.operation_sha256, safe.raw_body, safe.reason, Number(replaySafe), row.id);
-        if (!replaySafe) continue;
+    };
+    try {
+      for (const { id } of rowIds) {
+        const row = readRow.get(id) as RetryableRow | undefined;
+        if (!row) continue;
+        const safe = redactSyncDiagnostic(row);
+        if (JSON.stringify(safe) !== JSON.stringify(row)) {
+          const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq && safe.kind === row.kind
+            && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
+            && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
+            && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
+          this.db.prepare(`UPDATE sync_pull_quarantine SET epoch=?, seq=?, kind=?, entity_id=?,
+            origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, raw_body=?, reason=?, retryable=? WHERE id=?`)
+            .run(safe.epoch, safe.seq, safe.kind, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
+              safe.entity_rev, safe.operation_sha256, safe.raw_body, safe.reason, Number(replaySafe), row.id);
+          if (!replaySafe) continue;
+        }
+        const op: SyncOp = {
+          seq: row.seq,
+          kind: row.kind,
+          origin_device: row.origin_device_id,
+          origin_id: row.origin_local_id,
+          rev: row.entity_rev,
+          body: row.raw_body,
+          server_ts: 0, // read only by mutations, which are never retried
+          entity_id: row.entity_id,
+          entity_rev: row.entity_rev,
+          operation_sha256: row.operation_sha256,
+          deleted: false, // a tombstone cannot violate a constraint
+        };
+        let attempt: ReturnType<SyncApply['applyInSavepoint']>;
+        try {
+          attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
+        } catch (error) {
+          if (!this.db.inTransaction) throw error; // the batch itself is gone
+          continue; // transient: the next batch retries it again
+        }
+        if ('unapplicable' in attempt) continue;
+        this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+        if (attempt.outcome === 'applied') applied = true;
+        recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
       }
-      const op: SyncOp = {
-        seq: row.seq,
-        kind: row.kind,
-        origin_device: row.origin_device_id,
-        origin_id: row.origin_local_id,
-        rev: row.entity_rev,
-        body: row.raw_body,
-        server_ts: 0, // read only by mutations, which are never retried
-        entity_id: row.entity_id,
-        entity_rev: row.entity_rev,
-        operation_sha256: row.operation_sha256,
-        deleted: false, // a tombstone cannot violate a constraint
-      };
-      let attempt: ReturnType<SyncApply['applyInSavepoint']>;
-      try {
-        attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
-      } catch (error) {
-        if (!this.db.inTransaction) throw error; // the batch itself is gone
-        continue; // transient: the next batch retries it again
-      }
-      if ('unapplicable' in attempt) continue;
-      this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
-      if (attempt.outcome === 'applied') applied = true;
-      recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
+    } finally {
+      readRow.finalize();
     }
     return applied;
   }
