@@ -24,10 +24,10 @@ const VERSION = '13.4.0';
 const WEDGED_PID = 4343;
 
 type ReadyScenario =
-  | { kind: 'phases'; phases: Array<{ phase: string; message?: string }>; then: 'end' | 'hang' | 'ping' }
+  | { kind: 'phases'; phases: Array<{ phase: string; message?: string }>; then: 'end' | 'hang' | 'ping' | 'idle_error' }
   | { kind: 'status'; status: number }
-  /** Accepts the connection, never sends response headers (event loop blocked). */
-  | { kind: 'no_headers' };
+  /** The idle window expires before response headers arrive (event loop blocked). */
+  | { kind: 'no_headers_idle_error' };
 
 const READY_SUCCESSOR: ReadyScenario = { kind: 'phases', phases: [{ phase: 'starting' }, { phase: 'ready' }], then: 'end' };
 
@@ -92,6 +92,9 @@ function readyStreamResponse(scenario: Extract<ReadyScenario, { kind: 'phases' }
         pingTimer = setInterval(() => controller.enqueue(encoder.encode(': ping\n\n')), 30);
       }
     },
+    pull(controller) {
+      if (scenario.then === 'idle_error') controller.error(new Error('Request timed out after 5000ms idle'));
+    },
     cancel() {
       if (pingTimer) clearInterval(pingTimer);
     },
@@ -116,10 +119,8 @@ function installFetchMock(): void {
       if (scenario.kind === 'status') {
         return Promise.resolve(jsonResponse({ error: 'Not found' }, scenario.status));
       }
-      if (scenario.kind === 'no_headers') {
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
-        });
+      if (scenario.kind === 'no_headers_idle_error') {
+        return Promise.reject(new Error('Request timed out after 5000ms idle'));
       }
       return Promise.resolve(readyStreamResponse(scenario, init?.signal));
     }
@@ -229,7 +230,7 @@ describe('worker readiness via GET /api/ready', () => {
     }, 15_000);
 
     it('same pid silent for ≥30 s across hooks (headers do not reset the record) ⇒ wedged ⇒ recycled', async () => {
-      wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }], then: 'hang' };
+      wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }], then: 'idle_error' };
       const workerUtils = await loadWithOwnedPid();
       writeFileSync(unresponsiveRecordPath(), JSON.stringify({ pid: WEDGED_PID, firstUnresponsiveAtEpochMs: Date.now() - 31_000 }));
 
@@ -336,7 +337,7 @@ describe('worker readiness via GET /api/ready', () => {
     const unresponsiveRecordPath = () => join(tempDataDir, 'worker-unresponsive.json');
 
     it('once ⇒ skips the hook without killing and records the pid', async () => {
-      wedgedWorkerScenario = { kind: 'no_headers' };
+      wedgedWorkerScenario = { kind: 'no_headers_idle_error' };
       const workerUtils = await loadWithOwnedPid();
 
       const startedAt = Date.now();
@@ -350,7 +351,7 @@ describe('worker readiness via GET /api/ready', () => {
     }, 15_000);
 
     it('same pid unresponsive for ≥30 s across hooks ⇒ wedged ⇒ recycled', async () => {
-      wedgedWorkerScenario = { kind: 'no_headers' };
+      wedgedWorkerScenario = { kind: 'no_headers_idle_error' };
       const workerUtils = await loadWithOwnedPid();
       writeFileSync(unresponsiveRecordPath(), JSON.stringify({ pid: WEDGED_PID, firstUnresponsiveAtEpochMs: Date.now() - 31_000 }));
 
@@ -361,7 +362,7 @@ describe('worker readiness via GET /api/ready', () => {
     }, 15_000);
 
     it('an old record for a DIFFERENT pid does not count ⇒ no kill, record restarts for this pid', async () => {
-      wedgedWorkerScenario = { kind: 'no_headers' };
+      wedgedWorkerScenario = { kind: 'no_headers_idle_error' };
       const workerUtils = await loadWithOwnedPid();
       writeFileSync(unresponsiveRecordPath(), JSON.stringify({ pid: WEDGED_PID + 1, firstUnresponsiveAtEpochMs: Date.now() - 60_000 }));
 
@@ -380,7 +381,7 @@ describe('worker readiness via GET /api/ready', () => {
     });
 
     it('bounded startup: pre-header silence once ⇒ no kill and no second worker spawned', async () => {
-      wedgedWorkerScenario = { kind: 'no_headers' };
+      wedgedWorkerScenario = { kind: 'no_headers_idle_error' };
       const workerUtils = await loadWithOwnedPid();
 
       const result = await workerUtils.executeWithWorkerFallback('/api/test', 'GET', undefined, {

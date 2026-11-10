@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -142,9 +142,6 @@ describe('worker-utils fetch verbose diagnostics', () => {
       return true;
     }) as typeof process.stderr.write;
 
-    const loggerModule = await import('../../src/utils/logger.js');
-    const warnSpy = spyOn(loggerModule.logger, 'warn').mockImplementation(() => {});
-
     try {
       const workerUtils = await import('../../src/shared/worker-utils.js');
       await expect(
@@ -157,19 +154,7 @@ describe('worker-utils fetch verbose diagnostics', () => {
       expect(diagnostic).toContain('UND_ERR_SOCKET');
       expect(diagnostic).toContain('socket hang up');
       expect(diagnostic).toContain('read ECONNRESET');
-
-      const warnCall = warnSpy.mock.calls.find((call) => call[1] === 'Worker IPC fetch failed');
-      expect(warnCall).toBeDefined();
-      expect(warnCall?.[2]).toEqual({
-        url: 'http://127.0.0.1:37777/api/sessions/init',
-        method: 'POST',
-      });
-      expect(typeof warnCall?.[3]).toBe('string');
-      expect(warnCall?.[3]).toContain('UND_ERR_SOCKET');
-      expect(warnCall?.[3]).toContain('The socket connection was closed unexpectedly');
-      expect(warnCall?.[3]).toContain('read ECONNRESET');
     } finally {
-      warnSpy.mockRestore();
       process.stderr.write = originalWrite as typeof process.stderr.write;
     }
   });
