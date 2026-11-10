@@ -3863,68 +3863,73 @@ export class SessionStore {
       this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
     }
 
-    const existing = this.db.prepare(`
-      SELECT id, platform_source
-      FROM sdk_sessions
-      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
-        AND content_session_id = ?
-    `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number; platform_source: string | null } | undefined;
+    // The title has no independently synced session row: its outbox mutation
+    // is the only way another device learns it. Commit both together so a
+    // failed enqueue cannot leave a filled title that retries will skip.
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT id, platform_source
+        FROM sdk_sessions
+        WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+          AND content_session_id = ?
+      `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
-    if (existing) {
-      if (project) {
-        // 'unknown' is the placeholder ingest paths register when a payload has
-        // no cwd (#4772); a later init with the real project must repair it, but
-        // a real project is never demoted back to the placeholder. 'unknown' is
-        // also a legitimate path-mode project name — a non-git checkout literally
-        // named `unknown` resolves to it (#4774 review) — so only repair rows
-        // that provably hold the placeholder: every ingest/init path that
-        // resolves a real cwd also records it via setSessionCwd (first-write-wins,
-        // guarded on cwd IS NULL), so a stored 'unknown' with a NULL cwd can only
-        // come from a no-cwd payload.
-        this.db.prepare(`
-          UPDATE sdk_sessions SET project = ?
-          WHERE id = ? AND (project IS NULL OR project = '' OR (project = 'unknown' AND cwd IS NULL))
-        `).run(project, existing.id);
-      }
-      // A tool-first init persists the placeholder; the first real prompt repairs it.
-      // Real prompts are never overwritten by later real prompts.
-      if (storedUserPrompt && storedUserPrompt !== MEDIA_PROMPT_PLACEHOLDER) {
-        this.db.prepare(`
-          UPDATE sdk_sessions SET user_prompt = ?
-          WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = ?)
-        `).run(storedUserPrompt, existing.id, MEDIA_PROMPT_PLACEHOLDER);
-      }
-      if (customTitle) {
-        // SELECT-then-UPDATE, never a decision on `.run().changes`
-        // (bun:sqlite reports unreliable `changes` after RETURNING statements
-        // on this connection — see the note in SyncApply.applySetTitle). The
-        // set_title op is emitted only when the NULL-guarded fill actually
-        // landed, mirroring what replicas will apply.
-        const current = this.db.prepare(
-          'SELECT custom_title FROM sdk_sessions WHERE id = ?'
-        ).get(existing.id) as { custom_title: string | null } | undefined;
-        if (current && current.custom_title === null) {
+      if (existing) {
+        if (project) {
+          // 'unknown' is the placeholder ingest paths register when a payload has
+          // no cwd (#4772); a later init with the real project must repair it, but
+          // a real project is never demoted back to the placeholder. 'unknown' is
+          // also a legitimate path-mode project name — a non-git checkout literally
+          // named `unknown` resolves to it (#4774 review) — so only repair rows
+          // that provably hold the placeholder: every ingest/init path that
+          // resolves a real cwd also records it via setSessionCwd (first-write-wins,
+          // guarded on cwd IS NULL), so a stored 'unknown' with a NULL cwd can only
+          // come from a no-cwd payload.
           this.db.prepare(`
-            UPDATE sdk_sessions SET custom_title = ?
-            WHERE id = ? AND custom_title IS NULL
-          `).run(customTitle, existing.id);
-          this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+            UPDATE sdk_sessions SET project = ?
+            WHERE id = ? AND (project IS NULL OR project = '' OR (project = 'unknown' AND cwd IS NULL))
+          `).run(project, existing.id);
         }
+        // A tool-first init persists the placeholder; the first real prompt repairs it.
+        // Real prompts are never overwritten by later real prompts.
+        if (storedUserPrompt && storedUserPrompt !== MEDIA_PROMPT_PLACEHOLDER) {
+          this.db.prepare(`
+            UPDATE sdk_sessions SET user_prompt = ?
+            WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = ?)
+          `).run(storedUserPrompt, existing.id, MEDIA_PROMPT_PLACEHOLDER);
+        }
+        if (customTitle) {
+          // SELECT-then-UPDATE, never a decision on `.run().changes`
+          // (bun:sqlite reports unreliable `changes` after RETURNING statements
+          // on this connection — see the note in SyncApply.applySetTitle). The
+          // set_title op is emitted only when the NULL-guarded fill actually
+          // landed, mirroring what replicas will apply.
+          const current = this.db.prepare(
+            'SELECT custom_title FROM sdk_sessions WHERE id = ?'
+          ).get(existing.id) as { custom_title: string | null } | undefined;
+          if (current && current.custom_title === null) {
+            this.db.prepare(`
+              UPDATE sdk_sessions SET custom_title = ?
+              WHERE id = ? AND custom_title IS NULL
+            `).run(customTitle, existing.id);
+            this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+          }
+        }
+        return existing.id;
       }
-      return existing.id;
-    }
 
-    const result = this.db.prepare(`
-      INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
+      const result = this.db.prepare(`
+        INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
+      `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
-    if (customTitle) {
-      this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
-    }
+      if (customTitle) {
+        this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+      }
 
-    return Number(result.lastInsertRowid);
+      return Number(result.lastInsertRowid);
+    }).immediate();
   }
 
   // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
