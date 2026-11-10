@@ -27,7 +27,8 @@ import { randomBytes } from 'crypto';
 import { apiKeyPrefix, hashApiKey as hashApiKeyStorage } from '../../server/auth/api-key-hash.js';
 import { logger } from '../../utils/logger.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
-import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
+import { createPostgresPool, withPostgresTransaction, type PostgresPool } from '../../storage/postgres/pool.js';
+import type { PostgresQueryable } from '../../storage/postgres/utils.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import { ensureApiKeySchema } from '../../storage/postgres/schema.js';
@@ -69,44 +70,39 @@ export async function bootstrapServerApiKey(
   const pool = deps.pool ?? buildPoolFromEnv();
 
   try {
-    // The standalone key commands (`server api-key create`, `keys rotate`)
-    // run before any updated server process has bootstrapped the schema, and
-    // createApiKey writes key_prefix. Apply the idempotent upgrade first so an
-    // existing database gets the column before these queries touch it.
-    await ensureApiKeySchema(pool);
-    const teamId = await findOrCreateTeam(pool);
-    const projectId = await findOrCreateProject(pool, teamId);
-
     const rawKey = createRawApiKey();
     const keyHash = hashApiKey(rawKey);
     const keyPrefix = apiKeyPrefix(rawKey);
 
-    const repo = new PostgresAuthRepository(pool);
-    const created = await repo.createApiKey({
-      keyHash,
-      keyPrefix,
-      teamId,
-      projectId,
-      actorId: LOCAL_HOOK_ACTOR_ID,
-      scopes: [...HOOK_API_KEY_SCOPES],
+    return await withPostgresTransaction(pool, async client => {
+      // Keep the schema/key locks until the linked audit is written. Releasing
+      // them between inserts lets concurrent bootstrap DDL lock api_keys and
+      // then wait for audit_log while the audit's FK check waits for api_keys.
+      // Failure also rolls back tenant rows and the otherwise unreported key.
+      await ensureApiKeySchema(client);
+      const teamId = await findOrCreateTeam(client);
+      const projectId = await findOrCreateProject(client, teamId);
+      const repo = new PostgresAuthRepository(client);
+      const created = await repo.createApiKey({
+        keyHash,
+        keyPrefix,
+        teamId,
+        projectId,
+        actorId: LOCAL_HOOK_ACTOR_ID,
+        scopes: [...HOOK_API_KEY_SCOPES],
+      });
+      await repo.createAuditLog({
+        teamId,
+        projectId,
+        actorId: LOCAL_HOOK_ACTOR_ID,
+        apiKeyId: created.id,
+        action: 'api_key.create',
+        resourceType: 'api_key',
+        resourceId: created.id,
+        details: { source: 'server-bootstrap' },
+      });
+      return { rawKey, apiKeyId: created.id, teamId, projectId };
     });
-    await repo.createAuditLog({
-      teamId,
-      projectId,
-      actorId: LOCAL_HOOK_ACTOR_ID,
-      apiKeyId: created.id,
-      action: 'api_key.create',
-      resourceType: 'api_key',
-      resourceId: created.id,
-      details: { source: 'server-bootstrap' },
-    });
-
-    return {
-      rawKey,
-      apiKeyId: created.id,
-      teamId,
-      projectId,
-    };
   } finally {
     if (closePool) {
       await pool.end().catch(() => undefined);
@@ -233,7 +229,7 @@ export function hashApiKey(rawKey: string): string {
   return hashApiKeyStorage(rawKey);
 }
 
-async function findOrCreateTeam(pool: PostgresPool): Promise<string> {
+async function findOrCreateTeam(pool: PostgresQueryable): Promise<string> {
   const existing = await pool.query<{ id: string }>(
     `SELECT id FROM teams WHERE name = $1 LIMIT 1`,
     [LOCAL_HOOK_TEAM_NAME],
@@ -246,7 +242,7 @@ async function findOrCreateTeam(pool: PostgresPool): Promise<string> {
   return team.id;
 }
 
-async function findOrCreateProject(pool: PostgresPool, teamId: string): Promise<string> {
+async function findOrCreateProject(pool: PostgresQueryable, teamId: string): Promise<string> {
   const existing = await pool.query<{ id: string }>(
     `SELECT id FROM projects WHERE team_id = $1 AND name = $2 LIMIT 1`,
     [teamId, LOCAL_HOOK_PROJECT_NAME],
