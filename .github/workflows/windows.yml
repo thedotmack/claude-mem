@@ -71,13 +71,20 @@ jobs:
         shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/hooks/file-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
+          & $bun test tests/hooks/file-context.test.ts tests/cli/adapters/shell-tilde-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
 
       - name: Context reader responsiveness and packaging
         shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
           & $bun test tests/context/context-read-responsiveness.test.ts tests/context/context-read-results.test.ts tests/context/context-read-worker-lifecycle.test.ts tests/context/context-read-routes.test.ts tests/context/context-work-state-order.test.ts tests/infrastructure/context-reader-packaging.test.ts --timeout 60000
+
+      - name: Deep search subprocess lifecycle and release artifacts
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/worker/deep-search-client.test.ts tests/worker/deep-search-snapshot.test.ts tests/integration/deep-search-guard-faults.test.ts tests/integration/deep-search-process.test.ts tests/integration/deep-search-packaging.test.ts tests/integration/deep-search-release-e2e.test.ts tests/integration/context-bundle-environment.test.ts tests/integration/worker-binary-build.test.ts --timeout 120000
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
       # scripts that replaced rsync and tail: mirror pattern matching, --delete

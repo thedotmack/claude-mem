@@ -26,8 +26,11 @@ const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
 // The first test to probe the model may download all-MiniLM-L6-v2 (about
 // 90 MB) into a cold cache. On a GitHub runner that took about 12 s (server
-// search CI job 129461778315, 2026-11-09), past bun's 5 s default. Five times that
-// lets a slow runner finish while a hung download still fails the test.
+// search CI job 129461778315, 2026-11-09), past bun's 5 s default. With the
+// model already cached and the batched seed (#5658), the clamp test measured
+// 3.1 s (server search job) and 4.4 s (sync-api job), so the download is the
+// case to budget for. Five times 12 s lets a slow runner finish while a hung
+// download still fails the test.
 const COLD_MODEL_LOAD_TEST_TIMEOUT_MS = 60_000;
 
 describe('POST /v1/context/semantic limits', () => {
@@ -132,12 +135,17 @@ describe('POST /v1/context/semantic limits', () => {
     const storage = createPostgresStorageRepositories(client);
     const team = (await client.query<{ team_id: string }>('SELECT team_id FROM projects WHERE id = $1', [projectId])).rows[0]!.team_id;
     const embeddings = new PostgresObservationEmbeddingsRepository(pool);
+    const observations = [];
     for (const row of rows) {
-      const observation = await storage.observations.create({ projectId, teamId: team, ...row });
-      // With vectors, so the search finds them by meaning on any Postgres
-      // with pgvector, not only where bm25 matches any keyword.
-      const [embedded] = (await embedObservationRows(pool, [observation])) ?? [];
-      if (embedded) await embeddings.upsert({ observationId: observation.id, model: getSharedEmbedder().modelId, ...embedded });
+      observations.push(await storage.observations.create({ projectId, teamId: team, ...row }));
+    }
+    // With vectors, so the search finds them by meaning on any Postgres with
+    // pgvector, not only where bm25 matches any keyword. One embed call for the
+    // whole seed: one call per row made the 30-row clamp test pass the default
+    // 5 s timeout on loaded CI runners.
+    const embedded = (await embedObservationRows(pool, observations)) ?? [];
+    for (const [index, parts] of embedded.entries()) {
+      await embeddings.upsert({ observationId: observations[index]!.id, model: getSharedEmbedder().modelId, ...parts });
     }
   }
 

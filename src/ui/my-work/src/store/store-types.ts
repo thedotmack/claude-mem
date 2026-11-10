@@ -64,6 +64,7 @@ export type Section = NavPage | 'suggested' | 'past-focus'
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
 export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'
+export type FocusArtwork = 'full' | 'compact' | 'off'
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
 
@@ -86,6 +87,8 @@ export interface ViewState {
   listView: WorkListView
   filter: WorkFilter
   sort: WorkSort
+  /** Display density only; changing it never requests image generation. */
+  focusArtwork: FocusArtwork
 }
 
 export interface ViewSlice {
@@ -107,6 +110,7 @@ export interface ViewSlice {
   setListView: (listView: WorkListView) => void
   setFilter: (filter: WorkFilter) => void
   setSort: (sort: WorkSort) => void
+  setFocusArtwork: (focusArtwork: FocusArtwork) => void
 }
 
 // ---------- Rules: the receipts and Undo for My Rules saves ----------

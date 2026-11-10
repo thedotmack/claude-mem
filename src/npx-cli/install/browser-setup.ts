@@ -1,7 +1,8 @@
 // The installer's side of the install funnel: open the setup page, wait for the storage choice, apply it, then wait
 // until the page finishes setup. The worker holds the state (GET /api/setup/state); the terminal only waits.
-// There is no overall time limit for the person. Individual worker requests are bounded so an unresponsive
-// connection cannot pin a poll or keep the installer waiting after checkout has finished.
+// There is no overall time limit for the person: the URL is printed once the worker answers, and if the browser
+// never connects the wait goes on. Individual worker requests are bounded so an unresponsive connection cannot pin
+// a poll or keep the installer waiting after checkout has finished.
 import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
@@ -145,11 +146,12 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
   };
 
   const url = setupPageUrl(deps.workerBaseUrl);
-  deps.log.info(`Continue setup in your browser: ${url}`);
-  deps.openBrowser(url);
-  // Wait for the worker before the first report, then start a fresh hand-off: an earlier run's choice is cleared.
+  // Clear the previous run before exposing the page: opening it (or following the
+  // printed URL) can submit a new choice before a later reset would arrive.
   await waitFor(() => true);
   await report('waiting-for-choice');
+  deps.log.info(`Continue setup in your browser: ${url}`);
+  deps.openBrowser(url);
   deps.log.info('Waiting for you in the browser. This terminal finishes when setup does.');
 
   const chosen = await waitFor((state) => state.choice !== null);

@@ -368,7 +368,7 @@ export class MediaCloudSync {
       WHERE origin='native' AND state='ready' AND upload_state='pending' AND upload_retry_at<=?
       ORDER BY created_at LIMIT ${UPLOAD_BATCH}`).all(this.now()) as UploadCandidate[];
     for (const candidate of candidates) {
-      if (this.stopped) return;
+      if (this.stopped || !this.options.uploadsEnabled()) return;
       await this.uploadOne(candidate, result);
     }
   }
@@ -408,7 +408,9 @@ export class MediaCloudSync {
       this.recordUploadFailure(attempted, { kind: code === 'storage_unavailable' ? 'retry' : 'final', code }, result);
       return;
     }
-    if (this.stopped) return;
+    // Consent may change while the file read is pending. Do not begin a new
+    // cloud send after opt-out; the retained row stays pending for an opt-in.
+    if (this.stopped || !this.options.uploadsEnabled()) return;
     const outcome = await this.client.upload(manifest, canonicalBytes);
     if (this.stopped) return;
     if (outcome.kind !== 'ok') {

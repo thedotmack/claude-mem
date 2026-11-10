@@ -14,6 +14,8 @@ const compiled = buildSync({
       export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
+      export { SAMPLE_REQUESTS } from './src/data';
+      export { SAMPLE_FOCUS_AREAS } from './src/data-goals';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
         <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
@@ -21,7 +23,7 @@ const compiled = buildSync({
   },
   tsconfig: resolve(import.meta.dir, '../../../src/ui/my-work/tsconfig.app.json'),
   bundle: true, write: false, format: 'cjs', platform: 'node',
-  loader: { '.webp': 'dataurl' }, define: { 'process.env.NODE_ENV': '"production"' },
+  loader: { '.webp': 'dataurl', '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' },
 }).outputFiles[0].text;
 
 function fixture() {
@@ -111,12 +113,24 @@ describe('hosted setup scan control', () => {
     const empty = { goals: [], work: [], rules: [] };
     const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
     expect(local).toContain('You skipped this step.');
-    expect(local).not.toContain('already knows your work');
+    expect(local).not.toContain('Your work is starting to connect.');
     // An upload that came back with nothing must never be described as "nothing was uploaded".
     const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
     expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
-    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
+    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('Your work is starting to connect.');
+  });
+
+  it('counts requests already linked to an area while other work is still connecting or unreadable', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
+    const running = { state: 'running', step: 'work' };
+    const linked = app.renderReveal(agents, { goals: [], work: null, rules: null, focusAreas: app.SAMPLE_FOCUS_AREAS, requests: app.SAMPLE_REQUESTS, requestReadErrorCount: 1 }, running, ['codex']);
+    expect(linked).toMatch(/>[1-9]\d* requests?</);
+    expect(linked).toContain('Some work could not be read');
+    const unlinked = app.renderReveal(agents, { goals: [], work: null, rules: null, focusAreas: app.SAMPLE_FOCUS_AREAS, requests: [], requestReadErrorCount: 0 }, running, ['codex']);
+    expect(unlinked).toContain('Connecting work…');
+    expect(unlinked).not.toContain('Some work could not be read');
   });
 
   it('lets people continue after capacity refusal without claiming results or a voluntary skip', () => {
@@ -265,7 +279,7 @@ describe('hosted setup scan control', () => {
     expect(latest.scan.phase).toBe('uploading');
     expect(latest.scan.improveProduct).toBe(false);
     Stream.latest.send('work-view', {
-      goals: null, rules: [], story: null,
+      humanRequests: [], agents: [], source: { connected: true }, goals: null, rules: [], story: null,
       setup: { extraction: { state: 'ok', step: null }, work: [{ groupId: 'g1', title: 'Ship the upload', platform: 'codex', lastActiveAt: null, progressPercent: null }] },
     });
     Stream.latest.send('setup-scan', scan({ phase: 'done', done: true, percent: 100, improveProduct: false }));
@@ -315,7 +329,7 @@ describe('hosted setup scan control', () => {
     await until(() => bodies.length > 0);
     expect(bodies).toEqual([{ improveProduct: false }]);
     Stream.latest.send('setup-scan', scan({ phase: 'uploading', percent: 99, improveProduct: false }));
-    Stream.latest.send('work-view', { goals: null, rules: [], story: null, setup: { extraction: { state: 'ok', step: null }, work: [] } });
+    Stream.latest.send('work-view', { humanRequests: [], agents: [], source: { connected: true }, goals: null, rules: [], story: null, setup: { extraction: { state: 'ok', step: null }, work: [] } });
     Stream.latest.send('setup-scan', scan({ phase: 'done', percent: 100, done: true, improveProduct: false }));
     expect(latest.scan.done).toBe(true);
     expect(latest.scan.improveProduct).toBe(false);

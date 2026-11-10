@@ -1,3 +1,4 @@
+import { workerBinaryBuildOptions } from '../../scripts/worker-binary-build-options.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { build } from 'esbuild';
@@ -101,7 +102,8 @@ describe('work view reader packaging', () => {
 
   it('is an entry of every build that packages the worker', () => {
     const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
-    expect(packageJson.scripts['build:cli-binary']).toContain('./src/services/work-view/work-view-read-worker.ts');
+    expect(packageJson.scripts['build:cli-binary']).toContain('scripts/build-native-worker.js');
+    expect(workerBinaryBuildOptions({ outfile: 'unused' }).entrypoints.some((entry: string) => entry.endsWith('/src/services/work-view/work-view-read-worker.ts') || entry.endsWith('\\src\\services\\work-view\\work-view-read-worker.ts'))).toBe(true);
     expect(readFileSync('scripts/build-worker-binary.js', 'utf8')).toContain("'./plugin/scripts/work-view-read-worker.cjs'");
     expect(readFileSync('scripts/build-hooks.js', 'utf8')).toContain("source: 'src/services/work-view/work-view-read-worker.ts'");
   });
