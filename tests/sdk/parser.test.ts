@@ -63,6 +63,24 @@ describe('parseAgentXml — observations', () => {
     }
   });
 
+  it('preserves an observation that documents a skip sentinel inside its narrative', () => {
+    const narrative = '<![CDATA[The observer returned <skip_summary reason="no change"/> for bookkeeping.]]>';
+    const result = expectObservation(`<observation><type>discovery</type><title>Skip behavior</title><narrative>${narrative}</narrative></observation>`);
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('Skip behavior');
+    expect(result[0].narrative).toBe(narrative);
+  });
+
+  it('preserves a summary that discusses the skip sentinel in a field', () => {
+    const learned = '<![CDATA[<skip_summary/> means no substantive summary was requested.]]>';
+    const result = parseAgentXml(`<summary><request>Document the parser</request><learned>${learned}</learned></summary>`);
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error('Expected a complete summary');
+    expect(result.summary?.skipped).toBeUndefined();
+    expect(result.summary?.request).toBe('Document the parser');
+    expect(result.summary?.learned).toBe(learned);
+  });
+
   it('returns a populated observation when title is present', () => {
     const xml = `<observation>
       <type>discovery</type>
