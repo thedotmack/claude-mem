@@ -1,8 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCore } from '../../src/integrations/opencode-plugin/core.js';
+import { createCore, type ClaudeMemCore } from '../../src/integrations/opencode-plugin/core.js';
 
 const refusal = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+
+const ignoredResponses: Array<{ name: string; status: number; run: (core: ClaudeMemCore) => Promise<unknown> }> = [
+  { name: 'accepted session init', status: 200, run: core => core.captureUserPrompt('accepted-body', 'prompt') },
+  { name: 'rejected session init', status: 503, run: core => core.captureUserPrompt('rejected-body', 'prompt') },
+  { name: 'rejected context', status: 503, run: core => core.memoryContext('rejected-context-body') },
+  { name: 'rejected search', status: 503, run: core => core.search('query') },
+  { name: 'rejected timeline', status: 503, run: core => core.timeline(1) },
+  { name: 'rejected observation batch', status: 503, run: core => core.getObservations([1]) },
+];
+
+for (const { name, status, run } of ignoredResponses) {
+  test(`${name} releases its unread response when the operation returns`, async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    let cancelled = false;
+    let calls = 0;
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('ignored worker response')); },
+      cancel() { cancelled = true; },
+    }), { status });
+    globalThis.fetch = (async () => { calls++; return response; }) as typeof fetch;
+    console.warn = () => {};
+    try {
+      await run(createCore({ directory: '/work/response-ownership' }));
+      assert.equal(calls, 1, 'response cleanup must not resend a request');
+      assert.equal(cancelled, true, 'the operation owns the body even when it does not read it');
+    } finally {
+      await response.body?.cancel();
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
+}
 
 test('an outage never replays old OpenCode observations or summaries after recovery', async () => {
   const originalFetch = globalThis.fetch;

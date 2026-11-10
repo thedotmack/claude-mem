@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite';
 import type { Worker } from 'node:worker_threads';
 import type { ContentKind } from './CanonicalContent.js';
 import { createWorkViewReadWorker } from '../work-view/WorkViewReadWorkerClient.js';
+import { sharedWorkListSql } from '../work-view/shared-records.mjs';
 import { affectedByMutationSql, FROZEN_SCOPE, HEAD_MUTATION_SQL, mutationPrerequisiteSql, nativeScope, PENDING_MUTATIONS_SQL } from './SyncScheduling.js';
 
 export interface SyncQueueFlags {
@@ -48,7 +49,7 @@ export interface SyncQueueEvidenceSnapshot {
 const TABLES: Record<ContentKind, string> = {
   observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', work_state: 'work_state_entries',
 };
-const SHARED_LIST = "COALESCE(list_name, '') GLOB '__my_work_v[0-9]*:*'";
+const SHARED_LIST = sharedWorkListSql('list_name');
 type Aggregate = { pending: number; eligible: number; shared: number; mutationHeld: number; tombstones: number; oldest: number | null; oldestEligible: number | null; oldestMutationHeld: number | null };
 
 /** Runs only in the dedicated inventory worker (or an explicit test), never in status(). */
@@ -79,7 +80,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
       `).get(kind) as Aggregate;
       // Null list names (including tombstones without payloads) use the existing uploader policy.
       const frozenShared = kind === 'work_state'
-        ? "COALESCE(CASE WHEN json_valid(o.body) THEN json_extract(o.body, '$.payload.list_name') END, '') GLOB '__my_work_v[0-9]*:*'" : '0';
+        ? sharedWorkListSql("CASE WHEN json_valid(o.body) THEN json_extract(o.body, '$.payload.list_name') END") : '0';
       const frozenHeld = `(EXISTS (SELECT 1 FROM ${PENDING_MUTATIONS_SQL} m WHERE
         ${affectedByMutationSql(FROZEN_SCOPE, deviceSql)} AND NOT ${mutationPrerequisiteSql(FROZEN_SCOPE, deviceSql)})
         AND NOT EXISTS (SELECT 1 FROM ${HEAD_MUTATION_SQL} m WHERE ${mutationPrerequisiteSql(FROZEN_SCOPE, deviceSql)}))`;

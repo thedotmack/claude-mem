@@ -151,7 +151,7 @@ function withoutKey(record: UnknownRecord, removedKey: string | undefined): Unkn
 }
 
 function looksLikeJsonText(value: string): boolean {
-  return value.startsWith('{') || value.startsWith('[') || value.startsWith('"');
+  return /^[ \t\r\n]*[\[{\"]/.test(value);
 }
 
 /**
@@ -213,8 +213,8 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
     const label = `event1_image${recognizedImageCount}`;
     const encodedLength = image.encodedBytes?.length ?? 0;
     const rejectionCode = rejectionCodeFor(image);
-    acceptedEncodedCharacters += encodedLength;
     if (!rejectionCode) {
+      acceptedEncodedCharacters += encodedLength;
       candidates.push({
         shape: image.shape,
         ...(image.encodedBytes !== undefined ? { encoded: image.encodedBytes } : {}),

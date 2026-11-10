@@ -30,6 +30,11 @@ export interface BackupSnapshotResult {
   createdAt: number;
 }
 
+export interface BackupRunResult extends BackupSnapshotResult {
+  /** The snapshot is complete, but pruning old snapshots failed. */
+  retentionError?: string;
+}
+
 export interface BackupStatus {
   configured: boolean;
   lastSnapshotAt: number | null;
@@ -45,6 +50,9 @@ export interface BackupStatus {
  * the database.
  */
 const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
+
+// Node and Bun turn delays above the signed 32-bit limit into 1 ms.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** A snapshot still being written, or left behind by a crash mid-write. */
 const PARTIAL_SNAPSHOT_PATTERN = /^claude-mem-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.db\.partial(-wal|-shm|-journal)?$/;
@@ -85,8 +93,8 @@ export class BackupManager {
   private nextRunAt: number | null = null;
 
   constructor(settings: BackupSettingKeys, options: BackupManagerOptions = {}) {
-    const intervalHours = Number.parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS ?? '');
-    this.intervalMs = (Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 24) * 3_600_000;
+    const intervalMs = Number.parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS ?? '') * 3_600_000;
+    this.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 24 * 3_600_000;
     const retain = Number.parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT ?? '', 10);
     this.retainCount = Number.isFinite(retain) && retain > 0 ? retain : 7;
     this.dbPath = options.dbPath ?? DB_PATH;
@@ -222,15 +230,22 @@ export class BackupManager {
   /**
    * One snapshot + retention cycle on demand (POST /api/backup/run).
    * Single-flight: returns `null` without doing anything when a cycle is
-   * already in progress (the route maps that to 409). Failures are recorded
-   * in lastError and rethrown so the caller can surface them.
+   * already in progress (the route maps that to 409). A snapshot failure is
+   * thrown. A later retention failure accompanies the completed snapshot.
    */
-  async runNow(): Promise<BackupSnapshotResult | null> {
+  async runNow(): Promise<BackupRunResult | null> {
     if (this.running) return null;
     this.running = true;
     try {
       const result = await this.createSnapshot();
-      await this.applyRetention();
+      try {
+        await this.applyRetention();
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.lastError = normalized.message;
+        logger.error('BACKUP', 'Snapshot saved but retention failed', { backupPath: result.path }, normalized);
+        return { ...result, retentionError: normalized.message };
+      }
       return result;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
@@ -258,13 +273,24 @@ export class BackupManager {
   private schedule(delayMs: number): void {
     if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
+    const dueAt = this.now() + delayMs;
+    this.nextRunAt = dueAt;
+    this.armTimer(dueAt);
+  }
+
+  private armTimer(dueAt: number): void {
+    const delayMs = Math.max(0, dueAt - this.now());
+    const wait = Math.min(delayMs, MAX_TIMER_DELAY_MS);
     const timer = setTimeout(() => {
       this.timer = null;
+      if (delayMs > wait) {
+        this.armTimer(dueAt);
+        return;
+      }
       void this.tick();
-    }, delayMs);
+    }, wait);
     (timer as { unref?: () => void }).unref?.(); // never hold the process open
     this.timer = timer;
-    this.nextRunAt = this.now() + delayMs;
   }
 
   private async tick(): Promise<void> {

@@ -29,6 +29,7 @@ afterAll(() => {
 
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
+import * as ingestion from '../../src/services/worker/http/shared.js';
 
 interface ExampleConfig {
   schemas: Record<string, TranscriptSchema>;
@@ -133,5 +134,54 @@ describe('shipped codex schema: prompt delivery to session-init', () => {
     ), sessionId);
 
     expect(sessionInitCalls).toHaveLength(0);
+  });
+
+  it('retains every text part of the user request', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e57604';
+    await deliver([
+      ...rollout(sessionId),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: 'Inspect the failed build.' },
+        { type: 'input_text', text: 'Keep the public API unchanged.' },
+      ] } }),
+    ], sessionId);
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['Inspect the failed build.\nKeep the public API unchanged.']);
+  });
+
+  it('retains the request text when an image comes before it', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e57605';
+    await deliver([
+      ...rollout(sessionId),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_image', image_url: 'data:image/png;base64,fixture' },
+        { type: 'input_text', text: 'Fix the layout shown in this screenshot.' },
+      ] } }),
+    ], sessionId);
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['Fix the layout shown in this screenshot.']);
+  });
+
+  it('hands the full assistant answer to summary ingestion', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e57606';
+    const summary = spyOn(ingestion, 'ingestSummarize').mockImplementation(async () => ({ status: 'queued' }));
+    try {
+      await deliver([
+        ...rollout(sessionId, ['user', 'Repair the build and document the remaining issue.']),
+        JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [
+          { type: 'output_text', text: 'The build is repaired.' },
+          { type: 'output_text', text: 'The deployment still requires a credential.' },
+        ] } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } }),
+      ], sessionId);
+
+      expect(summary).toHaveBeenCalledTimes(1);
+      expect(summary.mock.calls[0][0]).toMatchObject({
+        contentSessionId: sessionId,
+        lastAssistantMessage: 'The build is repaired.\nThe deployment still requires a credential.',
+      });
+    } finally {
+      summary.mockRestore();
+    }
   });
 });

@@ -168,6 +168,12 @@ export class LocalEmbedder implements Embedder {
       let norm = 0;
       for (let d = 0; d < this.dims; d++) norm += v[d] * v[d];
       norm = Math.sqrt(norm);
+      // A zero/invalid model result cannot be normalized or stored in pgvector.
+      // Reject here so callers use their existing keyword/no-vector fallback,
+      // before an unusable embedding can fail an observation transaction.
+      if (!Number.isFinite(norm) || norm === 0) {
+        throw new Error(`Invalid embedding norm for text ${r}: expected a positive finite value`);
+      }
       for (let d = 0; d < this.dims; d++) v[d] /= norm;
       return v;
     });

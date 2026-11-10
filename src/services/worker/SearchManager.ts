@@ -315,7 +315,8 @@ export class SearchManager {
     const normalized: any = { ...args };
 
     if (normalized.filePath && !normalized.files) {
-      normalized.files = normalized.filePath;
+      // A single file path may itself contain commas.
+      normalized.files = typeof normalized.filePath === 'string' ? [normalized.filePath] : normalized.filePath;
       delete normalized.filePath;
     }
 
@@ -1262,7 +1263,7 @@ export class SearchManager {
 
   async getTimelineByQuery(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, mode, limit = 5, project, platformSource } = normalized;
+    const { query, mode, limit = 5, project, projects, platformSource } = normalized;
 
     if (mode !== 'interactive') {
       return this.timeline(args);
@@ -1273,8 +1274,9 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
-        results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource })
+        results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, projects: readKeys, platformSource }),
+          projects,
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1284,7 +1286,8 @@ export class SearchManager {
 
     if (results.length === 0) {
       try {
-        const ftsResults = this.sessionSearch.searchObservations(query, { project, platformSource, limit });
+        const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+        const ftsResults = this.sessionSearch.searchObservations(query, { project, projects: readKeys, platformSource, limit });
         if (ftsResults.length > 0) {
           results = ftsResults;
         }
