@@ -26,6 +26,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'cheapaimodel', label: 'cheapaimodel (cheapaimodel.ai)', baseUrl: 'https://api.cheapaimodel.ai/v1', defaultModel: 'deepseek-v4-1-flash' },
   { id: 'obscurify-ai', label: 'Obscurify.ai (obscurify.ai)', baseUrl: 'https://obscurify.ai/v1', defaultModel: 'deepseek/deepseek-v4-flash' },
   { id: 'standardcompute', label: 'Standard Compute (standardcompute.com)', baseUrl: 'https://api.stdcmpt.com/v1', defaultModel: 'deepseek/deepseek-v4-flash' },
+  { id: 'uberllm', label: 'UberLLM (uberllm.dev)', baseUrl: 'https://api.uberllm.dev/v1', defaultModel: 'deepseek/deepseek-v4.1-flash' },
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
   { id: 'opencode-go', label: 'OpenCode Go (opencode.ai)', baseUrl: 'https://opencode.ai/zen/go/v1', defaultModel: 'kimi-k3' },
   { id: 'opencode-zen', label: 'OpenCode Zen (opencode.ai)', baseUrl: 'https://opencode.ai/zen/v1', defaultModel: '' },
