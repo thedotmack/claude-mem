@@ -2151,27 +2151,31 @@ export class ChromaSync {
     const keptIds: string[] = [];
     const keptMetadatas: any[] = [];
     const keptDistances: number[] = [];
-    for (let i = 0; i < rawIds.length && keptIds.length < limit; i++) {
+    for (let i = 0; i < rawIds.length; i++) {
       if (!predicate(rawMetadatas[i] ?? {})) continue;
       keptIds.push(rawIds[i]);
       keptMetadatas.push(rawMetadatas[i]);
       keptDistances.push(rawDistances[i]);
     }
 
-    // The plain `where` ranks the same matches in the same order; the only ones
-    // missing here belong to rows outside the SQLite scope, which hydration
-    // drops anyway. So `limit` kept fragments are its top `limit`. A window
-    // shorter than n_results held every candidate. Otherwise more matches may
-    // sit past the window, and only the plain `where` can find them.
-    const windowExhausted = rawIds.length < nResults;
-    if (keptIds.length < limit && !windowExhausted) return null;
-    logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
-      rows: rowIds.length, fragments: rawIds.length, kept: keptIds.length
-    });
-    if (progress) progress.exhausted = windowExhausted && keptIds.length < limit;
-    return this.deduplicateQueryResults({
+    const filtered = this.deduplicateQueryResults({
       ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
     });
+    // Count rows, not fragments: one observation's facts can fill the raw
+    // limit while later memories already present in this window are lost.
+    // A full window with too few distinct matches cannot prove exhaustion;
+    // the next fallback must still get a chance to find the remaining rows.
+    const windowExhausted = rawIds.length < nResults;
+    if (filtered.ids.length < limit && !windowExhausted) return null;
+    logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
+      rows: rowIds.length, fragments: rawIds.length, kept: filtered.ids.length
+    });
+    if (progress) progress.exhausted = windowExhausted && filtered.ids.length <= limit;
+    return {
+      ids: filtered.ids.slice(0, limit),
+      metadatas: filtered.metadatas.slice(0, limit),
+      distances: filtered.distances.slice(0, limit)
+    };
   }
 
   /**
