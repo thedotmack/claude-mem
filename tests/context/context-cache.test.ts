@@ -210,6 +210,36 @@ describe('ContextCacheService invalidation', () => {
     store.close();
   });
 
+  it('a local summary replacement stops serving the old next steps immediately', async () => {
+    const store = memoryStore();
+    const summary = {
+      request: 'Publish release', investigated: 'release status', learned: 'ready',
+      completed: 'prepared', next_steps: 'publish the release', notes: null,
+    };
+    try {
+      const initialBody = readContextCache(keys, Date.now())?.body;
+      const first = store.storeObservations('memory-1', project, [], { ...summary }, 1);
+      expect(first.summaryUpdated).toBe(false);
+      // A new summary is still additive; the previous block remains usable.
+      expect(readContextCache(keys, Date.now())?.body).toBe(initialBody);
+      await waitPastDebounce();
+      service.recordLiveRender(keys, { body: summary.next_steps, cacheable: true }, Date.now());
+      const unrelatedBody = readContextCache(otherKeys, Date.now())?.body;
+
+      const revised = store.storeObservations('memory-1', project, [], {
+        ...summary, completed: 'published', next_steps: '',
+      }, 1);
+      expect(revised.summaryUpdated).toBe(true);
+      expect(revised.summaryId).toBe(first.summaryId);
+      expect(store.db.prepare('SELECT completed, next_steps FROM session_summaries WHERE id = ?')
+        .get(first.summaryId)).toEqual({ completed: 'published', next_steps: '' });
+      expect(readContextCache(keys, Date.now())).toBeNull();
+      expect(readContextCache(otherKeys, Date.now())?.body).toBe(unrelatedBody);
+      await waitPastDebounce();
+      expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+    } finally { store.close(); }
+  });
+
   it('SessionStore.appendWorkStateEntry', async () => {
     const store = memoryStore();
     await expectRerenderedOnlyFor(() => {
@@ -350,6 +380,78 @@ describe('ContextCacheService invalidation', () => {
     await waitPastDebounce();
     expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
     db.close();
+  });
+
+  for (const kind of ['observation', 'summary', 'prompt'] as const) {
+    it(`a pulled ${kind} revision stops serving the replaced context before re-rendering`, async () => {
+      const db = new Database(':memory:');
+      new SessionStore(db);
+      const apply = new SyncApply(db, { deviceId: 'device-self' });
+      const createdAtEpoch = Date.now();
+      const base = { memory_session_id: 'mem-remote', project, created_at_epoch: createdAtEpoch };
+      const body = kind === 'observation' ? { ...base, type: 'discovery', title: 'old text' }
+        : kind === 'summary' ? { ...base, request: 'old text' }
+          : { ...base, content_session_id: 'content-remote', platform_source: 'claude', prompt_number: 1, prompt_text: 'old text' };
+      const field = kind === 'observation' ? 'title' : kind === 'summary' ? 'request' : 'prompt_text';
+      const rowOp: SyncOp = {
+        seq: '1', kind, origin_device: 'device-remote', origin_id: '11', rev: '1',
+        body: JSON.stringify(body), server_ts: createdAtEpoch,
+        entity_id: `entity-${kind}`, entity_rev: '1', operation_sha256: `hash-${kind}-1`,
+      };
+      try {
+        expect(apply.applyOps([rowOp]).applied).toBe(1);
+        await waitPastDebounce();
+        service.recordLiveRender(keys, { body: 'old text', cacheable: true }, Date.now());
+        expect(apply.applyOps([{ ...rowOp, seq: '2', rev: '2', entity_rev: '2', operation_sha256: `hash-${kind}-2`,
+          body: JSON.stringify({ ...body, [field]: 'corrected text' }) }]).applied).toBe(1);
+        const table = kind === 'observation' ? 'observations' : kind === 'summary' ? 'session_summaries' : 'user_prompts';
+        expect(db.prepare(`SELECT ${field} AS text FROM ${table}`).get()).toEqual({ text: 'corrected text' });
+        expect(readContextCache(keys, Date.now())).toBeNull();
+        expect(existsSync(contextCacheFilePath(otherKeys))).toBe(false);
+        await waitPastDebounce();
+        expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  it('a constraint-blocked revision stops serving old context when a later pull applies it', async () => {
+    const db = new Database(':memory:');
+    new SessionStore(db);
+    const apply = new SyncApply(db, { deviceId: 'device-self' });
+    const createdAtEpoch = Date.now();
+    const rowOp = (seq: string, id: string, rev: string, title: string, hash: string): SyncOp => ({
+      seq, kind: 'observation', origin_device: 'device-remote', origin_id: id, rev,
+      entity_id: `entity-${id}`, entity_rev: rev, operation_sha256: `hash-${id}-${rev}`,
+      body: JSON.stringify({ memory_session_id: 'mem-remote', project, type: 'discovery', title,
+        content_hash: hash, created_at_epoch: createdAtEpoch }), server_ts: createdAtEpoch,
+    });
+    try {
+      apply.applyOps([rowOp('1', 'a', '1', 'old text', 'old-hash')]);
+      // A local row holds the unique hash needed by the incoming revision.
+      const local = db.prepare(`INSERT INTO observations
+        (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch)
+        VALUES ('mem-remote', ?, 'discovery', 'local duplicate', 'new-hash', ?, ?) RETURNING id`)
+        .all(project, new Date(createdAtEpoch).toISOString(), createdAtEpoch)[0] as { id: number };
+      expect(apply.applyOps([rowOp('2', 'a', '2', 'corrected text', 'new-hash')]).quarantined).toBe(1);
+      // The user deletes that local duplicate and a fresh context render can
+      // still contain the old remote revision until the next sync pull.
+      db.prepare('DELETE FROM observations WHERE id = ?').run(local.id);
+      emitContextInvalidation('all', 'delete-observation', 'removal');
+      await waitPastDebounce();
+      service.recordLiveRender(keys, { body: 'old text', cacheable: true }, Date.now());
+      // This page only adds a first revision; the older blocked update is
+      // applied by SyncApply's existing end-of-batch constraint handling.
+      apply.applyOps([rowOp('3', 'c', '1', 'unrelated new row', 'other-hash')]);
+      expect(db.prepare("SELECT title FROM observations WHERE origin_local_id = 'a'").get())
+        .toEqual({ title: 'corrected text' });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_pull_quarantine').get()).toEqual({ n: 0 });
+      expect(readContextCache(keys, Date.now())).toBeNull();
+      await waitPastDebounce();
+    } finally {
+      db.close();
+    }
   });
 
   it('a render in flight when a removal lands is discarded and re-run', async () => {

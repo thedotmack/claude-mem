@@ -973,8 +973,10 @@ export class SessionSearch {
     const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
-      patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
+      for (const separator of ['/', '\\']) {
+        const prefix = trailing.join(separator) + separator;
+        patterns.push(`${escape(prefix)}%`, `${escape('.' + separator + prefix)}%`);
+      }
     }
     return patterns;
   }

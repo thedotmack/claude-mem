@@ -76,6 +76,26 @@ describe('Grok Bot brainbeat webhook', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  for (const status of [202, 429]) {
+    it(`releases an unread webhook response after HTTP ${status}`, async () => {
+      mockSettings({
+        CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'security_alert',
+        CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/webhook',
+      });
+      let cancelled = false;
+      const response = new Response(new ReadableStream({
+        cancel() { cancelled = true; },
+      }), { status });
+      fetchSpy.mockResolvedValue(response);
+
+      await notifyGrokBotBrainbeat({ observations: [observation], observationIds: [42], project: 'p' });
+
+      expect(cancelled).toBe(true);
+      expect(warnSpy).toHaveBeenCalledTimes(status === 202 ? 0 : 1);
+      if (status === 429) expect(warnSpy.mock.calls[0][2]).toMatchObject({ reason: 'HTTP 429' });
+    });
+  }
+
   it('does not POST when the observation matches no awareness trigger', async () => {
     mockSettings({
       CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision',

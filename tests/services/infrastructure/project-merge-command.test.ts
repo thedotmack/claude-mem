@@ -44,7 +44,7 @@ const answering = (status: number, body: unknown, received: unknown[] = []): Wor
   };
 
 const noWorker: WorkerRequest = async () => {
-  throw new TypeError('fetch failed: connection refused');
+  throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
 };
 
 function seedDatabase(): string {

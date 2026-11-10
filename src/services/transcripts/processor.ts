@@ -380,24 +380,25 @@ export class TranscriptEventProcessor {
   }
 
   /**
-   * Normalize a message field to text. Transcripts that store messages as
-   * content-block arrays (e.g. DeepSeek Harness assistant messages with
-   * reasoning/text blocks) are joined by newline; strings pass through.
+   * Normalize visible message text. Reasoning and other non-text blocks are
+   * not the assistant's answer. A message with no visible text must not
+   * replace the preceding answer; strings retain their existing behavior.
    */
   private resolveMessageText(value: unknown): string | undefined {
     if (typeof value === 'string') return value;
     if (!Array.isArray(value)) return undefined;
     const parts: string[] = [];
     for (const block of value) {
-      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
-        parts.push((block as { text: string }).text);
-      }
+      if (!block || typeof block !== 'object') continue;
+      const { type, text } = block as { type?: unknown; text?: unknown };
+      if (type !== undefined && type !== 'text' && type !== 'input_text' && type !== 'output_text') continue;
+      if (typeof text === 'string' && text.length > 0) parts.push(text);
     }
     return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
-    const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    const prompt = this.resolveMessageText(fields.prompt) ?? '';
     await this.anchorUserPrompt(session, prompt, eventOccurredAtEpochMs);
   }
 
@@ -447,16 +448,6 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
     const toolResponse = this.maybeParseJson(fields.toolResponse);
-
-    if (toolName === 'apply_patch' && typeof toolInput === 'string') {
-      const files = this.parseApplyPatchFiles(toolInput);
-      for (const filePath of files) {
-        await this.sendFileEdit(session, {
-          filePath,
-          edits: [{ type: 'apply_patch', patch: toolInput }]
-        }, eventOccurredAtEpochMs);
-      }
-    }
 
     if (toolName && toolResponse !== undefined) {
       await this.sendObservation(session, watch, {
@@ -532,11 +523,14 @@ export class TranscriptEventProcessor {
       return;
     }
 
+    const toolInput = this.maybeParseJson(fields.toolInput);
     const payload = {
       contentSessionId: session.sessionId,
       cwd: session.cwd,
       toolName,
-      toolInput: this.maybeParseJson(fields.toolInput),
+      // Freeform patch calls need the same recognized field as structured
+      // patch inputs after ingest JSON-encodes them for file evidence.
+      toolInput: toolName === 'apply_patch' && typeof toolInput === 'string' ? { patch: toolInput } : toolInput,
       toolResponse: this.maybeParseJson(fields.toolResponse),
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
@@ -604,27 +598,6 @@ export class TranscriptEventProcessor {
       }, error instanceof Error ? error : undefined);
       return value;
     }
-  }
-
-  private parseApplyPatchFiles(patch: string): string[] {
-    const files: string[] = [];
-    const lines = patch.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('*** Update File: ')) {
-        files.push(trimmed.replace('*** Update File: ', '').trim());
-      } else if (trimmed.startsWith('*** Add File: ')) {
-        files.push(trimmed.replace('*** Add File: ', '').trim());
-      } else if (trimmed.startsWith('*** Delete File: ')) {
-        files.push(trimmed.replace('*** Delete File: ', '').trim());
-      } else if (trimmed.startsWith('*** Move to: ')) {
-        files.push(trimmed.replace('*** Move to: ', '').trim());
-      } else if (trimmed.startsWith('+++ ')) {
-        const path = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
-        if (path && path !== '/dev/null') files.push(path);
-      }
-    }
-    return Array.from(new Set(files));
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {

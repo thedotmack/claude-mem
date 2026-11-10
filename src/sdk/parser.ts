@@ -100,8 +100,9 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   raw = stripCodeFences(raw);
 
+  const firstRoot = /<(observation|summary)\b/i.exec(raw);
   const skipMatch = SKIP_SUMMARY_TAG.exec(raw);
-  if (skipMatch) {
+  if (skipMatch && (!firstRoot || skipMatch.index < firstRoot.index)) {
     const reason = skipMatch[1] ?? skipMatch[2];
     return {
       valid: true,
@@ -119,7 +120,6 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
     };
   }
 
-  const firstRoot = /<(observation|summary)\b/i.exec(raw);
   if (!firstRoot) {
     return { valid: false };
   }

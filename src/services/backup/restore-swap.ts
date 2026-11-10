@@ -7,6 +7,7 @@ import { renameWithWindowsRetry } from '../../shared/atomic-json.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
 import { LATEST_SCHEMA_VERSION } from '../sqlite/connection.js';
 import { ChromaSyncState } from '../sync/ChromaSyncState.js';
+import { contextCacheDir, listContextCacheFiles } from '../../shared/context-cache.js';
 import {
   clearPendingRestore,
   readPendingRestore,
@@ -283,6 +284,26 @@ function queueSemanticIndexRebuild(): void {
   }
 }
 
+/** The cache service has not started yet; remove pre-restore bodies directly. */
+function invalidateSessionStartCache(): void {
+  try {
+    for (const fileName of listContextCacheFiles()) {
+      try {
+        unlinkSync(join(contextCacheDir(), fileName));
+      } catch (error) {
+        logger.warn('BACKUP', 'Database restored; could not remove a stale SessionStart block', { fileName },
+          error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  } catch (error) {
+    logger.warn('BACKUP', 'Database restored; could not list stale SessionStart blocks', {},
+      error instanceof Error ? error : new Error(String(error)));
+  }
+  // Keep variants.json: the new cache service uses it to render these variants
+  // from the restored database. Successfully removed blocks take the live path
+  // during that startup gap; cleanup failures above are reported separately.
+}
+
 /**
  * Apply a restore staged by `npx claude-mem restore`, before anything in
  * this process opens the database. The marker is cleared as soon as it is
@@ -312,6 +333,7 @@ export async function applyPendingRestore(
     });
     result = { snapshot, at: Date.now(), ok: true, preRestoreCopy, error: null };
     logger.info('BACKUP', 'Pending restore applied', { snapshot, preRestoreCopy });
+    invalidateSessionStartCache();
     queueSemanticIndexRebuild();
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
