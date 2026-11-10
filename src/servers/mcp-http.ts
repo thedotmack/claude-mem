@@ -141,7 +141,9 @@ interface Session {
   rootsAttempts: number;
   /** The client said its roots changed: ask again before the next request. */
   rootsStale: boolean;
+  rootsRevision: number;
   rootsInFlight?: Promise<void>;
+  rootsInFlightRevision?: number;
 }
 
 export interface McpHttpHandle {
@@ -238,12 +240,13 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     }
   };
 
-  const refreshRoots = async (session: Session): Promise<void> => {
+  const refreshRoots = async (session: Session, revision: number): Promise<void> => {
     if (session.cwdSource === 'header') return;
     if (!session.server.getClientCapabilities()?.roots) return;
     session.rootsAttempts++;
     try {
       const { roots } = await session.server.listRoots(undefined, { timeout: MCP_ROOTS_TIMEOUT_MS });
+      if (revision !== session.rootsRevision) return;
       const resolution = resolveMcpProjectCwd({
         roots,
         fallbackCwd: session.cwd,
@@ -258,6 +261,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
         logger.info('SYSTEM', `MCP HTTP working directory resolved from ${resolution.source}`);
       }
     } catch (error) {
+      if (revision !== session.rootsRevision) return;
       const givingUp = session.rootsAttempts >= MAX_MCP_ROOTS_ATTEMPTS;
       logger.warn('SYSTEM', givingUp
         ? `MCP HTTP: roots/list failed ${MAX_MCP_ROOTS_ATTEMPTS} times, this session stays on ${session.cwd}`
@@ -273,13 +277,21 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     if (typeof method !== 'string' || method === 'initialize' || method.startsWith('notifications/')) return;
     // Roots decide the directory only while no header ever did. They are asked again when the
     // client reports a change (notifications/roots/list_changed), before the next request runs.
-    if (session.cwdSource === 'header') return;
-    if (session.cwdSource === 'roots' && !session.rootsStale) return;
-    if (session.rootsAttempts >= MAX_MCP_ROOTS_ATTEMPTS) return;
-    session.rootsInFlight ??= refreshRoots(session).finally(() => {
-      session.rootsInFlight = undefined;
-    });
-    await session.rootsInFlight;
+    while (session.cwdSource !== 'header') {
+      if (session.cwdSource === 'roots' && !session.rootsStale) return;
+      if (session.rootsAttempts >= MAX_MCP_ROOTS_ATTEMPTS) return;
+      if (!session.rootsInFlight) {
+        const revision = session.rootsRevision;
+        session.rootsInFlightRevision = revision;
+        session.rootsInFlight = refreshRoots(session, revision).finally(() => {
+          session.rootsInFlight = undefined;
+          session.rootsInFlightRevision = undefined;
+        });
+      }
+      const revision = session.rootsInFlightRevision;
+      await session.rootsInFlight;
+      if (revision === session.rootsRevision) return;
+    }
   };
 
   const createSession = (req: IncomingMessage): Session => {
@@ -289,6 +301,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       lastSeen: Date.now(),
       rootsAttempts: 0,
       rootsStale: false,
+      rootsRevision: 0,
     } as Session;
     applyHeaderCwd(session, req);
     session.transport = new StreamableHTTPServerTransport({
@@ -306,6 +319,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     // (last header, else roots) only serves requests that carry no header.
     session.server = options.createServer((extra) => headerCwd(extra?.requestInfo?.headers) ?? session.cwd);
     session.server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+      session.rootsRevision++;
       session.rootsStale = true;
       session.rootsAttempts = 0;
     });

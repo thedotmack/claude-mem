@@ -20,7 +20,7 @@ import {
   type PostgresPool,
   type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
-import { stripTags } from '../../utils/tag-stripping.js';
+import { stripMemoryTagsFromJsonStrings, stripTags } from '../../utils/tag-stripping.js';
 import { PostgresObservationEmbeddingsRepository } from '../../storage/postgres/observation-embeddings.js';
 import { embedObservationRows } from '../services/ObservationEmbeddingService.js';
 
@@ -281,6 +281,13 @@ async function persistGeneratedObservations(
   skipReason: string | null = null,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job } = input;
+
+  // Metadata feeds both the viewer and embedding parts, independently of the
+  // rendered content. Apply the same memory-tag boundary before either use.
+  rendered = rendered.map(observation => ({
+    ...observation,
+    metadata: stripMemoryTagsFromJsonStrings(observation.metadata),
+  }));
 
   // Vectors for search by meaning, computed before the transaction opens so
   // the model never holds it, and written beside each row inside it. Null when
