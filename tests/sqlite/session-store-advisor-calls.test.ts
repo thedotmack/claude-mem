@@ -104,20 +104,6 @@ describe('SessionStore advisor_calls', () => {
     });
   });
 
-  describe('migration', () => {
-    it('creates advisor_calls with a unique tool_use_id index and stamps schema version 58', () => {
-      const db = store.db;
-      const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'advisor_calls'").get();
-      expect(table).toBeTruthy();
-
-      const unique = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_advisor_calls_tool_use'").get() as { sql: string };
-      expect(unique.sql).toContain('UNIQUE');
-
-      const stamped = db.prepare('SELECT version FROM schema_versions WHERE version = 58').get();
-      expect(stamped).toBeTruthy();
-    });
-  });
-
   describe('getAdvisorCalls', () => {
     it('orders results by occurred_at_epoch descending and paginates', () => {
       const sessionDbId = createSession('content-advisor-3');

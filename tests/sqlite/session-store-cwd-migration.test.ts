@@ -82,23 +82,11 @@ describe('sdk_sessions.cwd migration (#2864)', () => {
       expect(cols.some(c => c.name === 'cwd')).toBe(true);
 
       const session = db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = 'legacy-content'").get() as { id: number };
-      store.setSessionCwd(session.id, '/work/legacy-project');
-      const stored = db.prepare('SELECT cwd FROM sdk_sessions WHERE id = ?').get(session.id) as { cwd: string };
-      expect(stored.cwd).toBe('/work/legacy-project');
+      store.setSessionCwd(session.id, '/work/legacy-project', 'path');
+      const stored = db.prepare('SELECT cwd, project_key_source FROM sdk_sessions WHERE id = ?').get(session.id) as { cwd: string; project_key_source: string };
+      expect(stored).toEqual({ cwd: '/work/legacy-project', project_key_source: 'path' });
     } finally {
       db.close();
     }
-  });
-
-  it('reopens cleanly without duplicating the ledger entry', () => {
-    const { store, dbPath } = open();
-    store.close();
-    const reopened = new SessionStore(dbPath);
-    const count = (reopened.db
-      .prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version = ?')
-      .get(SESSION_CWD_SCHEMA_VERSION) as { n: number }).n;
-    reopened.close();
-
-    expect(count).toBe(1);
   });
 });

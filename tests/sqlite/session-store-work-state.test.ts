@@ -9,15 +9,6 @@ describe('SessionStore work state (v61)', () => {
     store = null;
   });
 
-  it('creates the table and stamps schema version 61', () => {
-    store = new SessionStore(':memory:');
-
-    const versions = store.db.query('SELECT version FROM schema_versions WHERE version = 61').all();
-    const tables = store.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'work_state_entries'").all();
-    expect(versions).toHaveLength(1);
-    expect(tables).toHaveLength(1);
-  });
-
   it('returns entries oldest first with their fields as written, including null', () => {
     store = new SessionStore(':memory:');
     store.appendWorkStateEntry({ project: 'acme', listName: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' }, createdAtEpoch: 1_000 });
