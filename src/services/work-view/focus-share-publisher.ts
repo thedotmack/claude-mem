@@ -9,6 +9,7 @@ import { toSharedFocusPage, type SharedFocusPage } from '../../ui/my-work/src/li
 import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.ts';
 import type { WorkViewSnapshot } from './data-source.mjs';
 import { FocusShareError, type FocusShareEntry, type FocusShares } from './focus-share.js';
+import { logger } from '../../utils/logger.js';
 
 /** How often the worker republishes shared pages. */
 export const FOCUS_SHARE_PUBLISH_EVERY_MS = 30_000;
@@ -45,7 +46,9 @@ export class FocusSharePublisher {
   start(): void {
     const everyMs = this.options.everyMs ?? FOCUS_SHARE_PUBLISH_EVERY_MS;
     if (this.timer || everyMs <= 0) return;
-    this.timer = setInterval(() => { void this.publishAll(); }, everyMs);
+    this.timer = setInterval(() => {
+      void this.publishAll().catch(error => logger.error('WORKER', 'Shared focus pages could not be published', {}, error));
+    }, everyMs);
     this.timer.unref?.();
   }
 

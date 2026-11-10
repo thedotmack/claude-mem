@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FocusShareError, FocusShares } from '../../src/services/work-view/focus-share.js';
@@ -30,6 +30,38 @@ function setup(responses: Array<{ status: number; body?: unknown }>, credentials
 const page = (percent = 40, generatedAt = '2026-10-29T20:00:00.000Z') => ({ version: 1, area: { id: 'area-1', name: 'Launch' }, requests: [{ id: 'r1', percent }], generatedAt });
 
 describe('FocusShares', () => {
+  it('does not report a share stopped when its saved link cannot be read', async () => {
+    const { shares, calls, registryPath } = setup([
+      { status: 201, body: { token: TOKEN, url: `${ORIGIN}/focus/${TOKEN}` } },
+      { status: 200, body: { stopped: true } },
+    ]);
+    await shares.publish('area-1', page());
+    const saved = readFileSync(registryPath, 'utf8');
+    const damaged = '{"area-1":';
+    writeFileSync(registryPath, damaged);
+    await expect(shares.stop('area-1')).rejects.toThrow('saved sharing links');
+    expect(calls).toHaveLength(1);
+    expect(readFileSync(registryPath, 'utf8')).toBe(damaged);
+
+    writeFileSync(registryPath, saved);
+    await shares.stop('area-1');
+    expect(calls[1]).toMatchObject({ method: 'DELETE', url: `${ORIGIN}/api/focus-share/${TOKEN}` });
+    expect(shares.list()).toEqual({});
+  });
+
+  it('does not replace an invalid sharing registry when publishing another area', async () => {
+    const { shares, calls, registryPath } = setup([
+      { status: 201, body: { token: TOKEN, url: `${ORIGIN}/focus/${TOKEN}` } },
+      { status: 201, body: { token: 'b'.repeat(32), url: `${ORIGIN}/focus/${'b'.repeat(32)}` } },
+    ]);
+    await shares.publish('area-1', page());
+    const invalid = '[]';
+    writeFileSync(registryPath, invalid);
+    await expect(shares.publish('area-2', page())).rejects.toThrow('saved sharing links');
+    expect(calls).toHaveLength(1);
+    expect(readFileSync(registryPath, 'utf8')).toBe(invalid);
+  });
+
   it('shares an area once, then publishes to the same link, skipping a page that has not changed', async () => {
     const { shares, calls, registryPath } = setup([
       { status: 201, body: { token: TOKEN, url: `${ORIGIN}/focus/${TOKEN}`, created: true, publishedAt: '2026-10-29T20:00:01.000Z' } },

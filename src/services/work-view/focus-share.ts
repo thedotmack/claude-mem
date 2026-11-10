@@ -8,7 +8,7 @@
  * changed since the last publish is not sent again.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export interface FocusShareEntry {
@@ -205,12 +205,13 @@ export class FocusShares {
   }
 
   private read(): Registry {
-    if (!existsSync(this.options.registryPath)) return {};
     try {
       const parsed = JSON.parse(readFileSync(this.options.registryPath, 'utf8')) as unknown;
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Registry : {};
-    } catch {
-      return {};
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('Expected a sharing registry object');
+      return parsed as Registry;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw new FocusShareError('The saved sharing links could not be read. Restore focus-shares.json before changing a share.', 503);
     }
   }
 
