@@ -1,10 +1,36 @@
-import { describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { logger } from '../../../../src/utils/logger.js';
+import { ChromaSyncState } from '../../../../src/services/sync/ChromaSyncState.js';
 
 // #5495 — a delete burst schedules one post-delete Chroma cleanup loop per
 // request. Unserialized, 15k concurrent chroma_get_documents reads piled up on
 // chroma-mcp's single stdio channel and locked sync/health/search for hours.
 // The cleanups must take turns on one process-wide tail.
+//
+// #5664 — and a cleanup that fails must not simply be dropped: the row is gone
+// for good, so the failure is recorded in the sync checkpoint for the next
+// backfill sweep to retry.
+
+// The retry record is written to the data dir; never the user's real one.
+let dataDir: string;
+let previousDataDir: string | undefined;
+
+beforeEach(() => {
+  previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-data-routes-cleanup-'));
+  process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+  ChromaSyncState.resetCacheForTests();
+});
+
+afterEach(() => {
+  ChromaSyncState.resetCacheForTests();
+  if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
+});
 
 function routesWith(stub: { deleteRowDocuments: (kind: string, id: number) => Promise<void> }) {
   const { DataRoutes } = require('../../../../src/services/worker/http/routes/DataRoutes.js');
@@ -64,6 +90,10 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
       await routes.chromaCleanupTail;
       expect(warn).toHaveBeenCalled(); // the failure is logged per row
       expect(ranIds).toEqual([1, 2]); // the next batch still ran after the failure
+      // ...and the failed row is kept for the next backfill sweep (#5664).
+      expect(ChromaSyncState.getPendingRowDeletes()).toEqual([
+        { docType: 'observation', sqliteId: 1 },
+      ]);
     } finally {
       warn.mockRestore();
       mock.restore();
@@ -77,5 +107,6 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
     routes.scheduleChromaRowCleanup([]);
     expect(routes.chromaCleanupTail).toBe(before);
     expect(stub.deleteRowDocuments).not.toHaveBeenCalled();
+    expect(ChromaSyncState.getPendingRowDeletes()).toEqual([]);
   });
 });
