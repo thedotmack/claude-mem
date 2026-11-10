@@ -4930,6 +4930,32 @@ export class SessionStore {
       }
     }
 
+    // The rendered timeline counts all three record kinds. Observation-only
+    // bounds miss prompts and summaries outside the observation history (or
+    // every neighbor when a project has no observations). Probe those kinds
+    // with the same scope and include their requested boundary epochs too.
+    for (const source of [
+      { alias: 'ss', from: 'session_summaries ss LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id', scope: summaryScope },
+      { alias: 'up', from: 'user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id', scope: promptScope },
+    ]) {
+      for (const side of [
+        { comparison: '<', order: 'DESC', depth: depthBefore },
+        { comparison: '>', order: 'ASC', depth: depthAfter },
+      ]) {
+        if (side.depth === 0) continue;
+        const rows = this.db.prepare(`
+          SELECT ${source.alias}.created_at_epoch
+          FROM ${source.from}
+          WHERE ${source.alias}.created_at_epoch ${side.comparison} ? ${source.scope.clause}
+          ORDER BY ${source.alias}.created_at_epoch ${side.order}
+          LIMIT ?
+        `).all(anchorEpoch, ...source.scope.params, side.depth) as Array<{ created_at_epoch: number }>;
+        const boundary = rows.at(-1)?.created_at_epoch ?? anchorEpoch;
+        startEpoch = Math.min(startEpoch, boundary);
+        endEpoch = Math.max(endEpoch, boundary);
+      }
+    }
+
     // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
     // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
