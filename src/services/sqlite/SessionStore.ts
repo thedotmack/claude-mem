@@ -4616,10 +4616,16 @@ export class SessionStore {
   updateDiscoveryTokens(observationIds: number[], summaryId: number | null, discoveryTokens: number): void {
     if (observationIds.length === 0 && summaryId === null) return;
     this.db.transaction(() => {
-      const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
-      for (const id of observationIds) observationStmt.run(discoveryTokens, id);
+      // The assistant row may already have synced before the result corrects
+      // its usage. Mark changed payloads for the existing CloudSync snapshotter,
+      // which mints their next canonical revision against the acknowledged head.
+      const observationStmt = this.db.prepare(`UPDATE observations SET discovery_tokens = ?,
+        synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END WHERE id = ?`);
+      for (const id of observationIds) observationStmt.run(discoveryTokens, discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare(`UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?),
+          synced_at = CASE WHEN COALESCE(discovery_tokens, 0) < ? THEN NULL ELSE synced_at END WHERE id = ?`)
+          .run(discoveryTokens, discoveryTokens, summaryId);
       }
     })();
   }

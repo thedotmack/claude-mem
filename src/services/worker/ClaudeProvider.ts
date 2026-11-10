@@ -829,6 +829,7 @@ export class ClaudeProvider {
                   turnSummaryId,
                   missedInput + (resultUsage.output_tokens || 0),
                 );
+                this.dbManager.getCloudSync()?.notify();
               }
             }
           }
