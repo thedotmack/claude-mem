@@ -81,6 +81,8 @@ const SHAPES: Record<string, () => unknown> = {
   // the MIME is `file.type`, with originalSize/dimensions beside the bytes.
   claude_read_base64: () => realReadImageResult(pngB64, 'image/png'),
   mcp_base64: () => JSON.stringify({ content: [{ type: 'text', text: 'Browser tab: 1' }, { type: 'image', data: pngB64, mimeType: 'image/png' }] }),
+  mcp_json_whitespace: () => ' \r\n\t' + JSON.stringify({ content: [{ type: 'image', data: pngB64, mimeType: 'image/png' }] }),
+  nested_json_whitespace: () => ({ stdout: ' \r\n\t' + JSON.stringify({ content: [{ type: 'image', data: pngB64, mimeType: 'image/png' }] }) }),
   openai_data_url: () => ({ content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,' + pngB64 } }] }),
 };
 
@@ -143,6 +145,16 @@ describe('capture at the common ingest boundary', () => {
     noBytes(observation.tool_response);
     expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
     expect(existsSync(media.root)).toBe(false);
+  });
+
+  it('disabled capture elides image bytes inside whitespace-prefixed JSON strings', async () => {
+    process.env[FLAG] = 'false';
+    const observation = await ingest(SHAPES.nested_json_whitespace());
+    noBytes(observation.tool_response);
+    expect(observation.mediaFailures).toEqual([{ version: 1, state: 'disabled', code: 'converter_disabled', inspection: 'uninspected', label: 'event1_image1' }]);
+    const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+    noBytes(row.tool_response);
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
   });
 
   it('an image inside a <private> region spanning content blocks is never captured', async () => {

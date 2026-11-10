@@ -19,6 +19,21 @@ const summaryMode = {
 } as any;
 
 describe('buildObservationPrompt', () => {
+  it('withholds native image bytes in whitespace-prefixed nested JSON while retaining the caption', () => {
+    const bytes = 'iVBORw0KGgo' + 'A'.repeat(4000);
+    const output = { stdout: ' \r\n\t' + JSON.stringify({ content: [
+      { type: 'text', text: 'Viewport ready' },
+      { type: 'image', data: bytes, mimeType: 'image/png' },
+    ] }) };
+    const prompt = buildObservationPrompt({ id: 1, tool_name: 'Bash', tool_input: '{}',
+      tool_output: JSON.stringify(output), created_at_epoch: Date.now(), cwd: '/repo' });
+    expect(prompt).toContain('Viewport ready');
+    expect(prompt).toContain('image data withheld from the observer');
+    expect(prompt).not.toContain(bytes);
+    const plain = { stdout: ' \r\n\t{ "image_url": "an ordinary field", "count": 3 }' };
+    expect(stripImagePayloadsFromField(plain)).toBe(plain);
+  });
+
   it('instructs the observer to avoid prose skip responses', () => {
     const prompt = buildObservationPrompt({
       id: 1,

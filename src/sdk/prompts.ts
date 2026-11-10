@@ -244,7 +244,7 @@ function stripImagePayloadsFromString(value: string, depth: number): string {
   const elided = elideDataImageUrl(value);
   if (elided !== value) return elided;
   if (depth > MAX_SANITIZE_DEPTH || value.length <= NESTED_JSON_MIN_CHARS) return value;
-  if (value[0] !== '{' && value[0] !== '[') return value;
+  if (!/^[ \t\r\n]*[\[{]/.test(value)) return value;
   if (!IMAGE_PAYLOAD_MARKER.test(value)) return value;
   let parsed: unknown;
   try {
