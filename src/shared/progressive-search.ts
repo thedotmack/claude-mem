@@ -128,13 +128,21 @@ function indexRows(rows: MemoryIndexRow[], maximum: number): MemoryIndexRow[] {
   return result;
 }
 const STOP_WORDS = new Set("a an and are as at be been by can did do for from had has have how i in is it last me memory my of on or our previous search session sessions that the their this to was we were what when where which who why with work you your".split(" "));
+// Match complete terms within scripts that do not separate every word with
+// spaces. Their shared first five characters are not an English word stem.
+const UNSEGMENTED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Myanmar}\p{Script=Khmer}\p{Script=Bopomofo}]/u;
 function terms(query: string): string[] {
-  return [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].filter(word => !STOP_WORDS.has(word));
+  return [...new Set(query.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [])].filter(word => !STOP_WORDS.has(word));
 }
 function relevance(row: MemoryIndexRow, words: string[]): number {
   const title = row.title.toLowerCase();
-  const tokens = title.match(/[\p{L}\p{N}]+/gu) ?? [];
-  return words.reduce((score, word) => score + (tokens.some(token => token === word || (word.length >= 5 && token.length >= 5 && token.slice(0, 5) === word.slice(0, 5))) ? 1 : 0), 0);
+  const tokens = title.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [];
+  return words.reduce((score, word) => {
+    const matches = UNSEGMENTED_SCRIPT.test(word)
+      ? title.includes(word)
+      : tokens.some(token => token === word || (word.length >= 5 && token.length >= 5 && token.slice(0, 5) === word.slice(0, 5)));
+    return score + (matches ? 1 : 0);
+  }, 0);
 }
 /** Whether title ranking can select this row for a detail fetch. */
 export function isMemoryDetailCandidate(row: MemoryIndexRow, query: string): boolean {
