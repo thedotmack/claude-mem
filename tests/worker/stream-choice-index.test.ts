@@ -96,6 +96,19 @@ it('retains billed output from an unselected choice without a paid resend', asyn
   });
 });
 
+it('retains billed reasoning_details from an unselected choice without a paid resend', async () => {
+  const reasoningOnly = `data: ${JSON.stringify({ model: 'owned/model', choices: [
+    { index: 0, delta: { content: '' }, finish_reason: null },
+    { index: 1, delta: { reasoning_details: [{ type: 'reasoning.text', text: 'Weighing it.', index: 0 }] }, finish_reason: null },
+  ] })}\n\n`;
+  await withReply(reasoningOnly, async (url, requests) => {
+    const budget = new PaidSendBudget(1);
+    const error = await new OwnedProvider().ask(url, budget).catch(error => error);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(requests).toHaveLength(1);
+  });
+});
+
 it('keeps the existing single-choice compatibility when the index is omitted', async () => {
   await withReply(frame(choice(undefined, primary, 'stop')) + usage + 'data: [DONE]\n\n', async (url, requests) => {
     expect((await new OwnedProvider().ask(url, new PaidSendBudget(1))).content).toBe(primary);
