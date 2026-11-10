@@ -60,9 +60,10 @@ describe('committed prompts invalidate cached My Work activity', () => {
   }
 
   it('does not emit again for native retries, imported duplicates or private transcript prompts', () => {
+    const native = store.saveNativeUserPrompt('conversation', sessionId, 'native-turn', 'New committed ask');
     store.saveNativeUserPrompt('conversation', sessionId, 'native-turn', 'New committed ask');
-    store.saveNativeUserPrompt('conversation', sessionId, 'native-turn', 'New committed ask');
-    store.importUserPrompt(importedPrompt());
+    const [storedPrompt] = store.getUserPromptsByIds([native.id]);
+    expect(store.importUserPrompt(storedPrompt)).toEqual({ imported: false, id: native.id });
     expect(store.importTranscriptUserPrompt({ ...transcriptPrompt(), promptText: '<private>secret</private>' }).reason).toBe('private');
     expect(events).toHaveLength(1);
   });

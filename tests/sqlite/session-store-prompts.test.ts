@@ -63,13 +63,11 @@ describe('SessionStore prompts', () => {
         created_at: createdAt,
         created_at_epoch: 2,
       });
+      const [storedCursorPrompt] = store.getUserPromptsByIds([cursorImport.id]);
       const cursorDuplicate = store.importUserPrompt({
-        content_session_id: contentSessionId,
-        platform_source: 'cursor',
-        prompt_number: 1,
-        prompt_text: 'cursor duplicate prompt',
-        created_at: createdAt,
-        created_at_epoch: 3,
+        ...storedCursorPrompt,
+        // Resolve the replay by platform, without relying on this database's id.
+        session_db_id: undefined,
       });
 
       expect(cursorImport.imported).toBe(true);
