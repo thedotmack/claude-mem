@@ -1766,10 +1766,12 @@ export class SyncApply {
     // replicated prompt knows its real content_session_id AND its local
     // session link.
     const viaPrompt = this.db.prepare(`
-      SELECT session_db_id FROM user_prompts
-      WHERE content_session_id = ? AND session_db_id IS NOT NULL
+      SELECT up.session_db_id FROM user_prompts up
+      JOIN sdk_sessions s ON s.id = up.session_db_id
+      WHERE up.content_session_id = ?
+        AND COALESCE(NULLIF(s.platform_source, ''), ?) = ?
       LIMIT 1
-    `).get(contentSessionId) as { session_db_id: number } | undefined;
+    `).get(contentSessionId, DEFAULT_PLATFORM_SOURCE, platform) as { session_db_id: number } | undefined;
     if (viaPrompt) {
       this.db.prepare('UPDATE sdk_sessions SET custom_title = ? WHERE id = ?')
         .run(customTitle, viaPrompt.session_db_id);
