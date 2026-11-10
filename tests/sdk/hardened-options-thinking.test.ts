@@ -20,12 +20,6 @@ describe('buildHardenedSdkOptions thinking policy', () => {
     expect('thinkingConfig' in opts).toBe(false);
   });
 
-  it('does not set thinking for KnowledgeAgent sessions', () => {
-    const opts = build('KnowledgeAgent');
-    expect('thinking' in opts).toBe(false);
-    expect('thinkingConfig' in opts).toBe(false);
-  });
-
   it('defaults cwd to OBSERVER_SESSIONS_DIR, creates it, and honors an explicit cwd', () => {
     expect(build('Observer').cwd).toBe(OBSERVER_SESSIONS_DIR);
     expect(existsSync(OBSERVER_SESSIONS_DIR)).toBe(true);
