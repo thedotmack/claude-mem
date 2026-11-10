@@ -167,8 +167,6 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
-const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
 // Memory context per OpenCode session: fetched on the session's first system
@@ -186,33 +184,17 @@ const contextByOpenCodeSessionId = new Map<string, CachedMemoryContext>();
 // would otherwise add the full request timeout to each one (plan-17 contract).
 const FAILED_CONTEXT_RETRY_MS = 60_000;
 
-function getOrCreateContentSessionId(openCodeSessionId: string): string {
-  if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
-      if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-      } else {
-        break;
-      }
-    }
-    contentSessionIdsByOpenCodeSessionId.set(
-      openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
-    );
-  }
-  return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
-}
-
 /**
- * Resolves the stable local ID for all OpenCode activity without contacting the
- * worker. Session init means "a user prompt happened", not "ensure a session
+ * OpenCode retains its native ID when a session resumes. Use it directly,
+ * scoped by platformSource at the worker, so a restart or cache eviction cannot
+ * split later prompts and tools into a fresh memory session. Session init
+ * means "a user prompt happened", not "ensure a session
  * row exists": observations and summarize create their own rows. Posting init
  * without a prompt manufactures a "[media prompt]" at prompt #1 and attributes
  * a preceding tool observation to it (#3803).
  */
 function resolveContentSessionId(openCodeSessionId: string): string {
-  return getOrCreateContentSessionId(openCodeSessionId);
+  return openCodeSessionId;
 }
 
 /**
@@ -423,7 +405,6 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     },
 
     forgetSession(sessionID) {
-      contentSessionIdsByOpenCodeSessionId.delete(sessionID);
       contextByOpenCodeSessionId.delete(sessionID);
     },
 
