@@ -88,6 +88,12 @@ describe('compact local source', () => {
       streams[0].emit('work-view-overview', renamed)
       assert.equal(shown.length, 3)
       assert.equal(shown.at(-1)?.devices[0].name, 'Renamed computer')
+      // A sharing notice can change without any request changing.
+      const sharing = structuredClone(renamed)
+      sharing.model.sharedState = { enabled: true, pending: 2 }
+      streams[0].emit('work-view-overview', sharing)
+      assert.equal(shown.length, 4)
+      assert.deepEqual(shown.at(-1)?.sharedState, { enabled: true, pending: 2 })
     } finally { stop() }
   })
 

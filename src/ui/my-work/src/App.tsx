@@ -314,9 +314,10 @@ function LoadedApp() {
                 </nav>
               </Req>
 
-              {liveOpenRequest && <Suspense fallback={<RequestDetailLoading title={liveOpenRequest.title ?? liveOpenRequest.resolvesTo?.title ?? t('Untitled request')} onClose={closeRequestDrawer} />}>
+              {/* Always mounted: its code loads after first paint, and closing keeps the loaded detail for a reopen. */}
+              <Suspense fallback={liveOpenRequest ? <RequestDetailLoading title={liveOpenRequest.title ?? liveOpenRequest.resolvesTo?.title ?? t('Untitled request')} onClose={closeRequestDrawer} /> : null}>
                 <RequestDetail request={liveOpenRequest} onClose={closeRequestDrawer} onOpenFocus={goToFocus} />
-              </Suspense>}
+              </Suspense>
             </div>
           </Req>
         </TooltipProvider>

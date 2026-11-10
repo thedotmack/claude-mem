@@ -92,7 +92,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   function modelSignature(model: MappedWorkModel | WorkViewOverviewModel): string {
     let signature = modelSignatures.get(model)
     if (signature === undefined) {
-      signature = JSON.stringify([model.agents, model.devices, model.people, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory])
+      signature = JSON.stringify([model.agents, model.devices, model.people, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory, model.sharedState])
       modelSignatures.set(model, signature)
     }
     return signature
