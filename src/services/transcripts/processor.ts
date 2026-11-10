@@ -398,7 +398,7 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
-    const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    const prompt = this.resolveMessageText(fields.prompt) ?? '';
     await this.anchorUserPrompt(session, prompt, eventOccurredAtEpochMs);
   }
 
