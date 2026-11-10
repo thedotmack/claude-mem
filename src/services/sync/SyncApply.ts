@@ -1233,16 +1233,23 @@ export class SyncApply {
     }
     // Learning the association does not require a second stub. Keep a native
     // content identity in place while correcting this replica's platform.
+    // A deleted content identity also stays out: block_deleted_sdk_session_rekey
+    // refuses to re-key any row into it, even for work created after the
+    // deletion cutoff, so the stub keeps its synthetic id and only adopts the
+    // platform (its synthetic id is not the deleted one, so the trigger allows it).
     this.db.prepare(`
       UPDATE sdk_sessions SET
         platform_source = ?,
         content_session_id = CASE WHEN NOT EXISTS (
           SELECT 1 FROM sdk_sessions owner WHERE owner.platform_source = ?
             AND owner.content_session_id = ? AND owner.id != ?
+        ) AND NOT EXISTS (
+          SELECT 1 FROM deleted_content_sessions d
+          WHERE d.platform_source = ? AND d.content_session_id = ?
         ) THEN ? ELSE content_session_id END
       WHERE id = ? AND content_session_id = memory_session_id
         AND ${SyncApply.SYNC_STUB_PREDICATE}
-    `).run(platform, platform, contentSessionId, targetId, contentSessionId, targetId);
+    `).run(platform, platform, contentSessionId, targetId, platform, contentSessionId, contentSessionId, targetId);
   }
 
   /**
