@@ -162,7 +162,7 @@ function extractFromBash(toolInput: unknown, cwd: string, homeDirectory: string)
   // blocking the user's command is not.
   let tokens: ParsedToken[];
   try {
-    tokens = parse(command);
+    tokens = parse(command, process.env);
   } catch {
     return [];
   }

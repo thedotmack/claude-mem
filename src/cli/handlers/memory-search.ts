@@ -115,7 +115,7 @@ export function memorySearchLookup(input: NormalizedHookInput, roots: string[] =
   let shellPattern: string | undefined;
   if (tool === 'Bash' && typeof args.command === 'string') {
     try {
-      const tokens = parse(args.command).filter((value): value is string => typeof value === 'string');
+      const tokens = parse(args.command, process.env).filter((value): value is string => typeof value === 'string');
       if (!tokens.some(value => ['rg', 'grep', 'cat', 'head', 'tail', 'sed'].includes(path.basename(value)))) return null;
       candidates.push(...tokens.filter(value => isMemoryPath(value, input.cwd, roots)));
       const searchAt = tokens.findIndex(value => ['rg', 'grep'].includes(path.basename(value)));
