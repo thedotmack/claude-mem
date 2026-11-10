@@ -384,7 +384,9 @@ export async function readGeminiChat(path: string): Promise<{ header: any; messa
 function geminiTypedText(message: any): string | null {
   const display = message.displayContent;
   let text: string;
-  if (Array.isArray(display)) {
+  if (typeof display === 'string') {
+    text = display;
+  } else if (Array.isArray(display)) {
     if (!display.some((part: any) => typeof part?.text === 'string')) return null;
     text = textOf(display.map((part: any) => ({ type: 'text', ...part })), ['text']);
   } else {
