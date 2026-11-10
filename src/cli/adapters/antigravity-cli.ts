@@ -1,7 +1,7 @@
 import { homedir } from 'os';
 import type { NormalizedHookInput, PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
-import { extractLastMessage, findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
+import { contentToText, extractLastMessage, findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
 import { logger } from '../../utils/logger.js';
 import { expandHomeDirectory, extractFilePaths } from './codex-file-context.js';
 
@@ -148,6 +148,21 @@ export function inspectAntigravityTurn(
   }
 }
 
+// agy fires PostInvocation after EVERY model call of a turn, including the
+// steps that only call tools. What the call said is the text of the newest
+// PLANNER_RESPONSE, read only back to the newest USER_INPUT: a tool-only step
+// has no text, and an older turn's reply is not this call's, so both give ''
+// (#5665).
+function antigravityInvocationResponse(transcriptPath: string | undefined): string {
+  if (!transcriptPath) return '';
+  const text = findLastJsonlEntryBackward<string>(transcriptPath, (node) => {
+    if (node?.type === 'USER_INPUT') return '';
+    if (node?.type === 'PLANNER_RESPONSE') return contentToText(node.content) ?? '';
+    return undefined;
+  });
+  return text?.trim() ? text : '';
+}
+
 // Session-init input for an agy PreInvocation. A new user turn keeps the
 // prompt (as `submittedPrompt`); a follow-up call gets `submittedPrompt: null`,
 // session-init's "not a user turn", plus the files its tool step read.
@@ -225,14 +240,13 @@ export const antigravityCliAdapter: PlatformAdapter = {
     if (isInvocationEvent) {
       // PreInvocation routes to session-init, which works out whether this
       // model call starts a user turn (resolveAntigravityPreInvocation, run
-      // only there); PostInvocation routes to observation and records the
-      // assistant's turn, which lives in the transcript's PLANNER_RESPONSE node.
-      const response = transcriptPath
-        ? extractLastMessage(transcriptPath, 'assistant')
-        : '';
-      toolName = 'AntigravityProvider';
+      // only there); PostInvocation routes to observation and records what
+      // this model call said. A call with nothing to say has no toolName, so
+      // the observation handler records nothing for it.
+      const response = antigravityInvocationResponse(transcriptPath);
+      toolName = response ? 'AntigravityProvider' : undefined;
       toolInput = { prompt: prompt ?? 'User Query' };
-      toolResponse = { response: response || 'Completed' };
+      toolResponse = response ? { response } : undefined;
     }
 
     if (hasToolCall && toolName && !toolResponse) {
