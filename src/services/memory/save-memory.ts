@@ -4,6 +4,7 @@ import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { notifyGrokBotIndex } from '../integrations/GrokBotIndexWriter.js';
 import { notifyNotion } from '../integrations/NotionExporter.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 
 export interface SaveMemoryInput {
   text: string;
@@ -42,7 +43,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   const store = dbManager.getSessionStore();
   const sessionId = store.getOrCreateManualSession(project, platformSource);
   const observation = {
-    type: 'discovery', title: title?.trim() || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
+    type: 'discovery', title: title?.trim() || retainTextHeadTail(text, 60, 0).head.trim() + (text.length > 60 ? '...' : ''),
     subtitle: 'Manual memory', facts: [] as string[], narrative: text, concepts: [] as string[],
     files_read: [] as string[], files_modified: [] as string[], metadata: metadata ? JSON.stringify(metadata) : null,
   };
