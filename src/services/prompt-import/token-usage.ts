@@ -37,7 +37,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { claudeConfigDirectory, codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { claudeConfigDirectory, codexForkThreadId, createPromptReaders, isoToEpochMs, openCodeHistoryLayout, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -239,8 +239,14 @@ const openCodeUsage: UsageReader = {
       try {
         const database = new Database(source.path, { readonly: true });
         try {
-          const rows = database.prepare(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
-            FROM message WHERE json_extract(data, '$.role') = 'assistant'`).all() as Array<{ createdAt: number; tokens: string | null }>;
+          const layout = openCodeHistoryLayout(database);
+          const queries: string[] = [];
+          if (layout.legacy) queries.push(`SELECT m.time_created AS createdAt, json_extract(m.data, '$.tokens') AS tokens
+            FROM message m WHERE json_extract(m.data, '$.role') = 'assistant'
+            ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
+          if (layout.current) queries.push(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
+            FROM session_message WHERE type = 'assistant'`);
+          const rows = database.prepare(queries.join('\nUNION ALL\n')).all() as Array<{ createdAt: number; tokens: string | null }>;
           for (const row of rows) {
             const tokens = row.tokens ? parseLine(row.tokens) : null;
             if (!tokens) continue;
