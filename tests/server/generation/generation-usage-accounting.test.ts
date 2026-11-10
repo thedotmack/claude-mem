@@ -10,6 +10,7 @@ import {
   type ProcessGeneratedResponseInput,
 } from '../../../src/server/generation/processGeneratedResponse.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
+import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const databaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
@@ -82,6 +83,26 @@ describe('generation usage belongs to one committed completion', () => {
     const result = await pool.query('SELECT kind, SUM(quantity)::bigint AS total FROM usage_events WHERE team_id = $1 GROUP BY kind', [teamId]);
     return Object.fromEntries(result.rows.map(row => [row.kind, Number(row.total)]));
   }
+
+  it('meters a compatible provider reply that reports split token counts without a total', async () => {
+    const input = await inputFor('event');
+    const event = (await storage.agentEvents.getByIdForScope({
+      id: input.job.agentEventId!, teamId, projectId,
+    }))!;
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fixture',
+      baseUrl: 'https://compatible.example.test/v1',
+      fetchImpl: async () => Response.json({
+        choices: [{ message: { content: EVENT_XML } }],
+        usage: { prompt_tokens: 120, completion_tokens: 30 },
+      }),
+    });
+    const result = await provider.generate({
+      job: input.job, events: [event], project: { teamId, projectId, serverSessionId: null },
+    });
+    expect((await processGeneratedResponse({ ...input, ...result, tokensUsed: result.tokensUsed })).kind).toBe('completed');
+    expect(await usage()).toEqual({ observation: 1, tokens: 150 });
+  });
 
   for (const kind of ['event', 'summary'] as const) {
     it(`meters a ${kind} completion once across concurrent responses and terminal redelivery`, async () => {
