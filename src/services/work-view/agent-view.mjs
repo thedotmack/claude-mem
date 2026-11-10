@@ -128,7 +128,13 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   // (and, for a foreground agent, returned when it finished), and the time of
   // each subagent's latest captured tool call.
   // Only conversations whose loaded records include a subagent need it.
-  const contentIds = [...new Set([...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id))];
+  // Current observations link through memory_session_id, not the optional
+  // legacy content_session_id column. Their loaded parent sessions supply it.
+  const subagentMemoryIds = new Set(observations.filter((row) => row.agent_id && row.memory_session_id).map((row) => row.memory_session_id));
+  const contentIds = [...new Set([
+    ...[...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id),
+    ...sessions.filter((session) => subagentMemoryIds.has(session.memory_session_id) && session.content_session_id).map((session) => session.content_session_id),
+  ])];
   const contentArgs = contentIds.map(() => '?').join(', ');
   // Fields are pulled out in SQL: a launch response embeds the whole prompt,
   // so a truncated copy would not parse.
