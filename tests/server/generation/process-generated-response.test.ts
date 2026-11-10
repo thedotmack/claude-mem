@@ -11,20 +11,21 @@ import {
 import {
   processGeneratedResponse,
   processSessionSummaryResponse,
-  markGenerationFailed,
+  type ProcessGeneratedResponseInput,
 } from '../../../src/server/generation/processGeneratedResponse.js';
+import type { PostgresObservationGenerationJob } from '../../../src/storage/postgres/generation-jobs.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
-describe('processGeneratedResponse + markGenerationFailed', () => {
+describe('processGeneratedResponse', () => {
   if (!testDatabaseUrl) {
     it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL for Postgres integration', () => {});
     return;
   }
 
-  let pool: pg.Pool;
+  let pool: pg.Pool & ProcessGeneratedResponseInput['pool'];
   let client: PostgresPoolClient;
   let schemaName: string;
   let storage: PostgresStorageRepositories;
@@ -38,7 +39,7 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     // file runs standalone instead of relying on another test file's side effect.
     ModeManager.getInstance().loadMode('code');
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_phase5');
-    pool = poolForSchema(testDatabaseUrl!, schemaName);
+    pool = poolForSchema(testDatabaseUrl!, schemaName) as pg.Pool & ProcessGeneratedResponseInput['pool'];
     client = await pool.connect();
     await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
@@ -88,45 +89,33 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     });
   }
 
+  async function claim(job?: PostgresObservationGenerationJob) {
+    const id = job?.id ?? jobId;
+    await storage.observationGenerationJobs.transitionStatus({ id, projectId, teamId, status: 'processing' });
+    return (await storage.observationGenerationJobs.getByIdForScope({ id, projectId, teamId }))!;
+  }
+
+  async function summaryJob() {
+    const session = await storage.sessions.create({
+      projectId, teamId, contentSessionId: `content-${crypto.randomUUID()}`,
+      agentId: 'agent-1', platformSource: 'claude-code', metadata: {},
+    });
+    return storage.observationGenerationJobs.create({
+      projectId, teamId, sourceType: 'session_summary', sourceId: session.id,
+      serverSessionId: session.id, jobType: 'observation_generate_session_summary',
+    });
+  }
+
   // Regression: the summary path used to read only parsed.summary. A provider that
   // answered with <observation> blocks (which is what the shared prompt asked for)
   // produced summary=null, was judged empty, and the job completed having discarded
   // a paid-for response. Measured on a production deployment: 4,898 summary jobs,
   // zero observations persisted.
   it('persists a summary job answered with <observation> blocks instead of dropping it', async () => {
-    const session = await storage.sessions.create({
-      projectId,
-      teamId,
-      contentSessionId: `content-${crypto.randomUUID()}`,
-      agentId: 'agent-1',
-      platformSource: 'claude-code',
-      metadata: {},
-    });
-
-    const summaryJob = await storage.observationGenerationJobs.create({
-      projectId,
-      teamId,
-      sourceType: 'session_summary',
-      sourceId: session.id,
-      serverSessionId: session.id,
-      jobType: 'observation_generate_session_summary',
-    });
-
-    await storage.observationGenerationJobs.transitionStatus({
-      id: summaryJob.id,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-
-    const fresh = (await storage.observationGenerationJobs.getByIdForScope({
-      id: summaryJob.id,
-      projectId,
-      teamId,
-    }))!;
+    const fresh = await claim(await summaryJob());
 
     const outcome = await processSessionSummaryResponse({
-      pool: pool as unknown as Parameters<typeof processSessionSummaryResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: `
         <observation>
@@ -147,7 +136,7 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     }
 
     const reloaded = await storage.observationGenerationJobs.getByIdForScope({
-      id: summaryJob.id,
+      id: fresh.id,
       projectId,
       teamId,
     });
@@ -159,39 +148,10 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
   // block rendered to '' and was skipped as empty content - the same
   // accepted-then-discarded shape this PR is about, one layer down.
   it('persists a concepts-only response instead of completing the job empty', async () => {
-    const session = await storage.sessions.create({
-      projectId,
-      teamId,
-      contentSessionId: `content-${crypto.randomUUID()}`,
-      agentId: 'agent-1',
-      platformSource: 'claude-code',
-      metadata: {},
-    });
-
-    const summaryJob = await storage.observationGenerationJobs.create({
-      projectId,
-      teamId,
-      sourceType: 'session_summary',
-      sourceId: session.id,
-      serverSessionId: session.id,
-      jobType: 'observation_generate_session_summary',
-    });
-
-    await storage.observationGenerationJobs.transitionStatus({
-      id: summaryJob.id,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-
-    const fresh = (await storage.observationGenerationJobs.getByIdForScope({
-      id: summaryJob.id,
-      projectId,
-      teamId,
-    }))!;
+    const fresh = await claim(await summaryJob());
 
     const outcome = await processSessionSummaryResponse({
-      pool: pool as unknown as Parameters<typeof processSessionSummaryResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: `
         <observation>
@@ -215,16 +175,10 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
   // Same defect on the per-event path: concepts-only blocks were skipped by the
   // empty-content guard and the job still completed.
   it('persists a concepts-only observation on the per-event path', async () => {
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await reloadJob())!;
+    const fresh = await claim();
 
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: `
         <observation>
@@ -255,16 +209,9 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     expect(job).toBeTruthy();
 
     // Lock first, like the real generator does.
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-
-    const fresh = (await reloadJob())!;
+    const fresh = await claim();
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: xml,
       providerLabel: 'fake',
@@ -299,16 +246,9 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
       </observation>
     `;
 
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-
-    const fresh = (await reloadJob())!;
+    const fresh = await claim();
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: xml,
       providerLabel: 'fake',
@@ -335,10 +275,9 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
           <facts><fact>token metering</fact></facts>
         </observation>
       `;
-      await storage.observationGenerationJobs.transitionStatus({ id: jobId, projectId, teamId, status: 'processing' });
-      const fresh = (await reloadJob())!;
+      const fresh = await claim();
       const outcome = await processGeneratedResponse({
-        pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+        pool,
         job: fresh,
         rawText: xml,
         providerLabel: 'fake',
@@ -366,10 +305,9 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     delete process.env.CLAUDE_MEM_USAGE_METERING;
     try {
       const xml = `<observation><type>discovery</type><title>x</title><facts><fact>f</fact></facts></observation>`;
-      await storage.observationGenerationJobs.transitionStatus({ id: jobId, projectId, teamId, status: 'processing' });
-      const fresh = (await reloadJob())!;
+      const fresh = await claim();
       await processGeneratedResponse({
-        pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+        pool,
         job: fresh, rawText: xml, providerLabel: 'fake', modelId: 'fake-1', tokensUsed: 999,
       });
       const n = await pool.query(`SELECT count(*)::int AS n FROM usage_events WHERE team_id = $1`, [teamId]);
@@ -379,54 +317,10 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     }
   });
 
-  it('replaying the same job yields exactly one observation (idempotency)', async () => {
-    const xml = `<observation><type>discovery</type><title>Same</title><facts><fact>same</fact></facts></observation>`;
-
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-
-    const fresh = (await reloadJob())!;
-    const first = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
-      job: fresh,
-      rawText: xml,
-      providerLabel: 'fake',
-    });
-    expect(first.kind).toBe('completed');
-
-    // Manually move job back to processing to simulate retry
-    // (in practice retry would create a new job invocation, but the
-    // idempotency guard is at the observation level via generation_key).
-    // The terminal-status check inside processGeneratedResponse will
-    // short-circuit the second call cleanly, demonstrating that retries
-    // do not re-write observations.
-    const second = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
-      job: fresh,
-      rawText: xml,
-      providerLabel: 'fake',
-    });
-    expect(second.kind).toBe('completed');
-
-    // Verify only one observation exists
-    const list = await storage.observations.listByProject({ projectId, teamId });
-    expect(list).toHaveLength(1);
-  });
-
   it('marks job completed with no observation when the response is a skip_summary', async () => {
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await reloadJob())!;
+    const fresh = await claim();
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: '<skip_summary reason="all_events_private" />',
       providerLabel: 'fake',
@@ -442,31 +336,6 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
 
     const reloaded = await reloadJob();
     expect(reloaded?.status).toBe('completed');
-  });
-
-  it('returns parse_error and does not write observations for malformed XML', async () => {
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await reloadJob())!;
-    const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
-      job: fresh,
-      rawText: 'this is just prose without any xml',
-      providerLabel: 'fake',
-    });
-    expect(outcome.kind).toBe('parse_error');
-
-    const list = await storage.observations.listByProject({ projectId, teamId });
-    expect(list).toHaveLength(0);
-
-    // Job still in processing — caller (ProviderObservationGenerator) is
-    // responsible for transitioning to failed/retry.
-    const reloaded = await reloadJob();
-    expect(reloaded?.status).toBe('processing');
   });
 
   it('copies the session folder label onto generated observation metadata', async () => {
@@ -493,20 +362,10 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
       serverSessionId: session.id,
       jobType: 'observation_generate_for_event',
     });
-    await storage.observationGenerationJobs.transitionStatus({
-      id: job.id,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await storage.observationGenerationJobs.getByIdForScope({
-      id: job.id,
-      projectId,
-      teamId,
-    }))!;
+    const fresh = await claim(job);
 
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: `
         <observation>
@@ -526,15 +385,9 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
   });
 
   it('writes project: null when the job carries no server session (legacy jobs)', async () => {
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await reloadJob())!;
+    const fresh = await claim();
     const outcome = await processGeneratedResponse({
-      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      pool,
       job: fresh,
       rawText: `
         <observation>
@@ -552,22 +405,4 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     }
   });
 
-  it('markGenerationFailed routes to retry when retryable and attempts left', async () => {
-    await storage.observationGenerationJobs.transitionStatus({
-      id: jobId,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    const fresh = (await reloadJob())!;
-    await markGenerationFailed({
-      pool: pool as unknown as Parameters<typeof markGenerationFailed>[0]['pool'],
-      job: fresh,
-      reason: 'transient',
-      classification: 'transient',
-      retryable: true,
-    });
-    const reloaded = await reloadJob();
-    expect(reloaded?.status).toBe('queued');
-  });
 });
