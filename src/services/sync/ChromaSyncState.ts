@@ -285,7 +285,16 @@ export const ChromaSyncState = {
     if (merged.length === existing.length) return;
 
     pendingDeletesCache = merged;
-    persist();
+    // The record must reach the disk before the caller proceeds: the process
+    // that just failed the cleanup is the one that may exit next, and `persist`
+    // silently defers behind its failure backoff. Keep the cleanup lane
+    // non-throwing, but report a write that could not happen.
+    try {
+      persistOrThrow();
+    } catch (error) {
+      logger.warn('CHROMA_SYNC', 'Could not record a pending post-delete cleanup', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
   },
 
   /** Forget cleanups that succeeded (or whose row came back) in one write. */

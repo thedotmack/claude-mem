@@ -1301,6 +1301,33 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('reports a recovered connection once, for the post-delete cleanup retry (#5664)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let recoveries = 0;
+    const unsubscribe = mgr.onConnectionRecovered(() => {
+      recoveries += 1;
+    });
+    try {
+      prewarmSpawnBehavior = 'failure';
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+      // A failed connection is not a recovery.
+      expect(recoveries).toBe(0);
+
+      // The host recovers; the next call reconnects once the backoff is over.
+      prewarmSpawnBehavior = 'success';
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(recoveries).toBe(1);
+
+      // A healthy call is not another recovery: one report per lost connection.
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(recoveries).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('keeps the MCP 1.6 Pydantic compatibility bound in prewarm and transport launches', async () => {
     const mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', { limit: 1 });

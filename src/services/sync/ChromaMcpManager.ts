@@ -254,6 +254,15 @@ export class ChromaMcpManager {
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
+  /** A connection failure has been recorded and its recovery not reported yet. */
+  private recoveryPending: boolean = false;
+  /**
+   * Told once each time a connection comes back after a recorded failure.
+   * ChromaSync subscribes to retry the post-delete cleanups Chroma refused
+   * while it was down (#5664); the manager never imports it (that would be a
+   * cycle), so the callback is registered from outside.
+   */
+  private connectionRecoveryListeners: Array<() => void> = [];
   private connecting: Promise<void> | null = null;
   private activePrewarmChild: ChildProcess | null = null;
   /** Identity of activePrewarmChild, captured at spawn while it was alive. */
@@ -349,6 +358,7 @@ export class ChromaMcpManager {
         throw error;
       }
       this.lastConnectionFailureTimestamp = Date.now();
+      this.recoveryPending = true;
       if (error instanceof ChromaUnavailableError) {
         // Chroma being unavailable is transient and already handled downstream
         // (reconnect backoff + skip-the-write). Log at warn so it does not route
@@ -365,6 +375,42 @@ export class ChromaMcpManager {
       // stop() clears `connecting`, so a newer attempt may own it by now.
       if (this.connecting === connectionAttempt) {
         this.connecting = null;
+      }
+    }
+    // This attempt connected after a recorded failure: the recovery edge. A
+    // listener may start work synchronously, so it runs after the attempt has
+    // fully settled.
+    this.reportConnectionRecovered();
+  }
+
+  /**
+   * Run `listener` once each time chroma-mcp comes back after a failed
+   * connection (#5664). Registering the same function twice is a no-op, so a
+   * repeated worker init cannot stack calls. Returns an unsubscribe function.
+   * A listener runs on the call that reconnected: it must not throw, and it
+   * must tolerate Chroma failing again before its own work gets a turn.
+   */
+  onConnectionRecovered(listener: () => void): () => void {
+    if (!this.connectionRecoveryListeners.includes(listener)) {
+      this.connectionRecoveryListeners.push(listener);
+    }
+    return () => {
+      this.connectionRecoveryListeners = this.connectionRecoveryListeners.filter(existing => existing !== listener);
+    };
+  }
+
+  /** Report the recorded failure's recovery exactly once, after a connect. */
+  private reportConnectionRecovered(): void {
+    if (!this.recoveryPending) {
+      return;
+    }
+    this.recoveryPending = false;
+    for (const listener of this.connectionRecoveryListeners) {
+      try {
+        listener();
+      } catch (error: unknown) {
+        logger.warn('CHROMA_MCP', 'A connection-recovery listener failed', {},
+          error instanceof Error ? error : new Error(String(error)));
       }
     }
   }
@@ -579,6 +625,7 @@ export class ChromaMcpManager {
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
+      this.recoveryPending = true;
 
       // Direct child (uvx) emitted close, but on Linux the grandchildren
       // (uv/python/chroma-mcp) often outlive their parent because MCP SDK
@@ -1481,6 +1528,9 @@ export class ChromaMcpManager {
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
+      // A lost transport is a connection failure even when this call's retry
+      // succeeds, so the reconnect that follows reports the recovery.
+      this.recoveryPending = true;
 
       if (callGeneration !== this.connectionGeneration) {
         throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
@@ -1603,6 +1653,9 @@ export class ChromaMcpManager {
       return;
     }
     logger.warn('CHROMA_MCP', `chroma-mcp did not answer "${toolName}" in time and no write is in flight; restarting it`);
+    // The subprocess goes away here, so the reconnect that follows is a
+    // recovery like any other (#5664).
+    this.recoveryPending = true;
     // Waiters on the close cleanup expect it never to reject, like the
     // unexpected-close cleanup it shares the slot with.
     let restart: Promise<void>;

@@ -19,13 +19,25 @@ interface ChromaRowDeleter {
 let cleanupTail: Promise<void> = Promise.resolve();
 
 /**
+ * Run a retry pass on the lane the scheduled cleanups use, so a burst the
+ * delete routes just queued cannot interleave with it. The pass owns its
+ * failures: this only keeps the lane moving, like scheduleChromaRowCleanup.
+ */
+export function runOnChromaRowCleanupLane(operation: () => Promise<void>): Promise<void> {
+  const run = cleanupTail.then(operation, operation);
+  cleanupTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
  * Rows must already be committed gone; failures never undo durable deletion.
  *
  * A cleanup that fails is not merely logged (#5664). The SQLite row is gone, so
  * the DELETE route answers 404 from now on and no backfill walks the row again:
  * without a record, the row's documents are orphaned in Chroma for good. The
  * failures are kept in the sync checkpoint as pending row deletes and retried
- * by the next backfill sweep, the same pass that drains pending writes.
+ * by the next backfill sweep, the same pass that drains pending writes, or as
+ * soon as chroma-mcp comes back (see ChromaSync's recovery subscription).
  */
 export function scheduleChromaRowCleanup(
   chroma: ChromaRowDeleter,
