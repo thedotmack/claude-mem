@@ -43,6 +43,13 @@ test('no story and no saved rules: no rules, no learning run, no error', () => {
   assert.deepEqual([model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.lastRuns.progress], [[], [], null, null, null, null])
 })
 
+test('keeps saved-quote omissions visible even when local evidence is still available', () => {
+  const model = mapRules({ rules: [{ ...suggestion, quotesOmitted: 2 }, ownRule], ruleScopes: scopes })
+  assert.equal(model.rules[0].quotesOmitted, 2)
+  assert.equal(model.rules[0].quotes.length, 1)
+  assert.equal(model.rules[1].quotesOmitted, 0)
+})
+
 test('a rule in an unlisted scope or from an unknown source empties My Rules with the reason', () => {
   assert.match(mapRules({ rules: [ownRule], ruleScopes: [scopes[0]] }).rulesReadError!, /scope the worker did not list/)
   assert.match(mapRules({ rules: [{ ...suggestion, source: 'somewhere' }], ruleScopes: scopes }).rulesReadError!, /unknown source/)

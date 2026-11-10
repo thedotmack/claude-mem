@@ -1143,7 +1143,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     else {
       // Back to the learned suggestion: clearing every saved field lets the story's version show again.
       if (!current!.ruleId.startsWith('pref_')) { res.status(409).json({ error: 'Only a learned rule can go back to being a suggestion.', snapshot }); return; }
-      rows.push({ task: `Rule: ${current!.ruleId}`, rule_id: current!.ruleId, scope_tier: null, scope_name: null, when: null, then: null, set_by: null, status: null, source: null, replaced_by: null, replaced_at: null, quotes: null, times_seen: null, latest_at: null });
+      rows.push({ task: `Rule: ${current!.ruleId}`, rule_id: current!.ruleId, scope_tier: null, scope_name: null, when: null, then: null, set_by: null, status: null, source: null, replaced_by: null, replaced_at: null, quotes: null, quotes_total: null, times_seen: null, latest_at: null });
     }
     const project = this.homeProject ?? getProjectContext(homedir()).primary;
     for (const fields of rows) this.appendWorkStateEntry({ project, listName: MY_RULES_LIST, fields });

@@ -9,8 +9,9 @@ const compiled = buildSync({
     resolveDir: resolve(import.meta.dir, '../../../src/ui/my-work'), loader: 'tsx', contents: `
       import React from 'react';
       import { renderToStaticMarkup } from 'react-dom/server';
-      import { NoRulesYet } from './src/pages/my-rules';
+      import { NoRulesYet, RuleEvidence, RuleEvidenceNotice } from './src/pages/my-rules';
       export const renderNoRules = (readError, refresh) => renderToStaticMarkup(<NoRulesYet onAdd={() => {}} readError={readError} refresh={refresh} />);
+      export const renderEvidence = (rule) => renderToStaticMarkup(<><RuleEvidenceNotice rule={rule} /><RuleEvidence rule={rule} /></>);
     `,
   },
   tsconfig: resolve(import.meta.dir, '../../../src/ui/my-work/tsconfig.app.json'),
@@ -38,7 +39,7 @@ function loadFixture() {
   }
   return module.exports;
 }
-const { renderNoRules } = loadFixture();
+const { renderNoRules, renderEvidence } = loadFixture();
 
 const NO_AGENT = 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
 const LEARNS_ON_ITS_OWN = 'claude-mem learns how you like to work from your requests on its own.';
@@ -64,5 +65,30 @@ describe('empty Rules page (#5535)', () => {
     expect(html).toContain('Can’t read your rules right now');
     expect(html).not.toContain('Add rule');
     expect(html).not.toContain('Waiting to refresh');
+  });
+});
+
+describe('saved rule evidence budget', () => {
+  it('shows the omitted count without describing a learned rule as owner-written', () => {
+    const html = renderEvidence({ quotes: [], quotesOmitted: 2, source: 'request-progress' });
+    expect(html).toContain('2 supporting quotes could not fit in this saved rule.');
+    expect(html).toContain('Other devices may show fewer quotes.');
+    expect(html).toContain('No supporting quotes are available on this computer.');
+    expect(html).not.toContain('You wrote this rule');
+  });
+
+  it('still shows the budget notice when the local story supplies the missing evidence', () => {
+    const html = renderEvidence({
+      quotes: [{ quote: 'keep the supporting evidence', at: 'Today', kind: 'directive', where: 'prompt' }],
+      quotesOmitted: 1, source: 'request-progress', records: [],
+    });
+    expect(html).toContain('1 supporting quote could not fit in this saved rule.');
+    expect(html).toContain('keep the supporting evidence');
+  });
+
+  it('keeps the owner-written explanation without a false budget warning', () => {
+    const html = renderEvidence({ quotes: [], source: 'you' });
+    expect(html).toContain('You wrote this rule in My Rules');
+    expect(html).not.toContain('could not fit');
   });
 });

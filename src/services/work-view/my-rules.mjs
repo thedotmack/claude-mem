@@ -21,6 +21,7 @@ export const ruleTaskName = (ruleId) => `${RULE_TASK_PREFIX}${ruleId}`;
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const count = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const quoteCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const shortQuote = (quote) => quote.length > MAX_QUOTE_CHARS ? `${quote.slice(0, MAX_QUOTE_CHARS - 1)}…` : quote;
 
 /** "YYYY-MM-DD HH:MM | quote" lines, the same format owner-goals uses for evidence. */
@@ -82,6 +83,7 @@ export function buildRules(state, ledger) {
     };
     const scopeTier = RULE_SCOPE_TIERS.includes(fields.scope_tier) ? fields.scope_tier : base.scopeTier;
     const savedQuotes = parseQuoteLines(fields.quotes, base.kind);
+    const quotesTotal = quoteCount(fields.quotes_total);
     rules.set(ruleId, {
       ...base,
       scopeTier,
@@ -94,6 +96,9 @@ export function buildRules(state, ledger) {
       timesSeen: count(fields.times_seen) ?? base.timesSeen,
       latestAt: text(fields.latest_at) || base.latestAt,
       quotes: savedQuotes.length ? savedQuotes : base.quotes,
+      // The local story may still supply quotes that did not fit in the synced row.
+      quotesTotal: quotesTotal ?? (savedQuotes.length || base.quotes.length),
+      quotesOmitted: quotesTotal === null ? 0 : Math.max(0, quotesTotal - savedQuotes.length),
       replacedBy: text(fields.replaced_by) || null,
       replacedAt: text(fields.replaced_at) || null,
       savedAt: task.updatedAt,
@@ -130,9 +135,14 @@ export function ruleRowFields(rule) {
   };
   // Keep within one work-state write: drop quotes one at a time until it fits.
   let quotes = (rule.quotes ?? []).slice(0, MAX_QUOTES);
+  // Preserve the known total when a device can only re-save the surviving quotes.
+  // Complete saves need no extra field; the count is included in the budget when evidence is omitted.
+  const quotesTotal = Math.max(rule.quotes?.length ?? 0, quoteCount(rule.quotesTotal) ?? 0);
+  if (quotesTotal > quotes.length) fields.quotes_total = quotesTotal;
   while (JSON.stringify(fields).length > 2000 && quotes.length) {
     quotes = quotes.slice(0, -1);
     fields.quotes = quoteLines(quotes);
+    fields.quotes_total = quotesTotal;
   }
   if (JSON.stringify(fields).length > 2000) throw new RangeError('This rule is too long to save. Shorten it.');
   return fields;
