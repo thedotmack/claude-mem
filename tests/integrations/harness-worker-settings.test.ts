@@ -62,21 +62,21 @@ it('uses that budget for the context request instead of the 5 s cap', async () =
   const key = 'CLAUDE_MEM_API_TIMEOUT_MS';
   const before = process.env[key];
   const realFetch = globalThis.fetch;
-  // Stand-in for a busy worker: every response would arrive after 2 s.
+  // Stand-in for a busy worker: every response would arrive after 700 ms.
   globalThis.fetch = ((_url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
     const signal = init?.signal;
-    const timer = setTimeout(() => resolve(new Response('memory')), 2_000);
+    const timer = setTimeout(() => resolve(new Response('memory')), 700);
     signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); });
   })) as typeof fetch;
   try {
-    process.env[key] = '600';
+    process.env[key] = '500';
     const client = createHarnessWorkerClient();
     const started = Date.now();
-    await expect(client.context(new URLSearchParams({ cwd: '/tmp' }))).rejects.toThrow();
+    await expect(client.context(new URLSearchParams({ cwd: dir }))).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(1_500);
-    process.env[key] = '4000';
+    process.env[key] = '1000';
     client.reset();
-    expect(await client.context(new URLSearchParams({ cwd: '/tmp' }))).toBe('memory');
+    expect(await client.context(new URLSearchParams({ cwd: dir }))).toBe('memory');
   } finally {
     globalThis.fetch = realFetch;
     if (before === undefined) delete process.env[key]; else process.env[key] = before;

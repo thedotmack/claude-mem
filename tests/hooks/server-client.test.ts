@@ -173,8 +173,8 @@ describe('ServerClient', () => {
     }
   });
 
-  it('classifies 5xx as fallback-eligible http_error', async () => {
-    installFetch(async () => new Response('boom', { status: 502 }));
+  it.each([[502, true], [400, false], [429, true]] as const)('classifies HTTP %i with fallback eligibility %s', async (status, fallbackEligible) => {
+    installFetch(async () => new Response('error', { status }));
     const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
@@ -185,41 +185,8 @@ describe('ServerClient', () => {
     expect(caught).toBeInstanceOf(ServerClientError);
     if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('http_error');
-      expect(caught.status).toBe(502);
-      expect(caught.isFallbackEligible()).toBe(true);
-    }
-  });
-
-  it('classifies 4xx (not 429) as non-fallback http_error', async () => {
-    installFetch(async () => new Response('bad', { status: 400 }));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    let caught: unknown;
-    try {
-      await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ServerClientError);
-    if (caught instanceof ServerClientError) {
-      expect(caught.kind).toBe('http_error');
-      expect(caught.status).toBe(400);
-      expect(caught.isFallbackEligible()).toBe(false);
-    }
-  });
-
-  it('classifies 429 as fallback-eligible http_error', async () => {
-    installFetch(async () => new Response('rate', { status: 429 }));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    let caught: unknown;
-    try {
-      await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ServerClientError);
-    if (caught instanceof ServerClientError) {
-      expect(caught.status).toBe(429);
-      expect(caught.isFallbackEligible()).toBe(true);
+      expect(caught.status).toBe(status);
+      expect(caught.isFallbackEligible()).toBe(fallbackEligible);
     }
   });
 
