@@ -148,6 +148,55 @@ class ProviderTest(unittest.TestCase):
         self.drain()
         self.assertEqual(len(self.fake.requests[1]["body"]["tool_response"]), 1000)
 
+    def test_queued_tool_capture_snapshots_mutable_native_payloads(self):
+        self.provider.on_turn_start(1, "inspect the file")
+        self.drain()
+        release = threading.Event()
+        started = threading.Event()
+        self.client._enqueue(lambda: (started.set(), release.wait(3.0)))
+        self.assertTrue(started.wait(1.0))
+        args = {"path": "original.txt", "options": {"lines": [1, 2], "secret": "<private>token</private>"}}
+        result = {"content": [{"text": "original result <private>hidden</private>"}]}
+        try:
+            self.provider.record_tool_call("read_file", args, result, "sess-1", "snapshot-1")
+            args["path"] = "replacement.txt"
+            args["options"]["lines"].append(99)
+            result["content"][0]["text"] = "replacement result"
+        finally:
+            release.set()
+        self.drain()
+        body = self.fake.requests[-1]["body"]
+        self.assertEqual(body["tool_input"], {"path": "original.txt", "options": {"lines": [1, 2], "secret": ""}})
+        self.assertEqual(json.loads(body["tool_response"]), {"content": [{"text": "original result "}]})
+        self.assertEqual(body["tool_use_id"], "snapshot-1")
+        # Sanitizing capture must not mutate the host's still-owned objects.
+        self.assertEqual(args["options"]["secret"], "<private>token</private>")
+
+    def test_queued_note_snapshots_nested_metadata(self):
+        release = threading.Event()
+        started = threading.Event()
+        self.client._enqueue(lambda: (started.set(), release.wait(3.0)))
+        self.assertTrue(started.wait(1.0))
+        metadata = {"source": {"paths": ["original.txt"]}}
+        try:
+            self.client.save_note("sess-1", self.cwd, "A saved fact", "A title", metadata)
+            metadata["source"]["paths"].append("later.txt")
+        finally:
+            release.set()
+        self.drain()
+        body = self.fake.requests[-1]["body"]
+        self.assertEqual(body["metadata"]["source"], {"paths": ["original.txt"]})
+        self.assertEqual(metadata, {"source": {"paths": ["original.txt", "later.txt"]}})
+
+    def test_invalid_snapshot_does_not_escape_or_stop_later_capture(self):
+        cyclic = {}
+        cyclic["self"] = cyclic
+        self.provider.record_tool_call("terminal", cyclic, "invalid", "sess-1")
+        self.provider.record_tool_call("terminal", {"command": "valid"}, "done", "sess-1")
+        self.drain()
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(self.fake.requests[0]["body"]["tool_input"], {"command": "valid"})
+
     def test_memory_tools_and_child_agents_are_not_recorded(self):
         self.provider.on_turn_start(1, "remember this")
         for name in ("memory", "memory_search", "mem_search", "mcp_claude_mem_search", "mcp_claude-mem_search", ""):
@@ -636,6 +685,27 @@ class RecallPrivacyTest(unittest.TestCase):
 
 
 class ServerModeTest(unittest.TestCase):
+    def test_hosted_tool_capture_snapshots_before_the_sender_runs(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        client = client_module.ClaudeMemClient(client_module.Config("", fake.base, "key", "project"))
+        self.addCleanup(client.close)
+        release = threading.Event()
+        started = threading.Event()
+        client._enqueue(lambda: (started.set(), release.wait(3.0)))
+        self.assertTrue(started.wait(1.0))
+        args, result = {"command": "first"}, {"exit": 0}
+        try:
+            client.record_tool("session", REPO, "terminal", args, result, "hosted-snapshot")
+            args["command"], result["exit"] = "later", 1
+        finally:
+            release.set()
+        self.assertTrue(client.flush(3.0))
+        self.assertEqual(len(fake.requests), 1)
+        payload = fake.requests[0]["body"]["payload"]
+        self.assertEqual(payload["tool_input"], {"command": "first"})
+        self.assertEqual(json.loads(payload["tool_response"]), {"exit": 0})
+
     def test_events_go_to_the_hosted_server_with_the_key(self):
         fake = FakeClaudeMem()
         self.addCleanup(fake.close)

@@ -15,6 +15,7 @@ Hermes turn nothing.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import http.client
 import json
@@ -473,6 +474,13 @@ class ClaudeMemClient:
 
     def record_tool(self, session_id: str, cwd: str, tool_name: str, tool_input: Any,
                     tool_response: Any, tool_use_id: str = "") -> None:
+        try:
+            # The host may reuse its dictionaries as soon as this hook returns.
+            # Strip before capping, and retain our own snapshot for the sender.
+            tool_input = strip_tags(tool_input)
+            tool_response = strip_tags(text_of(tool_response))[:MAX_TOOL_RESPONSE]
+        except Exception:  # noqa: BLE001 - malformed capture must not break the host
+            return
         self._enqueue(lambda: self._record_tool(
             self._session(session_id), cwd, tool_name, tool_input, tool_response, tool_use_id))
 
@@ -481,6 +489,10 @@ class ClaudeMemClient:
 
     def save_note(self, session_id: str, cwd: str, text: str, title: str,
                   metadata: Dict[str, Any]) -> None:
+        try:
+            metadata = copy.deepcopy(metadata)
+        except Exception:  # noqa: BLE001 - keep the sender's fail-soft behavior
+            return
         self._enqueue(lambda: self._save_note(self._session(session_id), cwd, text, title, metadata))
 
     def _record_prompt(self, session: Session, cwd: str, prompt: str) -> None:
@@ -534,21 +546,17 @@ class ClaudeMemClient:
         session.last_prompt_recorded = True
 
     def _record_tool(self, session: Session, cwd: str, tool_name: str, tool_input: Any,
-                     tool_response: Any, tool_use_id: str) -> None:
+                     tool_response: str, tool_use_id: str) -> None:
         # A tool call belongs to the prompt before it: when the worker did not
         # record that prompt, the call is dropped rather than filed without one.
         if session.excluded or self._excluded(cwd) or (session.prompts_sent and not session.last_prompt_recorded):
             return
-        # Cut only after the tagged sections are gone: a cut through a section
-        # would leave its opening tag without the closing one.
-        response = strip_tags(text_of(tool_response))[:MAX_TOOL_RESPONSE]
-        tool_input = strip_tags(tool_input)
         try:
             if self.config.server:
                 if tool_name.lower() in self.config.skip_tools:
                     return
                 payload: Dict[str, Any] = {
-                    "tool_name": tool_name, "tool_input": tool_input, "tool_response": response,
+                    "tool_name": tool_name, "tool_input": tool_input, "tool_response": tool_response,
                     "cwd": cwd, "platformSource": PLATFORM_SOURCE,
                 }
                 if tool_use_id:
@@ -567,7 +575,7 @@ class ClaudeMemClient:
                     "contentSessionId": session.id,
                     "tool_name": tool_name,
                     "tool_input": tool_input,
-                    "tool_response": response,
+                    "tool_response": tool_response,
                     "platformSource": PLATFORM_SOURCE,
                     "cwd": cwd,
                 }
