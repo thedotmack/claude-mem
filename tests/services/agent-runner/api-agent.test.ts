@@ -80,6 +80,30 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[1].body.response_format).toEqual({ type: 'json_object' });
   });
 
+  it('resends without the reasoning field when the endpoint says reasoning cannot be disabled', async () => {
+    const { calls } = fakeFetch([
+      { status: 400, text: JSON.stringify({ error: { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' } }) },
+      { body: { choices: [{ message: { content: 'the answer' } }] } },
+    ]);
+    const router = target('https://openrouter.test/api/v1/chat/completions');
+    expect(await askApiTarget(router, 'the question')).toBe('the answer');
+    expect(calls.length).toBe(2);
+    expect(calls[0].body.reasoning).toEqual({ enabled: false });
+    expect(calls[1].body.reasoning).toBeUndefined();
+    // Not remembered against the URL: the next question tries the field again.
+    const again = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
+    await askApiTarget(router, 'next');
+    expect(again.calls[0].body.reasoning).toEqual({ enabled: false });
+  });
+
+  it('does not resend a schema-backed question when the 400 is about something else', async () => {
+    const { calls } = fakeFetch([{ status: 400, text: JSON.stringify({ error: { message: "This model's maximum context length is 8192 tokens, however you requested 9000 tokens" } }) }]);
+    await expect(askApiTarget(target('https://example.test/v5/chat/completions'), 'the question', { answerSchema: { type: 'object' } }))
+      .rejects.toThrow(/maximum context length/);
+    // A context refusal fails the same way in any answer format: one request, the original error.
+    expect(calls.length).toBe(1);
+  });
+
   it('reports the provider\'s own refusal and never asks anyone else', async () => {
     const { calls } = fakeFetch([{ status: 401, text: JSON.stringify({ error: { message: 'invalid api key' } }) }]);
     await expect(askApiTarget(target('https://example.test/v3/chat/completions'), 'the question')).rejects.toThrow(/not authenticated/i);

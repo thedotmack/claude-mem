@@ -24,7 +24,7 @@ import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { resolveOpenAICompatConfig } from '../worker/OpenAICompatProvider.js';
 import { resolveOpenRouterConfig } from '../worker/OpenRouterProvider.js';
-import { endpointRejectsReasoningField, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
+import { endpointRejectsReasoningField, isReasoningDisabledRejection, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
 
 /** The provider an API step runs on. */
 export type ApiProviderId = 'openrouter' | 'openai-compatible';
@@ -136,6 +136,16 @@ export interface ApiAskOptions {
   abortSignal?: AbortSignal;
 }
 
+/**
+ * Whether a 400/422 body says the endpoint does not accept the requested answer
+ * format. Only that refusal is worth the same question again in a looser format:
+ * a context-length or content refusal would fail identically, and the second
+ * request would spend provider credit for nothing.
+ */
+function isUnsupportedAnswerFormat(text: string): boolean {
+  return /response[_\s-]?format|json[_\s-]?schema|json[_\s-]?object|structured[_\s-]?output|guided[_\s-]?(json|decoding)/i.test(text);
+}
+
 /** The answer formats to try, in order. The schema one is strictest. */
 type AnswerFormat = 'json_schema' | 'json_object';
 
@@ -149,9 +159,10 @@ function answerFormatBodies(format: AnswerFormat, schema?: Record<string, unknow
  *
  * Two refusals are retried rather than reported, because both are the
  * endpoint's schema and not the answer's fault: an endpoint that rejects the
- * `reasoning` field (vLLM) is sent the request once more without it, and an
- * endpoint that rejects `json_schema` is sent the same question as
- * `json_object`. Nothing else is retried, and no refusal ever moves the work
+ * `reasoning` field (vLLM), or says reasoning cannot be disabled, is sent the request once more without it, and an
+ * endpoint whose 400/422 says it does not accept `json_schema` is sent the same
+ * question as `json_object`. A 400 about anything else (a context-length
+ * refusal, say) is reported as it came, with no second request. Nothing else is retried, and no refusal ever moves the work
  * to another provider.
  */
 export async function askApiTarget(target: ApiTarget, prompt: string, options: ApiAskOptions = {}): Promise<string> {
@@ -199,8 +210,14 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       includeReasoning = false;
       continue;
     }
+    // "Reasoning is mandatory for this endpoint and cannot be disabled": resend without the field, and do not
+    // remember it against the URL, because a router picks a different model next time (#5265).
+    if (includeReasoning && isReasoningDisabledRejection(text)) {
+      includeReasoning = false;
+      continue;
+    }
     const next = formats[formats.indexOf(format) + 1];
-    if (next) {
+    if (next && isUnsupportedAnswerFormat(text)) {
       format = next;
       continue;
     }

@@ -160,6 +160,34 @@ describe('the My Work refresh on an API provider', () => {
     });
   });
 
+  it('after a 401 the rest of the run sends nothing', async () => {
+    await withApiProvider('openrouter', async () => {
+      const { calls } = fakeFetch([{ status: 401, text: JSON.stringify({ error: { message: 'invalid api key' } }) }]);
+      const outcomes: string[] = [];
+      const task: AgentTask = {
+        reason: 'test',
+        cwd: process.cwd(),
+        claudeCode: { plugins: [], tools: ['Read'], allowedTools: [], readableFolders: [] },
+        allowedAgents: ['api'],
+        preferredAgent: 'api',
+        stayOnFirstUsableAgent: true,
+        // Like a refresh with many review batches: every batch is asked even when an earlier one failed.
+        run: async (ask) => {
+          for (let batch = 0; batch < 5; batch++) {
+            await ask(`batch ${batch}`, {}).catch((error: Error) => { outcomes.push(error.message); });
+          }
+          throw new Error(outcomes[0]);
+        },
+      };
+      const result = await runAgentTask(task, { detect: async () => [], query: (async () => {}) as any, buildEnv: async () => ({}) });
+      expect(result.state).toBe('failed');
+      expect(outcomes.length).toBe(5);
+      expect(outcomes.every(message => /not authenticated/i.test(message))).toBe(true);
+      // One request reached the provider; the other four steps reported the same refusal without sending.
+      expect(calls.length).toBe(1);
+    });
+  });
+
   it('a refused API call is not handed to a local agent', async () => {
     await withApiProvider('openrouter', async () => {
       fakeFetch([{ status: 401, text: JSON.stringify({ error: { message: 'invalid api key' } }) }]);

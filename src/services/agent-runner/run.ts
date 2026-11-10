@@ -42,7 +42,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
 import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
-import { askApiTarget, resolveApiTarget } from './api-agent.js';
+import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
@@ -359,12 +359,23 @@ function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerD
  * token to inject and no local CLI to spend.
  */
 function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+  // A credential, credit or quota refusal fails every later step of this run the
+  // same way, so once one is seen the run's remaining steps (a refresh sends many
+  // review batches) report it without sending. The latch lives and dies with this
+  // run: it is not stored, and the next run asks the provider afresh.
+  let refused: ApiProviderError | null = null;
   return async (prompt, models, answerSchema) => {
+    if (refused) throw refused;
     const resolution = resolveApiTarget();
     if (!resolution.target) {
       throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
     }
-    return askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema });
+    try {
+      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema });
+    } catch (error) {
+      if (error instanceof ApiProviderError && [401, 402, 403, 429].includes(error.status)) refused = error;
+      throw error;
+    }
   };
 }
 
