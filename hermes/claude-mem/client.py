@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -331,6 +332,14 @@ class Transport:
                 request.add_header(name, value)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = response.read()
+        except urllib.error.HTTPError as error:
+            # A 4xx is a permanent client error: the same request fails the same
+            # way on every retry, so a burst of them must not silence the
+            # transport. Only a server-side or transport failure counts, which is
+            # what the breaker is for -- a 5xx may clear on its own.
+            if error.code >= 500:
+                self.breaker.fail()
+            raise RequestFailed(str(error)) from error
         except (http.client.HTTPException, OSError, ValueError) as error:
             self.breaker.fail()
             raise RequestFailed(str(error)) from error

@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.error
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -347,6 +348,28 @@ class FailSoftTest(unittest.TestCase):
         transport = client_module.Transport(client_module.Config("http://localhost"))
         with mock.patch("urllib.request.urlopen") as urlopen:
             urlopen.return_value.__enter__.return_value.read.side_effect = client_module.http.client.IncompleteRead(b"", 2)
+            for _ in range(client_module.BREAKER_FAILURES):
+                with self.assertRaises(client_module.RequestFailed):
+                    transport.worker("GET", "/test")
+        self.assertTrue(transport.breaker.open())
+
+    def test_a_client_error_does_not_open_the_breaker(self):
+        # HTTPError subclasses OSError, so a 4xx used to count as a transport
+        # failure: three bad requests silenced every later call for 30 seconds.
+        transport = client_module.Transport(client_module.Config("http://localhost"))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.side_effect = urllib.error.HTTPError(
+                "http://localhost/test", 400, "Bad Request", {}, None)
+            for _ in range(client_module.BREAKER_FAILURES * 2):
+                with self.assertRaises(client_module.RequestFailed):
+                    transport.worker("POST", "/test", {"hello": "world"})
+        self.assertFalse(transport.breaker.open())
+
+    def test_a_server_error_still_counts_toward_the_breaker(self):
+        transport = client_module.Transport(client_module.Config("http://localhost"))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.side_effect = urllib.error.HTTPError(
+                "http://localhost/test", 503, "Service Unavailable", {}, None)
             for _ in range(client_module.BREAKER_FAILURES):
                 with self.assertRaises(client_module.RequestFailed):
                     transport.worker("GET", "/test")
