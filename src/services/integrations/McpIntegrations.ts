@@ -238,8 +238,12 @@ function findGooseExtensionsSpan(content: string): GooseExtensionsSpan | null {
 function upsertGooseExtension(content: string, mcpServerPath: string): string {
   const span = findGooseExtensionsSpan(content);
   if (!span) {
-    const existingLines = content.trimEnd() ? [content.trimEnd()] : [];
-    return [...existingLines, 'extensions:', ...buildGooseClaudeMemExtensionLines(mcpServerPath, '  ')].join('\n') + '\n';
+    const lines = content.trimEnd() ? content.trimEnd().split('\n') : [];
+    const documentEnd = lines.findIndex(line => /^\.\.\.(?:\s|$)/.test(line));
+    // Entries after `...` are outside the YAML document and cannot be loaded.
+    lines.splice(documentEnd === -1 ? lines.length : documentEnd, 0,
+      'extensions:', ...buildGooseClaudeMemExtensionLines(mcpServerPath, '  '));
+    return lines.join('\n') + '\n';
   }
   const { lines, header, indent, claudeMemEntry } = span;
   const extension = buildGooseClaudeMemExtensionLines(mcpServerPath, indent);

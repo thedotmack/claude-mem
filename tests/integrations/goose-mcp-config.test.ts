@@ -128,6 +128,23 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
     });
   });
 
+  for (const endMarker of ['...', '... # end of settings']) {
+    it(`registers before the YAML document end and restores the document on uninstall (${endMarker})`, () => {
+      const original = `---\nGOOSE_PROVIDER: ollama\nGOOSE_MODE: smart_approve\n${endMarker}\n`;
+      writeFileSync(configPath, original);
+      expect(read()).toEqual({ GOOSE_PROVIDER: 'ollama', GOOSE_MODE: 'smart_approve' });
+
+      mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
+      expect(read()).toEqual({
+        GOOSE_PROVIDER: 'ollama', GOOSE_MODE: 'smart_approve',
+        extensions: { 'claude-mem': claudeMemExtension('/plugin/scripts/mcp-server.cjs') },
+      });
+      expect(readFileSync(configPath, 'utf8')).toEndWith(endMarker + '\n');
+      expect(uninstallGooseMcpIntegration(configPath)).toBe(0);
+      expect(readFileSync(configPath, 'utf8')).toBe(original);
+    });
+  }
+
   it('finds the extensions mapping of a config saved with a byte order mark', () => {
     writeFileSync(configPath, '\uFEFF' + 'extensions:\n  developer:\n    bundled: true\n    enabled: true\n    name: developer\n    timeout: 300\n    type: builtin\n');
 
