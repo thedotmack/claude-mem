@@ -179,6 +179,18 @@ export function fitTeamBriefSection(section: string, otherChars: number, limit: 
 }
 
 /**
+ * Room left for the SessionStart body once the notices are counted: the field
+ * limit minus the notices and the blank line joining them to the body. The
+ * one definition both the cached read and the compose step use, so a body
+ * that fits here is never dropped there (#5672: a cached body rendered for
+ * the full budget must not be served when the current notices leave less
+ * room than it needs).
+ */
+export function sessionStartBodyRoom(notices: string, limit: number = CONTEXT_OUTPUT_LIMIT): number {
+  return Math.max(0, limit - notices.length - (notices ? 2 : 0));
+}
+
+/**
  * The model-bound SessionStart field: the notices, the TeamBrain brief, then
  * the memory body last. The body is the timeline and ends on its newest entry,
  * so nothing is added after it: a later update can append timeline rows.
@@ -196,7 +208,7 @@ export function composeSessionStartContext(
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string {
   const join = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
-  const room = Math.max(0, limit - notices.length - (notices ? 2 : 0));
+  const room = sessionStartBodyRoom(notices, limit);
   if (body.length > room) {
     // Older workers may ignore reserveChars; irreducible renderer output may
     // also exceed its limit. Never cut a rendered entry, code fence, or newest
@@ -447,9 +459,13 @@ export const contextHandler: EventHandler = {
         renderedAgoMs: cacheNowEpochMs - cached.renderedAtEpochMs,
       });
       const filled = fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
-      // A notice or settings change can outgrow the reserve of an older cache.
-      // Re-render whole entries instead of cutting an opaque cached string.
-      if (!colors && [noticeText, filled].filter(Boolean).join('\n\n').length > CONTEXT_OUTPUT_LIMIT) return null;
+      // A cached body was rendered for the full budget, without this session's
+      // notice reserve (#5672). Serve it only when it fits the room the
+      // current notices leave, the same room composeSessionStartContext
+      // enforces below; otherwise fall through to the live fetch, which
+      // re-renders it with the current reserve. Never cut a rendered entry
+      // to fit.
+      if (!colors && filled.length > sessionStartBodyRoom(noticeText)) return null;
       return filled;
     };
     const cachedModelContext = showLastMessage ? null : readCachedRender(false);
