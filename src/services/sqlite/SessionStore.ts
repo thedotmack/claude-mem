@@ -2108,6 +2108,7 @@ export class SessionStore {
   private ensureToolUsesTable(): void {
     createToolUsesSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(75, new Date().toISOString());
   }
 
   // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
@@ -3391,6 +3392,7 @@ export class SessionStore {
 
   linkToolUsesToObservation(params: {
     contentSessionId: string;
+    platformSource?: string;
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
