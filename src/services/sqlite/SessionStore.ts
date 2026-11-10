@@ -4047,10 +4047,15 @@ export class SessionStore {
     platformSource: string; contentSessionId: string; project: string;
     nativePromptId: string; promptText: string; createdAtEpoch: number;
     hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
-  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private' | 'deleted'; hookRowId?: number } {
     const text = normalizeStoredPromptText(prompt.promptText);
     if (!text) return { reason: 'private' };
     const platformSource = normalizePlatformSource(prompt.platformSource);
+    // A resumed conversation has a new session row, but its old transcript
+    // still contains the asks the owner deleted. Only later source times return.
+    if (this.isBeforeSessionDeletion(platformSource, prompt.contentSessionId, prompt.createdAtEpoch)) {
+      return { reason: 'deleted' };
+    }
     const session = this.db.prepare(`SELECT id FROM sdk_sessions
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
       .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;

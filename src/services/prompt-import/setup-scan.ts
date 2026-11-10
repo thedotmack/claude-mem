@@ -78,7 +78,7 @@ export interface SetupScanStore {
   importTranscriptUserPrompt(prompt: {
     platformSource: string; contentSessionId: string; project: string; nativePromptId: string; promptText: string;
     createdAtEpoch: number; hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
-  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number };
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private' | 'deleted'; hookRowId?: number };
   /** claude-mem's observation history, for the Token Savings efficiency percent. */
   streamObservationTokenFields(): Iterable<{ title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null }>;
 }
@@ -300,6 +300,7 @@ export class SetupScan {
       this.update({ phase: 'saving', percent: 95 }, true);
       const claimedHookRowIds = new Set<number>();
       const fromTranscripts = new Map<string, number>();
+      const deletedPrompts = new Set<OwnerPrompt>();
       let added = 0;
       result.ownerPrompts.forEach((prompt: OwnerPrompt, index) => {
         let outcome: ReturnType<SetupScanStore['importTranscriptUserPrompt']>;
@@ -313,6 +314,7 @@ export class SetupScan {
           logger.warn('IMPORT', 'Could not store an imported prompt', { agent: prompt.agent, sessionId: prompt.sessionId, error: String(error) });
           return;
         }
+        if (outcome.reason === 'deleted') deletedPrompts.add(prompt);
         if (outcome.reason === 'new') added++;
         if (outcome.reason === 'new' || outcome.reason === 'already-imported') {
           fromTranscripts.set(prompt.agent, (fromTranscripts.get(prompt.agent) ?? 0) + 1);
@@ -344,7 +346,7 @@ export class SetupScan {
         return [{ agent: summary.id, platformSource: prompt.platformSource, sessionId: prompt.contentSessionId, nativePromptId: `memory-${prompt.id}`,
           at: prompt.createdAtEpoch, cwd: prompt.cwd ?? null, text, project: prompt.project ?? '' }];
       });
-      const ownerPrompts = [...result.ownerPrompts, ...memoryOnly];
+      const ownerPrompts = [...result.ownerPrompts.filter(prompt => !deletedPrompts.has(prompt)), ...memoryOnly];
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
         || (!claimedHookRowIds.has(prompt.id) && completeTranscript(sessionsByPlatform.get(prompt.platformSource), prompt.contentSessionId)));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
