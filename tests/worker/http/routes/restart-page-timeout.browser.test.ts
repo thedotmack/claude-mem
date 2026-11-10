@@ -1,17 +1,30 @@
-import { expect, it } from 'bun:test';
+import { afterAll, beforeAll, expect, it } from 'bun:test';
 import express from 'express';
 import { createServer } from 'node:http';
 import type { Socket } from 'node:net';
 import { ViewerRoutes } from '../../../../src/services/worker/http/routes/ViewerRoutes.js';
 import {
-  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, failOnCiWithoutChrome, launchChrome, withTimeout, type OwnedChrome,
+  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, connectToPage, failOnCiWithoutChrome, launchChrome, withTimeout, type DevToolsPage, type OwnedChrome,
 } from '../../../helpers/chrome-devtools';
 
 failOnCiWithoutChrome('CI requires Chrome for restart recovery tests');
 
+let chrome:OwnedChrome|undefined;
+let page:DevToolsPage|undefined;
+
+beforeAll(async()=>{
+  if(!chromeExecutablePath)return;
+  chrome=launchChrome('about:blank',{profilePrefix:'claude-mem-restart-timeout-',extraFlags:UNTHROTTLED_TIMER_FLAGS,remoteDebugging:true});
+  page=await connectToPage(chrome,'about:blank');
+},30000);
+
+afterAll(async()=>{
+  page?.close();
+  await chrome?.close();
+},10000);
+
 for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-successor'] as const) {
   (chromeExecutablePath ? it : it.skip)(`restart page recovers after a stalled ${stalled} request`, async () => {
-    let chrome:OwnedChrome|undefined;
     let markReady!:()=>void;
     const ready=new Promise<void>(resolve=>{markReady=resolve});
     let report!:(result:unknown)=>void;
@@ -67,8 +80,7 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
       const address=server.address();
       if(!address||typeof address==='string')throw Error('No native TCP address');
-      chrome=launchChrome(`http://127.0.0.1:${address.port}/restart`,{profilePrefix:'claude-mem-restart-timeout-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
-      // Chrome's cold start gets its own window; the page's phases start at /ready.
+      await page!.send('Page.navigate',{url:`http://127.0.0.1:${address.port}/restart`});
       await withTimeout(ready,30000,'Restart page did not become ready');
       const received=await withTimeout(result,25000,'Browser timed out');
       const observation=received as {status:string;disabled:boolean;elapsed:number};
@@ -83,9 +95,12 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       }
       expect(healthRequests).toBeGreaterThanOrEqual(stalled==='post'?1:2);
     } finally {
-      await chrome?.close();
-      for(const socket of sockets)socket.destroy();
-      await new Promise<void>(resolve=>server.close(()=>resolve()));
+      try {
+        await page!.send('Page.navigate',{url:'about:blank'});
+      } finally {
+        for(const socket of sockets)socket.destroy();
+        await new Promise<void>(resolve=>server.close(()=>resolve()));
+      }
     }
   },80000);
 }

@@ -138,7 +138,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // from the file alone, never the environment: auto-update-check.ts
 // readAutoUpdateSettings), and CLAUDE_MEM_AUTO_UPDATE decides whether that
 // runs at all.
-const FILE_ONLY_SETTING_KEYS = new Set([
+export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',

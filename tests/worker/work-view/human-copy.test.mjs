@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy, generateHumanCopy, HUMAN_COPY_MAX_CHARS } from '../../../src/services/work-view/human-copy.mjs';
 

@@ -4,20 +4,37 @@ import { SearchManager } from '../../src/services/worker/SearchManager.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 
+function makeSearchManager({
+  search = {}, store = {}, chroma = null, formatter = {}, timeline = {}, recencyWindowMs,
+}: {
+  search?: object; store?: object; chroma?: object | null; formatter?: object; timeline?: object;
+  recencyWindowMs?: number;
+} = {}): SearchManager {
+  return new SearchManager(
+    { searchObservations: mock(() => []), searchSessions: mock(() => []), searchUserPrompts: mock(() => []), ...search } as any,
+    {
+      getObservationsByIds: mock(() => []), getSessionSummariesByIds: mock(() => []), getUserPromptsByIds: mock(() => []),
+      getProjectReadKeys: (projects: string[]) => projects, ...store,
+    } as any,
+    chroma as any, formatter as any, timeline as any, recencyWindowMs,
+  );
+}
+
+function observationRow(id: number, overrides: object = {}) {
+  return {
+    id, memory_session_id: `session-${id}`, project: 'search-project', text: null, type: 'discovery',
+    title: '', subtitle: null, facts: '[]', narrative: null, concepts: '[]', files_read: '[]', files_modified: '[]',
+    prompt_number: 1, discovery_tokens: 0, created_at: new Date().toISOString(), created_at_epoch: Date.now(),
+    ...overrides,
+  };
+}
+
 describe('SearchManager platform-scoped Chroma hydration', () => {
   it('normalizes date_from/date_to filters into dateRange for worker search', async () => {
     const searchObservations = mock(() => []);
-    const manager = new SearchManager(
-      {
-        searchObservations,
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {} as any,
-      null,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations },
+    });
 
     await manager.search({
       type: 'observations',
@@ -35,24 +52,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('passes platformSource into Chroma observation where filter and SQLite hydration', async () => {
-    const observation = {
-      id: 5,
+    const observation = observationRow(5, {
       memory_session_id: 'cursor-memory-id',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'cursor overlap observation',
-      subtitle: null,
-      facts: '[]',
       narrative: 'cursor overlap narrative',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
-      created_at: new Date().toISOString(),
-      created_at_epoch: Date.now(),
-    };
+    });
     const getObservationsByIds = mock(() => [observation]);
     const queryChroma = mock(() => Promise.resolve({
       ids: [observation.id],
@@ -66,21 +70,10 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       }],
     }));
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds,
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      store: { getObservationsByIds },
+      chroma: { queryChroma },
+    });
 
     const result = await manager.search({
       query: 'overlap',
@@ -106,24 +99,13 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('renders date_desc search results newest day first', async () => {
-    const jan4 = {
-      id: 4,
+    const jan4 = observationRow(4, {
       memory_session_id: 'session-4',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'Older observation',
-      subtitle: null,
-      facts: '[]',
       narrative: 'older',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
       created_at: '2025-01-04T10:00:00.000Z',
       created_at_epoch: Date.parse('2025-01-04T10:00:00.000Z'),
-    };
+    });
     const jan6 = {
       ...jan4,
       id: 6,
@@ -132,20 +114,13 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       created_at_epoch: Date.parse('2025-01-06T10:00:00.000Z'),
     };
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => [jan4, jan6]),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      { getProjectReadKeys: (projects: string[]) => projects } as any,
-      null,
-      {
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => [jan4, jan6]) },
+      formatter: {
         formatSearchTableHeader: mock(() => '| h |'),
         formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
-      } as any,
-      {} as any,
-    );
+      },
+    });
 
     const result = await manager.search({
       project: 'search-project',
@@ -175,21 +150,19 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       ],
     }));
 
-    const manager = new SearchManager(
-      {
+    const manager = makeSearchManager({
+      search: {
         searchObservations,
         searchSessions,
         searchUserPrompts,
-      } as any,
-      {
+      },
+      store: {
         getObservationsByIds,
         getSessionSummariesByIds,
         getUserPromptsByIds,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+      chroma: { queryChroma },
+    });
 
     await manager.search({
       query: 'trading',
@@ -210,24 +183,12 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   // #4135: Chroma picks its candidates by relevance, so the newest match can sit outside them.
   it('returns and renders first the newest keyword match that is outside the Chroma candidates (date_desc)', async () => {
     const dayMs = 24 * 60 * 60 * 1000;
-    const makeRow = (id: number, title: string, epoch: number) => ({
-      id,
-      memory_session_id: `session-${id}`,
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
+    const makeRow = (id: number, title: string, epoch: number) => (observationRow(id, {
       title,
-      subtitle: null,
-      facts: '[]',
       narrative: title,
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
       created_at: new Date(epoch).toISOString(),
       created_at_epoch: epoch,
-    });
+    }));
     const olderChromaCandidate = makeRow(11, 'Older semantic match', Date.now() - 10 * dayMs);
     const newestKeywordMatch = makeRow(99, 'Newest keyword match', Date.now() - dayMs);
     const queryChroma = mock(() => Promise.resolve({
@@ -236,24 +197,15 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       metadatas: [{ sqlite_id: olderChromaCandidate.id, doc_type: 'observation', created_at_epoch: olderChromaCandidate.created_at_epoch }],
     }));
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => [newestKeywordMatch]),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => [olderChromaCandidate]),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
-      } as any,
-      { queryChroma } as any,
-      {
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => [newestKeywordMatch]) },
+      store: { getObservationsByIds: mock(() => [olderChromaCandidate]) },
+      chroma: { queryChroma },
+      formatter: {
         formatSearchTableHeader: mock(() => '| h |'),
         formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
-      } as any,
-      {} as any,
-    );
+      },
+    });
 
     const newestOnly = await manager.search({ query: 'trading', type: 'observations', orderBy: 'date_desc', format: 'json', limit: 1 });
     expect(newestOnly.observations.map((o: { id: number }) => o.id)).toEqual([newestKeywordMatch.id]);
@@ -266,24 +218,12 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
 
   it('renders relevance-ordered unified results with the most relevant day first, not oldest first', async () => {
     const dayMs = 24 * 60 * 60 * 1000;
-    const makeRow = (id: number, title: string, epoch: number) => ({
-      id,
-      memory_session_id: `session-${id}`,
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
+    const makeRow = (id: number, title: string, epoch: number) => (observationRow(id, {
       title,
-      subtitle: null,
-      facts: '[]',
       narrative: title,
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
       created_at: new Date(epoch).toISOString(),
       created_at_epoch: epoch,
-    });
+    }));
     const mostRelevantNewer = makeRow(1, 'Most relevant match', Date.now() - dayMs);
     const lessRelevantOlder = makeRow(2, 'Less relevant match', Date.now() - 10 * dayMs);
     const queryChroma = mock(() => Promise.resolve({
@@ -295,20 +235,14 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       ],
     }));
 
-    const manager = new SearchManager(
-      { searchObservations: mock(() => []), searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
-      {
-        getObservationsByIds: mock(() => [lessRelevantOlder, mostRelevantNewer]),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
-      } as any,
-      { queryChroma } as any,
-      {
+    const manager = makeSearchManager({
+      store: { getObservationsByIds: mock(() => [lessRelevantOlder, mostRelevantNewer]) },
+      chroma: { queryChroma },
+      formatter: {
         formatSearchTableHeader: mock(() => '| h |'),
         formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
-      } as any,
-      {} as any,
-    );
+      },
+    });
 
     const rendered = await manager.search({ query: 'trading', type: 'observations', format: 'text', limit: 5 });
     const text = rendered.content[0].text as string;
@@ -327,18 +261,9 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     const newerVagueMatch = 22;
     const now = Date.now();
 
-    const makeManager = (getObservationsByIds: any) => new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds,
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      {
+    const makeManager = (getObservationsByIds: any) => makeSearchManager({
+      store: { getObservationsByIds },
+      chroma: {
         queryChroma: mock(() => Promise.resolve({
           // Chroma's own order: the exact match ranks first despite being older.
           ids: [olderExactMatch, newerVagueMatch],
@@ -348,10 +273,8 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
             { sqlite_id: newerVagueMatch, doc_type: 'observation', created_at_epoch: now },
           ],
         })),
-      } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+    });
 
     const searchHydrate = mock(() => []);
     await makeManager(searchHydrate).searchObservations({ query: 'exact phrase', limit: 1 });
@@ -408,21 +331,10 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       }],
     }));
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds,
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      store: { getSessionSummariesByIds },
+      chroma: { queryChroma },
+    });
 
     const result = await manager.search({
       query: 'overlap',
@@ -473,21 +385,10 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       }],
     }));
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      store: { getUserPromptsByIds },
+      chroma: { queryChroma },
+    });
 
     const result = await manager.search({
       query: 'overlap',
@@ -508,24 +409,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('passes platformSource and project scope through query-selected timeline hydration', async () => {
-    const observation = {
-      id: 8,
+    const observation = observationRow(8, {
       memory_session_id: 'cursor-memory-id',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'cursor timeline anchor',
-      subtitle: null,
-      facts: '[]',
       narrative: 'cursor timeline narrative',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
-      created_at: new Date().toISOString(),
-      created_at_epoch: Date.now(),
-    };
+    });
     const searchObservations = mock(() => [observation]);
     const getTimelineAroundObservation = mock(() => ({
       observations: [],
@@ -533,22 +421,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       prompts: [],
     }));
 
-    const manager = new SearchManager(
-      {
-        searchObservations,
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-        getTimelineAroundObservation,
-      } as any,
-      null,
-      {} as any,
-      { filterByDepth: mock(() => []) } as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations },
+      store: { getTimelineAroundObservation },
+      timeline: { filterByDepth: mock(() => []) },
+    });
 
     await manager.getTimelineByQuery({
       query: 'timeline',
@@ -574,24 +451,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('falls back to scoped SQLite/FTS when platform-scoped Chroma returns zero matches', async () => {
-    const observation = {
-      id: 9,
+    const observation = observationRow(9, {
       memory_session_id: 'cursor-memory-id',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'cursor fallback observation',
-      subtitle: null,
-      facts: '[]',
       narrative: 'cursor fallback narrative',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
-      created_at: new Date().toISOString(),
-      created_at_epoch: Date.now(),
-    };
+    });
     const session = {
       id: 10,
       memory_session_id: 'cursor-memory-id',
@@ -628,21 +492,14 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       metadatas: [],
     }));
 
-    const manager = new SearchManager(
-      {
+    const manager = makeSearchManager({
+      search: {
         searchObservations,
         searchSessions,
         searchUserPrompts,
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+      chroma: { queryChroma },
+    });
     const telemetry = {};
 
     const result = await manager.search({
@@ -680,24 +537,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('falls back to unscoped SQLite/FTS when unscoped Chroma returns zero matches', async () => {
-    const observation = {
-      id: 12,
+    const observation = observationRow(12, {
       memory_session_id: 'unscoped-memory-id',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'unscoped fallback observation',
-      subtitle: null,
-      facts: '[]',
       narrative: 'unscoped fallback narrative',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
-      created_at: new Date().toISOString(),
-      created_at_epoch: Date.now(),
-    };
+    });
     const searchObservations = mock(() => [observation]);
     const searchSessions = mock(() => []);
     const searchUserPrompts = mock(() => []);
@@ -707,21 +551,14 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       metadatas: [],
     }));
 
-    const manager = new SearchManager(
-      {
+    const manager = makeSearchManager({
+      search: {
         searchObservations,
         searchSessions,
         searchUserPrompts,
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+      chroma: { queryChroma },
+    });
     const telemetry = {};
 
     const result = await manager.search({
@@ -743,24 +580,13 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   });
 
   it('falls back to FTS5 when Chroma returns candidates but none survive the date-range filter', async () => {
-    const observation = {
-      id: 13,
+    const observation = observationRow(13, {
       memory_session_id: 'old-memory-id',
-      project: 'search-project',
-      text: null,
-      type: 'discovery',
       title: 'old glossary observation',
-      subtitle: null,
-      facts: '[]',
       narrative: 'old glossary narrative',
-      concepts: '[]',
-      files_read: '[]',
-      files_modified: '[]',
-      prompt_number: 1,
-      discovery_tokens: 0,
       created_at: new Date(0).toISOString(),
       created_at_epoch: 0,
-    };
+    });
     const searchObservations = mock(() => [observation]);
     const searchSessions = mock(() => []);
     const searchUserPrompts = mock(() => []);
@@ -779,21 +605,14 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       }],
     }));
 
-    const manager = new SearchManager(
-      {
+    const manager = makeSearchManager({
+      search: {
         searchObservations,
         searchSessions,
         searchUserPrompts,
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+      chroma: { queryChroma },
+    });
 
     const result = await manager.search({
       query: 'glossary',
@@ -815,22 +634,10 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   // metadata filters are exact, so every stored spelling is passed to Chroma.
   it('hands Chroma every stored spelling of the project', async () => {
     const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
-        getProjectReadKeys: () => ['pasteypal', 'PasteyPal'],
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      store: { getProjectReadKeys: () => ['pasteypal', 'PasteyPal'] },
+      chroma: { queryChroma },
+    });
 
     await manager.search({ query: 'overlap', type: 'observations', project: 'pasteypal', format: 'json', limit: 10 });
 
@@ -855,22 +662,13 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
     const getProjectReadKeys = mock((projects: string[]) => [...projects, 'old-folder']);
     const getObservationsByIds = mock(() => [observation]);
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
+    const manager = makeSearchManager({
+      store: {
         getObservationsByIds,
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
         getProjectReadKeys,
-      } as any,
-      { queryChroma } as any,
-      {} as any,
-      {} as any,
-    );
+      },
+      chroma: { queryChroma },
+    });
 
     await manager.search({ query: 'overlap', type: 'observations', project: 'acme/api', projects: 'api,acme/api', format: 'json', limit: 10 });
 
@@ -899,17 +697,17 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
     const getProjectReadKeys = mock((projects: string[]) => [...projects, 'old-folder']);
     const getObservationsByIds = mock(() => [observation]);
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      { getObservationsByIds, getProjectReadKeys } as any,
-      { queryChroma } as any,
-      { formatTableHeader: () => '', formatObservationIndex: () => '' } as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      store: {
+        getObservationsByIds,
+        getProjectReadKeys,
+      },
+      chroma: { queryChroma },
+      formatter: {
+        formatTableHeader: () => '',
+        formatObservationIndex: () => '',
+      },
+    });
 
     await manager.searchObservations({ query: 'overlap', projects: ['api', 'acme/api'] });
 
@@ -930,22 +728,10 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
   // path without a catch, so a query that broke both surfaced as a failed
   // request instead of an empty answer (the Chroma-less path already caught).
   it('answers instead of throwing when Chroma fails and the keyword fallback fails too', async () => {
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => { throw new Error('Expression tree is too large (maximum depth 1000)'); }),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
-        getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => { throw new Error('Expression tree is too large (maximum depth 1000)'); }) },
+      chroma: { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) },
+    });
 
     const result = await manager.search({ query: 'a pasted wall of text', format: 'json', limit: 10 });
 
@@ -954,24 +740,11 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
 });
 
 describe('SearchManager searchObservations date grouping', () => {
-  const makeObservation = (id: number, title: string, createdAt: string) => ({
-    id,
-    memory_session_id: `session-${id}`,
-    project: 'search-project',
-    text: null,
-    type: 'discovery',
+  const makeObservation = (id: number, title: string, createdAt: string) => (observationRow(id, {
     title,
-    subtitle: null,
-    facts: '[]',
-    narrative: null,
-    concepts: '[]',
-    files_read: '[]',
-    files_modified: '[]',
-    prompt_number: 1,
-    discovery_tokens: 0,
     created_at: createdAt,
     created_at_epoch: new Date(createdAt).getTime(),
-  });
+  }));
 
   it('renders results under day headers so older results are not undated', async () => {
     const { FormattingService } = await import('../../src/services/worker/FormattingService.js');
@@ -980,17 +753,10 @@ describe('SearchManager searchObservations date grouping', () => {
     const april = makeObservation(1, 'April observation', '2026-04-10T12:00:00Z');
     const august = makeObservation(2, 'August observation', '2026-08-22T12:00:00Z');
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => [august, april]),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {} as any,
-      null,
-      new FormattingService(),
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => [august, april]) },
+      formatter: new FormattingService(),
+    });
 
     const result = await manager.searchObservations({ query: 'observation' });
     const text = result.content[0].text;
@@ -1012,17 +778,10 @@ describe('SearchManager searchObservations date grouping', () => {
     const august = makeObservation(1, 'August observation', '2026-08-22T12:00:00Z');
     const april = makeObservation(2, 'April observation', '2026-04-10T12:00:00Z');
 
-    const manager = new SearchManager(
-      {
-        searchObservations: mock(() => [august, april]),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {} as any,
-      null,
-      new FormattingService(),
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations: mock(() => [august, april]) },
+      formatter: new FormattingService(),
+    });
 
     const result = await manager.searchObservations({ query: 'observation' });
     const text = result.content[0].text;
@@ -1035,24 +794,12 @@ describe('SearchManager searchObservations date grouping', () => {
 });
 
 describe('SearchManager per-category SQLite supplement (unified /api/search path)', () => {
-  const observation = {
-    id: 21,
+  const observation = observationRow(21, {
     memory_session_id: 'memory-21',
     project: 'supplement-project',
-    text: null,
-    type: 'discovery',
     title: 'fts supplement observation',
-    subtitle: null,
-    facts: '[]',
     narrative: 'found via fts supplement',
-    concepts: '[]',
-    files_read: '[]',
-    files_modified: '[]',
-    prompt_number: 1,
-    discovery_tokens: 0,
-    created_at: new Date().toISOString(),
-    created_at_epoch: Date.now(),
-  };
+  });
   const userPrompt = {
     id: 7,
     content_session_id: 'session-7',
@@ -1076,17 +823,15 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
     const searchUserPrompts = mock(() => []);
     const getUserPromptsByIds = mock(() => [userPrompt]);
 
-    const manager = new SearchManager(
-      { searchObservations, searchSessions, searchUserPrompts } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      },
+      store: { getUserPromptsByIds },
+      chroma: { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) },
+    });
 
     const telemetry = {};
     const result = await manager.search({ query: 'テスト', format: 'json', limit: 10 }, telemetry);
@@ -1109,17 +854,15 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
     const searchUserPrompts = mock(() => []);
     const getUserPromptsByIds = mock(() => [userPrompt]);
 
-    const manager = new SearchManager(
-      { searchObservations, searchSessions, searchUserPrompts } as any,
-      {
-        getObservationsByIds: mock(() => []),
-        getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
-      } as any,
-      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      },
+      store: { getUserPromptsByIds },
+      chroma: { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) },
+    });
 
     const result = await manager.search({ query: 'テスト', type: 'prompts', format: 'json', limit: 10 });
 
@@ -1221,9 +964,8 @@ describe('SearchManager dates survive a host whose date formatter cannot initial
   });
 
   it('renders recent session context instead of failing', async () => {
-    const manager = new SearchManager(
-      {} as any,
-      {
+    const manager = makeSearchManager({
+      store: {
         getRecentSessionsWithStatus: () => [
           { memory_session_id: 'summarized', has_summary: true, status: 'completed', started_at: ts, user_prompt: 'one' },
           { memory_session_id: 'running', has_summary: false, status: 'active', started_at: ts, user_prompt: 'two' },
@@ -1231,11 +973,8 @@ describe('SearchManager dates survive a host whose date formatter cannot initial
         ],
         getSummaryForSession: () => ({ request: 'Fix the worker', created_at: ts, prompt_number: 1 }),
         getObservationsForSession: () => [],
-      } as any,
-      null,
-      {} as any,
-      {} as any,
-    );
+      },
+    });
 
     const rendered = await manager.getRecentContext({ project: 'dates-project', limit: 3 });
     const text = rendered.content[0].text as string;
@@ -1244,15 +983,9 @@ describe('SearchManager dates survive a host whose date formatter cannot initial
   });
 
   it('renders timeline anchor matches instead of failing', async () => {
-    const manager = new SearchManager(
-      {
-        searchObservations: () => [{ id: 7, title: 'Anchor', subtitle: null, type: 'bugfix', created_at_epoch: Date.parse(ts) }],
-      } as any,
-      {} as any,
-      null,
-      {} as any,
-      {} as any,
-    );
+    const manager = makeSearchManager({
+      search: { searchObservations: () => [{ id: 7, title: 'Anchor', subtitle: null, type: 'bugfix', created_at_epoch: Date.parse(ts) }] },
+    });
 
     const rendered = await manager.getTimelineByQuery({ query: 'anchor', mode: 'interactive' });
     const text = rendered.content[0].text as string;
@@ -1281,20 +1014,11 @@ describe('SearchManager recency window wiring (#4770)', () => {
     const getObservationsByIds = mock((ids: number[]) =>
       ids.map(id => ({ id, created_at_epoch: id === 101 ? newEpoch : oldEpoch }))
     );
-    const sessionStore = {
-      getObservationsByIds,
-      getSessionSummariesByIds: mock(() => []),
-      getUserPromptsByIds: mock(() => []),
-      getProjectReadKeys: (projects: string[]) => projects,
-    };
-    const sessionSearch = {
-      searchObservations: mock(() => []),
-      searchSessions: mock(() => []),
-      searchUserPrompts: mock(() => []),
-    };
-    const manager = recencyWindowMs === undefined
-      ? new SearchManager(sessionSearch as any, sessionStore as any, { queryChroma } as any, {} as any, {} as any)
-      : new SearchManager(sessionSearch as any, sessionStore as any, { queryChroma } as any, {} as any, {} as any, recencyWindowMs);
+    const manager = makeSearchManager({
+      store: { getObservationsByIds },
+      chroma: { queryChroma },
+      recencyWindowMs,
+    });
     return { manager, queryChroma, getObservationsByIds };
   }
 

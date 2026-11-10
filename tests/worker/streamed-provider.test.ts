@@ -91,6 +91,17 @@ function installFetch(...scripts: StreamFetchScript[]) {
   return mock;
 }
 
+async function withoutRetryDelay<T>(run: () => Promise<T>): Promise<T> {
+  const nativeSetTimeout = globalThis.setTimeout;
+  const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms: number) =>
+    nativeSetTimeout(fn, ms >= 500 && ms < 2000 ? 0 : ms)) as typeof setTimeout);
+  try {
+    return await run();
+  } finally {
+    timer.mockRestore();
+  }
+}
+
 const sentBody = (mock: ReturnType<typeof createStreamFetchMock>, index = 0) =>
   JSON.parse(String(mock.calls[index].init?.body)) as Record<string, unknown>;
 
@@ -186,7 +197,7 @@ describe('OpenRouter secret stream', () => {
       streamScript([delta('<observation/>'), finish('stop'), done]),
     );
     const budget = new PaidSendBudget(1);
-    const result = await new TestOpenRouterProvider().runQuery(budget);
+    const result = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery(budget));
     expect(result.content).toBe('<observation/>');
     expect(mock.calls).toHaveLength(2);
     expect(budget.spentPaidSends).toBe(2);
@@ -215,7 +226,7 @@ describe('OpenRouter secret stream', () => {
 
   it('a network failure before the first delta is resent only once', async () => {
     const mock = installFetch({ failBeforeHeaders: new TypeError('fetch failed') });
-    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    const error = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery()).catch((caught: unknown) => caught);
     expect(mock.calls).toHaveLength(2);
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
     expect(isClassified(error) && error.failedBeforeOutput).toBe(true);
@@ -223,7 +234,7 @@ describe('OpenRouter secret stream', () => {
 
   it('a chunk that cannot be read before any output is resent only once', async () => {
     const mock = installFetch(streamScript([{ chunk: 'data: {not json\n\n' }]));
-    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    const error = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery()).catch((caught: unknown) => caught);
     expect(mock.calls).toHaveLength(2);
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
     expect(isClassified(error) && error.failedBeforeOutput).toBe(true);

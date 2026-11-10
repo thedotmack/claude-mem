@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { buildHumanRequests, humanRequestTitle, isHumanActionRequest, REQUEST_MEDIA_PREVIEW_LIMIT, requestText } from '../../../src/services/work-view/request-projection.mjs';
 
