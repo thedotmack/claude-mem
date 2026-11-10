@@ -116,7 +116,7 @@ function buildSearchQuery(query: string): { words: string; symbols: Array<{ lite
   const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
-    .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
+    .flatMap(token => token.split(/[^\p{L}\p{N}\p{M}_]+/gu))
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
