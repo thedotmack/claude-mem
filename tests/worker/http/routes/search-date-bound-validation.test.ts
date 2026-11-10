@@ -10,7 +10,6 @@ import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { FormattingService } from '../../../../src/services/worker/FormattingService.js';
 import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
 import { TimelineService } from '../../../../src/services/worker/TimelineService.js';
-import { resolveDateBound } from '../../../../src/shared/date-bounds.js';
 
 type Handler = (req: Request, res: Response) => void;
 
@@ -120,12 +119,6 @@ describe('invalid date bounds on the search routes', () => {
     expect(body.code).toBe('INVALID_DATE');
   });
 
-  it('resolveDateBound itself throws a 400 AppError for a non-date', () => {
-    for (const value of ['nope', '', 'tomorrow-ish']) {
-      expect(() => resolveDateBound(value, 'start')).toThrow(/Invalid date/);
-    }
-    expect(() => resolveDateBound(Number.NaN, 'end')).toThrow(/Invalid date/);
-  });
 });
 
 const hits = (body: any): number => ((body?.content?.[0]?.text ?? '') as string).match(/zebrafish-\d/g)?.length ?? 0;

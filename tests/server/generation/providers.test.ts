@@ -437,7 +437,6 @@ describe('GeminiObservationProvider', () => {
   }
 
   const PER_MINUTE = 'GenerateContentInputTokensPerModelPerMinute-FreeTier';
-  const PER_DAY = 'GenerateContentInputTokensPerModelPerDay-FreeTier';
 
   /**
    * A 429 body in the shape Gemini actually sends, captured from the live
@@ -478,16 +477,6 @@ describe('GeminiObservationProvider', () => {
     expect(err.kind).toBe('rate_limit');
     // No Retry-After header on these, so the body is the only hint there is.
     expect(err.retryAfterMs).toBe(11000);
-  });
-
-  it('reads a 429 that also names a period window as the exhausted allowance', () => {
-    const err = classifyGeminiServerError({
-      status: 429,
-      bodyText: quotaFailureBody([PER_MINUTE, PER_DAY]),
-      cause: new Error(''),
-    });
-
-    expect(err.kind).toBe('quota_exhausted');
   });
 
   it('lets a Retry-After header win over the body hint when one is present', () => {

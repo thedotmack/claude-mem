@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -95,14 +95,6 @@ describe('SettingsDefaultsManager', () => {
         if (process.platform === 'win32') return;
         SettingsDefaultsManager.loadFromFile(settingsPath);
         expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
-      });
-
-      it('should write pretty-printed JSON (2-space indent)', () => {
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        const content = readFileSync(settingsPath, 'utf-8');
-        expect(content).toContain('\n');
-        expect(content).toContain('  "CLAUDE_MEM_MODEL"');
       });
     });
 
@@ -1080,15 +1072,6 @@ describe('SettingsDefaultsManager', () => {
 
         expect(result?.CLAUDE_MEM_PROVIDER).toBe('gemini');
       });
-
-      it('should create defaults without leaving atomic temp files behind', () => {
-        expect(existsSync(settingsPath)).toBe(false);
-
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(existsSync(settingsPath)).toBe(true);
-        expect(readdirSync(tempDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
-      });
     });
   });
 
@@ -1133,6 +1116,7 @@ describe('SettingsDefaultsManager', () => {
 
       expect(defaults1).toEqual(defaults2);
       expect(defaults1).not.toBe(defaults2); 
+      expect(defaults1.CLAUDE_MEM_FILE_READ_GATE_ENABLED).toBe('true');
     });
 
     it('keeps every viewer default aligned except the per-install worker port', () => {

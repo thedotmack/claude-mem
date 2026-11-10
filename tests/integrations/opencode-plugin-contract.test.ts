@@ -481,6 +481,12 @@ describe("OpenCode plugin event contract", () => {
     ["defaults missing args", "list", "ses_empty_fallback", "c4", undefined, undefined, "ok", { tool_input: {}, tool_name: "list", tool_response: "ok", cwd: pluginCtx.directory }],
     ["keeps empty input args", "read", "ses_empty_input", "c5", {}, { path: "/output" }, "ok", { tool_input: {} }],
     ["reads hook input args (#3678)", "edit", "ses_args", "c2", { filePath: "/a/b.ts" }, undefined, "applied", { tool_input: { filePath: "/a/b.ts" } }],
+    ["normalizes read evidence", "read", "ses_read", "c6", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["normalizes write evidence", "write", "ses_write", "c7", { filePath: "/a", content: "new\n" }, undefined, "new\n", { tool_name: "Write", tool_input: { filePath: "/a", content: "new\n" } }],
+    ["normalizes edit evidence", "edit", "ses_edit", "c8", { filePath: "/a", oldString: "old", newString: "new" }, undefined, "new\n", { tool_name: "Edit", tool_input: { filePath: "/a", oldString: "old", newString: "new" } }],
+    ["normalizes patch evidence", "apply_patch", "ses_patch", "c9", { patchText: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" }, undefined, "new\n", { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" } }],
+    ["preserves legacy Read evidence", "Read", "ses_legacy", "c10", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["leaves custom tool evidence unchanged", "read_custom", "ses_custom", "c11", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "read_custom", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
   ] as const)("%s", async (_label, tool, sessionID, callID, inputArgs, outputArgs, output, expected) => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
@@ -491,6 +497,7 @@ describe("OpenCode plugin event contract", () => {
 
     try {
       const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const originalInput = JSON.stringify(inputArgs);
       await plugin["tool.execute.after"](
         { tool, sessionID, callID, ...(inputArgs === undefined ? {} : { args: inputArgs }) },
         { title: tool, output, metadata: {}, ...(outputArgs === undefined ? {} : { args: outputArgs }) },
@@ -501,6 +508,7 @@ describe("OpenCode plugin event contract", () => {
       const { tool_input, ...expectedFields } = expected;
       expect(body.tool_input).toEqual(tool_input);
       expect(body).toMatchObject(expectedFields);
+      expect(JSON.stringify(inputArgs)).toBe(originalInput);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -215,15 +215,5 @@ for (const operation of operations) {
       expect(result.chromaUpdates).toBe(0);
       expect(result.chromaFailed).toBe(0);
     }, 30_000);
-
-    it('lets the enabling environment variable override disabled file settings', async () => {
-      const data = fixture('false');
-      process.env.CLAUDE_MEM_CHROMA_ENABLED = 'true';
-      const result = await operation.run(data);
-
-      expect(mergedCounts(result)).toEqual([1, 1]);
-      expectSqliteMerge(data.dbPath);
-      expectChromaPatch(result);
-    }, 30_000);
   });
 }

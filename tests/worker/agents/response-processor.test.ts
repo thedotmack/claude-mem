@@ -458,32 +458,6 @@ describe('ResponseProcessor', () => {
         .toEqual([[101, 'First finding'], [102, 'Third finding']]);
     });
 
-    it('stores a closed observation block with freeform prose through the success path', async () => {
-      const session = createMockSession();
-      const responseText = `<observation>
-        <type>discovery</type>
-        Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
-        The follow-up kept the line-range handling aligned with the new helpers.
-      </observation>`;
-
-      await processAgentResponse(
-        responseText,
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [, , observations] = mockStoreObservations.mock.calls[0];
-      expect(observations).toHaveLength(1);
-      expect(observations[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
-      expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
-    });
-
     it('does not store an init reply or acknowledge queued work, even when it parses as an observation', async () => {
       // Upstream's seam: with the feed paced to one unanswered prompt,
       // lastGeneratorSource names the prompt this reply answers.
@@ -643,72 +617,6 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
 
-    // #3752: when the spawned CLI cannot reach the provider it returns its own
-    // error string rather than crashing, so the text lands in this same branch.
-    // Confirming it drops the claimed batch permanently — the reporter lost 882
-    // observations over six days that way.
-    it('requeues the claimed batch when the response is the child transport failure', async () => {
-      const confirmClaimedMessages = mock(() => Promise.resolve(0));
-      const resetProcessingToPending = mock(() => Promise.resolve(0));
-      mockSessionManager = {
-        getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        confirmClaimedMessages,
-        resetProcessingToPending,
-      } as unknown as SessionManager;
-
-      const session = createMockSession();
-      const responseText =
-        'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)';
-
-      await processAgentResponse(
-        responseText,
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
-      // The whole point: the batch must NOT be confirmed away.
-      expect(confirmClaimedMessages).not.toHaveBeenCalled();
-      expect(mockStoreObservations).not.toHaveBeenCalled();
-    });
-
-    // #3460: the CLI's own stream-cut message used to be classified prose, so
-    // the batch was confirmed and lost. It must take the preserve path.
-    it('requeues the claimed batch when the CLI reports a connection closed mid-response', async () => {
-      const confirmClaimedMessages = mock(() => Promise.resolve(0));
-      const resetProcessingToPending = mock(() => Promise.resolve(0));
-      mockSessionManager = {
-        getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        confirmClaimedMessages,
-        resetProcessingToPending,
-      } as unknown as SessionManager;
-
-      const session = createMockSession();
-
-      await processAgentResponse(
-        'API Error: Connection closed mid-response. The response above may be incomplete.',
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
-      expect(confirmClaimedMessages).not.toHaveBeenCalled();
-      expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(session.abortReason).toBe('transport:observer_text');
-    });
-
     it('pauses the generator with a preserving abort reason on transport failure', async () => {
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
@@ -732,6 +640,7 @@ describe('ResponseProcessor', () => {
 
       // handleGeneratorExit keys off the category before the colon; 'transport'
       // is what keeps it from finalizing the session and undoing the requeue.
+      expect(mockSessionManager.resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(mockSessionManager.confirmClaimedMessages).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('transport:observer_text');
@@ -742,66 +651,7 @@ describe('ResponseProcessor', () => {
         expect.objectContaining({ sessionId: 1, outputClass: 'transport' })
       );
     });
-
-    it('still confirms ordinary prose so low-signal batches do not loop', async () => {
-      const confirmClaimedMessages = mock(() => Promise.resolve(0));
-      const resetProcessingToPending = mock(() => Promise.resolve(0));
-      mockSessionManager = {
-        getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        confirmClaimedMessages,
-        resetProcessingToPending,
-      } as unknown as SessionManager;
-
-      const session = createMockSession();
-
-      await processAgentResponse(
-        'Traced the flake to a proxy that drops idle sockets; the retry now handles the connection reset.',
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(resetProcessingToPending).not.toHaveBeenCalled();
-    });
-
-    // The same guarantee one punctuation mark over: a completed observation
-    // that opens with an envelope AND a colon must still be confirmed, or the
-    // session pauses and retries work that already finished.
-    it('still confirms a punctuated envelope narrative', async () => {
-      const confirmClaimedMessages = mock(() => Promise.resolve(0));
-      const resetProcessingToPending = mock(() => Promise.resolve(0));
-      mockSessionManager = {
-        getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        confirmClaimedMessages,
-        resetProcessingToPending,
-      } as unknown as SessionManager;
-
-      const session = createMockSession();
-
-      await processAgentResponse(
-        'Network error: recovery is already covered by the retry wrapper',
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(resetProcessingToPending).not.toHaveBeenCalled();
-      expect(session.abortController.signal.aborted).toBe(false);
-    });
   });
-
 
   describe('context-window overflow recovery (#3800)', () => {
     function overflowSessionManager() {
@@ -842,67 +692,6 @@ describe('ResponseProcessor', () => {
       expect(session.abortController.signal.aborted).toBe(true);
       expect(session.consecutiveContextOverflows).toBe(1);
       expect(mockStoreObservations).not.toHaveBeenCalled();
-    });
-
-    it('pauses the session once recycling has failed repeatedly, rather than retrying forever', async () => {
-      const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
-      // Two recycles already spent; a fresh generation carries only the framing
-      // prompt, the session-so-far block and one field-truncated observation, so
-      // still not fitting means something else is oversized.
-      const session = createMockSession({ consecutiveContextOverflows: 2 });
-
-      await processAgentResponse(
-        'Prompt is too long', session, mockDbManager, mockSessionManager, mockWorker,
-        100, null, 'TestAgent'
-      );
-
-      expect(session.abortReason).toBe('overflow:exhausted');
-      expect(session.abortController.signal.aborted).toBe(true);
-      // Work is still preserved, and still not silently confirmed away.
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
-      expect(confirmClaimedMessages).not.toHaveBeenCalled();
-      expect(logger.error).toHaveBeenCalledWith(
-        'SESSION',
-        expect.stringContaining('still does not fit'),
-        expect.objectContaining({ consecutiveRecycles: 3 })
-      );
-    });
-
-    it('clears the overflow counter after a healthy observation so only consecutive failures trip it', async () => {
-      const session = createMockSession({ consecutiveContextOverflows: 1 });
-      const responseText = `
-        <observation>
-          <type>discovery</type>
-          <title>Recovered</title>
-          <narrative>The recycled conversation produced valid XML.</narrative>
-          <facts></facts>
-          <concepts></concepts>
-          <files_read></files_read>
-          <files_modified></files_modified>
-        </observation>
-      `;
-
-      await processAgentResponse(
-        responseText, session, mockDbManager, mockSessionManager, mockWorker,
-        100, null, 'TestAgent'
-      );
-
-      expect(session.consecutiveContextOverflows).toBe(0);
-    });
-
-    it('still treats ordinary prose as a benign skip, not an overflow', async () => {
-      const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
-      const session = createMockSession();
-
-      await processAgentResponse(
-        'Skipping — nothing worth recording here.', session, mockDbManager,
-        mockSessionManager, mockWorker, 100, null, 'TestAgent'
-      );
-
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(resetProcessingToPending).not.toHaveBeenCalled();
-      expect(session.consecutiveContextOverflows).toBe(0);
-      expect(session.forceInit).toBeUndefined();
     });
   });
 

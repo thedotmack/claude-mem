@@ -14,7 +14,6 @@ import type { FieldCompressor } from '../../../src/services/worker/field-optimiz
 const cleanup: Array<() => void | Promise<unknown>> = [];
 try {
   const provider = process.argv[2];
-  const advances = provider !== 'gemini-control';
   const loadSettings = SettingsDefaultsManager.loadFromFile;
   cleanup.push(() => { SettingsDefaultsManager.loadFromFile = loadSettings; });
   SettingsDefaultsManager.loadFromFile = () => ({ ...SettingsDefaultsManager.getAllDefaults(),
@@ -47,10 +46,8 @@ try {
     if (text.startsWith('Condense the tool payload')) {
       compressed++;
       assert.equal(session.lastPromptNumber, 1);
-      if (advances) {
-        store.saveUserPrompt('compression-content', 2, 'Second user request', sid);
-        manager.initializeSession(sid, 'Second user request', 2);
-      }
+      store.saveUserPrompt('compression-content', 2, 'Second user request', sid);
+      manager.initializeSession(sid, 'Second user request', 2);
       return Response.json({ candidates: [{ content: { parts: [{ text: 'Condensed first-request payload' }] } }] });
     }
     observed++;
@@ -85,7 +82,7 @@ try {
     await processAgentResponse(xml, session, db, manager, undefined, 10, null, 'SDK', undefined, 'owned-model', context.current);
   }
   assert.equal(compressed, 1);
-  assert.equal(session.lastPromptNumber, advances ? 2 : 1);
+  assert.equal(session.lastPromptNumber, 2);
   assert.deepEqual(store.db.query('SELECT title, prompt_number FROM observations').all(),
     [{ title: 'First request file', prompt_number: 1 }]);
   assert.equal(manager.getTotalQueueDepth(), 0);

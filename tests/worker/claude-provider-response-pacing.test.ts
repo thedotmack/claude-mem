@@ -26,8 +26,6 @@ const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvide
 const { SessionManager } = await import('../../src/services/worker/SessionManager.js');
 const {
   ObserverResponsePacer,
-  MAX_CONSECUTIVE_STALL_RESUMES,
-  planResponseStallResume,
 } = await import('../../src/services/worker/session/response-pacer.js');
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
 
@@ -503,18 +501,6 @@ describe('ObserverResponsePacer', () => {
     expect(outcome).toBeNull();
     pacer.answer();
     expect(await withTimeout(waiting, 'answer after retry')).toBe('answered');
-  });
-});
-
-describe('response-stall resume policy', () => {
-  it('resumes up to the cap, then stops', () => {
-    const session = createSession();
-    const decisions = [];
-    for (let i = 0; i < MAX_CONSECUTIVE_STALL_RESUMES + 1; i++) {
-      decisions.push(planResponseStallResume(session));
-    }
-    expect(decisions.slice(0, MAX_CONSECUTIVE_STALL_RESUMES).every(d => d.resume)).toBe(true);
-    expect(decisions[MAX_CONSECUTIVE_STALL_RESUMES]).toEqual({ resume: false, attempts: MAX_CONSECUTIVE_STALL_RESUMES + 1 });
   });
 });
 

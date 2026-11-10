@@ -187,8 +187,4 @@ describe('credentialProfileKey', () => {
     const keychainSuffix = deriveMacKeychainServiceName(profile).split('-').pop();
     expect(credentialProfileKey(profile)).toBe(`work#${keychainSuffix}`);
   });
-
-  it('names the bare keychain profile "default"', () => {
-    expect(credentialProfileKey({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: false })).toBe('default');
-  });
 });

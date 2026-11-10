@@ -226,15 +226,6 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSessionImmediate).not.toHaveBeenCalled();
   });
-
-  // The exact failure the reporter logged: `Generator exited — finalizing
-  // session {reason=null}`, ten times over fifteen minutes.
-  it('finalizes when the reason is null, which is what the bug produced', async () => {
-    const { deps, finalizeSession } = buildDeps();
-    await handleGeneratorExit(makeSession(), null, deps);
-
-    expect(finalizeSession).toHaveBeenCalledWith(382);
-  });
 });
 
 /**

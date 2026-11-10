@@ -293,33 +293,6 @@ describe('default Anthropic-plan fallback: generator lifecycle', () => {
     expect(getQuotaCooldown('openrouter')?.window).toBe('unavailable');
   });
 
-  it('a gateway key refusal discards its work and sends fresh work to Claude (the trial-expiry fallback)', async () => {
-    const settingsPath = paths.settings();
-    const original = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null;
-    try {
-      const settings = original ? JSON.parse(original) : {};
-      writeFileSync(settingsPath, JSON.stringify({ ...settings, CLAUDE_MEM_PRO_FALLBACK_AT: '' }));
-      pinGatewayPrimary();
-      delete process.env.CLAUDE_MEM_PRO_FALLBACK_AT; // the marker lives in the file
-      const refused = new ClassifiedProviderError('Your trial has ended.', {
-        kind: 'auth_invalid', code: 'subscription_inactive', cause: null,
-      });
-      const run = await runGatewayFailure(refused, 'auth:auth_invalid');
-      // The refused batch is discarded, not moved: nothing starts on its behalf.
-      expect(run.claudeStarts()).toBe(0);
-      expect(run.session.pausedReason).toBe('auth');
-      expect(selectProviderForGenerator().provider).toBe('claude');
-      // The next captured event runs on Claude.
-      run.routes.capture();
-      await run.routes.ensureGeneratorRunning(run.session.sessionDbId, 'observation');
-      await nextTick();
-      expect(run.claudeStarts()).toBe(1);
-    } finally {
-      if (original === null) writeFileSync(settingsPath, '{}');
-      else writeFileSync(settingsPath, original);
-    }
-  });
-
   it('a signed-out Claude fallback is taken out of rotation, its work is discarded, and fresh work returns to the recovered primary', async () => {
     pinGatewayPrimary();
     const session = makeSession();

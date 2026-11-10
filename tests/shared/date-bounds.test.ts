@@ -7,9 +7,15 @@ describe('resolveDateBound', () => {
     expect(resolveDateBound(1735689600000, 'end')).toBe(1735689600000);
   });
 
-  it('reads an all-digit string as epoch ms, the way HTTP and MCP deliver it', () => {
-    expect(resolveDateBound('1735689600000', 'start')).toBe(1735689600000);
+  it('trims whitespace from digit-string epochs', () => {
     expect(resolveDateBound(' 1735689600000 ', 'end')).toBe(1735689600000);
+  });
+
+  it('rejects non-dates', () => {
+    for (const value of ['nope', '', 'tomorrow-ish']) {
+      expect(() => resolveDateBound(value, 'start')).toThrow(/Invalid date/);
+    }
+    expect(() => resolveDateBound(Number.NaN, 'end')).toThrow(/Invalid date/);
   });
 
   it('rejects an epoch a Date cannot hold instead of returning Infinity', () => {

@@ -34,6 +34,16 @@ describe('SettingsRoutes settings document writes', () => {
     return { server, url: `http://127.0.0.1:${address.port}/api/settings` };
   }
 
+  it('returns 400 when the request has no body', async () => {
+    const { server, url } = await startServer();
+    try {
+      const response = await fetch(url, { method: 'POST' });
+      expect(response.status).toBe(400);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('updates nested env settings in place and preserves the document shape', async () => {
     writeFileSync(settingsPath, JSON.stringify({
       theme: 'dark',

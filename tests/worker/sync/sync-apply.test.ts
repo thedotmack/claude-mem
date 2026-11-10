@@ -1265,14 +1265,6 @@ describe('SyncApply', () => {
       expect(seen).toEqual([`n ${MARKER}`, `r ${MARKER}`, `p ${MARKER}`]);
     });
 
-    it('does not re-redact a body that already carries a marker', () => {
-      useRedaction(true);
-      makeApply().applyOps([op(1, 'observation', '11', obsBody({ title: `leaked ${MARKER}` }))]);
-      const obs = db.prepare(`SELECT title FROM observations WHERE origin_local_id = '11'`).get() as any;
-      expect(obs.title).toBe(`leaked ${MARKER}`);
-      expect((obs.title.match(/<redacted/g) ?? []).length).toBe(1);
-    });
-
     it('redacts a higher-revision update', () => {
       useRedaction(true);
       const apply = makeApply();

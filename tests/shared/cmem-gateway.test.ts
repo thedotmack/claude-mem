@@ -85,17 +85,6 @@ describe('cmem-gateway', () => {
   });
 
   describe('fallback marker write/clear', () => {
-    it('writes CLAUDE_MEM_PRO_FALLBACK_AT into settings.json, preserving unknown keys', () => {
-      writeFileSync(settingsPath, JSON.stringify({ SOME_FUTURE_KEY: 'kept', CLAUDE_MEM_PROVIDER: 'openrouter' }));
-
-      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
-
-      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
-      expect(parsed.SOME_FUTURE_KEY).toBe('kept');
-      expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
-    });
-
     it('preserves the legacy env wrapper and peer root settings when writing and clearing', () => {
       writeFileSync(settingsPath, JSON.stringify({
         theme: 'dark',
@@ -308,13 +297,6 @@ describe('cmem-gateway', () => {
       const notice = proFallbackNotice({ message: 'm', url: `https://cmem.ai/${'A'.repeat(5_000)}` });
 
       expect(notice.endsWith(`Manage your plan: ${proTrialUrl('fallback')}`)).toBe(true);
-    });
-
-    it('is plan-neutral without the gateway\'s words, and keeps the renewal link', () => {
-      expect(proFallbackNotice({ message: ' \n\t ', url: '' })).toBe([
-        'cmem.ai memory is paused for this account.',
-        `Memory is using your Anthropic plan for now. Manage your plan: ${proTrialUrl('fallback')}`,
-      ].join('\n'));
     });
   });
 

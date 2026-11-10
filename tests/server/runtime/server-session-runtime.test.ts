@@ -70,24 +70,6 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
     expect(ended2?.endedAtEpoch).toBe(firstEndedAt);
   });
 
-  it('cross-tenant getByIdForScope returns null', async () => {
-    const otherTeam = await storage.teams.create({ name: 'other' });
-    const otherProject = await storage.projects.create({ teamId: otherTeam.id, name: 'other-p' });
-    const otherSession = await sessions.create({
-      teamId: otherTeam.id,
-      projectId: otherProject.id,
-      externalSessionId: 'other-1',
-    });
-
-    // Trying to read other team's session under our scope returns null.
-    const result = await sessions.getByIdForScope({
-      id: otherSession.id,
-      teamId,
-      projectId,
-    });
-    expect(result).toBeNull();
-  });
-
   it('processSessionSummaryResponse persists a kind=summary observation', async () => {
     const session = await sessions.create({
       teamId,

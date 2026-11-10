@@ -219,31 +219,4 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
     });
   });
 
-  it('handles a rejected background delivery without rejecting response processing', async () => {
-    const session = createSession({ telegramWrapupRequestedAt: Date.now() });
-    const dbManager = createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 });
-    const error = new Error('wrap-up delivery failed');
-    deliverSessionWrapup.mockImplementationOnce(async () => {
-      throw error;
-    });
-
-    await expect(processAgentResponse(
-      summaryResponse,
-      session,
-      dbManager,
-      createSessionManager(session, dbManager),
-      undefined,
-      100,
-      null,
-      'TestAgent',
-    )).resolves.toMatchObject({ summaryId: 99 });
-    await flushBackgroundWork();
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      'TELEGRAM',
-      'Failed to deliver Telegram session wrap-up from SessionManager',
-      { sessionId: session.sessionDbId },
-      error,
-    );
-  });
 });

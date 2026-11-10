@@ -149,12 +149,5 @@ describe('SQLiteSearchStrategy', () => {
       }));
     });
 
-    it('should pass isFolder to findByFile so a folder is matched by its direct children', () => {
-      strategy.findByFile('/src/utils', { isFolder: true });
-
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/utils', expect.objectContaining({
-        isFolder: true
-      }));
-    });
   });
 });

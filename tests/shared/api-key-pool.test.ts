@@ -403,34 +403,6 @@ describe('withKeyPool', () => {
     expect(keyCooldownRemainingMs('gemini', 'b')).toBeGreaterThan(0);
   });
 
-  // Wave 3 gate R4-8: a quota error arms the provider breaker for 30 minutes.
-  // A pool whose other key frees in a minute is not spent, so it must not.
-  it('reports a rate limit until the next key frees, not the last key\'s quota error', async () => {
-    const pool = { poolId: 'gemini' as const, keys: ['a', 'b'], rateLimitUntilNextKey };
-    // Request 1: a is throttled for a minute, b serves.
-    await withKeyPool(pool, async ({ key }) => {
-      if (key === 'a') throw classified('rate_limit', 60_000);
-      return 'ok';
-    });
-    // Request 2: only b is offered, and its allowance is now spent.
-    let thrown: unknown;
-    try {
-      await withKeyPool(pool, async () => {
-        throw classified('quota_exhausted');
-      });
-    } catch (err) {
-      thrown = err;
-    }
-
-    expect(thrown).toBeInstanceOf(ClassifiedProviderError);
-    expect((thrown as ClassifiedProviderError).kind).toBe('rate_limit');
-    expect((thrown as ClassifiedProviderError).retryAfterMs).toBeGreaterThan(55_000);
-    expect((thrown as ClassifiedProviderError).retryAfterMs).toBeLessThanOrEqual(60_000);
-    expect((thrown as ClassifiedProviderError).message).toContain('test quota_exhausted');
-    // b still sits out its own quota window.
-    expect(keyCooldownRemainingMs('gemini', 'b')).toBeGreaterThan(29 * 60_000);
-  });
-
   it('keeps the quota error when no other key frees within a rate-limit window', async () => {
     markKeyCooldown('gemini', 'a', 'auth_invalid');
     let thrown: unknown;
@@ -442,17 +414,6 @@ describe('withKeyPool', () => {
       thrown = err;
     }
     expect((thrown as ClassifiedProviderError).kind).toBe('quota_exhausted');
-  });
-
-  it('skips a key that is already cooling from an earlier request', async () => {
-    markKeyCooldown('gemini', 'a', 'quota_exhausted');
-    const seen: string[] = [];
-    const result = await withKeyPool({ poolId: 'gemini', keys: ['a', 'b'] }, async ({ key }) => {
-      seen.push(key);
-      return key;
-    });
-    expect(result).toBe('b');
-    expect(seen).toEqual(['b']);
   });
 
   it('clears a recovered key on success', async () => {

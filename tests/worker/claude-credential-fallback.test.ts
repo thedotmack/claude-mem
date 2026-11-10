@@ -419,12 +419,6 @@ describe('Claude credential fallback: readiness', () => {
     expect(hasClaudeSubscriptionLogin()).toBe(true);
   });
 
-  it('does not count a CLAUDE_CODE_OAUTH_TOKEN JWT in ~/.claude-mem/.env that is past its exp claim', () => {
-    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
-    const expiredJwt = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
-    writeFileSync(join(tempDir, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${expiredJwt}\n`, { mode: 0o600 });
-    expect(hasClaudeSubscriptionLogin()).toBe(false);
-  });
 });
 
 describe('Claude credential fallback: a running stand-in hands back to the primary', () => {

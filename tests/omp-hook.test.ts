@@ -697,6 +697,7 @@ describe('OMP Claude Mem hook', () => {
     installFetchCapture(requests);
     const handlers = registerHook();
     const cwd = '/owned/omp-switch';
+    expect(handlers.session_branch).toBe(handlers.session_switch);
 
     await handlers.session_start?.();
     await handlers.before_agent_start?.({ prompt: 'first' }, { cwd });

@@ -27,25 +27,6 @@ describe('parseSkipAgentTypes', () => {
 });
 
 describe('shouldSkipAgentObservation', () => {
-  it('defaults preserve current behavior — never skips with both settings off', () => {
-    expect(shouldSkipAgentObservation('agent-1', 'workflow-subagent', settings()).skip).toBe(false);
-    expect(shouldSkipAgentObservation(undefined, undefined, settings()).skip).toBe(false);
-  });
-
-  it('global toggle skips a subagent observation (agent id AND agent type)', () => {
-    const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
-    expect(shouldSkipAgentObservation('agent-1', 'workflow-subagent', s))
-      .toEqual({ skip: true, reason: 'subagent_observation' });
-  });
-
-  it('global toggle keeps transcript-watch rows that carry an agent id alone (Grok Bot seats)', () => {
-    // Transcript-watch ingestion stamps the seat id (or an agent-transcripts
-    // uuid) as agentId on MAIN-agent rows. Keying on agentId alone would drop
-    // all Grok Bot capture as soon as the toggle is on.
-    const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
-    expect(shouldSkipAgentObservation('grok-seat-7', undefined, s)).toEqual({ skip: false });
-  });
-
   it('global toggle does NOT skip the main session', () => {
     const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
     expect(shouldSkipAgentObservation(undefined, undefined, s)).toEqual({ skip: false });

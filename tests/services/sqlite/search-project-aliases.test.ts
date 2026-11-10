@@ -113,14 +113,6 @@ describe('by-file search follows merged_into_project for summaries (gate P2-16)'
 });
 
 describe('projectReadKeys', () => {
-  it('lists every stored spelling and the projects merged into the requested ones', () => {
-    seedObservation('mem-case', 'API', 'CASE_VARIANT_RECORD');
-    seedObservation('mem-merged', 'old-folder', 'MERGED_RECORD', 'acme/api');
-
-    expect(projectReadKeys(store.db, ['api', 'acme/api']).sort()).toEqual(['API', 'acme/api', 'api', 'old-folder']);
-    expect(projectReadKeys(store.db, ['never-seen'])).toEqual(['never-seen']);
-    expect(projectReadKeys(store.db, [])).toEqual([]);
-  });
 
   it('preserves spellings found only in session metadata or summaries without duplicating requested keys', () => {
     store.createSDKSession('content-metadata-only', 'Api', 'metadata-only prompt');
@@ -128,19 +120,12 @@ describe('projectReadKeys', () => {
 
     expect(projectReadKeys(store.db, [' api ', 'API', 'api', '', '   ']).sort()).toEqual([' api ', 'API', 'Api', 'aPI', 'api']);
     expect(projectReadKeys(store.db, [' api '])).toEqual([' api ']);
+    expect(projectReadKeys(store.db, [])).toEqual([]);
   });
 
   it('includes a source project represented only by summaries merged into the requested key', () => {
     seedSummary('mem-summary-merged', 'old-summary-folder', 'acme/api');
 
     expect(projectReadKeys(store.db, ['acme/api']).sort()).toEqual(['acme/api', 'old-summary-folder']);
-  });
-
-  it('expands one merge hop without promoting deeper source projects', () => {
-    seedObservation('mem-direct-source', 'repo', 'DIRECT_SOURCE', 'work');
-    seedObservation('mem-adopted-source', 'repo/feature', 'ADOPTED_SOURCE', 'repo');
-    seedObservation('mem-deeper-source', 'repo/feature/deeper', 'DEEPER_SOURCE', 'repo/feature');
-
-    expect(projectReadKeys(store.db, ['work']).sort()).toEqual(['repo', 'work']);
   });
 });

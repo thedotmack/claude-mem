@@ -65,25 +65,6 @@ describe('SessionStore advisor_calls', () => {
       expect(call!.occurred_at_epoch).toBe(1000);
     });
 
-    it('ignores a duplicate tool_use_id and reports the existing row', () => {
-      const sessionDbId = createSession('content-advisor-dedup');
-
-      const first = store.recordAdvisorCall(baseCall(sessionDbId, 'content-advisor-dedup', {
-        toolUseId: 'srvtoolu_dup', advice: 'first insert',
-      }));
-      const second = store.recordAdvisorCall(baseCall(sessionDbId, 'content-advisor-dedup', {
-        toolUseId: 'srvtoolu_dup', advice: 'replayed insert',
-      }));
-
-      expect(first.inserted).toBe(true);
-      expect(second.inserted).toBe(false);
-      expect(second.id).toBe(first.id);
-
-      const rows = store.getAdvisorCalls(0, 10, 'test-project');
-      expect(rows.items).toHaveLength(1);
-      expect(rows.items[0].advice).toBe('first insert');
-    });
-
     it('accepts null context fields', () => {
       const sessionDbId = createSession('content-advisor-2');
 

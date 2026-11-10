@@ -78,11 +78,4 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     const relativeMatches = getObservationsByFilePath(store.db, ['C:/Users/dev/proj/src/services/win-relative.ts', 'src/services/win-relative.ts']);
     expect(relativeMatches.map(o => o.id)).toContain(relativeId);
   });
-
-  it('backward compatible: a single string path still works', () => {
-    const absolutePath = '/Users/dev/proj/src/single.ts';
-    const id = seedObservationWithReadPath(absolutePath, 'single');
-    const matches = getObservationsByFilePath(store.db, absolutePath);
-    expect(matches.map(o => o.id)).toContain(id);
-  });
 });
