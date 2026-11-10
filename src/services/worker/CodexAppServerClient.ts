@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { executableFingerprint } from '../../shared/executable-fingerprint.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
@@ -216,8 +216,10 @@ function codexTurnError(prefix: string, error: unknown): Error {
 }
 
 function resolveNativeCodexHome(explicitHome?: string): string {
-  const configured = explicitHome?.trim() || process.env.CODEX_HOME?.trim();
-  return configured || join(process.env.HOME?.trim() || homedir(), '.codex');
+  const configured = explicitHome || process.env.CODEX_HOME;
+  // The auth symlink lives in a different directory: resolve the selected
+  // profile from the caller's cwd, preserving the path Codex itself uses.
+  return resolve(configured || join(process.env.HOME || homedir(), '.codex'));
 }
 
 /**
