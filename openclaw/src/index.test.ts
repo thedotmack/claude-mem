@@ -112,6 +112,109 @@ function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
   };
 }
 
+describe("worker request deadlines", () => {
+  const realTimeout = AbortSignal.timeout;
+  async function resetGateway() {
+    const { api, fireEvent } = createMockApi();
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+  }
+  beforeEach(async () => {
+    await resetGateway();
+    // Keep real HTTP and abort behavior, shortening only the deadline clock.
+    AbortSignal.timeout = (ms: number) => realTimeout(Math.min(ms, 50));
+  });
+  afterEach(async () => {
+    AbortSignal.timeout = realTimeout;
+    await resetGateway();
+  });
+
+  async function stalledWorker(stage: "headers" | "body") {
+    let requests = 0;
+    let closed = 0;
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        requests++;
+        res.on("close", () => { closed++; });
+        if (stage === "body") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.write("{");
+        }
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    return {
+      port: (server.address() as { port: number }).port,
+      requests: () => requests,
+      closed: () => closed,
+      async close() {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      },
+    };
+  }
+
+  async function bounded<T>(work: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([work, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("worker request never reached its deadline")), 1000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  for (const hook of ["before_agent_start", "before_prompt_build"]) {
+    for (const stage of ["headers", "body"] as const) {
+      it(`releases ${hook} when the worker stalls its ${stage}`, async () => {
+        const server = await stalledWorker(stage);
+        const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1", syncMemoryFile: true });
+        claudeMemPlugin(api);
+        const pending = fireEvent(hook, { prompt: "A public prompt" }, { sessionKey: "deadline", agentId: "main" });
+        try {
+          await bounded(pending);
+          await waitFor(() => server.closed() === 1);
+          assert.equal(server.requests(), 1);
+          assert.ok(logs.some(line => line.includes("failed:")));
+        } finally {
+          await server.close();
+          await pending;
+        }
+      });
+    }
+  }
+
+  it("bounds fire-and-forget capture when the worker never sends headers", async () => {
+    const server = await stalledWorker("headers");
+    const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1" });
+    claudeMemPlugin(api);
+    try {
+      await fireEvent("after_tool_call", { toolName: "read", params: { path: "file.txt" }, result: "done" }, { sessionKey: "capture-deadline" });
+      await waitFor(() => logs.some(line => line.includes("failed:")));
+      await waitFor(() => server.closed() === 1);
+      assert.equal(server.requests(), 1);
+    } finally { await server.close(); }
+  });
+
+  it("counts stalled successful bodies as consecutive breaker failures", async () => {
+    const server = await stalledWorker("body");
+    const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1" });
+    claudeMemPlugin(api);
+    let pending: Promise<unknown> | undefined;
+    try {
+      for (let i = 0; i < 4; i++) {
+        pending = fireEvent("before_agent_start", { prompt: `Prompt ${i}` }, { sessionKey: "body-deadline" });
+        await bounded(pending);
+      }
+      assert.equal(server.requests(), 3);
+      assert.ok(logs.some(line => line.includes("disabling requests")));
+    } finally {
+      await server.close();
+      await pending;
+    }
+  });
+});
+
 describe("claudeMemPlugin", () => {
   it("registers the service without a transcript transform", () => {
     const { api, getService, getEventHandlers } = createMockApi();
