@@ -1,10 +1,9 @@
 // Work-state rows replayed into lists, tasks and events. Shared by the data source (data-source.mjs) and My Focus
 // (my-focus.mjs), which must not import each other.
 import { isSharedWorkList } from './shared-records.mjs';
-const CLOSED = new Set(['done', 'dropped']);
+import { isClosedWorkStateStatus as isClosed } from './work-state-status.mjs';
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 const iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
-const isClosed = (status) => status != null && CLOSED.has(String(status).toLowerCase());
 const effectiveStatus = (status) => status == null || status === '' ? 'unknown' : String(status).toLowerCase();
 const listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
 const taskId = (parentId, name) => JSON.stringify([parentId, name]);

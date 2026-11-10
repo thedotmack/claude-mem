@@ -8,6 +8,7 @@ import {
   formatDependencyHealthHint,
   StatusOutput,
 } from '../../src/services/worker-service.js';
+import { DEPENDENCY_STATUS_LABELS, type DependencyName } from '../../src/shared/dependency-health.js';
 
 const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
 
@@ -232,7 +233,43 @@ describe('worker-json-status', () => {
         },
       });
 
-      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search, Chroma unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
+      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search, Chroma unavailable for vector search). Run npx claude-mem doctor for remediation.');
+    });
+
+    it('words every dependency the worker can report, never its raw identifier', () => {
+      for (const [dependency, labels] of Object.entries(DEPENDENCY_STATUS_LABELS)) {
+        const hint = formatDependencyHealthHint({
+          dependencies: {
+            degraded: true,
+            statuses: [{ dependency: dependency as DependencyName, kind: labels.kind, message: 'broken', recordedAtMs: 1 }],
+          },
+        });
+
+        expect(hint).toBe(`  Dependencies: degraded (${labels.statusCommandHint}). Run npx claude-mem doctor for remediation.`);
+        expect(hint).not.toContain(`${dependency}: ${labels.kind}`);
+      }
+    });
+
+    it('names the observer data directory in words', () => {
+      const hint = formatDependencyHealthHint({
+        dependencies: {
+          degraded: true,
+          statuses: [{ dependency: 'observer_dir', kind: 'setup_required', message: 'not writable', recordedAtMs: 1 }],
+        },
+      });
+
+      expect(hint).toContain('Observer data directory setup required');
+    });
+
+    it('shows a status from a newer worker under the worker’s own names', () => {
+      const hint = formatDependencyHealthHint({
+        dependencies: {
+          degraded: true,
+          statuses: [{ dependency: 'future_dependency', kind: 'future_kind', message: 'broken', recordedAtMs: 1 }],
+        },
+      } as unknown as Parameters<typeof formatDependencyHealthHint>[0]);
+
+      expect(hint).toContain('future_dependency: future_kind');
     });
 
     it('returns null when dependencies are healthy or absent', () => {

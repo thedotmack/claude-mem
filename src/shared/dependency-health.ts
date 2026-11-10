@@ -6,6 +6,37 @@ export type DependencyStatusKind =
 
 export type DependencyName = 'claude_cli' | 'codex_cli' | 'observer_dir' | 'uvx' | 'chroma';
 
+/**
+ * The one kind of status each dependency reports, and the words a person reads
+ * for it: the hint in `claude-mem status` and the row name in `claude-mem
+ * doctor`. Both commands read this table, so they cannot name a status
+ * differently, and a new DependencyName fails the typecheck until it is worded.
+ */
+export const DEPENDENCY_STATUS_LABELS: Record<DependencyName, {
+  kind: DependencyStatusKind;
+  statusCommandHint: string;
+  doctorCheckName: string;
+}> = {
+  claude_cli: { kind: 'setup_required', statusCommandHint: 'Claude CLI setup required', doctorCheckName: 'Claude CLI setup' },
+  codex_cli: { kind: 'setup_required', statusCommandHint: 'Codex CLI setup required', doctorCheckName: 'Codex CLI setup' },
+  observer_dir: { kind: 'setup_required', statusCommandHint: 'Observer data directory setup required', doctorCheckName: 'Observer data directory' },
+  uvx: { kind: 'vector_search_unavailable', statusCommandHint: 'uvx unavailable for vector search', doctorCheckName: 'uvx (vector search)' },
+  chroma: { kind: 'vector_search_unavailable', statusCommandHint: 'Chroma unavailable for vector search', doctorCheckName: 'Chroma vector search' },
+};
+
+/**
+ * The labels for a status as it arrives over HTTP. Null for a pair this build
+ * does not list, which only a worker newer than the reading CLI can send.
+ */
+export function dependencyStatusLabels(
+  dependency: string,
+  kind: string,
+): (typeof DEPENDENCY_STATUS_LABELS)[DependencyName] | null {
+  if (!Object.hasOwn(DEPENDENCY_STATUS_LABELS, dependency)) return null;
+  const labels = DEPENDENCY_STATUS_LABELS[dependency as DependencyName];
+  return labels.kind === kind ? labels : null;
+}
+
 export interface DependencyStatus {
   dependency: DependencyName;
   kind: DependencyStatusKind;

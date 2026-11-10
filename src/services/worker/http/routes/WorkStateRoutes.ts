@@ -15,6 +15,7 @@ import { isMyFocusList } from '../../../work-view/my-focus.mjs';
 import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
+import { isClosedWorkStateStatus } from '../../../work-view/work-state-status.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -47,11 +48,10 @@ const workStateWriteSchema = z.object({
     ),
 });
 
-const CLOSING_STATUSES = ['dropped', 'done'];
 /** Why an owner-goals row cannot be saved, or null. List state rows and a row that only closes an item need no kind. */
 export function ownerGoalsRowRefusal(fields: WorkStateFields): string | null {
   if (fields.task == null || fields.task === '') return null;
-  const onlyCloses = Object.keys(fields).every(key => key === 'task' || key === 'status') && CLOSING_STATUSES.includes(String(fields.status));
+  const onlyCloses = Object.keys(fields).every(key => key === 'task' || key === 'status') && isClosedWorkStateStatus(fields.status);
   if (onlyCloses && !('goal_kind' in fields)) return null;
   if (!(GOAL_KINDS as unknown[]).includes(fields.goal_kind)) {
     return `an owner-goals item needs goal_kind ${GOAL_KINDS.map(kind => `"${kind}"`).join(' or ')}; got ${JSON.stringify(fields.goal_kind ?? null)}.`;

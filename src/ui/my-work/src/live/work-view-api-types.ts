@@ -1,5 +1,8 @@
 // Types for GET /api/work-view on the local worker (claude-mem 15.0.1), written from a real response
 // (.scratch/work-view-sample.json). Only the keys the mapper reads are typed; the rest are left out on purpose.
+// A status the worker declares a type for is taken from that declaration, never retyped here.
+import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
+import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
  * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
@@ -238,7 +241,7 @@ export interface WorkViewRule {
   when: string
   then: string
   setBy: 'owner' | 'approved' | 'learned'
-  status: 'on' | 'off' | 'suggested' | 'replaced' | 'dismissed'
+  status: SavedRule['status']
   kind: string
   source: string
   timesSeen: number
@@ -259,7 +262,7 @@ export interface WorkViewFocusArea {
   goal: string | null
   /** What belongs in the area, beyond its goal. Older workers leave it out. */
   about?: string | null
-  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  status: FocusAreaStatus
   priorityRank: number | null
   /** The owner's order; when set it wins over priorityRank. */
   ownerRank: number | null
@@ -320,9 +323,16 @@ export interface WorkViewSharedState {
   error?: string
 }
 
+/**
+ * A refresh run's state, as the worker reports it in refresh.json and in the setup extraction view.
+ * `waiting-for-agent`: no logged-in agent could run it yet, and the next check tries again. Every screen that shows
+ * a run uses this one list.
+ */
+export type WorkViewRefreshState = 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'
+
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */
 export interface WorkViewRefresh {
-  state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'
+  state: WorkViewRefreshState
   startedAt?: string
   finishedAt?: string
   error?: string | null
