@@ -28,7 +28,7 @@ import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agen
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
-import { resolveFocusAreaId } from '@/live/to-focus-model'
+import { createFocusAreaResolver } from '@/live/to-focus-model'
 import { cardGridEntries } from '@/live/card-groups'
 import { FocusOverview } from '@/components/focus-overview'
 import '@/components/focus-overview.css'
@@ -492,7 +492,11 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   const { team } = useWorkspace()
   const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas } = useWorkModel()
   const area = focusAreaId && focusAreaId !== OTHER_FOCUS_AREA_ID ? focusAreas.find((entry) => entry.id === focusAreaId) ?? null : null
-  const requests = useMemo(() => focusAreaId ? allRequests.filter((request) => resolveFocusAreaId(request.focusAreaId, focusAreas) === focusAreaId) : allRequests, [allRequests, focusAreas, focusAreaId])
+  const requests = useMemo(() => {
+    if (!focusAreaId) return allRequests
+    const resolveArea = createFocusAreaResolver(focusAreas)
+    return allRequests.filter((request) => resolveArea(request.focusAreaId) === focusAreaId)
+  }, [allRequests, focusAreas, focusAreaId])
   // A request that could not be read has no placement to file it under, so its card shows only under every request.
   const requestReadErrors = focusAreaId ? [] : allReadErrors
   const focusChanges = useFocusChanges()

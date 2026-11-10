@@ -14,7 +14,7 @@ import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from 
 import { SaveRefusedError } from '../data.ts'
 import type { Request as WorkRequest } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
-import { expandWorkViewOverview, type WorkViewOverview, type WorkViewRequestDetail } from './work-view-overview.ts'
+import { expandWorkViewOverview, type WorkViewOverview, type WorkViewOverviewModel, type WorkViewRequestDetail } from './work-view-overview.ts'
 import { mergeRequestDetail } from './request-detail-state.ts'
 import { isSyncStatus, type SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.ts'
 import { startViewerActivity, type ViewerActivityOptions } from '../../../viewer/utils/viewer-activity.ts'
@@ -70,6 +70,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   /** The newest snapshot accepted, kept so the aging timer can re-map it as time passes. */
   let latestSnapshot: WorkViewSnapshot | null = null
   let latestModel: MappedWorkModel | null = null
+  let latestOverviewSignature: string | null = null
   let legacyMode = false
   // All accepted models count, including HTTP reads and saves: an older response must not rewind either.
   let modelVersion = 0
@@ -85,12 +86,26 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const MAX_CACHED_DETAILS = 8
   /** The content of the last model handed to the screens, so an unchanged snapshot or a quiet minute is not sent again. */
   let lastDeliveredSignature: string | null = null
-  const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.agents, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory])
+  // Accepted models are immutable. Connection-only wrappers share their content signature,
+  // so bootstrap and publication do not serialize the same request list again.
+  const modelSignatures = new WeakMap<object, string>()
+  function modelSignature(model: MappedWorkModel | WorkViewOverviewModel): string {
+    let signature = modelSignatures.get(model)
+    if (signature === undefined) {
+      signature = JSON.stringify([model.agents, model.devices, model.people, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError, model.buildStory, model.sharedState])
+      modelSignatures.set(model, signature)
+    }
+    return signature
+  }
 
   const currentConnectionStatus = (): ConnectionStatus =>
     getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now(), where: SOURCE_KIND })
 
-  const withConnection = (mapped: MappedWorkModel): WorkModel => ({ ...mapped, sourceKind: SOURCE_KIND, connection: currentConnectionStatus() })
+  const withConnection = (mapped: MappedWorkModel): WorkModel => {
+    const model: WorkModel = { ...mapped, sourceKind: SOURCE_KIND, connection: currentConnectionStatus() }
+    modelSignatures.set(model, modelSignature(mapped))
+    return model
+  }
 
   /** app.js `health`: only a payload whose source read succeeded counts as a successful check. */
   function recordSourceHealth(source: WorkViewSource | undefined, serverAt?: string) {
@@ -119,6 +134,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   function acceptSnapshot(snapshot: WorkViewSnapshot, fromEvent: boolean, expectedSyncVersion?: number): WorkModel {
     modelVersion++
     latestSnapshot = snapshot
+    latestOverviewSignature = null
     latestModel = toWorkModel(snapshot, Date.now())
     if (fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(snapshot.source, snapshot.generatedAt)
     recordSync(snapshot.sync, expectedSyncVersion)
@@ -128,9 +144,15 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   function acceptOverview(overview: WorkViewOverview, fromEvent: boolean, expectedSyncVersion?: number): WorkModel {
     modelVersion++
     latestSnapshot = null
-    latestModel = expandWorkViewOverview(overview)
     if (fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(overview.source, overview.generatedAt)
     recordSync(overview.sync, expectedSyncVersion)
+    // A transport revision does not include clock-derived labels. Compare the actual
+    // compact content, before allocating the full request shapes and empty detail arrays.
+    const signature = `overview:${modelSignature(overview.model)}`
+    if (latestModel && signature === latestOverviewSignature) return withConnection(latestModel)
+    latestOverviewSignature = signature
+    latestModel = expandWorkViewOverview(overview)
+    modelSignatures.set(latestModel, signature)
     const live = new Map(latestModel.requests.map((request) => [request.id, request.detailRevision ?? request.contentFingerprint ?? '']))
     for (const [id, cached] of detailCache) if (live.get(id) !== cached.fingerprint) detailCache.delete(id)
     return withConnection(latestModel)

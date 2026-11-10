@@ -16,7 +16,7 @@ import { useConnection, useRecentChanges, useWorkModel } from '@/store'
 
 /** How long a request has been going. An open live request counts up as you watch; anything else shows its record. */
 export function RunningFor({ request }: { request: Request }) {
-  const now = useNow()
+  const now = useNow(!!request.runningLive && !!request.startedAtIso)
   if (!request.runningLive || !request.startedAtIso) return <>{request.runningFor}</>
   return <>{formatDuration(now - Date.parse(request.startedAtIso))}</>
 }
@@ -60,7 +60,7 @@ export function ChangeTicker({ onOpen }: { onOpen: (requestId: string) => void }
   const { sourceKind } = useWorkModel()
   const connection = useConnection()
   const live = sourceKind === 'sample' || connection.isLive
-  const now = useNow()
+  const now = useNow(changes.length > 0)
   const shown = changes.slice(0, TICKER_SHOWS)
   const [step, setStep] = useState(0)
   // A new change always shows first.

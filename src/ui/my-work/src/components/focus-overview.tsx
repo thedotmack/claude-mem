@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { ArrowRightIcon, ChevronDownIcon } from 'lucide-react'
 import { useI18n, interpolate } from '@/lib/i18n'
 import { formatPromptDay } from '@/lib/prompt-time'
@@ -21,7 +21,7 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [query, setQuery] = useState('')
-  const overview = focusOverview(areas, requests)
+  const overview = useMemo(() => focusOverview(areas, requests), [areas, requests])
   // Suggestions stay visible after setup. Opening one reaches its existing Keep / Dismiss controls.
   const searching = query.trim().length > 0
   const matches = ({ area }: (typeof overview.areas)[number]) => `${area.name} ${area.goal ?? ''} ${area.about ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
