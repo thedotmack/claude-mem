@@ -170,7 +170,15 @@ export class HumanCopyWorker {
   pauseWhile(shouldPause) { this.shouldPause = shouldPause; }
 
   observe(view) {
-    if (this.closed || this.shouldPause()) return view;
+    if (this.closed) return view;
+    // A successful full projection is authoritative about which requests still
+    // exist. Removing their pending entry also fences any late provider result
+    // at the existing fingerprint checks. A failed/stale read proves no removal.
+    if (view.source?.connected === true && !view.source.stale) {
+      const current = new Set((view.humanRequests ?? []).map(request => request.id));
+      for (const id of this.pending.keys()) if (!current.has(id)) this.pending.delete(id);
+    }
+    if (this.shouldPause()) return view;
     this.refreshProviderConfigKey();
     const now = this.now();
     const configured = providerIsAvailable(this.provider);
