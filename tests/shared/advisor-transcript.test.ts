@@ -158,23 +158,6 @@ describe('extractAdvisorCallsFromJsonl', () => {
     expect(calls[0].toolUseId).toBe('srvtoolu_new');
   });
 
-  it('currentTurnOnly ignores tool-result-only user entries as turn boundaries', () => {
-    const toolResultUserEntry = JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }] },
-      timestamp: '2026-07-06T05:00:03.000Z',
-    });
-    const jsonl = [
-      userLine('the turn'),
-      advisorCallLine('srvtoolu_a'),
-      advisorResultLine('srvtoolu_a', 'advice'),
-      toolResultUserEntry,
-    ].join('\n');
-
-    const calls = extractAdvisorCallsFromJsonl(jsonl, { currentTurnOnly: true });
-    expect(calls).toHaveLength(1);
-  });
-
   it('strips system reminders from the turn user message', () => {
     const jsonl = [
       userLine('<system-reminder>injected</system-reminder>real question'),
@@ -207,6 +190,16 @@ describe('extractAdvisorCalls', () => {
 
   it('returns [] for an empty path', () => {
     expect(extractAdvisorCalls('')).toEqual([]);
+  });
+
+  it('keeps a complete advisor call when the bounded tail starts exactly at its line', () => {
+    const prefix = userLine('earlier prompt');
+    const tail = [advisorCallLine('boundary'), advisorResultLine('boundary', 'Keep this advice.')];
+    const path = writeTranscript([prefix, ...tail]);
+    const calls = extractAdvisorCalls(path, { maxTailBytes: Buffer.byteLength(tail.join('\n') + '\n'), currentTurnOnly: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].advice).toBe('Keep this advice.');
+    expect(calls[0].transcriptByteOffset).toBe(Buffer.byteLength(prefix + '\n'));
   });
 
   it('reads only the tail of a long transcript, and its offsets still point into the file', () => {

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../src/shared/memory-retrieval-tools.js';
+import { logger } from '../../src/utils/logger.js';
 import { observationHandler } from '../../src/cli/handlers/observation.js';
 
 describe('claude-mem retrieval and explicit note classifiers', () => {
@@ -15,7 +16,13 @@ describe('claude-mem retrieval and explicit note classifiers', () => {
     expect(isExplicitMemoryWrite('mcp__other__save_memory')).toBe(false);
   });
   it('drops retrieval hooks before any spool, runtime request or input logging', async () => {
-    const result = await observationHandler.execute({ sessionId: 'memory-read-fixture', cwd: '', toolName: 'mcp__mcp_search__mem_search', toolInput: { continuation: 'signed-memory-index' } });
-    expect(result).toMatchObject({ continue: true, suppressOutput: true, exitCode: 0 });
+    const dataIn = spyOn(logger, 'dataIn').mockImplementation(() => {});
+    try {
+      const result = await observationHandler.execute({ sessionId: 'memory-read-fixture', cwd: '', toolName: 'mcp__mcp_search__mem_search', toolInput: { continuation: 'signed-memory-index' } });
+      expect(result).toMatchObject({ continue: true, suppressOutput: true, exitCode: 0 });
+      expect(dataIn).not.toHaveBeenCalled();
+    } finally {
+      dataIn.mockRestore();
+    }
   });
 });

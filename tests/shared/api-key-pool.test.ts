@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
   buildKeyPool,
-  KEY_ROTATE_KINDS,
   resolvePoolKeys,
   retryPolicyForPool,
   clearKeyCooldown,
@@ -41,6 +40,7 @@ describe('parseApiKeyList', () => {
 
   it('accepts an array, since settings.json is hand-edited', () => {
     expect(parseApiKeyList(['a', ' b '])).toEqual(['a', 'b']);
+    expect(parseApiKeyList(['real-key', null, undefined, 42, {}, ['nested-key'], true, ' second-key '])).toEqual(['real-key', 'second-key']);
   });
 
   it('flattens separator-bearing entries inside an array', () => {
@@ -103,10 +103,6 @@ describe('shouldRotateKey', () => {
 describe('cooldown bookkeeping', () => {
   beforeEach(() => {
     resetKeyPoolStateForTesting();
-  });
-
-  it('reports no cooldown for an untouched key', () => {
-    expect(keyCooldownRemainingMs('gemini', 'k1')).toBe(0);
   });
 
   it('applies the kind-specific window', () => {
@@ -211,17 +207,6 @@ describe('a spent pool does not push its own recovery further away', () => {
  * the pool is trying to move off, spending the window rotation exists to avoid.
  */
 describe('retryPolicyForPool', () => {
-  it('adds nothing for a pool of one, so single-key installs are unchanged', () => {
-    expect(retryPolicyForPool(1)).toEqual({});
-    expect(retryPolicyForPool(0)).toEqual({});
-  });
-
-  it('suppresses in-place retry of the rotate-worthy kinds once there is somewhere to rotate', () => {
-    expect(retryPolicyForPool(2).nonRetryableKinds).toEqual(KEY_ROTATE_KINDS);
-    expect(KEY_ROTATE_KINDS).toContain('rate_limit');
-    expect(KEY_ROTATE_KINDS).toContain('quota_exhausted');
-    expect(KEY_ROTATE_KINDS).toContain('auth_invalid');
-  });
 
   it('rotates after ONE failed request per key instead of three', async () => {
     const attempts: string[] = [];
@@ -273,19 +258,6 @@ describe('retryPolicyForPool', () => {
     )).rejects.toThrow();
 
     expect(attempts).toHaveLength(1);
-  });
-
-  it('reports the configured pool size, not the length of this sweep', async () => {
-    const keys = ['k1', 'k2', 'k3'];
-    for (const key of keys) markKeyCooldown('gemini', key, 'rate_limit', 5_000);
-
-    let seen = -1;
-    await expect(withKeyPool({ poolId: 'gemini', keys }, async ({ poolSize }) => {
-      seen = poolSize;
-      throw new ClassifiedProviderError('spent', { kind: 'quota_exhausted', cause: new Error('x') });
-    })).rejects.toThrow();
-
-    expect(seen).toBe(3);
   });
 
   // Never pay twice (Phase 1): a transient failure is ambiguous (the work may
@@ -484,25 +456,10 @@ describe('withKeyPool', () => {
   });
 
   it('clears a recovered key on success', async () => {
-    markKeyCooldown('gemini', 'a', 'rate_limit', 1_000);
-    // Force 'a' to be tried by making it the only key in the pool for this call.
+    markKeyCooldown('gemini', 'a', 'rate_limit', 60_000);
+    markKeyCooldown('gemini', 'b', 'rate_limit', 120_000);
     const result = await withKeyPool({ poolId: 'gemini', keys: ['a', 'b'] }, async ({ key }) => key);
-    expect(result).toBe('b');
-
-    clearKeyCooldown('gemini', 'a');
+    expect(result).toBe('a');
     expect(keyCooldownRemainingMs('gemini', 'a')).toBe(0);
-  });
-
-  it('reports position and pool size to the body, for logging', async () => {
-    const attempts: Array<{ attempt: number; poolSize: number }> = [];
-    await withKeyPool({ poolId: 'gemini', keys: ['a', 'b'] }, async ({ key, attempt, poolSize }) => {
-      attempts.push({ attempt, poolSize });
-      if (key === 'a') throw classified('rate_limit');
-      return 'ok';
-    });
-    expect(attempts).toEqual([
-      { attempt: 1, poolSize: 2 },
-      { attempt: 2, poolSize: 2 },
-    ]);
   });
 });

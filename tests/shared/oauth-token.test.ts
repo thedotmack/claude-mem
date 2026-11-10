@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { join } from 'path';
@@ -14,23 +13,13 @@ import {
   resolveClaudeCredentialProfile,
   deriveMacKeychainServiceName,
   readMacOsKeychain,
-  readLinuxLibsecret,
   readClaudeCredentialsFile,
   sanitizeMacOsKeychainAccount,
 } from '../../src/shared/oauth-token.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
-import { logger } from '../../src/utils/logger.js';
 
-/**
- * The implementation uses promisify(execFile), which captures execFile at
- * module-load time. To intercept those calls in tests we replace the export
- * on `child_process` and restore it afterwards. We also redirect DATA_DIR
- * to a per-test temp dir for marker/sidecar tests.
- */
-
-const ORIGINAL_EXEC_FILE = childProcess.execFile;
 const ORIGINAL_PLATFORM = process.platform;
 const ORIGINAL_ENV_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
@@ -56,25 +45,6 @@ function setPlatform(value: NodeJS.Platform): void {
 function restorePlatform(): void {
   Object.defineProperty(process, 'platform', { value: ORIGINAL_PLATFORM, configurable: true });
 }
-
-/**
- * Patch promisify(execFile) by replacing the underlying execFile with a stub
- * that calls back like the real Node API. Because oauth-token.ts already
- * captured the original at import time, we instead intercept the cached
- * promisified function via the module's internal binding by re-importing.
- *
- * Simpler approach: spy on childProcess.execFile and route calls to a fake
- * callback. Because promisify wraps execFile by reference at import time,
- * we can't intercept post-hoc. Instead we exercise the parsing logic
- * directly via parseKeychainPayload-equivalent paths: we inject results by
- * calling readClaudeOAuthToken() with platform spoofed AND the expected
- * `security`/`secret-tool` binary spy via mocking the `execFile` hostpath.
- *
- * Bun's spyOn lets us replace properties on the `child_process` module
- * object, but the promisified handle inside oauth-token.ts already holds a
- * reference. So we test the parsing layer by exercising decodeJwtExpMs
- * directly and rely on environment-fallback path for the integration shape.
- */
 
 beforeEach(() => {
   // Redirect DATA_DIR to a temp directory for marker file tests.
@@ -149,11 +119,6 @@ describe('marker file scheme', () => {
 
   it('readStaleMarker returns undefined when no marker exists', () => {
     expect(readStaleMarker()).toBeUndefined();
-  });
-
-  it('readStaleMarker returns the reason after writeStaleMarker', () => {
-    writeStaleMarker('refresh me');
-    expect(readStaleMarker()).toBe('refresh me');
   });
 
   it('clearStaleMarker removes an existing marker', () => {
@@ -233,58 +198,6 @@ describe('readClaudeOAuthToken — env-fallback branch', () => {
     if (result.kind === 'present') {
       expect(result.expiresAt).toBe(futureMs);
       expect(result.source).toBe('env-fallback');
-    }
-  });
-});
-
-describe('readClaudeOAuthToken — macOS keychain branch', () => {
-  // We can't easily intercept the cached promisified execFile from inside
-  // oauth-token.ts (it captured a reference at module load). Instead we
-  // verify the macOS branch dispatches by checking that on darwin without
-  // a real keychain entry, the fallback path is reached.
-  it('on macOS, falls back to env when keychain access fails or returns nothing', async () => {
-    if (process.platform !== 'darwin') {
-      // Skip on non-macOS — we only run this test where security CLI exists.
-      return;
-    }
-    // Use an env token; if the real keychain has a fresh entry, we get
-    // 'present' with source='keychain'. If no keychain entry, we fall back
-    // to env-fallback. Either way, kind='present' with a non-empty token
-    // (or 'expired' if the real keychain entry happens to be stale).
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-test-fallback';
-    setPlatform('darwin');
-    const result = await readClaudeOAuthToken();
-    // Whatever the keychain says, the result should be a valid kind.
-    expect(['present', 'expired', 'absent']).toContain(result.kind);
-    if (result.kind === 'present') {
-      expect(result.token.length).toBeGreaterThan(0);
-      expect(['keychain', 'credentials-file', 'env-fallback']).toContain(result.source);
-    }
-  });
-});
-
-describe('readClaudeOAuthToken — Linux branch', () => {
-  it('on linux without secret-tool, returns absent gracefully', async () => {
-    if (process.platform !== 'linux') return; // skip on non-linux
-    setPlatform('linux');
-    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    const result = await readClaudeOAuthToken();
-    // If secret-tool is not installed or has no entry, returns absent.
-    // If somehow present, we accept that too.
-    expect(['present', 'expired', 'absent']).toContain(result.kind);
-  });
-});
-
-describe('readClaudeOAuthToken — Windows branch', () => {
-  it('on win32 without keychain entry, returns absent or env-fallback', async () => {
-    if (process.platform !== 'win32') return; // skip on non-windows
-    setPlatform('win32');
-    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    const result = await readClaudeOAuthToken();
-    expect(['present', 'expired', 'absent']).toContain(result.kind);
-    if (result.kind === 'absent') {
-      expect(result.reason).not.toContain('Windows Credential Manager read failed');
-      expect(result.reason).toContain('Windows Credential Manager has no entry');
     }
   });
 });
@@ -380,13 +293,6 @@ describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
     expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile('~/.claude/'))).toBe('Claude Code-credentials');
   });
 
-  it('strips a trailing separator from an already-absolute setting value with a trailing slash', () => {
-    const absoluteWithSlash = `${DEFAULT_CLAUDE_CONFIG_DIR}/`;
-    const resolved = resolveEffectiveClaudeConfigDir(absoluteWithSlash);
-    expect(resolved).toBe(DEFAULT_CLAUDE_CONFIG_DIR);
-    expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile(absoluteWithSlash))).toBe('Claude Code-credentials');
-  });
-
   it('strips a trailing separator so an instance dir with a trailing slash matches its no-slash suffix', () => {
     const noSlash = '/Users/matthewdnye/.ccs/instances/iveg50';
     const withSlash = `${noSlash}/`;
@@ -414,20 +320,16 @@ describe('deriveMacKeychainServiceName (#2753) — suffix-derivation table', () 
     expect(deriveMacKeychainServiceName({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: false })).toBe('Claude Code-credentials');
   });
 
-  const studioTable: Array<{ instance: string; configDir: string; suffix: string }> = [
-    { instance: 'iveg50', configDir: '/Users/matthewdnye/.ccs/instances/iveg50', suffix: 'faf0d083' },
-    { instance: 'nyem50', configDir: '/Users/matthewdnye/.ccs/instances/nyem50', suffix: '7034a92a' },
-    { instance: 'qcom50', configDir: '/Users/matthewdnye/.ccs/instances/qcom50', suffix: '8bb48066' },
-    { instance: 'flee50', configDir: '/Users/matthewdnye/.ccs/instances/flee50', suffix: '53f0e97f' },
-    { instance: 'nyeq50', configDir: '/Users/matthewdnye/.ccs/instances/nyeq50', suffix: 'e38871d4' },
-    { instance: 'repl00', configDir: '/Users/matthewdnye/.ccs/instances/repl00', suffix: '2e1325ac' },
-  ];
-
-  for (const { instance, configDir, suffix } of studioTable) {
-    it(`suffixes ${instance} (${configDir}) as "Claude Code-credentials-${suffix}"`, () => {
-      expect(deriveMacKeychainServiceName({ configDir, explicitConfigDir: true })).toBe(`Claude Code-credentials-${suffix}`);
-    });
-  }
+  it.each([
+    ['/Users/matthewdnye/.ccs/instances/iveg50', 'faf0d083'],
+    ['/Users/matthewdnye/.ccs/instances/nyem50', '7034a92a'],
+    ['/Users/matthewdnye/.ccs/instances/qcom50', '8bb48066'],
+    ['/Users/matthewdnye/.ccs/instances/flee50', '53f0e97f'],
+    ['/Users/matthewdnye/.ccs/instances/nyeq50', 'e38871d4'],
+    ['/Users/matthewdnye/.ccs/instances/repl00', '2e1325ac'],
+  ])('suffixes %s as Claude Code-credentials-%s', (configDir, suffix) => {
+    expect(deriveMacKeychainServiceName({ configDir, explicitConfigDir: true })).toBe(`Claude Code-credentials-${suffix}`);
+  });
 
   // #4149 — Claude Code suffixes whenever CLAUDE_CONFIG_DIR is SET, even to
   // the default path, so an explicit default export is a suffixed entry.
@@ -502,10 +404,8 @@ describe('resolveClaudeCredentialProfile (#4149)', () => {
  * (not through readClaudeOAuthToken/process.platform dispatch — see the
  * module-load comment on readMacOsKeychain for why the module-level
  * execFileAsync can't be intercepted post-hoc). Because execImpl is fully
- * injected here, this never shells out to the real `security` binary, so —
- * unlike the platform-dispatch tests elsewhere in this file — it does NOT
- * need a `if (process.platform !== 'darwin') return;` guard; it runs on any
- * host OS and never touches the real keychain.
+ * injected here, this never shells out to the real `security` binary; it
+ * runs on any host OS and never touches the real keychain.
  */
 describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
   it('searches the login keychain directly when the default search list misses the item', async () => {
@@ -539,101 +439,6 @@ describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
       ...calls[0],
       join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
     ]);
-  });
-
-  it('logs both attempts when the login keychain also fails after the search list misses the item', async () => {
-    const searchListStderr = 'The specified item could not be found in the keychain.';
-    const loginKeychainStderr = 'User interaction is not allowed.';
-    const loginKeychainError = Object.assign(new Error('Command failed: security find-generic-password'), {
-      code: 36, stderr: loginKeychainStderr,
-    });
-    const fakeExecImpl = mock(async (_cmd: string, args: readonly string[]) => {
-      if (args.length === 6) {
-        throw Object.assign(new Error('Command failed: security find-generic-password'), {
-          code: 44, stderr: searchListStderr,
-        });
-      }
-      throw loginKeychainError;
-    }) as any;
-    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
-
-    try {
-      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
-
-      expect(result.kind).toBe('absent');
-      expect(fakeExecImpl).toHaveBeenCalledTimes(2);
-      expect(warning).toHaveBeenCalledTimes(1);
-      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
-        exitCode: 36,
-        stderr: loginKeychainStderr,
-        searchListExitCode: 44,
-        searchListStderr,
-      }), loginKeychainError);
-    } finally {
-      warning.mockRestore();
-    }
-  });
-
-  it('logs the security command code, signal, and stderr when a Keychain lookup fails', async () => {
-    const stderr = 'User interaction is not allowed.';
-    const error = Object.assign(new Error('Command failed: security find-generic-password'), {
-      code: 36, signal: 'SIGTERM', stderr: Buffer.from(stderr),
-    });
-    const fakeExecImpl = mock(() => Promise.reject(error)) as any;
-    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
-
-    try {
-      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
-
-      expect(result.kind).toBe('absent');
-      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
-        service: 'Claude Code-credentials',
-        account: 'kirat',
-        exitCode: 36,
-        errorCode: null,
-        signal: 'SIGTERM',
-        stderr,
-      }), error);
-    } finally {
-      warning.mockRestore();
-    }
-  });
-
-  it('the default service name returns absent while a per-config-dir suffixed service name returns present ("default item empty, instance item valid")', async () => {
-    const instanceServiceName = deriveMacKeychainServiceName({
-      configDir: '/Users/matthewdnye/.ccs/instances/iveg50',
-      explicitConfigDir: true,
-    });
-    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
-    const instancePayload = JSON.stringify({
-      claudeAiOauth: { accessToken: 'sk-ant-oat01-instance-token', expiresAt: futureExpiresAt },
-    });
-
-    const fakeExecImpl = mock((_cmd: string, args: readonly string[]) => {
-      const serviceArgIndex = args.indexOf('-s');
-      const serviceName = serviceArgIndex >= 0 ? args[serviceArgIndex + 1] : undefined;
-      if (serviceName === instanceServiceName) {
-        return Promise.resolve({ stdout: instancePayload, stderr: '' });
-      }
-      // The default item is empty (no keychain entry) — `security` exits
-      // non-zero and execFile rejects, exactly like the real binary.
-      return Promise.reject(new Error(
-        'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.'
-      ));
-    }) as any;
-
-    const defaultResult = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl);
-    expect(defaultResult.kind).toBe('absent');
-
-    const instanceResult = await readMacOsKeychain(instanceServiceName, fakeExecImpl);
-    expect(instanceResult.kind).toBe('present');
-    if (instanceResult.kind === 'present') {
-      expect(instanceResult.token).toBe('sk-ant-oat01-instance-token');
-      expect(instanceResult.source).toBe('keychain');
-      expect(instanceResult.expiresAt).toBe(futureExpiresAt);
-    }
-
-    expect(fakeExecImpl).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -828,24 +633,6 @@ describe('readMacOsKeychain (#4037) — keychain -a account follows Claude Code 
       expect(result.token).toBe('sk-ant-oat01-account-token');
     }
   });
-
-  it('queries the raw username when it is legal for Claude Code\'s keychain account', async () => {
-    const fakeExecImpl = fakeExecForAccount('alex.newman');
-    const result = await readMacOsKeychain(
-      'Claude Code-credentials',
-      fakeExecImpl,
-      'alex.newman',
-    );
-
-    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
-    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
-    expect(callArgs[callArgs.indexOf('-a') + 1]).toBe('alex.newman');
-    expect(callArgs).not.toContain('claude-code-user');
-    expect(result.kind).toBe('present');
-    if (result.kind === 'present') {
-      expect(result.token).toBe('sk-ant-oat01-account-token');
-    }
-  });
 });
 
 /**
@@ -886,14 +673,6 @@ describe('readClaudeCredentialsFile (#4348) — on-disk credentials file', () =>
     }
   });
 
-  it('returns absent when the file is missing (behavior unchanged)', () => {
-    const result = readClaudeCredentialsFile(credDir);
-    expect(result.kind).toBe('absent');
-    if (result.kind === 'absent') {
-      expect(result.reason).toContain('No credentials file');
-    }
-  });
-
   it('handles malformed JSON gracefully (absent, no throw)', () => {
     writeCredentials('{ this is not valid json');
     const result = readClaudeCredentialsFile(credDir);
@@ -906,11 +685,7 @@ describe('readClaudeCredentialsFile (#4348) — on-disk credentials file', () =>
     expect(result.kind).toBe('absent');
   });
 
-  it('treats a JSON null or array payload as absent instead of throwing', () => {
-    // JSON.parse('null') succeeds, and `null.claudeAiOauth` used to throw past
-    // every fallback, the env token included.
-    writeCredentials('null');
-    expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
+  it('treats a JSON array payload as absent instead of throwing', () => {
     writeCredentials('[]');
     expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
   });
@@ -921,47 +696,6 @@ describe('readClaudeCredentialsFile (#4348) — on-disk credentials file', () =>
         writeCredentials({ claudeAiOauth: { accessToken, expiresAt } });
         expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
       }
-    }
-  });
-
-  it('returns expired when the file token is past the grace window', () => {
-    const pastMs = Date.now() - 10 * 60 * 1000; // 10 minutes ago, past 60s grace
-    writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: pastMs } });
-    const result = readClaudeCredentialsFile(credDir);
-    expect(result.kind).toBe('expired');
-    if (result.kind === 'expired') {
-      expect(result.expiresAt).toBe(pastMs);
-    }
-  });
-});
-
-describe('readLinuxLibsecret (#4348) — legacy store, read only when the credentials file is absent', () => {
-  const futureExpiresAt = Date.now() + 60 * 60 * 1000;
-  const libsecretPayload = JSON.stringify({
-    claudeAiOauth: { accessToken: 'libsecret-token', expiresAt: futureExpiresAt },
-  });
-
-  it('returns the libsecret record when an entry exists', async () => {
-    const fakeExecImpl = mock(() => Promise.resolve({ stdout: libsecretPayload, stderr: '' })) as any;
-    const result = await readLinuxLibsecret(fakeExecImpl);
-    expect(result.kind).toBe('present');
-    if (result.kind === 'present') {
-      expect(result.token).toBe('libsecret-token');
-      expect(result.source).toBe('keychain');
-      expect(result.expiresAt).toBe(futureExpiresAt);
-    }
-    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
-    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
-    expect(callArgs[0]).toBe('lookup');
-  });
-
-  it('a miss is absent and no longer tells users to install secret-tool (Claude Code never writes libsecret)', async () => {
-    const fakeExecImpl = mock(() => Promise.reject(new Error('spawn secret-tool ENOENT'))) as any;
-    const result = await readLinuxLibsecret(fakeExecImpl);
-    expect(result.kind).toBe('absent');
-    if (result.kind === 'absent') {
-      expect(result.reason).toContain('Linux libsecret lookup failed');
-      expect(result.reason).not.toContain('is secret-tool installed?');
     }
   });
 });

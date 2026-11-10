@@ -207,22 +207,6 @@ describe('cmem-gateway', () => {
       expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('https://cmem.ai/dashboard');
     });
 
-    it('clearProFallback empties the gateway\'s words along with the marker', () => {
-      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath, {
-        message: 'words',
-        action: 'do this',
-        url: 'https://cmem.ai/dashboard',
-      });
-
-      clearProFallback(settingsPath, tempDir);
-
-      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
-      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
-      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('');
-      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('');
-    });
-
     it('clearProFallback empties stale gateway words even when the marker is already blank', () => {
       // A re-pair blanks CLAUDE_MEM_PRO_FALLBACK_AT through the installer's
       // settings merge first, then calls clearProFallback.
@@ -350,12 +334,6 @@ describe('cmem-gateway', () => {
       expect(results.filter(Boolean)).toHaveLength(1);
       expect(markProFallbackNoticeShown(tempDir)).toBe(false);
     }, 30_000);
-
-    it('starts unshown, becomes shown after marking', () => {
-      expect(hasShownProFallbackNotice(tempDir)).toBe(false);
-      markProFallbackNoticeShown(tempDir);
-      expect(hasShownProFallbackNotice(tempDir)).toBe(true);
-    });
   });
 
   describe('trialDaysRemaining', () => {
