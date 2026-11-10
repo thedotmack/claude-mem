@@ -497,6 +497,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: string;       // cold-start: skip fuzzy Tier-1 below N docs/project (IDF unreliable)
   CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
   CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
+  CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: string; // opt-in raw-tool full-text index; applied on worker restart
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
   CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
@@ -825,6 +826,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: '10',            // cold-start gate: IDF unreliable below ~10 docs/project
     CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
     CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
+    CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: 'false',
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_LOG_RETENTION_DAYS: '30',                // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.

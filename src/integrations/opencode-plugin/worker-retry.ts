@@ -1,12 +1,13 @@
 /**
- * Retry for capture POSTs that find the worker not listening yet.
+ * Retry for non-inference metadata POSTs while the worker is not listening.
  *
  * Nothing in OpenCode starts claude-mem's worker directly: the MCP server
  * OpenCode launches from opencode.json (#3621) starts it through the shared
- * ensureWorkerStarted, which takes a few seconds. A capture POST refused in
+ * ensureWorkerStarted, which takes a few seconds. A metadata POST refused in
  * that window would be lost, so it is retried in the background with growing
  * delays (about 10 s in all) and then dropped quietly. Nothing awaits the
  * retries, so no OpenCode hook waits on a worker that is still booting.
+ * Observations and summaries use the common one-attempt live handoff instead.
  *
  * Kept out of the plugin entry module, which may export only its factory.
  */

@@ -334,6 +334,19 @@ describe('SyncClient', () => {
     ]);
   });
 
+  it('quarantines wire integers outside the local range and commits the rest of the page', async () => {
+    const bad = observationChange(2, '12', REMOTE, { discovery_tokens: '9007199254740992' });
+    const { impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11'), bad, hubOp(3, '13')] });
+    const client = makeClient(impl);
+
+    await client.pullOnce({ timeoutMs: 5_000 });
+    expect(apply.getCursor()).toBe('3');
+    expect(count('observations')).toBe(2);
+    expect(db.prepare('SELECT seq, raw_body FROM sync_pull_quarantine').all()).toEqual([
+      { seq: '2', raw_body: JSON.stringify(bad) },
+    ]);
+  });
+
   it('pulls past a forked device\'s same-revision collision after a hub rebuild (the cursor-0 wedge)', async () => {
     const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11749')] });
     const client = makeClient(impl);

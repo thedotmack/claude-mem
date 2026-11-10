@@ -1,9 +1,13 @@
+import type { DeepSearchExecutor } from '../deep-search/protocol.js';
+import { emptyDeepResult, type DeepSearchResult } from '../sqlite/tool-use-search.js';
+import { formatDeepSearch } from '../../shared/deep-search-format.js';
+import { AppError } from '../server/ErrorHandler.js';
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
-import { FormattingService } from './FormattingService.js';
+import { FormattingService, singleLineTitle } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
@@ -47,6 +51,8 @@ export interface SearchTelemetryEnvelope {
   fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results';
 }
 
+type ObservationSearchState = { status: 'not_requested' | 'success_empty' | 'success_nonempty' | 'error' };
+
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
 
@@ -63,7 +69,8 @@ export class SearchManager {
      * An explicit `dateRange` on a request always wins over it.
      */
     private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS,
-    private contextReader: ContextReadWorkerClient | null = null
+    private contextReader: ContextReadWorkerClient | null = null,
+    private deepReader: DeepSearchExecutor | null = null
   ) {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
@@ -284,7 +291,7 @@ export class SearchManager {
           const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = singleLineTitle(obs.title || 'Untitled');
           const tokens = estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;
@@ -453,6 +460,44 @@ export class SearchManager {
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
+    if (args.deep !== undefined && ![true, false, 'true', 'false'].includes(args.deep)) {
+      throw new AppError('deep must be true or false', 400, 'INVALID_SEARCH_REQUEST');
+    }
+    const state: ObservationSearchState = { status: 'not_requested' };
+    const result = await this.searchMemory(args, telemetryOut, state);
+    if (args.deep !== true && args.deep !== 'true') return result;
+    const normalized = this.normalizeParams(args);
+    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { effectiveObsType } = this.resolveTypeFilters(type, obs_type);
+    // Existing search has no session/tool predicate. Do not silently discard a
+    // filter that the raw tier cannot apply with the same observation semantics.
+    const unmapped = effectiveObsType || concepts?.length || files?.length
+      || ['contentSessionId', 'sessionDbId', 'memorySessionId', 'session', 'toolName', 'agentId']
+        .some(key => normalized[key] !== undefined);
+    let raw: DeepSearchResult;
+    if (typeof query !== 'string' || !query.trim()
+      || Number(options.offset || 0) !== 0 || unmapped || state.status === 'not_requested') {
+      raw = emptyDeepResult('not_applicable');
+    } else if (state.status === 'error') raw = emptyDeepResult('observation_error');
+    else if (state.status === 'success_nonempty') raw = emptyDeepResult('observations_found');
+    else {
+      try {
+        const status = this.sessionSearch.getToolUseIndexStatus();
+        const projects = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+        const rawOptions = { ...options, projects };
+        raw = status !== 'ready' ? emptyDeepResult(status)
+          : this.deepReader ? await this.deepReader.search(query, rawOptions)
+            : emptyDeepResult('unsupported');
+      } catch (error) {
+        logger.error('SEARCH', 'Raw tool search failed', {}, error instanceof Error ? error : undefined);
+        raw = emptyDeepResult('error');
+      }
+    }
+    if (format === 'json') return { ...result, ...raw };
+    return { ...result, ...raw, content: [...result.content, { type: 'text', text: formatDeepSearch(raw) }] };
+  }
+
+  private async searchMemory(args: any, telemetryOut: SearchTelemetryEnvelope | undefined, state: ObservationSearchState): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
     // Gate P2-5: every key the requested projects are stored under, so a
@@ -509,7 +554,7 @@ export class SearchManager {
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
-      let chromaSucceeded = false;
+      let chromaResult: StrategySearchResult | undefined;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
       // HTTP pagination values can be strings. Keep enough filtered rows to
@@ -520,7 +565,7 @@ export class SearchManager {
       const candidateOptions = { ...options, offset: 0, limit: limit === undefined ? undefined : offset + limit };
 
       try {
-        const chromaResult = await this.orchestrator.searchChroma({
+        chromaResult = await this.orchestrator.searchChroma({
           ...candidateOptions,
           // The strategy resolves stored project keys itself; do not expand
           // the already-resolved candidateOptions.projects a second time.
@@ -534,24 +579,6 @@ export class SearchManager {
           // Omitted-limit JSON searches historically expose the ranked window.
           limit: candidateOptions.limit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
         });
-        chromaSucceeded = true;
-        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
-        // category Chroma left empty, or answers alone when Chroma left them all empty.
-        const supplemented = await this.orchestrator.supplementEmptyCategories(
-          {
-            ...candidateOptions,
-            limit: candidateOptions.limit ?? offset + SEARCH_CONSTANTS.DEFAULT_LIMIT,
-            query,
-            searchType: category ?? 'all',
-            obsType: effectiveObsType,
-            concepts,
-            files,
-            orderBy: options.orderBy ?? 'relevance',
-          },
-          chromaResult
-        );
-        ({ observations, sessions, prompts } = supplemented.results);
-        chromaSupplementStrategy = supplemented.strategy;
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -583,6 +610,29 @@ export class SearchManager {
           const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
           logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
         }
+      }
+
+      // Only a failed semantic search should trigger the Chroma fallback.
+      // A SQLite refill failure must escape, just as in SearchOrchestrator;
+      // retrying it as a Chroma failure can silently discard semantic matches.
+      if (chromaResult) {
+        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
+        // category Chroma left empty, or answers alone when Chroma left them all empty.
+        const supplemented = await this.orchestrator.supplementEmptyCategories(
+          {
+            ...candidateOptions,
+            limit: candidateOptions.limit ?? offset + SEARCH_CONSTANTS.DEFAULT_LIMIT,
+            query,
+            searchType: category ?? 'all',
+            obsType: effectiveObsType,
+            concepts,
+            files,
+            orderBy: options.orderBy ?? 'relevance',
+          },
+          chromaResult
+        );
+        ({ observations, sessions, prompts } = supplemented.results);
+        chromaSupplementStrategy = supplemented.strategy;
       }
 
       if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
@@ -629,6 +679,8 @@ export class SearchManager {
       }
     }
 
+    state.status = !searchObservations ? 'not_requested' : chromaFailed ? 'error'
+      : observations.length ? 'success_nonempty' : 'success_empty';
     const totalResults = observations.length + sessions.length + prompts.length;
 
     // Telemetry envelope (search_performed): derive the strategy from the

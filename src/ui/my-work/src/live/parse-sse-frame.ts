@@ -21,3 +21,20 @@ export function parseSseFrame(eventType: string, raw: string): Record<string, un
   }
   return parsed as Record<string, unknown>
 }
+
+/** Apply a setup frame only when it can be read. A bad frame preserves the last displayed result, and its private
+ * body or mapper error never reaches the console. EventSource callbacks run outside React's error boundaries. */
+export function applySseFrame<T>(eventType: string, raw: string, apply: (frame: T) => void,
+  isShaped: (frame: Record<string, unknown>) => boolean = () => true): void {
+  const frame = parseSseFrame(eventType, raw)
+  if (frame === null) return
+  try {
+    if (!isShaped(frame)) {
+      console.warn(`[work-view] Ignoring a ${eventType} frame with an unexpected shape`)
+      return
+    }
+    apply(frame as T)
+  } catch {
+    console.warn(`[work-view] Ignoring an unreadable ${eventType} frame`)
+  }
+}

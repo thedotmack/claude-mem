@@ -144,9 +144,9 @@ export function getOrCreateInstallId(): string {
 
   const installId = randomUUID();
   saveTelemetryConfig({
+    ...existing,
     installId,
-    decidedAt: '',
-    ...(existing?.anonymousId ? { anonymousId: existing.anonymousId } : {}),
+    decidedAt: existing?.decidedAt ?? '',
   });
   return installId;
 }
@@ -164,7 +164,7 @@ export function getOrCreateAnonymousDistinctId(): string {
   if (existing?.installId) {
     saveTelemetryConfig({ ...existing, anonymousId });
   } else {
-    saveTelemetryConfig({ installId: randomUUID(), anonymousId, decidedAt: '' });
+    saveTelemetryConfig({ ...existing, installId: randomUUID(), anonymousId, decidedAt: existing?.decidedAt ?? '' });
   }
   return anonymousId;
 }

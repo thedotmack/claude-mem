@@ -1,0 +1,77 @@
+.focus-overview { container-type: inline-size; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); text-align: left; }
+.focus-area-grid { display: grid; align-items: start; gap: 1rem; }
+.focus-area-card { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: none; animation: focus-area-arrive .35s ease-out; }
+.focus-area-card svg { width: 16px; height: 16px; flex-shrink: 0; }
+.focus-area-signals { display: flex; flex-wrap: wrap; gap: .75rem; padding-block: .75rem; font-size: .7rem; font-variant-numeric: tabular-nums; }
+.focus-signal-attention { color: var(--attention-foreground); }
+.focus-signal-working { color: var(--working-foreground); }
+.focus-area-evidence-toggle { display: flex; align-items: center; gap: .5rem; font-size: .75rem; min-height: 44px; cursor: pointer; }
+.focus-area-evidence { width: 100%; margin-top: .8rem; border-top: 1px solid var(--border); padding-top: .75rem; font-size: .82rem; line-height: 1.6; }
+.focus-area-evidence blockquote { border-left: 2px solid var(--border); padding-left: .75rem; }
+.focus-area-evidence cite { display: block; color: var(--muted-foreground); font-size: .7rem; font-style: normal; }
+.focus-area-evidence li { border-top: 1px solid var(--border); }
+.focus-area-evidence li button { display: flex; gap: .5rem; align-items: center; min-height: 44px; text-align: left; cursor: pointer; }
+.focus-area-card button:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 3px; }
+.focus-area-empty, .focus-area-loading { border: 1px dashed var(--border); border-radius: 12px; padding: 1.5rem; color: var(--muted-foreground); font-size: .85rem; }
+.focus-area-skeleton { height: 80px; background: var(--muted); margin-top: 1rem; }
+.focus-area-open { display: inline-flex; min-height: 44px; align-items: center; gap: .5rem; color: var(--background); background: var(--foreground); border: 1px solid var(--foreground); border-radius: 8px; padding-inline: .9rem; font-size: .73rem; font-weight: 600; cursor: pointer; }
+.focus-area-next { font-size: .8rem; font-weight: 550; }
+.focus-area-next button { display: inline-flex; align-items: center; text-align: left; gap: .5rem; min-height: 44px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.focus-area-open:hover { background: var(--primary-deep); color: var(--primary-foreground); }
+.focus-area-signals span { border: 1px solid var(--border); border-radius: 5px; padding: .15rem .4rem; }
+.focus-area-signals .focus-signal-attention { background: var(--attention); border-color: var(--attention-border); }
+.focus-area-signals .focus-signal-working { background: var(--working); border-color: var(--working-border); }
+.focus-artwork { position: relative; margin: 0; overflow: hidden; background: #f2eae0; aspect-ratio: 2; }
+.focus-artwork img { width: 100%; height: 100%; object-fit: contain; }
+.focus-artwork figcaption { position: absolute; bottom: .5rem; right: .6rem; color: #5d5049; background: #fff9; border-radius: 4px; padding: .1rem .35rem; font-size: .6rem; }
+.dark .focus-artwork { background: #463d36; }
+.focus-overview-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 1rem; margin-bottom: 1.25rem; }
+.focus-artwork-control { display: inline-flex; align-items: center; gap: .5rem; color: var(--muted-foreground); font-size: .75rem; }
+.focus-artwork-control select { min-height: 44px; padding-inline: .5rem; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; }
+.focus-area-body { display: flex; flex-direction: column; align-items: start; min-width: 0; padding: 1.15rem; }
+.focus-area-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-top: auto; padding-top: .75rem; }
+.focus-area-evidence > * + * { margin-top: .75rem; }
+.focus-area-evidence li { padding-block: .3rem; }
+.focus-area-evidence li + li { margin-top: .35rem; }
+.focus-area-next { margin-bottom: .25rem; }
+.focus-area-card:has(.focus-area-evidence-toggle[aria-expanded=true]) .focus-area-evidence-toggle svg { transform: rotate(180deg); }
+.artwork-compact .focus-area-card { display: grid; grid-template-columns: 80px minmax(0, 1fr); }
+.artwork-compact .focus-artwork { height: 80px; width: 80px; margin: 1rem 0 0 1rem; border-radius: 8px; }
+.artwork-compact .focus-artwork figcaption { display: none; }
+.artwork-compact .focus-area-body { padding-left: 1.5rem; }
+@container (min-width: 900px) {
+  .focus-area-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .artwork-full .focus-area-card { display: grid; grid-template-columns: 32% minmax(0, 1fr); }
+  .artwork-full .focus-artwork { height: 100%; min-height: 260px; aspect-ratio: auto; }
+}
+.reveal-supporting { max-width: 900px; margin: 1.5rem auto; padding: 1rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: .85rem; }
+.reveal-supporting summary { min-height: 44px; cursor: pointer; }
+.reveal-supporting p, .reveal-supporting blockquote { margin-top: .75rem; }
+.focus-overview-heading h2 { font-size: clamp(1.7rem, 3vw, 2.1rem); font-weight: 560; line-height: 1.18; letter-spacing: -.04em; margin-top: .35rem; }
+.focus-overview-heading p:not(.section-label) { color: var(--muted-foreground); font-size: .87rem; line-height: 1.6; margin-top: .5rem; }
+.focus-area-card h3 { margin-top: .35rem; font-size: 1.32rem; font-weight: 580; line-height: 1.25; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.focus-area-goal { margin-top: .35rem; color: var(--muted-foreground); font-size: .85rem; line-height: 1.55; }
+.focus-area-eyebrow { color: var(--muted-foreground); font-size: .65rem; font-weight: 500; letter-spacing: .025em; }
+.focus-area-evidence-toggle, .focus-area-open { font-size: .73rem; }
+.focus-reveal-notice { color: var(--foreground); border: 1px solid var(--border); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .9rem; line-height: 1.6; }
+@keyframes focus-area-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.focus-header-intro { display: grid; grid-template-columns: minmax(100px, 180px) minmax(0, 1fr); align-items: start; gap: 1.25rem; }
+.focus-header-intro > .focus-artwork { aspect-ratio: 1.5; border-radius: 8px; }
+.focus-header-intro.artwork-off { display: block; }
+.focus-header-intro.artwork-compact { grid-template-columns: 80px minmax(0, 1fr); }
+.focus-header-intro.artwork-compact .focus-artwork { width: 80px; height: 80px; margin: 0; }
+.cmem-setup .focus-overview { --foreground: var(--ink); --background: #fff; --card: #fff; --muted: #f1f0f6; --muted-foreground: var(--metadata); --border: var(--line); --primary: var(--violet); --primary-deep: #3e399e; --primary-foreground: #fff; }
+.cmem-setup .focus-area-open { color: #fff; }
+.focus-overview-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.5rem; color: var(--muted-foreground); font-size: .75rem; margin-top: 1rem; }
+.focus-overview-footer button { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.focus-overview-footer svg { width: 14px; height: 14px; }
+.cmem-setup .focus-reveal-continue { position: sticky; bottom: 1rem; justify-content: flex-end; pointer-events: none; }
+.focus-reveal-continue button { pointer-events: auto; box-shadow: 0 3px 12px #30236b24; }
+.focus-area-search { display: block; margin-bottom: 1rem; max-width: 24rem; }
+.focus-area-search input { width: 100%; min-height: 44px; padding: .6rem .8rem; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--foreground); font-size: .85rem; }
+.focus-area-search input:focus-visible, .focus-artwork-control select:focus-visible, .focus-overview-footer button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+@media (max-width: 480px) {
+  .focus-header-intro { grid-template-columns: 80px minmax(0, 1fr); gap: .75rem; }
+  .focus-header-intro > .focus-artwork { aspect-ratio: 1; }
+  .focus-header-intro figcaption { display: none; }
+}

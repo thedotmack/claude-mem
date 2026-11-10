@@ -164,7 +164,7 @@ describe('SQLiteSearchStrategy', () => {
       expect(callArgs[1].orderBy).toBe('date_asc');
     });
 
-    it('should handle search errors gracefully', async () => {
+    it('should propagate search errors to the caller', async () => {
       mockSessionSearch.searchObservations = mock(() => {
         throw new Error('Database error');
       });
@@ -173,12 +173,7 @@ describe('SQLiteSearchStrategy', () => {
         limit: 10
       };
 
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.results.sessions).toHaveLength(0);
-      expect(result.results.prompts).toHaveLength(0);
-      expect(result.usedChroma).toBe(false);
+      await expect(strategy.search(options)).rejects.toThrow('Database error');
     });
   });
 

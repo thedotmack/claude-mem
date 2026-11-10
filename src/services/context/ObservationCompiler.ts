@@ -1,9 +1,10 @@
 
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
-import { stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
+import { findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
@@ -54,7 +55,7 @@ const PROJECT_KEYS_PER_QUERY = 250;
 function newestUniqueRows<T extends { id: number; created_at_epoch: number }>(batches: T[][], limit: number): T[] {
   const rows = new Map<number, T>();
   for (const batch of batches) for (const row of batch) rows.set(row.id, row);
-  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch).slice(0, limit);
+  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch || b.id - a.id).slice(0, limit);
 }
 
 function newestIdsPerProjectKeySql(
@@ -70,7 +71,7 @@ function newestIdsPerProjectKeySql(
   }
   return `
     SELECT id FROM (${parts.join(' UNION ')})
-    ORDER BY created_at_epoch DESC
+    ORDER BY created_at_epoch DESC, id DESC
     LIMIT ?`;
 }
 
@@ -171,7 +172,7 @@ export function queryObservationsNewest(
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE ${filterSql}
-      ORDER BY o.created_at_epoch DESC
+      ORDER BY o.created_at_epoch DESC, o.id DESC
       LIMIT ?
     `);
     try {
@@ -186,7 +187,7 @@ export function queryObservationsNewest(
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE ${keyPredicate} AND ${filterSql}
-      ORDER BY o.created_at_epoch DESC
+      ORDER BY o.created_at_epoch DESC, o.id DESC
       LIMIT ?`);
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...filterParams, options.limit]));
@@ -197,7 +198,7 @@ export function queryObservationsNewest(
     FROM (${winnersSql}) w
     JOIN observations o ON o.id = w.id
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    ORDER BY o.created_at_epoch DESC
+    ORDER BY o.created_at_epoch DESC, o.id DESC
   `);
   try {
     return statement.all(...perKeyParams, options.limit) as LocalObservation[];
@@ -247,7 +248,7 @@ export function querySummariesMulti(
       FROM session_summaries ss
       LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
       WHERE ${keyPredicate} AND (? IS NULL OR s.platform_source = ?)
-      ORDER BY ss.created_at_epoch DESC
+      ORDER BY ss.created_at_epoch DESC, ss.id DESC
       LIMIT ?`);
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...platformParams, limit]));
@@ -269,7 +270,7 @@ export function querySummariesMulti(
     FROM (${winnersSql}) w
     JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    ORDER BY ss.created_at_epoch DESC
+    ORDER BY ss.created_at_epoch DESC, ss.id DESC
   `);
   try {
     return statement.all(...perKeyParams, limit) as LocalSessionSummary[];
@@ -305,47 +306,25 @@ export function cwdToDashed(cwd: string): string {
   return `${dashed.slice(0, CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH)}-${claudeProjectDirNameHash(cwd)}`;
 }
 
-function parseAssistantTextFromLine(line: string): string | null {
-  if (!/"type"\s*:\s*"assistant"/.test(line)) return null;
-
-  const entry = JSON.parse(line);
-  if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-    let text = '';
-    for (const block of entry.message.content) {
-      if (block.type === 'text') text += block.text;
-    }
-    text = stripSystemReminderBlocks(text).trim();
-    if (text) return text;
+function assistantTextFromEntry(entry: any): string | undefined {
+  if (entry?.type !== 'assistant' || !Array.isArray(entry.message?.content)) return undefined;
+  let text = '';
+  for (const block of entry.message.content) {
+    if (block?.type === 'text' && typeof block.text === 'string') text += block.text;
   }
-  return null;
-}
-
-function findLastAssistantMessage(lines: string[]): string {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const result = parseAssistantTextFromLine(lines[i]);
-      if (result) return result;
-    } catch (parseError) {
-      if (parseError instanceof Error) {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
-      } else {
-        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i, error: String(parseError) });
-      }
-      continue;
-    }
-  }
-  return '';
+  // This text bypasses observation storage and comes from the host's raw
+  // transcript, so apply the same privacy boundary as captured messages.
+  text = stripMemoryTags(text).trim();
+  return text || undefined;
 }
 
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
     if (!existsSync(transcriptPath)) return { assistantMessage: '' };
-    const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) return { assistantMessage: '' };
-
-    const lines = content.split('\n').filter(line => line.trim());
-    const lastAssistantMessage = findLastAssistantMessage(lines);
-    return { assistantMessage: lastAssistantMessage };
+    // SessionStart needs one reply, not an in-memory copy of a long session.
+    // Reuse the chunked reader while keeping this path's text-only semantics
+    // (no synthetic tool-only reply).
+    return { assistantMessage: findLastJsonlEntryBackward(transcriptPath, assistantTextFromEntry) ?? '' };
   } catch (error) {
     if (error instanceof Error) {
       logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
