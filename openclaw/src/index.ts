@@ -833,6 +833,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
+    const failed = (typeof event.error === "string" && event.error.length > 0)
+      || (event.result !== null && typeof event.result === "object"
+        && (event.result as { isError?: unknown }).isError === true);
     let toolResponseText = typeof event.result === "string" ? event.result : "";
     const content = event.result && typeof event.result === "object"
       ? (event.result as { content?: Array<{ type: string; text?: string }> }).content
@@ -871,7 +874,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
       tool_input: toolInput,
-      tool_response: toolResponseText,
+      // A failed file operation is evidence of an attempt, not a completed
+      // read/edit. Keep the shared worker's structured failure marker.
+      tool_response: failed ? { is_error: true, error: toolResponseText } : toolResponseText,
       // The worker needs the native ID to retain and link the raw tool receipt.
       ...(typeof event.toolCallId === "string" && event.toolCallId ? { tool_use_id: event.toolCallId } : {}),
       cwd: workspaceDir,

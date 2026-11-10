@@ -356,7 +356,8 @@ describe("Observation I/O event handlers", () => {
     const request = receivedRequests.find((r) => r.url === "/api/sessions/observations");
     assert.ok(request);
     assert.equal(request.body.tool_name, "Read");
-    assert.match(request.body.tool_response, /ENOENT: no such file/);
+    assert.equal(request.body.tool_response.is_error, true);
+    assert.match(request.body.tool_response.error, /ENOENT: no such file/);
   });
 
   it("after_tool_call records a call from a host build that omits params", async () => {
