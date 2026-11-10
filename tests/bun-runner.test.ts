@@ -13,7 +13,7 @@ const findBunSource = source.slice(
 type FindBun = () => string | null;
 const createFindBun = new Function(
   'deps',
-  `const { IS_WINDOWS, dirname, existsSync, homedir, join, spawnSync } = deps;\n${findBunSource}\nreturn findBun;`
+  `const { IS_WINDOWS, dirname, existsSync, homedir, join, spawnSync, process = globalThis.process } = deps;\n${findBunSource}\nreturn findBun;`
 ) as (deps: {
   IS_WINDOWS: boolean;
   dirname: typeof win32.dirname;
@@ -21,6 +21,7 @@ const createFindBun = new Function(
   homedir: () => string;
   join: typeof join;
   spawnSync: typeof spawnSync;
+  process?: { env: NodeJS.ProcessEnv; cwd: () => string };
 }) => FindBun;
 
 interface WhereResult {
@@ -32,59 +33,59 @@ function runFindBun(
   whereResult: WhereResult,
   { isWindows = true, existingPaths = [] as string[] } = {}
 ): string | null {
-  const factory = new Function(
-    'spawnSync',
-    'IS_WINDOWS',
-    'join',
-    'dirname',
-    'homedir',
-    'existsSync',
-    `${findBunSource}\nreturn findBun();`
-  );
-  return factory(
-    () => whereResult,
-    isWindows,
-    isWindows ? win32.join : join,
-    isWindows ? win32.dirname : dirname,
-    () => (isWindows ? 'C:\\Users\\test' : '/home/test'),
-    (p: string) => existingPaths.includes(p)
-  );
+  return createFindBun({
+    IS_WINDOWS: isWindows,
+    dirname: isWindows ? win32.dirname : dirname,
+    existsSync: p => existingPaths.includes(p),
+    homedir: () => isWindows ? 'C:\\Users\\test' : '/home/test',
+    join: isWindows ? win32.join : join,
+    spawnSync: (() => whereResult) as typeof spawnSync,
+  })();
 }
 
 describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
-  it('does not use separate args array with shell:true (DEP0190 trigger pattern)', () => {
-    const vulnerablePattern = /spawnSync\s*\(\s*(?:IS_WINDOWS\s*\?\s*['"]where['"]\s*:[^)]+|['"]where['"]),\s*\[[^\]]+\],\s*\{[^}]*shell\s*:\s*(?:true|IS_WINDOWS)/;
-    expect(vulnerablePattern.test(source)).toBe(false);
+  it('uses System32 where.exe without a shell and skips current-directory hits', () => {
+    const calls: unknown[][] = [];
+    const result = createFindBun({
+      IS_WINDOWS: true,
+      dirname: win32.dirname,
+      existsSync: p => ['C:\\project\\bun.exe', 'C:\\tools\\bun.exe'].includes(p),
+      homedir: () => 'C:\\Users\\fixture',
+      join: win32.join,
+      process: { env: { SystemRoot: 'C:\\Windows' }, cwd: () => 'C:\\project' },
+      spawnSync: ((...args: unknown[]) => {
+        calls.push(args);
+        return { status: 0, stdout: 'C:\\project\\bun.exe\r\nC:\\tools\\bun.exe\r\n' };
+      }) as typeof spawnSync,
+    })();
+    expect(result).toBe('C:\\tools\\bun.exe');
+    expect(calls).toEqual([['C:\\Windows\\System32\\where.exe', ['bun'], {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    }]]);
   });
 
-  it('uses a shell-free Windows where-bun lookup with hidden windows', () => {
-    const windowsCallMatch = source.match(/spawnSync\(whereExe,\s*\['bun'\],\s*\{([^}]+)\}/);
-    expect(windowsCallMatch).not.toBeNull();
-    expect(windowsCallMatch![1]).toContain('windowsHide: true');
-    expect(windowsCallMatch![1]).not.toContain('shell');
+  it('uses Unix which without a shell', () => {
+    const calls: unknown[][] = [];
+    expect(createFindBun({
+      IS_WINDOWS: false, dirname, existsSync: () => false, homedir: () => '/home/fixture', join,
+      spawnSync: ((...args: unknown[]) => {
+        calls.push(args);
+        return { status: 0, stdout: '/usr/local/bin/bun\n' };
+      }) as typeof spawnSync,
+    })()).toBe('bun');
+    expect(calls).toEqual([['which', ['bun'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }]]);
   });
 
-  it('runs the System32 where.exe and drops current-directory hits', () => {
-    // The binary itself must come from SystemRoot — a bare 'where' spawn can
-    // execute a planted where.exe from the project dir — and its results must
-    // exclude that same dir, or a planted bun.exe still wins.
-    expect(source).toContain("'System32'");
-    expect(source).toContain("'where.exe'");
-    expect(source).toContain('notInCwd');
-  });
-
-  it('uses no shell option for Unix which-bun lookup', () => {
-    const unixCallMatch = source.match(/spawnSync\('which',\s*\['bun'\],\s*\{([^}]+)\}/)
-    if (unixCallMatch) {
-      expect(unixCallMatch[1]).not.toContain('shell');
-    }
-    expect(source).toContain("spawnSync('which', ['bun']");
-  });
-
-  it('probes BUN_INSTALL and ~/.bun when Bun is not on PATH (#3224)', () => {
-    expect(source).toContain('process.env.BUN_INSTALL');
-    expect(source).toContain("join(homedir(), '.bun', 'bin', 'bun.exe')");
-    expect(source).toContain("join(homedir(), '.bun', 'bin', 'bun')");
+  it.each([true, false])('finds BUN_INSTALL when PATH is empty (Windows: %s)', isWindows => {
+    const path = isWindows ? win32 : { join, dirname };
+    const installation = isWindows ? 'C:\\custom-bun' : '/custom-bun';
+    const expected = path.join(installation, 'bin', isWindows ? 'bun.exe' : 'bun');
+    expect(createFindBun({
+      IS_WINDOWS: isWindows, dirname: path.dirname, existsSync: p => p === expected,
+      homedir: () => '/home/fixture', join: path.join,
+      process: { env: { BUN_INSTALL: installation }, cwd: () => '/project' },
+      spawnSync: (() => ({ status: 1, stdout: '' })) as typeof spawnSync,
+    })()).toBe(expected);
   });
 });
 
@@ -185,14 +186,6 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
     }
   }
 
-  function findBunBaseForWhereOutput(stdout: string) {
-    const bunCmdPath = stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
-    if (bunCmdPath) {
-      return bunCmdPath.trim();
-    }
-    return 'bun';
-  }
-
   function runFixture(fixtureDir: string) {
     const scriptPath = join(fixtureDir, 'fixture.js');
     const systemPath = process.env.PATH || '';
@@ -202,6 +195,12 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
         env: {
           ...process.env,
           PATH: `${fixtureDir};${systemPath}`,
+          HOME: fixtureDir,
+          USERPROFILE: fixtureDir,
+          BUN: '',
+          BUN_PATH: '',
+          BUN_INSTALL: '',
+          CLAUDE_MEM_DATA_DIR: join(fixtureDir, 'data'),
           CLAUDE_CONFIG_DIR: fixtureDir
         },
         windowsHide: true
@@ -210,10 +209,6 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
 
   it('launches the resolved bun.exe from where', () => {
     withFixture({ 'bun.exe': null }, fixtureDir => {
-      const bunExePath = join(fixtureDir, 'bun.exe');
-      expect(findBunBaseForWhereOutput(`${bunExePath}\r\n`)).toBe('bun');
-      expect(findBunForWhereOutput(`${bunExePath}\r\n`)).toBe(bunExePath);
-
       const result = runFixture(fixtureDir);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('fixture launched');
@@ -227,13 +222,6 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
       'bun.exe': null,
       'bun.cmd': '@echo off\r\nexit /b 91\r\n'
     }, fixtureDir => {
-      const bunExePath = join(fixtureDir, 'bun.exe');
-      const bunCmdPath = join(fixtureDir, 'bun.cmd');
-      const whereOutput = `${bunExePath}\r\n${bunCmdPath}\r\n`;
-
-      expect(findBunBaseForWhereOutput(whereOutput)).toBe(bunCmdPath);
-      expect(findBunForWhereOutput(whereOutput)).toBe(bunExePath);
-
       const result = runFixture(fixtureDir);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('fixture launched');
@@ -245,10 +233,6 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
     withFixture({
       'bun.cmd': `@echo off\r\n"${bunExecutable}" %*\r\n`
     }, fixtureDir => {
-      const bunCmdPath = join(fixtureDir, 'bun.cmd');
-      expect(findBunBaseForWhereOutput(`${bunCmdPath}\r\n`)).toBe(bunCmdPath);
-      expect(findBunForWhereOutput(`${bunCmdPath}\r\n`)).toBe(bunCmdPath);
-
       const result = runFixture(fixtureDir);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('fixture launched');
@@ -357,17 +341,43 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
   // double it past that limit — inside a `shell: true` spawn, cmd then sees
   // an empty PATH and cannot resolve anything by name. A resolved .exe must
   // therefore be spawned directly; only .cmd/.bat shims require the shell.
-  it('gates the Windows shell spawn on a .cmd/.bat target', () => {
-    expect(source).toMatch(
-      /const needsCmdShell = IS_WINDOWS && \/\\\.\(cmd\|bat\)\$\/i\.test\(bunPath\)/
-    );
-    expect(source).toMatch(/if \(needsCmdShell\) \{[\s\S]*?spawnOptions\.shell = true/);
+  it.each(['.exe', '.cmd', '.bat'])('uses a shell only for Windows command shims (%s)', extension => {
+    const calls: unknown[][] = [];
+    const spawnSource = source.slice(source.indexOf('const spawnOptions = {'), source.indexOf('\nif (child.stdin)'));
+    const runSpawn = new Function('deps', `const { IS_WINDOWS, bunPath, args, neutralBunSpawnCwd, spawn, process } = deps;\n${spawnSource}`);
+    const bunPath = `C:\\tools\\bun${extension}`;
+    runSpawn({
+      IS_WINDOWS: true, bunPath, args: ['fixture.js', '%USERPROFILE%'],
+      neutralBunSpawnCwd: () => 'C:\\data\\run',
+      process: { env: {}, cwd: () => 'C:\\project' },
+      spawn: (...args: unknown[]) => { calls.push(args); return {}; },
+    });
+    const [command, args, options] = calls[0] as [string, string[], { shell?: boolean }];
+    if (extension === '.exe') {
+      expect(command).toBe(bunPath);
+      expect(args).toEqual(['fixture.js', '%USERPROFILE%']);
+      expect(options.shell).toBeUndefined();
+    } else {
+      expect(command).toBe(`"${bunPath}" "fixture.js" "%USERPROFILE%"`);
+      expect(args).toEqual([]);
+      expect(options.shell).toBe(true);
+    }
   });
 
-  it('does not enable shell mode unconditionally on Windows', () => {
-    const shellAssignments = source.match(/spawnOptions\.shell = true/g) ?? [];
-    expect(shellAssignments.length).toBe(1);
-    expect(source).not.toMatch(/if \(IS_WINDOWS\) \{\s*const quote/);
+  it.skipIf(process.platform !== 'win32')('passes environment-variable arguments literally to bun.exe', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bun-runner-argv-'));
+    try {
+      const script = join(root, 'argv.js');
+      writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)));');
+      const result = spawnSync(process.execPath, [BUN_RUNNER_PATH, script, '%USERPROFILE%'], {
+        encoding: 'utf-8', input: '{}', windowsHide: true,
+        env: { ...process.env, BUN: '', BUN_PATH: process.execPath, CLAUDE_CONFIG_DIR: root, CLAUDE_MEM_DATA_DIR: join(root, 'data') },
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual(['%USERPROFILE%']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // #4628: Bun reads tsconfig.json from its working directory and prints its
