@@ -328,17 +328,21 @@ async function embedMissingObservations(
   // its connection is released before the pool closes; the next start resumes.
   while (!options.signal?.aborted) {
     const rows = await repo.listMissing({ model: embedder.modelId, limit: batchSize, after });
-    if (rows.length === 0) break;
+    if (options.signal?.aborted || rows.length === 0) break;
     const last = rows[rows.length - 1]!;
     after = { createdAt: last.createdAt, id: last.id };
 
     let embedded: Array<EmbeddedParts | null> | null = await embedObservationRows(client, rows, embedder, { waitForModelMs: Infinity });
+    if (options.signal?.aborted) break;
     if (!embedded) {
       // Retry a failed batch a row at a time, so a row the model cannot embed
       // is skipped instead of stopping every row after it at each start. If
       // every row fails, the fault is not the rows'; stop until the next start.
       embedded = [];
-      for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder, { waitForModelMs: Infinity }))?.[0] ?? null);
+      for (const row of rows) {
+        if (options.signal?.aborted) break;
+        embedded.push((await embedObservationRows(client, [row], embedder, { waitForModelMs: Infinity }))?.[0] ?? null);
+      }
       if (embedded.every(parts => parts === null)) break;
     }
     if (options.signal?.aborted) break;

@@ -368,6 +368,7 @@ describe("Observation I/O event handlers", () => {
     assert.ok(request);
     assert.deepEqual(request.body.tool_input, {});
     assert.equal(request.body.tool_response, "contents");
+    assert.equal(Object.hasOwn(request.body, "tool_use_id"), false, "older hosts without a native ID must still capture normally");
   });
 
   it("agent_end sends summarize and complete to worker", async () => {

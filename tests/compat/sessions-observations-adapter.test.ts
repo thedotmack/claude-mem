@@ -22,6 +22,9 @@ import {
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
 import { quoteIdentifier, newApiKey } from '../sdk/pg-isolation.js';
+import { ProviderObservationGenerator } from '../../src/server/generation/ProviderObservationGenerator.js';
+import { OpenRouterObservationProvider } from '../../src/server/generation/providers/OpenRouterObservationProvider.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -342,6 +345,58 @@ describe('Phase 9 compat adapters', () => {
       [body.generationJobId],
     );
     expect((outboxRows.rows[0] as { source_type: string }).source_type).toBe('session_summary');
+  });
+
+  it.each([false, true])('feeds the final answer into summary generation (earlier tool: %s)', async withTool => {
+    const contentSessionId = 'compat-final-answer';
+    if (withTool) {
+      await authedFetch(projectScopedApiKey, '/api/sessions/observations', {
+        method: 'POST', body: JSON.stringify({ contentSessionId, tool_name: 'Read', tool_response: 'Inspected release' }),
+      });
+    }
+    const request = {
+      contentSessionId,
+      last_assistant_message: 'Release verified. <private>server-only-secret</private>',
+    };
+    const first = await authedFetch(projectScopedApiKey, '/api/sessions/summarize', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    expect(first.status).toBe(200);
+    const body = await first.json();
+    const repeated = await authedFetch(projectScopedApiKey, '/api/sessions/summarize', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    expect((await repeated.json()).generationJobId).toBe(body.generationJobId);
+
+    ModeManager.getInstance().loadMode('code');
+    let prompt = '';
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'test-key',
+      fetchImpl: (async (_url, init) => {
+        prompt = String(init?.body);
+        return Response.json({ choices: [{ message: { content: '<summary><completed>Release verified.</completed></summary>' } }] });
+      }) as typeof fetch,
+    });
+    const generator = new ProviderObservationGenerator({ pool, provider });
+    const published = enqueuedSummaryJobs[0];
+    const outcome = await generator.process({ id: published.id, data: published.payload } as never);
+    expect(prompt).toContain('Release verified.');
+    expect(prompt).not.toContain('server-only-secret');
+    expect(outcome.observationCount).toBe(1);
+    const events = await storage.agentEvents.listByProject({ projectId, teamId, serverSessionId: body.serverSessionId });
+    expect(events.filter(event => event.eventType === 'assistant_message')).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain('server-only-secret');
+    expect(enqueuedEventJobs).toHaveLength(withTool ? 1 : 0);
+  });
+
+  it.each(['', ' \n', '<private>only private text</private>'])('does not create final-answer events for empty visible content: %s', async text => {
+    const response = await authedFetch(projectScopedApiKey, '/api/sessions/summarize', {
+      method: 'POST', body: JSON.stringify({ contentSessionId: 'compat-empty-answer', last_assistant_message: text }),
+    });
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(await storage.agentEvents.listByProject({ projectId, teamId })).toHaveLength(0);
+    expect(enqueuedEventJobs).toHaveLength(0);
   });
 
   it('POST /api/sessions/summarize with agentId returns subagent_context skip without enqueuing', async () => {

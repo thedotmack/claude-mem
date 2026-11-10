@@ -14,10 +14,10 @@
  * safety net behind both Rule A (host-managed shell templates) and Rule B.
  */
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 import { lookupWindowsCommand } from '../../shared/spawn.js';
+import { bunCommonPaths, isExecutableFile } from '../../npx-cli/install/tool-path.js';
 
 function firstExisting(candidates: string[]): string | null {
   for (const candidate of candidates) {
@@ -85,18 +85,10 @@ export function getBunAbsolutePath(): string {
     : null;
   const candidates = [
     ...(pathResolvedBun?.toLowerCase().endsWith('.exe') ? [pathResolvedBun] : []),
-    path.join(homedir(), '.bun', 'bin', 'bun'),
-    '/usr/local/bin/bun',
-    '/usr/bin/bun',
-    ...(process.platform === 'win32'
-      ? [
-          path.join(homedir(), '.bun', 'bin', 'bun.exe'),
-          path.join(process.env.LOCALAPPDATA || '', 'bun', 'bun.exe'),
-        ]
-      : []),
+    ...bunCommonPaths(),
   ];
 
-  return firstExisting(candidates) ?? 'bun';
+  return candidates.find(isExecutableFile) ?? 'bun';
 }
 
 /**

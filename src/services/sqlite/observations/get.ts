@@ -26,7 +26,14 @@ export function getObservationsByFilePath(
   const candidatePaths = Array.from(
     new Set((Array.isArray(filePath) ? filePath : [filePath])
       .filter(p => typeof p === 'string' && p.length > 0)
-      .flatMap(p => [p, p.replaceAll('/', '\\')]))
+      .flatMap(p => {
+        const forward = p.replaceAll('\\', '/').replace(/^(\.\/)+/, '');
+        const forms = [p, forward];
+        // Read resolves away ./, but captured tool evidence keeps it verbatim.
+        // Only relative paths have this equivalent current-directory spelling.
+        if (forward && !/^(\/|[A-Za-z]:|~\/)/.test(forward)) forms.push(`./${forward}`);
+        return forms.flatMap(form => [form, form.replaceAll('/', '\\')]);
+      }))
   );
   if (candidatePaths.length === 0) {
     logger.debug('DB', 'Skipping observation file lookup with no candidate paths');

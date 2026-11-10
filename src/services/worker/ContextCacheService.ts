@@ -293,8 +293,10 @@ export class ContextCacheService {
     if (dropsFiles) this.removalGeneration++;
     let matched = 0;
     for (const [variantId, variant] of this.variants) {
-      const unresolvedRemoval = removal && (variant.readKeys.size === 0 || this.activeVariantIds.has(variantId));
-      if (unresolvedRemoval || invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
+      // Restored or refreshing variants may not know their full read scope
+      // yet. Closing a task needs the same immediate eviction as a removal.
+      const unresolvedScope = dropsFiles && (variant.readKeys.size === 0 || this.activeVariantIds.has(variantId));
+      if (unresolvedScope || invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
         this.pendingVariantIds.add(variantId);
         // Synchronous: the writer's HTTP route responds only after this returns.
         if (dropsFiles) this.removeFile(variant.keys);
