@@ -5325,10 +5325,17 @@ export class SessionStore {
       );
     }
 
+    // A prompt number is local to the writer's history. Synced devices can
+    // contribute distinct prompts with the same number to one session, so a
+    // restore must match the retained row, including its native receipt.
     const existing = this.db.prepare(`
       SELECT id FROM user_prompts
       WHERE ${sessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?'} AND prompt_number = ?
-    `).get(sessionDbId ?? prompt.content_session_id, prompt.prompt_number) as { id: number } | undefined;
+        AND prompt_text IS ? AND created_at_epoch = ?
+        AND native_prompt_id IS ? AND native_prompt_hash IS ?
+    `).get(sessionDbId ?? prompt.content_session_id, prompt.prompt_number,
+      coerceBindValue(prompt.prompt_text), prompt.created_at_epoch,
+      prompt.native_prompt_id ?? null, prompt.native_prompt_hash ?? null) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
