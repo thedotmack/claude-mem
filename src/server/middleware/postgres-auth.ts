@@ -241,7 +241,12 @@ async function resolveApiKeyRow(
   const inFlight = poolScopedMap(inFlightVerificationsByPool, pool);
   const pending = inFlight.get(rawKeyDigest);
   if (pending) {
-    return pending;
+    const proof = await pending;
+    if (!proof) return null;
+    // Share the expensive derivation, not the first request's authorization
+    // snapshot: this request may have arrived after a revocation or scope edit.
+    const row = await repo.getApiKeyById(proof.id);
+    return row?.keyHash === proof.keyHash ? row : null;
   }
   const verification = deriveAndMatchApiKeyRow(repo, rawKey).then(row => {
     if (row && isSaltedHash(row.keyHash)) {
