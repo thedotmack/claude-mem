@@ -61,8 +61,12 @@ async function postBrainbeat(url: string, headers: Record<string, string>, body:
     redirect: 'error',
     signal: AbortSignal.timeout(BRAINBEAT_TIMEOUT_MS),
   });
-  if (!response.ok) {
-    throw new BrainbeatHttpError(response.status);
+  try {
+    if (!response.ok) throw new BrainbeatHttpError(response.status);
+  } finally {
+    // The status is the complete acknowledgement. Release the unused body
+    // now instead of holding its connection until the receiver finishes it.
+    await response.body?.cancel().catch(() => {});
   }
 }
 
