@@ -104,6 +104,7 @@ endpoint or model you pinned yourself.
 | `cheapaimodel` | `https://api.cheapaimodel.ai/v1` | yes |
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
+| `uberllm` | `https://api.uberllm.dev/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -443,6 +444,25 @@ endpoint, set `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "standardcompute",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Standard Compute key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
+}
+```
+
+## UberLLM
+
+[UberLLM](https://uberllm.dev) serves models from DeepSeek, Z.ai, Moonshot,
+Qwen, Google, Anthropic and others through one OpenAI-compatible key, billed
+from prepaid credit. Model ids are vendor-prefixed, such as
+`deepseek/deepseek-v4.1-flash` (the preset's default) or `z-ai/glm-5.2`, and are
+passed verbatim. The model list is public at
+`https://api.uberllm.dev/v1/models`, and keys come from the
+[UberLLM dashboard](https://uberllm.dev/dashboard/keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "uberllm",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your UberLLM key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4.1-flash"
 }
 ```
 

@@ -154,6 +154,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key from standardcompute.com/dashboard/api-keys; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. US endpoint: https://us.stdcmpt.com/v1.',
   },
   {
+    id: 'uberllm',
+    label: 'UberLLM (uberllm.dev)',
+    baseUrl: 'https://api.uberllm.dev/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4.1-flash',
+    requiresApiKey: true,
+    hint: 'Key from uberllm.dev/dashboard/keys; vendor-prefixed model ids such as deepseek/deepseek-v4.1-flash or z-ai/glm-5.2, listed at api.uberllm.dev/v1/models.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
