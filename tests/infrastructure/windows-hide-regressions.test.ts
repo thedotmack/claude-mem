@@ -22,11 +22,11 @@ describe('windowsHide regression coverage (#2900)', () => {
     );
     expectWindowsHideNear(
       readSource('src', 'services', 'worker-service.ts'),
-      /spawn\(process\.execPath,\s*\[serverScript,\s*command,\s*\.\.\.extraArgs\],\s*\{[\s\S]*?stdio:\s*'inherit',[\s\S]*?windowsHide:\s*true/s
+      /spawn\(process\.execPath,\s*\[BUN_NO_AUTO_INSTALL_FLAG,\s*serverScript,\s*command,\s*\.\.\.extraArgs\],\s*\{[\s\S]*?stdio:\s*'inherit',[\s\S]*?windowsHide:\s*true/s
     );
     expectWindowsHideNear(
       readSource('src', 'server', 'runtime', 'ServerService.ts'),
-      /spawn\(process\.execPath,\s*\[scriptPath,\s*'--daemon'\],\s*\{[\s\S]*?stdio:\s*'ignore',[\s\S]*?windowsHide:\s*true/s
+      /spawn\(process\.execPath,\s*\[BUN_NO_AUTO_INSTALL_FLAG,\s*scriptPath,\s*'--daemon'\],\s*\{[\s\S]*?stdio:\s*'ignore',[\s\S]*?windowsHide:\s*true/s
     );
   });
 });

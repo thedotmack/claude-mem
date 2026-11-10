@@ -77,6 +77,7 @@ export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 import { MediaError } from '../shared/media-contract.js';
+import { BUN_NO_AUTO_INSTALL_FLAG } from '../shared/bun-auto-install.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 declare const __CMEM_MEDIA_STANDALONE__: boolean;
@@ -1750,7 +1751,8 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
     }
   }
 
-  const child = spawn(process.execPath, [serverScript, command, ...extraArgs], {
+  // `server start` runs the server in this child; its embedder loads sharp (#5601).
+  const child = spawn(process.execPath, [BUN_NO_AUTO_INSTALL_FLAG, serverScript, command, ...extraArgs], {
     stdio: 'inherit',
     windowsHide: true,
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
