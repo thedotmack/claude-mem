@@ -144,7 +144,8 @@ import {
   handleDevinCommand
 } from './integrations/DevinHooksInstaller.js';
 import {
-  handleAntigravityCliCommand
+  handleAntigravityCliCommand,
+  healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
 
@@ -2255,6 +2256,14 @@ async function main() {
     }
 
     case 'hook': {
+      // A pre-#5085 Antigravity install left a PreToolUse entry in
+      // ~/.gemini/config/hooks.json pointing at this binary; the current
+      // adapter answers it with no `decision`, so agy denies every tool call
+      // until the file is migrated (#5665). Heal it on the way in — a no-op
+      // when the file is current, missing, or corrupt.
+      if (process.argv[3] === 'antigravity-cli') {
+        healStaleAntigravityHooksConfig();
+      }
       // Shared with the hook-only bundle (src/cli/hook-entry.ts), which the
       // launcher and bun-runner.js run for `hook` when the plugin ships it.
       const { runHookSubcommand } = await import('../cli/run-hook-subcommand.js');
@@ -2375,6 +2384,10 @@ async function main() {
     // never a foreground worker (#5490).
     case undefined:
     case '--daemon': {
+      // Worker startup also migrates stale Antigravity hooks.json entries
+      // left by an in-place upgrade (#5665); see the `hook` case.
+      healStaleAntigravityHooksConfig();
+
       // Before anything below spawns a child (the reclaim probes, the
       // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
       // whatever cwd this daemon was launched with (#3706; EPERM on
