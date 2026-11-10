@@ -70,9 +70,13 @@ export function buildRules(state, ledger) {
   const rules = new Map(suggestionsFromStory(ledger?.story).map((rule) => [rule.ruleId, rule]));
   // Every row saves the whole rule. Two computers with different home folders save under different
   // projects, so after sync one rule can sit in several lists: apply them oldest first, the latest wins.
+  // Events are newest first in canonical write order. Local row IDs only identify each task's
+  // latest event; their allocation order changes when another device's rows arrive through sync.
+  const writeOrder = new Map((state.events ?? []).map((event, index) => [event.id, index]));
   const ruleTasks = state.lists.filter((list) => isMyRulesList(list.name)).flatMap((list) => list.tasks)
     .filter((task) => task.name.startsWith(RULE_TASK_PREFIX))
-    .sort((a, b) => (a.updatedAtEpoch ?? 0) - (b.updatedAtEpoch ?? 0) || (a.latestEntryId ?? 0) - (b.latestEntryId ?? 0));
+    .sort((a, b) => (a.updatedAtEpoch ?? 0) - (b.updatedAtEpoch ?? 0)
+      || (writeOrder.get(b.latestEntryId) ?? 0) - (writeOrder.get(a.latestEntryId) ?? 0));
   for (const task of ruleTasks) {
     const fields = task.fields;
     const ruleId = text(fields.rule_id) || task.name.slice(RULE_TASK_PREFIX.length);
