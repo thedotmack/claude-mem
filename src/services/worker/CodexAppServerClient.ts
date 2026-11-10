@@ -644,17 +644,23 @@ export class CodexAppServerClient {
   private async waitForTurn(active: ActiveTurn, timeoutMs: number, signal?: AbortSignal): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let removeAbort: (() => void) | undefined;
+    let stoppedError: Error | undefined;
+    let interrupt: Promise<void> | undefined;
+    const stop = (error: Error, reject: (error: Error) => void) => {
+      if (stoppedError) return;
+      stoppedError = error;
+      interrupt = this.interruptOrInvalidate(active);
+      void interrupt.then(() => reject(error), () => reject(error));
+    };
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        const error = new Error(`Codex app-server turn timed out after ${timeoutMs}ms`);
-        void this.interruptOrInvalidate(active).finally(() => reject(error));
+        stop(new Error(`Codex app-server turn timed out after ${timeoutMs}ms`), reject);
       }, timeoutMs);
     });
     const aborted = new Promise<never>((_, reject) => {
       if (!signal) return;
       const onAbort = () => {
-        const error = new Error('Codex app-server turn aborted');
-        void this.interruptOrInvalidate(active).finally(() => reject(error));
+        stop(new Error('Codex app-server turn aborted'), reject);
       };
       if (signal.aborted) onAbort();
       else {
@@ -665,6 +671,13 @@ export class CodexAppServerClient {
 
     try {
       await Promise.race([active.completion, timeout, aborted]);
+      // A completion notification may arrive while turn/interrupt is still
+      // awaiting acknowledgement. Once stopped, that answer cannot turn the
+      // cancelled request back into a successful observation.
+      if (stoppedError) {
+        await interrupt;
+        throw stoppedError;
+      }
     } finally {
       if (timer) clearTimeout(timer);
       removeAbort?.();

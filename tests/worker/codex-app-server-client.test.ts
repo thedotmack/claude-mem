@@ -37,7 +37,7 @@ interface FakeCodexOptions {
   /** Give this fake its own executable file, for tests that replace the binary in place. */
   privateExecutable?: boolean;
   mode?: 'normal' | 'terminal-response' | 'hold-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
-    | 'empty-first-turn' | 'empty-always' | 'missing-message' | 'silent-init';
+    | 'empty-first-turn' | 'empty-always' | 'missing-message' | 'silent-init' | 'finish-during-interrupt';
 }
 
 const FAKE_CODEX_CONFIG_FILE = 'fake-codex.json';
@@ -121,11 +121,14 @@ const FAKE_CODEX_SOURCE = [
   "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
   '      } else {',
   '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
-  "        if (mode === 'hold-first-turn' && turn === 1) releaseFirstTurn = finish; else finish();",
+  "        if ((mode === 'hold-first-turn' || mode === 'finish-during-interrupt') && turn === 1) releaseFirstTurn = finish; else finish();",
   '      }',
   '    }',
   "    else if (message.method === 'thread/unsubscribe') send({ id: message.id, result: {} });",
-  "    else if (message.method === 'turn/interrupt') send({ id: message.id, result: {} });",
+  "    else if (message.method === 'turn/interrupt') {",
+  "      if (mode === 'finish-during-interrupt') { releaseFirstTurn?.(); setTimeout(() => send({ id: message.id, result: {} }), 30); }",
+  "      else send({ id: message.id, result: {} });",
+  "    }",
   "    else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: 'unsupported' } });",
   '  }',
   '});',
@@ -906,3 +909,32 @@ describe('sweepStaleAppServerWorkdirs (#4788)', () => {
     expect(await sweepStaleAppServerWorkdirs({ baseDir: join(tmpdir(), 'claude-mem-no-such-dir-4788') })).toEqual([]);
   });
 });
+
+for (const stop of ['abort', 'timeout'] as const) {
+  itPosix(`rejects after ${stop} even when completion arrives during the interrupt acknowledgement`, async () => {
+    const fake = createFakeCodex({ mode: 'finish-during-interrupt' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const controller = new AbortController();
+    try {
+      const turn = client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 1000, signal: controller.signal })
+        .then(value => ({ value, error: null }), error => ({ value: null, error }));
+      if (stop === 'abort') {
+        const deadline = Date.now() + 5000;
+        while (!readTrace(fake.trace).some(entry => entry.method === 'turn/start')) {
+          if (Date.now() > deadline) throw new Error('fake turn did not start');
+          await Bun.sleep(10);
+        }
+        controller.abort();
+      }
+      const result = await turn;
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.error.message).toContain(stop === 'abort' ? 'aborted' : 'timed out');
+      expect(result.value).toBeNull();
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/interrupt')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
