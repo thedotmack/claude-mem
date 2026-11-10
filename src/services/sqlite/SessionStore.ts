@@ -5340,10 +5340,25 @@ export class SessionStore {
       );
     }
 
-    const existing = this.db.prepare(`
+    // A prompt number is local to the writer's history. Synced devices can
+    // contribute distinct prompts with the same number to one session, so a
+    // restore matches the retained row, not just its turn number.
+    // A native receipt is the prompt's identity (UNIQUE per session), so an
+    // incoming receipt matches on it alone. Without one, or with no receipt hit,
+    // the row matches on its number, text and time; an export taken before
+    // receipts still matches a destination row that has gained one since.
+    const sessionClause = sessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const sessionKey = sessionDbId ?? prompt.content_session_id;
+    const nativePromptId = prompt.native_prompt_id ?? null;
+    const existingByReceipt = nativePromptId === null ? undefined : this.db.prepare(`
+      SELECT id FROM user_prompts WHERE ${sessionClause} AND native_prompt_id = ?
+    `).get(sessionKey, nativePromptId) as { id: number } | undefined;
+    const existing = existingByReceipt ?? this.db.prepare(`
       SELECT id FROM user_prompts
-      WHERE ${sessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?'} AND prompt_number = ?
-    `).get(sessionDbId ?? prompt.content_session_id, prompt.prompt_number) as { id: number } | undefined;
+      WHERE ${sessionClause} AND prompt_number = ? AND prompt_text IS ? AND created_at_epoch = ?
+        ${nativePromptId === null ? '' : 'AND native_prompt_id IS NULL'}
+    `).get(sessionKey, prompt.prompt_number, coerceBindValue(prompt.prompt_text),
+      prompt.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
