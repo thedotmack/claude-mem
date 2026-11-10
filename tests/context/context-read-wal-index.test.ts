@@ -86,11 +86,38 @@ function plainReadonlyOpenError(dataDir: string): string | null {
   `, dataDir).message;
 }
 
-function readThroughWorker(dataDir: string): any {
+function recoverThenReadThroughWorker(dataDir: string): any {
   return runChild(`
+    import { Database } from 'bun:sqlite';
     import { ContextReadWorkerClient } from './src/services/context/ContextReadWorkerClient.ts';
-    const reader = new ContextReadWorkerClient();
+    import { openReaderDatabase } from './src/services/sqlite/connection.ts';
+    import { logger } from './src/utils/logger.ts';
     const out = {};
+    const run = Database.prototype.run;
+    const warn = logger.warn;
+    const warnings = [];
+    let probeFailed = false;
+    // Force recovery on SQLite builds that can reopen without missing sidecars.
+    Database.prototype.run = function(sql, ...params) {
+      if (sql === 'PRAGMA schema_version' && !probeFailed) {
+        probeFailed = true;
+        throw new Error('unable to open database file');
+      }
+      return run.call(this, sql, ...params);
+    };
+    logger.warn = (_category, message) => warnings.push(message);
+    try {
+      const recovered = openReaderDatabase(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db');
+      try {
+        out.recoveredTitles = recovered.query('SELECT title FROM observations').all().map(row => row.title);
+        try { recovered.run('DELETE FROM observations'); } catch (error) { out.readonlyError = error.message; }
+        out.fallbackWarnings = warnings.filter(message => message.includes('Read-only open failed until'));
+      } finally { recovered.close(); }
+    } finally {
+      Database.prototype.run = run;
+      logger.warn = warn;
+    }
+    const reader = new ContextReadWorkerClient();
     try { out.app = await reader.hasObservations(['app']); } catch (error) { out.appError = error.message; }
     try { out.walonly = await reader.hasObservations(['walonly']); } catch (error) { out.walonlyError = error.message; }
     try { out.search = [
@@ -117,12 +144,14 @@ describe('context reader when the -wal and wal-index are missing (#5429)', () =>
       seedDatabase(dataDir);
       // Whether a plain read-only open fails here depends on the SQLite build:
       // the macOS system library (the reporter's, SQLite 3.51.0 on macOS 26)
-      // refuses it, while the SQLite Bun embeds on Linux reads it. Where it
-      // fails, the fixture must reproduce that, or the read-write recovery
-      // below would go unexercised.
+      // refuses it, while the SQLite Bun embeds on Linux reads it. The probe
+      // below exercises recovery on both builds.
       const plainError = plainReadonlyOpenError(dataDir);
       if (process.platform === 'darwin') expect(plainError).toContain('unable to open database file');
-      const result = readThroughWorker(dataDir);
+      const result = recoverThenReadThroughWorker(dataDir);
+      expect(result.fallbackWarnings).toHaveLength(1);
+      expect(result.readonlyError).toContain('readonly');
+      expect(result.recoveredTitles).toContain('SEEDED_RECORD');
       expect(result.appError).toBeUndefined();
       expect(result.app).toBe(true);
       expect(result.walonly).toBe(false);
@@ -135,12 +164,16 @@ describe('context reader when the -wal and wal-index are missing (#5429)', () =>
     withDataDir('claude-mem-reader-wal-only-', dataDir => {
       seedDatabase(dataDir);
       leaveObservationOnlyInWal(dataDir);
-      const result = readThroughWorker(dataDir);
+      const result = recoverThenReadThroughWorker(dataDir);
+      expect(result.fallbackWarnings).toHaveLength(1);
+      expect(result.readonlyError).toContain('readonly');
+      expect(result.recoveredTitles).toContain('SEEDED_RECORD');
       expect(result.appError).toBeUndefined();
       expect(result.app).toBe(true);
       // Never checkpointed: only a reader that replays the -wal sees it.
       expect(result.walonlyError).toBeUndefined();
       expect(result.walonly).toBe(true);
+      expect(result.recoveredTitles).toContain('WAL_ONLY_RECORD');
       expect(result.searchError).toBeUndefined();
       expect(result.search).toContain('WAL_ONLY_RECORD');
     });
@@ -161,20 +194,6 @@ describe('context reader when the -wal and wal-index are missing (#5429)', () =>
         if (app !== true) throw new Error('healthy read missed the seeded observation');
         console.log(JSON.stringify({ app }));
       `, dataDir);
-    });
-  }, 60_000);
-
-  it('still refuses a missing database without creating it', () => {
-    withDataDir('claude-mem-reader-missing-', dataDir => {
-      const result = runChild(`
-        import { ContextReadWorkerClient } from './src/services/context/ContextReadWorkerClient.ts';
-        const reader = new ContextReadWorkerClient();
-        const message = await reader.hasObservations(['app']).then(() => null, error => error.message);
-        await reader.close();
-        console.log(JSON.stringify({ message }));
-      `, dataDir);
-      expect(result.message).toContain('unable to open database file');
-      expect(existsSync(join(dataDir, 'claude-mem.db'))).toBe(false);
     });
   }, 60_000);
 });

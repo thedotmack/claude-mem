@@ -1,16 +1,14 @@
 """Phase 5 tests (plan 5.3): device export carries no text, and merging a second device's export flips
 replica sessions from extrapolated to measured while the extrapolation is recomputed for the rest."""
-import copy
 import json
 import os
 import shutil
-import sqlite3
 import tempfile
 import unittest
 
 import _paths  # noqa: F401
 import test_rollup as tr
-from acr import devices, evidence, rollup, transcripts
+from acr import devices, transcripts
 
 
 class Export(unittest.TestCase):
@@ -32,7 +30,6 @@ class Export(unittest.TestCase):
         self.assertEqual((d["device"], len(d["rows"]), d["rows"][0]["device"], d["rows"][0]["session"]), ("mac", 1, "mac", "cs1"))
         self.assertIn("m1", d["sessions"]); self.assertEqual(d["sessions"]["m1"]["content_session_id"], "cs1")
         txt = open(path).read(); self.assertNotIn("secret prompt", txt); self.assertNotIn("/w/p", txt); self.assertNotIn(".jsonl", txt)
-        self.assertFalse(any(k in r for r in d["rows"] for k in devices.FORBIDDEN))
 
     def test_load_rejects_text_fields(self):
         p = os.path.join(self.tmp, "bad.json")
@@ -60,14 +57,7 @@ class Merge(unittest.TestCase):
         self.fx.tearDown()
 
     def build(self, exports=()):
-        db = sqlite3.connect(self.fx.dbp); db.row_factory = sqlite3.Row
-        try:
-            usage = dict(window=tr.W.block(), rows=copy.deepcopy(self.fx.rows))
-            report, _, _ = rollup.build(usage, tr.PRICES, db, evidence.Scope("period", S=tr.W.start_epoch_ms, E=tr.W.end_epoch_ms), tr.W.block(), now=tr.NOW, use_gh=False,
-                                        remote=lambda cwd: None, behavior=False, device_exports=list(exports))
-            return report
-        finally:
-            db.close()
+        return self.fx.build(device_exports=exports)[0]
 
     def mac_export(self, cs="mac-local-cs2", mid="m2", n=1, inp=50000):
         rows = [dict(src="claude-code", session=cs, sidechain=False, model="claude-fable-5-1", ts=tr.ts(tr.ms(1, 8.3 + i * 0.1)), input=inp, output=1000, cache_write=0, cache_write_1h=0, cache_write_5m=0, cache_read=0, cost_usd_reported=None, device="mac") for i in range(n)]

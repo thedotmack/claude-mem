@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, jest } from 'bun:test';
 import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
 import { join } from 'node:path';
@@ -47,6 +47,18 @@ function fakeSpawn(script: Record<string, ScriptedOutcome>, calls: string[] = []
     else queueMicrotask(answer);
     return child;
   }) as unknown as typeof spawn;
+}
+
+async function afterFakeDelay<T>(start: () => Promise<T>): Promise<T> {
+  jest.useFakeTimers();
+  try {
+    const pending = start();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    jest.advanceTimersByTime(3_500);
+    return await pending;
+  } finally {
+    jest.useRealTimers();
+  }
 }
 
 const HOME = '/home/tester';
@@ -165,16 +177,16 @@ describe('detectUsableAgents', () => {
     });
 
     it('a slow `claude auth status` is waited for and still reports logged in', async () => {
-      const agent = await detectOne('claude-code', {
+      const agent = await afterFakeDelay(() => detectOne('claude-code', {
         ...installed,
         readClaudeOAuthToken: async () => ({ kind: 'absent', reason: 'no keychain access' }),
         spawn: fakeSpawn({
           [`${CLAUDE_PATH} auth status --json`]: { exitCode: 0, stdout: '{"loggedIn": true, "authMethod": "claude.ai"}', delayMs: 3_500 },
         }),
-      });
+      }));
       expect(agent).toMatchObject({ authenticated: true });
       expect(agent.reason).toContain('claude.ai');
-    }, 10_000);
+    });
   });
 
   describe('Codex', () => {
@@ -200,14 +212,14 @@ describe('detectUsableAgents', () => {
     });
 
     it('a slow `codex login status` is waited for and still reports logged in', async () => {
-      const agent = await detectOne('codex', {
+      const agent = await afterFakeDelay(() => detectOne('codex', {
         spawn: fakeSpawn({
           ...WHICH_CODEX,
           [`${CODEX_PATH} login status`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n', delayMs: 3_500 },
         }),
-      });
+      }));
       expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
-    }, 10_000);
+    });
 
     it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
@@ -302,12 +314,12 @@ describe('detectUsableAgents', () => {
     });
 
     it('a slow `which gemini` is waited for and still reports logged in', async () => {
-      const agent = await detectOne('gemini', {
+      const agent = await afterFakeDelay(() => detectOne('gemini', {
         spawn: fakeSpawn({ 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n`, delayMs: 3_500 } }),
         environment: { GEMINI_API_KEY: 'key' },
-      });
+      }));
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
-    }, 10_000);
+    });
 
     it('unreadable settings.json is reported, not thrown', async () => {
       const agent = await detectOne('gemini', {
@@ -323,9 +335,9 @@ describe('detectUsableAgents', () => {
 
 describe('runCommand', () => {
   it('waits for a slow command to finish instead of giving up', async () => {
-    const result = await runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']);
+    const result = await afterFakeDelay(() => runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']));
     expect(result).toMatchObject({ exitCode: 0, stderr: 'Logged in' });
-  }, 10_000);
+  });
 
   it('reports a spawn error instead of rejecting', async () => {
     const result = await runCommand(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }), 'nope', []);

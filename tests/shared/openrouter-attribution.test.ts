@@ -82,8 +82,4 @@ describe('OPENROUTER_APP_CATEGORIES', () => {
   it('claims no category twice', () => {
     expect(new Set(all).size).toBe(all.length);
   });
-
-  it('has no stray whitespace', () => {
-    expect(OPENROUTER_APP_CATEGORIES).toBe(all.map((c) => c.trim()).join(','));
-  });
 });

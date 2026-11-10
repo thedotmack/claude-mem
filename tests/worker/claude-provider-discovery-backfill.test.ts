@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
-import codeMode from '../../plugin/modes/code.json';
+import { installScriptedClaudeSdk, createScriptedSession } from '../fixtures/worker/scripted-claude-sdk.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
@@ -8,60 +8,8 @@ import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-med
 // output only and the session counters missed the input. The turn's result
 // message carries the real usage; it corrects both at the turn boundary.
 
-// bun's mock.module is process-global and sticky; snapshot and restore.
-const actualAgentSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
-const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
-const actualEnvManager = { ...(await import('../../src/shared/EnvManager.js')) };
-const actualProcessRegistry = { ...(await import('../../src/supervisor/process-registry.js')) };
-const actualModeManager = { ...(await import('../../src/services/domain/ModeManager.js')) };
-
-let scriptedMessages: unknown[] = [];
-
-mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  ...actualAgentSdk,
-  query: () => (async function* () {
-    for (const message of scriptedMessages) yield message;
-  })(),
-}));
-mock.module('../../src/shared/find-claude-executable.js', () => ({
-  ...actualFindClaude,
-  findClaudeExecutable: () => '/mock/claude',
-}));
-mock.module('../../src/shared/EnvManager.js', () => ({
-  ...actualEnvManager,
-  buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH ?? '' }),
-  getAuthMethodDescription: () => 'test-auth',
-}));
-mock.module('../../src/supervisor/process-registry.js', () => ({
-  ...actualProcessRegistry,
-  waitForSlot: async () => ({ release: () => {} }),
-  createSdkSpawnFactory: () => () => {
-    throw new Error('spawn factory must not run in this test');
-  },
-  getSdkProcessForSession: () => undefined,
-  ensureSdkProcessExit: async () => {},
-}));
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ...actualModeManager,
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: codeMode.prompts,
-        observation_types: [{ id: 'discovery' }],
-        observation_concepts: [],
-      }),
-    }),
-  },
-}));
-
-afterAll(() => {
-  mock.module('../../src/services/domain/ModeManager.js', () => actualModeManager);
-  mock.module('@anthropic-ai/claude-agent-sdk', () => actualAgentSdk);
-  mock.module('../../src/shared/find-claude-executable.js', () => actualFindClaude);
-  mock.module('../../src/shared/EnvManager.js', () => actualEnvManager);
-  mock.module('../../src/supervisor/process-registry.js', () => actualProcessRegistry);
-});
+const sdkFixture = installScriptedClaudeSdk();
+afterAll(() => sdkFixture.restore());
 
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 
@@ -99,27 +47,7 @@ function resultFrame(usage: Record<string, number>) {
 }
 
 function createSession(): ActiveSession {
-  return {
-    sessionDbId: 3664,
-    contentSessionId: 'content-3664',
-    memorySessionId: null,
-    project: 'observer-project',
-    platformSource: 'claude',
-    userPrompt: 'run the project',
-    abortController: new AbortController(),
-    generatorPromise: null,
-    lastPromptNumber: 2,
-    startTime: Date.now(),
-    cumulativeInputTokens: 0,
-    cumulativeOutputTokens: 0,
-    earliestPendingTimestamp: 1700000000000,
-    claimedMessageIds: [1],
-    conversationHistory: [],
-    currentProvider: null,
-    consecutiveRestarts: 0,
-    consecutiveInvalidOutputs: 0,
-    lastGeneratorActivity: Date.now(),
-  } as ActiveSession;
+  return createScriptedSession(3664, { earliestPendingTimestamp: 1700000000000, claimedMessageIds: [1] });
 }
 
 function createHarness(session: ActiveSession) {
@@ -167,14 +95,14 @@ function createHarness(session: ActiveSession) {
 
 describe('ClaudeProvider discovery-token correction from the result usage (#3664)', () => {
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
   });
 
   it('gives the rows of a zero-input turn the turn\'s real cost and counts the missed input', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame({ input_tokens: 0, output_tokens: 1 }),
       resultFrame({ input_tokens: 900, cache_creation_input_tokens: 100, cache_read_input_tokens: 50, output_tokens: 40 }),
     ];
@@ -204,7 +132,7 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
       createdAtEpoch: 1700000000000,
     })) as never);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame({ input_tokens: 0, output_tokens: 1 }),
       resultFrame({ input_tokens: 900, output_tokens: 40 }),
     ];
@@ -226,7 +154,7 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
       return { observationIds: [id], mergedIntoExisting: [false], insertedObservationIds: [id], summaryId: null, createdAtEpoch: 1700000000000 };
     });
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame({ input_tokens: 0, output_tokens: 1 }),
       assistantFrame({ input_tokens: 0, output_tokens: 2 }),
       resultFrame({ input_tokens: 900, cache_creation_input_tokens: 100, output_tokens: 40 }),
@@ -244,7 +172,7 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame({ input_tokens: 900, output_tokens: 1 }),
       resultFrame({ input_tokens: 900, output_tokens: 40 }),
     ];
@@ -259,7 +187,7 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame({ input_tokens: 0, output_tokens: 1 }),
       resultFrame({ input_tokens: 900, output_tokens: 40 }),
       assistantFrame({ input_tokens: 0, output_tokens: 3 }),

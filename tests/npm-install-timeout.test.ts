@@ -42,7 +42,10 @@ function holdInstallTimeoutUntilReady(pidFile: string): { triggeredAt: () => num
   };
 }
 
-it.skipIf(process.platform === 'win32')('terminates a timed-out installer that ignores SIGTERM', async () => {
+async function withFakeNpm(
+  script: (root: string, pidFile: string) => string,
+  run: (result: Awaited<ReturnType<typeof runNpmStrict>>, elapsedMs: number) => void,
+): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'cmem-npm-timeout-'));
   const pidFile = join(root, 'child.pid');
   const oldPath = process.env.PATH;
@@ -58,63 +61,43 @@ it.skipIf(process.platform === 'win32')('terminates a timed-out installer that i
   };
   // Independent cleanup guarantees the failing baseline never leaves an orphan.
   const watchdog = setTimeout(cleanup, 15000);
+  let installTimeout: ReturnType<typeof holdInstallTimeoutUntilReady> | undefined;
   try {
-    // The installer ignores SIGTERM from its first shell instruction (an ignored
-    // disposition survives exec), so a slow runtime start cannot let the timeout's
-    // SIGTERM land before the handler exists.
     writeFileSync(join(root, 'hold.js'), 'setInterval(()=>{},100);\n');
-    writeFileSync(join(root, 'npm'), `#!/bin/sh\ntrap '' TERM\necho $$ > ${JSON.stringify(pidFile)}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(root, 'hold.js'))}\n`, { mode: 0o755 });
+    writeFileSync(join(root, 'npm'), script(root, pidFile), { mode: 0o755 });
     process.env.PATH = root + ':' + oldPath;
     process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = String(INSTALL_TIMEOUT_SENTINEL_MS);
-    const installTimeout = holdInstallTimeoutUntilReady(pidFile);
-    let result: Awaited<ReturnType<typeof runNpmStrict>>;
-    try { result = await runNpmStrict(root, ['fixture']); } finally { installTimeout.restore(); }
+    installTimeout = holdInstallTimeoutUntilReady(pidFile);
+    const result = await runNpmStrict(root, ['fixture']);
     settled = true;
     expect(Number(readFileSync(pidFile, 'utf8'))).toBeGreaterThan(0);
     expect(result.timedOut).toBe(true);
-    expect(result.code).not.toBe(0);
-    // SIGTERM is ignored, so the SIGKILL after the grace period must end the wait.
-    expect(performance.now() - installTimeout.triggeredAt()).toBeLessThan(4000);
+    run(result, performance.now() - installTimeout.triggeredAt());
   } finally {
+    installTimeout?.restore();
     clearTimeout(watchdog); cleanup();
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     if (oldTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS; else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = oldTimeout;
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+it.skipIf(process.platform === 'win32')('terminates a timed-out installer that ignores SIGTERM', async () => {
+  // An ignored disposition survives exec, so startup cannot race SIGTERM.
+  await withFakeNpm(
+    (root, pidFile) => `#!/bin/sh\ntrap '' TERM\necho $$ > ${JSON.stringify(pidFile)}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(root, 'hold.js'))}\n`,
+    (result, elapsedMs) => {
+      expect(result.code).not.toBe(0);
+      // SIGTERM is ignored, so the SIGKILL after the grace period must end the wait.
+      expect(elapsedMs).toBeLessThan(4000);
+    },
+  );
 }, 20000);
 
 it.skipIf(process.platform === 'win32')('reports a timeout even if the child handles SIGTERM by exiting zero', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cmem-npm-timeout-zero-'));
-  const pidFile = join(root, 'child.pid');
-  const oldPath = process.env.PATH;
-  const oldTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-  let settled = false;
-  const cleanup = () => {
-    if (settled) return;
-    try {
-      const pid = Number(readFileSync(pidFile, 'utf8'));
-      const current = spawnSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', timeout: 5000 });
-      if (current.status === 0 && current.stdout.includes(root)) process.kill(pid, 'SIGKILL');
-    } catch {}
-  };
-  const watchdog = setTimeout(cleanup, 15000);
-  try {
-    // The SIGTERM handler is installed by the installer's first shell instruction,
-    // so a slow runtime start cannot race the timeout's SIGTERM.
-    writeFileSync(join(root, 'npm'), `#!/bin/sh\ntrap 'exit 0' TERM\necho $$ > ${JSON.stringify(pidFile)}\nwhile :; do sleep 1 & wait $!; done\n`, { mode: 0o755 });
-    process.env.PATH = root + ':' + oldPath;
-    process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = String(INSTALL_TIMEOUT_SENTINEL_MS);
-    const installTimeout = holdInstallTimeoutUntilReady(pidFile);
-    let result: Awaited<ReturnType<typeof runNpmStrict>>;
-    try { result = await runNpmStrict(root, ['fixture']); } finally { installTimeout.restore(); }
-    settled = true;
-    expect(Number(readFileSync(pidFile, 'utf8'))).toBeGreaterThan(0);
-    expect(result.timedOut).toBe(true);
-    expect(result.code).toBe(124);
-  } finally {
-    clearTimeout(watchdog); cleanup();
-    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
-    if (oldTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS; else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = oldTimeout;
-    rmSync(root, { recursive: true, force: true });
-  }
+  // Install the trap before publishing readiness to the test.
+  await withFakeNpm(
+    (_root, pidFile) => `#!/bin/sh\ntrap 'exit 0' TERM\necho $$ > ${JSON.stringify(pidFile)}\nwhile :; do sleep 1 & wait $!; done\n`,
+    result => { expect(result.code).toBe(124); },
+  );
 }, 20000);

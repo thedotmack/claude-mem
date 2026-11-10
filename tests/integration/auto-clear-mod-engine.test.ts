@@ -31,35 +31,40 @@ function claudeWithMods(): boolean {
 
 const repoRoot = join(import.meta.dir, '..', '..');
 
-describe.skipIf(!claudeWithMods())('auto-clear mod in the Claude Code engine', () => {
-  it('passes the engine checks', async () => {
-    const plugin = mkdtempSync(join(tmpdir(), 'auto-clear-engine-'));
-    try {
-      mkdirSync(join(plugin, '.claude-plugin'));
-      mkdirSync(join(plugin, 'hooks'));
-      mkdirSync(join(plugin, 'tests'));
-      writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({
-        name: 'autoclear-engine-test', version: '0.0.0', description: 'auto-clear engine checks', author: { name: 'claude-mem' }, license: 'Apache-2.0',
-      }));
-      writeFileSync(join(plugin, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./auto-clear.js'] }));
-      await build({
-        entryPoints: [join(repoRoot, 'src', 'mods', 'auto-clear', 'register.ts')],
-        bundle: true,
-        platform: 'neutral',
-        target: 'es2022',
-        format: 'esm',
-        outfile: join(plugin, 'hooks', 'auto-clear.js'),
-        logLevel: 'error',
-      });
-      copyFileSync(join(repoRoot, 'tests', 'fixtures', 'auto-clear-mod', 'engine-checks.ts'), join(plugin, 'tests', 'engine.test.ts'));
+async function runEngineChecks() {
+  const plugin = mkdtempSync(join(tmpdir(), 'auto-clear-engine-'));
+  try {
+    mkdirSync(join(plugin, '.claude-plugin'));
+    mkdirSync(join(plugin, 'hooks'));
+    mkdirSync(join(plugin, 'tests'));
+    writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({
+      name: 'autoclear-engine-test', version: '0.0.0', description: 'auto-clear engine checks', author: { name: 'claude-mem' }, license: 'Apache-2.0',
+    }));
+    writeFileSync(join(plugin, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./auto-clear.js'] }));
+    await build({
+      entryPoints: [join(repoRoot, 'src', 'mods', 'auto-clear', 'register.ts')],
+      bundle: true,
+      platform: 'neutral',
+      target: 'es2022',
+      format: 'esm',
+      outfile: join(plugin, 'hooks', 'auto-clear.js'),
+      logLevel: 'error',
+    });
+    copyFileSync(join(repoRoot, 'tests', 'fixtures', 'auto-clear-mod', 'engine-checks.ts'), join(plugin, 'tests', 'engine.test.ts'));
 
-      const run = spawnSync('claude', ['plugin', 'test'], { cwd: plugin, encoding: 'utf-8', timeout: 180_000 });
-      const output = `${run.stdout ?? ''}\n${run.stderr ?? ''}`;
-      if (/hooks modules are turned off/.test(output)) return; // mods disabled on this machine: nothing to check
-      expect(output).toContain(' 0 fail');
-      expect(run.status).toBe(0);
-    } finally {
-      rmSync(plugin, { recursive: true, force: true });
-    }
-  }, 240_000);
+    return spawnSync('claude', ['plugin', 'test'], { cwd: plugin, encoding: 'utf-8', timeout: 180_000 });
+  } finally {
+    rmSync(plugin, { recursive: true, force: true });
+  }
+}
+
+const run = claudeWithMods() ? await runEngineChecks() : null;
+const output = `${run?.stdout ?? ''}\n${run?.stderr ?? ''}`;
+const requireEngine = process.env.CLAUDE_MEM_TEST_AUTO_CLEAR_ENGINE === '1';
+
+describe.skipIf(!requireEngine && (run === null || /hooks modules are turned off/.test(output)))('auto-clear mod in the Claude Code engine', () => {
+  it('passes the engine checks', () => {
+    expect(output).toContain(' 0 fail');
+    expect(run!.status).toBe(0);
+  });
 });

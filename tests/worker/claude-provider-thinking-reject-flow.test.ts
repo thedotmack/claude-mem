@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { installScriptedClaudeSdk, createScriptedSession } from '../fixtures/worker/scripted-claude-sdk.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // Provider-level coverage for #4732: drives ClaudeProvider.startSession over a
@@ -7,65 +8,8 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 //
 // bun's mock.module is process-global and sticky, so every real module is
 // snapshotted first and re-registered in afterAll.
-const actualAgentSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
-const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
-const actualEnvManager = { ...(await import('../../src/shared/EnvManager.js')) };
-const actualProcessRegistry = { ...(await import('../../src/supervisor/process-registry.js')) };
-const actualModeManager = { ...(await import('../../src/services/domain/ModeManager.js')) };
-
-type ScriptStep = Record<string, unknown> | { throwError: unknown };
-
-let scriptedSteps: ScriptStep[] = [];
-const capturedSdkOptions: Array<Record<string, unknown>> = [];
-
-mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  ...actualAgentSdk,
-  query: (args: { options: Record<string, unknown> }) => {
-    capturedSdkOptions.push(args.options);
-    const steps = scriptedSteps;
-    return (async function* () {
-      for (const step of steps) {
-        if ('throwError' in step) throw step.throwError;
-        yield step;
-      }
-    })();
-  },
-}));
-
-mock.module('../../src/shared/find-claude-executable.js', () => ({
-  ...actualFindClaude,
-  findClaudeExecutable: () => '/mock/claude',
-}));
-
-mock.module('../../src/shared/EnvManager.js', () => ({
-  ...actualEnvManager,
-  buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH ?? '' }),
-  getAuthMethodDescription: () => 'test-auth',
-}));
-
-mock.module('../../src/supervisor/process-registry.js', () => ({
-  ...actualProcessRegistry,
-  waitForSlot: async () => ({ release: () => {} }),
-  createSdkSpawnFactory: () => () => {
-    throw new Error('spawn factory must not run in this test');
-  },
-  getSdkProcessForSession: () => undefined,
-  ensureSdkProcessExit: async () => {},
-}));
-
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ...actualModeManager,
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
-        observation_types: [{ id: 'discovery' }],
-        observation_concepts: [],
-      }),
-    }),
-  },
-}));
+const sdkFixture = installScriptedClaudeSdk();
+const capturedSdkOptions = sdkFixture.capturedOptions;
 
 const previousThinkingSetting = process.env.CLAUDE_MEM_OBSERVER_THINKING;
 // Pin the operator setting so a developer's own settings.json can't change the
@@ -75,11 +19,7 @@ process.env.CLAUDE_MEM_OBSERVER_THINKING = 'disabled';
 afterAll(() => {
   if (previousThinkingSetting === undefined) delete process.env.CLAUDE_MEM_OBSERVER_THINKING;
   else process.env.CLAUDE_MEM_OBSERVER_THINKING = previousThinkingSetting;
-  mock.module('../../src/services/domain/ModeManager.js', () => actualModeManager);
-  mock.module('@anthropic-ai/claude-agent-sdk', () => actualAgentSdk);
-  mock.module('../../src/shared/find-claude-executable.js', () => actualFindClaude);
-  mock.module('../../src/shared/EnvManager.js', () => actualEnvManager);
-  mock.module('../../src/supervisor/process-registry.js', () => actualProcessRegistry);
+  sdkFixture.restore();
 });
 
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
@@ -112,27 +52,7 @@ function textlessFailureResultFrame() {
 }
 
 function createSession(): ActiveSession {
-  return {
-    sessionDbId: 4732,
-    contentSessionId: 'content-4732',
-    memorySessionId: null,
-    project: 'observer-project',
-    platformSource: 'claude',
-    userPrompt: 'run the project',
-    abortController: new AbortController(),
-    generatorPromise: null,
-    lastPromptNumber: 2,
-    startTime: Date.now(),
-    cumulativeInputTokens: 0,
-    cumulativeOutputTokens: 0,
-    earliestPendingTimestamp: 1700000000000,
-    claimedMessageIds: [1],
-    conversationHistory: [],
-    currentProvider: null,
-    consecutiveRestarts: 0,
-    consecutiveInvalidOutputs: 0,
-    lastGeneratorActivity: Date.now(),
-  } as ActiveSession;
+  return createScriptedSession(4732, { earliestPendingTimestamp: 1700000000000, claimedMessageIds: [1] });
 }
 
 function createHarness(session: ActiveSession) {
@@ -168,21 +88,21 @@ function createHarness(session: ActiveSession) {
 async function runNextGeneration(provider: InstanceType<typeof ClaudeProvider>, session: ActiveSession) {
   session.abortController = new AbortController();
   session.abortReason = undefined;
-  scriptedSteps = [];
+  sdkFixture.messages = [];
   await provider.startSession(session);
   return capturedSdkOptions[capturedSdkOptions.length - 1];
 }
 
 describe('ClaudeProvider thinking-param rejection (#4732)', () => {
   beforeEach(() => {
-    scriptedSteps = [];
+    sdkFixture.messages = [];
     capturedSdkOptions.length = 0;
   });
 
   it('strips the param and releases the batch when a result frame carries the rejection', async () => {
     const session = createSession();
     const harness = createHarness(session);
-    scriptedSteps = [thinkingRejectedResultFrame()];
+    sdkFixture.messages = [thinkingRejectedResultFrame()];
 
     await harness.provider.startSession(session);
 
@@ -201,7 +121,7 @@ describe('ClaudeProvider thinking-param rejection (#4732)', () => {
     const harness = createHarness(session);
     // The message alone names thinking but not the 400; only the structured
     // status says the request itself was refused.
-    scriptedSteps = [{ throwError: Object.assign(new Error('thinking parameter is not supported'), { status: 400 }) }];
+    sdkFixture.messages = [{ throwError: Object.assign(new Error('thinking parameter is not supported'), { status: 400 }) }];
 
     await expect(harness.provider.startSession(session)).rejects.toThrow('thinking parameter is not supported');
 
@@ -218,7 +138,7 @@ describe('ClaudeProvider thinking-param rejection (#4732)', () => {
     const session = createSession();
     session.observerThinkingStripped = true;
     const harness = createHarness(session);
-    scriptedSteps = [thinkingRejectedResultFrame()];
+    sdkFixture.messages = [thinkingRejectedResultFrame()];
 
     await harness.provider.startSession(session);
 
@@ -232,7 +152,7 @@ describe('ClaudeProvider thinking-param rejection (#4732)', () => {
   it('still strips when an earlier textless failure already used the ordinary retry', async () => {
     const session = createSession();
     const harness = createHarness(session);
-    scriptedSteps = [textlessFailureResultFrame(), thinkingRejectedResultFrame()];
+    sdkFixture.messages = [textlessFailureResultFrame(), thinkingRejectedResultFrame()];
 
     await harness.provider.startSession(session);
 

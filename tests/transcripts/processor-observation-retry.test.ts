@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { setIngestContext } from '../../src/services/worker/http/shared.js';
-import { TranscriptEventProcessor, TranscriptObservationError } from '../../src/services/transcripts/processor.js';
+import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
 import type { TranscriptSchema } from '../../src/services/transcripts/types.js';
 
 // The real ingestObservation, with the worker's dependencies stubbed the way
@@ -47,21 +47,24 @@ const schema: TranscriptSchema = { name: 'retry', sessionIdPath: 'session', even
 ] };
 const watch = { name: 'retry', path: '/unused', workspace: '/repo', schema };
 
-describe('transcript observation retry', () => {
+describe('transcript observation handoff', () => {
   for (const before of ['session-resolution', 'queue'] as const) {
-    it(`keeps the tool call when ingest fails at ${before} (before accepting it)`, async () => {
+    it(`discards the tool call when ingest fails at ${before} (before accepting it)`, async () => {
       const processor = new TranscriptEventProcessor();
       await processor.processEntry({ session: 's', type: 'use', id: 't', name: 'Read', input: { path: 'a' } }, watch, schema);
       const result = { session: 's', type: 'result', id: 't', output: 'contents' };
       failure = before;
-      await expect(processor.processEntry(result, watch, schema)).rejects.toBeInstanceOf(TranscriptObservationError);
+      await expect(processor.processEntry(result, watch, schema)).resolves.toBeUndefined();
       expect(queued).toHaveLength(0);
       failure = 'none';
       await processor.processEntry(result, watch, schema);
+      expect(queued).toHaveLength(0);
+      await processor.processEntry({ session: 's', type: 'use', id: 'fresh', name: 'Read', input: { path: 'b' } }, watch, schema);
+      await processor.processEntry({ session: 's', type: 'result', id: 'fresh', output: 'fresh contents' }, watch, schema);
       expect(queued).toHaveLength(1);
-      expect(queued[0]).toMatchObject({ tool_name: 'Read', toolUseId: 't' });
-      expect(JSON.parse(queued[0].tool_input)).toEqual({ path: 'a' });
-      expect(JSON.parse(queued[0].tool_response)).toBe('contents');
+      expect(queued[0]).toMatchObject({ tool_name: 'Read', toolUseId: 'fresh' });
+      expect(JSON.parse(queued[0].tool_input)).toEqual({ path: 'b' });
+      expect(JSON.parse(queued[0].tool_response)).toBe('fresh contents');
     });
   }
 

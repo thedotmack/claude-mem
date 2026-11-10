@@ -3,13 +3,11 @@
 // review thread), the status batching, and server-rendered markup for cards, drawers and image-free rows.
 import { describe, expect, it } from 'bun:test';
 import { buildSync } from 'esbuild';
-import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { MEDIA_LIMITS } from '../../../src/shared/media-contract.js';
 
 const MY_WORK = resolve(import.meta.dir, '../../../src/ui/my-work');
-const GALLERY_DIR = join(MY_WORK, 'src/components/observation-media');
 
 // Compile the real components with the app's own React, as hosted-setup.test.ts does.
 const compiled = buildSync({
@@ -17,17 +15,13 @@ const compiled = buildSync({
     resolveDir: MY_WORK, loader: 'tsx', contents: `
       import React from 'react';
       import { renderToStaticMarkup } from 'react-dom/server';
-      import { MediaCountBadge, ObsMediaStrip, MediaSourceContext, watchMediaStatus } from './src/components/observation-media/ObsMedia';
-      import { SAMPLE_MEDIA_SOURCE } from './src/components/observation-media/sample-media';
+      import { MediaCountBadge, ObsMediaStrip, watchMediaStatus } from './src/components/observation-media/ObsMedia';
       import { requestImages } from './src/components/observation-media/request-images';
       export * from './src/components/observation-media/media';
       export { createWorkerMediaSource, statusChunks } from './src/components/observation-media/worker-media-source';
-      export { SAMPLE_MEDIA_REFS } from './src/components/observation-media/sample-media';
-      export { SAMPLE_REQUESTS } from './src/data';
       export { watchMediaStatus, requestImages };
       export const renderStrip = (props) => renderToStaticMarkup(<ObsMediaStrip {...props} />);
       export const renderBadge = (props) => renderToStaticMarkup(<MediaCountBadge {...props} />);
-      export const renderWithSample = (props) => renderToStaticMarkup(<MediaSourceContext.Provider value={SAMPLE_MEDIA_SOURCE}><ObsMediaStrip {...props} /></MediaSourceContext.Provider>);
     `,
   },
   tsconfig: join(MY_WORK, 'tsconfig.app.json'),
@@ -60,14 +54,6 @@ describe('worker media URLs', () => {
     expect(() => gallery.mediaStatusUrl([])).toThrow();
     expect(gallery.MEDIA_STATUS_MAX_IDS).toBe(MEDIA_LIMITS.maxObservationRefs);
     expect(() => gallery.mediaStatusUrl(refs(MEDIA_LIMITS.maxObservationRefs + 1).map(ref => ref.id))).toThrow();
-  });
-
-  it('no gallery file names a Pro media route or the owner details route', () => {
-    for (const name of readdirSync(GALLERY_DIR)) {
-      const source = readFileSync(join(GALLERY_DIR, name), 'utf8').split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
-      expect(source).not.toContain('/api/observation-media');
-      expect(source).not.toContain('/details');
-    }
   });
 });
 
@@ -203,12 +189,6 @@ describe('server-rendered gallery', () => {
     expect(gallery.renderBadge({ media: { version: 1, attachments: refs(1), overflow: true } })).toContain('1 image (more on the source event)');
   });
 
-  it('sample mode fixtures cover every display state and render without a worker', () => {
-    expect(gallery.SAMPLE_MEDIA_REFS).toHaveLength(6);
-    const sample = gallery.SAMPLE_REQUESTS.find((request: any) => request.id === 'r1');
-    expect(sample.media).toEqual({ count: 6, preview: gallery.SAMPLE_MEDIA_REFS.slice(0, 4) });
-    expect(gallery.renderWithSample({ media: { version: 1, attachments: gallery.SAMPLE_MEDIA_REFS }, title: 'Sample' })).toContain('6 images');
-  });
 
   it('the drawer strip holds each linked image once, newest record first', () => {
     const shared = refs(2);

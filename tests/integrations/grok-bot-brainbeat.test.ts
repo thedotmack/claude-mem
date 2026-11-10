@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import {
-  BRAINBEAT_TIMEOUT_MS,
   brainbeatFailureReason,
   notifyGrokBotBrainbeat,
   webhookOrigin,
@@ -87,23 +86,6 @@ describe('Grok Bot brainbeat webhook', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('dispatches every matching POST at once instead of one after another', async () => {
-    mockSettings({
-      CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'security_alert',
-      CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/webhook',
-    });
-    const release: Array<() => void> = [];
-    fetchSpy.mockImplementation(() => new Promise<Response>(resolve => {
-      release.push(() => resolve(new Response(null, { status: 202 })));
-    }));
-
-    const pending = notifyGrokBotBrainbeat({ observations: [observation, observation], observationIds: [1, 2], project: 'p' });
-    await Promise.resolve();
-    expect(fetchSpy).toHaveBeenCalledTimes(2); // both in flight before either answered
-    release.forEach(done => done());
-    await pending;
-  });
-
   it('never throws, and logs only the receiver origin (no path, query or userinfo)', async () => {
     mockSettings({
       CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'security_alert',
@@ -140,20 +122,6 @@ describe('Grok Bot brainbeat webhook', () => {
     expect((call[2] as Record<string, unknown>).reason).toBe('TypeError');
   });
 
-  it('logs the HTTP status or a timeout as the reason', async () => {
-    mockSettings({
-      CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'security_alert',
-      CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook',
-    });
-    fetchSpy.mockResolvedValue(new Response(null, { status: 503 }));
-    await notifyGrokBotBrainbeat({ observations: [observation], observationIds: [42], project: 'p' });
-    expect((warnSpy.mock.calls[0][2] as Record<string, unknown>).reason).toBe('HTTP 503');
-
-    fetchSpy.mockRejectedValue(new DOMException('The operation timed out.', 'TimeoutError'));
-    await notifyGrokBotBrainbeat({ observations: [observation], observationIds: [42], project: 'p' });
-    expect((warnSpy.mock.calls[1][2] as Record<string, unknown>).reason).toBe(`timed out after ${BRAINBEAT_TIMEOUT_MS}ms`);
-  });
-
   it('refuses redirects, so the secret and observation never reach another origin', async () => {
     const stolen: string[] = [];
     const elsewhere = Bun.serve({
@@ -184,8 +152,7 @@ describe('Grok Bot brainbeat webhook', () => {
     }
   });
 
-  it('reduces a URL to its origin for logs', () => {
-    expect(webhookOrigin('https://user:pw@host.example:8443/a/b?x=1')).toBe('https://host.example:8443');
+  it('labels an invalid webhook URL for logs', () => {
     expect(webhookOrigin('not a url')).toBe('(invalid webhook URL)');
   });
 

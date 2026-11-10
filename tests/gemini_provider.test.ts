@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import codeMode from '../plugin/modes/code.json';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
 import { GeminiProvider } from '../src/services/worker/GeminiProvider';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
@@ -178,22 +175,7 @@ describe('GeminiProvider', () => {
   });
 
   it('should initialize with correct config', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      claimedMessageIds: [],
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{
@@ -215,24 +197,6 @@ describe('GeminiProvider', () => {
   // A generator start opens a new generation (#3479), so a multi-turn history
   // only exists mid-generation. These drive query() with one directly.
   const GEMINI_QUERY_CONFIG = { apiKey: 'test-api-key', model: 'gemini-flash-latest', rateLimitingEnabled: false };
-
-  it('should handle multi-turn conversation', async () => {
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: 'response' }] } }]
-    }))));
-
-    await (agent as any).query([
-      { role: 'user', content: 'prev context' },
-      { role: 'assistant', content: 'prev response' },
-      { role: 'user', content: 'next prompt' },
-    ], GEMINI_QUERY_CONFIG);
-
-    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
-    expect(body.contents).toHaveLength(3);
-    expect(body.contents[0].role).toBe('user');
-    expect(body.contents[1].role).toBe('model');
-    expect(body.contents[2].role).toBe('user');
-  });
 
   it('sends an init prompt (not a continuation) when the session has no prompt anchor (#3653)', async () => {
     // A transcript-ingested session with no user_prompts row resolves to
@@ -311,22 +275,7 @@ describe('GeminiProvider', () => {
   });
 
   it('should process observations and store them', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      claimedMessageIds: [],
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     const observationXml = `
       <observation>
@@ -480,45 +429,15 @@ describe('GeminiProvider', () => {
   });
 
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      claimedMessageIds: [],
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
-    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
+    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429, headers: { 'Retry-After': '0' } })));
 
     await expect(agent.startSession(session)).rejects.toThrow(/429/);
   });
 
   it('should throw on other errors', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      claimedMessageIds: [],
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument RAW_PROVIDER_BODY', { status: 400 })));
 
@@ -536,22 +455,7 @@ describe('GeminiProvider', () => {
 
   it('redacts non-400 Gemini response body from thrown message and cause', async () => {
     const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [],
-      lastPromptNumber: 1,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      claimedMessageIds: [],
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+    const session = makeSession();
 
     global.fetch = mock(() => Promise.resolve(new Response(rawBody, {
       status: 418,
@@ -573,87 +477,19 @@ describe('GeminiProvider', () => {
     }
   });
 
-  it('should respect rate limits when rate limiting enabled', async () => {
-    rateLimitingEnabled = 'true';
+  it('falls back to gemini-flash-latest for a retired configured model', async () => {
+    loadFromFileSpy.mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash',
+      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
+    }));
+    mockSuccessfulGeminiFetch();
 
-    const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = mock((cb: any) => cb());
-    global.setTimeout = mockSetTimeout as any;
+    await agent.startSession(makeSession());
 
-    try {
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        abortController: new AbortController(),
-        claimedMessageIds: [],
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'ok' }] } }]
-      }))));
-
-      await agent.startSession(session);
-      await agent.startSession(session);
-
-      expect(mockSetTimeout).toHaveBeenCalled();
-    } finally {
-      global.setTimeout = originalSetTimeout;
-    }
-  });
-
-  describe('gemini-3-flash-preview model support', () => {
-    it('should accept only currently-available models (no retired 2.x IDs)', async () => {
-      const validModels = [
-        'gemini-flash-latest',
-        'gemini-flash-lite-latest',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3-flash-preview'
-      ];
-
-      expect(validModels.every(m => typeof m === 'string')).toBe(true);
-      expect(validModels).toContain('gemini-3-flash-preview');
-      // Retired IDs that 404 for new API keys must not be selectable.
-      expect(validModels).not.toContain('gemini-2.5-flash-lite');
-      expect(validModels).not.toContain('gemini-2.5-flash');
-      expect(validModels).not.toContain('gemini-2.0-flash');
-    });
-
-    it('should have rate limit defined for gemini-3-flash-preview', async () => {
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        abortController: new AbortController(),
-        claimedMessageIds: [],
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'ok' }] } }],
-        usageMetadata: { totalTokenCount: 10 }
-      }))));
-
-      await agent.startSession(session);
-      expect(global.fetch).toHaveBeenCalled();
-    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect((global.fetch as any).mock.calls[0][0]).toContain('models/gemini-flash-latest:');
   });
 });

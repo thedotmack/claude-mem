@@ -145,14 +145,6 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
     expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
   }, 30_000);
 
-  it('does not adopt a live submodule during the startup sweep', async () => {
-    const fx = buildFixture();
-
-    await adoptMergedWorktreesForAllKnownRepos({ dataDirectory: fx.dataDirectory });
-
-    expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
-  }, 30_000);
-
   // A submodule's --git-common-dir is `<super>/.git/modules/<name>`, not
   // `<super>/.git`, so repo discovery has to walk back past `/.git/modules/`
   // to reach the superproject root. Without that, a session that only ever ran
@@ -223,7 +215,7 @@ it('keeps initialized nested submodules separate while their described paths rem
   expect(result.orphanedWorktrees).toEqual([]);
   expect(mergedInto(fx.dbPath, observation)).toBeNull();
   expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
-});
+}, 30_000);
 
 it('still adopts a deinitialized submodule without recursing into its empty checkout', async () => {
   const fx = buildFixture();
@@ -234,7 +226,7 @@ it('still adopts a deinitialized submodule without recursing into its empty chec
   const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
   expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
   expect(result.orphanedWorktrees).toEqual(['react/peerless']);
-});
+}, 30_000);
 
 it('keeps sessions and observations in distinct ..-prefixed submodule paths', async () => {
   const fx = buildFixture();

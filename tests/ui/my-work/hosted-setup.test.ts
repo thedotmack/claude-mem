@@ -13,7 +13,6 @@ const compiled = buildSync({
       import { RevealScreen } from './src/setup/screens/reveal-screen';
       export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
-      export { createSampleSetupSource } from './src/setup/setup-sample';
       export { SAMPLE_REQUESTS } from './src/data';
       export { SAMPLE_FOCUS_AREAS } from './src/data-goals';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
@@ -169,11 +168,6 @@ describe('hosted setup scan control', () => {
     expect(html).not.toContain('Claude Code');
   });
 
-  it('carries the upload record from the worker to the page', () => {
-    const app = fixture();
-    expect(app.EMPTY_SETUP_DATA.scan.uploadedAgents).toBeNull();
-  });
-
   it('renders hosted failures and preference failures in the existing alert style', () => {
     const app = fixture();
     const html = app.renderScan(scan({ phase: 'failed', error: 'Hosted extraction exceeded the upload limit.' }), 'Could not save this choice: Network unavailable.');
@@ -185,10 +179,11 @@ describe('hosted setup scan control', () => {
     const app = fixture();
     useNetwork(url => url === '/api/setup/state'
       ? Response.json({ status: 'pending', alreadyPro: false })
-      : Response.json(scan({ phase: 'uploading', percent: 99 })));
+      : Response.json(scan({ phase: 'uploading', percent: 99, uploadedAgents: ['codex'] })));
     let latest: any;
     const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
     await until(() => latest.scan.phase === 'uploading');
+    expect(latest.scan.uploadedAgents).toEqual(['codex']);
     const message = 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.';
     Stream.latest.send('setup-scan', scan({ phase: 'failed', error: message }));
     expect(app.renderScan(latest.scan)).toContain(`class="scan-error" role="alert">${message}`);
@@ -399,17 +394,6 @@ describe('hosted setup scan control', () => {
     expect(latest.scan.error).toBe(null);
     Stream.latest.send('setup-scan', scan({ phase: 'done', done: true, percent: 100 }));
     expect(latest.scan.done).toBe(true);
-    stop();
-  });
-
-  it('retains unchecked state in the sample source across scan progress', async () => {
-    const app = fixture();
-    const source = app.createSampleSetupSource(false, 1);
-    let latest: any;
-    const stop = source.subscribe((data: any) => { latest = data; });
-    await source.setImproveProduct(false);
-    await until(() => latest.scan.percent === 1);
-    expect(latest.scan.improveProduct).toBe(false);
     stop();
   });
 });

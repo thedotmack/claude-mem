@@ -148,9 +148,10 @@ describe('selected historical recovery', () => {
   });
   it('continues a selected job on an idle device through the same live-first flush timer', async () => {
     historical(); historical(); historical(); const job = create(); resume(job.id);
+    const armedDelays: number[] = []; (sync as any).armFlushTimer = (delayMs: number) => { armedDelays.push(delayMs); };
     await sync.flush(); expect(state(job.id).status).toBe('running');
-    const deadline = Date.now() + 2000;
-    while (state(job.id).status !== 'complete' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    expect(armedDelays).toContain(1000);
+    await sync.flush();
     expect(state(job.id).status).toBe('complete'); expect(pages.length).toBe(2);
   });
   it('pause prevents selection while cancel during an in-flight upload preserves the real acknowledgement', async () => {

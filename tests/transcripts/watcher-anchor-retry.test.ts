@@ -1,8 +1,3 @@
-// R5-2 / R5-8: a turn whose prompt the worker did not record is retried from
-// its own line (JSONL) or frame (zstd), so nothing before it is sent twice and
-// nothing after it is dropped; startAtEnd offsets are saved when a file is
-// found, a large file with a fresh mtime is not replayed from byte 0, and
-// reads go in bounded passes.
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
@@ -60,7 +55,7 @@ const schema: TranscriptSchema = {
 };
 
 const turnLine = (text: string, padding = ''): string =>
-  JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text, padding });
+  JSON.stringify({ type: 'turn', session: 'session-retry', cwd: join(tmpdir(), 'retry-project'), text, padding });
 
 const zstdFrame = (texts: string[]): Buffer =>
   zstdCompressSync(Buffer.from(`${texts.map(text => turnLine(text)).join('\n')}\n`, 'utf8'));
@@ -79,7 +74,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 80));
 // suite runs files side by side; the default 5 s test timeout is too tight.
 const HEAVY_TEST_TIMEOUT_MS = 30_000;
 
-describe('TranscriptWatcher retries a failed turn from its own record', () => {
+describe('TranscriptWatcher consumes failed live handoffs', () => {
   let tmpRoot: string;
   let statePath: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -105,120 +100,58 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  function tail(filePath: string): { watcher: TranscriptWatcher; poke: () => void } {
+  async function tail(filePath: string): Promise<{ watcher: TranscriptWatcher; poke: () => Promise<void> }> {
     const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     watchers.push(watcher);
     const watch: WatchTarget = { name: 'retry-test', path: filePath, schema };
-    void (watcher as any).addTailer(filePath, watch, schema);
-    return { watcher, poke: () => (watcher as any).tailers.get(filePath)?.poke() };
+    await (watcher as any).addTailer(filePath, watch, schema);
+    const tailer = (watcher as any).tailers.get(filePath);
+    await tailer.readTask;
+    return { watcher, poke: async () => { tailer.poke(); await tailer.readTask; } };
   }
 
   const savedOffset = (filePath: string): number | undefined =>
     JSON.parse(readFileSync(statePath, 'utf8')).offsets[filePath];
 
-  it('JSONL: retries the failed line in-process without resending earlier lines', async () => {
+  for (const restart of [false, true]) it(`JSONL: skips outage lines after ${restart ? 'restart' : 'recovery'}`, async () => {
     const filePath = join(tmpRoot, 'rollout.jsonl');
     writeFileSync(filePath, ['L1', 'L2', 'L3', 'L4'].map(text => `${turnLine(text)}\n`).join(''));
     failing.add('L3');
-
-    const { poke } = tail(filePath);
-    await waitFor(() => recorded.length >= 2);
-    await settle();
+    failing.add('L4');
+    const first = await tail(filePath);
     expect(recorded).toEqual(['L1', 'L2']);
-    // Checkpointed AT the failed line: the bytes of L1 and L2 only.
-    expect(savedOffset(filePath)).toBe(Buffer.byteLength(`${turnLine('L1')}\n${turnLine('L2')}\n`));
-
-    failing.delete('L3');
+    expect(savedOffset(filePath)).toBe(statSync(filePath).size);
+    if (restart) first.watcher.stop();
+    failing.clear();
+    const active = restart ? await tail(filePath) : first;
+    await active.poke();
+    expect(recorded).toEqual(['L1', 'L2']);
     appendFileSync(filePath, `${turnLine('L5')}\n`);
-    poke();
-    await waitFor(() => recorded.length >= 5);
-    await settle();
-    expect(recorded).toEqual(['L1', 'L2', 'L3', 'L4', 'L5']);
+    await active.poke();
+    expect(recorded).toEqual(['L1', 'L2', 'L5']);
     expect(savedOffset(filePath)).toBe(statSync(filePath).size);
   });
 
-  it('JSONL: a restart after a failed turn resumes at that turn', async () => {
-    const filePath = join(tmpRoot, 'rollout.jsonl');
-    writeFileSync(filePath, ['L1', 'L2', 'L3', 'L4'].map(text => `${turnLine(text)}\n`).join(''));
-    failing.add('L3');
-
-    const first = tail(filePath);
-    await waitFor(() => recorded.length >= 2);
-    await settle();
-    first.watcher.stop();
-    failing.delete('L3');
-
-    tail(filePath);
-    await waitFor(() => recorded.length >= 4);
-    await settle();
-    expect(recorded).toEqual(['L1', 'L2', 'L3', 'L4']);
-  });
-
-  it('zstd: never resends earlier frames (the Z1,Z2,Z1,Z2,Z3,Z4 probe)', async () => {
+  for (const frames of [
+    [['Z1'], ['Z2'], ['Z3'], ['Z4']],
+    [['A1', 'A2'], ['B1', 'B2']],
+  ]) for (const restart of [false, true]) it(`zstd: skips failed lines across ${frames.length} frames after ${restart ? 'restart' : 'recovery'}`, async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
-    writeFileSync(filePath, Buffer.concat([zstdFrame(['Z1']), zstdFrame(['Z2']), zstdFrame(['Z3']), zstdFrame(['Z4'])]));
-    failing.add('Z3');
-
-    const { poke } = tail(filePath);
-    await waitFor(() => recorded.length >= 2);
-    await settle();
-    expect(recorded).toEqual(['Z1', 'Z2']);
-
-    failing.delete('Z3');
-    poke();
-    await waitFor(() => recorded.length >= 4);
-    await settle();
-    expect(recorded).toEqual(['Z1', 'Z2', 'Z3', 'Z4']);
-  });
-
-  it('zstd: resumes inside a frame at the failed line, not at the frame start', async () => {
-    const filePath = join(tmpRoot, 'session.jsonl.zstd');
-    writeFileSync(filePath, Buffer.concat([zstdFrame(['A1', 'A2']), zstdFrame(['B1', 'B2'])]));
-    failing.add('B2');
-
-    const { poke } = tail(filePath);
-    await waitFor(() => recorded.length >= 3);
-    await settle();
-    failing.delete('B2');
-    poke();
-    await waitFor(() => recorded.length >= 4);
-    await settle();
-    expect(recorded).toEqual(['A1', 'A2', 'B1', 'B2']);
-  });
-
-  it('zstd: a restart after a turn failed inside a frame resumes at that line', async () => {
-    const filePath = join(tmpRoot, 'session.jsonl.zstd');
-    writeFileSync(filePath, Buffer.concat([zstdFrame(['A1', 'A2', 'A3']), zstdFrame(['B1'])]));
-    failing.add('A2');
-
-    const first = tail(filePath);
-    await waitFor(() => recorded.length >= 1);
-    await settle();
-    first.watcher.stop();
-    expect(recorded).toEqual(['A1']);
-    failing.delete('A2');
-
-    tail(filePath);
-    await waitFor(() => recorded.length >= 4);
-    await settle();
-    expect(recorded).toEqual(['A1', 'A2', 'A3', 'B1']);
-  });
-
-  it('zstd: a restart after a failed turn resumes at that frame', async () => {
-    const filePath = join(tmpRoot, 'session.jsonl.zstd');
-    writeFileSync(filePath, Buffer.concat([zstdFrame(['Z1']), zstdFrame(['Z2']), zstdFrame(['Z3'])]));
-    failing.add('Z2');
-
-    const first = tail(filePath);
-    await waitFor(() => recorded.length >= 1);
-    await settle();
-    first.watcher.stop();
-    failing.delete('Z2');
-
-    tail(filePath);
-    await waitFor(() => recorded.length >= 3);
-    await settle();
-    expect(recorded).toEqual(['Z1', 'Z2', 'Z3']);
+    writeFileSync(filePath, Buffer.concat(frames.map(zstdFrame)));
+    const rejected = frames.at(-1)!;
+    rejected.forEach(text => failing.add(text));
+    const first = await tail(filePath);
+    const accepted = frames.slice(0, -1).flat();
+    expect(recorded).toEqual(accepted);
+    expect(savedOffset(filePath)).toBe(statSync(filePath).size);
+    if (restart) first.watcher.stop();
+    failing.clear();
+    const active = restart ? await tail(filePath) : first;
+    await active.poke();
+    expect(recorded).toEqual(accepted);
+    appendFileSync(filePath, zstdFrame(['fresh']));
+    await active.poke();
+    expect(recorded).toEqual([...accepted, 'fresh']);
   });
 
   it('JSONL: a backlog larger than one pass is read in bounded passes, every line once', async () => {
@@ -228,7 +161,7 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     writeFileSync(filePath, texts.map(text => `${turnLine(text, padding)}\n`).join(''));
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
-    tail(filePath);
+    await tail(filePath);
     await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
@@ -243,7 +176,7 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     ))));
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
-    tail(filePath);
+    await tail(filePath);
     await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
@@ -343,7 +276,7 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
   it('reads a large file from byte 0 when its first record began after startup (a live session)', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'live-large.jsonl');
-    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'opening', timestamp: new Date().toISOString() });
+    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: join(tmpdir(), 'retry-project'), text: 'opening', timestamp: new Date().toISOString() });
     const padding = 'z'.repeat(1000);
     writeFileSync(filePath, `${opening}\n${Array.from({ length: 300 }, (_, index) => `${turnLine(`turn-${index}`, padding)}\n`).join('')}`);
     expect(statSync(filePath).size).toBeGreaterThan(256 * 1024);
@@ -359,7 +292,7 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
   it('starts even a small copied history at EOF when its first record is older than startup', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'copied-small.jsonl');
-    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
+    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: join(tmpdir(), 'retry-project'), text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
     writeFileSync(filePath, `${oldOpening}\n${turnLine('old turn')}\n`);
 
     const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };

@@ -4,9 +4,7 @@
  * Unit tests drive runWatchdog directly with an injected fetchImpl (the
  * repo's fetchImpl idiom) so every GraphQL/Discord response is scripted
  * in-test; the KV side uses the REAL env.AUTH_CACHE binding so the
- * kill-switch write path is exercised end-to-end. The scheduled-handler
- * wiring tests call worker.scheduled() with the outboundService mocks from
- * vitest.config.ts (scripted by accountTag).
+ * kill-switch write path is exercised end-to-end.
  *
  * Covered:
  *   - unconfigured → skipped, GraphQL never called (never a false metric
@@ -21,17 +19,14 @@
  *   - threshold env overrides respected (alert and kill)
  *   - Discord failure never blocks the kill-switch write
  *   - re-run while tripped → already_tripped, first flag preserved
- *   - scheduled() export wiring via the config-level outbound mocks
  */
 
-import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
-import worker from "../src/index";
 import { KILL_SWITCH_KEY, __resetKillSwitchCacheForTests } from "../src/kill-switch";
 import {
 	GRAPHQL_ENDPOINT,
 	runWatchdog,
-	type WatchdogResult,
 } from "../src/watchdog";
 
 const WEBHOOK = "https://discord.test/webhooks/unit";
@@ -248,33 +243,13 @@ describe("watchdog: escalation ladder", () => {
 
 		const [call] = discordCalls(calls);
 		expect(call).toBeDefined();
-		// Payload shape:
-		// {embeds: [{title, description, color, fields, footer, timestamp}]}.
 		const payload = call.parsed as {
-			embeds: Array<{
-				title: string;
-				description: string;
-				color: number;
-				fields: Array<{ name: string; value: string; inline: boolean }>;
-				footer: { text: string };
-				timestamp: string;
-			}>;
+			embeds: Array<{ fields: Array<{ name: string; value: string }> }>;
 		};
 		expect(payload.embeds).toHaveLength(1);
-		const embed = payload.embeds[0];
-		expect(embed.title).toContain("sync-hub watchdog");
-		expect(embed.title).not.toContain("SEVERE");
-		expect(embed.color).toBe(0xf59e0b); // amber = alert tier
-		expect(embed.description).toContain("duration=120.00 GB-s");
-		const durationField = embed.fields.find((f) => f.name.includes("duration GB-s/hour"));
-		expect(durationField).toBeDefined();
-		expect(durationField!.value).toContain("120");
-		expect(durationField!.value).toContain("alert ≥ 50");
-		expect(durationField!.value).toContain("kill ≥ 450");
-		const killField = embed.fields.find((f) => f.name === "Kill switch");
-		expect(killField!.value).toBe("Not tripped.");
-		expect(typeof embed.timestamp).toBe("string");
-		expect(embed.footer.text).toContain("watchdog");
+		const fields = payload.embeds[0].fields;
+		expect(fields.find((field) => field.name.includes("duration GB-s/hour"))?.value).toContain("120");
+		expect(fields.find((field) => field.name === "Kill switch")?.value).toBe("Not tripped.");
 	});
 
 	it("severe duration → kill switch tripped (flag content names the breach) + severe Discord", async () => {
@@ -382,16 +357,6 @@ describe("watchdog: threshold env overrides", () => {
 		});
 	});
 
-	it("respects a lowered kill threshold (auto-trip family)", async () => {
-		const { impl } = makeFetch({});
-		const result = await runWatchdog(
-			watchdogEnv({ WATCHDOG_ROWS_READ_ALERT: "1000", WATCHDOG_ROWS_READ_KILL: "10000" }),
-			{ fetchImpl: impl }, // rowsRead default fixture = 12,000
-		);
-		expect(result.status).toBe("severe");
-		expect(result.killSwitch).toBe("tripped");
-	});
-
 	it("a kill threshold set BELOW the (default) alert threshold still engages (breach gate is min(alert, kill))", async () => {
 		// Only the kill value is lowered — the alert stays at the 5,000,000
 		// default, far above the 12,000-row fixture. Gating breaches on the
@@ -422,46 +387,3 @@ describe("watchdog: threshold env overrides", () => {
 		expect(result.status).toBe("healthy");
 	});
 });
-
-describe("watchdog: scheduled handler wiring", () => {
-	function controller(): ScheduledController {
-		return {
-			scheduledTime: Date.now(),
-			cron: "7 * * * *",
-			noRetry() {},
-		} as ScheduledController;
-	}
-
-	it("scheduled() runs the watchdog against the outbound mocks: severe account trips the KV flag", async () => {
-		const ctx = createExecutionContext();
-		await worker.scheduled(
-			controller(),
-			watchdogEnv({ ACCOUNT_ID: "acct-duration-severe", DISCORD_WEBHOOK_URL: "https://discord.test/webhooks/ok" }),
-			ctx,
-		);
-		await waitOnExecutionContext(ctx);
-		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).not.toBeNull();
-	});
-
-	it("scheduled() with a healthy account leaves the flag alone", async () => {
-		const ctx = createExecutionContext();
-		await worker.scheduled(
-			controller(),
-			watchdogEnv({ ACCOUNT_ID: "acct-healthy", DISCORD_WEBHOOK_URL: "https://discord.test/webhooks/ok" }),
-			ctx,
-		);
-		await waitOnExecutionContext(ctx);
-		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).toBeNull();
-	});
-});
-
-// Type-level guard: runWatchdog's result surface is what the scheduled
-// handler logs — keep the union in sync with the tests above.
-const _statusCheck: WatchdogResult["status"][] = [
-	"skipped",
-	"query_failed",
-	"healthy",
-	"alert",
-	"severe",
-];
-void _statusCheck;

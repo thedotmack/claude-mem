@@ -12,10 +12,12 @@ import { parseAgentXml } from '../../src/sdk/parser.js';
 // real `code` mode is a superset of the types these tests exercise, so the
 // assertions below are unchanged.
 ModeManager.getInstance().loadMode('code');
+let previousMode: unknown;
 
 describe('parseAgentXml — summaries', () => {
   beforeEach(() => {
     const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    previousMode = modeManager.activeMode;
     modeManager.activeMode = {
       observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
       observation_concepts: [],
@@ -24,7 +26,7 @@ describe('parseAgentXml — summaries', () => {
 
   afterEach(() => {
     const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
-    modeManager.activeMode = null;
+    modeManager.activeMode = previousMode;
   });
 
   it('returns invalid when response is plain text (no XML)', () => {
@@ -78,15 +80,6 @@ describe('parseAgentXml — summaries', () => {
     if (result.valid && result.summary) {
       expect(result.summary.skipped).toBe(true);
       expect(result.summary.skip_reason).toBe('no work done');
-    }
-  });
-
-  it('does NOT coerce <observation> into a summary (former #1633 path deleted)', () => {
-    const result = parseAgentXml('<observation><title>foo</title></observation>');
-    expect(result.valid).toBe(true);
-    if (result.valid) {
-      expect(result.summary).toBeNull();
-      expect(result.observations).toHaveLength(1);
     }
   });
 

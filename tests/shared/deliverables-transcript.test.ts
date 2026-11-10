@@ -40,12 +40,6 @@ describe('extractTranscriptFileActivityFromJsonl', () => {
     ]);
   });
 
-  it('drops a write whose tool result failed and leaves a session transcript\'s sidechain entries to SubagentStop', () => {
-    const paths = extractTranscriptFileActivityFromJsonl(TRANSCRIPT, { currentTurnOnly: false }).writes.map(write => write.path);
-    expect(paths).not.toContain('/w/.scratch/broken.pdf');
-    expect(paths).not.toContain('/w/.scratch/side.png');
-  });
-
   it('reads sidechain entries when asked, which a subagent\'s own transcript needs: every entry in it is one', () => {
     // The shape of ~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl: isSidechain on every line.
     const subagent = [

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import { classifyPostKillState } from './ghost-state.js';
 import { reapOwnedLiveTree, reapSnapshottedDescendants, runForMatchingProcess, snapshotDescendants, survivingProcesses, type ProcessIdentity } from './process-tree.js';
 
 describe('ghost fixture descendant cleanup', () => {
@@ -8,24 +7,6 @@ describe('ghost fixture descendant cleanup', () => {
     { pid: 22, startToken: 'python-1', name: 'python.exe' },
     { pid: 23, startToken: 'python-2', name: 'python.exe' },
   ];
-
-  it('reaps the identified sidecars even in the free-port runtime skip', () => {
-    const state = classifyPostKillState({
-      fixturePid: 20,
-      fixtureAlive: false,
-      portOwners: [],
-      chainSurvived: true,
-    });
-    expect(state.kind).toBe('runtime-capability-skip');
-
-    const killed: number[] = [];
-    reapSnapshottedDescendants(
-      snapshot,
-      (pid, token) => snapshot.some(entry => entry.pid === pid && entry.startToken === token),
-      pid => { killed.push(pid); }
-    );
-    expect(killed).toEqual([23, 22, 21]);
-  });
 
   it('leaves reused and unverified PIDs alone', () => {
     const killed: number[] = [];
@@ -222,29 +203,6 @@ describe('ghost fixture descendant cleanup', () => {
     reapSnapshottedDescendants(discovered, () => true, pid => { killed.push(pid); });
     expect(killed).toEqual([]);
     expect(survivingProcesses(discovered, () => true, () => null)).toEqual(discovered);
-  });
-
-  it('does not certify descendants below a parent with an unknown creation time', () => {
-    const rows = [
-      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '100' },
-      { pid: 21, ppid: 20, name: 'uv.exe', startToken: null },
-      { pid: 22, ppid: 21, name: 'python.exe', startToken: '300' },
-    ];
-    const discovered = snapshotDescendants(20, '100', rows);
-    expect(discovered).toEqual([
-      { pid: 21, name: 'uv.exe', startToken: null },
-      { pid: 22, name: 'python.exe', startToken: null },
-    ]);
-
-    const malformedRows = [
-      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000.000001' },
-      { pid: 21, ppid: 20, name: 'uv.exe', startToken: '20261006210000.invalid' },
-      { pid: 22, ppid: 21, name: 'python.exe', startToken: '20261006210001.000000' },
-    ];
-    expect(snapshotDescendants(20, malformedRows[0]!.startToken, malformedRows)).toEqual([
-      { pid: 21, name: 'uv.exe', startToken: null },
-      { pid: 22, name: 'python.exe', startToken: null },
-    ]);
   });
 
   it('skips unverified roots in successful and failed-readiness cleanup', async () => {

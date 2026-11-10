@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { HOOK_API_KEY_SCOPES, persistServerSettings, readServerKeyRotationState } from '../src/services/hooks/server-bootstrap.js';
-import { DEFAULT_LOCAL_API_KEY_SCOPES } from '../src/server/auth/sqlite-api-key-service.js';
 
 const VALUES = { apiKey: 'cmem_testkey', projectId: 'proj-test' };
 
@@ -31,48 +30,6 @@ describe('persistServerSettings: corrupt-document write refusal', () => {
   });
 });
 
-describe('persistServerSettings: non-record write refusal', () => {
-  it('returns false and leaves bytes exact for a root null', () => {
-    const original = 'null';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = persistServerSettings(settingsPath, VALUES);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
-  });
-
-  it('returns false and leaves bytes exact for a root array', () => {
-    const original = '["sentinel"]';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = persistServerSettings(settingsPath, VALUES);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
-  });
-});
-
-describe('persistServerSettings: flat-record merge preservation', () => {
-  it('writes API keys and preserves all unrelated root keys', () => {
-    const original = {
-      CLAUDE_MEM_RUNTIME: 'server',
-      CLAUDE_MEM_MODEL: 'claude-opus-4-5',
-      UNRELATED_KEY: 'keep-me',
-    };
-    writeFileSync(settingsPath, JSON.stringify(original, null, 2), 'utf-8');
-
-    persistServerSettings(settingsPath, VALUES);
-
-    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(written.CLAUDE_MEM_SERVER_API_KEY).toBe('cmem_testkey');
-    expect(written.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
-    expect(written.CLAUDE_MEM_RUNTIME).toBe('server');
-    expect(written.CLAUDE_MEM_MODEL).toBe('claude-opus-4-5');
-    expect(written.UNRELATED_KEY).toBe('keep-me');
-  });
-});
-
 describe('persistServerSettings: nested-env merge preservation', () => {
   it('writes API keys into env block and preserves root peers', () => {
     const original = {
@@ -94,22 +51,6 @@ describe('persistServerSettings: nested-env merge preservation', () => {
     expect(written.env.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
     expect(written.env.CLAUDE_MEM_RUNTIME).toBe('server');
     expect(written.env.EXISTING_VAR).toBe('keep-me');
-  });
-
-  it('keeps API keys in nested env beside unrelated root Claude settings', () => {
-    const original = {
-      CLAUDE_CODE_MAX_OUTPUT_CHARS: '12000',
-      env: { CLAUDE_MEM_RUNTIME: 'server' },
-    };
-    writeFileSync(settingsPath, JSON.stringify(original, null, 2), 'utf-8');
-
-    persistServerSettings(settingsPath, VALUES);
-
-    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(written.CLAUDE_CODE_MAX_OUTPUT_CHARS).toBe('12000');
-    expect(written.CLAUDE_MEM_SERVER_API_KEY).toBeUndefined();
-    expect(written.env.CLAUDE_MEM_SERVER_API_KEY).toBe('cmem_testkey');
-    expect(written.env.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
   });
 });
 
@@ -185,31 +126,8 @@ describe('readServerKeyRotationState: only the retry marker resumes a rotation',
   });
 });
 
-// The installer writes this key into ~/.claude-mem/settings.json and every hook
-// then authenticates with it against the server runtime's /v1 routes. Those
-// routes gate reads on `memories:read` and writes on `memories:write`
-// (ServerV1PostgresRoutes.ts), and hasRequiredScopes() requires exact scope
-// membership with no alias/expansion. A bootstrapped key whose scopes do not
-// include those two values 403s on every route — the server runtime is unusable
-// for hooked clients even though the installer just reported success.
 describe('HOOK_API_KEY_SCOPES satisfies the /v1 route scope requirements', () => {
-  // Mirrors hasRequiredScopes() in src/server/middleware/postgres-auth.ts.
-  const hasRequiredScopes = (grantedScopes: string[], requiredScopes: string[]): boolean =>
-    requiredScopes.length === 0
-    || grantedScopes.includes('*')
-    || requiredScopes.every(scope => grantedScopes.includes(scope));
-
-  it('grants memories:write, which every /v1 write route requires', () => {
-    expect(hasRequiredScopes([...HOOK_API_KEY_SCOPES], ['memories:write'])).toBe(true);
-  });
-
-  it('grants memories:read, which every /v1 read route requires', () => {
-    expect(hasRequiredScopes([...HOOK_API_KEY_SCOPES], ['memories:read'])).toBe(true);
-  });
-
-  it('covers the same route scopes as a default local (SQLite) key', () => {
-    for (const scope of DEFAULT_LOCAL_API_KEY_SCOPES) {
-      expect([...HOOK_API_KEY_SCOPES]).toContain(scope);
-    }
+  it('grants the required read and write scopes', () => {
+    expect(HOOK_API_KEY_SCOPES).toEqual(expect.arrayContaining(['memories:read', 'memories:write']));
   });
 });

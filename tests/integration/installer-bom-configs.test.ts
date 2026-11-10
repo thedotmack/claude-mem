@@ -19,6 +19,32 @@ afterEach(() => {
 });
 const scratch = () => { const root = realpathSync(mkdtempSync(join(tmpdir(), 'cmem-bom-'))); roots.push(root); return root; };
 
+describe('Antigravity installer paths', () => {
+  it('installs hooks, both MCP configs and context files under the owned home', () => {
+    const home = scratch();
+    const plugin = join(home, 'plugin');
+    mkdirSync(join(plugin, 'scripts'), { recursive: true });
+    writeFileSync(join(plugin, 'scripts', 'worker-service.cjs'), '');
+    writeFileSync(join(plugin, 'scripts', 'mcp-server.cjs'), '');
+    const installer = new URL('../../src/services/integrations/AntigravityCliHooksInstaller.ts', import.meta.url).href;
+    const run = Bun.spawnSync([process.execPath, '-e', `const m = await import(${JSON.stringify(installer)}); process.exitCode = await m.installAntigravityCliHooks();`], {
+      cwd: home,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem'), CLAUDE_PLUGIN_ROOT: plugin },
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(run.exitCode, new TextDecoder().decode(run.stderr)).toBe(0);
+    const hooks = JSON.parse(readFileSync(join(home, '.gemini', 'config', 'hooks.json'), 'utf-8'));
+    expect(hooks['claude-mem'].SessionStart[0].command).toContain('worker-service.cjs hook antigravity-cli context');
+    for (const path of ['antigravity', 'config']) {
+      const mcp = JSON.parse(readFileSync(join(home, '.gemini', path, 'mcp_config.json'), 'utf-8'));
+      expect(mcp.mcpServers['claude-mem'].args).toContain(join(plugin, 'scripts', 'mcp-server.cjs'));
+    }
+    for (const path of ['.gemini/GEMINI.md', '.agents/rules/claude-mem-context.md']) {
+      expect(readFileSync(join(home, path), 'utf-8')).toContain('<claude-mem-context>');
+    }
+  });
+});
+
 describe('installers read BOM-prefixed host configs', () => {
   it('OpenCode: registers and deregisters in a BOM-prefixed opencode.json, keeping other servers', () => {
     const dir = scratch();

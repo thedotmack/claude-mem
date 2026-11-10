@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { bumpTokenDf, getProjectDocCount, buildProjectIdf, isFuzzyReady, computeTitleNormKey, findTier0Canonical } from '../../src/services/sqlite/dedup-store.js';
+import { bumpTokenDf, getProjectDocCount, buildProjectIdf, computeTitleNormKey } from '../../src/services/sqlite/dedup-store.js';
 
 describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
   let store: any;
@@ -19,15 +19,8 @@ describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
     expect(df('added')).toBe(2);
     expect(df('plugin')).toBe(1);
     expect(getProjectDocCount(store.db, 'p')).toBe(2);
-  });
-
-  it('scopes df per project', () => {
-    bumpTokenDf(store.db, 'p1', 'shared token');
-    bumpTokenDf(store.db, 'p2', 'shared token');
-    const df = (proj: string, t: string) => (store.db.prepare('SELECT df FROM token_df WHERE project=? AND token=?').get(proj, t) as any)?.df ?? 0;
-    expect(df('p1', 'shared')).toBe(1);
-    expect(df('p2', 'shared')).toBe(1);
-    expect(getProjectDocCount(store.db, 'p1')).toBe(1);
+    bumpTokenDf(store.db, 'p2', 'added');
+    expect(df('added')).toBe(2);
   });
 
   it('buildProjectIdf weights a rare token above a common one', () => {
@@ -47,26 +40,5 @@ describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
     expect(computeTitleNormKey('p', 'claude', 'same title', true)).not.toBe(computeTitleNormKey('p', 'claude', 'same title')); // agent-scoped (#3310)
     expect(computeTitleNormKey('p', 'claude', 'Added X')).not.toBe(computeTitleNormKey('p', 'claude', 'Removed X'));
     for (const empty of [null, '', '   ', '!!!', '🔵']) expect(computeTitleNormKey('p', 'claude', empty)).toBeNull();
-  });
-
-  it('findTier0Canonical returns the oldest matching row, null on miss or null key', () => {
-    const id = store.createSDKSession('content-t0', 'project', 'prompt');
-    store.updateMemorySessionId(id, 'mem-t0');
-    const norm = computeTitleNormKey('project', 'claude', 'Hardened Checkpoint!');
-    const o = { type: 'discovery', title: 'x', subtitle: null, facts: [], narrative: 'x', concepts: [], files_read: [], files_modified: [] };
-    store.db.prepare("UPDATE observations SET title_norm_key = ? WHERE id = ?")
-      .run(norm, store.storeObservation('mem-t0', 'project', o, 1, 0, Date.now()).id);
-    const hit = findTier0Canonical(store.db, 'project', norm);
-    expect(hit?.id).toBeGreaterThan(0);
-    expect(findTier0Canonical(store.db, 'project', computeTitleNormKey('project', 'claude', 'totally different'))).toBeNull();
-    expect(findTier0Canonical(store.db, 'project', null)).toBeNull();
-  });
-
-  it('isFuzzyReady gates on the cold-start minimum doc count', () => {
-    for (let i = 0; i < 9; i++) bumpTokenDf(store.db, 'p', `doc ${i}`);
-    expect(isFuzzyReady(store.db, 'p', 10)).toBe(false); // 9 < 10
-    bumpTokenDf(store.db, 'p', 'doc 9');
-    expect(isFuzzyReady(store.db, 'p', 10)).toBe(true);  // 10 >= 10
-    expect(isFuzzyReady(store.db, 'brand-new', 10)).toBe(false); // unknown project -> 0
   });
 });

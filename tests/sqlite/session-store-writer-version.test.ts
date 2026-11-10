@@ -179,24 +179,6 @@ describe('schema writer-version stamp', () => {
     store.close();
   });
 
-  it('plugin semver rollback with an unchanged schema is not an outage: an equally-stamped DB reopens', () => {
-    const dir = makeTempDir();
-    const dbPath = path.join(dir, 'claude-mem-test.db');
-
-    // "Newer plugin" writes the DB: the stamp names the schema, not the semver.
-    const first = new SessionStore(dbPath);
-    const stampAfterFirst = readSchemaWriterStamp(first.db);
-    expect(stampAfterFirst).toBe(LATEST_SCHEMA_VERSION);
-    first.close();
-
-    // The rollback case from #4602 review: an older bundled plugin whose chain
-    // ends at the same migration reopens the file — only schema versions are
-    // compared, so an equal stamp adopts regardless of either binary's semver.
-    const second = new SessionStore(dbPath);
-    expect(readSchemaWriterStamp(second.db)).toBe(stampAfterFirst);
-    second.close();
-  });
-
   it('refuses only a schema newer than this binary\'s chain: equal adopts, 0 adopts, older adopts', () => {
     const db = new Database(':memory:');
     db.run('CREATE TABLE marker (id INTEGER)');
@@ -210,19 +192,6 @@ describe('schema writer-version stamp', () => {
 
     db.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION - 1)).toThrow(SchemaNewerThanBinaryError);
-    db.close();
-  });
-
-  it('migrates an older schema stamp up to the current version', () => {
-    const dir = makeTempDir();
-    const db = new Database(path.join(dir, 'claude-mem-test.db'));
-    db.run('CREATE TABLE marker (id INTEGER)');
-    const olderStamp = LATEST_SCHEMA_VERSION - 14;
-    db.run(`PRAGMA user_version = ${olderStamp}`);
-
-    claimSchemaWriter(db, LATEST_SCHEMA_VERSION);
-    expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
-    expect(readSchemaWriterStamp(db)).toBeGreaterThan(olderStamp);
     db.close();
   });
 

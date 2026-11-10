@@ -42,39 +42,18 @@ describe('resolveServerGenerationConcurrency', () => {
     expect(resolveServerGenerationConcurrency()).toBe(6);
   });
 
-  for (const bad of ['0', '-4', '2.5', 'many', '']) {
+  for (const bad of ['0', '-4', '2.5', 'many', '', 'six', '1e100']) {
     it(`ignores ${JSON.stringify(bad)} rather than starting a broken worker`, () => {
       process.env[KEY] = bad;
       const warn = spyOn(logger, 'warn').mockImplementation(() => undefined);
       try {
         expect(resolveServerGenerationConcurrency()).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(bad ? 1 : 0);
       } finally {
         warn.mockRestore();
       }
     });
   }
-
-  it('warns on a value it refuses, so a typo is not silently serial', () => {
-    process.env[KEY] = 'six';
-    const warn = spyOn(logger, 'warn').mockImplementation(() => undefined);
-    try {
-      resolveServerGenerationConcurrency();
-      expect(warn).toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('refuses 1e100: Number() reads it as an integer, but it is not a safe one', () => {
-    process.env[KEY] = '1e100';
-    const warn = spyOn(logger, 'warn').mockImplementation(() => undefined);
-    try {
-      expect(resolveServerGenerationConcurrency()).toBeUndefined();
-      expect(warn).toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
-  });
 
   it('clamps a value above the per-lane cap and warns', () => {
     process.env[KEY] = String(MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE + 36);

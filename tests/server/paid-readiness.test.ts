@@ -149,9 +149,15 @@ describe('paid-readiness (usage metering, rate limit, quota)', () => {
     const c = fakeCtx({ apiKeyId, teamId, projectId });
     mw(c.req, c.res, c.next);
     expect(c.out.nexted).toBe(true); // never blocks
-    await new Promise((r) => setTimeout(r, 100)); // let the background insert land
-    const n = await pool.query(`SELECT count(*)::int AS n FROM usage_events WHERE team_id = $1 AND kind = 'request'`, [teamId]);
-    expect(n.rows[0]?.n).toBe(1);
+    const deadline = Date.now() + 2_000;
+    let count = 0;
+    do {
+      const n = await pool.query(`SELECT count(*)::int AS n FROM usage_events WHERE team_id = $1 AND kind = 'request'`, [teamId]);
+      count = n.rows[0]?.n;
+      if (count === 1) break;
+      await new Promise((r) => setTimeout(r, 10));
+    } while (Date.now() < deadline);
+    expect(count).toBe(1);
   });
 
   it('GET /v1/usage returns the team usage (array-middleware wiring works)', async () => {

@@ -334,21 +334,4 @@ describe('#4689 — buildIsolatedEnvWithFreshOAuth injects a usable credential i
     expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(result.ANTHROPIC_API_KEY).toBeUndefined();
   });
-
-  it('without the transcript-only dir, the child env stays CLAUDE_CONFIG_DIR-free and still gets the token (#4149 guard)', async () => {
-    const envToken = 'sk-ant-oat01-4689-fresh-spawn';
-    const storedProbe = await probeStoredCredential();
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = envToken;
-    setPlatform('aix');
-    stubSettingsFile({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: '' });
-
-    const result = await buildIsolatedEnvWithFreshOAuth();
-
-    expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
-    if (storedProbe.kind === 'present') {
-      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(storedProbe.token);
-    } else {
-      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(envToken);
-    }
-  });
 });

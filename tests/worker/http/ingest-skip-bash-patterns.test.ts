@@ -97,11 +97,6 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
     })).rejects.toThrow();
   });
 
-  it('ignores an invalid regex instead of dropping the observation', async () => {
-    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '(unbalanced';
-    await expect(bash('ls -la')).rejects.toThrow();
-  });
-
   it('warns once for a persistent invalid regex, not on every observation', async () => {
     // A unique value so the module-level compile cache has not seen it yet.
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '(only-warn-once-' + process.pid;

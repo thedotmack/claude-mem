@@ -11,7 +11,8 @@ failOnCiWithoutChrome('CI requires Chrome for the session project-case regressio
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { App } from './src/ui/viewer/App';
-    localStorage.setItem('claude-mem-welcome-dismissed', 'true');
+    import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+    setStoredWelcomeDismissed(true);
     location.hash = '#/sessions';
     let selectedPages = 0;
     const originalFetch = window.fetch.bind(window);

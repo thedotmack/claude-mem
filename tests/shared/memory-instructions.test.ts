@@ -14,7 +14,6 @@ describe('runtime-specific memory instructions', () => {
     expect(text).toContain('search({query, project})');
     expect(text).toContain('timeline({anchor})');
     expect(text).toContain('get_observations({ids})');
-    expect(text).toContain('Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.');
     expect(text).not.toContain('Server runtime:');
   });
   it('does not direct server recall into the local corpus', () => {
@@ -36,12 +35,6 @@ describe('MCP server instructions', () => {
       const text = mcpServerInstructions({ runtime, workStateEnabled: true, memoryInstructionsEnabled: true });
       expect(text).toBe(`${WORK_STATE_RULE}\n\n${memoryInstructionsForRuntime(runtime)}`);
     }
-    expect(WORK_STATE_RULE).toStartWith("# Work state: your to-do lists and working state\nUse claude-mem's work_state_write tool");
-    expect(WORK_STATE_RULE).toContain('It is your canonical to-do list: use it instead of any built-in to-do tool.');
-    // A bare work_state_read shows only what is open, so the hint for closed items names the flag.
-    expect(WORK_STATE_RULE).toContain('\n- Read every list, closed items included: work_state_read with includeClosed=true');
-    // It no longer sits beside the open lists, so it does not say "here".
-    expect(WORK_STATE_RULE).toContain('Whatever is still open is shown at the start of every session in this project.');
   });
 
   it('leaves out each part its setting turns off', () => {

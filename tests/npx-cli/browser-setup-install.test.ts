@@ -72,6 +72,16 @@ const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const spawner = { ...await import('../../src/services/worker-spawner.js') };
 const cliPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
 const memoryCredentials = { ...await import('../../src/npx-cli/cmem-memory-credentials.js') };
+const browserSetup = { ...await import('../../src/npx-cli/install/browser-setup.js') };
+let backgroundPolls = 0;
+mock.module('../../src/npx-cli/install/browser-setup.js', () => ({
+  ...browserSetup,
+  runBrowserSetup: (deps: Parameters<typeof browserSetup.runBrowserSetup>[0]) => browserSetup.runBrowserSetup({ ...deps, pollIntervalMs: 10 }),
+  waitForBackgroundWorkToFinish: (deps: Parameters<typeof browserSetup.waitForBackgroundWorkToFinish>[0]) => browserSetup.waitForBackgroundWorkToFinish({
+    ...deps, pollIntervalMs: 10,
+    sleep: async (ms) => { backgroundPolls++; await new Promise(resolve => setTimeout(resolve, ms)); },
+  }),
+}));
 const packageVersion = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')).version;
 mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPluginVersion: () => packageVersion }));
 
@@ -79,19 +89,24 @@ const lines: string[] = [];
 const questions: string[] = [];
 const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
+const providerMenus: Array<{ options: Array<{ value: string }>; initialValues: string[] }> = [];
 let workerStarts = 0;
 const workerStartStates: unknown[] = [];
 const workerStartSessions: unknown[] = [];
+const workerStartSettings: unknown[] = [];
 let fixtureWorkerResult: 'ready' | 'dead' = 'ready';
 mock.module('@clack/prompts', () => ({
   ...prompts,
   intro: () => {}, outro: (value: string) => lines.push(value), cancel: (value: string) => lines.push(value),
   note: (value: string, title?: string) => lines.push(`${title}\n${value}`),
   spinner: () => ({ start: (value: string) => lines.push(value), stop: (value: string) => lines.push(value), message: () => {} }),
-  multiselect: async (options: { message: string }) => {
+  multiselect: async (options: { message: string; options: Array<{ value: string }>; initialValues: string[] }) => {
     questions.push(options.message);
     // The terminal flow's provider prompt: CMEM Pro, whose sign-in is the login boundary below.
-    if (options.message.startsWith('Select Provider')) return ['cmem'];
+    if (options.message.startsWith('Select Provider')) {
+      providerMenus.push(options);
+      return ['cmem'];
+    }
     return ['claude-code'];
   },
   select: async (options: { message: string }) => {
@@ -160,6 +175,7 @@ mock.module('../../src/services/worker-spawner.js', () => ({
     workerStarts++;
     workerStartStates.push(existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null);
     workerStartSessions.push(existsSync(sessionPath) ? JSON.parse(readFileSync(sessionPath, 'utf8')) : null);
+    workerStartSettings.push(JSON.parse(readFileSync(settingsPath, 'utf8')));
     if (extraction.running) extraction.restartsWhileRunning++;
     if (fixtureWorkerResult === 'dead') return 'dead';
     await startFixtureWorker();
@@ -228,6 +244,9 @@ beforeEach(async () => {
   pairingStarts.length = 0; pairingStartHeaders.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
   workerStartStates.length = 0;
   workerStartSessions.length = 0;
+  workerStartSettings.length = 0;
+  providerMenus.length = 0;
+  backgroundPolls = 0;
   fixtureWorkerResult = 'ready';
   extraction.running = false; extraction.restartsWhileRunning = 0;
 });
@@ -420,7 +439,10 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     expect(lines.join('\n')).toContain('restarts to apply your settings once it finishes reading your goals, work and rules');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    for (let poll = 0; poll < 100 && backgroundPolls < 2; poll++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(backgroundPolls).toBeGreaterThanOrEqual(2);
     expect(installed).toBe(false);
     expect(workerStarts).toBe(1);
     expect((await browserState()).status).toBe('complete');
@@ -444,6 +466,9 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
     // Sign-in waited for the provider choice instead of gating the install.
     expect(questions.some(q => q.startsWith('Select Provider'))).toBe(true);
+    expect(providerMenus).toHaveLength(1);
+    expect(providerMenus[0].options.map(option => option.value)).toEqual(['cmem', 'claude']);
+    expect(providerMenus[0].initialValues).toEqual(['cmem']);
     expect(lines.join('\n')).toContain('CMEM Pro needs a claude-mem sign-in.');
   });
 
@@ -498,6 +523,10 @@ describe('install with --provider claude (interactive TTY)', () => {
     expect(lines.join('\n')).toContain('--provider claude runs memory on your own Anthropic plan.');
     expect(existsSync(statePath)).toBe(false);
     expect(workerStartStates.every(state => state === null)).toBe(true);
+    expect(workerStartSettings).not.toHaveLength(0);
+    for (const settings of workerStartSettings) {
+      expect(settings).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
+    }
   });
 });
 

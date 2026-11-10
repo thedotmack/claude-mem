@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { backfillProjectDedup, sweepProjectCandidates, runDedupScan, computeTitleNormKey } from '../../src/services/sqlite/dedup-store.js';
+import { backfillProjectDedup, sweepProjectCandidates, computeTitleNormKey } from '../../src/services/sqlite/dedup-store.js';
 
 const CFG = { cosineThreshold: 0.8, idfVetoDf: 10, minSharedTokens: 2, maxScan: 2000, maxBackfillRows: 50000 };
 
@@ -66,8 +66,6 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     const n = sweepProjectCandidates(store.db, 'p', CFG);
     expect(n).toBeGreaterThanOrEqual(1);
 
-    const ids = store.db.prepare("SELECT id FROM observations WHERE title LIKE '%worker%service%' OR title LIKE '%worker build%'").all() as any[];
-    expect(ids.length).toBe(2);
     const cand = store.db.prepare('SELECT method, status FROM observation_dedup_candidates LIMIT 1').get() as any;
     expect(cand.method).toBe('idf_cosine');
     expect(cand.status).toBe('pending');
@@ -132,19 +130,11 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(store.listDedupCandidates('p')).toHaveLength(all.length);
   });
 
-  it('store.runDedupScan() backfills + sweeps all projects via configured knobs', () => {
-    process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD = '0.80';
-    seed(['build the worker service module', 'worker build the service module'], 'pp');
-    const report = store.runDedupScan();
-    expect(report.find((r: any) => r.project === 'pp')?.docs).toBe(2);
-    delete process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD;
-  });
-
   it('runDedupScan covers every project', () => {
     seed(['one alpha', 'two beta'], 'projA');
     seed(['three gamma', 'four delta'], 'projB');
-    const report = runDedupScan(store.db, CFG);
-    expect(report.map(r => r.project).sort()).toEqual(['projA', 'projB']);
-    expect(report.every(r => r.docs === 2)).toBe(true);
+    const report = store.runDedupScan();
+    expect(report.map((r: any) => r.project).sort()).toEqual(['projA', 'projB']);
+    expect(report.every((r: any) => r.docs === 2)).toBe(true);
   });
 });

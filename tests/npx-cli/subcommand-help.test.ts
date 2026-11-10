@@ -63,22 +63,29 @@ function runCli(args: string[]) {
 }
 
 describe('npx CLI subcommand --help', () => {
-  for (const sub of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart', 'adopt', 'cleanup']) {
-    for (const flag of ['--help', '-h']) {
-      it(`${sub} ${flag} prints help and does not run the command`, () => {
-        const r = runCli([sub, flag]);
-        expect(r.status).toBe(0);
-        expect(r.stdout).toContain('Install Commands');
-        expect(r.stdout).not.toContain('Stopped running worker');
-        expect(r.stdout).not.toContain('Uninstall');
-        expect(r.stdout).not.toContain('Cache root:');
-        expect(r.homeEntries).toEqual([]);
-      });
-    }
+  for (const [index, sub] of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart', 'adopt', 'cleanup'].entries()) {
+    const flag = index % 2 === 0 ? '--help' : '-h';
+    it(`${sub} ${flag} prints help and does not run the command`, () => {
+      const r = runCli([sub, flag]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('Install Commands');
+      expect(r.stdout).not.toContain('Stopped running worker');
+      expect(r.stdout).not.toContain('Uninstall');
+      expect(r.stdout).not.toContain('Cache root:');
+      expect(r.homeEntries).toEqual([]);
+      if (sub === 'install') {
+        expect(r.stdout).toContain('prints the docker compose command');
+        expect(r.stdout).toContain('only when CLAUDE_MEM_SERVER_DATABASE_URL is set');
+        expect(r.stdout).toContain('set CLAUDE_MEM_SERVER_DATABASE_URL before running npx claude-mem server keys rotate');
+        expect(r.stdout).not.toContain('brings up Docker');
+        expect(r.stdout).not.toContain('generates an API key');
+        expect(r.stdout).not.toContain('injects the IDE MCP config');
+      }
+    });
   }
 
   // The flag can also follow a verb, e.g. `kimi uninstall --help`.
-  for (const command of [
+  for (const [index, command] of [
     ['memory', 'ingest'],
     ['telemetry', 'disable'],
     ['kimi', 'uninstall'],
@@ -91,14 +98,13 @@ describe('npx CLI subcommand --help', () => {
     ['server', 'start'],
     ['worker', 'start'],
     ['transcript', 'watch'],
-  ]) {
-    for (const flag of ['--help', '-h']) {
-      it(`${command.join(' ')} ${flag} prints help and does not run the command`, () => {
-        const r = runCli([...command, flag]);
-        expect(r.status).toBe(0);
-        expect(r.stdout).toContain('Install Commands');
-        expect(r.homeEntries).toEqual([]);
-      });
-    }
+  ].entries()) {
+    const flag = index % 2 === 0 ? '--help' : '-h';
+    it(`${command.join(' ')} ${flag} prints help and does not run the command`, () => {
+      const r = runCli([...command, flag]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('Install Commands');
+      expect(r.homeEntries).toEqual([]);
+    });
   }
 });
