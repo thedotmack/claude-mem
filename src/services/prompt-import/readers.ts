@@ -405,8 +405,10 @@ export function createGeminiCliReader(): AgentPromptReader {
     label: 'Gemini CLI',
     platformSource: 'gemini-cli',
     locate(homeDirectory) {
-      projectDirectories = geminiProjectDirectories(homeDirectory);
-      const tmp = join(homeDirectory, '.gemini', 'tmp');
+      // Gemini's override names the parent of .gemini, not the config folder.
+      const profileHome = nativeProfileDirectory(homeDirectory, 'GEMINI_CLI_HOME');
+      projectDirectories = geminiProjectDirectories(profileHome);
+      const tmp = join(profileHome, '.gemini', 'tmp');
       const sources: Array<TranscriptSource | null> = [];
       for (const project of listDirectory(tmp)) {
         const chats = join(tmp, project, 'chats');

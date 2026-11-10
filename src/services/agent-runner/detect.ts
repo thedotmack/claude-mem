@@ -38,7 +38,7 @@ import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
 import { hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from '../../shared/EnvManager.js';
@@ -281,24 +281,27 @@ async function detectGemini(dependencies: AgentDetectionDependencies): Promise<U
     return { id: 'gemini', path, authenticated: true, reason: 'GEMINI_API_KEY is set' };
   }
 
-  const geminiDirectory = join(dependencies.homeDirectory(), '.gemini');
+  const configuredHome = dependencies.environment.GEMINI_CLI_HOME;
+  const geminiDirectory = join(configuredHome ? resolve(configuredHome) : dependencies.homeDirectory(), '.gemini');
   const settingsPath = join(geminiDirectory, 'settings.json');
   const credentialsPath = join(geminiDirectory, 'oauth_creds.json');
+  const settingsLabel = configuredHome ? settingsPath : '~/.gemini/settings.json';
+  const credentialsLabel = configuredHome ? credentialsPath : '~/.gemini/oauth_creds.json';
   if (!dependencies.fileExists(settingsPath)) {
-    return { id: 'gemini', path, authenticated: false, reason: 'no GEMINI_API_KEY and no ~/.gemini/settings.json' };
+    return { id: 'gemini', path, authenticated: false, reason: `no GEMINI_API_KEY and no ${settingsLabel}` };
   }
   let selectedType: unknown;
   try {
     const settings = JSON.parse(dependencies.readTextFile(settingsPath)) as { security?: { auth?: { selectedType?: unknown } } };
     selectedType = settings.security?.auth?.selectedType;
   } catch (error) {
-    return { id: 'gemini', path, authenticated: false, reason: `~/.gemini/settings.json is unreadable: ${describeError(error)}` };
+    return { id: 'gemini', path, authenticated: false, reason: `${settingsLabel} is unreadable: ${describeError(error)}` };
   }
   if (typeof selectedType !== 'string' || !selectedType) {
-    return { id: 'gemini', path, authenticated: false, reason: '~/.gemini/settings.json names no auth type' };
+    return { id: 'gemini', path, authenticated: false, reason: `${settingsLabel} names no auth type` };
   }
   if (!dependencies.fileExists(credentialsPath)) {
-    return { id: 'gemini', path, authenticated: false, reason: `auth type ${selectedType} but no ~/.gemini/oauth_creds.json` };
+    return { id: 'gemini', path, authenticated: false, reason: `auth type ${selectedType} but no ${credentialsLabel}` };
   }
   const loginKey = [path, selectedType, geminiLoginFingerprint(dependencies, credentialsPath)].join('\0');
   let check = dependencies.geminiAccountChecks.get(loginKey);
@@ -328,7 +331,10 @@ function geminiLoginFingerprint(dependencies: AgentDetectionDependencies, creden
 async function probeGeminiAccount(dependencies: AgentDetectionDependencies, path: string, selectedType: string): Promise<UsableAgent> {
   // CLAUDE_MEM_INTERNAL=1 keeps claude-mem's own Gemini hooks from recording the probe.
   const result = await runCommand(dependencies.spawn, path, GEMINI_ACCOUNT_PROBE_ARGS, {
-    cwd: dependencies.homeDirectory(), env: { ...dependencies.environment, CLAUDE_MEM_INTERNAL: '1' }, input: '',
+    cwd: dependencies.homeDirectory(), env: { ...dependencies.environment, CLAUDE_MEM_INTERNAL: '1',
+      // The probe runs in a different cwd; retain the profile selected here.
+      ...(dependencies.environment.GEMINI_CLI_HOME ? { GEMINI_CLI_HOME: resolve(dependencies.environment.GEMINI_CLI_HOME) } : {}),
+    }, input: '',
   });
   const authenticationError = /Error authenticating:\s*(.+)/.exec(result.stderr)?.[1]?.trim();
   if (authenticationError) {
