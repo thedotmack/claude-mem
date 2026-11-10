@@ -38,7 +38,7 @@ const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
 ).transform(fields => ({ ...fields }));
 
 const workStateWriteSchema = z.object({
-  cwd: z.string().trim().min(1),
+  cwd: z.string().refine(cwd => cwd.trim().length > 0, 'cwd is required'),
   list: z.string().trim().min(1).max(200).refine(list => !isSharedWorkList(list), 'This list is reserved for shared My Work records'),
   fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
@@ -137,8 +137,8 @@ export class WorkStateRoutes extends BaseRouteHandler {
       res.status(403).json({ error: 'Forbidden', message: 'Work-state reads from another browser page are not allowed' });
       return;
     }
-    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd.trim() : '';
-    if (!cwd) {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    if (!cwd.trim()) {
       this.badRequest(res, 'cwd is required');
       return;
     }

@@ -384,7 +384,9 @@ export async function readGeminiChat(path: string): Promise<{ header: any; messa
 function geminiTypedText(message: any): string | null {
   const display = message.displayContent;
   let text: string;
-  if (Array.isArray(display)) {
+  if (typeof display === 'string') {
+    text = display;
+  } else if (Array.isArray(display)) {
     if (!display.some((part: any) => typeof part?.text === 'string')) return null;
     text = textOf(display.map((part: any) => ({ type: 'text', ...part })), ['text']);
   } else {
@@ -405,8 +407,10 @@ export function createGeminiCliReader(): AgentPromptReader {
     label: 'Gemini CLI',
     platformSource: 'gemini-cli',
     locate(homeDirectory) {
-      projectDirectories = geminiProjectDirectories(homeDirectory);
-      const tmp = join(homeDirectory, '.gemini', 'tmp');
+      // Gemini's override names the parent of .gemini, not the config folder.
+      const profileHome = nativeProfileDirectory(homeDirectory, 'GEMINI_CLI_HOME');
+      projectDirectories = geminiProjectDirectories(profileHome);
+      const tmp = join(profileHome, '.gemini', 'tmp');
       const sources: Array<TranscriptSource | null> = [];
       for (const project of listDirectory(tmp)) {
         const chats = join(tmp, project, 'chats');
@@ -498,25 +502,70 @@ export function createAntigravityCliReader(): AgentPromptReader {
 
 // ---------------------------------------------------------------------------
 // OpenCode: ~/.local/share/opencode/opencode.db (SQLite, opened read-only).
-// `session` (parent_id set for subagent sessions), `message` (data.role),
-// `part` holds typed text (not synthetic/ignored) and model-authored tool inputs.
+// V1 stores message roles and text in `message`/`part`; V2 stores typed user
+// text in `session_message`, with assistant content inline or in `session_part`.
+// Native migration retains V1 rows, preserving their IDs in the V2 tables.
+
+export function openCodeHistoryLayout(database: Database): { legacy: boolean; current: boolean; splitParts: boolean } {
+  const tables = new Set((database.prepare(`SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name IN ('message', 'session_message', 'session_part')`).all() as Array<{ name: string }>).map(row => row.name));
+  const legacy = tables.has('message');
+  const current = tables.has('session_message');
+  if (!legacy && !current) throw new Error('No supported OpenCode message table');
+  return { legacy, current, splitParts: tables.has('session_part') };
+}
 
 interface OpenCodePart { messageId: string; sessionId: string; role: string; createdAt: number; directory: string; parentId: string | null; data: string }
 
 function readOpenCodeParts(path: string, role: 'user' | 'assistant'): OpenCodePart[] {
   const database = new Database(path, { readonly: true });
   try {
-    // Tool outputs may be user-authored files; project only model input and its call time.
-    return database.prepare(`SELECT p.message_id AS messageId, m.session_id AS sessionId, json_extract(m.data, '$.role') AS role,
+    const layout = openCodeHistoryLayout(database);
+    const queries: string[] = [];
+    const parameters: string[] = [];
+    if (layout.legacy) {
+      queries.push(`SELECT p.message_id AS messageId, m.session_id AS sessionId, json_extract(m.data, '$.role') AS role,
+        m.time_created AS createdAt, s.directory, s.parent_id AS parentId, p.data,
+        json_extract(p.data, '$.type') AS partType, json_extract(p.data, '$.state.time.start') AS startedAt,
+        0 AS storageOrder, p.id AS ordinal
+        FROM part p JOIN message m ON m.id = p.message_id JOIN session s ON s.id = m.session_id
+        WHERE json_extract(m.data, '$.role') = ? AND (json_extract(p.data, '$.type') = 'text'
+          OR (? = 'assistant' AND json_extract(p.data, '$.type') = 'tool'))
+          ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
+      parameters.push(role, role);
+    }
+    if (layout.current && role === 'user') {
+      queries.push(`SELECT m.id AS messageId, m.session_id AS sessionId, m.type AS role,
         m.time_created AS createdAt, s.directory, s.parent_id AS parentId,
-        CASE WHEN json_extract(p.data, '$.type') = 'tool' THEN json_object(
-          'type', 'tool', 'status', json_extract(p.data, '$.state.status'),
-          'input', json_extract(p.data, '$.state.input'), 'startedAt', json_extract(p.data, '$.state.time.start'))
-          ELSE p.data END AS data
-      FROM part p JOIN message m ON m.id = p.message_id JOIN session s ON s.id = m.session_id
-      WHERE json_extract(m.data, '$.role') = ? AND (json_extract(p.data, '$.type') = 'text'
-        OR (? = 'assistant' AND json_extract(p.data, '$.type') = 'tool'))
-      ORDER BY m.time_created, p.message_id, p.id`).all(role, role) as OpenCodePart[];
+        json_object('type', 'text', 'text', json_extract(m.data, '$.text')) AS data,
+        'text' AS partType, NULL AS startedAt, 0 AS storageOrder, 0 AS ordinal
+        FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.type = 'user'`);
+    }
+    if (layout.current && role === 'assistant') {
+      if (layout.splitParts) {
+        queries.push(`SELECT m.id AS messageId, m.session_id AS sessionId, m.type AS role,
+          m.time_created AS createdAt, s.directory, s.parent_id AS parentId, p.data,
+          p.type AS partType, json_extract(p.data, '$.time.ran') AS startedAt, 0 AS storageOrder, p.ordinal
+          FROM session_message m JOIN session_v2 s ON s.id = m.session_id
+          JOIN session_part p ON p.message_id = m.id
+          WHERE m.type = 'assistant' AND p.type IN ('text', 'tool')`);
+      }
+      // Native history reads ordered split parts before any remaining inline
+      // content. Both can exist when an older build resumes a split message.
+      queries.push(`SELECT m.id AS messageId, m.session_id AS sessionId, m.type AS role,
+        m.time_created AS createdAt, s.directory, s.parent_id AS parentId, p.value AS data,
+        json_extract(p.value, '$.type') AS partType, json_extract(p.value, '$.time.ran') AS startedAt,
+        1 AS storageOrder, CAST(p.key AS INTEGER) AS ordinal
+        FROM session_message m JOIN session_v2 s ON s.id = m.session_id, json_each(m.data, '$.content') p
+        WHERE m.type = 'assistant' AND json_extract(p.value, '$.type') IN ('text', 'tool')`);
+    }
+    // Tool outputs may be user-authored files; project only model input and its call time.
+    return database.prepare(`SELECT messageId, sessionId, role, createdAt, directory, parentId,
+        CASE WHEN partType = 'tool' THEN json_object(
+          'type', 'tool', 'status', json_extract(data, '$.state.status'),
+          'input', json_extract(data, '$.state.input'), 'startedAt', startedAt)
+          ELSE data END AS data
+      FROM (${queries.join('\nUNION ALL\n')}) ORDER BY createdAt, messageId, storageOrder, ordinal`).all(...parameters) as OpenCodePart[];
   } finally {
     database.close();
   }

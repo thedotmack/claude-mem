@@ -47,8 +47,8 @@ class TestOpenRouterProvider extends OpenRouterProvider {
     super({} as never, {} as never);
     this.streamIdleTimeoutMs = IDLE_MS;
   }
-  runQuery(paidSendBudget?: PaidSendBudget): Promise<ProviderQueryResult> {
-    return this.query(HISTORY, OPENROUTER_CONFIG as never, undefined, undefined, paidSendBudget);
+  runQuery(paidSendBudget?: PaidSendBudget, reasoningEffort?: 'high'): Promise<ProviderQueryResult> {
+    return this.query(HISTORY, { ...OPENROUTER_CONFIG, reasoningEffort } as never, undefined, undefined, paidSendBudget);
   }
 }
 
@@ -207,6 +207,64 @@ describe('OpenRouter secret stream', () => {
     }
   });
 
+  // OpenRouter streams summary, text and encrypted reasoning in
+  // choices[].delta.reasoning_details, without requiring a reasoning string.
+  // These are already generated output even before the visible answer starts.
+  for (const detail of [
+    { type: 'reasoning.summary', summary: 'Checking the supplied evidence.', format: 'openai-responses-v1', index: 0 },
+    { type: 'reasoning.text', text: 'Checking the supplied evidence.', format: 'anthropic-claude-v1', index: 0 },
+    { type: 'reasoning.encrypted', data: 'b3BhcXVl', format: 'anthropic-claude-v1', index: 0 },
+  ]) {
+    it(`does not resend after ${detail.type} output and an early stream end`, async () => {
+      const mock = installFetch(streamScript([sse({ choices: [{ delta: { reasoning_details: [detail] } }] })]));
+      const budget = new PaidSendBudget(1);
+      const error = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery(budget, 'high')).catch((caught: unknown) => caught);
+      expect(mock.calls).toHaveLength(1);
+      expect(paidSendOutcomeOf(error)).toBe('output_failure');
+      expect(isClassified(error) && error.code).toBe(STREAM_INTERRUPTED_CODE);
+      expect(budget.spentPaidSends).toBe(1);
+      expect(sentBody(mock).reasoning).not.toEqual({ enabled: false });
+    });
+  }
+
+  for (const [name, ending] of [
+    ['unreadable chunk', { chunk: 'data: {not json\n\n' }],
+    ['idle timeout', { hang: true }],
+    ['provider error', sse({ error: { code: 'server_error', message: 'Provider disconnected' } })],
+  ] as const) {
+    it(`does not resend reasoning details after a ${name}`, async () => {
+      const mock = installFetch(streamScript([
+        sse({ choices: [{ delta: { reasoning_details: [{ type: 'reasoning.encrypted', data: 'b3BhcXVl', index: 0 }] } }] }),
+        ending,
+      ]));
+      const budget = new PaidSendBudget(1);
+      const error = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery(budget, 'high')).catch((caught: unknown) => caught);
+      expect(mock.calls).toHaveLength(1);
+      expect(paidSendOutcomeOf(error)).toBe('output_failure');
+      expect(budget.spentPaidSends).toBe(1);
+    });
+  }
+
+  it('keeps the existing pre-output resend when reasoning_details is empty', async () => {
+    const mock = installFetch(
+      streamScript([sse({ choices: [{ delta: { reasoning_details: [] } }] })]),
+      streamScript([delta('<observation/>'), finish('stop'), done]),
+    );
+    const budget = new PaidSendBudget(1);
+    const result = await withoutRetryDelay(() => new TestOpenRouterProvider().runQuery(budget, 'high'));
+    expect(result.content).toBe('<observation/>');
+    expect(mock.calls).toHaveLength(2);
+    expect(budget.spentPaidSends).toBe(2);
+  });
+
+  it('does not mix reasoning details into a completed answer', async () => {
+    installFetch(streamScript([
+      sse({ choices: [{ delta: { reasoning_details: [{ type: 'reasoning.text', text: 'Checking evidence.', index: 0 }] } }] }),
+      delta('<observation/>'), finish('stop'), usage(), done,
+    ]));
+    expect((await new TestOpenRouterProvider().runQuery(undefined, 'high')).content).toBe('<observation/>');
+  });
+
   // #4737: a self-hosted backend spends its queue wait silent, so the queue
   // wait reads as idle and the fixed window fired before the deadline the
   // user raised. With the test hook unset, the window must come from
@@ -301,6 +359,17 @@ describe('OpenRouter secret stream', () => {
 });
 
 describe('openai-compatible secret stream', () => {
+  it('does not resend an interrupted reasoning_details-only response from a compatible endpoint', async () => {
+    const mock = installFetch(streamScript([
+      sse({ choices: [{ delta: { reasoning_details: [{ type: 'reasoning.summary', summary: 'Checking evidence.', index: 0 }] } }] }),
+    ]));
+    const budget = new PaidSendBudget(1);
+    const error = await withoutRetryDelay(() => new TestOpenAICompatProvider().runQuery(budget)).catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(budget.spentPaidSends).toBe(1);
+  });
+
   it('streams, assembles the reply (leading think block removed) and captures usage', async () => {
     const mock = installFetch(streamScript([
       { chunk: ': keep-alive\n\n' },

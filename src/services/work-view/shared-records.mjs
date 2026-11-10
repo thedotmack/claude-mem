@@ -10,6 +10,10 @@ export const SHARED_WORK_MAX_ROW_BYTES = 128_000;
 export const SHARED_WORK_MAX_UPDATES = 512;
 export const SHARED_WORK_MAX_PARTS = 32;
 export const isSharedWorkList = value => typeof value === 'string' && /^__my_work_v\d+:/.test(value);
+// Match the numeric version grammar in SQLite too. A bare GLOB '*' also
+// matches letters, which would reserve authored names like v1draft:notes.
+export const sharedWorkListSql = expression => `(COALESCE(${expression}, '') GLOB '__my_work_v[0-9]*:*'
+  AND substr(${expression}, 12, instr(substr(${expression}, 12), ':') - 1) NOT GLOB '*[^0-9]*')`;
 export const sharedRecordKey = (kind, key) => canonicalJson([kind, key]);
 export const sharedValueHash = (kind, key, value, deleted = false) => sha256Base64Url(canonicalJson({ kind, key, value: deleted ? null : value, deleted }));
 

@@ -80,7 +80,7 @@ export function findBunExecutablePath(): string | null {
   return getToolPath('bun', bunCommonPaths());
 }
 
-function isExecutableFile(path: string): boolean {
+export function isExecutableFile(path: string): boolean {
   try {
     if (!statSync(path).isFile()) return false;
     if (!IS_WINDOWS) accessSync(path, constants.X_OK);

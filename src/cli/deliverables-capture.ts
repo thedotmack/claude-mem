@@ -107,8 +107,8 @@ function isWithinRoots(realPath: string, roots: string[]): boolean {
  */
 export function resolveCandidatePath(value: unknown, cwd: string, roots: string[] = deliverableRoots(cwd)): string | null {
   if (typeof value !== 'string') return null;
-  const text = value.trim();
-  if (!text || text.includes('\0') || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  const text = value;
+  if (!text.trim() || text.includes('\0') || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
   const expanded = text.startsWith('~/') ? join(homedir(), text.slice(2)) : text;
   const path = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
   let real: string;

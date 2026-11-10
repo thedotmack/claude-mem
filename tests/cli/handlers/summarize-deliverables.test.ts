@@ -221,6 +221,52 @@ describe('Stop hook deliverables capture', () => {
     expect(spooledEntries('deliverables')).toHaveLength(0);
   });
 
+  it.skipIf(process.platform === 'win32')('copies the declared literal filename instead of its trimmed neighbor', async () => {
+    makeTurn();
+    const source = join(repo, 'out', 'slides.pdf ');
+    const neighbor = source.trimEnd();
+    writeFileSync(source, '%PDF-1.4 intended deliverable');
+    writeFileSync(neighbor, '%PDF-1.4 unrelated neighbor');
+    writeFileSync(transcriptPath, [
+      user('Attach the exact file I requested'),
+      assistant([toolUse('toolu_literal', 'Write', { file_path: source, content: '' })]),
+      user([toolResult('toolu_literal')]),
+      assistant([toolUse('toolu_attach', 'work_state_write', { fields: { work_product: { path: source } } })]),
+      user([toolResult('toolu_attach')]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const [entry] = spooledEntries('deliverables');
+    const payload = entry.payload as SpooledDeliverablesPayload;
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0].sourcePath).toBe(source);
+    expect(payload.files[0].declared).toBe(true);
+    expect(readFileSync(payload.files[0].bucketPath, 'utf8')).toBe('%PDF-1.4 intended deliverable');
+  });
+
+  it.skipIf(process.platform === 'win32')('does not infer a different file by trimming a captured Write path', async () => {
+    makeTurn();
+    const source = join(repo, '.scratch', 'report.html ');
+    writeFileSync(source, 'the file the tool actually wrote');
+    writeFileSync(transcriptPath, [
+      user('Write the requested file'),
+      assistant([toolUse('toolu_literal', 'Write', { file_path: source, content: '' })]),
+      user([toolResult('toolu_literal')]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    // The literal extension is not a recognized work-product kind. Its .html
+    // neighbor was not written this turn and must not be copied in its place.
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+  });
+
   it('records a subagent\'s deliverables from its own transcript at SubagentStop, whose entries are all sidechain', async () => {
     makeTurn({ sidechain: true });
     const mainTranscript = join(outside, 'main.jsonl');

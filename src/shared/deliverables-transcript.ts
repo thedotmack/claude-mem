@@ -165,7 +165,7 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
       if (FILE_WRITING_TOOLS.has(block.name)) {
         const path = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : null;
         if (path && path.trim()) {
-          const write = { path: path.trim(), toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine };
+          const write = { path, toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine };
           writes.push(write);
           invocations.set(block.id, write);
         }

@@ -24,6 +24,7 @@ import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
 import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
 import { isInsideDeliverablesDir, resolveDeliverablesDir } from '../../../shared/deliverables.js';
+import { isPrivatePrompt } from '../../../shared/deliverables-transcript.js';
 import { statSync } from 'fs';
 import { isExpiredObserverEvent } from '../../../shared/observer-work-policy.js';
 
@@ -762,9 +763,10 @@ export function ingestAdvisorCalls(
   let privateOnly = 0;
   for (const call of liveCalls) {
     // <private> content never reaches the database, the same rule as
-    // prompts and tool payloads. Advice that was entirely private is dropped.
+    // prompts and tool payloads. A private originating prompt suppresses the
+    // entire call, even when the resulting advice contains no tags.
     const advice = stripMemoryTags(call.advice).trim();
-    if (!advice) {
+    if (!advice || isPrivatePrompt(call.lastUserMessage ?? '')) {
       privateOnly++;
       continue;
     }

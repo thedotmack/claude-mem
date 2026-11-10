@@ -7,6 +7,7 @@ import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import { parseSearchResponse } from "../../src/integrations/opencode-plugin/contract";
 import { normalizePlatformSource } from "../../src/shared/platform-source";
 import { isConnectionRefusedError } from "../../src/shared/connection-errors";
+import { ingestObservation, setIngestContext } from "../../src/services/worker/http/shared";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -402,6 +403,46 @@ describe("OpenCode plugin event contract", () => {
       expect(obsBody.platform_source).toBe("opencode");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  // #5666: OpenCode names its shell tool `bash`, and the worker only applies
+  // CLAUDE_MEM_SKIP_BASH_PATTERNS to `Bash`, so no command was ever skipped.
+  it("sends bash as Bash so CLAUDE_MEM_SKIP_BASH_PATTERNS applies", async () => {
+    const results: unknown[] = [];
+    const originalFetch = globalThis.fetch;
+    const prevPattern = process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = "scripts/write_memory\\.py";
+    setIngestContext({ sessionManager: {} as any, dbManager: {} as any, eventBroadcaster: {} as any });
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/api/sessions/observations")) {
+        const body = JSON.parse(String(init!.body));
+        results.push(await ingestObservation({
+          contentSessionId: body.contentSessionId,
+          toolName: body.tool_name,
+          toolInput: body.tool_input,
+          toolResponse: body.tool_response,
+        }));
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          sessionID: "ses_bash_skip",
+          callID: "c1",
+          args: { command: "python3 scripts/write_memory.py --x", description: "Write memory" },
+        },
+        { title: "bash", output: "ok", metadata: {} },
+      );
+      expect(results).toEqual([{ ok: true, status: "skipped", reason: "bash_pattern_excluded" }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prevPattern === undefined) delete process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
+      else process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = prevPattern;
     }
   });
 

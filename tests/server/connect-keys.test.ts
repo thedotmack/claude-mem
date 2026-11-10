@@ -88,6 +88,47 @@ describe('POST /v1/keys + GET /v1/connect', () => {
 
   const url = (p: string) => `http://127.0.0.1:${port}${p}`;
 
+  it('answers health while a new key is being derived', async () => {
+    // Warm authentication so this probe isolates issuance, not the first-key
+    // verifier's own asynchronous derivation.
+    const auth = { Authorization: `Bearer ${writeKey}` };
+    await (await fetch(url('/v1/connect'), { headers: auth })).json();
+    await (await fetch(url('/api/health'))).json();
+
+    const query = pool.query.bind(pool) as (sql: string, values?: unknown[]) => Promise<pg.QueryResult>;
+    let health: Promise<number> | undefined;
+    let healthAnswered = false;
+    let answeredBeforeInsert = false;
+    const observed = spyOn(pool, 'query').mockImplementation((async (sql: string, values?: unknown[]) => {
+      if (/INSERT INTO api_keys/.test(sql)) answeredBeforeInsert = healthAnswered;
+      const result = await query(sql, values);
+      if (!health && /FROM api_keys WHERE id =/.test(sql)) {
+        // The cached authorization row has arrived. Submit another real HTTP
+        // request just as this handler starts deriving its new key.
+        health = fetch(url('/api/health')).then(async response => {
+          await response.json();
+          healthAnswered = true;
+          return response.status;
+        });
+      }
+      return result;
+    }) as typeof pool.query);
+    try {
+      const response = await fetch(url('/v1/keys'), {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: '{}',
+      });
+      expect(response.status).toBe(201);
+      const minted = await response.json() as { apiKey: string };
+      expect(await health).toBe(200);
+      expect(answeredBeforeInsert).toBe(true);
+      const recall = await fetch(url('/v1/connect'), { headers: { Authorization: `Bearer ${minted.apiKey}` } });
+      expect(recall.status).toBe(200);
+      await recall.text();
+    } finally {
+      observed.mockRestore();
+    }
+  });
+
   it('mints a read-only key whose connect command targets /v1/mcp', async () => {
     const r = await fetch(url('/v1/keys'), {
       method: 'POST',

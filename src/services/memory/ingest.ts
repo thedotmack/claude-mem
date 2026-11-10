@@ -39,6 +39,7 @@ import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { expandHome } from '../../shared/expand-home.js';
 import { cwdToDashed } from '../context/ObservationCompiler.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 
 const MD_EXT = '.md';
 const JSONL_EXT = '.jsonl';
@@ -596,7 +597,7 @@ export function buildMemoryObservation(ref: MemoryDirRef, file: MemoryFileRef): 
   const concepts = ['memory-import', `memory-type:${memoryType}`];
   const description = file.frontmatter.description?.trim();
   const subtitle = description && description.length
-    ? description.slice(0, 300)
+    ? retainTextHeadTail(description, 300, 0).head
     : `Imported memory (${memoryType})`;
 
   const metadata: Record<string, unknown> = {
@@ -611,7 +612,7 @@ export function buildMemoryObservation(ref: MemoryDirRef, file: MemoryFileRef): 
   return {
     project: ref.project,
     type: 'discovery',
-    title: file.title.slice(0, 200),
+    title: retainTextHeadTail(file.title, 200, 0).head,
     subtitle,
     narrative: file.body,
     concepts,
