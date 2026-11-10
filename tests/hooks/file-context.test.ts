@@ -6,6 +6,8 @@ import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import { resolveDbPath } from '../../src/shared/paths.js';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { getObservationsByFilePath } from '../../src/services/sqlite/observations/get.js';
 
 // Capture the REAL modules BEFORE mocking so afterAll can restore them.
 // bun's `mock.module` is process-global and sticky; `mock.restore()` does NOT
@@ -360,6 +362,31 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(pathParams).toContain(absoluteForm);
     expect(pathParams).toContain('test.md'); // cwd-relative form
     expect(pathParams.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('injects current-directory file evidence through the real indexed lookup', async () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const session = store.getOrCreateManualSession('test-project');
+      store.storeObservation(session, 'test-project', {
+        type: 'discovery', title: 'Current-directory evidence', subtitle: null,
+        narrative: 'Read this file before.', facts: [], concepts: [],
+        files_read: ['./test.md'], files_modified: [],
+      }, 1, 0, Date.now() + 60_000);
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request) => {
+        const query = new URL(String(url));
+        const observations = getObservationsByFilePath(store.db, query.searchParams.getAll('path'), {
+          projects: ['test-project'],
+        });
+        return Response.json({ observations, count: observations.length });
+      });
+      const result = await fileContextHandler.execute({
+        sessionId: 'dot-evidence', cwd: tmpDir, toolName: 'Read', toolInput: { file_path: testFile },
+      });
+      expect(result.hookSpecificOutput?.additionalContext).toContain('Current-directory evidence');
+    } finally {
+      store.close();
+    }
   });
 
   it('injects once per (session, file) — a second unchanged Read is deduped (#3480)', async () => {
