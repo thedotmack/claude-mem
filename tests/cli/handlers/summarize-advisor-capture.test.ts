@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -29,6 +29,8 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
     get: (key: string) => (key === 'CLAUDE_MEM_DATA_DIR' ? join(homedir(), '.claude-mem') : ''),
     getInt: () => 0,
     loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
+    // Project resolution reads the defaults when no settings file exists yet.
+    getAllDefaults: () => realSettingsSnapshot.SettingsDefaultsManager.getAllDefaults(),
   },
 }));
 
@@ -171,6 +173,43 @@ describe('Stop hook advisor-call capture', () => {
       lastUserMessage: 'why is the sync stalling?',
     });
     expect(typeof body.calls[0].transcriptByteOffset).toBe('number');
+  });
+
+  it('leaves no advisor spool entry for an entirely private originating prompt', async () => {
+    captureSetting = 'true';
+    const transcript = readFileSync(transcriptPath, 'utf8')
+      .replace('why is the sync stalling?', '<private>why is the confidential sync stalling?</private>');
+    writeFileSync(transcriptPath, transcript);
+
+    await summarizeHandler.execute(stopInput());
+
+    expect(spooledEntries('advisor_calls')).toEqual([]);
+    expect(workerCalls).toHaveLength(0);
+  });
+
+  it('retains the advisor call for a prompt with both public and private text', async () => {
+    captureSetting = 'true';
+    const transcript = readFileSync(transcriptPath, 'utf8')
+      .replace('why is the sync stalling?', 'why is the sync stalling? <private>confidential account</private>');
+    writeFileSync(transcriptPath, transcript);
+
+    await summarizeHandler.execute(stopInput());
+
+    const entries = spooledEntries('advisor_calls');
+    expect(entries).toHaveLength(1);
+    expect(workerCalls).toHaveLength(0);
+    const { SessionStore } = await import('../../../src/services/sqlite/SessionStore.js');
+    const { ingestAdvisorCalls } = await import('../../../src/services/worker/http/shared.js');
+    const store = new SessionStore(':memory:');
+    try {
+      expect(ingestAdvisorCalls(entries[0].payload as any, { getSessionStore: () => store } as any))
+        .toMatchObject({ stored: 1, privateOnly: 0 });
+      const [row] = store.getAdvisorCalls(0, 10).items;
+      expect(row.advice).toBe('Check the lease timeout.');
+      expect(row.last_user_message).toBe('why is the sync stalling?');
+    } finally {
+      store.close();
+    }
   });
 
   it('never reaches for a local worker in server runtime', async () => {
