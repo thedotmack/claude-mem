@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { getSupervisor } from '../../src/supervisor/index.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
@@ -25,6 +25,7 @@ interface FakeCodex {
 }
 
 interface FakeCodexOptions {
+  authHomeName?: string;
   instructionSources?: string[];
   writeOnShutdown?: boolean;
   networkUrl?: string;
@@ -141,7 +142,7 @@ afterAll(() => {
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-'));
   const trace = join(root, 'trace.jsonl');
-  const authHome = join(root, 'native-codex-home');
+  const authHome = join(root, options.authHomeName ?? 'native-codex-home');
   mkdirSync(authHome, { mode: 0o700 });
   writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
   writeFileSync(join(root, FAKE_CODEX_CONFIG_FILE), JSON.stringify({
@@ -189,6 +190,38 @@ itPosix('leaves model and effort selection to Codex when no override is configur
     rmSync(fake.root, { recursive: true, force: true });
   }
 });
+
+for (const source of ['option', 'environment'] as const) {
+  for (const kind of ['relative', 'literal whitespace'] as const) {
+    itPosix(`uses the selected ${kind} auth profile from the ${source}`, async () => {
+      const fake = createFakeCodex({ authHomeName: kind === 'literal whitespace' ? 'native-codex-home ' : undefined });
+      const configuredHome = kind === 'relative' ? relative(process.cwd(), fake.authHome) : fake.authHome;
+      const previousHome = process.env.CODEX_HOME;
+      if (kind === 'literal whitespace') {
+        // Both names exist: trimming silently chooses a different account,
+        // rather than merely reporting that the selected login is missing.
+        mkdirSync(fake.authHome.trim(), { mode: 0o700 });
+        writeFileSync(join(fake.authHome.trim(), 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { account_id: 'neighbor' } }), { mode: 0o600 });
+      }
+      if (source === 'environment') process.env.CODEX_HOME = configuredHome;
+      const client = new CodexAppServerClient(source === 'option' ? { nativeCodexHome: configuredHome } : {});
+      try {
+        const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Summarize using the selected profile.', timeoutMs: 5000 });
+        expect(result.content).toContain('<title>Turn 1</title>');
+        const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+        expect(started).toBeDefined();
+        expect(realpathSync(join(started!.codexHome, 'auth.json'))).toBe(realpathSync(join(fake.authHome, 'auth.json')));
+        expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      } finally {
+        await client.close();
+        if (previousHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousHome;
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
 
 it('rejects API-key login before launching a model process', async () => {
   const fake = createFakeCodex();
