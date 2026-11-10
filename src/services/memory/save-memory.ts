@@ -27,7 +27,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   const { title, metadata } = input;
   const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim() ? metadata.project : '';
   const project = (input.project?.trim() ? input.project : '') || metadataProject || defaultProject;
-  const platformSource = normalizePlatformSource(typeof metadata?.platformSource === 'string' ? metadata.platformSource : undefined);
+  const platformSource = typeof metadata?.platformSource === 'string' ? metadata.platformSource : undefined;
   const sourceFingerprint = typeof metadata?.sourceFingerprint === 'string' ? metadata.sourceFingerprint : undefined;
   if (sourceFingerprint) {
     // Exact replay dedupe includes the project and source. It survives process crashes
@@ -36,7 +36,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
       LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
       WHERE o.project = ? AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?
         AND CASE WHEN json_valid(o.metadata) THEN json_extract(o.metadata, '$.sourceFingerprint') END = ?
-      ORDER BY o.id DESC LIMIT 1`).get(project, platformSource, sourceFingerprint) as { id: number; title: string } | null;
+      ORDER BY o.id DESC LIMIT 1`).get(project, normalizePlatformSource(platformSource), sourceFingerprint) as { id: number; title: string } | null;
     if (existing) return { success: true, id: existing.id, title: existing.title, project, duplicate: true, message: `Memory already saved as observation #${existing.id}` };
   }
   const store = dbManager.getSessionStore();
