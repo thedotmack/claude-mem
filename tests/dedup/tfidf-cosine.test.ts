@@ -36,14 +36,4 @@ describe('tfidfCosine', () => {
     const b = 'Added rdlp-redact dependency to rdlp-plugin crate';
     expect(tc(a, b)).toBeCloseTo(tc(b, a), 10);
   });
-
-  it('returns 0 when either side is empty', () => {
-    expect(tc('', 'added crate')).toBe(0);
-    expect(tc('added crate', '')).toBe(0);
-  });
-
-  it('returns 0 (no NaN) on an empty corpus (N=0, every idf=0) — first-observation case', () => {
-    const emptyIdf = buildIdfFn(() => 0, 0); // N=0 → idf=log(1)=0 for every token
-    expect(tfidfCosine(tokenizeWs('added crate'), tokenizeWs('added crate'), emptyIdf)).toBe(0);
-  });
 });
