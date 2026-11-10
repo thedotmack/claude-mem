@@ -1159,6 +1159,7 @@ export class ClaudeProvider {
       });
 
       let out = '';
+      let completed = false;
       for await (const message of result) {
         if (message.type === 'assistant') {
           const content = (message as any).message.content;
@@ -1166,7 +1167,17 @@ export class ClaudeProvider {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
         }
+        if (message.type === 'result') {
+          // Assistant text can be an API error or a partial answer. Only the
+          // terminal result makes it a usable compression/wrap-up response.
+          if (message.is_error || message.subtype !== 'success') {
+            const details = message.subtype === 'success' ? message.result : message.errors.join('\n');
+            throw new Error(`Claude standalone prompt failed (${message.subtype}): ${details}`);
+          }
+          completed = true;
+        }
       }
+      if (!completed) throw new Error('Claude standalone prompt ended without a result');
       return out || null;
     } finally {
       for (const source of signals) source.removeEventListener('abort', abort);
