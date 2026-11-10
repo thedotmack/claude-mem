@@ -979,6 +979,9 @@ export class CodexAppServerClient {
     if (Array.isArray(turn.items)) {
       active.terminalItems += turn.items.length;
       for (const raw of turn.items) {
+        if (isObject(raw) && typeof raw.type === 'string' && FORBIDDEN_ITEM_TYPES.has(raw.type)) {
+          active.protocolError = new Error(`Codex app-server attempted forbidden ${raw.type} capability`);
+        }
         if (isObject(raw) && raw.type === 'agentMessage' && typeof raw.text === 'string') {
           active.agentMessages += 1;
           if (raw.phase === 'final_answer' || active.finalText === null) active.finalText = raw.text;

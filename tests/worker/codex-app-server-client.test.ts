@@ -33,6 +33,7 @@ interface FakeCodexOptions {
   usage?: Record<string, number>;
   instructionSources?: string[];
   writeOnShutdown?: boolean;
+  terminalItemType?: string;
   networkUrl?: string;
   /** Give this fake its own executable file, for tests that replace the binary in place. */
   privateExecutable?: boolean;
@@ -54,7 +55,7 @@ const FAKE_CODEX_SOURCE = [
   "import { dirname, join } from 'node:path';",
   "const authHome = dirname(realpathSync(join(process.env.CODEX_HOME, 'auth.json')));",
   `const config = JSON.parse(readFileSync(join(dirname(authHome), ${JSON.stringify(FAKE_CODEX_CONFIG_FILE)}), 'utf8'));`,
-  'const { trace, instructionSources, mode, writeOnShutdown, usage } = config;',
+  'const { trace, instructionSources, mode, writeOnShutdown, terminalItemType, usage } = config;',
   "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
   "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
   // hold-first-turn: turn 1 finishes only when the test sends SIGUSR1.
@@ -102,11 +103,12 @@ const FAKE_CODEX_SOURCE = [
   "    else if (message.method === 'turn/start') {",
   '      turn += 1;',
   "      const turnId = 'turn-' + turn;",
+  "      const terminalItems = terminalItemType ? [{ type: terminalItemType }] : [];",
   "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
   "      const finish = () => {",
   "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: usage ?? { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 13 } } } });",
   "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
-  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
+  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: terminalItems } } });",
   '      };',
   "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
   "      if (mode === 'usage-limit') {",
@@ -118,7 +120,7 @@ const FAKE_CODEX_SOURCE = [
   "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: true, error: { message: 'stream disconnected', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null } } });",
   "        finish();",
   "      } else if (mode === 'terminal-response') {",
-  "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [...terminalItems, { type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
   '      } else {',
   '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
   "        if ((mode === 'hold-first-turn' || mode === 'finish-during-interrupt') && turn === 1) releaseFirstTurn = finish; else finish();",
@@ -158,6 +160,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     instructionSources: options.instructionSources ?? [],
     mode: options.mode ?? 'normal',
     writeOnShutdown: options.writeOnShutdown === true,
+    terminalItemType: options.terminalItemType,
     networkUrl: options.networkUrl,
     usage: options.usage,
   }));
@@ -199,6 +202,27 @@ itPosix('leaves model and effort selection to Codex when no override is configur
     rmSync(fake.root, { recursive: true, force: true });
   }
 });
+
+for (const mode of ['normal', 'terminal-response'] as const) {
+  for (const terminalItemType of ['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch']) {
+    itPosix(`rejects forbidden terminal items without another turn (${mode}, ${terminalItemType})`, async () => {
+      const fake = createFakeCodex({ mode, terminalItemType });
+      const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+      try {
+        await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Summarize the supplied text.', timeoutMs: 5000 }))
+          .rejects.toThrow(`forbidden ${terminalItemType} capability`);
+        const trace = readTrace(fake.trace);
+        expect(trace.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+        // The completed turn needs no interrupt, and rejection never retries it.
+        expect(trace.filter(entry => entry.method === 'turn/interrupt')).toHaveLength(0);
+      } finally {
+        await client.close();
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
 
 for (const source of ['option', 'environment'] as const) {
   for (const kind of ['relative', 'literal whitespace'] as const) {
