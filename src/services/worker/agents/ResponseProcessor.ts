@@ -243,26 +243,43 @@ function extractPatchPaths(toolInput: unknown): string[] {
 
 function parsePatchFiles(patch: string): string[] {
   const files: string[] = [];
+  let customPatch = false;
+  let oldLines = 0;
+  let newLines = 0;
   for (const line of patch.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('*** Update File: ')) {
-      files.push(trimmed.replace('*** Update File: ', '').trim());
+    // Unified hunks can contain header-shaped context and +/- content. Count
+    // their lines so a later file header is still recognized without treating
+    // an added "++ b/path" line as another modified file.
+    if (oldLines > 0 || newLines > 0) {
+      if (line.startsWith(' ') || line.startsWith('-')) oldLines--;
+      if (line.startsWith(' ') || line.startsWith('+')) newLines--;
       continue;
     }
-    if (trimmed.startsWith('*** Add File: ')) {
-      files.push(trimmed.replace('*** Add File: ', '').trim());
+    if (line === '*** Begin Patch') {
+      customPatch = true;
       continue;
     }
-    if (trimmed.startsWith('*** Delete File: ')) {
-      files.push(trimmed.replace('*** Delete File: ', '').trim());
+    const customHeader = line.match(/^\*\*\* (?:Update File|Add File|Delete File|Move to): (.+)$/);
+    if (customHeader) {
+      customPatch = true;
+      files.push(customHeader[1].trim());
       continue;
     }
-    if (trimmed.startsWith('*** Move to: ')) {
-      files.push(trimmed.replace('*** Move to: ', '').trim());
+    if (line === '*** End Patch') {
+      customPatch = false;
       continue;
     }
-    if (trimmed.startsWith('+++ ')) {
-      const filePath = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
+    // Custom patch body lines use a leading space, + or -. Their file
+    // directives start in column zero; +++ is never a header in this format.
+    if (customPatch) continue;
+    const hunk = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/);
+    if (hunk) {
+      oldLines = Number(hunk[1] ?? 1);
+      newLines = Number(hunk[2] ?? 1);
+      continue;
+    }
+    if (line.startsWith('+++ ')) {
+      const filePath = line.slice(4).replace(/^b\//, '').trim();
       if (filePath && filePath !== '/dev/null') {
         files.push(filePath);
       }
