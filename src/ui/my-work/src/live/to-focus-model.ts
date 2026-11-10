@@ -67,7 +67,7 @@ const newerStamp = (a: string, b: string) => (a > b ? a : b)
  */
 export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, minedAreas: readonly MinedGoalItem[], minedAsks: readonly MinedGoalItem[]): { focusAreas: FocusArea[]; otherAsks: FocusAsk[] } {
   const areas: FocusArea[] = (raw ?? []).map((area) => ({
-    id: area.focusAreaId, name: area.name, goal: area.goal, status: area.status,
+    id: area.focusAreaId, name: area.name, goal: area.goal, about: area.about ?? null, status: area.status,
     ownerRank: area.ownerRank, priorityRank: area.priorityRank, source: area.source,
     mergedInto: area.mergedInto, evidence: area.evidence,
     timesAsked: null, latestAt: null, quotes: [], asks: [],

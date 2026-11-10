@@ -36,6 +36,13 @@ export class DatabaseManager {
   private mediaCloudSync: MediaCloudSync | null = null;
   private mediaReplicaResolver: MediaCloudReplicaResolver | null = null;
 
+  private rawSearchEnabled = false;
+  private readonly rawSearchAbort = new AbortController();
+
+  async initializeToolUseSearch(): Promise<void> {
+    await this.sessionSearch?.configureToolUseIndex(this.rawSearchEnabled, this.rawSearchAbort.signal);
+  }
+
   async initialize(): Promise<void> {
     // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
     // so a database whose schema is newer than this binary's chain must be
@@ -43,6 +50,7 @@ export class DatabaseManager {
     this.db = openGuardedSqliteDatabase(DB_PATH);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    this.rawSearchEnabled = settings.CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED === 'true';
     // Shared local work has an origin before credentials exist. Later cloud
     // configuration reuses this identity rather than orphaning its records.
     settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = ensureLocalDeviceIdentity(this.db, USER_SETTINGS_PATH, settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID);
@@ -132,6 +140,7 @@ export class DatabaseManager {
   }
 
   async close(): Promise<void> {
+    this.rawSearchAbort.abort();
     if (this.mediaCleanupTimer) clearInterval(this.mediaCleanupTimer);
     this.mediaCleanupTimer = null;
     this.mediaCloudSync?.stop();
@@ -146,7 +155,7 @@ export class DatabaseManager {
     this.syncRecoveryReader = null;
     this.syncConflictRecovery = null;
 
-    this.backupManager?.stop();
+    await this.backupManager?.stop();
     this.backupManager = null;
 
     this.sessionStore = null;

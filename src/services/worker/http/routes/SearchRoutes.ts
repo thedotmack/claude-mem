@@ -10,6 +10,7 @@ import { AppError } from '../../../server/ErrorHandler.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { isForeignBrowserRead } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import {
@@ -101,8 +102,7 @@ Memory injection starts on your second session in a project.
 
 \`/learn-codebase\` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
 
-Live activity: {viewer_url}
-{pro_trial_line}
+Live activity: {viewer_url}{pro_trial_line}
 How it works: \`/how-it-works\`
 
 This message disappears once the first observation lands.
@@ -387,6 +387,17 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // `cwd` below is resolved through getProjectContext, which runs `git` in it
+    // (findGitRepoRoot), so another browser page must not choose it, even with
+    // a no-cors fetch that sends no Origin. Hooks, the CLI and the MCP tool
+    // send no browser headers and keep working.
+    if (isForeignBrowserRead(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        message: 'Context injection from another browser page is not allowed.',
+      });
+      return;
+    }
     let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
@@ -579,9 +590,10 @@ export class SearchRoutes extends BaseRouteHandler {
       if (!await this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = getViewerBaseUrl(port);
+        const promo = proTrialLine('welcome-hint', process.env.CLAUDE_MEM_PRO_PLAN ?? settings.CLAUDE_MEM_PRO_PLAN);
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
-          .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
+          .replace('{pro_trial_line}', promo ? `\n${promo}` : '');
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.

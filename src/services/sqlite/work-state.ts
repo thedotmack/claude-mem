@@ -105,18 +105,26 @@ export function getWorkStateEntries(
   listName?: string,
   localDeviceId = '',
 ): WorkStateEntry[] {
-  if (projects.length === 0) return [];
+  if (projects.length === 0 || isSharedWorkList(listName)) return [];
   const placeholders = projects.map(() => '?').join(', ');
   const listFilter = listName === undefined ? '' : ' AND list_name = ?';
+  // Shared My Work stores large opaque payloads in this table. Exclude them
+  // before sorting/materializing the public list history. The two predicates
+  // together match isSharedWorkList's /^__my_work_v\d+:/ exactly: GLOB's '*'
+  // alone would also hide an authored name such as '__my_work_v1draft:notes'.
   const statement = db.prepare(`
     SELECT id, project, list_name, fields, created_at_epoch
     FROM work_state_entries
     WHERE project COLLATE NOCASE IN (${placeholders})${listFilter}
+      AND NOT (
+        list_name GLOB '__my_work_v[0-9]*:*'
+        AND substr(list_name, 12, instr(substr(list_name, 12), ':') - 1) NOT GLOB '*[^0-9]*'
+      )
     ORDER BY created_at_epoch, COALESCE(origin_device_id, ?), COALESCE(CAST(origin_local_id AS INTEGER), id)
   `);
   try {
     const rows = statement.all(...projects, ...(listName === undefined ? [] : [listName]), localDeviceId) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
-    return rows.filter(row => !isSharedWorkList(row.list_name)).map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
+    return rows.map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
   } finally {
     statement.finalize();
   }

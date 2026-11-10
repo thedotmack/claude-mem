@@ -1,3 +1,5 @@
+import { formatDeepSearch } from '../shared/deep-search-format.js';
+import type { DeepSearchResult } from '../services/sqlite/tool-use-search.js';
 import { logger } from '../utils/logger.js';
 import { projectMemoryContent } from '../shared/progressive-search.js';
 import { retainTextHeadTail } from '../shared/text-truncation.js';
@@ -43,7 +45,10 @@ function identity(row: Record<string, unknown>): string {
     + (row.project || row.projectId ? ` (${line(row.project ?? row.projectId, '', 100)})` : '');
 }
 function recordedAt(row: Record<string, unknown>): string {
-  const epoch = typeof row.created_at_epoch === 'number' ? row.created_at_epoch : typeof row.createdAtEpoch === 'number' ? row.createdAtEpoch : null;
+  // Older SQLite rows use seconds. Server createdAtEpoch is already in milliseconds.
+  const stored = row.created_at_epoch;
+  const epoch = typeof stored === 'number' ? (stored < 1e12 ? stored * 1000 : stored)
+    : typeof row.createdAtEpoch === 'number' ? row.createdAtEpoch : null;
   const date = epoch === null ? null : new Date(epoch);
   return date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '';
 }
@@ -135,6 +140,8 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
     case 'server-search':
     case 'server-timeline': {
       const server = purpose === 'server-search' || purpose === 'server-timeline';
+      const deepText = !server && data.deep && Array.isArray(data.toolUses)
+        ? formatDeepSearch(data as unknown as DeepSearchResult) : '';
       const results = [
         ...rows(payload, 'observations').map(value => ({ value, prefix: '' })),
         ...rows(payload, 'sessions').map(value => ({ value, prefix: server ? '' : 'S' })),
@@ -163,7 +170,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         return `- ${identity({ ...row, id, title: title ?? 'Untitled memory' })}${context ? `\n  ${context}` : ''}`;
       });
       const included: string[] = [];
-      let bytes = Buffer.byteLength(next, 'utf8') + 300;
+      let bytes = Buffer.byteLength(next + deepText, 'utf8') + 302;
       for (const entry of entries) {
         const size = Buffer.byteLength(entry + '\n', 'utf8');
         if (bytes + size > MAX_TEXT_BYTES) break;
@@ -173,6 +180,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         + included.join('\n')
         + (included.length < results.length ? `\n${results.length - included.length} results omitted to fit the response budget; narrow the query or page the search.` : '')
         + `\n${next}` : 'No matching memories found.';
+      if (deepText) text += '\n\n' + deepText;
       break;
     }
     case 'context':
@@ -211,6 +219,14 @@ export function formatWorkerMcpResponse(purpose: McpTextPurpose, payload: unknow
       const parsed = parseStored(text);
       return typeof parsed === 'string' ? parsed : formatMcpPayload(purpose, parsed).content[0].text;
     });
+    if (purpose === 'search' && data.deep && Array.isArray(data.toolUses)) {
+      const rawText = formatDeepSearch(data as unknown as DeepSearchResult);
+      // SearchManager appends this block after ordinary memory text. Budget the
+      // latter separately so long summaries cannot consume the raw tier's space.
+      const ordinary = (readable.at(-1) === rawText ? readable.slice(0, -1) : readable).join('\n\n');
+      const budget = MAX_TEXT_BYTES - Buffer.byteLength(rawText, 'utf8') - 2;
+      return mcpTextResult(`${bounded(ordinary, budget)}\n\n${rawText}`, data.isError === true);
+    }
     if (readable.length) return mcpTextResult(readable.join('\n\n'), data.isError === true, purpose === 'observations' ? MAX_OBSERVATION_TEXT_BYTES : MAX_TEXT_BYTES);
     logger.debug('SYSTEM', 'Omitted unsupported MCP response content', { purpose });
     return mcpTextResult('The tool returned no readable text.', data.isError === true);

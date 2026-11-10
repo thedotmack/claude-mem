@@ -410,17 +410,10 @@ var init_settings_document = __esm({
   }
 });
 
-// src/shared/paths.ts
-import { join as join5, dirname as dirname2, basename as basename2 } from "path";
+// src/shared/data-dir.ts
+import { existsSync as existsSync5 } from "fs";
 import { homedir as homedir4 } from "os";
-import { existsSync as existsSync5, mkdirSync as mkdirSync2 } from "fs";
-import { fileURLToPath } from "url";
-function getDirname() {
-  if (typeof __dirname !== "undefined") {
-    return __dirname;
-  }
-  return dirname2(fileURLToPath(import.meta.url));
-}
+import { join as join5 } from "path";
 function resolveDataDir() {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
     return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
@@ -440,60 +433,79 @@ function resolveDataDir() {
   }
   return defaultDataDir2;
 }
+var init_data_dir = __esm({
+  "src/shared/data-dir.ts"() {
+    "use strict";
+    init_atomic_json();
+    init_expand_home();
+    init_settings_document();
+  }
+});
+
+// src/shared/paths.ts
+import { join as join6, dirname as dirname2, basename as basename2 } from "path";
+import { homedir as homedir5 } from "os";
+import { fileURLToPath } from "url";
+function getDirname() {
+  if (typeof __dirname !== "undefined") {
+    return __dirname;
+  }
+  return dirname2(fileURLToPath(import.meta.url));
+}
 var _dirname, DATA_DIR, DEFAULT_CLAUDE_CONFIG_DIR, CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT, LOGS_DIR, USER_SETTINGS_PATH, DB_FILENAME, DB_PATH, OBSERVER_SESSIONS_DIR, OBSERVER_SESSIONS_PROJECT, paths;
 var init_paths = __esm({
   "src/shared/paths.ts"() {
     "use strict";
-    init_atomic_json();
-    init_settings_document();
+    init_data_dir();
     init_expand_home();
     init_expand_home();
+    init_data_dir();
     _dirname = getDirname();
     DATA_DIR = resolveDataDir();
-    DEFAULT_CLAUDE_CONFIG_DIR = join5(homedir4(), ".claude");
+    DEFAULT_CLAUDE_CONFIG_DIR = join6(homedir5(), ".claude");
     CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
-    MARKETPLACE_ROOT = join5(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
-    LOGS_DIR = join5(DATA_DIR, "logs");
-    USER_SETTINGS_PATH = join5(DATA_DIR, "settings.json");
+    MARKETPLACE_ROOT = join6(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
+    LOGS_DIR = join6(DATA_DIR, "logs");
+    USER_SETTINGS_PATH = join6(DATA_DIR, "settings.json");
     DB_FILENAME = "claude-mem.db";
-    DB_PATH = join5(DATA_DIR, DB_FILENAME);
-    OBSERVER_SESSIONS_DIR = join5(DATA_DIR, "observer-sessions");
+    DB_PATH = join6(DATA_DIR, DB_FILENAME);
+    OBSERVER_SESSIONS_DIR = join6(DATA_DIR, "observer-sessions");
     OBSERVER_SESSIONS_PROJECT = basename2(OBSERVER_SESSIONS_DIR);
     paths = {
       dataDir: () => DATA_DIR,
-      workerPid: () => join5(DATA_DIR, "worker.pid"),
-      workerHeartbeat: () => join5(DATA_DIR, "worker-heartbeat.json"),
+      workerPid: () => join6(DATA_DIR, "worker.pid"),
+      workerHeartbeat: () => join6(DATA_DIR, "worker-heartbeat.json"),
       // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
       // remain `.server-beta.*` so existing installations keep finding their
       // pid/port/runtime state. Plan §1d will migrate the basenames.
-      serverPid: () => join5(DATA_DIR, ".server-beta.pid"),
-      serverPort: () => join5(DATA_DIR, ".server-beta.port"),
-      serverRuntime: () => join5(DATA_DIR, ".server-beta.runtime.json"),
-      settings: () => join5(DATA_DIR, "settings.json"),
-      database: () => join5(DATA_DIR, DB_FILENAME),
+      serverPid: () => join6(DATA_DIR, ".server-beta.pid"),
+      serverPort: () => join6(DATA_DIR, ".server-beta.port"),
+      serverRuntime: () => join6(DATA_DIR, ".server-beta.runtime.json"),
+      settings: () => join6(DATA_DIR, "settings.json"),
+      database: () => join6(DATA_DIR, DB_FILENAME),
       // Automatic snapshot target (BackupManager). Nested under backups/auto so
       // the manager's retention sweep never touches the legacy one-off backups
       // that live directly in backups/.
-      backups: () => join5(DATA_DIR, "backups", "auto"),
+      backups: () => join6(DATA_DIR, "backups", "auto"),
       // A restore staged by `npx claude-mem restore`, applied by the next worker
       // boot before it opens the database, and the outcome of the last one.
-      pendingRestore: () => join5(DATA_DIR, "backups", "restore-pending.json"),
-      lastRestore: () => join5(DATA_DIR, "backups", "last-restore.json"),
-      chroma: () => join5(DATA_DIR, "chroma"),
-      combinedCerts: () => join5(DATA_DIR, "combined_certs.pem"),
-      transcriptsConfig: () => join5(DATA_DIR, "transcript-watch.json"),
-      transcriptsState: () => join5(DATA_DIR, "transcript-watch-state.json"),
-      corpora: () => join5(DATA_DIR, "corpora"),
-      supervisorRegistry: () => join5(DATA_DIR, "supervisor.json"),
-      envFile: () => join5(DATA_DIR, ".env"),
+      pendingRestore: () => join6(DATA_DIR, "backups", "restore-pending.json"),
+      lastRestore: () => join6(DATA_DIR, "backups", "last-restore.json"),
+      chroma: () => join6(DATA_DIR, "chroma"),
+      combinedCerts: () => join6(DATA_DIR, "combined_certs.pem"),
+      transcriptsConfig: () => join6(DATA_DIR, "transcript-watch.json"),
+      transcriptsState: () => join6(DATA_DIR, "transcript-watch-state.json"),
+      corpora: () => join6(DATA_DIR, "corpora"),
+      supervisorRegistry: () => join6(DATA_DIR, "supervisor.json"),
+      envFile: () => join6(DATA_DIR, ".env"),
       logsDir: () => LOGS_DIR
     };
   }
 });
 
 // src/utils/logger.ts
-import { closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
+import { dirname as dirname3, join as join7 } from "path";
 function escapeLineBreaks(value) {
   return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 }
@@ -537,9 +549,9 @@ var init_logger = __esm({
         try {
           const logsDir = paths.logsDir();
           if (!existsSync6(logsDir)) {
-            mkdirSync3(logsDir, { recursive: true });
+            mkdirSync2(logsDir, { recursive: true });
           }
-          this.logFilePath = join6(logsDir, `claude-mem-${date2}.log`);
+          this.logFilePath = join7(logsDir, `claude-mem-${date2}.log`);
           this.logFileInitialized = true;
         } catch (error) {
           if (firstAttemptToday) {
@@ -579,7 +591,7 @@ var init_logger = __esm({
           if (!current) this.closeLogFd();
         }
         if (this.logFd === null) {
-          mkdirSync3(dirname3(path4), { recursive: true });
+          mkdirSync2(dirname3(path4), { recursive: true });
           this.logFd = openSync2(path4, "a");
         }
         try {
@@ -892,18 +904,18 @@ var init_openrouter_base_url = __esm({
 });
 
 // src/shared/SettingsDefaultsManager.ts
-import { readFileSync as readFileSync6, existsSync as existsSync7, writeFileSync } from "fs";
-import { basename as basename3, dirname as dirname4, join as join7 } from "path";
-import { homedir as homedir5, hostname } from "os";
+import { readFileSync as readFileSync5, existsSync as existsSync7, writeFileSync } from "fs";
+import { basename as basename3, dirname as dirname4, join as join8 } from "path";
+import { homedir as homedir6, hostname } from "os";
 import { parseEnv } from "util";
 function coercePersistedSettingValue(value) {
   return typeof value === "boolean" ? String(value) : value;
 }
 function envFileSetsAnthropicBaseUrl(settingsPath) {
-  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join7(dirname4(settingsPath), ".env");
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join8(dirname4(settingsPath), ".env");
   try {
     if (!existsSync7(envFile)) return false;
-    const parsed = parseEnv(stripUtf8Bom(readFileSync6(envFile, "utf-8")));
+    const parsed = parseEnv(stripUtf8Bom(readFileSync5(envFile, "utf-8")));
     return Boolean(parsed.ANTHROPIC_BASE_URL);
   } catch {
     return true;
@@ -926,7 +938,7 @@ function hasRetiredOpenRouterDefault(flatSettings) {
   return baseUrl === "" || isOpenRouterApiUrl(baseUrl);
 }
 function raisedDefaultMarkerPath(settingsPath, raised) {
-  return join7(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
+  return join8(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
 }
 function markRaisedDefaultDone(settingsPath, raised) {
   try {
@@ -1119,7 +1131,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: "0.93",
         CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: "0.92",
         CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: "0.95",
-        CLAUDE_MEM_DATA_DIR: join7(homedir5(), ".claude-mem"),
+        CLAUDE_MEM_DATA_DIR: join8(homedir6(), ".claude-mem"),
         CLAUDE_MEM_LOG_LEVEL: "INFO",
         CLAUDE_MEM_PYTHON_VERSION: "3.13",
         CLAUDE_CODE_PATH: "",
@@ -1160,7 +1172,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_FOLDER_USE_LOCAL_MD: "false",
         // When true, writes to CLAUDE.local.md instead of CLAUDE.md
         CLAUDE_MEM_TRANSCRIPTS_ENABLED: "true",
-        CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join7(homedir5(), ".claude-mem", "transcript-watch.json"),
+        CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join8(homedir6(), ".claude-mem", "transcript-watch.json"),
         CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: "false",
         // Codex subagent rollouts through the transcript watch: each one's tool
         // calls are new observer spend (the gateway allowance, or the user's own
@@ -1434,12 +1446,22 @@ var init_SettingsDefaultsManager = __esm({
         // per-insert candidate-scan cap (logged when exceeded)
         CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: "50000",
         // dedup-scan skips a project with more rows than this (memory safety)
+        CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: "false",
         CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: "0",
         // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
         CLAUDE_MEM_LOG_RETENTION_DAYS: "30",
         // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
         CLAUDE_MEM_WORKER_AUTOSTART: "true",
         // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
+        // Daily update to the release the owner promotes. On by default; Claude
+        // Code's DISABLE_AUTOUPDATER (unless FORCE_AUTOUPDATE_PLUGINS=1),
+        // DISABLE_UPDATES and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also turn it
+        // off, set in the environment or in the env block of Claude Code's user or
+        // managed settings.
+        CLAUDE_MEM_AUTO_UPDATE: "true",
+        // only 'true' (any case) is on; 'false' or any other value = never check for or install an update
+        CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: "",
+        // Empty = the built-in release switch (DEFAULT_PROMOTED_RELEASE_URL in src/services/auto-update/auto-update-check.ts), so a saved settings.json never pins it; tests and the sandbox run point it at a local server or a file:// path in settings.json, since the updater never reads its environment variable
         CLAUDE_MEM_PROJECT_NAME_SOURCE: "path"
         // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
       };
@@ -1479,7 +1501,7 @@ var init_SettingsDefaultsManager = __esm({
         result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
         const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
         if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
-          result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join7(expandHome(dataDir), "transcript-watch.json");
+          result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join8(expandHome(dataDir), "transcript-watch.json");
         }
         return result;
       }
@@ -1511,7 +1533,7 @@ var init_SettingsDefaultsManager = __esm({
             }
             return this.finalizeSettings(defaults, applyEnvOverrides);
           }
-          const settingsData = readFileSync6(settingsPath, "utf-8");
+          const settingsData = readFileSync5(settingsPath, "utf-8");
           const settings2 = parseJsonWithBom(settingsData);
           let flatSettings = settingsTarget(settings2);
           const hasNestedEnv = flatSettings !== settings2;
@@ -1698,12 +1720,18 @@ function parse(value) {
   }
 }
 function urlsIn(value, found = []) {
-  if (typeof value === "string") {
-    const url = safeWebUrl(value);
-    if (url) found.push(url);
-  } else if (Array.isArray(value)) for (const item of value) urlsIn(item, found);
-  else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) if (/url$/i.test(key) || typeof item === "object") urlsIn(item, found);
+  const pending = [value];
+  const visited = /* @__PURE__ */ new WeakSet();
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === "string") {
+      const url = safeWebUrl(item);
+      if (url) found.push(url);
+    } else if (item && typeof item === "object" && !visited.has(item)) {
+      visited.add(item);
+      const children = Array.isArray(item) ? item : Object.entries(item).filter(([key, child]) => /url$/i.test(key) || typeof child === "object").map(([, child]) => child);
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    }
   }
   return found;
 }
@@ -1713,7 +1741,7 @@ function githubRepo(remote) {
 }
 function gitUrl(product) {
   if (!product.repo) return void 0;
-  return product.kind === "commit" ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch}`;
+  return product.kind === "commit" ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch.split("/").map(encodeURIComponent).join("/")}`;
 }
 function outputText(call, response) {
   if (typeof response === "string") return response;
@@ -1759,34 +1787,66 @@ function commitsFrom(command2, response, out) {
   }
   return [...commits.values()];
 }
-function pushTarget(command2) {
-  const args = command2.match(gitPattern(String.raw`push((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`))?.[1];
-  const tokens = (args ?? "").trim().split(/\s+/).filter(Boolean).map(unquote);
-  if (tokens.some((token) => ["-d", "--delete", "--tags", "--mirror", "--all"].includes(token))) return null;
-  const [remote, refspec] = tokens.filter((token) => !token.startsWith("-"));
-  const branch = refspec && !refspec.startsWith(":") ? refspec.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "") : null;
-  return { repo: githubRepo(remote), branch: branch && branch !== "HEAD" ? branch : null };
+function pushTargets(command2) {
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, "g");
+  return [...command2.matchAll(pattern)].map(([, args]) => {
+    const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
+    const [remote, ...refspecs] = tokens.filter((token) => !token.startsWith("-"));
+    const destinations = refspecs.map((spec) => spec.startsWith(":") ? "" : spec.replace(/^\+/, "").split(":").at(-1));
+    const deleting = tokens.some((token) => ["-d", "--delete"].includes(token));
+    const branches = deleting ? [] : destinations.map((ref) => ref && ref !== "HEAD" && (!ref.startsWith("refs/") || ref.startsWith("refs/heads/")) ? ref.replace(/^refs\/heads\//, "") : null);
+    const deletesOrTags = deleting || tokens.includes("--tags") || destinations.some((ref) => ref.startsWith("refs/tags/"));
+    return {
+      repo: githubRepo(remote),
+      branches,
+      dryRun: tokens.some((token) => token === "--dry-run" || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)),
+      deletesOrTags
+    };
+  });
 }
 function pushesFrom(command2, response, out) {
-  const runs = gitPattern(String.raw`push\b`).test(command2);
-  const recorded = typeof response?.gitOperation?.push?.branch === "string" ? response.gitOperation.push.branch : null;
-  if (!runs && !recorded) return [];
-  const target = runs ? pushTarget(command2) : null;
+  const targets = pushTargets(command2);
+  const recorded = response?.gitOperation?.push?.branch;
+  if (!targets.length && typeof recorded !== "string") return [];
+  let target = targets.length === 1 ? targets[0] : null;
+  let index = 0;
+  let repo = target?.repo ?? null;
   const pushes = /* @__PURE__ */ new Map();
-  let repo = null;
-  for (const line of out.split("\n")) {
-    const remote = line.match(/^To (\S+)$/);
-    if (remote) {
-      repo = githubRepo(remote[1]);
+  const add = (branch2, head) => {
+    const key = JSON.stringify([repo, branch2]);
+    pushes.set(key, { branch: branch2, repo, heads: head ? [head] : [] });
+  };
+  const lines = out.split("\n");
+  const mixedSimulation = targets.some((t) => t.dryRun) && targets.some((t) => !t.dryRun);
+  if (mixedSimulation) {
+    const reportsPush = (text5) => typeof text5 === "string" && /^(?:To |Everything up-to-date$)/m.test(text5);
+    if (lines.filter(reportsPush).length !== targets.length || reportsPush(response?.stdout) && reportsPush(response?.stderr)) return [];
+  }
+  for (const line of lines) {
+    if (line === "Everything up-to-date") {
+      index++;
       continue;
     }
-    const ref = line.match(new RegExp(String.raw`^\s*[ +*=]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
-    if (!ref) continue;
-    const branch2 = ref[3].replace(/^refs\/heads\//, "");
-    pushes.set(branch2, { branch: branch2, repo: repo ?? target?.repo ?? null, heads: ref[1] ? [ref[1]] : [] });
+    const remote = line.match(/^To (\S+)$/);
+    if (remote) {
+      target = targets[index++] ?? (targets.length === 1 ? targets[0] : null);
+      repo = githubRepo(remote[1]) ?? target?.repo ?? null;
+      continue;
+    }
+    if (target?.dryRun) continue;
+    const porcelain = line.match(/^[ +*]\t[^:\t]*:refs\/heads\/([^\t]+)\t(.+)$/);
+    if (porcelain) {
+      add(porcelain[1], porcelain[2].match(new RegExp(String.raw`^${SHA}\.\.\.?(${SHA})`))?.[1]);
+      continue;
+    }
+    const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
+    if (ref && !ref[3].startsWith("refs/tags/")) {
+      const branch2 = ref[3].replace(/^refs\/heads\//, "");
+      if (!target?.deletesOrTags || target.branches.includes(branch2) || line.includes("[new branch]")) add(branch2, ref[1]);
+    }
   }
-  const branch = recorded ?? target?.branch;
-  if (!pushes.size && branch && !/\[rejected\]|failed to push|^fatal:/m.test(out)) pushes.set(branch, { branch, repo: target?.repo ?? null, heads: [] });
+  const branch = recorded ?? target?.branches[0];
+  if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
   return [...pushes.values()];
 }
 function createdBranchesFrom(command2, out) {
@@ -1804,13 +1864,13 @@ function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRe
 }
 function gitProductsFromCommand(command2, response, out, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
   const pushes = pushesFrom(command2, response, out);
-  const branches = new Map([...createdBranchesFrom(command2, out), ...pushes].map((branch) => [branch.branch, branch]));
+  const branches = [...createdBranchesFrom(command2, out).filter((created) => !pushes.some((pushed) => pushed.branch === created.branch)), ...pushes];
   const products = [];
   for (const commit of commitsFrom(command2, response, out)) {
     const pushed = commit.branch && pushes.find((push) => push.branch === commit.branch) || pushes.find((push) => push.heads.some((head) => head.startsWith(commit.sha.slice(0, 7)))) || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
     products.push({ kind: "commit", title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef: sourceRef2 });
   }
-  for (const branch of branches.values()) products.push({ kind: "branch", title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef: sourceRef2 });
+  for (const branch of branches) products.push({ kind: "branch", title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef: sourceRef2 });
   return products.map((product) => ({ ...product, url: gitUrl(product) }));
 }
 function productsFromToolUse(call) {
@@ -1834,8 +1894,9 @@ function productsFromObservation(observation) {
   if (!Array.isArray(files)) return [];
   return files.flatMap((path4, index) => {
     const kind = fileKind(path4);
+    if (!kind) return [];
     const title = /^index\.\w+$/i.test(basename4(path4)) ? basename4(path4.slice(0, -basename4(path4).length - 1)) || basename4(path4) : basename4(path4);
-    return kind ? [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }] : [];
+    return [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }];
   });
 }
 function isWorkProductField(field) {
@@ -1873,16 +1934,19 @@ function mergeProducts(lists, limit = 60) {
     for (const head of product.heads ?? []) repoByHead.set(head.slice(0, 7), product.repo);
   }
   const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
-  const pushedAfter = (product) => pushesByBranch.get(product.branch)?.find((push) => product.kind === "branch" || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0))?.repo;
+  const pushedAfter = (product) => {
+    const repos = new Set((pushesByBranch.get(product.branch) ?? []).filter((push) => product.kind === "branch" || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map((push) => push.repo));
+    return repos.size === 1 ? [...repos][0] : null;
+  };
   const repoOf = (product) => product.repo ?? pushedAfter(product) ?? (product.sha ? repoByHead.get(product.sha.slice(0, 7)) : void 0) ?? null;
   for (const product of products) if (product.kind === "commit" && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
   const unique = /* @__PURE__ */ new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
-    const key = productKey(product);
-    if (unique.has(key)) continue;
     const isGit = product.kind === "commit" || product.kind === "branch";
     const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" ? repoBySource.get(sourceKey(product)) : null) : null;
-    unique.set(key, repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product);
+    const resolved = repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product;
+    const key = productKey(resolved);
+    if (!unique.has(key)) unique.set(key, resolved);
   }
   return [...unique.values()].slice(0, limit);
 }
@@ -2033,7 +2097,7 @@ var init_work_product = __esm({
     SHA = "[0-9a-f]{7,40}";
     unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
     BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
-    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha.slice(0, 7)}` : product.kind === "branch" && product.branch ? `branch:${product.branch}` : product.productId ?? product.url ?? product.path;
+    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha.slice(0, 7)}` : product.kind === "branch" && product.branch ? `branch:${product.repo ?? ""}:${product.branch}` : product.productId ?? product.url ?? product.path;
     FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
     PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
   OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
@@ -2045,7 +2109,7 @@ var init_work_product = __esm({
 });
 
 // src/utils/worktree.ts
-import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync8, statSync as statSync4, readFileSync as readFileSync6 } from "fs";
 import path from "path";
 function detectWorktree(cwd) {
   const gitPath = path.join(cwd, ".git");
@@ -2063,7 +2127,7 @@ function detectWorktree(cwd) {
   }
   let content;
   try {
-    content = readFileSync7(gitPath, "utf-8").trim();
+    content = readFileSync6(gitPath, "utf-8").trim();
   } catch (error) {
     logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
     return NOT_A_WORKTREE;
@@ -2243,7 +2307,7 @@ var init_project_environments = __esm({
 // src/utils/project-name.ts
 import path2 from "path";
 import { existsSync as existsSync9, realpathSync as realpathSync3, statSync as statSync5 } from "fs";
-import { homedir as homedir6, tmpdir } from "os";
+import { homedir as homedir7, tmpdir } from "os";
 import { execFileSync } from "child_process";
 function findGitRepoRoot(dir) {
   try {
@@ -2272,7 +2336,7 @@ function isWithin(child, parent) {
   return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
 }
 function markerWalkStops() {
-  return [homedir6(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
+  return [homedir7(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
     const resolved = path2.resolve(dir);
     return [resolved, realpathOrSelf2(resolved)];
   });
@@ -2494,8 +2558,8 @@ var init_project_name = __esm({
 
 // src/services/work-view/session-project.mjs
 import { existsSync as existsSync10, realpathSync as realpathSync4 } from "node:fs";
-import { homedir as homedir7, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, dirname as dirname5, join as join8, resolve as resolve3 } from "node:path";
+import { homedir as homedir8, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename6, dirname as dirname5, join as join9, resolve as resolve3, sep as sep2 } from "node:path";
 function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
   if (typeof project !== "string") return null;
   return gitRemoteNames ? project : project.split("/")[0];
@@ -2511,7 +2575,7 @@ function isAgentScratchFolder(folder) {
   if (typeof folder !== "string" || !folder) return false;
   if (CODEX_SCRATCH.test(folder)) return true;
   const absolute = resolve3(folder);
-  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}${sep2}`));
 }
 function repoRootOf(path4) {
   const visited = [];
@@ -2522,7 +2586,7 @@ function repoRootOf(path4) {
       break;
     }
     visited.push(current);
-    if (existsSync10(join8(current, ".git"))) {
+    if (existsSync10(join9(current, ".git"))) {
       found = current;
       break;
     }
@@ -2552,7 +2616,7 @@ function pathsIn(toolInput, platform = process.platform) {
   const paths2 = [];
   for (const text5 of strings) for (const match of text5.matchAll(PATH_START)) {
     const raw = match[1].trim();
-    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join8(HOME, raw.slice(2)) : raw;
+    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join9(HOME, raw.slice(2)) : raw;
     if (path4.length > 1 && isAbsoluteOn(path4, platform) && !isAgentHome(path4)) paths2.push(path4);
   }
   return paths2;
@@ -2648,12 +2712,12 @@ var init_session_project = __esm({
       }
     };
     TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve3(tmpdir2()), realpathOrSelf3(resolve3(tmpdir2())), "/tmp", "/private/tmp"])];
-    HOME = homedir7();
+    HOME = homedir8();
     TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename6(folder)).filter((name) => name && name !== "tmp"));
     CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
     repoRootCache = /* @__PURE__ */ new Map();
     PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
-    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join8(HOME, name));
+    AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
     isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
     isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
     checkoutForPath = (path4) => {
@@ -2993,7 +3057,7 @@ var init_work_state_limits = __esm({
 });
 
 // src/utils/redaction.ts
-import { existsSync as existsSync11, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync7 } from "fs";
 function genericBuiltinRegex(lookbehind) {
   return new RegExp(`${lookbehind}${GENERIC_VALUE}`, "gi");
 }
@@ -3082,7 +3146,7 @@ function loadRedactionConfig(settings2) {
 function readSettingsText(settingsPath) {
   if (!existsSync11(settingsPath)) return null;
   try {
-    return readFileSync8(settingsPath, "utf-8");
+    return readFileSync7(settingsPath, "utf-8");
   } catch {
     return "";
   }
@@ -3156,15 +3220,22 @@ function awsSecretKeyMarkerForKeyedValue(key, value, config) {
   if (!AWS_SECRET_KEY_KEY.test(key) || !WHOLE_AWS_SECRET_KEY_VALUE.test(value)) return null;
   return "<redacted type='aws_secret_key'/>";
 }
+function cookieMarkerForKeyedValue(key, value, config) {
+  if (config.disabledBuiltinPatterns?.includes("cookie_header")) return null;
+  if (!COOKIE_KEY.test(key) || value.trim().length < 4) return null;
+  return "<redacted type='cookie_header'/>";
+}
 function redactJsonStrings(value, config = getRedactionConfig()) {
   if (!config.enabled) return value;
   const walk = (node, key) => {
     if (typeof node === "string") {
+      const cookieMarker = key === void 0 ? null : cookieMarkerForKeyedValue(key, node, config);
+      if (cookieMarker) return cookieMarker;
       const result = redactSensitive(node, config);
       if (key === void 0 || Object.keys(result.counts).length > 0) return result.redacted;
       return awsSessionTokenMarkerForKeyedValue(key, node, config) ?? awsSecretKeyMarkerForKeyedValue(key, node, config) ?? bearerMarkerForKeyedValue(key, node, config) ?? basicMarkerForKeyedValue(key, node, config) ?? genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
     }
-    if (Array.isArray(node)) return node.map((child) => walk(child));
+    if (Array.isArray(node)) return node.map((child) => walk(child, key !== void 0 && COOKIE_KEY.test(key) ? key : void 0));
     if (node !== null && typeof node === "object") {
       return Object.fromEntries(Object.entries(node).map(([childKey, child]) => [childKey, walk(child, childKey)]));
     }
@@ -3172,7 +3243,7 @@ function redactJsonStrings(value, config = getRedactionConfig()) {
   };
   return walk(value);
 }
-var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE;
+var GENERIC_VALUE_CLASS, GENERIC_VALUE, OPTIONAL_QUOTE, BOUNDED_SPACE, BARE_TOKEN_KEY, ESCAPED_QUOTE, STRING_EDGE, ASSIGNMENT_START, LINE_START, LINE_END, GENERIC_TOKEN_REGEX, ESCAPED_WHITESPACE_OR_WORD_BOUNDARY, COOKIE_VALUE_CHAR, BUILTIN_REDACTION_PATTERNS, GENERIC_REDACTION_PATTERNS, MAX_INPUT_CHARS, OVERSIZE_MARKER, cachedConfig, cacheStamp, CACHE_TTL_MS, lastLoadedConfig, warnedUnreadableSettings, BUILTINS_ONLY, REDACTION_REQUESTED_IN_RAW, GENERIC_PASSWORD_KEY, GENERIC_TOKEN_KEY, WHOLE_GENERIC_VALUE, AUTHORIZATION_KEY, KEYED_BEARER_VALUE, KEYED_BASIC_VALUE, AWS_SESSION_TOKEN_KEY, WHOLE_AWS_SESSION_TOKEN_VALUE, AWS_SECRET_KEY_KEY, WHOLE_AWS_SECRET_KEY_VALUE, COOKIE_KEY;
 var init_redaction = __esm({
   "src/utils/redaction.ts"() {
     "use strict";
@@ -3198,7 +3269,23 @@ var init_redaction = __esm({
       `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`
     ].join("|"), "gi");
     ESCAPED_WHITESPACE_OR_WORD_BOUNDARY = String.raw`(?:(?<=\\[nrt])|\b)`;
+    COOKIE_VALUE_CHAR = String.raw`[^\\\n\r"'\`<]`;
     BUILTIN_REDACTION_PATTERNS = [
+      // A `Cookie`/`Set-Cookie` header value is a session credential whatever the
+      // cookie is named (`Cookie: sessionid=...`, `set-cookie: sid=...`), as printed
+      // by `curl -v`, a proxy log or a captured response dump. Only the value is
+      // replaced, so the key stays readable. The Cowork shim has redacted these
+      // since the plugin landed (its COOKIE_RE, #3733), so the same session text
+      // was redacted on the way to cmem.ai and stored verbatim by the local worker.
+      // keyedLookbehind takes JSON-escaped keys (`\"Cookie\":\"…\"`); an optional
+      // `[` takes the first entry of Node's `"set-cookie": ["…"]` array. The value
+      // stops at a line end, a quote or a backslash, so in `JSON.stringify` text it
+      // ends before an escaped `\n` or `\"` and leaves the rest of the payload and
+      // its JSON intact, and at `<`, so it never re-redacts its own marker. The
+      // 4-char floor keeps a bare `Cookie: x` placeholder out. First in the list:
+      // the whole header value goes before a vendor pattern can split it with its
+      // marker and leave a later cookie in the same header readable.
+      { name: "cookie_header", regex: new RegExp(`(?<=(?:\\b(?:set-)?cookie)${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}(?:\\[${BOUNDED_SPACE})?${OPTIONAL_QUOTE})(?![ \\t])${COOKIE_VALUE_CHAR}{4,}`, "gi") },
       // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
       // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
       // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
@@ -3357,6 +3444,7 @@ var init_redaction = __esm({
     WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
     AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
     WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
+    COOKIE_KEY = /^(?:set-)?cookie$/i;
   }
 });
 
@@ -3840,7 +3928,7 @@ function reduceWorkState(entries, { currentProject, currentProjectScope = [], ev
       inCurrentScope: scope.has(normalizedKey(row.project))
     });
   }
-  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list2) => {
+  const lists = [...listsById.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch || b.latestEntryId - a.latestEntryId).map((list2) => {
     const tasks2 = [...list2.tasksByName.values()].map((task) => ({
       ...task,
       status: effectiveStatus(task.fields.status),
@@ -4158,6 +4246,15 @@ var init_env_sanitizer = __esm({
       // SDK child from recovering it from user settings. Keep this as a single
       // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
       "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      // One of Claude Code's documented "no background updates" switches (the
+      // other two, DISABLE_AUTOUPDATER and DISABLE_UPDATES, have no CLAUDE_CODE_
+      // prefix and pass already). The worker's auto-update check reads it from its
+      // own env to stay off (src/services/auto-update/auto-update-check.ts), and
+      // every worker spawn passes through sanitizeEnv, so stripping it left the
+      // updater running for a user who set it. The Observer's SDK child inherits
+      // it too, which keeps the user's choice there as well. Keep this as a single
+      // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
       // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
       // path to the claude binary, documented as settable from the file OR the
       // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
@@ -4199,7 +4296,7 @@ var init_oauth_token = __esm({
 });
 
 // src/shared/EnvManager.ts
-import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync2, mkdirSync as mkdirSync4, chmodSync } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync8, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, chmodSync } from "fs";
 import { parseEnv as parseEnv2 } from "util";
 function envFilePath() {
   return process.env.CLAUDE_MEM_ENV_FILE ?? paths.envFile();
@@ -4213,7 +4310,7 @@ function loadClaudeMemEnv() {
     return {};
   }
   try {
-    const content = readFileSync9(envFile, "utf-8");
+    const content = readFileSync8(envFile, "utf-8");
     const parsed = parseEnvFile(content);
     const result = {};
     for (const key of CREDENTIAL_KEYS) {
@@ -4332,7 +4429,7 @@ __export(request_judge_exports, {
   routeUndecided: () => routeUndecided,
   rulesJudge: () => rulesJudge
 });
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 function bandFor(confidence) {
   if (!Number.isFinite(confidence)) throw new TypeError(`A judge's confidence must be a number, got ${confidence}.`);
   return confidence >= JOIN_THRESHOLD ? "join" : confidence >= SUGGEST_THRESHOLD ? "suggest" : "new";
@@ -4466,7 +4563,7 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
   const routed = [], unplaced = [];
   let working = ledger.groups;
   const persist = () => {
-    if (apply) writeJsonAtomic(join9(dir, "request-groups.json"), working);
+    if (apply) writeJsonAtomic(join10(dir, "request-groups.json"), working);
   };
   for (; ; ) {
     const input = groupingInput({ ...ledger, groups: working }, database, { sinceEpoch, limit: Infinity, skip });
@@ -4585,7 +4682,7 @@ function decideSuggestion({ dir, database, conversationKey: conversationKey2, ac
     next.updatedAt = iso2(now);
   }
   if (writeGroups) writeGroups(next);
-  else writeJsonAtomic(join9(dir, "request-groups.json"), next);
+  else writeJsonAtomic(join10(dir, "request-groups.json"), next);
   return { status: next.suggestions[conversationKey2].status, requestId: next.conversations[conversationKey2] ?? null };
 }
 var DAY_MS, iso2, JOIN_THRESHOLD, SUGGEST_THRESHOLD, MAX_CANDIDATE_REQUESTS, MAX_DECISION_BODY_BYTES, DECISION_TIMEOUT_MS, JEV_MODEL, OPENROUTER_DECISIONS_URL, CONTEXT_PROMPTS, CONTEXT_PROMPT_CHARS, CONTEXT_RECORDED_TITLES, CONTEXT_TITLE_CHARS, PICK_INSTRUCTIONS, CHECK_INSTRUCTIONS, CHECK_CRITERIA, clean, rulesJudge;
@@ -4634,32 +4731,45 @@ var init_request_judge = __esm({
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
 import { createHash as createHash4 } from "node:crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync10, readdirSync, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync3 } from "node:fs";
-import { homedir as homedir8 } from "node:os";
-import { join as join10 } from "node:path";
+import { readFileSync as readFileSync9, readdirSync, statSync as statSync6 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { join as join11 } from "node:path";
 function placeholders(values2) {
   return values2.map(() => "?").join(",");
+}
+function queryInChunks(database, values2, sqlFor, parametersFor = (chunk) => chunk, chunkSize = 500) {
+  const rows = [];
+  for (let index = 0; index < values2.length; index += chunkSize) {
+    const chunk = values2.slice(index, index + chunkSize);
+    const statement = database.prepare(sqlFor(chunk));
+    try {
+      for (const row of statement.all(...parametersFor(chunk))) rows.push(row);
+    } finally {
+      statement.finalize();
+    }
+  }
+  return rows;
 }
 function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const stored = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
+  const stored = pairs ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`, (chunk) => chunk.flat(), 250) : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
   if (!stored.length) return [];
   const sessions = withDerivedProjects(database, stored);
-  const ids = sessions.map((session) => session.id);
-  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const writes = database.prepare(`SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
-    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const observations = database.prepare(`SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
+  const ids = [...new Set(sessions.map((session) => session.id))];
+  const prompts = queryInChunks(database, ids, (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const writes = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
+    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(chunk)})`);
+  const observations = queryInChunks(database, ids, (chunk) => `SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
     FROM observations o JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE s.id IN (${placeholders(ids)}) GROUP BY s.id`).all(...ids);
+    WHERE s.id IN (${placeholders(chunk)}) GROUP BY s.id`);
   const observationsBySession = new Map(observations.map((row) => [row.session_db_id, row]));
-  const toolActivity = database.prepare(`SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
-    WHERE session_db_id IN (${placeholders(ids)}) GROUP BY session_db_id`).all(...ids);
+  const toolActivity = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
+    WHERE session_db_id IN (${placeholders(chunk)}) GROUP BY session_db_id`);
   const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
   const promptsBySession = /* @__PURE__ */ new Map();
   for (const prompt of prompts) {
@@ -4751,7 +4861,7 @@ function linkBackwards(candidates) {
   return { proposedGroups: [...groups.values()], skippedLists };
 }
 function readGoals(database) {
-  const rows = database.prepare("SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id").all(OWNER_GOALS_LIST);
+  const rows = database.prepare("SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY created_at_epoch, id").all(OWNER_GOALS_LIST);
   const listState = {}, items = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const fields = JSON.parse(row.fields);
@@ -4782,7 +4892,7 @@ function readGoals(database) {
 }
 function readJson(path4, fallback) {
   try {
-    return JSON.parse(readFileSync10(path4, "utf8"));
+    return JSON.parse(readFileSync9(path4, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return fallback;
     throw error;
@@ -4790,12 +4900,8 @@ function readJson(path4, fallback) {
 }
 function writeJsonAtomic(path4, value) {
   const finish = beforeSharedFileWrite(path4, value);
-  mkdirSync5(join10(path4, ".."), { recursive: true });
-  const temp = `${path4}.tmp`;
   const stored = finish && Object.hasOwn(finish, "value") ? finish.value : value;
-  writeFileSync3(temp, `${JSON.stringify(stored, null, 2)}
-`, { mode: 384 });
-  renameSync3(temp, path4);
+  writeJsonFileAtomic(path4, stored, { mode: 384 });
   finish?.();
 }
 function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map() } = {}) {
@@ -4857,7 +4963,10 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     delete next.conversations[ignored.conversation];
   }
   const used = new Set(Object.values(next.conversations));
-  for (const id of Object.keys(next.groups)) if (!used.has(id)) delete next.groups[id];
+  for (const [id, group] of Object.entries(next.groups)) {
+    if (!used.has(id)) delete next.groups[id];
+    else group.links = (group.links ?? []).filter((link) => link.conversations.every((key) => next.conversations[key] === id));
+  }
   next.updatedAt = iso3(now);
   return next;
 }
@@ -5070,24 +5179,24 @@ function validateStory(story) {
   };
 }
 function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join10(dir, "request-groups.json"), emptyGroups());
+  const groups = readJson(join11(dir, "request-groups.json"), emptyGroups());
   const progress = {};
   let names = [];
   try {
-    names = readdirSync(join10(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
+    names = readdirSync(join11(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
   for (const name of names) {
-    const entry = readJson(join10(dir, "progress", name), null);
+    const entry = readJson(join11(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
     groups,
     progress,
-    story: readJson(join10(dir, "story.json"), null),
-    refresh: readJson(join10(dir, "refresh.json"), null),
-    agentWrittenPromptIds: new Set(readJson(join10(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+    story: readJson(join11(dir, "story.json"), null),
+    refresh: readJson(join11(dir, "refresh.json"), null),
+    agentWrittenPromptIds: new Set(readJson(join11(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
   };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
@@ -5254,7 +5363,7 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
 function readInput(source) {
-  return JSON.parse(readFileSync10(source === "-" ? 0 : source, "utf8"));
+  return JSON.parse(readFileSync9(source === "-" ? 0 : source, "utf8"));
 }
 function textOption(args, name) {
   const index = args.indexOf(`--${name}`);
@@ -5268,7 +5377,7 @@ function option(args, name, fallback) {
   return value;
 }
 function openDatabase() {
-  const path4 = process.env.CLAUDE_MEM_DB ?? join10(DATA_DIR2, "claude-mem.db");
+  const path4 = process.env.CLAUDE_MEM_DB ?? join11(DATA_DIR2, "claude-mem.db");
   statSync6(path4);
   const database = new Database(path4, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
@@ -5352,7 +5461,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "apply") {
     const ledger = readLedger(dir);
     const next = applyDecisions(ledger.groups, readInput(args[0] ?? "-"), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
-    writeJsonAtomic(join10(dir, "request-groups.json"), next);
+    writeJsonAtomic(join11(dir, "request-groups.json"), next);
     return print2({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command2 === "pending" || command2 === "show") {
@@ -5390,7 +5499,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join10(dir, "progress", `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join11(dir, "progress", `${entry.groupId}.json`), entry);
     return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...coercedFields.size ? { coercedFields: [...coercedFields] } : {} });
   }
   if (command2 === "story-input") {
@@ -5419,7 +5528,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const validated = validateStory(readInput(args[0] ?? "-"));
     const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference2) => preference2?.source === OWNER_GOALS_LIST);
     const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso3(now) };
-    writeJsonAtomic(join10(dir, "story.json"), story);
+    writeJsonAtomic(join11(dir, "story.json"), story);
     return print2({ recorded: "story", preferences: story.preferences.length });
   }
   const focusQuestion = () => {
@@ -5447,8 +5556,9 @@ var init_request_groups = __esm({
     init_session_project();
     init_my_focus();
     init_shared_file_hooks();
-    DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join10(homedir8(), ".claude-mem");
-    LEDGER_DIR = join10(DATA_DIR2, "work-view");
+    init_atomic_json();
+    DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join11(homedir9(), ".claude-mem");
+    LEDGER_DIR = join11(DATA_DIR2, "work-view");
     AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
     DAY_MS2 = 864e5;
     GOALS_STALE_MS = DAY_MS2;
@@ -5493,7 +5603,7 @@ var init_request_groups = __esm({
 });
 
 // src/services/work-view/request-groups-cli.mjs
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 
 // src/integrations/harness-worker.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
@@ -5533,8 +5643,8 @@ import { existsSync as existsSync13 } from "node:fs";
 
 // src/services/work-view/shared-ledger-adapter.mjs
 init_request_groups();
-import { readFileSync as readFileSync11, readdirSync as readdirSync2, mkdirSync as mkdirSync6, renameSync as renameSync4, writeFileSync as writeFileSync4, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
-import { join as join11 } from "node:path";
+import { readFileSync as readFileSync10, readdirSync as readdirSync2, mkdirSync as mkdirSync4, renameSync as renameSync3, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, statSync as statSync7 } from "node:fs";
+import { join as join12 } from "node:path";
 import { createHash as createHash7 } from "node:crypto";
 
 // src/services/work-view/agent-view.mjs
@@ -7086,7 +7196,7 @@ var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-wr
 var fileKinds = (name) => name === "request-groups.json" ? ["group", "ignored"] : name === "story.json" ? ["story"] : name === "refresh.json" ? ["refresh"] : name === "agent-written-prompts.json" ? ["exclusion"] : /^progress\/g_[a-f0-9]{12}\.json$/.test(name) ? ["progress"] : [];
 function load(path4) {
   try {
-    const raw = readFileSync11(path4);
+    const raw = readFileSync10(path4);
     if (raw.byteLength > MAX_FILE_BYTES) throw new RangeError("Shared My Work file is over the local import limit");
     return JSON.parse(raw.toString("utf8"));
   } catch (error) {
@@ -7095,12 +7205,12 @@ function load(path4) {
   }
 }
 function rawWrite(path4, value) {
-  mkdirSync6(join11(path4, ".."), { recursive: true });
+  mkdirSync4(join12(path4, ".."), { recursive: true });
   const temp = `${path4}.${process.pid}.shared.tmp`;
   try {
-    writeFileSync4(temp, `${JSON.stringify(value, null, 2)}
+    writeFileSync3(temp, `${JSON.stringify(value, null, 2)}
 `, { mode: 384 });
-    renameSync4(temp, path4);
+    renameSync3(temp, path4);
   } finally {
     try {
       unlinkSync2(temp);
@@ -7147,7 +7257,7 @@ var SharedLedgerAdapter = class {
     const bases = Object.fromEntries([...knownKeys].map((key) => [key, shared.records.get(key)?.hash ?? prior.bases[key] ?? null]));
     this.db.prepare(`INSERT INTO my_work_file_state(name, observed_hash, bases, keys_json, pending_json, pending_delete) VALUES(?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET observed_hash=excluded.observed_hash, bases=excluded.bases,
-      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? digest(load(join11(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
+      keys_json=excluded.keys_json, pending_json=excluded.pending_json, pending_delete=excluded.pending_delete`).run(name, pending ? prior.observed_hash ?? digest(load(join12(this.directory, name))) : digest(value), JSON.stringify(bases), JSON.stringify(keys), pending ? JSON.stringify(value) : null, Number(pending && pendingDelete));
   }
   localLedger() {
     try {
@@ -7155,7 +7265,7 @@ var SharedLedgerAdapter = class {
     } catch {
       const safe = (name, fallback) => {
         try {
-          return load(join11(this.directory, name)) ?? fallback;
+          return load(join12(this.directory, name)) ?? fallback;
         } catch {
           return fallback;
         }
@@ -7163,7 +7273,7 @@ var SharedLedgerAdapter = class {
       const groups = safe("request-groups.json", { groups: {}, conversations: {}, ignored: {} });
       const progress = {};
       try {
-        for (const name of readdirSync2(join11(this.directory, "progress"))) if (/^g_[a-f0-9]{12}\.json$/.test(name)) {
+        for (const name of readdirSync2(join12(this.directory, "progress"))) if (/^g_[a-f0-9]{12}\.json$/.test(name)) {
           const value = safe(`progress/${name}`, null);
           if (value) progress[name.slice(0, -5)] = value;
         }
@@ -7181,12 +7291,12 @@ var SharedLedgerAdapter = class {
   signature(captureActivity) {
     const names = [...fixedFiles, "human-copy.json"];
     try {
-      names.push(...readdirSync2(join11(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
+      names.push(...readdirSync2(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
     } catch {
     }
     const files = names.sort().map((name) => {
       try {
-        const stat = statSync7(join11(this.directory, name));
+        const stat = statSync7(join12(this.directory, name));
         return [name, stat.ino, stat.size, stat.mtimeMs];
       } catch {
         return [name, "missing"];
@@ -7302,11 +7412,11 @@ var SharedLedgerAdapter = class {
       if (this.state(name).pending_json !== JSON.stringify(redactJsonStrings(value))) return false;
       if (value === null) {
         try {
-          unlinkSync2(join11(this.directory, name));
+          unlinkSync2(join12(this.directory, name));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
-      } else rawWrite(join11(this.directory, name), value);
+      } else rawWrite(join12(this.directory, name), value);
       this.remember(name, value, updates, shared ?? this.shared(), false);
       return true;
     }).immediate();
@@ -7331,18 +7441,18 @@ var SharedLedgerAdapter = class {
   finishPendingFile(name) {
     return this.db.transaction(() => {
       const prior = this.state(name);
-      const current = load(join11(this.directory, name));
+      const current = load(join12(this.directory, name));
       if (prior.pending_json === null) return current;
       const originallyPending = JSON.parse(prior.pending_json);
       const pending = redactJsonStrings(originallyPending);
       if (current !== void 0 && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending) && digest(current) !== digest(pending)) throw new Error("Local file changed during an unfinished shared write");
       if (prior.pending_delete) {
         try {
-          unlinkSync2(join11(this.directory, name));
+          unlinkSync2(join12(this.directory, name));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
-      } else rawWrite(join11(this.directory, name), pending);
+      } else rawWrite(join12(this.directory, name), pending);
       this.remember(name, pending, this.updatesForFile(name, pending), this.shared(), false);
       return pending;
     }).immediate();
@@ -7358,7 +7468,7 @@ var SharedLedgerAdapter = class {
   saveFile(name, value, options) {
     if (!fileKinds(name).length) throw new TypeError("Unsupported shared My Work file");
     const finish = this.beforeWrite(name, value, options);
-    rawWrite(join11(this.directory, name), finish && Object.hasOwn(finish, "value") ? finish.value : value);
+    rawWrite(join12(this.directory, name), finish && Object.hasOwn(finish, "value") ? finish.value : value);
     finish?.();
   }
   publish(updates) {
@@ -7382,17 +7492,17 @@ var SharedLedgerAdapter = class {
     this.errors = [];
     const names = [.../* @__PURE__ */ new Set([...fixedFiles, ...this.db.prepare("SELECT name FROM my_work_file_state").all().map((row) => row.name)])];
     try {
-      names.push(...readdirSync2(join11(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
+      names.push(...readdirSync2(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
     for (const name of names) {
       try {
-        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join11(this.directory, name));
+        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join12(this.directory, name));
         if ((current !== void 0 || this.state(name).observed_hash !== null) && digest(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
           if (finish && Object.hasOwn(finish, "value") && digest(current) !== digest(finish.value)) {
-            rawWrite(join11(this.directory, name), finish.value);
+            rawWrite(join12(this.directory, name), finish.value);
             current = finish.value;
           }
           finish?.();
@@ -7416,7 +7526,7 @@ var SharedLedgerAdapter = class {
       if (value == null || this.errors.some((error) => error.file === name)) continue;
       const kinds = fileKinds(name);
       if (!shared.records.size || ![...shared.records.values()].some((record) => kinds.includes(record.kind))) continue;
-      if (digest(load(join11(this.directory, name))) === digest(value)) {
+      if (digest(load(join12(this.directory, name))) === digest(value)) {
         const prior = this.state(name);
         if (this.tombstoneKeys(name, shared).some((key) => prior.bases[key] !== shared.records.get(key).hash)) {
           this.remember(name, value, this.updatesForFile(name, value), shared, false);
@@ -7431,7 +7541,7 @@ var SharedLedgerAdapter = class {
       if (!record.deleted) continue;
       const name = record.kind === "story" && record.key === "current" ? "story.json" : record.kind === "progress" && /^g_[a-f0-9]{12}$/.test(record.key) ? `progress/${record.key}.json` : null;
       if (!name || this.errors.some((error) => error.file === name)) continue;
-      if (load(join11(this.directory, name)) === void 0) {
+      if (load(join12(this.directory, name)) === void 0) {
         if (this.state(name).bases[sharedRecordKey(record.kind, record.key)] !== record.hash) this.remember(name, null, [], shared, false);
         continue;
       }
@@ -7442,7 +7552,7 @@ var SharedLedgerAdapter = class {
     let copies = {}, copyHash = null;
     if (captureActivity) {
       try {
-        copies = load(join11(this.directory, "human-copy.json"))?.entries ?? {};
+        copies = load(join12(this.directory, "human-copy.json"))?.entries ?? {};
         copyHash = digest(copies);
       } catch (error) {
         this.errors.push({ file: "human-copy.json", message: String(error.message) });
@@ -7531,17 +7641,17 @@ async function saveFocus(body) {
   if (!response.ok) throw new Error(`worker refused /api/work-view/focus/router: ${response.status} ${text5}`);
   return JSON.parse(text5);
 }
-var settings = SettingsDefaultsManager.loadFromFile(join12(resolveDataDir(), "settings.json"), true, { readOnly: true });
+var settings = SettingsDefaultsManager.loadFromFile(join13(resolveDataDir(), "settings.json"), true, { readOnly: true });
 var localDeviceId = settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
 var sharedDatabase = null;
 var stopSharedWriter = null;
 var command = process.argv[2];
 var writesLedger = ["apply", "record-progress", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
-if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join12(resolveDataDir(), "claude-mem.db"))) {
-  sharedDatabase = new Database2(join12(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
-  localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join12(resolveDataDir(), "settings.json"), localDeviceId);
-  const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join12(resolveDataDir(), "work-view"), deviceId: localDeviceId });
-  stopSharedWriter = registerSharedFileWriter(join12(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));
+if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) {
+  sharedDatabase = new Database2(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
+  localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
+  const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join13(resolveDataDir(), "work-view"), deviceId: localDeviceId });
+  stopSharedWriter = registerSharedFileWriter(join13(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));
 }
 var output = "";
 var print = (value) => {

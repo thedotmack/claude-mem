@@ -157,4 +157,11 @@ export const setupKo: Record<string, string> = {
   'Search suggestions': '검색 제안',
   'Memory search results': '메모리 검색 결과',
   'Kept notes': '보관한 노트',
+  'Your conversations are saved. Focus areas need an available agent; you can continue setup now.': '대화가 저장되었습니다. 집중 영역에는 사용 가능한 에이전트가 필요합니다. 지금 설정을 계속할 수 있습니다.',
+  'What else came through': '그 밖에 찾은 것',
+  'A selection of requests and preferences from your conversations.': '대화에서 고른 요청과 선호 사항 일부입니다.',
+  'Some requests could not be read. The work shown may be incomplete.': '일부 요청을 읽을 수 없습니다. 표시된 작업이 완전하지 않을 수 있습니다.',
+  'From {count} messages across {agents}: the bigger picture of what you’re working toward.': '{agents}에 걸친 메시지 {count}개에서 찾은, 지금 향하고 있는 큰 그림입니다.',
+  'Your work is starting to connect.': '작업이 서로 연결되기 시작했습니다.',
+  'Couldn’t finish connecting your work. You can continue with what’s here.': '작업 연결을 끝내지 못했습니다. 지금 있는 내용으로 계속할 수 있습니다.',
 };

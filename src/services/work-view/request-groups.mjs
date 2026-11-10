@@ -22,7 +22,7 @@
 //   bun request-groups.mjs refresh-needs [--days 14]  what the automatic refresh would do now
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
@@ -30,6 +30,7 @@ import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -54,6 +55,21 @@ export const groupIdFor = (anchorConversationKey) => `g_${createHash('sha256').u
 
 function placeholders(values) { return values.map(() => '?').join(','); }
 
+// Keep bound parameters below SQLite limits even for large history scans.
+function queryInChunks(database, values, sqlFor, parametersFor = (chunk) => chunk, chunkSize = 500) {
+  const rows = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    const chunk = values.slice(index, index + chunkSize);
+    const statement = database.prepare(sqlFor(chunk));
+    try {
+      for (const row of statement.all(...parametersFor(chunk))) rows.push(row);
+    } finally {
+      statement.finalize();
+    }
+  }
+  return rows;
+}
+
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
 // fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
 // excludedPromptIds: hook-recorded prompts the setup scan found an agent wrote (agent-written-prompts.json).
@@ -61,7 +77,7 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs
-    ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => '(?, ?)').join(',')})`).all(...pairs.flat()) : []
+    ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => '(?, ?)').join(',')})`, (chunk) => chunk.flat(), 250)
     // Any recent activity counts: a new start, prompt, observation or recorded tool use (a commit, a push, a work-state write).
     : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
@@ -70,18 +86,18 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   if (!stored.length) return [];
   // A session started from an agent scratch folder takes the repo its tool calls touched.
   const sessions = withDerivedProjects(database, stored);
-  const ids = sessions.map((session) => session.id);
-  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const writes = database.prepare(`SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
-    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(ids)})`).all(...ids);
-  const observations = database.prepare(`SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
+  const ids = [...new Set(sessions.map((session) => session.id))];
+  const prompts = queryInChunks(database, ids, (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const writes = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
+    WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(chunk)})`);
+  const observations = queryInChunks(database, ids, (chunk) => `SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
     FROM observations o JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE s.id IN (${placeholders(ids)}) GROUP BY s.id`).all(...ids);
+    WHERE s.id IN (${placeholders(chunk)}) GROUP BY s.id`);
   const observationsBySession = new Map(observations.map((row) => [row.session_db_id, row]));
   // Work after a review without a new prompt or observation (a commit, a push) still makes the review due again.
-  const toolActivity = database.prepare(`SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
-    WHERE session_db_id IN (${placeholders(ids)}) GROUP BY session_db_id`).all(...ids);
+  const toolActivity = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
+    WHERE session_db_id IN (${placeholders(chunk)}) GROUP BY session_db_id`);
   const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
   const promptsBySession = new Map();
   for (const prompt of prompts) {
@@ -161,7 +177,7 @@ export function linkBackwards(candidates) {
 
 /** Fold the owner-goals list (patch entries) into its open focus areas and asks, areas first. */
 export function readGoals(database) {
-  const rows = database.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id').all(OWNER_GOALS_LIST);
+  const rows = database.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY created_at_epoch, id').all(OWNER_GOALS_LIST);
   const listState = {}, items = new Map();
   for (const row of rows) {
     const fields = JSON.parse(row.fields);
@@ -188,11 +204,8 @@ function readJson(path, fallback) {
 
 export function writeJsonAtomic(path, value) {
   const finish = beforeSharedFileWrite(path, value);
-  mkdirSync(join(path, '..'), { recursive: true });
-  const temp = `${path}.tmp`;
   const stored = finish && Object.hasOwn(finish, 'value') ? finish.value : value;
-  writeFileSync(temp, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temp, path);
+  writeJsonFileAtomic(path, stored, { mode: 0o600 });
   finish?.();
 }
 
@@ -265,7 +278,10 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     delete next.conversations[ignored.conversation];
   }
   const used = new Set(Object.values(next.conversations));
-  for (const id of Object.keys(next.groups)) if (!used.has(id)) delete next.groups[id];
+  for (const [id, group] of Object.entries(next.groups)) {
+    if (!used.has(id)) delete next.groups[id];
+    else group.links = (group.links ?? []).filter((link) => link.conversations.every((key) => next.conversations[key] === id));
+  }
   next.updatedAt = iso(now);
   return next;
 }

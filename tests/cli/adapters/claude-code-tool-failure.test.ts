@@ -22,6 +22,7 @@ describe('claudeCodeAdapter.normalizeInput — PostToolUseFailure', () => {
     expect(input.toolInput).toEqual(postToolUseFailurePayload.tool_input);
     expect(input.toolUseId).toBe('toolu_01TW23kr6AgmuFcagxiwvpC7');
     expect(input.toolResponse).toEqual({
+      is_error: true,
       error: 'Exit code 1\nls: ./does-not-exist: No such file or directory',
       is_interrupt: false,
     });
@@ -34,7 +35,7 @@ describe('claudeCodeAdapter.normalizeInput — PostToolUseFailure', () => {
       is_interrupt: true,
     });
 
-    expect(input.toolResponse).toEqual({ error: 'Command failed', is_interrupt: true });
+    expect(input.toolResponse).toEqual({ is_error: true, error: 'Command failed', is_interrupt: true });
   });
 
   it('keeps the interrupt of a failure that carries no error text', () => {

@@ -148,7 +148,9 @@ async function runJobsStatus(args: ParsedArgs): Promise<void> {
       scope: { team: scope.team, project: scope.project },
       postgres: pgCounts,
       bullmq: bullmqCounts ?? { unavailable: true },
-      divergence: detectDivergence(pgCounts, bullmqCounts),
+      divergence: bullmqCounts && (scope.team || scope.project)
+        ? { reason: 'queue_counts_are_global' }
+        : detectDivergence(pgCounts, bullmqCounts),
     };
     console.log(JSON.stringify(output, null, 2));
   } finally {
@@ -231,6 +233,10 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     }
     if (lookup.status === 'processing') {
       console.error(styleText('red', `Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
+      process.exit(1);
+    }
+    if (lookup.status !== 'failed' && lookup.status !== 'cancelled') {
+      console.error(styleText('red', `Cannot retry a ${lookup.status} job. Only failed or cancelled jobs can be retried.`));
       process.exit(1);
     }
 
@@ -492,11 +498,15 @@ async function openPool(): Promise<{
   releasePool: () => Promise<void>;
 }> {
   if (testSeams.openPool) return testSeams.openPool();
-  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
-  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+  const { createPostgresPool, parsePostgresConfig } = await import('../../storage/postgres/index.js');
+  const config = parsePostgresConfig({ requireDatabaseUrl: true });
+  if (!config) throw new Error('Postgres requires CLAUDE_MEM_SERVER_DATABASE_URL');
+  // These short-lived commands own their connection lifetime. An idle shared
+  // pool keeps the CLI alive after output and cannot tear itself down on exit.
+  const pool = createPostgresPool(config);
   return {
     pool: pool as never,
-    releasePool: async () => { /* shared pool tears down on process exit */ },
+    releasePool: () => pool.end(),
   };
 }
 

@@ -16,7 +16,8 @@ import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { type FocusArea, type FocusAsk, type LiveState, type Quote, type Request } from '@/data'
-import { useWorkModel } from '@/store'
+import { useStore, useWorkModel } from '@/store'
+import { FocusArtwork } from './focus-artwork'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-changes'
@@ -215,6 +216,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
   const { t } = useI18n()
   const [edit, setEdit] = useState<AreaEdit | null>(null)
   const [sharing, setSharing] = useState(false)
+  const artwork = useStore((state) => state.view.focusArtwork)
   const navWord = navWordIn(area.name)
   const status = statusOf(area.latestAt, requests)
   const shipped = requests.filter((request) => request.state === 'shipped').length
@@ -222,6 +224,8 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
   return (
     <Req ids={['R16.2', 'R12.3']}>
       <HeaderFrame>
+        <div className={`focus-header-intro artwork-${artwork}`}>
+        {artwork !== 'off' && <FocusArtwork area={area} priority />}
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -235,6 +239,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
             {area.quotes.length > 0 ? <WhyItsHere quotes={area.quotes} /> : area.evidence && <p className="text-xs text-muted-foreground">{interpolate(t('Why it’s here: {evidence}'), { evidence: area.evidence })}</p>}
           </div>
           <AreaMenu area={area} changes={changes} onEdit={setEdit} onShare={() => setSharing(true)} />
+        </div>
         </div>
         {navWord && <p className="text-xs text-attention-foreground">{interpolate(t('“{name}” reuses the page name “{navWord}”. Rename it so each word means one thing.'), { name: area.name, navWord })}</p>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">

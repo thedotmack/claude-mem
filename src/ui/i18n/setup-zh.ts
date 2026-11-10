@@ -180,4 +180,11 @@ export const setupZh: Record<string, string> = {
   'Search suggestions': '搜索建议',
   'Memory search results': '记忆搜索结果',
   'Kept notes': '已保存的便签',
+  'Your conversations are saved. Focus areas need an available agent; you can continue setup now.': '您的对话已保存。焦点区域需要一个可用的智能体；您现在可以继续设置。',
+  'What else came through': '还发现了什么',
+  'A selection of requests and preferences from your conversations.': '从您的对话中选出的部分请求和偏好。',
+  'Some requests could not be read. The work shown may be incomplete.': '部分请求无法读取。显示的工作可能不完整。',
+  'From {count} messages across {agents}: the bigger picture of what you’re working toward.': '来自 {agents} 中的 {count} 条消息：您正在努力实现的整体目标。',
+  'Your work is starting to connect.': '您的工作正在逐渐连成一体。',
+  'Couldn’t finish connecting your work. You can continue with what’s here.': '未能完成工作关联。您可以基于现有内容继续。',
 };

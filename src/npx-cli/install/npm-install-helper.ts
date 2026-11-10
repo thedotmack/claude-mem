@@ -21,6 +21,41 @@ import { IS_WINDOWS } from '../utils/paths.js';
 const TIMEOUT_MS = 5 * 60 * 1000;
 const TERMINATION_GRACE_MS = 1000;
 
+type TerminatePosixGroup = (signal: NodeJS.Signals) => void;
+const activePosixGroups = new Set<TerminatePosixGroup>();
+const parentSignalHandlers = new Map<NodeJS.Signals, () => void>();
+const terminateActivePosixGroups = (signal: NodeJS.Signals) => {
+  for (const terminate of [...activePosixGroups]) terminate(signal);
+};
+const onParentExit = () => terminateActivePosixGroups('SIGKILL');
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  parentSignalHandlers.set(signal, () => {
+    terminateActivePosixGroups(signal);
+    const ownHandler = parentSignalHandlers.get(signal)!;
+    // Prepending lets an existing once-listener retain control too: it has
+    // not removed itself yet. Do not replace the installer's own cancellation.
+    if (process.listeners(signal).some(listener => listener !== ownHandler)) return;
+    onParentExit();
+    process.off(signal, ownHandler);
+    process.kill(process.pid, signal);
+  });
+}
+
+function trackPosixGroup(terminate: TerminatePosixGroup): () => void {
+  if (activePosixGroups.size === 0) {
+    process.on('exit', onParentExit);
+    for (const [signal, handler] of parentSignalHandlers) process.prependListener(signal, handler);
+  }
+  activePosixGroups.add(terminate);
+  return () => {
+    activePosixGroups.delete(terminate);
+    if (activePosixGroups.size === 0) {
+      process.off('exit', onParentExit);
+      for (const [signal, handler] of parentSignalHandlers) process.off(signal, handler);
+    }
+  };
+}
+
 export interface NpmResult {
   code: number;
   stdout: string;
@@ -81,7 +116,9 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
       env: npmChildEnv(sanitizeEnv(process.env)),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+      // Own a POSIX process group so a timeout includes npm's children, such
+      // as git processes that inherited the captured output pipes.
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : { detached: true }),
     });
 
     let stdout = '';
@@ -89,6 +126,22 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
     let timedOut = false;
     let spawnError: Error | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    const terminatePosixGroup = (signal: NodeJS.Signals) => {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch (error) {
+          // ESRCH is expected if the group already exited. Keep other failures
+          // visible and still try the direct child before releasing the pipes.
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+            stderr += `\nFailed to terminate npm process group: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+      }
+      child.kill(signal);
+    };
+    const untrackGroup = IS_WINDOWS ? () => {} : trackPosixGroup(terminatePosixGroup);
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -112,9 +165,13 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
           });
         }
       } else {
-        child.kill('SIGTERM');
-        // An installer can ignore SIGTERM; the timeout must still end the wait.
-        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), TERMINATION_GRACE_MS);
+        forceKillTimer = setTimeout(() => {
+          terminatePosixGroup('SIGKILL');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          settle(124);
+        }, TERMINATION_GRACE_MS);
+        terminatePosixGroup('SIGTERM');
       }
     }, resolveInstallTimeoutMs());
 
@@ -126,6 +183,7 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
       settled = true;
       clearTimeout(timer);
       if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      untrackGroup();
       resolve({
         code: timedOut ? 124 : (typeof code === 'number' ? code : 1),
         stdout,
@@ -137,6 +195,11 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
     // 'close' never fires when the process fails to spawn (ENOENT), so the
     // error handler must settle too.
     child.on('error', (error) => { spawnError = error; settle(null); });
-    child.on('close', (code) => { settle(code); });
+    child.on('close', (code) => {
+      // Even if npm exits first, finish the grace-period cleanup for any child
+      // that ignored SIGTERM (including children that closed their own pipes).
+      if (!IS_WINDOWS && timedOut && forceKillTimer !== undefined) return;
+      settle(code);
+    });
   });
 }

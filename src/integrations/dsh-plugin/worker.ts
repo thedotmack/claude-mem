@@ -63,6 +63,26 @@ function timeoutOf(x: AbortSignal, code: string): TimeoutReason | undefined {
   return reason instanceof TimeoutReason && reason.code === code ? reason : undefined
 }
 
+function requestError(error: unknown, requestSignal: AbortSignal, callerSignal?: AbortSignal): MemError {
+  const reason = timeoutOf(requestSignal, MEM_TIMEOUT)
+  if (reason !== undefined) return new MemError(`memory request timed out after ${reason.timeoutMs}ms`, 'MEM_TIMEOUT')
+  if (callerSignal?.aborted) return new MemError('memory request aborted', 'MEM_ABORTED')
+  if (error instanceof MemError) return error
+  return new MemError(`memory request failed: ${error instanceof Error ? error.message : String(error)}`, 'MEM_PROVIDER_ERROR', { cause: error })
+}
+
+async function responseError(response: Response): Promise<MemError> {
+  let text: string
+  try {
+    text = await response.text()
+  } catch (error) {
+    // The headers are still useful when a failed worker closes its response
+    // early. The outer request classifier keeps timeout/abort precedence.
+    return new MemError(`memory worker returned HTTP ${response.status}: response body could not be read`, 'MEM_PROVIDER_ERROR', { cause: error })
+  }
+  return new MemError(`memory worker returned HTTP ${response.status}: ${text.slice(0, 500)}`, 'MEM_PROVIDER_ERROR')
+}
+
 /**
  * The local claude-mem worker HTTP client. The worker is a separate process;
  * network availability fails loudly at execution time.
@@ -170,38 +190,39 @@ export class WorkerClient {
       init.headers = { 'content-type': 'application/json' }
       init.body = JSON.stringify(options.body)
     }
-    let response: Response
     try {
-      response = await fetch(url, init)
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw await responseError(response)
+      }
+      const result: unknown = await response.json()
+      // Search/timeline use the MCP result envelope, including errors returned
+      // with HTTP 200. Keep those failures out of the successful memory index.
+      // The MemError passes through requestError unchanged.
+      if (result !== null && typeof result === 'object' && !Array.isArray(result)
+        && (result as Record<string, unknown>).isError === true) {
+        const message = contentText((result as Record<string, unknown>).content)
+        throw new MemError(message?.slice(0, 500) || 'memory worker returned an error', 'MEM_PROVIDER_ERROR')
+      }
+      return result as T
     } catch (error: unknown) {
-      const reason = timeoutOf(d.signal, MEM_TIMEOUT)
-      if (reason !== undefined) throw new MemError(`memory request timed out after ${reason.timeoutMs}ms`, 'MEM_TIMEOUT')
-      throw new MemError(`memory request failed: ${error instanceof Error ? error.message : String(error)}`, 'MEM_PROVIDER_ERROR')
+      throw requestError(error, d.signal, signal)
     }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new MemError(`memory worker returned HTTP ${response.status}: ${text.slice(0, 500)}`, 'MEM_PROVIDER_ERROR')
-    }
-    return await response.json() as T
   }
 
   private async requestText(path: string, query: URLSearchParams, signal?: AbortSignal): Promise<string> {
     if (signal?.aborted) throw new MemError('memory request aborted', 'MEM_ABORTED')
     using d = deadline(signal, this.limits.timeoutMs, MEM_TIMEOUT)
     const url = this.urlFor(path, query)
-    let response: Response
     try {
-      response = await fetch(url, { method: 'GET', signal: d.signal })
+      const response = await fetch(url, { method: 'GET', signal: d.signal })
+      if (!response.ok) {
+        throw await responseError(response)
+      }
+      return await response.text()
     } catch (error: unknown) {
-      const reason = timeoutOf(d.signal, MEM_TIMEOUT)
-      if (reason !== undefined) throw new MemError(`memory request timed out after ${reason.timeoutMs}ms`, 'MEM_TIMEOUT')
-      throw new MemError(`memory request failed: ${error instanceof Error ? error.message : String(error)}`, 'MEM_PROVIDER_ERROR')
+      throw requestError(error, d.signal, signal)
     }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new MemError(`memory worker returned HTTP ${response.status}: ${text.slice(0, 500)}`, 'MEM_PROVIDER_ERROR')
-    }
-    return await response.text()
   }
 
   private urlFor(path: string, query?: URLSearchParams): string {

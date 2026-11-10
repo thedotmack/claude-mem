@@ -4,11 +4,11 @@ import { homedir } from 'os';
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
   mkdirSync,
   cpSync,
   rmSync,
 } from 'fs';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
@@ -85,7 +85,7 @@ function readOpenClawConfig(): Record<string, any> {
 function writeOpenClawConfig(config: Record<string, any>): void {
   const configDirectory = getOpenClawConfigDirectory();
   mkdirSync(configDirectory, { recursive: true });
-  writeFileSync(getOpenClawConfigFilePath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  writeJsonFileAtomic(getOpenClawConfigFilePath(), config);
 }
 
 function registerPluginInOpenClawConfig(
@@ -198,10 +198,9 @@ function copyPluginFilesAndRegister(
     console.log(`  Skills copied to: ${destinationSkills}`);
   }
 
-  writeFileSync(
+  writeJsonFileAtomic(
     path.join(extensionDirectory, 'package.json'),
-    JSON.stringify(extensionPackageJson, null, 2) + '\n',
-    'utf-8',
+    extensionPackageJson,
   );
 
   const workerPort = getWorkerPort();

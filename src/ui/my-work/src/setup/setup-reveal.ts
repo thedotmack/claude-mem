@@ -2,6 +2,8 @@
 // then work (request groups), then rules (the build story's preferences). Nothing is invented: a set the run has not
 // reached yet is `null` (placeholders), and a finished run leaves an empty set empty.
 import type { WorkViewSnapshot } from '../live/work-view-api-types.ts'
+import { toWorkModel } from '../live/to-work-model.ts'
+import type { FocusArea, Request } from '../data.ts'
 
 /** data.ts AgentTool, spelled out so this file (and its node test) needs no app alias. */
 type AgentTool = 'claude' | 'codex' | 'gemini' | 'other'
@@ -11,7 +13,17 @@ export interface RevealWork { id: string; title: string; agent: AgentTool; lastA
 export interface RevealGoal { id: string; rank: number; title: string; timesAsked: number; latestAt: string }
 export interface RevealRule { id: string; text: string; quote: string; quotedAt: string }
 /** `null` while that set is still being extracted. */
-export interface RevealSets { goals: RevealGoal[] | null; work: RevealWork[] | null; rules: RevealRule[] | null }
+export interface RevealSets {
+  goals: RevealGoal[] | null
+  work: RevealWork[] | null
+  rules: RevealRule[] | null
+  /** The same recorded areas, owner words and ordering used in My Work. Null until areas land or extraction ends. */
+  focusAreas?: FocusArea[] | null
+  /** Real requests with their recorded area placement; a title is never used to guess membership. */
+  requests?: Request[]
+  /** Requests the mapper could not read consistently; they must not be presented as an absence of work. */
+  requestReadErrorCount?: number
+}
 
 /** The worker's setup view on the snapshot (WorkViewRoutes.setupView). */
 export interface WorkerExtraction {
@@ -52,6 +64,10 @@ const RULE_SHOWN_STATUSES = new Set(['on', 'suggested'])
 export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
   const extraction = snapshot.setup?.extraction ?? null
   const finished = extraction?.state === 'ok' || extraction?.state === 'failed'
+  const workModel = toWorkModel(snapshot, Date.parse(snapshot.generatedAt))
+  // An empty list is also present before extraction has found anything. Keep it loading until the run ends;
+  // once an area is saved it can surface immediately, without waiting for work or rules to finish.
+  const focusAreas = workModel.focusAreas.length ? workModel.focusAreas : finished ? [] : null
 
   const goals: RevealGoal[] | null = snapshot.goals
     ? [...snapshot.goals.areas].sort((left, right) => (left.rank ?? Infinity) - (right.rank ?? Infinity)).slice(0, SHOWN)
@@ -77,5 +93,8 @@ export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
       .map((rule) => ({ id: rule.ruleId, text: rule.when ? `${rule.when}: ${rule.then}` : rule.then, quote: rule.quotes[0].quote, quotedAt: promptStamp(rule.quotes[0].at) }))
     : null
 
-  return { goals: goals ?? (finished ? [] : null), work: work ?? (finished ? [] : null), rules: rules ?? (finished ? [] : null) }
+  return {
+    goals: goals ?? (finished ? [] : null), work: work ?? (finished ? [] : null), rules: rules ?? (finished ? [] : null),
+    focusAreas, requests: workModel.requests, requestReadErrorCount: workModel.requestReadErrors.length,
+  }
 }

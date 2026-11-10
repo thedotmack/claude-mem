@@ -37,6 +37,12 @@ function statePath(): string {
 
 let cache: Record<string, ProjectWatermarks> | null = null;
 
+function createProjectMap(): Record<string, ProjectWatermarks> {
+  // Project names come from directory names, so every string (including
+  // __proto__) must be an own, serializable entry in the checkpoint map.
+  return Object.create(null);
+}
+
 /**
  * After a failed write, skip writes for this long. The backfill writes once or
  * twice per row, and each failed write can block for the full rename retry.
@@ -95,7 +101,7 @@ function load(): Record<string, ProjectWatermarks> {
   if (cache) return cache;
   const path = statePath();
   if (!existsSync(path)) {
-    cache = {};
+    cache = createProjectMap();
     return cache;
   }
   let parsed: Record<string, Partial<ProjectWatermarks>>;
@@ -110,10 +116,10 @@ function load(): Record<string, ProjectWatermarks> {
     logger.warn('CHROMA_SYNC', 'Unreadable chroma-sync-state.json, treating as empty', {
       path
     }, error instanceof Error ? error : new Error(String(error)));
-    cache = {};
+    cache = createProjectMap();
     return cache;
   }
-  const normalized: Record<string, ProjectWatermarks> = {};
+  const normalized = createProjectMap();
   for (const [project, marks] of Object.entries(parsed)) {
     normalized[project] = normalizeProjectWatermarks(marks);
   }

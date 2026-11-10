@@ -1,9 +1,16 @@
 // The installer's side of the install funnel: open the setup page, wait for the storage choice, apply it, then wait
 // until the page finishes setup. The worker holds the state (GET /api/setup/state); the terminal only waits.
-// There is no time limit anywhere: if the browser never connects, the URL is on screen and the wait goes on.
+// There is no overall time limit for the person: the URL is printed once the worker answers, and if the browser
+// never connects the wait goes on. Individual worker requests are bounded so an unresponsive connection cannot pin
+// a poll or keep the installer waiting after checkout has finished.
 import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
+
+// Every request here goes to the local worker on loopback, and these routes answer from a small local JSON file
+// (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer. Same
+// budget as READ_TIMEOUT_MS in usage-summary.ts for the installer's other loopback reads.
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 /** On The Go checkout on the existing pairing path (funnel Phase 8). */
 export interface BrowserCheckout {
@@ -92,20 +99,32 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
   const pollIntervalMs = deps.pollIntervalMs ?? 1000;
   const stateUrl = `${deps.workerBaseUrl}/api/setup/state`;
   let unreachableNoted = false;
+  const noteUnreachable = (): null => {
+    if (!unreachableNoted) deps.log.warn(`Waiting for the worker at ${deps.workerBaseUrl}…`);
+    unreachableNoted = true;
+    return null;
+  };
 
   /** A worker that is still starting (or restarting) is waited for; a refusal from it is an error. */
   const readState = async (): Promise<SetupStateView | null> => {
+    const signal = AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS);
     let response: Response;
     try {
-      response = await request(stateUrl, { cache: 'no-store' });
+      response = await request(stateUrl, { cache: 'no-store', signal });
     } catch {
-      if (!unreachableNoted) deps.log.warn(`Waiting for the worker at ${deps.workerBaseUrl}…`);
-      unreachableNoted = true;
-      return null;
+      return noteUnreachable();
     }
     if (!response.ok) throw await workerResponseError(response, 'The worker refused the setup state');
-    unreachableNoted = false;
-    return await response.json() as SetupStateView;
+    try {
+      const state = await response.json() as SetupStateView;
+      unreachableNoted = false;
+      return state;
+    } catch (error) {
+      // A request can stall after its headers. Keep waiting for the worker on
+      // deadline expiry, but surface malformed JSON instead of retrying it.
+      if (!signal.aborted) throw error;
+      return noteUnreachable();
+    }
   };
   const waitFor = async (done: (state: SetupStateView) => boolean): Promise<SetupStateView> => {
     for (;;) {
@@ -119,16 +138,20 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(checkout ? { stage, error, checkout } : { stage, error }),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw await workerResponseError(response, `The worker did not take the installer stage ${stage}`);
+    // The report response has no data the installer needs.
+    await response.body?.cancel().catch(() => {});
   };
 
   const url = setupPageUrl(deps.workerBaseUrl);
-  deps.log.info(`Continue setup in your browser: ${url}`);
-  deps.openBrowser(url);
-  // Wait for the worker before the first report, then start a fresh hand-off: an earlier run's choice is cleared.
+  // Clear the previous run before exposing the page: opening it (or following the
+  // printed URL) can submit a new choice before a later reset would arrive.
   await waitFor(() => true);
   await report('waiting-for-choice');
+  deps.log.info(`Continue setup in your browser: ${url}`);
+  deps.openBrowser(url);
   deps.log.info('Waiting for you in the browser. This terminal finishes when setup does.');
 
   const chosen = await waitFor((state) => state.choice !== null);
@@ -221,21 +244,42 @@ export const BACKGROUND_WORK_LABELS: Record<NonNullable<SetupStateView['backgrou
 
 /**
  * Waits, with no time limit, until the worker runs no extraction or history import, so a restart cannot kill one.
- * Losing contact cannot prove work finished: fail visibly and leave the worker running.
+ * A read that hits the per-request deadline is a busy worker, not a finished one: poll again. Losing contact
+ * (a refused connection), a refusal or malformed state cannot prove work finished: fail visibly and leave the
+ * worker running.
  */
 export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'>): Promise<void> {
   const request = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let announced = '';
+  let slowNoted = false;
+  const readFailed = (error: unknown) =>
+    new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+  // A late answer means the worker is busy (goal extraction, history import), not that its work finished.
+  const waitForSlowWorker = async () => {
+    if (!slowNoted) deps.log.warn('Waiting for the worker to answer…');
+    slowNoted = true;
+    await sleep(deps.pollIntervalMs ?? 1000);
+  };
   for (;;) {
+    const signal = AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS);
     let response: Response;
     try {
-      response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store' });
+      response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store', signal });
     } catch (error) {
-      throw new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+      if (signal.aborted) { await waitForSlowWorker(); continue; }
+      throw readFailed(error);
     }
     if (!response.ok) throw await workerResponseError(response, 'The worker refused the background work state');
-    const running = ((await response.json()) as SetupStateView).backgroundWorkRunning ?? [];
+    let state: SetupStateView;
+    try {
+      state = await response.json() as SetupStateView;
+    } catch (error) {
+      if (signal.aborted) { await waitForSlowWorker(); continue; }
+      throw readFailed(error);
+    }
+    slowNoted = false;
+    const running = state.backgroundWorkRunning ?? [];
     if (!running.length) return;
     const doing = running.map(work => BACKGROUND_WORK_LABELS[work]).join(' and ');
     if (doing !== announced) {

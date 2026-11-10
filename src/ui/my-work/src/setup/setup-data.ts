@@ -5,7 +5,7 @@ import type { AgentTool } from '@/data'
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
-import { parseSseFrame } from '../live/parse-sse-frame'
+import { applySseFrame } from '../live/parse-sse-frame'
 import type { SetupEvent } from '../../../../shared/setup-funnel.ts'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
@@ -95,7 +95,7 @@ export interface SetupSource {
 
 export const EMPTY_SETUP_DATA: SetupData = {
   scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true, uploadedAgents: null },
-  reveal: { goals: null, work: null, rules: null },
+  reveal: { goals: null, work: null, rules: null, focusAreas: null, requests: [], requestReadErrorCount: 0 },
   extraction: null,
   recentPrompts: [],
   checkout: null,
@@ -214,19 +214,15 @@ export const localSetupSource: SetupSource = {
     // A frame that is not a JSON object is skipped with a warning, not thrown:
     // these listeners run outside React's error boundaries (see parseSseFrame).
     const onFrame = <T>(event: Event, apply: (frame: T) => void, isShaped: (frame: Record<string, unknown>) => boolean = () => true): void => {
-      const frame = parseSseFrame(event.type, (event as MessageEvent<string>).data)
-      if (frame === null) return
-      if (!isShaped(frame)) {
-        console.warn(`[work-view] Ignoring a ${event.type} frame with an unexpected shape`)
-        return
-      }
-      apply(frame as T)
+      applySseFrame(event.type, (event as MessageEvent<string>).data, apply, isShaped)
     }
     // applyScan reads scan.agents, so a scan frame without that list is skipped.
     stream.addEventListener('setup-scan', (event) => onFrame<WorkerScanState>(event, applyScan, (frame) => Array.isArray(frame.agents)))
     stream.addEventListener('setup-state', (event) => onFrame<WorkerSetupState>(event, applyState))
     stream.addEventListener('setup-import', (event) => onFrame<WorkerHistoryImport>(event, (frame) => publish({ historyImport: toHistoryImport(frame) })))
-    stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event, applySnapshot))
+    stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event, applySnapshot, (frame) =>
+      Array.isArray(frame.humanRequests) && Array.isArray(frame.agents)
+      && typeof (frame.source as { connected?: unknown } | null)?.connected === 'boolean'))
     const startScan = async () => {
       const revision = scanRevision
       const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
