@@ -2899,8 +2899,9 @@ export class SessionStore {
         SET memory_session_id = ?
         WHERE session_db_id = ?
       `).run(memorySessionId, sessionDbId);
+      // The same-id guard must not skip a repair whose outbox write failed.
+      if (memorySessionId) this.requeuePromptSync(sessionDbId);
     })();
-    if (memorySessionId) this.requeuePromptSync(sessionDbId);
   }
 
   /**
@@ -3110,10 +3111,12 @@ export class SessionStore {
     // A deliberate change of identity is still available through
     // `updateMemorySessionId`. "Ensure registered" means make sure one exists.
     if (session.memory_session_id === null) {
-      this.db.prepare(`
-        UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
-      `).run(memorySessionId, sessionDbId);
-      this.requeuePromptSync(sessionDbId);
+      this.db.transaction(() => {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
+        `).run(memorySessionId, sessionDbId);
+        this.requeuePromptSync(sessionDbId);
+      })();
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,
