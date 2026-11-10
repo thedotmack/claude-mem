@@ -203,9 +203,10 @@ function resolveEventIdentity(input: CaptureInput, platform: MediaProvenance['pl
 function assertReplayMatchesPriorSource(candidate: MediaCandidate, input: CaptureInput, priorProvenance: MediaProvenance): void {
   if (candidate.filePath) {
     const originalPath = priorProvenance.source_locator?.path;
-    const toolInputFilePath = (input.toolInput as { file_path?: unknown } | null)?.file_path;
-    if (input.toolName !== 'Read' || !input.cwd || toolInputFilePath !== candidate.filePath
-      || originalPath !== resolve(realpathSync(input.cwd), candidate.filePath)) {
+    // Use the same path authorization as first capture: an absolute input and
+    // relative result may name the same file. Its original locator must still match.
+    const { targetPath } = trustedFileTarget(candidate, input);
+    if (originalPath !== targetPath) {
       throw new MediaError('unsupported_source');
     }
   }
