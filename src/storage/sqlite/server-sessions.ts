@@ -75,7 +75,7 @@ export class ServerSessionsRepository {
     this.db.prepare(`
       UPDATE server_sessions
       SET status = 'completed', completed_at_epoch = ?, updated_at_epoch = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'active'
     `).run(completedAtEpoch, completedAtEpoch, id);
 
     return this.getById(id);
