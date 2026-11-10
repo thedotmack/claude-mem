@@ -177,7 +177,7 @@ The My Work refresh (goals, grouping, review, focus and story steps) runs on one
 | `CLAUDE_MEM_WORK_VIEW_CODEX_MODEL` | empty | Model id for every refresh step on Codex. Each step keeps its reasoning effort. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_API_MODEL` | empty | Model for every refresh step on the selected API provider, such as `anthropic/claude-sonnet-4`. Empty keeps the model your provider is configured with. |
-| `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty lets each step use the language most of your prompts are in. It is never detected by a model, so it costs nothing. |
+| `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty uses the language most of your asks are written in, decided once per refresh by the grouping step (which already reads them, so it costs no extra model call) and kept for later refreshes that have nothing to group. |
 
 ### Quota Fallback Settings
 

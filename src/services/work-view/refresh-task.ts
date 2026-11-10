@@ -130,17 +130,34 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
 const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
 
 /** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
- * every run. It is never detected by a model: a detection call would spend the owner's agent quota on every
- * automatic refresh. Empty or not a language name gives null, and the skills' own Language rule applies. */
+ * every run. Empty or not a language name gives null: the run then uses the language its grouping step decides from
+ * the owner's asks (decidedTextLanguage), and only with neither does each step apply the skills' own Language rule. */
 export function resolveTextLanguage(dataDir: string): string | null {
   const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
   return LANGUAGE_NAME.test(value) ? value : null;
+}
+
+/** Where a run records the language its grouping step decided, for later runs that have nothing to group. */
+const DECIDED_LANGUAGE_FILE = 'text-language.json';
+
+/** A language name from a model answer, or null: only a value that passes LANGUAGE_NAME is ever put in a question. */
+export function decidedTextLanguage(value: unknown): string | null {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return LANGUAGE_NAME.test(name) ? name : null;
+}
+
+/** The language an earlier run's grouping step decided, or null when none was recorded (or the file is unreadable). */
+export function readDecidedTextLanguage(ledgerDir: string): string | null {
+  try { return decidedTextLanguage(JSON.parse(readFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), 'utf8'))?.language); }
+  catch { return null; }
 }
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
 const stringArray = { type: 'array', items: { type: 'string' } };
 /** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
 export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  // The human language most of the batch's asks are written in (#5660): the run names it in every later question.
+  language: { type: 'string' },
   groups: { type: 'array', items: strictObject({
     title: { type: 'string' },
     conversations: stringArray,
@@ -356,15 +373,28 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
     /**
-     * The owner's language, when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE names one, is named in every grouping, review,
-     * focus and story question. Those run as separate agents that each see only their own input (a review batch in
-     * "amend" mode sees only its later asks), so left to the skill's rule they could each pick a different language.
+     * The owner's language for this run is named in every grouping, review, focus and story question. Those run as
+     * separate agents that each see only their own input (a review batch in "amend" mode sees only its later asks), so
+     * left to the skill's rule they could each pick a different language (#5660). It is decided once:
+     * CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when set; otherwise the first grouping answer's "language" (the grouping
+     * question already reads the asks, so this costs no extra model call), recorded for runs with nothing to group;
+     * otherwise the language an earlier run recorded. With none, each step keeps the skill's own rule.
      * The goals step reads every owner prompt in one question, so it keeps the skill's own rule.
      */
-    const textLanguage = resolveTextLanguage(dataDir);
-    const languageRule = textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    const configuredLanguage = resolveTextLanguage(dataDir);
+    let textLanguage = configuredLanguage ?? readDecidedTextLanguage(ledgerDir);
+    let languageDecidedThisRun = false;
+    const languageRule = () => textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    /** The first valid grouping answer decides the run's language when the setting names none. */
+    const noteGroupingLanguage = (value: unknown) => {
+      const decided = decidedTextLanguage(value);
+      if (configuredLanguage || languageDecidedThisRun || !decided) return;
+      languageDecidedThisRun = true;
+      textLanguage = decided;
+      writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
+    };
     const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
-      const rule = name === 'goals' ? '' : languageRule;
+      const rule = name === 'goals' ? '' : languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
@@ -466,8 +496,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // The batch is inline, with its keys named: on a file path alone Codex's light model sometimes
           // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
           `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
-          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
-        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)), GROUPING_ANSWER_SCHEMA);
+          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else, plus "language": the human language most of the owner's asks are written in, as an English name such as "English", ignoring code, file paths, URLs and product names.`,
+        ].join('\n\n'), answer => {
+          const { language, ...decisions } = answer ?? {};
+          const saved = cli(['apply'], validateGroupingAnswer(decisions, input));
+          noteGroupingLanguage(language);
+          return saved;
+        }, GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }
       if (grouped) done.push(`${grouped} new conversations grouped`);
@@ -519,7 +554,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
-          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule), { groups: batch.length })]));
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule()), { groups: batch.length })]));
         }
       };
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
