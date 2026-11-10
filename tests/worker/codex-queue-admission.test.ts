@@ -1,11 +1,11 @@
 import { describe, expect, it, spyOn } from 'bun:test';
-import { CodexAppServerPool } from '../src/services/worker/CodexAppServerPool.js';
-import { CodexProvider } from '../src/services/worker/CodexProvider.js';
-import { withRetry } from '../src/services/worker/retry.js';
-import { PaidSendBudget } from '../src/services/worker/paid-send-budget.js';
-import { ClassifiedProviderError } from '../src/services/worker/provider-errors.js';
-import * as dependencyHealth from '../src/shared/dependency-health.js';
-import * as quotaCooldown from '../src/shared/quota-cooldown.js';
+import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
+import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
+import { withRetry } from '../../src/services/worker/retry.js';
+import { PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
+import * as dependencyHealth from '../../src/shared/dependency-health.js';
+import * as quotaCooldown from '../../src/shared/quota-cooldown.js';
 
 async function run(scenario: string) {
   const starts: string[] = [];

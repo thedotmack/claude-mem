@@ -1,4 +1,4 @@
-"""Phase 7.2: copy + checksum sync of the skill (SKILL.md, CHECKSUMS.txt and every file under scripts/)
+"""Phase 7.2: copy + checksum sync of the skill (SKILL.md, CHECKSUMS.txt and runtime files under scripts/)
 from the plugin dir (source of truth) to the house copy and the four mirror plugins (G2: mirrors carry
 the skill as byte copies, tracked in git). `sync-check` reports drift and exits 1; `--write` copies
 plugin -> destinations and re-checks. Destinations live in one place (DESTINATIONS) and can be
@@ -13,7 +13,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SKILL_DIR)))        
 MIRRORS = ("claude-mem-cursor", "claude-mem-grok-bot", "cowork", "openclaw")
 HOUSE_COPY = os.path.expanduser("~/agent-data/workflows/agent-cost-report")
 CHECKSUMS = "CHECKSUMS.txt"
-SKIP_DIRS = {"__pycache__", ".chrome-profile"}
+SKIP_DIRS = {"__pycache__", ".chrome-profile", "tests"}
 SKIP_FILES = {CHECKSUMS}
 
 
@@ -22,7 +22,7 @@ def destinations(repo_root=REPO_ROOT, house=HOUSE_COPY):
 
 
 def shipped_files(root=SKILL_DIR):
-    """Relative paths of every shipped file: SKILL.md plus scripts/** (no caches, no checksum file)."""
+    """Relative paths of every shipped file: SKILL.md plus scripts/** (no tests, caches or checksum file)."""
     out = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and (dirpath != root or d == "scripts"))

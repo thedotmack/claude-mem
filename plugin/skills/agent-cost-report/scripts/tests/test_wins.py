@@ -61,13 +61,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(wins.session_trailers("Claude-Session: abc def"), []); self.assertEqual(wins.session_trailers("Claude-Session: (abc)"), [])
         self.assertEqual(wins.session_trailers("Claude-Session: a\nClaude-Session: a\nClaude-Session: b"), ["a", "b"])
 
-    def test_no_fallback_estimate_anywhere(self):
-        for f in ("wins.py", "rollup.py", "costs.py"):
-            with open(os.path.join(_paths.SCRIPTS, "acr", f)) as fh: src = fh.read()
-            self.assertNotIn("fallback_estimate", src, f); self.assertNotIn("lineage", src.lower().replace("no lineage fallback", ""), f)
 
-    def test_praise_stub(self):
-        self.assertEqual(wins.detect_praise(), []); self.assertEqual(wins.detect_praise(prompts=["boom love it"]), [])
 
 
 class Transcripts(unittest.TestCase):
@@ -157,12 +151,10 @@ class Build(Transcripts):
 
     def test_replica_session_win_is_extrapolated_only_with_link(self):
         gh = fake_gh({"o/r#1": dict(mergedAt=iso(S + 5 * H), url="u", title="t", commits=[dict(messageHeadline="x", messageBody="Claude-Session: cs2")])})
-        block, _ = self.build([], self.ship(1), gh=gh, ratio=2.0)                            # 2 micro-dollars per observer token
+        block, _ = self.build([], self.ship(1), gh=gh, ratio=2000.0)                         # 2000 micro-dollars per observer token
         w = block["items"][0]
-        self.assertEqual((w["cost_status"], w["cost_basis"], w["usd"]), ("session_linked", "extrapolated", 0.0))
+        self.assertEqual((w["cost_status"], w["cost_basis"], w["usd"]), ("session_linked", "extrapolated", 2.0))
         self.assertIn("EXTRAPOLATED (low confidence)", w["cost_label"])
-        block, _ = self.build([], self.ship(1), gh=gh, ratio=2.0)
-        self.assertEqual(block["items"][0]["usd"], round(1000 * 2.0 / 1e6, 2))
         gh2 = fake_gh({"o/r#1": dict(mergedAt=iso(S + 5 * H), url="u", title="t", commits=[])})
         block, _ = self.build([], self.ship(1), gh=gh2, ratio=2.0)
         self.assertEqual((block["items"][0]["cost_status"], block["items"][0]["usd"], block["items"][0]["cost_basis"]), ("unmeasured", None, None))

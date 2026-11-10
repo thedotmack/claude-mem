@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import _paths  # noqa: F401
 from acr import snapshot
@@ -28,8 +29,13 @@ class Backup(unittest.TestCase):
         db.executemany("INSERT INTO sdk_sessions VALUES (?,?,?)", [("s1", "p", 1), ("s2", "q", 2)])
         db.commit()
         db.close()
+        self.writer = sqlite3.connect(self.live)
+        self.writer.execute("PRAGMA wal_autocheckpoint=0")
+        self.writer.execute("INSERT INTO sdk_sessions VALUES (?,?,?)", ("s3", "r", 3))
+        self.writer.commit()
 
     def tearDown(self):
+        self.writer.close()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_snapshot_is_a_faithful_copy_and_live_is_untouched(self):
@@ -42,17 +48,14 @@ class Backup(unittest.TestCase):
         db = snapshot.open_snapshot(snap)
         rows = db.execute("SELECT content_session_id, project FROM sdk_sessions ORDER BY 1").fetchall()
         db.close()
-        self.assertEqual([tuple(r) for r in rows], [("s1", "p"), ("s2", "q")])
+        self.assertEqual([tuple(r) for r in rows], [("s1", "p"), ("s2", "q"), ("s3", "r")])
         # a second run replaces the stale snapshot
         snap2 = snapshot.snapshot(out, live=self.live)
         self.assertEqual(snap, snap2)
 
     def test_env_resolution_used_when_live_not_given(self):
-        os.environ["CLAUDE_MEM_DATA_DIR"] = os.path.dirname(self.live)
-        try:
+        with patch.dict(os.environ, CLAUDE_MEM_DATA_DIR=os.path.dirname(self.live)):
             snap = snapshot.snapshot(os.path.join(self.tmp, "out2"))
-        finally:
-            del os.environ["CLAUDE_MEM_DATA_DIR"]
         self.assertTrue(os.path.exists(snap))
 
     def test_missing_db_is_a_clear_error(self):

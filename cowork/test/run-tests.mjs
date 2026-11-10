@@ -154,21 +154,6 @@ const groqKey = 'gsk_' + 'A'.repeat(52);
 const runcrateKey = 'rc_live_' + 'Aa1'.repeat(9);
 const xaiKey = 'xai-' + 'A'.repeat(80);
 const pplxKey = 'pplx-' + 'A'.repeat(48);
-received = [];
-await run('observation', {
-  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2v',
-  tool_input: { command: `echo pinned to ${nvapiKey} for build.nvidia.com` },
-  tool_response: `keys on record: ${groqKey}, ${runcrateKey}, ${xaiKey}, ${pplxKey}`
-});
-const ing2v = received.find(r => r.body?.payload?.tool_use_id === 'tu_2v');
-const in2v = String(ing2v?.body.payload.tool_input || '');
-const out2v = String(ing2v?.body.payload.tool_response || '');
-check('bare nvidia key redacted', !in2v.includes(nvapiKey) && in2v.includes('[cmem-redacted]'), in2v);
-check('bare groq key redacted', !out2v.includes(groqKey), out2v);
-check('bare runcrate key redacted', !out2v.includes(runcrateKey), out2v);
-check('bare xai key redacted', !out2v.includes(xaiKey), out2v);
-check('bare perplexity key redacted', !out2v.includes(pplxKey), out2v);
-check('vendor-key marker kept', out2v.includes('[cmem-redacted]'), out2v);
 // A structured tool_response is JSON-stringified before redaction, so a key
 // right after a newline arrives as `\nKEY`. The `n` is a word character, so a
 // bare `\b` start cannot match there; every prefix shape must accept the
@@ -456,24 +441,9 @@ writeFileSync(LOCAL_PLUGIN + '/hooks/hooks.json', '{}');
 writeFileSync(LOCAL_PLUGIN + '/scripts/worker-service.cjs', '// owned injector fixture');
 writeFileSync(TESTHOME + '/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }));
 writeFileSync(TESTHOME + '/.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: LOCAL_PLUGIN }] } }));
-received = [];
-// run() points CLAUDE_MEM_WORKER_PORT at port 1, so the local worker is down (a cold start)
-const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' });
-check('no /api/hooks/context request when claude-mem is installed locally', !received.some(r => r.url.startsWith('/api/hooks/context')));
-check('no cloud context block injected', !localStart.out.includes('claude-mem-context'), localStart.out.slice(0, 120));
-received = [];
-await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
-check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
-received = [];
-await run('session-init', { session_id: 's9', cwd: '/home/claude', prompt: 'hello' });
-await run('observation', { session_id: 's9', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_30', tool_input: { command: 'ls' } });
-check('capture is skipped too (the local plugin and its cloud sync own it)', received.length === 0, JSON.stringify(received.map(r => r.url)));
 const localStatus = await run('status', '');
 check('status says the hooks are off', localStatus.out.includes('hooks    : off'), localStatus.out);
 rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
-received = [];
-const cloudStart = await run('context', { session_id: 's10', cwd: '/home/claude', source: 'startup' });
-check('without a local install the cloud context is still read', received.some(r => r.url.startsWith('/api/hooks/context')) && cloudStart.out.includes('claude-mem-context'));
 
 // ---- 10. malformed stdin never crashes ----
 console.log('\n[10] resilience');

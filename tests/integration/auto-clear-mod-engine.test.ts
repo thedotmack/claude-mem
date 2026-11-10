@@ -60,8 +60,9 @@ async function runEngineChecks() {
 
 const run = claudeWithMods() ? await runEngineChecks() : null;
 const output = `${run?.stdout ?? ''}\n${run?.stderr ?? ''}`;
+const requireEngine = process.env.CLAUDE_MEM_TEST_AUTO_CLEAR_ENGINE === '1';
 
-describe.skipIf(run === null || /hooks modules are turned off/.test(output))('auto-clear mod in the Claude Code engine', () => {
+describe.skipIf(!requireEngine && (run === null || /hooks modules are turned off/.test(output)))('auto-clear mod in the Claude Code engine', () => {
   it('passes the engine checks', () => {
     expect(output).toContain(' 0 fail');
     expect(run!.status).toBe(0);
