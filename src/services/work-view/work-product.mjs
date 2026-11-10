@@ -242,9 +242,18 @@ function createdBranchesFrom(command, out) {
   // A command can be skipped by a shell condition, refused with `error:` (dirty
   // worktree), or succeed before a later command fails. Credit each branch only
   // when Git confirms that particular creation/reset, regardless of later errors.
+  const requested = [...new Set([...command.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, 'g'))].map((match) => unquote(match[1])))];
   const confirmed = new Set([...out.matchAll(/^(?:Switched to a new branch|Switched to and reset branch|Reset branch) '(.+)'\r?$/gm)].map((match) => match[1]));
-  const requested = [...command.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, 'g'))].map((match) => unquote(match[1]));
-  return [...new Set(requested)].filter(branch => confirmed.has(branch)).map(branch => ({ branch, repo: null, heads: [] }));
+  if (confirmed.size > 0 || /^(?:fatal:|error:|Already on ')/m.test(out)) {
+    return requested.filter(branch => confirmed.has(branch)).map(branch => ({ branch, repo: null, heads: [] }));
+  }
+  // No English Git message at all: Git may be printing in another language (its
+  // checkout/switch messages are translated), so the confirmation above can't be
+  // read. Localized output can't be fully verified; credit a requested branch only
+  // when the output names it quoted, as Git's localized success line does. An
+  // untaken `&&` branch or an unrelated failure doesn't, and empty output credits
+  // nothing, so this is no looser than the old rule (which credited every request).
+  return requested.filter(branch => out.includes(`'${branch}'`)).map(branch => ({ branch, repo: null, heads: [] }));
 }
 
 function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {

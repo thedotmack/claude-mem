@@ -69,3 +69,13 @@ test('confirmed creation and reset outputs retain only the branch Git names', ()
   expect(branches('git checkout -B feature', git('checkout', '-B', 'feature'))).toEqual(['feature']);
   expect(branches('git switch -c not-run', { stdout: '', stderr: "Switched to a new branch 'another'\n" })).toEqual([]);
 });
+
+test('localized Git output still credits the branch it names', () => {
+  expect(branches('git switch -c feature', { stdout: '', stderr: "Zu neuem Branch 'feature' gewechselt\n" })).toEqual(['feature']);
+  expect(branches('git checkout -b feature', { stdout: '', stderr: "切换到一个新分支 'feature'\n" })).toEqual(['feature']);
+});
+
+test('an unrelated failure before an untaken branch creation credits nothing', () => {
+  const npmFailure = 'npm error code ELIFECYCLE\nnpm error command failed\nnpm error command sh -c bun test\n';
+  expect(branches('npm test && git switch -c x', { stdout: '', stderr: npmFailure })).toEqual([]);
+});
