@@ -1,15 +1,17 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, symlinkSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import path, { join } from 'path';
 import { spawnSync } from 'node:child_process';
 import {
   planCachePrune,
   planPluginCachePrune,
   prunePluginCache,
+  pruneSupersededPluginCache,
   readRegisteredCacheVersions,
   readUserScopeRegisteredCacheVersions,
   workingCacheVersions,
+  isDirectChildPath,
   DEFAULT_CACHE_RETENTION,
 } from '../../src/npx-cli/utils/prune-cache.js';
 
@@ -309,5 +311,144 @@ describe('readRegisteredCacheVersions', () => {
 
     expect(result.removed).toEqual(['13.24.0']);
     expect(existsSync(join(cacheRoot, '13.20.0'))).toBe(true);
+  });
+});
+
+describe('isDirectChildPath', () => {
+  it('accepts one version segment on Windows and POSIX paths and rejects an escape', () => {
+    const winRoot = 'C:\\Users\\Ada\\.claude\\plugins\\cache\\thedotmack\\claude-mem';
+    expect(isDirectChildPath(winRoot, `${winRoot}\\15.15.1`, path.win32)).toBe(true);
+    expect(isDirectChildPath(winRoot, 'C:\\Users\\Ada\\.claude\\plugins\\cache\\someone\\other\\15.15.1', path.win32)).toBe(false);
+    expect(isDirectChildPath(winRoot, 'C:\\Windows\\System32', path.win32)).toBe(false);
+
+    const posixRoot = '/home/ada/.claude/plugins/cache/thedotmack/claude-mem';
+    expect(isDirectChildPath(posixRoot, `${posixRoot}/15.15.1`, path.posix)).toBe(true);
+    expect(isDirectChildPath(posixRoot, '/home/ada/.claude/plugins/cache/someone/other', path.posix)).toBe(false);
+    expect(isDirectChildPath(posixRoot, `${posixRoot}/15.15.1/scripts`, path.posix)).toBe(false);
+  });
+});
+
+function writeWorkerScript(root: string, version: string): string {
+  const script = join(root, version, 'scripts', 'worker-service.cjs');
+  mkdirSync(join(root, version, 'scripts'), { recursive: true });
+  writeFileSync(script, '');
+  return script;
+}
+
+describe('pruneSupersededPluginCache', () => {
+  let scratch: string;
+
+  afterEach(() => {
+    if (scratch && existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('keeps the running version and the newest two, and leaves everything else outside the cache', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem prune '));
+    const root = join(scratch, 'cache');
+    const running = writeWorkerScript(root, '15.5.0');
+    writeWorkerScript(root, '15.14.0');
+    writeWorkerScript(root, '15.15.0');
+    writeWorkerScript(root, '15.15.1');
+    mkdirSync(join(root, 'notes'));
+    writeFileSync(join(root, 'notes', 'keep.txt'), 'notes');
+    const neighbor = join(scratch, 'other-plugin', '15.0.0');
+    mkdirSync(neighbor, { recursive: true });
+    writeFileSync(join(neighbor, 'keep.txt'), 'neighbor');
+
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      runningScriptPath: running,
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    expect(result.removed).toEqual(['15.14.0']);
+    expect(existsSync(join(root, '15.5.0', 'scripts', 'worker-service.cjs'))).toBe(true);
+    expect(existsSync(join(root, '15.15.1'))).toBe(true);
+    expect(existsSync(join(root, '15.15.0'))).toBe(true);
+    expect(existsSync(join(root, '15.14.0'))).toBe(false);
+    expect(readFileSync(join(root, 'notes', 'keep.txt'), 'utf-8')).toBe('notes');
+    expect(readFileSync(join(neighbor, 'keep.txt'), 'utf-8')).toBe('neighbor');
+  });
+
+  it('removes an old version when nothing is running from it', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-unprotected-'));
+    const root = join(scratch, 'cache');
+    for (const version of ['15.5.0', '15.15.0', '15.15.1']) writeWorkerScript(root, version);
+
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    expect(result.removed).toEqual(['15.5.0']);
+    expect(existsSync(join(root, '15.5.0'))).toBe(false);
+  });
+
+  it('does not follow a symlink version or a symlink inside a removed version', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-symlink-'));
+    const root = join(scratch, 'cache');
+    const preciousDir = join(scratch, 'precious');
+    mkdirSync(preciousDir);
+    writeFileSync(join(preciousDir, 'keep.txt'), 'keep');
+    mkdirSync(root);
+    symlinkSync(preciousDir, join(root, '15.4.0'));
+    const inside = join(root, '15.4.1');
+    mkdirSync(inside);
+    const preciousFile = join(scratch, 'precious.txt');
+    writeFileSync(preciousFile, 'file');
+    symlinkSync(preciousFile, join(inside, 'link'));
+    writeWorkerScript(root, '15.15.0');
+    writeWorkerScript(root, '15.15.1');
+
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    expect(result.removed.sort()).toEqual(['15.4.0', '15.4.1']);
+    expect(readFileSync(join(preciousDir, 'keep.txt'), 'utf-8')).toBe('keep');
+    expect(readFileSync(preciousFile, 'utf-8')).toBe('file');
+    expect(existsSync(join(root, '15.15.1'))).toBe(true);
+  });
+
+  it('returns an empty removal when the cache root does not exist', async () => {
+    scratch = join(tmpdir(), 'claude-mem-prune-absent-root');
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: join(scratch, 'missing'),
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([]);
+  });
+
+  it('throws on a corrupt registry before deleting anything', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-corrupt-'));
+    const root = join(scratch, 'cache');
+    writeWorkerScript(root, '15.5.0');
+    writeWorkerScript(root, '15.15.0');
+    writeWorkerScript(root, '15.15.1');
+    const registryPath = join(scratch, 'installed_plugins.json');
+    writeFileSync(registryPath, '{ not json');
+
+    await expect(pruneSupersededPluginCache({ cacheRoot: root, registryPath })).rejects.toThrow(/Corrupt JSON/);
+    expect(existsSync(join(root, '15.5.0'))).toBe(true);
+  });
+
+  it('keeps the version installed_plugins.json registers even when it is older than the newest two', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-registered-'));
+    const root = join(scratch, 'cache');
+    for (const version of ['15.5.0', '15.14.0', '15.15.0', '15.15.1']) writeWorkerScript(root, version);
+    const registryPath = join(scratch, 'installed_plugins.json');
+    writeFileSync(registryPath, JSON.stringify({
+      plugins: { 'claude-mem@thedotmack': [{ scope: 'user', installPath: join(root, '15.5.0') }] },
+    }));
+
+    const result = await pruneSupersededPluginCache({ cacheRoot: root, keepCount: 2, registryPath });
+
+    expect(result.removed).toEqual(['15.14.0']);
+    expect(existsSync(join(root, '15.5.0'))).toBe(true);
   });
 });

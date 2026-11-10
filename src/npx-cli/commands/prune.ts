@@ -2,8 +2,10 @@
  * `npx claude-mem prune` — remove superseded plugin cache versions. Auto-update
  * keeps every version ever installed under the plugin cache, one runnable
  * old-version worker source per release, which wastes disk and lets a stale
- * worker act on the shared database (#4105). The installer prunes on every
- * install; this command exposes the same routine on demand, beside `doctor`.
+ * worker act on the shared database (#4105). The installer prunes when it
+ * copies a version into the cache. A Claude Code marketplace update writes
+ * the next folder itself, so the worker sweeps the same cache while it runs
+ * (#5681). This command exposes the routine on demand, beside `doctor`.
  *
  * Keeps the newest two usable versions, whatever version a live worker
  * reports, the version installed_plugins.json registers, the version the
