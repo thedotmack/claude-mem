@@ -86,11 +86,11 @@ function readJson(file: string, fallback: unknown): unknown {
 function parseProjectMap(raw: string | undefined): Map<string, string[]> {
   const map = new Map<string, string[]>();
   for (const entry of String(raw ?? '').split(';')) {
-    const [agentId, projects] = entry.split('=');
-    if (!agentId || !projects) continue;
-    const id = agentId.trim();
+    const separator = entry.indexOf('=');
+    if (separator < 0) continue;
+    const id = entry.slice(0, separator).trim();
     if (!AGENT_ID_RE.test(id)) continue;
-    const list = splitCsv(projects);
+    const list = splitCsv(entry.slice(separator + 1));
     if (list.length > 0) map.set(id.toLowerCase(), list);
   }
   return map;
