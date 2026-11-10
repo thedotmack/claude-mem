@@ -326,6 +326,12 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
     if (!isPlainRecord(value)) return value;
     const image = recognizeImageBlock(value);
     if (image) return handleImageBlock(value, image, pointer, depth);
+    // Dispatch already removed rejected bytes, but their native image blocks
+    // still occupy an ordinal. Reusing that label for a later image would
+    // replace the rejected block's status with the later attachment's ID.
+    const byteContainer = anthropicImageSourceOf(value) ?? claudeReadImageFileOf(value)
+      ?? openAiImageUrlOf(value) ?? (value.type === 'image' ? value : undefined);
+    if (byteContainer?.elided === ELIDED_IMAGE_NOTE && isPlainRecord(value.media_status)) recognizedImageCount += 1;
     return walkRecordEntries(value, pointer, depth);
   };
 

@@ -162,6 +162,45 @@ describe('capture at the common ingest boundary', () => {
     });
   }
 
+  const rejectedShapes = {
+    anthropic: () => ({ type: 'image', source: { type: 'base64', media_type: 'image/gif', data: pngB64 } }),
+    read: () => realReadImageResult(pngB64, 'image/gif'),
+    mcp: () => ({ type: 'image', data: pngB64, mimeType: 'image/gif' }),
+    openai: () => ({ type: 'image_url', image_url: { url: 'data:image/gif;base64,' + pngB64 } }),
+  };
+  for (const [shape, rejected] of Object.entries(rejectedShapes)) {
+    it(`keeps the rejected ${shape} image separate from the next retained image after dispatch`, async () => {
+      const body = boundObservationDispatch({ tool_response: { content: [
+        rejected(), { type: 'image', data: otherB64, mimeType: 'image/png' },
+      ] } });
+      const observation = await ingest(body.tool_response);
+      const stored = JSON.parse(observation.tool_response);
+      expect(stored.content[0].media_status).toEqual({ version: 1, state: 'rejected', code: 'unsupported_format', inspection: 'uninspected', label: 'event1_image1' });
+      expect(observation.mediaRefs).toHaveLength(1);
+      const [ref] = observation.mediaRefs;
+      expect(ref.label).toBe('event1_image2');
+      expect(stored.content[1].media_status).toMatchObject({ state: 'retained', id: ref.id, label: ref.label });
+      const attachment = db.prepare('SELECT provenance FROM media_attachments WHERE id=?').get(ref.id) as any;
+      expect(JSON.parse(attachment.provenance)).toMatchObject({ source_index: 1, source_pointer: '/tool_response/content/1' });
+      const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      expect(row.tool_response).toBe(observation.tool_response);
+    });
+  }
+
+  it('a rejected private image does not hide the following public image by reusing its label', async () => {
+    const body = boundObservationDispatch({ tool_response: { content: [
+      { type: 'text', text: '<private>' }, rejectedShapes.mcp(),
+      { type: 'text', text: '</private> Public screenshot follows.' },
+      { type: 'image', data: otherB64, mimeType: 'image/png' },
+    ] } });
+    const observation = await ingest(body.tool_response);
+    expect(observation.mediaRefs).toHaveLength(1);
+    expect(observation.mediaRefs[0].label).toBe('event1_image2');
+    expect(observation.tool_response).toContain('Public screenshot follows.');
+    expect(observation.tool_response).not.toContain('unsupported_format');
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(1);
+  });
+
   it('disabled capture (the default) stores nothing and leaves an honest disabled descriptor', async () => {
     process.env[FLAG] = 'false';
     const observation = await ingest(anthropic());
