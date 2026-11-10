@@ -4047,10 +4047,15 @@ export class SessionStore {
     platformSource: string; contentSessionId: string; project: string;
     nativePromptId: string; promptText: string; createdAtEpoch: number;
     hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
-  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private' | 'deleted'; hookRowId?: number } {
     const text = normalizeStoredPromptText(prompt.promptText);
     if (!text) return { reason: 'private' };
     const platformSource = normalizePlatformSource(prompt.platformSource);
+    // A resumed conversation has a new session row, but its old transcript
+    // still contains the asks the owner deleted. Only later source times return.
+    if (this.isBeforeSessionDeletion(platformSource, prompt.contentSessionId, prompt.createdAtEpoch)) {
+      return { reason: 'deleted' };
+    }
     const session = this.db.prepare(`SELECT id FROM sdk_sessions
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
       .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
@@ -4970,27 +4975,35 @@ export class SessionStore {
   }
 
   getOrCreateManualSession(project: string, platformSource = DEFAULT_PLATFORM_SOURCE): string {
-    const normalizedPlatformSource = normalizePlatformSource(platformSource);
-    const memorySessionId = `manual-${project}-${normalizedPlatformSource}`;
-    const contentSessionId = `manual-content-${project}-${normalizedPlatformSource}`;
+    // Order session selection/creation with DELETE, including other connections.
+    return this.db.transaction(() => {
+      const normalizedPlatformSource = normalizePlatformSource(platformSource);
+      const baseMemorySessionId = `manual-${project}-${normalizedPlatformSource}`;
+      const contentSessionId = `manual-content-${project}-${normalizedPlatformSource}`;
+      const existing = this.db.prepare(`
+        SELECT memory_session_id FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?
+      `).get(normalizedPlatformSource, contentSessionId) as { memory_session_id: string } | undefined;
+      if (existing) return existing.memory_session_id;
 
-    const existing = this.db.prepare(
-      'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
-    ).get(memorySessionId) as { memory_session_id: string } | undefined;
+      // A deleted memory ID stays forbidden to delayed sync/backup rows. A new
+      // manual save gets a fresh identity, then reuses it through the stable
+      // content session lookup above, including after a worker restart.
+      const wasDeleted = this.db.prepare(
+        'SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?'
+      ).get(baseMemorySessionId);
+      const memorySessionId = wasDeleted ? `${baseMemorySessionId}-${randomUUID()}` : baseMemorySessionId;
+      const deletedAt = this.getSessionDeletedAtEpochMs(normalizedPlatformSource, contentSessionId);
+      // This explicit save follows the deletion observed under the writer lock,
+      // even when both operations share one wall-clock millisecond.
+      const now = new Date(Math.max(Date.now(), (deletedAt ?? -1) + 1));
+      this.db.prepare(`
+        INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'active')
+      `).run(memorySessionId, contentSessionId, project, normalizedPlatformSource, now.toISOString(), now.getTime());
 
-    if (existing) {
+      logger.info('SESSION', 'Created manual session', { memorySessionId, project, platformSource: normalizedPlatformSource });
       return memorySessionId;
-    }
-
-    const now = new Date();
-    this.db.prepare(`
-      INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(memorySessionId, contentSessionId, project, normalizedPlatformSource, now.toISOString(), now.getTime());
-
-    logger.info('SESSION', 'Created manual session', { memorySessionId, project, platformSource: normalizedPlatformSource });
-
-    return memorySessionId;
+    }).immediate();
   }
 
   close(): void {

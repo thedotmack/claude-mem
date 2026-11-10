@@ -5,6 +5,7 @@ import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEp
 import type { PostgresAgentEvent } from './agent-events.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -97,8 +98,9 @@ export class PostgresServerSessionsRepository {
         input.agentType ?? null,
         platformSource,
         input.generationStatus ?? null,
-        // Session metadata can carry the opening prompt: no <private> sections stored.
-        JSON.stringify(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))
+        // Session metadata carries the opening prompt and follows the same
+        // privacy and configured redaction policy as event payloads.
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.metadata ?? {})))
       ]
     );
     return mapServerSessionRow(row!);

@@ -14,11 +14,11 @@ import {
 } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { executableFingerprint } from '../../shared/executable-fingerprint.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { ENV_PROXY_VARS, sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
 
@@ -216,8 +216,10 @@ function codexTurnError(prefix: string, error: unknown): Error {
 }
 
 function resolveNativeCodexHome(explicitHome?: string): string {
-  const configured = explicitHome?.trim() || process.env.CODEX_HOME?.trim();
-  return configured || join(process.env.HOME?.trim() || homedir(), '.codex');
+  const configured = explicitHome || process.env.CODEX_HOME;
+  // The auth symlink lives in a different directory: resolve the selected
+  // profile from the caller's cwd, preserving the path Codex itself uses.
+  return resolve(configured || join(process.env.HOME || homedir(), '.codex'));
 }
 
 /**
@@ -229,6 +231,16 @@ export const CODEX_SETUP_REQUIRED_CODE = 'codex_setup_required';
 
 function codexSetupError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
+}
+
+/** Codex infers ChatGPT for legacy token files whose optional auth_mode is absent or null. */
+function hasChatGptAuth(auth: unknown): boolean {
+  if (!isObject(auth)) return false;
+  if (auth.auth_mode != null) return auth.auth_mode === 'chatgpt' || auth.auth_mode === 'chatgptAuthTokens';
+  // AuthDotJson.resolved_mode gives these credential fields precedence over
+  // legacy ChatGPT tokens. Even an empty API-key string selects API-key auth.
+  return isObject(auth.tokens) && [auth.OPENAI_API_KEY, auth.personal_access_token,
+    auth.bedrock_api_key, auth.bedrock_access_keys].every(value => value == null);
 }
 
 /**
@@ -373,7 +385,7 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
     } catch (error) {
       throw codexSetupError(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (!isObject(auth) || (auth.auth_mode !== 'chatgpt' && auth.auth_mode !== 'chatgptAuthTokens')) {
+    if (!hasChatGptAuth(auth)) {
       throw codexSetupError('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
     }
 
@@ -1017,6 +1029,7 @@ export class CodexAppServerClient {
 }
 
 const APP_SERVER_ENV_ALLOWLIST = new Set([
+  ...ENV_PROXY_VARS,
   'APPDATA',
   'CODEX_HOME',
   'HOME',

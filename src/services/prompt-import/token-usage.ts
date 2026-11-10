@@ -5,7 +5,8 @@
  *
  * - Claude Code: assistant lines carry `message.usage`. One API message is
  *   written once per content block with the same `message.id`, so each id
- *   counts once. Tokens = input + cache creation + cache read + output.
+ *   counts once, keeping its largest recorded usage as the output completes.
+ *   Tokens = input + cache creation + cache read + output.
  *   claude-mem's own observer sessions (OBSERVER_SESSIONS_DIR) are not the
  *   person's usage and are left out.
  * - Codex: `event_msg` lines with `payload.type: "token_count"` carry the
@@ -128,7 +129,7 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
   return {
     retentionDays: claudeRetentionDays,
     async read(sources, sinceEpochMs, usage, skip) {
-      const seenMessages = new Set<string>();
+      const messages = new Map<string, { at: number; tokens: number }>();
       for (const source of sources) {
         const projectFolder = basename(source.holdsPrompts ? dirname(source.path) : dirname(dirname(dirname(source.path))));
         if (excludedFolders.has(projectFolder)) continue;
@@ -139,13 +140,19 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
             const message = record?.message;
             if (record?.type !== 'assistant' || !message?.usage) continue;
             const key = typeof message.id === 'string' && message.id ? message.id : `${record.requestId ?? ''}\u0000${record.uuid ?? ''}`;
-            if (seenMessages.has(key)) continue;
-            seenMessages.add(key);
+            const at = isoToEpochMs(record.timestamp);
+            if (at === null) continue;
             const { input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens } = message.usage;
-            tally(usage, isoToEpochMs(record.timestamp), count(input_tokens) + count(cache_creation_input_tokens) + count(cache_read_input_tokens) + count(output_tokens), sinceEpochMs);
+            const tokens = count(input_tokens) + count(cache_creation_input_tokens) + count(cache_read_input_tokens) + count(output_tokens);
+            const previous = messages.get(key);
+            // A later content block can carry the completed output count. Keep
+            // one whole usage total, not a sum of repeated blocks or per-field
+            // maxima, and do not let a copied early block lower that count.
+            messages.set(key, { at: Math.min(previous?.at ?? at, at), tokens: Math.max(previous?.tokens ?? 0, tokens) });
           }
         } catch (error) { skip(source, error); }
       }
+      for (const message of messages.values()) tally(usage, message.at, message.tokens, sinceEpochMs);
     },
   };
 }
