@@ -42,9 +42,11 @@ export async function mergeProjectInto(opts: {
   dataDirectory?: string;
   dryRun?: boolean;
 }): Promise<ProjectMergeResult> {
-  const from = opts.from.trim();
-  const into = opts.into.trim();
-  if (!from || !into) {
+  // Project keys retain the checkout's literal spelling. Trimming here can
+  // merge a different sibling project and publish that remap to every device.
+  const from = opts.from;
+  const into = opts.into;
+  if (!from.trim() || !into.trim()) {
     throw new Error('project merge needs both <from> and <into>');
   }
   if (from === into) {
