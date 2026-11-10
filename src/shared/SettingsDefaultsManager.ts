@@ -243,6 +243,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: string;
+  CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS: string;
   CLAUDE_MEM_IDLE_EXIT_SEC: string;  // Worker idle-exit window in seconds; '0' (default) = never idle-exit.
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
@@ -537,6 +538,7 @@ export class SettingsDefaultsManager {
                                 // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(defaultSessionInitRequestTimeoutMs()),  // 10s; 7s on Windows, whose hook start-up the budget never sees
+    CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS: '250',
     // Worker idle exit (opt-in; minimum 60): after this many seconds with no
     // session activity, no queued work, no open or recent requests and no AI
     // interaction, the worker shuts itself down through the graceful stop

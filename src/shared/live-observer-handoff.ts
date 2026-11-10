@@ -3,8 +3,9 @@ export const LIVE_OBSERVER_HANDOFF_TIMEOUT_MS = 250;
 
 export async function deliverLiveObserverHandoff(
   request: (timeoutMs: number) => Promise<Response>,
+  timeoutMs: number = LIVE_OBSERVER_HANDOFF_TIMEOUT_MS,
 ): Promise<void> {
-  const response = await request(LIVE_OBSERVER_HANDOFF_TIMEOUT_MS);
+  const response = await request(timeoutMs);
   await response.body?.cancel();
   if (!response.ok) throw new Error(`Live observer handoff returned ${response.status}`);
 }
