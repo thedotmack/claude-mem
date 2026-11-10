@@ -31,6 +31,13 @@ describe('displayTime', () => {
     expect(displayTime('Nov 3')).toBe('11월 3일');
   });
 
+  it('puts ÖÖ/ÖS before the time and localizes dates in Turkish', () => {
+    setLocale('tr');
+    expect(displayTime('Today 3:45 pm')).toBe('Bugün ÖS 3:45');
+    expect(displayTime('Yesterday 9:05am')).toBe('Dün ÖÖ 9:05');
+    expect(displayTime('Nov 3')).toBe('3 Kas');
+  });
+
   it('keeps the Chinese wording as before', () => {
     setLocale('zh-CN');
     expect(displayTime('Today 3:45 pm')).toBe('今天 3:45 下午');

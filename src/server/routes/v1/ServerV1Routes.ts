@@ -5,7 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import { CreateMemoryItemSchema, UpdateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
+import { CreateMemoryItemSchema, UpdateMemoryItemSchema, type MemoryItem } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
 import {
@@ -16,12 +16,16 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
-import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS } from '../../../storage/sqlite/memory-items.js';
+import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS, sanitizeMemoryItemContent } from '../../../storage/sqlite/memory-items.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
   ? __DEFAULT_PACKAGE_VERSION__
   : 'development';
+
+function hasText(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
 
 /**
  * Write-path contract guard (#2684): a memory_items row is only useful if at
@@ -37,8 +41,6 @@ function hasSearchableContent(body: {
   facts?: string[];
   concepts?: string[];
 }): boolean {
-  const hasText = (value: string | null | undefined): boolean =>
-    typeof value === 'string' && value.trim().length > 0;
   return (
     hasText(body.title) ||
     hasText(body.subtitle) ||
@@ -47,6 +49,17 @@ function hasSearchableContent(body: {
     (Array.isArray(body.facts) && body.facts.some(hasText)) ||
     (Array.isArray(body.concepts) && body.concepts.some(hasText))
   );
+}
+
+function renderMemoryContext(memory: MemoryItem): string {
+  return [
+    memory.narrative,
+    memory.text,
+    memory.title,
+    memory.subtitle,
+    memory.facts.filter(hasText).join('\n'),
+    memory.concepts.filter(hasText).join(', '),
+  ].find(hasText) ?? '';
 }
 
 export interface ServerV1RoutesOptions {
@@ -188,7 +201,7 @@ export class ServerV1Routes implements RouteHandler {
       // A row with NONE of the searchable text columns populated is invisible to
       // search — it looks "frozen". Reject it LOUDLY here instead of silently
       // persisting an unsearchable record.
-      if (!hasSearchableContent(body)) {
+      if (!hasSearchableContent(sanitizeMemoryItemContent(body))) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field (narrative, text, title, subtitle, facts, or concepts) so the FTS index is populated; refusing to persist an empty record',
@@ -228,7 +241,7 @@ export class ServerV1Routes implements RouteHandler {
       // PATCH omission preserves stored values, while explicit null/[] clears
       // them. Reject losing searchable content, while allowing unrelated edits
       // to existing empty records that predate the public creation check.
-      if (hasSearchableContent(existing) && !hasSearchableContent({ ...existing, ...body })) {
+      if (hasSearchableContent(existing) && !hasSearchableContent(sanitizeMemoryItemContent({ ...existing, ...body }))) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
@@ -287,7 +300,7 @@ export class ServerV1Routes implements RouteHandler {
         ? repo.search(body.projectId, body.query, body.limit ?? 10)
         : repo.listByProject(body.projectId, body.limit ?? 10);
       this.audit(req, 'memory.context', null, body.projectId);
-      res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
+      res.json({ memories, context: memories.map(renderMemoryContext).filter(Boolean).join('\n\n') });
     }));
 
     app.get('/v1/audit', readAuth, (req, res) => {

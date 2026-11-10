@@ -16,6 +16,22 @@ import {
 } from '../../core/schemas/memory-item.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonArray, parseJsonObject, stringifyJson } from './serde.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
+
+/** Sanitize content without rewriting identifiers, categories or omitted PATCH fields. */
+export function sanitizeMemoryItemContent<T extends Partial<CreateMemoryItem>>(input: T): T {
+  const sanitized = { ...input };
+  for (const key of ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts',
+    'filesRead', 'filesModified', 'metadata'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    const value = redactJsonStrings(stripMemoryTagsFromJsonStrings(input[key]));
+    // These nullable fields reject empty strings in the public schema. A fully
+    // private title has no remaining content, so represent it as absent.
+    Object.assign(sanitized, { [key]: (key === 'title' || key === 'subtitle') && value === '' ? null : value });
+  }
+  return sanitized;
+}
 
 interface MemoryItemRow {
   id: string;
@@ -100,7 +116,7 @@ function buildSearchQuery(query: string): { words: string; symbols: Array<{ lite
   const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
-    .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
+    .flatMap(token => token.split(/[^\p{L}\p{N}\p{M}_]+/gu))
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
@@ -133,7 +149,7 @@ export class MemoryItemsRepository {
   }
 
   create(input: CreateMemoryItem): MemoryItem {
-    const item = CreateMemoryItemSchema.parse(input);
+    const item = CreateMemoryItemSchema.parse(sanitizeMemoryItemContent(input));
     const now = Date.now();
     const id = randomUUID();
 
@@ -228,7 +244,7 @@ export class MemoryItemsRepository {
     if (!existing) {
       return null;
     }
-    const next = CreateMemoryItemSchema.parse({
+    const next = CreateMemoryItemSchema.parse(sanitizeMemoryItemContent({
       projectId: input.projectId ?? existing.projectId,
       serverSessionId: input.serverSessionId !== undefined ? input.serverSessionId : existing.serverSessionId,
       legacyObservationId: input.legacyObservationId !== undefined ? input.legacyObservationId : existing.legacyObservationId,
@@ -243,7 +259,7 @@ export class MemoryItemsRepository {
       filesRead: input.filesRead ?? existing.filesRead,
       filesModified: input.filesModified ?? existing.filesModified,
       metadata: input.metadata ?? existing.metadata,
-    });
+    }));
     const now = Date.now();
 
     this.db.prepare(`

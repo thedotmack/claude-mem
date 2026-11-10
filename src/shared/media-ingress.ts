@@ -151,7 +151,7 @@ function withoutKey(record: UnknownRecord, removedKey: string | undefined): Unkn
 }
 
 function looksLikeJsonText(value: string): boolean {
-  return value.startsWith('{') || value.startsWith('[') || value.startsWith('"');
+  return /^[ \t\r\n]*[\[{\"]/.test(value);
 }
 
 /**

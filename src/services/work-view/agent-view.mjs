@@ -15,6 +15,7 @@ const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? n
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 const callKey = (project, list, fields) => JSON.stringify([PROJECT_KEY(project), list, fingerprint(fields)]);
 const agentKey = (platform, session, agent) => JSON.stringify(['session', platform ?? 'unknown', String(session ?? ''), agent ?? 'unidentified']);
+const lifecycleKey = (platform, session, agent) => JSON.stringify([platform ?? null, session, agent]);
 
 export function compactText(value, max = 260) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return null;
@@ -127,7 +128,13 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   // (and, for a foreground agent, returned when it finished), and the time of
   // each subagent's latest captured tool call.
   // Only conversations whose loaded records include a subagent need it.
-  const contentIds = [...new Set([...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id))];
+  // Current observations link through memory_session_id, not the optional
+  // legacy content_session_id column. Their loaded parent sessions supply it.
+  const subagentMemoryIds = new Set(observations.filter((row) => row.agent_id && row.memory_session_id).map((row) => row.memory_session_id));
+  const contentIds = [...new Set([
+    ...[...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id),
+    ...sessions.filter((session) => subagentMemoryIds.has(session.memory_session_id) && session.content_session_id).map((session) => session.content_session_id),
+  ])];
   const contentArgs = contentIds.map(() => '?').join(', ');
   // Fields are pulled out in SQL: a launch response embeds the whole prompt,
   // so a truncated copy would not parse.
@@ -138,12 +145,12 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     substr(coalesce(json_extract(tool_input, '$.prompt'), json_extract(tool_response, '$.prompt')), 1, 600) AS prompt
     FROM tool_uses WHERE tool_name IN ('Agent', 'Task') AND json_valid(tool_response) AND json_valid(coalesce(tool_input, '{}'))
     AND content_session_id IN (${contentArgs}) ORDER BY id DESC LIMIT 2000`, contentIds) : [];
-  const agentToolActivity = contentIds.length ? safeRead(database, `SELECT content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
-    FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY content_session_id, agent_id`, contentIds) : [];
+  const agentToolActivity = contentIds.length ? safeRead(database, `SELECT platform_source, content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
+    FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY platform_source, content_session_id, agent_id`, contentIds) : [];
   return { calls, observations, summaries, sessions, prompts, productCalls, productObservations, productDeliverables, agentLaunches, agentToolActivity };
 }
 
-// The parent's Agent (formerly Task) calls, by [content session, agent id].
+// The parent's Agent (formerly Task) calls, by [platform, content session, agent id].
 // A foreground call's PostToolUse fires when the subagent returns, so its row
 // is a recorded finish; an async launch only says the subagent started.
 export function readAgentLaunches(rows) {
@@ -151,7 +158,7 @@ export function readAgentLaunches(rows) {
   for (const row of rows) {
     const agentId = typeof row.agent_id === 'string' && row.agent_id ? row.agent_id : null;
     if (!agentId || !row.content_session_id) continue;
-    const key = JSON.stringify([row.content_session_id, agentId]);
+    const key = lifecycleKey(row.platform_source, row.content_session_id, agentId);
     if (launches.has(key)) continue;
     const isAsync = row.is_async === 1 || row.is_async === true || row.status === 'async_launched';
     launches.set(key, {
@@ -173,7 +180,7 @@ function launchRequest(launch) {
 export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records;
   const launches = readAgentLaunches(agentLaunches);
-  const lastToolEpochs = new Map(agentToolActivity.map((row) => [JSON.stringify([row.content_session_id, row.agent_id]), Number(row.last_epoch) || 0]));
+  const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
   const stops = readAgentStops(state);
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const sessionsByMemory = new Map(sessions.filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
@@ -269,7 +276,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
         // sets agent_id only inside a subagent; other hosts (Codex) also tag
         // the main thread, so their groups keep the per-prompt layout.
         isSubagent: Boolean(session && agentId && platform === 'claude'),
-        launch: session && agentId ? launches.get(JSON.stringify([session.content_session_id, agentId])) ?? null : null,
+        launch: session && agentId ? launches.get(lifecycleKey(platform, session.content_session_id, agentId)) ?? null : null,
         work: [], activity: [], lastActivityEpoch: 0,
       });
     }
@@ -413,7 +420,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   // conversation ended.) Any captured
   // tool call or observation after that evidence means the agent resumed.
   function subagentFinish(group) {
-    const lastToolEpoch = lastToolEpochs.get(JSON.stringify([group.contentSessionId, group.agentId])) ?? 0;
+    const lastToolEpoch = lastToolEpochs.get(lifecycleKey(group.platformSource, group.contentSessionId, group.agentId)) ?? 0;
     const lastActive = Math.max(group.lastActivityEpoch, lastToolEpoch);
     const evidence = [];
     const stop = agentStopFor(stops, group.platformSource, group.contentSessionId, group.agentId);

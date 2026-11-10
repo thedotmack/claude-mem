@@ -329,6 +329,51 @@ describe('path guards', () => {
 });
 
 describe('refreshSeatIndex live write', () => {
+  for (const source of ['settings', 'environment'] as const) {
+    it(`queries the complete literal project map before writing the index (${source})`, () => {
+      const root = tempRoot();
+      writeSeat(root, PRIORITIZER, 'Prioritizer');
+      const settingsPath = path.join(root, 'settings.json');
+      const projectMap = `${PRIORITIZER}=repo=blue,docs;${ORIFICE}=other`;
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK: 'off',
+        ...(source === 'settings' ? { CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: projectMap } : {}),
+      }));
+      const cfg = loadGrokBotIndexConfig(settingsPath, {
+        GROK_BOT_AGENT_DATA: root,
+        ...(source === 'environment' ? { CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: projectMap } : {}),
+      });
+      const db = new Database(':memory:');
+      try {
+        db.exec(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT, content_session_id TEXT);
+          CREATE TABLE observations (
+            id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT,
+            narrative TEXT, facts TEXT, concepts TEXT, files_read TEXT, files_modified TEXT,
+            discovery_tokens INTEGER, created_at TEXT, created_at_epoch INTEGER, project TEXT, merged_into_project TEXT);
+          INSERT INTO sdk_sessions VALUES ('sdk-seat', 'grok-bot', 'native-seat');`);
+        const insert = db.prepare(`INSERT INTO observations
+          (id, memory_session_id, type, title, concepts, created_at, created_at_epoch, project)
+          VALUES (?, 'sdk-seat', 'discovery', ?, '["how-it-works"]', ?, ?, ?)`);
+        for (const [index, project] of ['repo=blue', 'docs', 'repo'].entries()) {
+          insert.run(index + 1, `Fact from ${project}`, NOW.toISOString(), index + 1, project);
+        }
+        const context = { observationTypes: new Set(['discovery']), observationConcepts: new Set(['how-it-works']) } as unknown as ContextConfig;
+        const [seat] = resolveIndexSeats(cfg);
+        const result = refreshSeatIndex(cfg, seat, {
+          querySeat: (projects, limit, platformSource) => queryObservationsNewest({ db }, context, { projects, limit, platformSource, includeManualSaves: true }),
+          queryHouse: () => [],
+        }, NOW);
+        expect(result.status).toBe('written');
+        const text = readFileSync(result.filePath!, 'utf8');
+        expect(text).toContain('Fact from repo=blue');
+        expect(text).toContain('Fact from docs');
+        expect(text).not.toContain('Fact from repo»');
+        expect(result.projects).toEqual(['repo=blue', 'docs']);
+        expect(cfg.projectsByAgent.get(ORIFICE)).toEqual(['other']);
+      } finally { db.close(); }
+    });
+  }
+
   it('writes a growing INDEX and does not touch profile.md', async () => {
     const root = tempRoot();
     writeSeat(root, PRIORITIZER, 'Prioritizer');

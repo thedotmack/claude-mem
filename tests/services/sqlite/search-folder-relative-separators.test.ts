@@ -56,3 +56,21 @@ test('folder candidates keep percent, underscore, quotes and backslashes literal
     expect(next.sessions).toEqual([]);
   }
 });
+
+for (const query of ['src/feature', './src/feature', '.\\src\\feature', '/repo/src/feature', 'C:\\repo\\src\\feature']) {
+  test(`folder lookup treats a leading current-directory segment consistently: ${JSON.stringify(query)}`, async () => {
+    store = new SessionStore(':memory:');
+    const read = seed('./src/feature/main.ts', 'dot-read');
+    const edited = seed('.\\src\\feature\\edit.ts', 'dot-edited', true);
+    const plain = seed('src/feature/plain.ts', 'plain');
+    seed('./src/feature/nested/deep.ts', 'nested');
+    seed('./src/feature-old/other.ts', 'sibling');
+    seed('./src/feature/other-project.ts', 'foreign', false, 'other');
+    const orchestrator = new SearchOrchestrator(new SessionSearch(store.db), store, null);
+    const result = await orchestrator.findByFile(query, { project: 'project', isFolder: true });
+    expect(result.observations.map(row => row.id).sort((a, b) => a - b))
+      .toEqual([read.observation, edited.observation, plain.observation]);
+    expect(result.sessions.map(row => row.id).sort((a, b) => a - b))
+      .toEqual([read.summary, edited.summary, plain.summary]);
+  });
+}

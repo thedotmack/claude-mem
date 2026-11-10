@@ -6,7 +6,7 @@
 // What it shows stays relevant to the people it is shared with (R17.3): only requests placed in this area, so a new
 // request shows up when it lands here and nothing from other areas or Other ever does. Moving a request out of the
 // area takes it off the page. Closed requests stay off, as they do on My Work. The owner's own words (quotes,
-// prompts, and any title, ask or goal that repeats them), terminal lines, evidence links, work product,
+// prompts, and any title, summary, next step, ask or goal that repeats them), terminal lines, evidence links, work product,
 // conversations and machine names never leave.
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
@@ -97,11 +97,13 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
     requests: open.slice(0, SHARED_REQUESTS_MAX).map((request) => ({
       id: request.id,
       title: clip(sharedTitle(request), 200),
-      summary: request.summary?.trim() ? clip(request.summary.trim(), 600) : null,
+      summary: request.summary?.trim() && !request.summaryRepeatsPrompt && !titleQuotesPrompt(request.summary, request.prompts)
+        ? clip(request.summary.trim(), 600) : null,
       state: request.state,
       stage: request.stage,
       percent: request.progress.percent,
-      next: { who: request.next.who, text: clip(request.next.text.trim() || 'Next step not recorded', 300) },
+      next: { who: request.next.who, text: request.nextRepeatsPrompt || titleQuotesPrompt(request.next.text, request.prompts)
+        ? 'Next step not recorded' : clip(request.next.text.trim() || 'Next step not recorded', 300) },
       agent: clip(agentName(request), 80),
       startedAt: clip(request.startedAt, 60),
       runningFor: clip(request.runningFor, 60),
