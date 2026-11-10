@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const cwd of ['root', 'nested']) {
-  for (const inputPath of ['relative', 'absolute']) {
+for (const cwd of ['root', 'nested', 'linked']) {
+  for (const inputPath of cwd === 'linked' ? ['relative', 'absolute', 'physical'] : ['relative', 'absolute']) {
     it(`injects project-relative file history from ${cwd} cwd with ${inputPath} input`, async () => {
       const dataDir = mkdtempSync(join(tmpdir(), 'file-context-root-'));
       let child: ReturnType<typeof Bun.spawn> | undefined;

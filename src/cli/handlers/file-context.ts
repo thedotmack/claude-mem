@@ -6,7 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime, compactTime } from '../../shared/timeline-formatting.js';
-import { closeSync, openSync, readSync, statSync } from 'fs';
+import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -435,8 +435,8 @@ export const fileContextHandler: EventHandler = {
 
 /**
  * The `path` forms the by-file lookup sends, forward-slashed and de-duped: the
- * absolute path, the cwd-relative and project-root-relative paths and, for a
- * file under the home directory, its `~/` form. An observation can store the `~/` form a tool
+ * absolute path, the cwd-relative path and, for a file under the home
+ * directory, its `~/` form. An observation can store the `~/` form a tool
  * argument used (agy's `read_file` takes the path the model typed), and a
  * lookup by the absolute path alone would miss it.
  */
@@ -444,15 +444,13 @@ export function fileHistoryQueryPaths(
   absolutePath: string,
   relativePath: string,
   homeDirectory: string = homedir(),
-  repoRoot?: string | null,
 ): string[] {
   const absoluteForward = absolutePath.split(path.sep).join('/');
   const homeForward = homeDirectory.split(path.sep).join('/');
   const homeRelative = absoluteForward.startsWith(homeForward + '/')
     ? '~/' + absoluteForward.slice(homeForward.length + 1)
     : '';
-  const rootRelative = repoRoot ? path.relative(repoRoot, absolutePath).split(path.sep).join('/') : '';
-  return Array.from(new Set([absoluteForward, relativePath, rootRelative, homeRelative].filter(Boolean)));
+  return Array.from(new Set([absoluteForward, relativePath, homeRelative].filter(Boolean)));
 }
 
 async function lookupFileObservationHistory(
@@ -462,6 +460,7 @@ async function lookupFileObservationHistory(
   let fileMtimeMs = 0;
   let fileStatVerified = false;
   let fileSizeBytes = 0;
+  let resolvedFilePath: string | undefined;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
@@ -470,6 +469,7 @@ async function lookupFileObservationHistory(
     if (!stat.isFile() || stat.size < FILE_CONTEXT_MIN_BYTES) {
       return null;
     }
+    resolvedFilePath = realpathSync(statPath);
     fileMtimeMs = stat.mtimeMs;
     fileStatVerified = true;
     fileSizeBytes = stat.size;
@@ -495,8 +495,16 @@ async function lookupFileObservationHistory(
   // PreToolUse:Read query previously sent ONLY the cwd-relative form, so it
   // never matched absolute-path storage. A subdirectory cwd also needs the
   // project-root-relative form; cwd-relative alone misses the observer's paths.
-  // Send all forms forward-slashed and de-duped as repeated `path` params.
-  const candidateQueryPaths = fileHistoryQueryPaths(absolutePath, relativePath, homedir(), repoRoot);
+  // Git returns a physical root even when cwd goes through a symlink. Keep
+  // in-checkout logical spellings too, since a file itself can be a symlink.
+  const projectRelativePaths = repoRoot
+    ? [absolutePath, resolvedFilePath ?? absolutePath]
+      .map(candidate => path.relative(repoRoot, candidate).split(path.sep).join('/'))
+      .filter(candidate => candidate && candidate !== '..' && !candidate.startsWith('../') && !path.isAbsolute(candidate))
+    : [];
+  const candidateQueryPaths = Array.from(new Set([
+    ...fileHistoryQueryPaths(absolutePath, relativePath), ...projectRelativePaths,
+  ]));
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);
