@@ -3192,7 +3192,7 @@ export class SessionStore {
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();
-    const projectsBySource: Record<string, string[]> = {};
+    const projectsBySource: Record<string, string[]> = Object.create(null);
 
     for (const row of rows) {
       const source = normalizePlatformSource(row.platform_source);
