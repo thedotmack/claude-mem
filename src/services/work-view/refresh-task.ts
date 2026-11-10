@@ -94,9 +94,6 @@ export interface RefreshAgentChoice {
 }
 
 const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemini'];
-/** The providers that name an API endpoint instead of a local CLI. 'cmem' is the legacy spelling of the
- * hosted gateway, which is OpenRouter-shaped. */
-const API_PROVIDERS = new Set(['openrouter', 'openai-compatible', 'cmem']);
 
 /** Which agents the My Work refresh may run on (#5189). A background refresh that falls through to another
  * agent spends that agent's quota without the owner asking: a Claude Code session limit sent ~230 hidden
@@ -106,9 +103,8 @@ const API_PROVIDERS = new Set(['openrouter', 'openai-compatible', 'cmem']);
  * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
  * - `api`: only the API provider CLAUDE_MEM_PROVIDER selects ('openrouter', 'openai-compatible', 'cmem');
  * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
- *   runs NOTHING: the refresh is model spend on that endpoint, so it starts only when the owner sets
- *   `api`, and a local CLI is not a candidate, because a local Claude Code run spends the Anthropic
- *   subscription the owner routed away from.
+ *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ *   The API provider itself runs the refresh only when the owner sets `api`: it spends that provider's credit.
  * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
 export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
@@ -127,8 +123,6 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
     });
   }
   if (providerAgent) return { allowedAgents: [providerAgent], preferredAgent: providerAgent, stayOnFirstUsableAgent: true };
-  // An API endpoint is opt-in (CLAUDE_MEM_WORK_VIEW_AGENT=api), and a local CLI is never the stand-in.
-  if (API_PROVIDERS.has(provider)) return { allowedAgents: [], stayOnFirstUsableAgent: true };
   return { stayOnFirstUsableAgent: true };
 }
 

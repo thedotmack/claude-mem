@@ -111,9 +111,13 @@ function providerLabel(provider: ApiProviderId): string {
 
 /** Enough room for a step that reads a whole window of conversations. */
 const REQUEST_TIMEOUT_MS = 600_000;
-/** The steps ask for JSON; a long answer is a step that over-explained. */
-const MAX_OUTPUT_TOKENS = 8000;
-/** Reasoning off by default: a reasoning model would spend the output budget thinking. */
+/**
+ * The largest answer a step must fit is the story step's: a real install's story answer
+ * (work-view/agent-runs/<run>/9-record-story.json, Nov 2026) is 31 KB of JSON, about 8,000
+ * tokens. 16,000 gives that step twice its measured size. An answer that still runs out is
+ * refused loudly (readAnswer, finish_reason "length"), never saved truncated.
+ */
+const MAX_OUTPUT_TOKENS = 16_000;
 const TEMPERATURE = 0.2;
 
 const SYSTEM_PROMPT = [
@@ -188,6 +192,7 @@ export async function askApiTarget(target: ApiTarget, prompt: string, options: A
       stream: false,
       temperature: TEMPERATURE,
       max_tokens: MAX_OUTPUT_TOKENS,
+      // Reasoning off by default: a reasoning model would spend the output budget thinking.
       ...(includeReasoning ? { reasoning: { enabled: false } } : {}),
       ...(format === 'none' ? {} : answerFormatBodies(format, options.answerSchema)),
       messages: [
@@ -232,6 +237,10 @@ async function readAnswer(response: Response, target: ApiTarget): Promise<string
   try { data = await response.json(); }
   catch { throw new Error(`${providerLabel(target.provider)} answered with unreadable JSON.`); }
   const choice = data?.choices?.[0];
+  // A cut-off answer is broken JSON or a partial story: fail the step, never hand it to the validators.
+  if (choice?.finish_reason === 'length') {
+    throw new Error(`${providerLabel(target.provider)} stopped at the ${MAX_OUTPUT_TOKENS}-token answer limit (finish reason: length); the answer is incomplete.`);
+  }
   const raw = choice?.message?.content;
   const content = typeof raw === 'string' ? raw
     : Array.isArray(raw) ? raw.filter((part: any) => part?.type === 'text').map((part: any) => part?.text ?? '').join('')

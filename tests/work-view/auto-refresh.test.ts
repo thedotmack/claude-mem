@@ -1246,11 +1246,9 @@ describe('My Work refresh stays on one agent (#5189)', () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'gemini' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['gemini'], preferredAgent: 'gemini', stayOnFirstUsableAgent: true }));
   });
 
-  it('an API-endpoint provider runs no agent until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {
-    // The refresh is model spend on that endpoint, and a local Claude Code run would spend the
-    // Anthropic subscription the owner routed away from: neither starts on its own.
+  it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one, until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
-      await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: [], stayOnFirstUsableAgent: true }));
+      await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ stayOnFirstUsableAgent: true }));
       await withSettings({ CLAUDE_MEM_PROVIDER: provider, CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true }));
     }
   });

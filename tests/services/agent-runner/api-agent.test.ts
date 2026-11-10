@@ -52,6 +52,14 @@ describe('the API agent talks to the selected provider', () => {
     expect(calls[0].body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'answer', schema, strict: false } });
   });
 
+  it('refuses an answer the provider cut off at the token limit instead of returning it', async () => {
+    // A truncated JSON answer must fail loudly, never reach the step's validators half-written.
+    const { calls } = fakeFetch([{ body: { choices: [{ finish_reason: 'length', message: { content: '{"narrative": "The record holds' } }] } }]);
+    await expect(askApiTarget(target(), 'the question')).rejects.toThrow(/finish reason: length/);
+    expect(calls.length).toBe(1);
+    expect(calls[0].body.max_tokens).toBe(16_000);
+  });
+
   it('uses the step\'s model over the provider\'s own', async () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'a' } }] } }]);
     await askApiTarget(target(), 'the question', { model: 'vendor/other' });

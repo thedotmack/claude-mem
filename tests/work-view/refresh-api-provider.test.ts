@@ -94,12 +94,14 @@ describe('the My Work refresh on an API provider', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
 
-  it('runs nothing by default: the refresh is the owner\'s model spend, and a local CLI is no stand-in', async () => {
+  it('an empty setting keeps main\'s behaviour: the first logged-in agent and only that one, never the API provider', async () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
       await withApiProvider(provider, dir => {
-        // A local Claude Code run spends the owner's Anthropic subscription, which is exactly
-        // what choosing another provider was meant to stop; the API refresh is opt-in.
-        expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: [], stayOnFirstUsableAgent: true });
+        // The API refresh spends that provider's credit, so it runs only when the owner sets `api`.
+        // Every CMEM Pro install is `openrouter`, and its My Work keeps refreshing on its logged-in agent.
+        const choice = resolveRefreshAgents(dir);
+        expect(choice).toEqual({ stayOnFirstUsableAgent: true });
+        expect(choice.allowedAgents).toBeUndefined();
       });
     }
   });
