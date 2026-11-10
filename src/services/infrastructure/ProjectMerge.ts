@@ -6,6 +6,7 @@ import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { resolveDbPath } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 export interface ProjectMergeResult {
@@ -42,9 +43,11 @@ export async function mergeProjectInto(opts: {
   dataDirectory?: string;
   dryRun?: boolean;
 }): Promise<ProjectMergeResult> {
-  const from = opts.from.trim();
-  const into = opts.into.trim();
-  if (!from || !into) {
+  // Project keys retain the checkout's literal spelling. Trimming here can
+  // merge a different sibling project and publish that remap to every device.
+  const from = opts.from;
+  const into = opts.into;
+  if (!from.trim() || !into.trim()) {
     throw new Error('project merge needs both <from> and <into>');
   }
   if (from === into) {
@@ -142,8 +145,8 @@ const WORKER_MERGE_TIMEOUT_MS = 10 * 60 * 1000;
  * `claude-mem project merge` from the CLI. The running worker holds the Chroma
  * writer lock, so a merge run in this process could update SQLite but never
  * Chroma: with a worker up, the merge runs inside it (POST /api/projects/merge).
- * This process runs it only when no worker answers (it is then the only
- * writer), or when the worker is an older one without that route. Any other
+ * This process runs it only when the connection is refused, or when the
+ * worker is an older one without that route. Any other
  * worker failure is raised rather than retried here, so a merge never runs
  * twice against two writers (gate P2-4).
  */
@@ -167,7 +170,10 @@ export async function runProjectMergeCommand(
       timeoutMs: WORKER_MERGE_TIMEOUT_MS,
     });
   } catch (error: unknown) {
-    logger.info('SYSTEM', 'No worker answered; running the project merge in this process', {
+    // A timeout or reset can follow an accepted POST. The worker still owns
+    // that merge; only a refused connection proves no request reached it.
+    if (!isConnectionRefusedError(error)) throw error;
+    logger.info('SYSTEM', 'Worker connection refused; running the project merge in this process', {
       error: error instanceof Error ? error.message : String(error),
     });
   }

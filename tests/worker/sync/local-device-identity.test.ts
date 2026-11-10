@@ -41,6 +41,14 @@ test('adopts configured or legacy native identity, preserving wrapped settings',
   expect(ensureLocalDeviceIdentity(native.db, native.path)).toBe('native-device');
 });
 
+test('does not adopt a device writer from an authored version-like list name', () => {
+  const { db, path } = fixture();
+  const store = new SessionStore(db);
+  store.appendWorkStateEntry({ project: 'repo', listName: '__my_work_v1draft:notes', fields: { writer: 'document-author' } });
+  expect(ensureLocalDeviceIdentity(db, path, 'configured-device')).toBe('configured-device');
+  expect(JSON.parse(readFileSync(path, 'utf8')).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe('configured-device');
+});
+
 test('refuses a real identity conflict without rotating either stored identity', () => {
   const { db, path } = fixture();
   ensureLocalDeviceIdentity(db, path, 'original-device');

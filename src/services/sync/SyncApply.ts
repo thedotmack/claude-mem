@@ -165,9 +165,8 @@
 //   - Stub-session warts: a stub created from observations/summaries only
 //     keeps content_session_id = memory_session_id (their bodies carry no
 //     content id) until an op carrying the real association (prompt row op
-//     or set_prompt_session) arrives. Its content id is rewritten only when
-//     a content-keyed stub for that session exists to fold in; otherwise
-//     only prompt linking and parked-title claiming use the association.
+//     or set_prompt_session) arrives. An existing native content identity
+//     keeps its ownership, so that replica retains a synthetic content id.
 //     Prompts orphaned before a content-keyed stub could be created stay
 //     orphaned (their project was never stored locally). Stubs are created
 //     with status 'completed' and stay
@@ -668,14 +667,18 @@ export class SyncApply {
             if (!op.deleted && typeof list === 'string') changedLists.add(list);
             else unknownWorkStateList = true;
           }
-          // A tombstone deletes a row; a mutation can re-key or retitle rows.
-          if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
+          // A later row revision can replace content too. Only first-revision
+          // inserts are known to be additive; cached old text must stop being
+          // served as soon as a replacement commits.
+          if (op.kind === 'mutation' || op.deleted === true || op.rev !== '1') removedOrRemapped = true;
         } else {
           result.skippedStale++;
         }
       }
 
-      this.retrySetAside(chromaJobs, recovered);
+      // A recovered row may replace a revision that was served while its
+      // update was blocked. Stale recoveries have not changed stored content.
+      if (this.retrySetAside(chromaJobs, recovered)) removedOrRemapped = true;
 
       // Cursor advance IN THE SAME TRANSACTION as the rows (crash-safe
       // exactly-once): a crash before COMMIT leaves both unmoved.
@@ -688,8 +691,9 @@ export class SyncApply {
 
     // Pulled rows change what SessionStart shows. 'all': a mutation (remap,
     // set-title) can move rows between projects, so no single project names it.
-    // 'removal' when a tombstone or mutation applied: the cached block may show
-    // what is now gone, so it must not be served until re-rendered.
+    // 'removal' when a tombstone, mutation, later row revision or recovered
+    // row applied: the cached block may show removed or replaced content,
+    // so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
       emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive', recovered.length ? undefined : {
         kinds: [...changedKinds], ...(!unknownWorkStateList ? { workStateLists: [...changedLists] } : {}),
@@ -766,7 +770,8 @@ export class SyncApply {
    * ledger makes a late retry safe (stale once a newer revision applied). A
    * retry that still fails stays set aside and never fails the batch.
    */
-  private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): void {
+  private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): boolean {
+    let applied = false;
     const rows = this.db.prepare(`
       SELECT id, epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
              entity_rev, operation_sha256, raw_body, reason
@@ -810,8 +815,10 @@ export class SyncApply {
       }
       if ('unapplicable' in attempt) continue;
       this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      if (attempt.outcome === 'applied') applied = true;
       recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
     }
+    return applied;
   }
 
   /**
@@ -1032,6 +1039,7 @@ export class SyncApply {
       fieldString(op, body, 'memory_session_id'),
       fieldString(op, body, 'content_session_id'),
       fieldString(op, body, 'platform_source'),
+      fieldNumber(op, body, 'created_at_epoch'),
     )) return 'stale';
     switch (op.kind) {
       case 'observation':
@@ -1051,14 +1059,21 @@ export class SyncApply {
     memorySessionId: string | null,
     contentSessionId: string | null,
     platformSource: string | null,
+    createdAtEpoch: number | null = null,
   ): boolean {
     if (memorySessionId && this.db.prepare(`
       SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?
     `).get(memorySessionId)) return true;
-    if (contentSessionId && this.db.prepare(`
-      SELECT 1 FROM deleted_content_sessions
-      WHERE platform_source = ? AND content_session_id = ?
-    `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId)) return true;
+    if (contentSessionId) {
+      const deleted = this.db.prepare(`
+        SELECT deleted_at_epoch_ms FROM deleted_content_sessions
+        WHERE platform_source = ? AND content_session_id = ?
+      `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId) as { deleted_at_epoch_ms: number } | null;
+      // v74 permits new work in the same conversation, while an old memory
+      // identity above remains permanently deleted. Hub arrival time is not
+      // evidence that the source row was created after the deletion.
+      if (deleted && (createdAtEpoch === null || createdAtEpoch <= deleted.deleted_at_epoch_ms)) return true;
+    }
     return false;
   }
 
@@ -1214,28 +1229,43 @@ export class SyncApply {
       WHERE platform_source = ? AND content_session_id = ? AND memory_session_id IS NULL AND id != ?
         AND ${SyncApply.SYNC_STUB_PREDICATE}
     `).get(platform, contentSessionId, targetId) as { id: number; custom_title: string | null } | undefined;
-    if (!other) return;
-    // Every column that references sdk_sessions(id): the declared foreign keys,
-    // read from the schema so a new referencing table moves instead of
-    // cascading away, plus tool_uses.session_db_id, which has none on purpose.
-    const refs = this.db.prepare(`
-      SELECT m.name AS tbl, f."from" AS col FROM sqlite_master m
-      JOIN pragma_foreign_key_list(m.name) f
-      WHERE m.type = 'table' AND f."table" = 'sdk_sessions' AND f."to" = 'id'
-    `).all() as Array<{ tbl: string; col: string }>;
-    for (const { tbl, col } of [...refs, { tbl: 'tool_uses', col: 'session_db_id' }]) {
-      this.db.prepare(`UPDATE "${tbl}" SET "${col}" = ? WHERE "${col}" = ?`).run(targetId, other.id);
+    if (other) {
+      // Every column that references sdk_sessions(id): the declared foreign keys,
+      // read from the schema so a new referencing table moves instead of
+      // cascading away, plus tool_uses.session_db_id, which has none on purpose.
+      const refs = this.db.prepare(`
+        SELECT m.name AS tbl, f."from" AS col FROM sqlite_master m
+        JOIN pragma_foreign_key_list(m.name) f
+        WHERE m.type = 'table' AND f."table" = 'sdk_sessions' AND f."to" = 'id'
+      `).all() as Array<{ tbl: string; col: string }>;
+      for (const { tbl, col } of [...refs, { tbl: 'tool_uses', col: 'session_db_id' }]) {
+        this.db.prepare(`UPDATE "${tbl}" SET "${col}" = ? WHERE "${col}" = ?`).run(targetId, other.id);
+      }
+      // Delete first: the target cannot take the content id while the other row
+      // still holds it under the (platform_source, content_session_id) index.
+      this.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(other.id);
+      this.db.prepare('UPDATE sdk_sessions SET custom_title = COALESCE(custom_title, ?) WHERE id = ?')
+        .run(other.custom_title, targetId);
     }
-    // Delete first: the target cannot take the content id while the other row
-    // still holds it under the (platform_source, content_session_id) index.
-    this.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(other.id);
+    // Learning the association does not require a second stub. Keep a native
+    // content identity in place while correcting this replica's platform.
+    // A deleted content identity also stays out: block_deleted_sdk_session_rekey
+    // refuses to re-key any row into it, even for work created after the
+    // deletion cutoff, so the stub keeps its synthetic id and only adopts the
+    // platform (its synthetic id is not the deleted one, so the trigger allows it).
     this.db.prepare(`
       UPDATE sdk_sessions SET
-        custom_title = COALESCE(custom_title, ?),
-        platform_source = CASE WHEN content_session_id = memory_session_id THEN ? ELSE platform_source END,
-        content_session_id = CASE WHEN content_session_id = memory_session_id THEN ? ELSE content_session_id END
-      WHERE id = ?
-    `).run(other.custom_title, platform, contentSessionId, targetId);
+        platform_source = ?,
+        content_session_id = CASE WHEN NOT EXISTS (
+          SELECT 1 FROM sdk_sessions owner WHERE owner.platform_source = ?
+            AND owner.content_session_id = ? AND owner.id != ?
+        ) AND NOT EXISTS (
+          SELECT 1 FROM deleted_content_sessions d
+          WHERE d.platform_source = ? AND d.content_session_id = ?
+        ) THEN ? ELSE content_session_id END
+      WHERE id = ? AND content_session_id = memory_session_id
+        AND ${SyncApply.SYNC_STUB_PREDICATE}
+    `).run(platform, platform, contentSessionId, targetId, platform, contentSessionId, contentSessionId, targetId);
   }
 
   /**
@@ -1249,12 +1279,13 @@ export class SyncApply {
     project: string,
     createdAtEpoch: number,
     contentSessionId?: string | null,
-    platformSource?: string | null
+    platformSource?: string | null,
+    association?: { op: SyncOp; chromaJobs: ChromaJob[] },
   ): number {
     const platform = normalizePlatformSource(platformSource ?? undefined);
     const existing = this.db.prepare(
-      'SELECT id FROM sdk_sessions WHERE memory_session_id = ?'
-    ).get(memorySessionId) as { id: number } | undefined;
+      'SELECT id, platform_source FROM sdk_sessions WHERE memory_session_id = ?'
+    ).get(memorySessionId) as { id: number; platform_source: string } | undefined;
     if (existing) {
       // An op carrying the content↔memory association can satisfy a title
       // parked under the content key: obs-created stubs have a synthetic
@@ -1262,6 +1293,15 @@ export class SyncApply {
       // op or a set_prompt_session repair), not at stub creation.
       if (contentSessionId) {
         this.mergeContentSession(existing.id, platform, contentSessionId);
+        if (association && this.chromaSync && this.sessionPlatformSource(memorySessionId) !== existing.platform_source) {
+          const chroma = this.chromaSync;
+          const rows = this.db.query(`
+            SELECT 'observations' AS tbl, id FROM observations WHERE memory_session_id = ?1
+            UNION ALL SELECT 'session_summaries', id FROM session_summaries WHERE memory_session_id = ?1
+            UNION ALL SELECT 'user_prompts', id FROM user_prompts WHERE session_db_id = ?2
+          `).all(memorySessionId, existing.id) as Array<{ tbl: 'observations' | 'session_summaries' | 'user_prompts'; id: number }>;
+          association.chromaJobs.push(() => this.refreshRemappedVectors(chroma, association.op, rows.map(row => ({ table: row.tbl, id: row.id }))));
+        }
         this.claimParkedTitle(existing.id, SyncApply.parkedTitleContentKey(platform, contentSessionId));
       }
       return existing.id;
@@ -1514,10 +1554,10 @@ export class SyncApply {
   private async refreshRemappedVectors(
     chroma: ChromaSyncLike,
     op: SyncOp,
-    rows: Array<{ table: 'observations' | 'session_summaries'; id: number }>,
+    rows: Array<{ table: 'observations' | 'session_summaries' | 'user_prompts'; id: number }>,
   ): Promise<void> {
     for (const { table, id } of rows) {
-      const kind = table === 'observations' ? 'observation' : 'summary';
+      const kind = table === 'observations' ? 'observation' : table === 'session_summaries' ? 'summary' : 'prompt';
       try {
         await this.enqueueChromaWrite(`${kind}:${id}`, () => {
           // Read the row when its turn comes; one deleted meanwhile has nothing to refresh.
@@ -1525,7 +1565,8 @@ export class SyncApply {
           if (!row) return Promise.resolve();
           return kind === 'observation'
             ? this.observationChromaWrite(chroma, id, op, row, true)()
-            : this.summaryChromaWrite(chroma, id, op, row, true)();
+            : kind === 'summary' ? this.summaryChromaWrite(chroma, id, op, row, true)()
+            : this.promptChromaWrite(chroma, id, row)();
         });
       } catch (error) {
         logChromaWriteFailure('SYNC_APPLY', 'Chroma refresh of a remapped row failed, continuing with the rest of the remap', { id, kind },
@@ -1535,7 +1576,7 @@ export class SyncApply {
   }
 
   /** Resolve the local sdk_sessions id for a remote prompt, or NULL (orphan). */
-  private resolvePromptSession(op: SyncOp, body: Record<string, unknown>, createdAtEpoch: number): number | null {
+  private resolvePromptSession(op: SyncOp, body: Record<string, unknown>, createdAtEpoch: number, chromaJobs: ChromaJob[]): number | null {
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     if (memorySessionId) {
       return this.ensureSessionForMemoryId(
@@ -1543,7 +1584,8 @@ export class SyncApply {
         fieldString(op, body, 'project') ?? 'unknown',
         createdAtEpoch,
         fieldString(op, body, 'content_session_id'),
-        fieldString(op, body, 'platform_source')
+        fieldString(op, body, 'platform_source'),
+        { op, chromaJobs },
       );
     }
     // No memory id on the origin yet (prompt captured before registration).
@@ -1583,7 +1625,7 @@ export class SyncApply {
     const existing = this.findByOrigin('user_prompts', op.origin_device, op.origin_id);
     if (existing) {
       if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
-      const sessionDbId = this.resolvePromptSession(op, body, createdAtEpoch);
+      const sessionDbId = this.resolvePromptSession(op, body, createdAtEpoch, chromaJobs);
       this.db.prepare(`
         UPDATE user_prompts SET
           session_db_id = ?, content_session_id = ?, prompt_number = ?, prompt_text = ?,
@@ -1598,7 +1640,7 @@ export class SyncApply {
       return 'applied';
     }
 
-    const sessionDbId = this.resolvePromptSession(op, body, createdAtEpoch);
+    const sessionDbId = this.resolvePromptSession(op, body, createdAtEpoch, chromaJobs);
     const inserted = this.db.prepare(`
       INSERT INTO user_prompts
         (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch,
@@ -1615,29 +1657,26 @@ export class SyncApply {
   }
 
   private forwardPrompt(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
-    const contentSessionId = fieldString(op, body, 'content_session_id')!;
-    const promptText = fieldString(op, body, 'prompt_text')!;
-    const promptNumber = fieldNumber(op, body, 'prompt_number')!;
-    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      chromaJobs.push(() => this.enqueueChromaWrite(`prompt:${id}`, () => chroma.syncUserPrompt(
-        id,
-        fieldString(op, body, 'memory_session_id') ?? contentSessionId,
-        fieldString(op, body, 'project') ?? 'unknown',
-        promptText,
-        promptNumber,
-        createdAtEpoch,
-        fieldString(op, body, 'platform_source') ?? undefined,
-        () => this.db.query(`
-          SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
-            COALESCE(s.project, 'unknown') AS project,
-            COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
-          FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-          WHERE up.id = ?
-        `).get(normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined), id) as StoredUserPrompt | undefined
-      )));
+      chromaJobs.push(() => this.enqueueChromaWrite(`prompt:${id}`, this.promptChromaWrite(chroma, id, body)));
     }
+  }
+
+  private promptChromaWrite(chroma: ChromaSyncLike, id: number, body: Record<string, unknown>): () => Promise<void> {
+    const loadCurrent = () => this.db.query(`
+      SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+        COALESCE(s.project, 'unknown') AS project,
+        COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+      FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE up.id = ?
+    `).get(normalizePlatformSource(typeof body.platform_source === 'string' ? body.platform_source : undefined), id) as StoredUserPrompt | undefined;
+    return async () => {
+      const row = loadCurrent();
+      if (!row) return;
+      await chroma.syncUserPrompt(id, row.memory_session_id, row.project, row.prompt_text,
+        row.prompt_number, row.created_at_epoch, row.platform_source, loadCurrent);
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1651,7 +1690,7 @@ export class SyncApply {
       case 'set_title':
         return this.applySetTitle(op, body);
       case 'set_prompt_session':
-        return this.applySetPromptSession(op, body);
+        return this.applySetPromptSession(op, body, chromaJobs);
       case 'remap_project':
         return this.applyRemapProject(op, body, chromaJobs);
       default:
@@ -1673,7 +1712,10 @@ export class SyncApply {
     if (!target || typeof target !== 'object' || Array.isArray(target) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
       throw invalidOp(op, 'set_title requires target and fields objects');
     }
-    const customTitle = fieldString(op, fields, 'custom_title');
+    // Titles can arrive from peers with capture redaction disabled. Apply the
+    // receiving policy before either writing the session or parking its title;
+    // the canonical mutation and its hash remain unchanged.
+    const customTitle = fieldString(op, redactInboundFields(fields, ['custom_title']), 'custom_title');
     if (customTitle === null) {
       throw invalidOp(op, 'set_title requires fields.custom_title');
     }
@@ -1743,7 +1785,7 @@ export class SyncApply {
     return 'applied';
   }
 
-  private applySetPromptSession(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+  private applySetPromptSession(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
     const target = body.target as Record<string, unknown> | undefined;
     const fields = body.fields as Record<string, unknown> | undefined;
     const targetDevice = target ? fieldString(op, target, 'origin_device_id') : null;
@@ -1778,13 +1820,15 @@ export class SyncApply {
       (fields && fieldString(op, fields, 'project')) ?? 'unknown',
       op.server_ts,
       fields ? fieldString(op, fields, 'content_session_id') : null,
-      fields ? fieldString(op, fields, 'platform_source') : null
+      fields ? fieldString(op, fields, 'platform_source') : null,
+      { op, chromaJobs },
     );
     // synced_at deliberately untouched: the repair travels through the log
     // itself, so applying it must not queue a re-push (echo guard).
     this.db.prepare(
       'UPDATE user_prompts SET session_db_id = ?, sync_rev = ? WHERE id = ?'
     ).run(sessionDbId, op.rev, row.id);
+    this.forwardPrompt(row.id, op, fields!, chromaJobs);
     return 'applied';
   }
 

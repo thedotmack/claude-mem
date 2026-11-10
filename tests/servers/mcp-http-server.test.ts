@@ -168,6 +168,39 @@ describe('mcp http server', () => {
     expect(seen).toBe(resolve(projectB));
   });
 
+  it('refreshes again when roots change during an outstanding roots/list answer', async () => {
+    const client = await connect(open, {}, { current: projectA });
+    expect(await eventually(() => whoami(client), cwd => cwd === resolve(projectA))).toBe(resolve(projectA));
+
+    let releaseOldAnswer!: () => void;
+    let markRequested!: () => void;
+    const requested = new Promise<void>(resolve => { markRequested = resolve; });
+    const oldAnswer = new Promise<void>(resolve => { releaseOldAnswer = resolve; });
+    let requests = 0;
+    client.setRequestHandler(ListRootsRequestSchema, async () => {
+      requests++;
+      if (requests === 1) {
+        markRequested();
+        await oldAnswer;
+        return { roots: [{ uri: pathToFileURL(projectA).href }] };
+      }
+      return { roots: [{ uri: pathToFileURL(projectB).href }] };
+    });
+
+    await client.sendRootsListChanged();
+    const pendingCall = whoami(client);
+    await requested;
+    try {
+      await client.sendRootsListChanged();
+    } finally {
+      releaseOldAnswer();
+    }
+
+    expect(await pendingCall).toBe(resolve(projectB));
+    expect(await whoami(client)).toBe(resolve(projectB));
+    expect(requests).toBe(2);
+  });
+
   it('keeps overlapping requests of one session in their own directories', async () => {
     const init = await fetch(`http://127.0.0.1:${open.port}/mcp`, {
       method: 'POST',
