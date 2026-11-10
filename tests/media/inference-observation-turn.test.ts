@@ -322,6 +322,49 @@ describe('image request boundary', () => {
 });
 
 describe('gateway lane', () => {
+  for (const [width, height] of [[320, 180], [180, 320]]) {
+    it(`honors the advertised image dimension before sending a ${width}x${height} derivative`, async () => {
+      const oversized = (await sharp({ create: { width, height, channels: 3, background: RED } }).png().toBuffer()).toString('base64');
+      const small = (await sharp({ create: { width: 128, height: 96, channels: 3, background: BLUE } }).png().toBuffer()).toString('base64');
+      await ingest('toolu_dimension', oversized, small);
+      capabilityBody = { ...QUALIFIED_RESPONSE, bounds: { ...QUALIFIED_RESPONSE.bounds, max_image_dimension: 256 } };
+      chatReplies.push(reply('<observation><type>discovery</type><title>Small viewport</title></observation>'));
+
+      await runTurn(pending(queued[0]), gatewayConfig());
+
+      expect(chatBodies).toHaveLength(1);
+      const parts = JSON.parse(chatBodies[0]).messages.at(-1).content;
+      const images = parts.filter((part: any) => part.type === 'image_url');
+      expect(images).toHaveLength(1);
+      expect(await decodedPixel(images[0].image_url.url)).toMatchObject({ width: 128, height: 96 });
+      expect(parts.map((part: any) => part.text).filter(Boolean)).toContain('[image event1_image2]');
+      expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image2', inspection: 'inspected' }]);
+      // The larger image remains available locally without being sent or labelled inspected.
+      expect(count('SELECT COUNT(*) n FROM media_event_refs')).toBe(2);
+      expect(media.getMetadata(queued[0].mediaRefs[0].id).state).toBe('ready');
+    });
+  }
+
+  it('sends text once when every derivative exceeds the advertised image dimension', async () => {
+    await ingest('toolu_dimension_text', redPng);
+    capabilityBody = { ...QUALIFIED_RESPONSE, bounds: { ...QUALIFIED_RESPONSE.bounds, max_image_dimension: 256 } };
+    chatReplies.push(reply('<observation><type>discovery</type><title>Viewport text</title></observation>'));
+    await runTurn(pending(queued[0]), gatewayConfig());
+    expect(chatBodies).toHaveLength(1);
+    expect(chatBodies[0]).not.toContain('image_url');
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
+  });
+
+  it('accepts a derivative exactly at the advertised image dimension', async () => {
+    await ingest('toolu_dimension_equal', redPng);
+    capabilityBody = { ...QUALIFIED_RESPONSE, bounds: { ...QUALIFIED_RESPONSE.bounds, max_image_dimension: 320 } };
+    chatReplies.push(reply('<observation><type>discovery</type><title>Viewport pixels</title></observation>'));
+    await runTurn(pending(queued[0]), gatewayConfig());
+    expect(chatBodies).toHaveLength(1);
+    expect(chatBodies[0]).toContain('image_url');
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'inspected' }]);
+  });
+
   it('uses the gateway capability response and resends once text-only on media_request_invalid', async () => {
     await ingest('toolu_gateway', redPng);
     catalog = TEXT_ONLY_CATALOG; // local catalogue disagrees; the gateway decides
@@ -558,7 +601,7 @@ describe('linkage and durable results', () => {
     await ingest('toolu_batch_a', redPng);
     await ingest('toolu_batch_b', bluePng);
     const messages = [pending(queued[0], 1), pending(queued[1], 2)];
-    const prepared = await prepareTurnImages(messages, id => media.readVariant(id, 'llm'), LOCAL_IMAGE_REQUEST_BOUNDS);
+    const prepared = await prepareTurnImages(messages, async id => ({ ...media.getMetadata(id).llm!, bytes: await media.readVariant(id, 'llm') }), LOCAL_IMAGE_REQUEST_BOUNDS);
     expect(prepared.images.map(image => [image.requestLabel, image.eventLabel])).toEqual([
       ['event1_image1', 'event1_image1'],
       ['event2_image1', 'event1_image1'],
@@ -604,7 +647,7 @@ describe('turn image selection', () => {
     const unreadable = '00000003-1111-4111-8111-111111111113';
     const prepared = await prepareTurnImages(messages, async id => {
       if (id === unreadable) throw new Error('not ready');
-      return webp;
+      return { bytes: webp, width: 8, height: 8 };
     }, LOCAL_IMAGE_REQUEST_BOUNDS);
     expect(prepared.images.map(image => image.requestLabel)).toEqual(['event1_image1', 'event1_image2', 'event2_image1', 'event2_image2']);
     expect(prepared.events.map(event => event.ordinal)).toEqual([1, 2]);
@@ -621,11 +664,11 @@ describe('turn image selection', () => {
       '00000002-1111-4111-8111-111111111112': Buffer.concat([webp, Buffer.alloc(262_145)]),
       '00000003-1111-4111-8111-111111111113': webp,
     };
-    const prepared = await prepareTurnImages(messages, async id => bytesById[id], LOCAL_IMAGE_REQUEST_BOUNDS);
+    const prepared = await prepareTurnImages(messages, async id => ({ bytes: bytesById[id], width: 8, height: 8 }), LOCAL_IMAGE_REQUEST_BOUNDS);
     expect(prepared.images.map(image => image.requestLabel)).toEqual(['event1_image3']);
-    const one = await prepareTurnImages(messages, async () => webp, { ...LOCAL_IMAGE_REQUEST_BOUNDS, max_images_per_request: 1 });
+    const one = await prepareTurnImages(messages, async () => ({ bytes: webp, width: 8, height: 8 }), { ...LOCAL_IMAGE_REQUEST_BOUNDS, max_images_per_request: 1 });
     expect(one.images).toHaveLength(1);
-    const noWebp = await prepareTurnImages(messages, async () => webp, { ...LOCAL_IMAGE_REQUEST_BOUNDS, image_mime_types: ['image/png'] });
+    const noWebp = await prepareTurnImages(messages, async () => ({ bytes: webp, width: 8, height: 8 }), { ...LOCAL_IMAGE_REQUEST_BOUNDS, image_mime_types: ['image/png'] });
     expect(noWebp.images).toHaveLength(0);
   });
 });

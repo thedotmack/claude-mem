@@ -32,6 +32,13 @@ export interface TurnImage extends TurnImageLabel {
   dataUrl: string;
 }
 
+/** Verified derivative bytes with the dimensions retained by MediaStore. */
+export interface TurnImageDerivative {
+  bytes: Buffer;
+  width: number;
+  height: number;
+}
+
 export interface PreparedTurnMedia {
   events: TurnMediaEvent[];
   images: TurnImage[];
@@ -80,7 +87,7 @@ function isWebp(bytes: Buffer): boolean {
  */
 export async function prepareTurnImages(
   messages: ReadonlyArray<{ mediaEventKey?: string; mediaRefs?: MediaAttachmentRef[] }>,
-  readDerivative: (attachmentId: string) => Promise<Buffer>,
+  readDerivative: (attachmentId: string) => Promise<TurnImageDerivative>,
   bounds: ImageRequestBounds,
 ): Promise<PreparedTurnMedia> {
   const events = turnMediaEvents(messages);
@@ -90,6 +97,7 @@ export async function prepareTurnImages(
 
   const maxImages = Math.min(bounds.max_images_per_request, LOCAL_IMAGE_REQUEST_BOUNDS.max_images_per_request);
   const maxImageBytes = Math.min(bounds.max_image_decoded_bytes, MEDIA_LIMITS.maxDerivativeBytes);
+  const maxDimension = Math.min(bounds.max_image_dimension, MEDIA_LIMITS.maxDerivativeDimension);
   const maxDataUrlChars = WEBP_DATA_URL_PREFIX.length + 4 * Math.ceil(maxImageBytes / 3);
   let aggregateBytes = 0;
   let aggregateDataUrlChars = 0;
@@ -102,9 +110,9 @@ export async function prepareTurnImages(
       .sort((left, right) => left.ordinal - right.ordinal);
     for (const { ref, ordinal } of refs) {
       if (images.length >= maxImages) break;
-      let bytes: Buffer;
+      let derivative: TurnImageDerivative;
       try {
-        bytes = await readDerivative(ref.id);
+        derivative = await readDerivative(ref.id);
       } catch (error) {
         const code = error instanceof MediaError ? error.code : 'storage_unavailable';
         logger.debug('SDK', 'Image derivative unavailable; it stays uninspected on its event', { code });
@@ -113,6 +121,13 @@ export async function prepareTurnImages(
       const skip = (code: 'image_too_large' | 'unsupported_format') => {
         logger.debug('SDK', 'Image derivative left out of the request; it stays uninspected on its event', { code });
       };
+      const { bytes, width, height } = derivative;
+      // A gateway may advertise a stricter edge bound than the local recipe.
+      // Keep that image uninspected rather than sending a request it rejects.
+      if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= maxDimension)) {
+        skip('image_too_large');
+        continue;
+      }
       if (!isWebp(bytes)) { skip('unsupported_format'); continue; }
       if (bytes.length > maxImageBytes) { skip('image_too_large'); continue; }
       const dataUrl = WEBP_DATA_URL_PREFIX + bytes.toString('base64');
