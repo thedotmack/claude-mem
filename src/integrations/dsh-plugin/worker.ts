@@ -130,6 +130,7 @@ export class WorkerClient {
     const body: Record<string, unknown> = { text: request.text }
     if (request.title !== undefined) body.title = request.title
     if (request.project !== undefined) body.project = request.project
+    if (request.cwd !== undefined) body.cwd = request.cwd
     if (request.metadata !== undefined) body.metadata = request.metadata
     return await this.requestJson<MemSaveResult>('/api/memory/save', { method: 'POST', body }, signal)
   }
