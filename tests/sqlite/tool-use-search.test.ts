@@ -210,6 +210,19 @@ describe('optional raw-tool content index (#4060)', () => {
     }
   });
 
+  it('preserves complete Unicode context beside matches in near-limit raw payloads', () => {
+    const h = fixture(); h.enable();
+    const before = '🧪'.repeat(60), after = '🚀'.repeat(60);
+    h.write('large-unicode', 'x'.repeat(30_000) + before + '连接池' + after + 'y'.repeat(30_000));
+    const hit = h.find('连接池').toolUses[0];
+    expect(hit.snippet).toBe(before + '连接池' + after);
+    expect(hit.snippet.isWellFormed()).toBe(true);
+    h.write('mixed-boundary', 'x'.repeat(1000) + '🧪'.repeat(60) + 'a连接池b' + '🚀'.repeat(60) + 'y'.repeat(1000));
+    const mixed = h.find('连接池').toolUses.find(row => row.tool_use_id === 'mixed-boundary')!;
+    expect(mixed.snippet).toBe('🧪'.repeat(59) + 'a连接池b' + '🚀'.repeat(59));
+    expect(mixed.snippet.isWellFormed()).toBe(true);
+  });
+
   it('keeps orphan evidence indexed while retention removes only live-linked old rows', () => {
     const h = fixture(); h.enable();
     const session = h.store.createSDKSession('session', 'shop-api', 'prompt');
