@@ -8,6 +8,7 @@ import { npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
+import { BUN_NO_AUTO_INSTALL_FLAG } from '../../shared/bun-auto-install.js';
 
 /**
  * The plugin root the worker spawns from — the shared resolveWorkerScript()
@@ -60,9 +61,12 @@ function packagePluginScriptPath(scriptName: string): string {
  * process with the child's exit code. `args[0]` is the script path. Sanitizes
  * host CLI bleed-through and Anthropic credentials before launch; credentials
  * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+ * Bun's auto-install is off: the worker, server and transcript watcher can
+ * load sharp, which auto-install resolves to a wasm build that freezes on its
+ * first decode (#5601).
  */
 function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun'): void {
-  const child = spawnHidden(bunPath, args, {
+  const child = spawnHidden(bunPath, [BUN_NO_AUTO_INSTALL_FLAG, ...args], {
     stdio: 'inherit',
     cwd,
     env: sanitizeEnv(process.env),

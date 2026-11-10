@@ -1144,8 +1144,6 @@ var init_SettingsDefaultsManager = __esm({
         // Default mode profile
         CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: "false",
         CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: "false",
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: "false",
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: "true",
         CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: "",
         // Comma-separated observation types to inject. Empty = every type in the active mode
         CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: "",

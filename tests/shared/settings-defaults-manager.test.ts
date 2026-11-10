@@ -155,6 +155,27 @@ describe('SettingsDefaultsManager', () => {
         expect(afterContent).toBe(originalContent);
       });
 
+      // The context-header savings line and its two settings were removed (#5654).
+      // A settings.json saved before that still carries them and must load as before.
+      it('loads a settings file that still has the retired savings keys', () => {
+        const content = JSON.stringify({
+          CLAUDE_MEM_MODEL: 'kept-model',
+          CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'false',
+        });
+        writeFileSync(settingsPath, content);
+
+        const { value: result, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(warnings).toEqual([]);
+        expect(result.CLAUDE_MEM_MODEL).toBe('kept-model');
+        expect(result.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS).toBe('true');
+        expect(result).not.toHaveProperty('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT');
+        expect(result).not.toHaveProperty('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
+      });
+
       // Every key is declared `string` and the gates compare against a string
       // ('false'), so a hand-written JSON boolean in settings.json has to
       // arrive as that same text (#4630).

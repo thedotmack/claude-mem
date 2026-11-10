@@ -136,7 +136,7 @@ describe('server-runtime session start reads the shared store', () => {
       platformSource: 'claude',
     });
 
-    expect(text).toContain('# [this-repo] recent context');
+    expect(text).toStartWith('Access Claude-Mem Rules + Tools: ');
     expect(text).toContain('Import no longer aborts on a bad row');
     expect(text).toContain('Stop one bad row from aborting the restore');
     expect(text).not.toContain('Work in a different repo');

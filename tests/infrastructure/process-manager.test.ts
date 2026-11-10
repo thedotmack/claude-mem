@@ -733,6 +733,18 @@ describe('ProcessManager', () => {
       expect(failure!).toContain('boot noise line 0');
     });
 
+    it('runs the bundle with Bun auto-install off, like the daemon it stands in for (#5601)', () => {
+      const scriptPath = writeProbeScript(
+        'exec-argv.cjs',
+        `console.error('execArgv=' + JSON.stringify(process.execArgv));\nprocess.exit(1);\n`
+      );
+
+      const failure = probeWorkerBootFailure(scriptPath);
+
+      expect(failure).toBeDefined();
+      expect(failure!).toContain('execArgv=["--no-install"]');
+    });
+
     it('returns rather than throwing when the script does not exist at all', () => {
       const missing = path.join(PROBE_DIR, 'no-such-worker-bundle.cjs');
 
@@ -836,6 +848,31 @@ describe('ProcessManager', () => {
     });
   });
 
+});
+
+describe('spawnDetachedWorkerDaemon runtime flags (#5601)', () => {
+  // A worker started from a plugin root without node_modules (the marketplace
+  // clone) let Bun auto-install sharp's wasm32 build, whose first decode froze
+  // the daemon for good. A real detached launch must reach the script with
+  // auto-install off.
+  it('starts the daemon with Bun auto-install off', async () => {
+    const launchDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-daemon-flags-'));
+    const reportPath = path.join(launchDir, 'exec-argv.json');
+    const scriptPath = path.join(launchDir, 'fake-worker.cjs');
+    writeFileSync(scriptPath, `require('fs').writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ execArgv: process.execArgv, argv: process.argv.slice(2) }));\n`);
+
+    const pid = spawnDetachedWorkerDaemon(process.execPath, scriptPath, { ...process.env });
+    expect(pid).toBeDefined();
+
+    // 10 s: a cold Bun start on a loaded CI runner, not a product limit.
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(reportPath) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(existsSync(reportPath)).toBe(true);
+    const report = JSON.parse(readFileSync(reportPath, 'utf-8')) as { execArgv: string[]; argv: string[] };
+    expect(report.execArgv).toEqual(['--no-install']);
+    expect(report.argv).toEqual(['--daemon']);
+    rmSync(launchDir, { recursive: true, force: true });
+  }, 15_000); // above the 10 s wait, so the wait's own failure is what reports
 });
 
 describe('spawnDetachedWorkerDaemon launch error', () => {

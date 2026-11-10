@@ -414,13 +414,6 @@ export function ContextSettingsModal({
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS')}
                   />
-                  <ToggleSwitch
-                    id="show-savings-amount"
-                    label="Savings"
-                    description="Total tokens saved by reusing context"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
-                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
-                  />
                 </div>
               </div>
             </CollapsibleSection>

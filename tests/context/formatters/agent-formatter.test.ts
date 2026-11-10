@@ -43,9 +43,6 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 }));
 
 import {
-  renderAgentHeader,
-  renderAgentLegend,
-  renderAgentContextEconomics,
   renderAgentDayHeader,
   renderAgentTableRow,
   renderAgentFullObservation,
@@ -55,7 +52,7 @@ import {
   renderAgentEmptyState,
 } from '../../../src/services/context/formatters/AgentFormatter.js';
 
-import type { Observation, TokenEconomics, ContextConfig } from '../../../src/services/context/types.js';
+import type { Observation, ContextConfig } from '../../../src/services/context/types.js';
 import { formatContextReferenceId } from '../../../src/services/context/formatters/id-display.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -77,17 +74,6 @@ function createTestObservation(overrides: Partial<Observation> = {}): Observatio
   };
 }
 
-function createTestEconomics(overrides: Partial<TokenEconomics> = {}): TokenEconomics {
-  return {
-    totalObservations: 10,
-    totalReadTokens: 500,
-    totalDiscoveryTokens: 5000,
-    savings: 4500,
-    savingsPercent: 90,
-    ...overrides,
-  };
-}
-
 function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig {
   return {
     totalObservationCount: 50,
@@ -95,8 +81,6 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     sessionCount: 3,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery', 'decision', 'bugfix']),
     observationConcepts: new Set(['concept1', 'concept2']),
     fullObservationField: 'narrative',
@@ -108,48 +92,6 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
 }
 
 describe('AgentFormatter', () => {
-  describe('renderAgentHeader', () => {
-    it('renders the current date and time by default', () => {
-      const result = renderAgentHeader('my-project');
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
-      expect(result.slice(1)).toEqual(['Mode: Code Development (code)', '']);
-    });
-
-    it.each(['my-project', 'project-with-special_chars.v2', ''])('renders project %j', (project) => {
-      expect(renderAgentHeader(project, 'NOW')).toEqual([
-        `# [${project}] recent context, NOW`, 'Mode: Code Development (code)', '',
-      ]);
-    });
-  });
-
-  describe('renderAgentLegend', () => {
-    it.each([undefined, true, false])('renders the fetch hint for %j', (fetchByIdSupported) => {
-      expect(renderAgentLegend(fetchByIdSupported)).toEqual([
-        'Legend: 🎯session Ddecision Bbugfix Idiscovery',
-        'Format: ID TIME TYPE TITLE',
-        fetchByIdSupported === false
-          ? 'Fetch details: observation_search by title (short refs are display-only)'
-          : 'Fetch details: get_observations([IDs]) | Search: mem-search skill',
-        '',
-      ]);
-    });
-  });
-
-  describe('renderAgentContextEconomics', () => {
-    it.each([
-      [{ totalObservations: 25 }, {}, '25 obs (500t read) | 5,000t work | 4,500t saved | 90% savings'],
-      [{ totalReadTokens: 1500 }, {}, '10 obs (1,500t read) | 5,000t work | 4,500t saved | 90% savings'],
-      [{ totalDiscoveryTokens: 10000 }, {}, '10 obs (500t read) | 10,000t work | 4,500t saved | 90% savings'],
-      [{ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 }, { showSavingsAmount: true, showSavingsPercent: false }, '10 obs (500t read) | 5,000t work | 4,500t saved'],
-      [{ savingsPercent: 85, totalDiscoveryTokens: 1000 }, { showSavingsAmount: false, showSavingsPercent: true }, '10 obs (500t read) | 1,000t work | 85% savings'],
-      [{ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 }, { showSavingsAmount: true, showSavingsPercent: true }, '10 obs (500t read) | 5,000t work | 4,500t saved | 90% savings'],
-      [{ totalDiscoveryTokens: 0, savings: 0, savingsPercent: 0 }, { showSavingsAmount: true, showSavingsPercent: true }, '10 obs (500t read) | 0t work'],
-    ] as [Partial<TokenEconomics>, Partial<ContextConfig>, string][])('renders economics %j with %j', (economics, config, expected) => {
-      expect(renderAgentContextEconomics(createTestEconomics(economics), createTestConfig(config)))
-        .toEqual([`Stats: ${expected}`, '']);
-    });
-  });
-
   it('renders the day as a heading', () => {
     expect(renderAgentDayHeader('2025-01-01')).toEqual(['### 2025-01-01']);
   });
@@ -218,14 +160,9 @@ describe('AgentFormatter', () => {
   });
 
   describe('renderAgentEmptyState', () => {
-    it.each(['my-project', 'test', ''])('renders an empty timeline for %j', (project) => {
-      expect(renderAgentEmptyState(project, 'NOW'))
-        .toBe(`# [${project}] recent context, NOW\nMode: Code Development (code)\n\nNo previous sessions found.`);
-    });
-
     it('puts lead sections under the header and keeps the empty timeline last', () => {
-      expect(renderAgentEmptyState('my-project', 'NOW', ['WARNING', '', 'OPEN WORK']))
-        .toBe('# [my-project] recent context, NOW\nMode: Code Development (code)\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
+      expect(renderAgentEmptyState(['HEADER', ''], ['WARNING', '', 'OPEN WORK']))
+        .toBe('HEADER\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
     });
   });
 });

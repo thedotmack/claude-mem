@@ -25,7 +25,7 @@ describe('Windows #5240 — worker daemon launch contract', () => {
     expect(plan.command).toBe(runtimePath);
     // Direct argv: a spaced script path stays one argument, so the old
     // PowerShell -ArgumentList quoting workaround (#3195) cannot recur.
-    expect(plan.args).toEqual([scriptPath, '--daemon']);
+    expect(plan.args).toEqual(['--no-install', scriptPath, '--daemon']);
     // Detached so the daemon outlives the hook or MCP server that launched it.
     expect(plan.options.detached).toBe(true);
     expect(plan.options.stdio).toBe('ignore');
@@ -35,7 +35,7 @@ describe('Windows #5240 — worker daemon launch contract', () => {
     const plan = buildDetachedWorkerDaemonSpawn('bun.exe', 'worker-service.cjs', {}, 'win32', true);
 
     expect(plan.command).toBe('bun.exe');
-    expect(plan.args).toEqual(['worker-service.cjs', '--daemon']);
+    expect(plan.args).toEqual(['--no-install', 'worker-service.cjs', '--daemon']);
   });
 
   it('uses setsid on POSIX when it is available', () => {
@@ -48,7 +48,7 @@ describe('Windows #5240 — worker daemon launch contract', () => {
     );
 
     expect(plan.command).toBe('/usr/bin/setsid');
-    expect(plan.args).toEqual(['/home/me/.bun/bin/bun', '/plugin/worker-service.cjs', '--daemon']);
+    expect(plan.args).toEqual(['/home/me/.bun/bin/bun', '--no-install', '/plugin/worker-service.cjs', '--daemon']);
   });
 
   it('falls back to launching the runtime directly when setsid is absent', () => {
@@ -61,7 +61,7 @@ describe('Windows #5240 — worker daemon launch contract', () => {
     );
 
     expect(plan.command).toBe('/home/me/.bun/bin/bun');
-    expect(plan.args).toEqual(['/plugin/worker-service.cjs', '--daemon']);
+    expect(plan.args).toEqual(['--no-install', '/plugin/worker-service.cjs', '--daemon']);
   });
 
   it('buildSpawnSyncInvocation forces windowsHide even when options try to disable it', () => {

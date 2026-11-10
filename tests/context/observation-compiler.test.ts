@@ -54,8 +54,6 @@ function config(concept: string): ContextConfig {
     sessionCount: 20,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery']),
     observationConcepts: new Set([concept]),
     fullObservationField: 'narrative',

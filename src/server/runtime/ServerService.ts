@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import { Server, type RouteHandler } from '../../services/server/Server.js';
 import { paths } from '../../shared/paths.js';
+import { BUN_NO_AUTO_INSTALL_FLAG } from '../../shared/bun-auto-install.js';
 import { logger } from '../../utils/logger.js';
 import {
   captureProcessStartToken,
@@ -879,7 +880,8 @@ function spawnServerDaemon(port: number): number | undefined {
   // DATA_DIR without creating it — so create it rather than depend on some earlier
   // caller having done so. Idempotent.
   mkdirSync(paths.dataDir(), { recursive: true });
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  // The server's embedder loads sharp; never let Bun auto-install it (#5601).
+  const child = spawn(process.execPath, [BUN_NO_AUTO_INSTALL_FLAG, scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

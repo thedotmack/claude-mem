@@ -273,4 +273,3 @@ describe('describeSaveFailure', () => {
     expect(decoded).toBe(msgPart);
   });
 });
-

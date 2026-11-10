@@ -12,6 +12,7 @@ import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } fr
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
+import { BUN_NO_AUTO_INSTALL_FLAG } from '../../shared/bun-auto-install.js';
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -528,7 +529,8 @@ export function probeWorkerBootFailure(
   const runProbe = (): { result: ReturnType<typeof spawnSync>; elapsedMs: number } | undefined => {
     const startedAt = Date.now();
     try {
-      const result = spawnSync(runtimePath, [scriptPath, 'status'], {
+      // Same auto-install setting as the daemon it stands in for (#5601).
+      const result = spawnSync(runtimePath, [BUN_NO_AUTO_INSTALL_FLAG, scriptPath, 'status'], {
         encoding: 'utf-8',
         timeout: timeoutMs,
         windowsHide: true,
@@ -597,6 +599,10 @@ export interface DetachedWorkerDaemonSpawn {
  * the child gets no console window. `setsid` is POSIX-only — dropping it would
  * let the daemon keep the caller's process group and receive its terminal's
  * signals.
+ *
+ * Bun's auto-install is off (BUN_NO_AUTO_INSTALL_FLAG): from a plugin root
+ * without node_modules it resolves sharp to its wasm32 build, whose first
+ * decode freezes the daemon for good (#5601).
  */
 export function buildDetachedWorkerDaemonSpawn(
   runtimePath: string,
@@ -606,9 +612,10 @@ export function buildDetachedWorkerDaemonSpawn(
   setsidAvailable: boolean = existsSync(SETSID_PATH)
 ): DetachedWorkerDaemonSpawn {
   const useSetsid = platform !== 'win32' && setsidAvailable;
+  const runtimeArgs = [BUN_NO_AUTO_INSTALL_FLAG, scriptPath, '--daemon'];
   return {
     command: useSetsid ? SETSID_PATH : runtimePath,
-    args: useSetsid ? [runtimePath, scriptPath, '--daemon'] : [scriptPath, '--daemon'],
+    args: useSetsid ? [runtimePath, ...runtimeArgs] : runtimeArgs,
     options: {
       detached: true,
       stdio: 'ignore',

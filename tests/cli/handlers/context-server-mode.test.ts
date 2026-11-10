@@ -13,7 +13,7 @@
 // call would show up there.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createServer, type Server as NetServer, type Socket } from 'net';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
@@ -233,13 +233,15 @@ describe('SessionStart in server runtime (plan-24 step 4)', () => {
     const additionalContext = output.hookSpecificOutput?.additionalContext ?? '';
     // Rendered through the local renderer and budget, not the route's raw
     // pre-joined `context` string.
-    expect(additionalContext).toContain(`# [${projectName}] recent context`);
+    expect(additionalContext).toStartWith(`Access Claude-Mem Rules + Tools: ${join(dataDir, 'RULES-AND-TOOLS.md')}\n\n`);
+    // Server runtime renders here, so the file the line points to is written here too.
+    expect(readFileSync(join(dataDir, 'RULES-AND-TOOLS.md'), 'utf-8')).toContain('Fetch details: observation_search');
     expect(additionalContext).toContain('Import no longer aborts on a bad row');
     expect(additionalContext).toContain('Stop one bad row from aborting the restore');
     expect(additionalContext).not.toContain('Fixed the import batch abort\n\nsummary body');
 
     // The terminal copy links the viewer the server serves, not a local worker.
-    expect(output.systemMessage ?? '').toContain(`View Observations Live @ ${serverBaseUrl}`);
+    expect(output.systemMessage ?? '').toContain(`\n\nView Observations Live @ ${serverBaseUrl} · 2 lines`);
     expect(output.systemMessage ?? '').not.toContain(`localhost:${workerPort}`);
 
     // ONE recency read (no query key) per session start, scoped to this folder

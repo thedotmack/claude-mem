@@ -9,7 +9,7 @@ import type { ContextConfig } from '../../src/services/context/types.js';
 
 const config: ContextConfig = {
   totalObservationCount: 10, fullObservationCount: 3, sessionCount: 3,
-  showReadTokens: false, showWorkTokens: false, showSavingsAmount: false, showSavingsPercent: false,
+  showReadTokens: false, showWorkTokens: false,
   observationTypes: new Set(), observationConcepts: new Set(), fullObservationField: 'narrative',
   showLastSummary: true, showLastMessage: false,
 };

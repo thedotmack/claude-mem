@@ -1,3 +1,4 @@
+import { rulesAndToolsPointerLine } from '../../src/services/context/RulesAndToolsFile.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,7 +21,7 @@ const WORK_STATE = 'Work state, still open:\n- release: status=active, updated 1
 
 const config: ContextConfig = {
   totalObservationCount: 10, fullObservationCount: 0, sessionCount: 3,
-  showReadTokens: false, showWorkTokens: false, showSavingsAmount: false, showSavingsPercent: true,
+  showReadTokens: false, showWorkTokens: false,
   // The query keeps only these; the fixture rows are all discovery / how-it-works.
   observationTypes: new Set(['discovery']), observationConcepts: new Set(['how-it-works']), fullObservationField: 'narrative',
   showLastSummary: true, showLastMessage: false,
@@ -70,14 +71,14 @@ function render(input: Record<string, unknown> = {}, forHuman = false): string {
 }
 
 describe('agent SessionStart block layout', () => {
-  it('opens with how to read the timeline and ends on the newest row, with nothing after it', () => {
+  it('opens with the one Rules + Tools line and ends on the newest row, with nothing after it', () => {
     observe('OLDEST_ROW', 30);
     observe('MIDDLE_ROW', 20);
     observe('NEWEST_ROW', 10);
     const text = render();
 
-    expect(text).toStartWith(`# [${PROJECT}] recent context, `);
-    const order = ['Legend: ', 'Format: ID TIME TYPE TITLE', 'Fetch details: get_observations([IDs])', 'Stats: ', WORK_STATE, '\n### ', 'OLDEST_ROW', 'MIDDLE_ROW', 'NEWEST_ROW'];
+    expect(text).toStartWith(`${rulesAndToolsPointerLine()}\n\n`);
+    const order = [WORK_STATE, '\n### ', 'OLDEST_ROW', 'MIDDLE_ROW', 'NEWEST_ROW'];
     const positions = order.map(marker => text.indexOf(marker));
     expect(positions.every(position => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
@@ -87,6 +88,10 @@ describe('agent SessionStart block layout', () => {
     expect(text).not.toContain('tokens of past work');
     expect(text).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS.split('\n')[0]);
     expect(text).not.toContain('# Work state: your to-do lists');
+    // How to read it lives in the file the line points to, not in every block.
+    for (const repeated of ['recent context', 'Mode: ', 'Legend: ', 'Format: ', 'Fetch details: ', 'Stats: ']) {
+      expect(text).not.toContain(repeated);
+    }
   });
 
   it('ends on the last session summary when it is the newest entry, its fields right after its row', () => {
@@ -117,14 +122,14 @@ describe('agent SessionStart block layout', () => {
       observe('NEWEST_ROW', 10);
       const text = render();
       const warningAt = text.indexOf("can't save memories");
-      expect(warningAt).toBeGreaterThan(text.indexOf('Fetch details:'));
+      expect(warningAt).toBeGreaterThan(text.indexOf(rulesAndToolsPointerLine()));
       expect(warningAt).toBeLessThan(text.indexOf(WORK_STATE));
       expect(text.indexOf(WORK_STATE)).toBeLessThan(text.indexOf('\n### '));
       expect(text.split('\n').at(-1)).toMatch(/ NEWEST_ROW$/);
 
       // The terminal preview ends on its newest row too, so its warning goes above.
       const preview = render({}, true);
-      expect(preview.indexOf("can't save memories")).toBeLessThan(preview.indexOf('recent context'));
+      expect(preview.indexOf("can't save memories")).toBeLessThan(preview.indexOf(rulesAndToolsPointerLine()));
       expect(preview.trimEnd().split('\n').at(-1)).toContain('NEWEST_ROW');
     } finally {
       rmSync(healthPath, { force: true });
@@ -133,17 +138,17 @@ describe('agent SessionStart block layout', () => {
 
   it('keeps the empty timeline last when a project has no memory yet', () => {
     const text = render();
-    expect(text).toStartWith(`# [${PROJECT}] recent context, `);
-    expect(text.indexOf(WORK_STATE)).toBeGreaterThan(text.indexOf('Mode: '));
+    expect(text).toStartWith(`${rulesAndToolsPointerLine()}\n\n${WORK_STATE}`);
     expect(text).toEndWith(`${WORK_STATE}\n\nNo previous sessions found.`);
   });
 
-  it('gives the terminal preview the same shape: how to read it on top, the newest row last', () => {
+  it('gives the terminal preview the same shape: the Rules + Tools line on top, the newest row last', () => {
     observe('OLDEST_ROW', 30);
     observe('NEWEST_ROW', 10);
     const preview = render({}, true);
-    expect(preview).toContain('Legend: ');
-    expect(preview.indexOf('Legend: ')).toBeLessThan(preview.indexOf('OLDEST_ROW'));
+    expect(preview.indexOf(rulesAndToolsPointerLine())).toBeGreaterThanOrEqual(0);
+    expect(preview.indexOf(rulesAndToolsPointerLine())).toBeLessThan(preview.indexOf('OLDEST_ROW'));
+    expect(preview).not.toContain('Legend: ');
     expect(preview.trimEnd().split('\n').at(-1)).toContain('NEWEST_ROW');
     // No closing line, and none of the old instruction blocks.
     expect(preview).not.toContain('tokens of past research & decisions');

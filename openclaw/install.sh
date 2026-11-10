@@ -992,8 +992,6 @@ write_settings() {
       CLAUDE_MEM_MODE: 'code',
       CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
       CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
       CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: 'bugfix,feature,refactor,discovery,decision,change',
       CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
       CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',

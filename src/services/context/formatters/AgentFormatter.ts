@@ -2,72 +2,12 @@
 import type {
   ContextConfig,
   Observation,
-  SessionSummary,
-  TokenEconomics,
   PriorMessages,
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatHeaderDateTime, compactTime } from '../../../shared/timeline-formatting.js';
+import { compactTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
-
-function formatActiveMode(): string {
-  const manager = ModeManager.getInstance();
-  const mode = manager.getActiveMode();
-  return `${mode.name} (${manager.getActiveModeId()})`;
-}
-
-export function renderAgentHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
-  return [
-    `# [${project}] recent context, ${headerTime}`,
-    `Mode: ${formatActiveMode()}`,
-    ''
-  ];
-}
-
-export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
-  const mode = ModeManager.getInstance().getActiveMode();
-  const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
-
-  // Server runtime: ids are UUIDs shown as 8-char display refs, and there is no
-  // by-id fetch, so point at the server's search tool instead.
-  const fetchLine = fetchByIdSupported
-    ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
-    : `Fetch details: observation_search by title (short refs are display-only)`;
-
-  return [
-    `Legend: 🎯session ${typeLegendItems}`,
-    `Format: ID TIME TYPE TITLE`,
-    fetchLine,
-    ''
-  ];
-}
-
-export function renderAgentContextEconomics(
-  economics: TokenEconomics,
-  config: ContextConfig
-): string[] {
-  const output: string[] = [];
-
-  const parts: string[] = [
-    `${economics.totalObservations} obs (${economics.totalReadTokens.toLocaleString()}t read)`,
-    `${economics.totalDiscoveryTokens.toLocaleString()}t work`
-  ];
-
-  if (economics.totalDiscoveryTokens > 0) {
-    if (config.showSavingsAmount) {
-      parts.push(`${economics.savings.toLocaleString()}t saved`);
-    }
-    if (config.showSavingsPercent) {
-      parts.push(`${economics.savingsPercent}% savings`);
-    }
-  }
-
-  output.push(`Stats: ${parts.join(' | ')}`);
-  output.push('');
-
-  return output;
-}
 
 export function renderAgentDayHeader(day: string): string[] {
   return [
@@ -149,14 +89,10 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
   ];
 }
 
-/** The header, then each lead section (health warning, open work state), then the empty timeline. */
-export function renderAgentEmptyState(
-  project: string,
-  headerTime: string = formatHeaderDateTime(),
-  leadSections: string[] = [],
-): string {
+/** The Rules + Tools line, then each lead section (health warning, open work state), then the empty timeline. */
+export function renderAgentEmptyState(header: string[], leadSections: string[] = []): string {
   return [
-    ...renderAgentHeader(project, headerTime),
+    ...header,
     ...leadSections.filter(Boolean).flatMap(section => [section, '']),
     'No previous sessions found.',
   ].join('\n');
