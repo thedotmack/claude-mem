@@ -1,6 +1,6 @@
 
 import { Database } from 'bun:sqlite';
-import { projectScopeSql } from '../project-read-keys.js';
+import { projectReadKeys, projectScopeSql } from '../project-read-keys.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
 import { logger } from '../../../utils/logger.js';
@@ -26,7 +26,14 @@ export function getObservationsByFilePath(
   const candidatePaths = Array.from(
     new Set((Array.isArray(filePath) ? filePath : [filePath])
       .filter(p => typeof p === 'string' && p.length > 0)
-      .flatMap(p => [p, p.replaceAll('/', '\\')]))
+      .flatMap(p => {
+        const forward = p.replaceAll('\\', '/').replace(/^(\.\/)+/, '');
+        const forms = [p, forward];
+        // Read resolves away ./, but captured tool evidence keeps it verbatim.
+        // Only relative paths have this equivalent current-directory spelling.
+        if (forward && !/^(\/|[A-Za-z]:|~\/)/.test(forward)) forms.push(`./${forward}`);
+        return forms.flatMap(form => [form, form.replaceAll('/', '\\')]);
+      }))
   );
   if (candidatePaths.length === 0) {
     logger.debug('DB', 'Skipping observation file lookup with no candidate paths');
@@ -39,7 +46,8 @@ export function getObservationsByFilePath(
 
   let projectClause = '';
   if (options?.projects?.length) {
-    const scope = projectScopeSql('o', options.projects, { includeMerged: true });
+    const projects = projectReadKeys(db, options.projects);
+    const scope = projectScopeSql('o', projects, { includeMerged: true });
     projectClause = `AND ${scope.sql}`;
     params.push(...scope.params);
   }

@@ -161,6 +161,50 @@ describe('My Rules routes', () => {
     expect(ruleById(await snapshot(), SUGGESTED_ID)).toMatchObject({ status: 'suggested', setBy: 'learned', then: PREFERENCE });
   });
 
+  it('reports evidence omitted on save and clears the count when restoring the suggestion', async () => {
+    writeFileSync(join(directory, 'work-view', 'story.json'), JSON.stringify({
+      preferences: [{ preference: PREFERENCE, kind: 'correction', quotes: [1, 2, 3].map(index => ({
+        quote: String(index).repeat(200), at: '2026-10-18T10:00:00Z',
+      })) }],
+    }));
+    const approved = await saveRule({ action: 'approve', ruleId: SUGGESTED_ID, rule: {
+      scopeTier: 'everywhere', scopeName: 'Everywhere', when: 'x'.repeat(100), then: '"'.repeat(600),
+    } });
+    expect(approved.status).toBe(200);
+    expect(ruleById(await approved.json(), SUGGESTED_ID)).toMatchObject({ quotesOmitted: 2, quotesTotal: 3 });
+    const row = source.prepare("SELECT fields FROM work_state_entries ORDER BY id DESC LIMIT 1").get() as { fields: string };
+    expect(row.fields.length).toBeLessThanOrEqual(2000);
+    expect(JSON.parse(row.fields).quotes_total).toBe(3);
+    await saveRule({ action: 'restore-suggestion', ruleId: SUGGESTED_ID });
+    const restored = ruleById(await snapshot(), SUGGESTED_ID);
+    expect(restored).toMatchObject({ status: 'suggested', quotesOmitted: 0 });
+    expect(restored.quotes).toHaveLength(3);
+  });
+
+  it('recovers partially omitted local evidence when editing the rule to fit', async () => {
+    const quotes = [1, 2, 3].map(index => ({ quote: String(index).repeat(200), at: '2026-10-18T10:00:00Z' }));
+    writeFileSync(join(directory, 'work-view', 'story.json'), JSON.stringify({
+      preferences: [{ preference: PREFERENCE, kind: 'correction', quotes }],
+    }));
+    const approved = await saveRule({ action: 'approve', ruleId: SUGGESTED_ID, rule: {
+      scopeTier: 'everywhere', scopeName: 'Everywhere', when: 'x'.repeat(100), then: '"'.repeat(600),
+    } });
+    expect(approved.status).toBe(200);
+    const saved = ruleById(await approved.json(), SUGGESTED_ID);
+    expect(saved).toMatchObject({ quotesOmitted: 2, quotesTotal: 3 });
+    expect(saved.quotes.map(({ quote }: { quote: string }) => quote)).toEqual(quotes.map(({ quote }) => quote));
+    const edited = await saveRule({ action: 'edit', ruleId: SUGGESTED_ID, rule: {
+      scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'Keep the supporting evidence.',
+    } });
+    expect(edited.status).toBe(200);
+    expect(ruleById(await edited.json(), SUGGESTED_ID)).toMatchObject({ quotesOmitted: 0, quotesTotal: 3 });
+    const row = source.prepare("SELECT fields FROM work_state_entries ORDER BY id DESC LIMIT 1").get() as { fields: string };
+    const fields = JSON.parse(row.fields);
+    expect(fields.quotes.split('\n')).toHaveLength(3);
+    expect(fields.quotes_total).toBeUndefined();
+    expect(ruleById(await snapshot(), SUGGESTED_ID).quotes).toHaveLength(3);
+  });
+
   it('adds the MY-RULES.md import to the user-level CLAUDE.md once', async () => {
     const load = () => fetch(`${origin}/api/work-view/rules/load-in-claude-code`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: '{}' });
     expect((await fetch(`${origin}/api/work-view/rules/load-in-claude-code`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: '{}' })).status).toBe(403);

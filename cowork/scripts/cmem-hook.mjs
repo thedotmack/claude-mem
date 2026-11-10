@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'cmem-pro/0.2.0';
+const PLUGIN_HEADER = 'cmem-pro/0.2.1';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output).
 // $HOME first, so the spool sits in the same ~/.claude-mem that loadConfig below reads
 // settings from whenever a host overrides HOME; homedir() covers a host that does not.
@@ -632,7 +632,7 @@ async function mcpSearch(query, limit, project) {
     const init = await mcpRpc('initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
-      clientInfo: { name: 'cmem-pro', version: '0.2.0' }
+      clientInfo: { name: 'cmem-pro', version: '0.2.1' }
     }, 1);
     if (!init.ok) return null;
     await mcpRpc('notifications/initialized', {}, undefined).catch?.(() => {});

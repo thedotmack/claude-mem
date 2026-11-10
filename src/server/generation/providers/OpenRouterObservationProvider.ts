@@ -164,7 +164,9 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const tokensUsed = typeof data.usage?.total_tokens === 'number' ? data.usage.total_tokens : undefined;
+    // Compatible endpoints can report only the prompt/completion split. Use
+    // the same accounting as the correction path even when no retry occurred.
+    const tokensUsed = billedTokensAcrossRetry(data.usage, undefined);
 
     return {
       rawText,

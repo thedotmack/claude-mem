@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isWithinMemoryRoot, type MemoryWatchRoot } from './config.js';
 import type { SaveMemoryInput } from './save-memory.js';
 import { logger } from '../../utils/logger.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_FILES_PER_ROOT = 500;
@@ -56,7 +57,7 @@ export class MemoryFileWatcher {
       } catch { continue; }
       const files = this.listMarkdown(root.path);
       for (const file of files) {
-        const key = `${root.project}\0${file}`;
+        const key = `${root.project}\0${normalizePlatformSource(root.platformSource)}\0${file}`;
         seen.add(key);
         try {
           const stat = lstatSync(file);

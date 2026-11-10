@@ -580,6 +580,25 @@ describe('GeminiObservationProvider', () => {
 });
 
 describe('OpenRouterObservationProvider', () => {
+  for (const [usage, expected] of [
+    [{ prompt_tokens: 17, completion_tokens: 4 }, 21],
+    [{ prompt_tokens: 17 }, 17],
+    [{ completion_tokens: 4 }, 4],
+    [{ prompt_tokens: 17, completion_tokens: 4, total_tokens: 25 }, 25],
+    [{ total_tokens: 0 }, 0],
+    [undefined, undefined],
+  ] as const) {
+    it(`reports token usage from ${JSON.stringify(usage)}`, async () => {
+      const provider = new OpenRouterObservationProvider({
+        apiKey: 'fake',
+        fetchImpl: async () => jsonResponse(200, {
+          choices: [{ message: { content: '<observation>kept</observation>' } }], usage,
+        }),
+      });
+      expect((await provider.generate(makeContext())).tokensUsed).toBe(expected);
+    });
+  }
+
   it('preserves XML tags and words split across content blocks without changing worker separation', async () => {
     const xml = '<observation><type>discovery</type><title>Native answer</title><narrative>Reliable extraction</narrative></observation>';
     const content = [{ type: 'text', text: '<observ' }, { type: 'reasoning', text: 'private' }, { type: 'text', text: xml.slice(7) }];
