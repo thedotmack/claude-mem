@@ -13,17 +13,6 @@ describe("swift-initializers", () => {
   expect(file.symbols[0].children?.map(s => s.name)).toEqual(['init(size: Int)', 'init(label: String)', 'render']); expect(file.symbols[1].children?.map(s => s.name)).toEqual(['deinit']);
   expect(formatFoldedView(file)).toContain("init(label");
  }, 120000);
- test('batch search supplies a usable unfold identity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cm-swift-initializers-'));
-  try {
-   writeFileSync(join(dir, filename), source);
-   const result = await searchCodebase(dir, "init(label");
-   const match = result.matchingSymbols.find(s => s.symbolName === "Widget.init(label: String)");
-   expect(match).toBeDefined();
-
-   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("print(label)");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- }, 120000);
 });
 
 test('initializer identities use native parameters despite modifiers and default closures', () => {

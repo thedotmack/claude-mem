@@ -84,6 +84,16 @@ describe('adoption sweep repo discovery (#2864)', () => {
     const parent = results.find(r => r.parentProject === 'parent-repo');
     expect(parent).toBeDefined();
     expect(parent!.adoptedObservations).toBe(1);
+
+    const verify = new SessionStore(dbPath);
+    try {
+      expect(verify.db.prepare('SELECT merged_into_project FROM observations').all()).toEqual([
+        { merged_into_project: null },
+      ]);
+      expect(verify.db.prepare("SELECT COUNT(*) AS n FROM sync_outbox WHERE body LIKE '%remap_project%'").get()).toEqual({ n: 0 });
+    } finally {
+      verify.close();
+    }
   }, 30_000);
 });
 
@@ -101,28 +111,24 @@ describe('adoption sweep keeps the event loop free (gate P2-3)', () => {
 
   it('lets the event loop turn before the sweep finishes', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p23-'));
-    const mainRepo = path.join(tempRoot, 'parent-repo');
     const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(mainRepo, { recursive: true });
     mkdirSync(dataDirectory);
-    git(mainRepo, 'init', '-b', 'main');
 
     const store = new SessionStore(path.join(dataDirectory, 'claude-mem.db'));
     seedDeadCheckouts(store, tempRoot, 20);
-    const liveSession = store.createSDKSession('content-live', 'parent-repo', 'prompt');
-    store.setSessionCwd(liveSession, mainRepo);
     store.close();
 
     let sweepFinished = false;
+    const eventLoopTurn = new Promise<boolean>(resolve => setImmediate(() => resolve(!sweepFinished)));
     const sweep = adoptMergedWorktreesForAllKnownRepos({ dataDirectory }).then(results => {
       sweepFinished = true;
       return results;
     });
-    const turnedWhileSweeping = await new Promise<boolean>(resolve => setImmediate(() => resolve(!sweepFinished)));
+    const turnedWhileSweeping = await eventLoopTurn;
     const results = await sweep;
 
     expect(turnedWhileSweeping).toBe(true);
-    expect(results.map(result => result.parentProject)).toEqual(['parent-repo']);
+    expect(results).toEqual([]);
   }, 30_000);
 
   // 300 dead checkouts cost ~5 s of blocked event loop when each spawned git.
