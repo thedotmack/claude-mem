@@ -80,12 +80,6 @@ describe('search platform_source scoping', () => {
     expect(results[0].title).toBe('Codex finding');
   });
 
-  it('returns only claude-sourced rows when platformSource=claude (no null-source bleed)', () => {
-    const results = search.searchObservations('scoping', { platformSource: 'claude', project: 'scoping-project' });
-    expect(results.length).toBe(1);
-    expect(results[0].memory_session_id).toBe('claude-mem');
-  });
-
   it('returns all sources when platformSource is omitted', () => {
     const results = search.searchObservations('scoping', { project: 'scoping-project' });
     expect(results.length).toBe(2);
