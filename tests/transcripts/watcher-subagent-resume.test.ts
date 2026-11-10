@@ -56,8 +56,6 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 
-const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
-
 const SESSION_ID = '01a0f592-bd36-7311-9d49-62ebfe754e30';
 
 const schema: TranscriptSchema = {
@@ -113,10 +111,10 @@ describe('a resumed subagent-only tail learns the marker from the first line', (
 
   async function resumeAndAppend(watcher: TranscriptWatcher, watch: WatchTarget): Promise<void> {
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     appendFileSync(filePath, user('live follow-up') + exec('live-cmd'), 'utf8');
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
   }
 

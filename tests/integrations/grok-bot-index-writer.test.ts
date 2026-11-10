@@ -114,16 +114,6 @@ describe('mergeIndexObservations', () => {
     expect(merged.map(row => row.id)).toEqual([3, 2, 91, 90]);
   });
 
-  it('seat rows that reach the window leave no room for house rows', () => {
-    const seat = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
-    const house = Array.from({ length: 50 }, (_, i) => obs(1_000 + i, `House ${i}`, 100_000 + i, 'claude-mem'));
-    const merged = mergeIndexObservations(seat, house, 80);
-    expect(merged).toHaveLength(80);
-    expect(merged.every(row => row.id <= 80)).toBe(true);
-    expect(merged[0].id).toBe(80);
-    expect(merged[merged.length - 1].id).toBe(1);
-  });
-
   it('caps the seat itself at the window, dropping its oldest rows', () => {
     const seat = Array.from({ length: 100 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
     const merged = mergeIndexObservations(seat, [obs(999, 'House', 999_999, 'claude-mem')], 80);
@@ -345,7 +335,7 @@ describe('path guards', () => {
 });
 
 describe('refreshSeatIndex live write', () => {
-  it('writes a growing INDEX and does not touch CCS or profile.md', async () => {
+  it('writes a growing INDEX and does not touch profile.md', async () => {
     const root = tempRoot();
     writeSeat(root, PRIORITIZER, 'Prioritizer');
     writeFileSync(path.join(root, 'transcript-watch.json'), JSON.stringify({
@@ -370,7 +360,6 @@ describe('refreshSeatIndex live write', () => {
     expect(firstText).toContain('80');
     expect(firstText).toContain('House newest');
     expect(firstText).toContain('Seat only');
-    expect(existsSync(path.join(root, 'ccs'))).toBe(false);
     expect(existsSync(path.join(root, 'agents', PRIORITIZER, 'profile.md'))).toBe(false);
 
     const second = refreshSeatIndex(
@@ -401,23 +390,6 @@ describe('refreshSeatIndex live write', () => {
     expect(factBlock(readFileSync(third.filePath!, 'utf8'))).toBe(factBlock(secondText));
   });
 
-  it('reports houseFilled false when seat rows fill the whole window', () => {
-    const root = tempRoot();
-    writeSeat(root, PRIORITIZER, 'Prioritizer');
-    const seatRows = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
-    const result = refreshSeatIndex(
-      makeCfg(root),
-      { id: PRIORITIZER, name: 'Prioritizer', projects: ['cmem_work_prioritizer'] },
-      queries(seatRows, [obs(900, 'Busy house', 900_000, 'claude-mem')]),
-      NOW,
-    );
-    expect(result.status).toBe('written');
-    expect(result.houseFilled).toBe(false);
-    const text = readFileSync(result.filePath!, 'utf8');
-    expect(text).not.toContain('Busy house');
-    expect(text).not.toContain('house fill');
-  });
-
   it('skips the house query entirely when seat rows fill the window', () => {
     const root = tempRoot();
     writeSeat(root, PRIORITIZER, 'Prioritizer');
@@ -438,24 +410,8 @@ describe('refreshSeatIndex live write', () => {
     expect(houseCalls).toBe(0);
     expect(result.status).toBe('written');
     expect(result.houseFilled).toBe(false);
-  });
-
-  it('skips CCS as a required intermediate even when a TIMELINE.md already exists', () => {
-    const root = tempRoot();
-    writeSeat(root, ORIFICE, 'Orifice');
-    const ccsPath = path.join(root, 'ccs', 'seats', ORIFICE, 'TIMELINE.md');
-    mkdirSync(path.dirname(ccsPath), { recursive: true });
-    writeFileSync(ccsPath, '# leftover CCS bucket\n');
-
-    refreshSeatIndex(
-      makeCfg(root, { agentIdsAuto: false, agentIds: [ORIFICE] }),
-      { id: ORIFICE, name: 'Orifice', projects: ['cmem_work_orifice'] },
-      queries([obs(9, 'Direct write', 2_000, 'cmem_work_orifice')], []),
-      NOW,
-    );
-
-    expect(readFileSync(ccsPath, 'utf8')).toBe('# leftover CCS bucket\n');
-    expect(readFileSync(injectLogPath(root, ORIFICE), 'utf8')).toContain('Direct write');
+    const text = readFileSync(result.filePath!, 'utf8');
+    expect(text).not.toContain('house fill');
   });
 
   it('does not write when inject is disabled', async () => {

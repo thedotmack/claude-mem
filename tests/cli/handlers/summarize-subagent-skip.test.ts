@@ -44,10 +44,13 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 }));
 
 import { logger } from '../../../src/utils/logger.js';
+import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let tempSpool: ReturnType<typeof useTempHookSpoolDataDir>;
 
 beforeEach(() => {
+  tempSpool = useTempHookSpoolDataDir();
   workerCallLog.length = 0;
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
@@ -61,6 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  tempSpool.restore();
 });
 
 afterAll(() => {
@@ -75,9 +79,9 @@ describe('summarizeHandler — subagent short-circuit', () => {
 
     const result = await summarizeHandler.execute({
       sessionId: 'session-abc',
-      cwd: '/tmp',
+      cwd: tempSpool.dataDir,
       platform: 'claude-code',
-      transcriptPath: '/tmp/does-not-matter.jsonl',
+      lastAssistantMessage: 'Completed the requested work.',
       agentId: 'agent-abc',
     });
 
@@ -85,6 +89,7 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(spooledEntries('summarize')).toHaveLength(0);
   });
 
   it('does NOT skip when only agentType is set (--agent main session still owns its summary)', async () => {
@@ -92,15 +97,17 @@ describe('summarizeHandler — subagent short-circuit', () => {
 
     const result = await summarizeHandler.execute({
       sessionId: 'session-def',
-      cwd: '/tmp',
+      cwd: tempSpool.dataDir,
       platform: 'claude-code',
       agentType: 'Explore',
-      // transcriptPath intentionally omitted
+      lastAssistantMessage: 'Completed the requested work.',
     });
 
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(spooledEntries('summarize')).toHaveLength(1);
+    expect(spooledEntries('summarize')[0].payload.lastAssistantMessage).toBe('Completed the requested work.');
   });
 
   it('skips summary when both agentId and agentType are set', async () => {
@@ -108,9 +115,9 @@ describe('summarizeHandler — subagent short-circuit', () => {
 
     const result = await summarizeHandler.execute({
       sessionId: 'session-both',
-      cwd: '/tmp',
+      cwd: tempSpool.dataDir,
       platform: 'claude-code',
-      transcriptPath: '/tmp/does-not-matter.jsonl',
+      lastAssistantMessage: 'Completed the requested work.',
       agentId: 'agent-xyz',
       agentType: 'Plan',
     });
@@ -119,21 +126,23 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(spooledEntries('summarize')).toHaveLength(0);
   });
 
-  it('falls through to existing no-transcriptPath guard in main-session context', async () => {
+  it('summarizes a main session without a transcript when the host supplies its last message', async () => {
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
 
     const result = await summarizeHandler.execute({
       sessionId: 'session-main',
-      cwd: '/tmp',
+      cwd: tempSpool.dataDir,
       platform: 'claude-code',
-      // transcriptPath intentionally omitted
+      lastAssistantMessage: 'Completed the requested work.',
     });
 
     expect(result.continue).toBe(true);
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(spooledEntries('summarize')).toHaveLength(1);
   });
 });

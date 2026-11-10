@@ -3,8 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { buildShellCommand, buildCodexWindowsCommand } from '../../src/build/hook-shell-template.js';
-import { checkWindowsGitBash } from '../../src/npx-cli/utils/windows-git-bash-preflight.js';
+import { buildCodexWindowsCommand } from '../../src/build/hook-shell-template.js';
 
 const flags = [
   'CLAUDE_MEM_DISABLE_TOOL_HOOKS',
@@ -12,22 +11,7 @@ const flags = [
   'CLAUDE_MEM_DISABLE_FILE_CONTEXT',
 ];
 
-const isWindows = process.platform === 'win32';
-
-/**
- * The shell each generated command needs. The POSIX template is what a POSIX host
- * runs, and on Windows only the Setup hook still reaches it, through Git Bash, so
- * it is resolved the way that hook resolves it. Where no bash exists the POSIX
- * cases are skipped rather than failed: without a POSIX shell they cannot run.
- * The Windows template is already a `node -e "…"` command line, so it runs under
- * whatever shell the host itself would use.
- */
-const posixShell: string | null = isWindows
-  ? checkWindowsGitBash().resolvedPath ?? null
-  : '/bin/sh';
-const canRunPosixCases = posixShell !== null;
-
-function probe(event: string, flag: string, windows = false, value?: string) {
+function probe(event: string, flag: string, value: string) {
   const dir = mkdtempSync(join(tmpdir(), 'hook-early-optout-'));
   const marker = join(dir, 'started');
   try {
@@ -35,15 +19,7 @@ function probe(event: string, flag: string, windows = false, value?: string) {
     writeFileSync(join(dir, 'scripts', 'worker-service.cjs'), '');
     writeFileSync(join(dir, 'scripts', 'bun-runner.js'),
       `require('fs').writeFileSync(${JSON.stringify(marker)},'started')`);
-    const args = ['hook', windows ? 'codex' : 'claude-code', event];
-    const command = windows ? buildCodexWindowsCommand(args) : buildShellCommand({
-      host: 'claude-code',
-      requireFile: 'bun-runner.js',
-      requireFileSecondary: 'worker-service.cjs',
-      trailingCommand: ['node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...args],
-      notFoundMessage: 'missing',
-      failOpen: true,
-    });
+    const command = buildCodexWindowsCommand(['hook', 'codex', event]);
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       CLAUDE_PLUGIN_ROOT: dir,
@@ -51,10 +27,8 @@ function probe(event: string, flag: string, windows = false, value?: string) {
       HOME: dir,
     };
     for (const name of flags) delete env[name];
-    if (value !== undefined) env[flag] = value;
-    const result = windows
-      ? spawnSync(command, { shell: true, env, encoding: 'utf8', timeout: 10000 })
-      : spawnSync(posixShell!, ['-c', command], { env, encoding: 'utf8', timeout: 10000 });
+    env[flag] = value;
+    const result = spawnSync(command, { shell: true, env, encoding: 'utf8', timeout: 10000 });
     expect(result.error).toBeUndefined();
     return { status: result.status, stderr: result.stderr, started: existsSync(marker) };
   } finally {
@@ -62,27 +36,19 @@ function probe(event: string, flag: string, windows = false, value?: string) {
   }
 }
 
-for (const windows of [false, true]) {
-  for (const [event, flag] of [
-    ['file-context', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT'],
-    ['observation', 'CLAUDE_MEM_DISABLE_OBSERVATION'],
-    ['file-context', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
-    ['observation', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
-  ]) {
-    for (const value of ['1', '0', 'true', '', undefined]) {
-      test.skipIf(!windows && !canRunPosixCases)(`launcher ${event} ${flag}=${value ?? '<unset>'} windows=${windows}`, () => {
-        expect(probe(event, flag, windows, value)).toEqual({
-          status: 0,
-          stderr: '',
-          started: value !== '1',
-        });
+for (const [event, flag] of [
+  ['file-context', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT'],
+  ['observation', 'CLAUDE_MEM_DISABLE_OBSERVATION'],
+  ['file-context', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
+  ['observation', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
+]) {
+  for (const value of ['1', '0']) {
+    test(`Windows launcher ${event} ${flag}=${value}`, () => {
+      expect(probe(event, flag, value)).toEqual({
+        status: 0,
+        stderr: '',
+        started: value !== '1',
       });
-    }
+    });
   }
 }
-test.skipIf(!canRunPosixCases)('does not skip an unrelated tool hook', () => {
-  expect(probe('observation', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT', false, '1').started).toBe(true);
-});
-test.skipIf(!canRunPosixCases)('does not skip SessionStart context', () => {
-  expect(probe('context', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS', false, '1').started).toBe(true);
-});

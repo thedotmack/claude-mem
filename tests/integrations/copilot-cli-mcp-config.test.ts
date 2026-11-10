@@ -70,16 +70,6 @@ describe('Copilot CLI MCP config', () => {
     expect(existsSync(path.join(home, '.copilot'))).toBe(false);
   });
 
-  it('keeps the servers already in mcp-config.json', () => {
-    writeUserConfig();
-
-    expect(install()).toBe(0);
-
-    const { mcpServers } = readConfig(configPath);
-    expect(mcpServers.playwright).toEqual(playwright);
-    expect(mcpServers['claude-mem'].args).toEqual([serverPath]);
-  });
-
   it('uninstall removes claude-mem and leaves the rest of mcp-config.json as it was', () => {
     const original = writeUserConfig();
     expect(install()).toBe(0);

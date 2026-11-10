@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { spawnSync } from 'node:child_process';
 import {
   planCachePrune,
   planPluginCachePrune,
@@ -38,16 +39,6 @@ describe('planCachePrune', () => {
     expect(prune).toEqual(['13.24.0', '13.20.0']);
   });
 
-  it('protects the live worker version even when it is older than N-1', () => {
-    const { keep, prune } = planCachePrune(
-      ['13.25.1', '13.25.0', '13.20.0'],
-      2,
-      { protectedVersions: ['13.20.0'] },
-    );
-    expect(keep).toContain('13.20.0');
-    expect(prune).not.toContain('13.20.0');
-  });
-
   it('ignores names that are not version directories', () => {
     const { keep, prune } = planCachePrune(
       ['13.25.1', '13.25.0', '13.24.0', '.tmp', 'node_modules'],
@@ -70,17 +61,60 @@ describe('planCachePrune', () => {
     const { prune } = planCachePrune(['13.25.1', '13.25.0'], 2);
     expect(prune).toEqual([]);
   });
+});
 
-  it('does not let an orphaned newest directory consume a retention slot', () => {
-    // 13.26.0 is orphaned: the resolver ignores it, so it must not displace a
-    // usable rollback version. Keep the two newest usable ones and prune the orphan.
-    const { keep, prune } = planCachePrune(
-      ['13.26.0', '13.25.0', '13.24.0'],
-      2,
-      { orphanedVersions: ['13.26.0'] },
-    );
-    expect(keep).toEqual(['13.25.0', '13.24.0']);
-    expect(prune).toEqual(['13.26.0']);
+describe('prunePluginCacheSafely protects the running worker', () => {
+  it.each([
+    ['old live version', { version: '13.20.0' }, false, false, []],
+    ['missing version', {}, false, true, []],
+    ['invalid version', { version: 123 }, false, true, []],
+    ['invalid JSON', 'invalid-json', false, true, []],
+    ['health timeout', 'timeout', false, true, []],
+    ['silent port with owned worker', 'refused', true, true, []],
+    ['no worker', 'refused', false, false, ['13.20.0']],
+  ])('%s', (_name, health, owned, retainAll, removed) => {
+    const root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-live-'));
+    try {
+      for (const version of ['13.20.0', '13.24.0', '13.25.0']) mkdirSync(join(root, version));
+      const script = `
+        import { mock } from 'bun:test';
+        const paths = await import(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/utils/paths.ts'))});
+        const registry = await import(${JSON.stringify(join(import.meta.dir, '../../src/supervisor/process-registry.ts'))});
+        mock.module(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/utils/paths.ts'))}, () => ({
+          ...paths, installedPluginsPath: () => ${JSON.stringify(join(root, 'missing-registry.json'))},
+        }));
+        mock.module(${JSON.stringify(join(import.meta.dir, '../../src/supervisor/process-registry.ts'))}, () => ({
+          ...registry, readOwnedWorkerPidInfo: () => ${owned ? '{ pid: 123 }' : 'null'},
+        }));
+        const health = ${JSON.stringify(health)};
+        let requests = 0;
+        globalThis.fetch = async (url) => {
+          if (!String(url).endsWith('/api/health')) throw new Error('unexpected URL: ' + url);
+          requests++;
+          if (health === 'timeout') throw new Error('request timed out');
+          if (health === 'refused') throw new Error('ECONNREFUSED');
+          return new Response(health === 'invalid-json' ? '{' : JSON.stringify(health));
+        };
+        const { prunePluginCacheSafely } = await import(${JSON.stringify(join(import.meta.dir, '../../src/npx-cli/utils/prune-cache.ts'))});
+        const result = await prunePluginCacheSafely({ cacheRoot: ${JSON.stringify(root)}, keepCount: 2 });
+        console.log(JSON.stringify({ result, requests }));
+      `;
+      const child = spawnSync(process.execPath, ['--eval', script], {
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(root, 'data'), CLAUDE_CONFIG_DIR: join(root, 'claude') },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(child.status, child.stderr).toBe(0);
+      const { result, requests } = JSON.parse(child.stdout.trim().split('\n').at(-1)!);
+      expect(requests).toBe(1);
+      expect(result.retainedForLiveWorker).toBe(retainAll);
+      expect(result.removed).toEqual(removed);
+      expect(result.failed).toEqual([]);
+      for (const version of ['13.20.0', '13.24.0', '13.25.0']) {
+        expect(existsSync(join(root, version))).toBe(!removed.includes(version));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

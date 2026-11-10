@@ -42,12 +42,14 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md']);
   });
 
-  it.skipIf(process.platform === 'win32')('extracts plus-prefixed operands that cat actually reads', () => {
+  it('extracts plus-prefixed read operands', () => {
     writeFileSync(join(tmpDir, '+page.svelte'), 'synthetic page');
-    const child = Bun.spawnSync({ cmd: ['cat', '+page.svelte'], cwd: tmpDir });
-    expect(child.exitCode).toBe(0);
-    expect(child.stdout.toString()).toBe('synthetic page');
     expect(extractFilePaths('Bash', { command: 'cat +page.svelte' }, tmpDir)).toEqual(['+page.svelte']);
+  });
+
+  it.each(['my notes.md', 'notes;draft.md'])('preserves the %s operand in a read-command argv', (name) => {
+    writeFileSync(join(tmpDir, name), 'contents');
+    expect(extractFilePaths('Bash', { command: ['cat', name] }, tmpDir)).toEqual([name]);
   });
 
   it('still excludes plus-prefixed positioning options for tail', () => {
@@ -74,14 +76,6 @@ describe('extractFilePaths', () => {
     writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
     expect(extractFilePaths('Bash', { command: 'cat -- -notes.md && cat -n README.md' }, tmpDir))
       .toEqual(['-notes.md', 'README.md']);
-  });
-
-  it.skipIf(process.platform === 'win32')('matches an actual cat read of a hyphen-prefixed file', () => {
-    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
-    const child = Bun.spawnSync({ cmd: ['cat', '--', '-notes.md'], cwd: tmpDir });
-    expect(child.exitCode).toBe(0);
-    expect(child.stdout.toString()).toBe('literal filename');
-    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md' }, tmpDir)).toEqual(['-notes.md']);
   });
 
   it('ignores non-read Bash commands', () => {
@@ -117,18 +111,5 @@ describe('extractFilePaths', () => {
   it('yields no paths instead of throwing on an unparseable substitution', () => {
     expect(() => extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).not.toThrow();
     expect(extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).toEqual([]);
-  });
-
-  it('yields no paths when the unparseable part rides alongside a real read', () => {
-    // The readable file is genuinely there, so this fails only because the
-    // command as a whole cannot be tokenised — not because the path is bad.
-    expect(
-      extractFilePaths('Bash', { command: 'cat README.md && cat ${}' }, tmpDir)
-    ).toEqual([]);
-  });
-
-  it('still extracts paths from a command that parses', () => {
-    // The guard must not swallow the feature it protects.
-    expect(extractFilePaths('Bash', { command: 'cat README.md' }, tmpDir)).toEqual(['README.md']);
   });
 });

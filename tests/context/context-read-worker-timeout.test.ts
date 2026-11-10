@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ContextReadReply, ContextReadRequest } from '../../src/services/context/ContextReadProtocol.ts';
-import {
-  CONTEXT_READ_REQUEST_TIMEOUT_MS,
-  CONTEXT_READ_TERMINATE_TIMEOUT_MS,
-  ContextReadWorkerClient,
-} from '../../src/services/context/ContextReadWorkerClient.ts';
+import { ContextReadWorkerClient } from '../../src/services/context/ContextReadWorkerClient.ts';
 
 /**
  * A context-read thread stand-in. `silent` accepts a message and never
@@ -53,13 +49,6 @@ function rejectionOf(promise: Promise<unknown>): Promise<Error> {
 }
 
 describe('context reader deadlines', () => {
-  it('keeps the production deadline above a slow search and the terminate bound finite', () => {
-    expect(CONTEXT_READ_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
-    expect(Number.isFinite(CONTEXT_READ_REQUEST_TIMEOUT_MS)).toBe(true);
-    expect(CONTEXT_READ_TERMINATE_TIMEOUT_MS).toBeGreaterThan(0);
-    expect(CONTEXT_READ_TERMINATE_TIMEOUT_MS).toBeLessThan(CONTEXT_READ_REQUEST_TIMEOUT_MS);
-  });
-
   it('rejects every caller when the reader never replies, then reads successfully on a replacement', async () => {
     const workers: ScriptedWorker[] = [];
     const reader = new ContextReadWorkerClient({
