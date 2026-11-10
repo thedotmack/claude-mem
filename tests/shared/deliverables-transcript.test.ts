@@ -25,6 +25,7 @@ const TRANSCRIPT = [
   JSON.stringify({ type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [toolUse('toolu_6', 'Write', { file_path: '/w/.scratch/side.png' })] } }),
   'not json at all',
   assistant([toolUse('toolu_7', 'NotebookEdit', { notebook_path: '/w/analysis.ipynb', new_source: '' })]),
+  user([toolResult('toolu_7')]),
   assistant([{ type: 'text', text: 'Done.' }]),
 ].join('\n');
 

@@ -122,6 +122,50 @@ afterAll(() => {
 });
 
 describe('Stop hook deliverables capture', () => {
+  it.each(['file write', 'work-state declaration'])('does not copy an existing file from an unconfirmed %s', async (source) => {
+    makeTurn();
+    const path = source === 'file write' ? join(repo, '.scratch', 'report.html') : join(outside, 'notes.md');
+    const before = readFileSync(path);
+    const call = source === 'file write'
+      ? toolUse('unfinished', 'Write', { file_path: path, content: 'a replacement that never completed' })
+      : toolUse('unfinished', 'work_state_write', { list: 'launch', fields: { work_product: path } });
+    writeFileSync(transcriptPath, [user('Replace the old report'), assistant([call]), ''].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    const result = await summarizeHandler.execute(stopInput());
+
+    expect(result.continue).toBe(true);
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+    expect(readFileSync(path)).toEqual(before);
+    expect(spooledEntries('summarize')).toHaveLength(1);
+  });
+
+  it('attributes the copied file to its confirmed revision when a later edit never returns', async () => {
+    makeTurn();
+    const report = join(repo, '.scratch', 'report.html');
+    const abandoned = join(repo, '.scratch', 'abandoned.html');
+    writeFileSync(abandoned, '<p>Output from an earlier turn</p>');
+    writeFileSync(transcriptPath, [
+      user('Make the launch report'),
+      assistant([toolUse('completed', 'Write', { file_path: report, content: '<h1>Launch report</h1>' })]),
+      user([toolResult('completed')]),
+      assistant([toolUse('unfinished-edit', 'Edit', { file_path: report, old_string: 'Launch', new_string: 'Final' })]),
+      assistant([toolUse('unfinished-write', 'Write', { file_path: abandoned, content: 'not written' })]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const entries = spooledEntries('deliverables');
+    expect(entries).toHaveLength(1);
+    const payload = entries[0].payload as SpooledDeliverablesPayload;
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0]).toMatchObject({ sourcePath: report, toolUseId: 'completed', declared: false });
+    expect(readFileSync(payload.files[0].bucketPath)).toEqual(readFileSync(report));
+  });
+
   it('copies the turn\'s declared files and its human-openable files outside the source tree into the project bucket, then spools them', async () => {
     makeTurn();
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
