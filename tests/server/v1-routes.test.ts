@@ -261,6 +261,40 @@ describe('server REST API v1 routes', () => {
     expect((await endResponse.json()).session.status).toBe('completed');
   });
 
+  it.each([
+    ['subtitle', { subtitle: 'Fallback subtitle evidence' }, 'Fallback subtitle evidence'],
+    ['facts', { facts: ['Fallback first fact', 'Second fact'] }, 'Fallback first fact\nSecond fact'],
+    ['concepts', { concepts: ['Fallback concept', 'Second concept'] }, 'Fallback concept, Second concept'],
+    ['empty narrative', { narrative: '', text: 'Fallback text evidence' }, 'Fallback text evidence'],
+    ['blank primary fields', { narrative: ' \n', text: '\t', title: 'Fallback title evidence' }, 'Fallback title evidence'],
+  ])('renders %s memories in both recent and searched context', async (_name, fields, expected) => {
+    const { project } = await (await post('/v1/projects', { name: 'Context fallback' })).json();
+    const created = await post('/v1/memories', {
+      projectId: project.id, kind: 'manual', type: 'note', ...fields as object,
+    });
+    expect(created.status).toBe(201);
+    const { memory } = await created.json();
+
+    for (const query of [undefined, 'Fallback']) {
+      const response = await post('/v1/context', { projectId: project.id, query });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+      expect(result.context).toBe(expected);
+    }
+  });
+
+  it('keeps a populated narrative as the preferred context text', async () => {
+    const { project } = await (await post('/v1/projects', { name: 'Context preference' })).json();
+    await post('/v1/memories', {
+      projectId: project.id, kind: 'manual', type: 'note',
+      narrative: 'Preferred context', text: 'Other text', title: 'Other title',
+      subtitle: 'Other subtitle', facts: ['Other fact'], concepts: ['Other concept'],
+    });
+    const response = await post('/v1/context', { projectId: project.id });
+    expect((await response.json()).context).toBe('Preferred context');
+  });
+
   it('returns recent memories when /v1/context is given no query', async () => {
     // A session-start block asks "what happened recently". Until this, /v1/context
     // ran the same relevance search as /v1/search and REQUIRED a query, so it could

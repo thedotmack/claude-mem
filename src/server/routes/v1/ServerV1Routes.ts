@@ -287,7 +287,15 @@ export class ServerV1Routes implements RouteHandler {
         ? repo.search(body.projectId, body.query, body.limit ?? 10)
         : repo.listByProject(body.projectId, body.limit ?? 10);
       this.audit(req, 'memory.context', null, body.projectId);
-      res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
+      const context = memories.map(memory => [
+        memory.narrative,
+        memory.text,
+        memory.title,
+        memory.subtitle,
+        memory.facts.filter(value => value.trim()).join('\n'),
+        memory.concepts.filter(value => value.trim()).join(', '),
+      ].find(value => value?.trim())).filter(Boolean).join('\n\n');
+      res.json({ memories, context });
     }));
 
     app.get('/v1/audit', readAuth, (req, res) => {
