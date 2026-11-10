@@ -352,7 +352,7 @@ function mapSessionEventRow(row: SessionEventRow): PostgresAgentEvent {
     idempotencyKey: row.idempotency_key,
     eventType: row.event_type,
     platformSource: row.platform_source,
-    payload: toJsonObject(row.payload),
+    payload: row.payload,
     metadata: toJsonObject(row.metadata),
     occurredAtEpoch: row.occurred_at.getTime(),
     receivedAtEpoch: row.received_at.getTime(),
