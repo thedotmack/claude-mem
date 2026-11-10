@@ -30,6 +30,11 @@ export interface BackupSnapshotResult {
   createdAt: number;
 }
 
+export interface BackupRunResult extends BackupSnapshotResult {
+  /** The snapshot is complete, but pruning old snapshots failed. */
+  retentionError?: string;
+}
+
 export interface BackupStatus {
   configured: boolean;
   lastSnapshotAt: number | null;
@@ -225,15 +230,22 @@ export class BackupManager {
   /**
    * One snapshot + retention cycle on demand (POST /api/backup/run).
    * Single-flight: returns `null` without doing anything when a cycle is
-   * already in progress (the route maps that to 409). Failures are recorded
-   * in lastError and rethrown so the caller can surface them.
+   * already in progress (the route maps that to 409). A snapshot failure is
+   * thrown. A later retention failure accompanies the completed snapshot.
    */
-  async runNow(): Promise<BackupSnapshotResult | null> {
+  async runNow(): Promise<BackupRunResult | null> {
     if (this.running) return null;
     this.running = true;
     try {
       const result = await this.createSnapshot();
-      await this.applyRetention();
+      try {
+        await this.applyRetention();
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.lastError = normalized.message;
+        logger.error('BACKUP', 'Snapshot saved but retention failed', { backupPath: result.path }, normalized);
+        return { ...result, retentionError: normalized.message };
+      }
       return result;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));

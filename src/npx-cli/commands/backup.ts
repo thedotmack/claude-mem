@@ -121,6 +121,9 @@ async function runBackupRun(): Promise<void> {
   console.log(styleText('green', 'Snapshot created.'));
   console.log(`  ${styleText('bold', 'Path:')}  ${snapshot.path}`);
   console.log(`  ${styleText('bold', 'Size:')}  ${typeof snapshot.bytes === 'number' ? formatBytes(snapshot.bytes) : 'n/a'}`);
+  if (typeof snapshot.retentionError === 'string') {
+    console.error(styleText('yellow', `Could not clean up old snapshots: ${snapshot.retentionError}`));
+  }
 }
 
 async function runBackupList(): Promise<void> {
