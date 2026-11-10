@@ -1,8 +1,8 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type FocusArea, type PastPeriod, type Request, type SkillRun } from '../data.ts'
-import { resolveFocusAreaId, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
+import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { createFocusAreaResolver, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
@@ -132,7 +132,7 @@ function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>,
 
 /** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
  * Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
-function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, focusAreas: readonly FocusArea[] = []): Request {
+function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, resolveArea: ReturnType<typeof createFocusAreaResolver>): Request {
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const generatedTitle = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
@@ -161,7 +161,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
   ].filter((source, index, all) => EVIDENCE_URL.test(source.href) && all.findIndex((other) => other.href === source.href) === index)
-  const focusAreaId = resolveFocusAreaId(raw.focusAreaId, focusAreas)
+  const focusAreaId = resolveArea(raw.focusAreaId)
   const title = generatedTitle ? raw.title.trim() || null : copyReady && copy.title?.trim() ? copy.title.trim() : null
   // Checked against the full prompts here, since the card's quotes are cut to 400 characters.
   const ownerWords = [raw.original, ...raw.scopeUpdates].map((prompt) => prompt.text ?? '')
@@ -447,9 +447,10 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
   const requestReadErrors: RequestReadError[] = []
   const { goalsRun, minedAreas, minedAsks, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
   const { focusAreas, otherAsks } = toFocusModel(snapshot.focusAreas, minedAreas, minedAsks)
+  const resolveArea = createFocusAreaResolver(focusAreas)
   for (const raw of snapshot.humanRequests) {
     try {
-      requests.push(toRequest(raw, snapshot.agents, now, focusAreas))
+      requests.push(toRequest(raw, snapshot.agents, now, resolveArea))
     } catch (error) {
       requestReadErrors.push({
         requestId: raw.id,

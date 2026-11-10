@@ -1,7 +1,7 @@
 // One focus-area overview for setup's first reveal and the live work view. This reads recorded placement only;
 // matching words, repeated prompts and unsorted requests never manufacture an area or a completion estimate.
 import { needsYou, OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
-import { byFocusPriority, resolveFocusAreaId } from './to-focus-model.ts'
+import { byFocusPriority, createFocusAreaResolver } from './to-focus-model.ts'
 
 export interface FocusOverviewRow {
   area: FocusArea
@@ -23,10 +23,11 @@ export interface FocusOverview {
 
 export function focusOverview(areas: readonly FocusArea[], requests: readonly Request[]): FocusOverview {
   const members = new Map<string, Request[]>()
+  const resolveArea = createFocusAreaResolver(areas)
   const other: Request[] = []
   const sorting: Request[] = []
   for (const request of requests) {
-    const id = resolveFocusAreaId(request.focusAreaId, areas)
+    const id = resolveArea(request.focusAreaId)
     if (id === OTHER_FOCUS_AREA_ID) other.push(request)
     else if (id === null) sorting.push(request)
     else {

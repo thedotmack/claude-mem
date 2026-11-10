@@ -30,26 +30,25 @@ const GlowingEffect = memo(
     const containerRef = useRef<HTMLDivElement>(null);
     const lastPosition = useRef({ x: 0, y: 0 });
     const animationFrameRef = useRef<number>(0);
+    const glowAnimation = useRef<ReturnType<typeof animate> | null>(null);
 
     const handleMove = useCallback(
       (e?: MouseEvent | { x: number; y: number }) => {
         if (!containerRef.current) return;
-
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-        }
+        if (e) lastPosition.current = { x: e.x, y: e.y };
+        // Keep only the latest pointer position, with one layout read per frame.
+        if (animationFrameRef.current) return;
 
         animationFrameRef.current = requestAnimationFrame(() => {
+          animationFrameRef.current = 0;
           const element = containerRef.current;
           if (!element) return;
 
           const { left, top, width, height } = element.getBoundingClientRect();
-          const mouseX = e?.x ?? lastPosition.current.x;
-          const mouseY = e?.y ?? lastPosition.current.y;
-
-          if (e) {
-            lastPosition.current = { x: mouseX, y: mouseY };
-          }
+          const { x: mouseX, y: mouseY } = lastPosition.current;
+          // The previous tween must release this element before another starts.
+          glowAnimation.current?.stop();
+          glowAnimation.current = null;
 
           const center = [left + width * 0.5, top + height * 0.5];
           const distanceFromCenter = Math.hypot(
@@ -83,7 +82,7 @@ const GlowingEffect = memo(
           const angleDiff = ((targetAngle - currentAngle + 180) % 360) - 180;
           const newAngle = currentAngle + angleDiff;
 
-          animate(currentAngle, newAngle, {
+          glowAnimation.current = animate(currentAngle, newAngle, {
             duration: movementDuration,
             ease: [0.16, 1, 0.3, 1],
             onUpdate: (value) => {
@@ -100,20 +99,42 @@ const GlowingEffect = memo(
 
       const handleScroll = () => handleMove();
       const handlePointerMove = (e: PointerEvent) => handleMove(e);
-
-      window.addEventListener("scroll", handleScroll, { passive: true });
-      document.body.addEventListener("pointermove", handlePointerMove, {
-        passive: true,
-      });
+      let listening = false;
+      const setListening = (visible: boolean) => {
+        if (visible === listening) return;
+        listening = visible;
+        if (visible) {
+          window.addEventListener("scroll", handleScroll, { passive: true });
+          document.body.addEventListener("pointermove", handlePointerMove, { passive: true });
+        } else {
+          window.removeEventListener("scroll", handleScroll);
+          document.body.removeEventListener("pointermove", handlePointerMove);
+          cancelAnimationFrame(animationFrameRef.current);
+          animationFrameRef.current = 0;
+          glowAnimation.current?.stop();
+          glowAnimation.current = null;
+          containerRef.current?.style.setProperty("--active", "0");
+        }
+      };
+      // Offscreen cards need no pointer listeners, layout reads or glow tweens.
+      const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(
+        ([entry]) => setListening(entry.isIntersecting),
+        { rootMargin: `${proximity}px` }
+      );
+      if (observer && containerRef.current) observer.observe(containerRef.current);
+      else setListening(true);
 
       return () => {
+        observer?.disconnect();
+        setListening(false);
         if (animationFrameRef.current) {
           cancelAnimationFrame(animationFrameRef.current);
+          animationFrameRef.current = 0;
         }
-        window.removeEventListener("scroll", handleScroll);
-        document.body.removeEventListener("pointermove", handlePointerMove);
+        glowAnimation.current?.stop();
+        glowAnimation.current = null;
       };
-    }, [handleMove, disabled]);
+    }, [handleMove, disabled, proximity]);
 
     return (
       <>

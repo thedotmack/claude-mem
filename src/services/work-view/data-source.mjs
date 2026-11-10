@@ -75,6 +75,8 @@ export class WorkStateSource {
     this.activitySignature = null;
     this.activityCheckedAt = null;
     this.signature = null;
+    this.workStateRevision = null;
+    this.workStateDataVersion = null;
     this.sharedState = null;
     this.source = {
       kind: 'claude-mem-work-state', mode: 'read-only-sqlite', connected: false,
@@ -105,7 +107,16 @@ export class WorkStateSource {
     this.source.lastCheckedAt = new Date().toISOString();
     try {
       const database = this.openDatabase();
-      const revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
+      // This connection is read-only: without another connection's commit,
+      // the aggregate cannot change. Avoid scanning all synced work-state
+      // rows on every idle poll; data_version also catches edits and deletes.
+      const dataVersion = database.prepare('PRAGMA data_version').get().data_version;
+      let revision = this.workStateRevision;
+      if (!revision || dataVersion !== this.workStateDataVersion) {
+        revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
+        this.workStateRevision = revision;
+        this.workStateDataVersion = dataVersion;
+      }
       const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
       const previousTitles = this.titleCacheSignature;
       const previousLedger = this.ledgerSignature;
@@ -232,7 +243,10 @@ export class WorkStateSource {
   /** A known content commit invalidates activity; unrelated database writes still use the bounded window. */
   invalidateActivity(workState = false) {
     this.activityCheckedAt = null;
-    if (workState) this.signature = null;
+    if (workState) {
+      this.signature = null;
+      this.workStateRevision = null;
+    }
   }
 
   snapshot() {
@@ -327,5 +341,7 @@ export class WorkStateSource {
     this.database?.close();
     this.database = null;
     this.databaseIdentity = null;
+    this.workStateRevision = null;
+    this.workStateDataVersion = null;
   }
 }

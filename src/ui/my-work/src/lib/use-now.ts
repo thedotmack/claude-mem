@@ -16,8 +16,12 @@ function subscribeToClock(listener: (now: number) => void) {
 }
 
 /** The current time, updated every 15 seconds. */
-export function useNow() {
+export function useNow(enabled = true) {
   const [now, setNow] = useState(() => Date.now())
-  useEffect(() => subscribeToClock(setNow), [])
+  useEffect(() => {
+    if (!enabled) return
+    setNow(Date.now())
+    return subscribeToClock(setNow)
+  }, [enabled])
   return now
 }
