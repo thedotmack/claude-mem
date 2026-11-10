@@ -123,133 +123,60 @@ describe('server API key auth', () => {
     expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])).toBeNull();
   });
 
-  it('middleware allows localhost local-dev without a bearer token', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
-    const req: any = {
-      ip: '127.0.0.1',
-      socket: {},
-      header: (name: string) => name.toLowerCase() === 'host' ? '127.0.0.1:37777' : undefined,
-    };
+  function runAuth(
+    options: Parameters<typeof requireServerAuth>[1] = {},
+    { ip = '127.0.0.1', headers = {} }: { ip?: string; headers?: Record<string, string> } = {},
+  ) {
+    const req: any = { ip, socket: { remoteAddress: ip }, header: (name: string) => headers[name.toLowerCase()] };
+    let nexted = false;
+    let status = 200;
+    let body: unknown;
     const res: any = {
-      status: () => res,
-      json: () => {},
+      status: (code: number) => { status = code; return res; },
+      json: (value: unknown) => { body = value; },
     };
-    let calledNext = false;
+    requireServerAuth(() => db, options)(req, res, () => { nexted = true; });
+    return { nexted, status, body, ctx: req.authContext };
+  }
 
-    middleware(req, res, () => {
-      calledNext = true;
+  it('middleware allows localhost local-dev without a bearer token', () => {
+    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+      headers: { host: '127.0.0.1:37777' },
     });
-
-    expect(calledNext).toBe(true);
-    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
+    expect(result.nexted).toBe(true);
+    expect(result.ctx).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
   });
 
   it('middleware requires explicit opt-in before local-dev bypass is honored', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
-    const req: any = {
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-      header: (name: string) => name.toLowerCase() === 'host' ? 'localhost:37777' : undefined,
-    };
-    const res: any = {
-      statusCode: 200,
-      status(code: number) {
-        this.statusCode = code;
-        return this;
-      },
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
-    });
-
-    expect(calledNext).toBe(false);
-    expect(res.statusCode).toBe(401);
+    const result = runAuth({ authMode: 'local-dev' }, { headers: { host: 'localhost:37777' } });
+    expect(result.nexted).toBe(false);
+    expect(result.status).toBe(401);
   });
 
   it('middleware blocks local-dev bypass when forwarded proxy headers are present', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
-    const req: any = {
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-      header: (name: string) => {
-        const normalized = name.toLowerCase();
-        if (normalized === 'host') return 'claude-mem.example.com';
-        if (normalized === 'x-forwarded-for') return '203.0.113.10';
-        return undefined;
-      },
-    };
-    const res: any = {
-      statusCode: 200,
-      status(code: number) {
-        this.statusCode = code;
-        return this;
-      },
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
+    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+      headers: { host: 'claude-mem.example.com', 'x-forwarded-for': '203.0.113.10' },
     });
-
-    expect(calledNext).toBe(false);
-    expect(res.statusCode).toBe(401);
+    expect(result.nexted).toBe(false);
+    expect(result.status).toBe(401);
   });
 
   it('middleware accepts bracketed IPv6 loopback host headers in explicit local-dev mode', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
-    const req: any = {
-      ip: '::1',
-      socket: { remoteAddress: '::1' },
-      header: (name: string) => name.toLowerCase() === 'host' ? '[::1]:37777' : undefined,
-    };
-    const res: any = {
-      status: () => res,
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
+    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+      ip: '::1', headers: { host: '[::1]:37777' },
     });
-
-    expect(calledNext).toBe(true);
-    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
+    expect(result.nexted).toBe(true);
+    expect(result.ctx).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
   });
 
   it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {
     const originalAuthMode = process.env.CLAUDE_MEM_AUTH_MODE;
     delete process.env.CLAUDE_MEM_AUTH_MODE;
     try {
-      const middleware = requireServerAuth(() => db);
-      const req: any = {
-        ip: '127.0.0.1',
-        socket: { remoteAddress: '127.0.0.1' },
-        header: (name: string) => name.toLowerCase() === 'host' ? 'localhost:37777' : undefined,
-      };
-      const res: any = {
-        statusCode: 200,
-        body: null,
-        status(code: number) {
-          this.statusCode = code;
-          return this;
-        },
-        json(body: unknown) {
-          this.body = body;
-        },
-      };
-      let calledNext = false;
-
-      middleware(req, res, () => {
-        calledNext = true;
-      });
-
-      expect(calledNext).toBe(false);
-      expect(res.statusCode).toBe(401);
-      expect(res.body).toMatchObject({ error: 'Unauthorized' });
+      const result = runAuth({}, { headers: { host: 'localhost:37777' } });
+      expect(result.nexted).toBe(false);
+      expect(result.status).toBe(401);
+      expect(result.body).toMatchObject({ error: 'Unauthorized' });
     } finally {
       if (originalAuthMode === undefined) {
         delete process.env.CLAUDE_MEM_AUTH_MODE;
@@ -263,37 +190,14 @@ describe('server API key auth', () => {
     const teamId = seedTeam(db, 'team-core');
     const project = new ProjectsRepository(db).create({ name: 'Project' });
     const created = createServerApiKey(db, {
-      name: 'Write key',
-      teamId,
-      projectId: project.id,
-      scopes: ['memories:write'],
+      name: 'Write key', teamId, projectId: project.id, scopes: ['memories:write'],
     });
-    const middleware = requireServerAuth(() => db, {
-      authMode: 'api-key',
-      requiredScopes: ['memories:write'],
+    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+      ip: '10.0.0.5', headers: { authorization: `Bearer ${created.rawKey}` },
     });
-    const req: any = {
-      ip: '10.0.0.5',
-      socket: {},
-      header: (name: string) => name.toLowerCase() === 'authorization' ? `Bearer ${created.rawKey}` : undefined,
-    };
-    const res: any = {
-      status: () => res,
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
-    });
-
-    expect(calledNext).toBe(true);
-    expect(req.authContext).toMatchObject({
-      mode: 'api-key',
-      apiKeyId: created.record.id,
-      teamId,
-      projectId: project.id,
-      scopes: ['memories:write'],
+    expect(result.nexted).toBe(true);
+    expect(result.ctx).toMatchObject({
+      mode: 'api-key', apiKeyId: created.record.id, teamId, projectId: project.id, scopes: ['memories:write'],
     });
   });
 
@@ -305,37 +209,14 @@ describe('server API key auth', () => {
     const teamId = seedTeam(db, 'team-core');
     const project = new ProjectsRepository(db).create({ name: 'Project' });
     const created = createServerApiKey(db, {
-      name: 'XApiKey client',
-      teamId,
-      projectId: project.id,
-      scopes: ['memories:write'],
+      name: 'XApiKey client', teamId, projectId: project.id, scopes: ['memories:write'],
     });
-    const middleware = requireServerAuth(() => db, {
-      authMode: 'api-key',
-      requiredScopes: ['memories:write'],
+    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+      ip: '10.0.0.5', headers: { 'x-api-key': created.rawKey },
     });
-    const req: any = {
-      ip: '10.0.0.5',
-      socket: {},
-      header: (name: string) => name.toLowerCase() === 'x-api-key' ? created.rawKey : undefined,
-    };
-    const res: any = {
-      status: () => res,
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
-    });
-
-    expect(calledNext).toBe(true);
-    expect(req.authContext).toMatchObject({
-      mode: 'api-key',
-      apiKeyId: created.record.id,
-      teamId,
-      projectId: project.id,
-      scopes: ['memories:write'],
+    expect(result.nexted).toBe(true);
+    expect(result.ctx).toMatchObject({
+      mode: 'api-key', apiKeyId: created.record.id, teamId, projectId: project.id, scopes: ['memories:write'],
     });
   });
 
@@ -344,72 +225,23 @@ describe('server API key auth', () => {
     // where an unrelated X-Api-Key sneaks in via a proxy or a stale env var.
     const teamId = seedTeam(db, 'team-core');
     const bearerKey = createServerApiKey(db, {
-      name: 'Bearer key',
-      teamId,
-      projectId: null,
-      scopes: ['memories:write'],
+      name: 'Bearer key', teamId, projectId: null, scopes: ['memories:write'],
     });
     const xApiKeyKey = createServerApiKey(db, {
-      name: 'X-Api-Key key',
-      teamId,
-      projectId: null,
-      scopes: ['memories:write'],
+      name: 'X-Api-Key key', teamId, projectId: null, scopes: ['memories:write'],
     });
-    const middleware = requireServerAuth(() => db, {
-      authMode: 'api-key',
-      requiredScopes: ['memories:write'],
+    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+      ip: '10.0.0.5', headers: { authorization: `Bearer ${bearerKey.rawKey}`, 'x-api-key': xApiKeyKey.rawKey },
     });
-    const req: any = {
-      ip: '10.0.0.5',
-      socket: {},
-      header: (name: string) => {
-        const normalized = name.toLowerCase();
-        if (normalized === 'authorization') return `Bearer ${bearerKey.rawKey}`;
-        if (normalized === 'x-api-key') return xApiKeyKey.rawKey;
-        return undefined;
-      },
-    };
-    const res: any = {
-      status: () => res,
-      json: () => {},
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
-    });
-
-    expect(calledNext).toBe(true);
-    expect(req.authContext?.apiKeyId).toBe(bearerKey.record.id);
+    expect(result.nexted).toBe(true);
+    expect(result.ctx?.apiKeyId).toBe(bearerKey.record.id);
   });
 
   it('middleware rejects requests with neither Bearer nor X-Api-Key', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'api-key' });
-    const req: any = {
-      ip: '10.0.0.5',
-      socket: {},
-      header: (_name: string) => undefined,
-    };
-    const res: any = {
-      statusCode: 200,
-      body: null,
-      status(code: number) {
-        this.statusCode = code;
-        return this;
-      },
-      json(body: unknown) {
-        this.body = body;
-      },
-    };
-    let calledNext = false;
-
-    middleware(req, res, () => {
-      calledNext = true;
-    });
-
-    expect(calledNext).toBe(false);
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toMatchObject({
+    const result = runAuth({ authMode: 'api-key' }, { ip: '10.0.0.5' });
+    expect(result.nexted).toBe(false);
+    expect(result.status).toBe(401);
+    expect(result.body).toMatchObject({
       error: 'Unauthorized',
       message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
     });

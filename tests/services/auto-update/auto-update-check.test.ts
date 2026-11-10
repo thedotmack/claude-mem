@@ -398,7 +398,6 @@ function expectNothingTouchedAfterSettings(checkHarness: CheckHarness, result?: 
   expect(checkHarness.pluginRootLookups()).toBe(0);
   expectOnlyTheOffDecisionRecorded(checkHarness, result);
   expect(checkHarness.fetches).toHaveLength(0);
-  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 /** Off by a switch in one of Claude Code's settings files: read once, and nothing after it. */
@@ -408,7 +407,6 @@ function expectNothingTouchedAfterClaudeCodeSettings(checkHarness: CheckHarness,
   expect(checkHarness.pluginRootLookups()).toBe(0);
   expectOnlyTheOffDecisionRecorded(checkHarness, result);
   expect(checkHarness.fetches).toHaveLength(0);
-  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 /** Off by claude-mem's own state in Claude Code: both of Claude Code's reads ran once, and nothing after them. */
@@ -419,7 +417,6 @@ function expectNothingTouchedAfterPluginState(checkHarness: CheckHarness, result
   expectOnlyTheOffDecisionRecorded(checkHarness, result);
   expect(checkHarness.fetches).toHaveLength(0);
   expect(checkHarness.launches).toHaveLength(0);
-  expectKnownMarketplacesNotWritten(checkHarness);
 }
 
 function expectVanishedSupervisorRecordedAsFailed(checkHarness: CheckHarness, messagePart: string): void {

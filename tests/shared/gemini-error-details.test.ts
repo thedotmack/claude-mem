@@ -5,6 +5,7 @@ describe('parseRetryDelayMs', () => {
   for (const [input, expected] of [
     ['3s', 3000],
     ['1.5s', 1500],
+    ['1.25s', 1250],
     ['0.25s', 250],
     ['0s', 0],
     [' 7s ', 7000],
@@ -14,7 +15,7 @@ describe('parseRetryDelayMs', () => {
     });
   }
 
-  for (const input of ['', 'abc', '5', '5ms', '-1s', '1.5', 's', null, undefined]) {
+  for (const input of ['', 'abc', '5', '5ms', '-1s', '1.5', 's', null, undefined, '9'.repeat(400) + 's', '9007199254741s']) {
     it(`returns undefined for ${JSON.stringify(input)}`, () => {
       expect(parseRetryDelayMs(input)).toBeUndefined();
     });

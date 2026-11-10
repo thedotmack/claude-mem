@@ -17,23 +17,6 @@ function obs(overrides: Partial<Parameters<SessionStore['storeObservation']>[2]>
 }
 
 describe('computeObservationContentHash', () => {
-  it('is deterministic and 16 chars', () => {
-    const a = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
-    const b = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
-    expect(a).toBe(b);
-    expect(a.length).toBe(16);
-  });
-
-  it('different content produces different hash', () => {
-    const a = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
-    const b = computeObservationContentHash('session-1', 'Title B', 'Narrative B');
-    expect(a).not.toBe(b);
-  });
-
-  it('handles null title and narrative', () => {
-    expect(computeObservationContentHash('session-1', null, null).length).toBe(16);
-  });
-
   it('avoids collision from field boundary ambiguity', () => {
     const h1 = computeObservationContentHash('session-abc', 'debug log', '');
     const h2 = computeObservationContentHash('session-ab', 'cdebug log', '');

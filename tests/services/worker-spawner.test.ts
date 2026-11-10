@@ -89,28 +89,6 @@ const { ensureWorkerStarted, getLastWorkerBootFailure } = await import('../../sr
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
 
-async function modelBaseLivePidResult(
-  port: number,
-  waitForHealthImpl: TimedProbe,
-  waitForReadinessImpl: TimedProbe
-): Promise<'ready' | 'warming'> {
-  const healthy = await waitForHealthImpl(port, HOOK_TIMEOUTS.PORT_IN_USE_WAIT);
-  if (!healthy) return 'warming';
-  const ready = await waitForReadinessImpl(port, HOOK_TIMEOUTS.READINESS_WAIT);
-  return ready ? 'ready' : 'warming';
-}
-
-async function modelBaseSpawnResult(
-  port: number,
-  waitForHealthImpl: TimedProbe,
-  waitForReadinessImpl: TimedProbe
-): Promise<'ready' | 'warming'> {
-  const healthy = await waitForHealthImpl(port, HOOK_TIMEOUTS.POST_SPAWN_WAIT);
-  if (!healthy) return 'warming';
-  const ready = await waitForReadinessImpl(port, HOOK_TIMEOUTS.READINESS_WAIT);
-  return ready ? 'ready' : 'warming';
-}
-
 function resetMocks(): void {
   processManager.cleanStalePidFile.mockReset();
   processManager.cleanStalePidFile.mockReturnValue('dead');
@@ -144,7 +122,7 @@ function resetMocks(): void {
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
-  it('returns ready for a live PID when base would have warmed after the old 3s gate', async () => {
+  it('waits for the full readiness budget for a live PID', async () => {
     resetMocks();
     const port = 39001;
     const becomesReadyOnlyAtReadinessBudget: TimedProbe = async (_port, timeout) =>
@@ -154,14 +132,8 @@ describe('ensureWorkerStarted startup readiness', () => {
     healthMonitor.waitForHealth.mockImplementation(becomesReadyOnlyAtReadinessBudget);
     healthMonitor.waitForReadiness.mockImplementation(becomesReadyOnlyAtReadinessBudget);
 
-    const baseResult = await modelBaseLivePidResult(
-      port,
-      becomesReadyOnlyAtReadinessBudget,
-      becomesReadyOnlyAtReadinessBudget
-    );
     const result = await ensureWorkerStarted(port, import.meta.filename);
 
-    expect(baseResult).toBe('warming');
     expect(result).toBe('ready');
     expect(healthMonitor.waitForHealth).not.toHaveBeenCalled();
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(port, HOOK_TIMEOUTS.READINESS_WAIT);
@@ -169,7 +141,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
   });
 
-  it('returns ready after spawn when base would have warmed after the old 15s gate', async () => {
+  it('waits for the full readiness budget after spawn', async () => {
     resetMocks();
     const port = 39002;
     const becomesReadyOnlyAtReadinessBudget: TimedProbe = async (_port, timeout) =>
@@ -178,14 +150,8 @@ describe('ensureWorkerStarted startup readiness', () => {
     healthMonitor.waitForHealth.mockImplementation(becomesReadyOnlyAtReadinessBudget);
     healthMonitor.waitForReadiness.mockImplementation(becomesReadyOnlyAtReadinessBudget);
 
-    const baseResult = await modelBaseSpawnResult(
-      port,
-      becomesReadyOnlyAtReadinessBudget,
-      becomesReadyOnlyAtReadinessBudget
-    );
     const result = await ensureWorkerStarted(port, import.meta.filename);
 
-    expect(baseResult).toBe('warming');
     expect(result).toBe('ready');
     expect(healthMonitor.waitForHealth).toHaveBeenCalledWith(port, 1000);
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(port, HOOK_TIMEOUTS.READINESS_WAIT);

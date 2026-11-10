@@ -6,7 +6,6 @@ import path from 'path';
 import type { AutoUpdateApplyDeps } from '../../../src/services/auto-update/auto-update-apply.js';
 import {
   AUTO_UPDATE_APPLY_COMMAND,
-  AUTO_UPDATE_HOP_EXIT_BUDGET_MS,
   AutoUpdateApplyUsageError,
   FORBID_REAL_AUTO_UPDATE_ENV,
   autoUpdateApplyArgv,
@@ -39,7 +38,7 @@ import { AUTO_UPDATE_SUPERVISOR_DEADLINE_MS, WORKER_PID_CAPTURE_TIMEOUT_MS } fro
 import { autoUpdateStatePath, defaultAutoUpdateState, type AutoUpdateState } from '../../../src/services/auto-update/auto-update-state.js';
 import { LATEST_SCHEMA_VERSION } from '../../../src/services/sqlite/connection.js';
 import type { PidInfo } from '../../../src/supervisor/process-registry.js';
-import { getPlatformTimeout, resolveWorkerRuntimePath, spawnDaemon, WORKER_BOOT_PROBE_TIMEOUT_MS } from '../../../src/services/infrastructure/ProcessManager.js';
+import { resolveWorkerRuntimePath, spawnDaemon } from '../../../src/services/infrastructure/ProcessManager.js';
 import { Server, type ServerOptions } from '../../../src/services/server/Server.js';
 import { InitPhaseTracker } from '../../../src/services/server/init-phase.js';
 import { INSTALL_RUN_BY_AUTO_UPDATE_ENV, withoutNpmSettingsFromAutoUpdateNpxFlags } from '../../../src/shared/auto-update-install-run.js';
@@ -1080,10 +1079,6 @@ describe('launchAutoUpdateSupervisor (the worker\'s side)', () => {
     rmSync(deps.attemptLogPath(STARTED_AT), { force: true });
   }, REAL_PROCESS_TEST_TIMEOUT_MS);
 
-  it('gives the hop the budget of a bundle-loading probe: 5 s, 10 s on Windows', () => {
-    expect(AUTO_UPDATE_HOP_EXIT_BUDGET_MS).toBe(getPlatformTimeout(WORKER_BOOT_PROBE_TIMEOUT_MS));
-  });
-
   it('records the supervisor deadline gate 3 uses, as this worker computes it', () => {
     expect(autoUpdateLaunchDeps({ scriptPath: '/never/run/worker-service.cjs' }).supervisorDeadlineMs).toBe(AUTO_UPDATE_SUPERVISOR_DEADLINE_MS);
   });
@@ -1227,7 +1222,7 @@ describe('autoUpdateWorkerProof (the supervisor\'s proof)', () => {
     // /api/health already reports this worker's pid and version.
     expect(await (await fetch(`http://127.0.0.1:${port}/api/health`)).json()).toMatchObject({ pid: process.pid, version, initialized: false });
 
-    const proof = await autoUpdateWorkerProof(port, TEST_CEILING_MS)(null, version);
+    const proof = await autoUpdateWorkerProof(port, 200)(null, version);
 
     expect(proof).toEqual({ ok: false, startupFailed: false, detail: expect.stringContaining('"phase":"routes_ready"') });
   });

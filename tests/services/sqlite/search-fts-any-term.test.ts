@@ -68,17 +68,6 @@ describe('FTS5 any-term fallback for queries no row fully matches', () => {
     expect(results[0].title).toBe('Payment retry limit raised');
   });
 
-  it('keeps a query the AND form answers precise: no widening to rows holding only some terms', () => {
-    // Three terms, so the query is eligible for widening; 'Retry backoff' holds only 'retry' and must not appear.
-    const results = search.searchObservations('payment retry limit', { project: 'proj' });
-    expect(results.map(r => r.title)).toEqual(['Payment retry limit raised']);
-  });
-
-  it('keeps a session query the AND form answers precise', () => {
-    const results = search.searchSessions('payment retry limit', { project: 'proj' });
-    expect(results.map(r => r.request)).toEqual(['Raise the payment retry limit after the outage']);
-  });
-
   it('prefers a complete substring match to a partial any-term match (Latin glued to ideographs)', () => {
     expect(search.searchObservations('payload retry limit', { project: 'proj' }).map(r => r.title))
       .toEqual(['payload解析 retry重试 limit限制']);

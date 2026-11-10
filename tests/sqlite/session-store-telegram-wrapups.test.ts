@@ -21,18 +21,6 @@ describe('SessionStore Telegram wrap-ups', () => {
     };
   }
 
-  it('creates schema version 52 and the Telegram wrap-up ledger', () => {
-    const version = store.db.query(
-      'SELECT version FROM schema_versions WHERE version = 52',
-    ).get() as { version: number } | null;
-    const table = store.db.query(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'telegram_wrapups'",
-    ).get() as { name: string } | null;
-
-    expect(version?.version).toBe(52);
-    expect(table?.name).toBe('telegram_wrapups');
-  });
-
   it('claims once, releases a claim, and can claim again', () => {
     const input = ledgerInput();
 

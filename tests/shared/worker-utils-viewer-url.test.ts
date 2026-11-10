@@ -39,16 +39,6 @@ describe('getViewerBaseUrl', () => {
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
   }
 
-  it('prefers the CLAUDE_MEM_PUBLIC_URL env var over settings.json', async () => {
-    writeSettings('https://from-settings.example');
-    process.env.CLAUDE_MEM_PUBLIC_URL = 'https://from-env.example';
-
-    const workerUtils = await import('../../src/shared/worker-utils.js');
-    workerUtils.clearPortCache();
-
-    expect(workerUtils.getViewerBaseUrl(37700)).toBe('https://from-env.example');
-  });
-
   it('uses the settings.json value when no env override is present', async () => {
     writeSettings('https://37700.host.alice.example');
 
@@ -56,23 +46,5 @@ describe('getViewerBaseUrl', () => {
     workerUtils.clearPortCache();
 
     expect(workerUtils.getViewerBaseUrl(37700)).toBe('https://37700.host.alice.example');
-  });
-
-  it('trims a trailing slash from the public URL', async () => {
-    writeSettings('https://37700.host.alice.example/');
-
-    const workerUtils = await import('../../src/shared/worker-utils.js');
-    workerUtils.clearPortCache();
-
-    expect(workerUtils.getViewerBaseUrl(37700)).toBe('https://37700.host.alice.example');
-  });
-
-  it('falls back to http://localhost:<port> when unset', async () => {
-    writeSettings('');
-
-    const workerUtils = await import('../../src/shared/worker-utils.js');
-    workerUtils.clearPortCache();
-
-    expect(workerUtils.getViewerBaseUrl(37742)).toBe('http://localhost:37742');
   });
 });

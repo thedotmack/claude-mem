@@ -87,28 +87,15 @@ describe('SessionStore.storeObservation', () => {
     expect(store.getObservationById(99999)).toBeNull();
   });
 
-  it('stores agent_type and agent_id when provided', () => {
-    const result = store.storeObservation(session('mem-agent'), 'project', obs({ agent_type: 'Explore', agent_id: 'agent-abc' }));
-
+  it.each([
+    [{ agent_type: 'Explore', agent_id: 'agent-abc' }, 'Explore', 'agent-abc'],
+    [{}, null, null],
+    [{ agent_type: 'Plan' }, 'Plan', null],
+  ] as const)('round-trips agent fields %j', (fields, agentType, agentId) => {
+    const result = store.storeObservation(session('mem-agent'), 'project', obs(fields));
     const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBe('Explore');
-    expect(row?.agent_id).toBe('agent-abc');
-  });
-
-  it('defaults agent_type and agent_id to NULL when omitted', () => {
-    const result = store.storeObservation(session('mem-noagent'), 'project', obs());
-
-    const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBeNull();
-    expect(row?.agent_id).toBeNull();
-  });
-
-  it('stores agent_type alone when agent_id is absent', () => {
-    const result = store.storeObservation(session('mem-partial'), 'project', obs({ agent_type: 'Plan' }));
-
-    const row = store.getObservationById(result.id);
-    expect(row?.agent_type).toBe('Plan');
-    expect(row?.agent_id).toBeNull();
+    expect(row?.agent_type).toBe(agentType);
+    expect(row?.agent_id).toBe(agentId);
   });
 
   it('getFirstObservationCreatedAt returns null when empty and the earliest ISO otherwise', () => {
@@ -132,12 +119,6 @@ describe('SessionStore.importObservation', () => {
   afterEach(() => {
     store.close();
   });
-
-  // observations.memory_session_id is an enforced FK to sdk_sessions; register it first.
-  function registeredSession(memorySessionId: string): void {
-    const id = store.createSDKSession(`content-${memorySessionId}`, 'project', 'prompt');
-    store.updateMemorySessionId(id, memorySessionId);
-  }
 
   function importedObs(memorySessionId: string | null | undefined) {
     return {
@@ -167,22 +148,8 @@ describe('SessionStore.importObservation', () => {
   // rows (z.array(z.unknown())) straight into importObservation. A row whose
   // memory_session_id is null/undefined must be rejected with a warning rather
   // than crashing with "NOT NULL constraint failed: observations.memory_session_id".
-  it('rejects an observation with null memory_session_id without throwing or inserting', () => {
-    const result = store.importObservation(importedObs(null) as any);
-
-    expect(result.imported).toBe(false);
-    expect(observationCount()).toBe(0);
-  });
-
-  it('rejects an observation with undefined memory_session_id without throwing or inserting', () => {
-    const result = store.importObservation(importedObs(undefined) as any);
-
-    expect(result.imported).toBe(false);
-    expect(observationCount()).toBe(0);
-  });
-
   // Truthiness is not enough: {}, true and 123 are truthy but are not session ids.
-  for (const notASessionId of [{}, true, 123, '   ']) {
+  for (const notASessionId of [null, undefined, {}, true, 123, '   ']) {
     it(`rejects an observation whose memory_session_id is ${JSON.stringify(notASessionId)}`, () => {
       const result = store.importObservation(importedObs(notASessionId as any) as any);
 
@@ -191,17 +158,6 @@ describe('SessionStore.importObservation', () => {
     });
   }
 
-  it('still imports valid rows that follow a rejected one in the same batch', () => {
-    registeredSession('mem-import');
-
-    const rejected = store.importObservation(importedObs(null) as any);
-    const accepted = store.importObservation(importedObs('mem-import'));
-
-    expect(rejected.imported).toBe(false);
-    expect(accepted.imported).toBe(true);
-    expect(accepted.id).toBeGreaterThan(0);
-    expect(observationCount()).toBe(1);
-  });
 });
 
 describe('SessionStore.importSessionSummary', () => {

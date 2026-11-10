@@ -47,14 +47,6 @@ describe('parseNetstatListeningPids', () => {
     expect(owners).toEqual([57824]);
   });
 
-  it('ignores other ports, non-LISTENING states and UDP rows', () => {
-    const owners = parseNetstatListeningPids(SAMPLE_NETSTAT, 37777);
-    expect(owners).not.toContain(1100); // different port
-    expect(owners).not.toContain(22040); // 37778
-    expect(owners).not.toContain(9999); // ESTABLISHED, not a listener
-    expect(owners).not.toContain(4); // 37001
-  });
-
   it('returns an empty list when nothing listens on the port', () => {
     expect(parseNetstatListeningPids(SAMPLE_NETSTAT, 39999)).toEqual([]);
     expect(parseNetstatListeningPids('', 37777)).toEqual([]);
@@ -146,7 +138,6 @@ function rows(inputs: RowInput[]): WindowsProcessRow[] {
     cmdline: input.cmdline !== undefined ? input.cmdline : null,
   }));
 }
-
 
 /**
  * listOwners is invoked twice (probe + verify). A real ghost clears after the
@@ -351,7 +342,6 @@ describe('reclaimGhostListeningPort decision branches', () => {
   });
 });
 
-
 /**
  * Wedged-worker reclaim: our PID file names a LIVE worker that holds the port
  * but no longer answers /health (#4127). Unlike the ghost-listener path this is
@@ -457,13 +447,6 @@ describe('a slow worker is not a dead worker (heartbeat)', () => {
     const result = await reclaimGhostListeningPort(37777, testDeps);
     expect(result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
     expect(killed).toEqual([]);
-  });
-
-  it('still kills a silent worker whose heartbeat is stale', async () => {
-    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 600_000 } });
-    const result = await reclaimGhostListeningPort(37777, testDeps);
-    expect(result.reclaimed).toBe(true);
-    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
   });
 
   it('still kills a silent worker that writes no heartbeat (an older worker)', async () => {

@@ -152,7 +152,6 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
   });
 
   it('compares the query only with parts embedded by its own model', async () => {
-    if (!vectorAvailable) return;
     const storage = createPostgresStorageRepositories(pool);
     const content = 'Written before the model changed.';
     const stale = await storage.observations.create({ projectId, teamId, content, metadata: { narrative: content } });
@@ -615,7 +614,6 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
   }, 30_000);
 
   it('keeps the vectors when the model\'s width is unchanged, and starts over when it changes', async () => {
-    if (!vectorAvailable) return;
     const stored = async () => {
       const result = await pool.query(
         `SELECT (SELECT atttypmod FROM pg_attribute

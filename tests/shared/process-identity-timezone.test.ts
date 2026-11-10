@@ -70,25 +70,17 @@ function unprovableCrossEraToken(pid: number): string {
  */
 
 describe('startTokenProbeEnv (#5311)', () => {
-  it('pins TZ together with the locale, overriding whatever the host exported', () => {
-    const env = startTokenProbeEnv({ PATH: '/usr/bin', TZ: 'America/New_York', LANG: 'de_DE.UTF-8' });
+  it.each([
+    { PATH: '/usr/bin', TZ: 'America/New_York', LANG: 'de_DE.UTF-8' },
+    { PATH: '/usr/bin' },
+  ])('pins TZ and locale without mutating the host env %j', (base) => {
+    const original = { ...base };
+    const env = startTokenProbeEnv(base);
     expect(env.TZ).toBe('UTC');
     expect(env.LC_ALL).toBe('C');
     expect(env.LANG).toBe('C');
     expect(env.PATH).toBe('/usr/bin');
-  });
-
-  it('pins TZ even when the host exported none', () => {
-    const env = startTokenProbeEnv({ PATH: '/usr/bin' });
-    expect(env.TZ).toBe('UTC');
-    expect(env.LC_ALL).toBe('C');
-    expect(env.LANG).toBe('C');
-  });
-
-  it('does not mutate the base env object', () => {
-    const base = { TZ: 'America/New_York' };
-    startTokenProbeEnv(base);
-    expect(base.TZ).toBe('America/New_York');
+    expect(base).toEqual(original);
   });
 });
 

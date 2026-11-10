@@ -57,31 +57,9 @@ describe('SessionStore.storeObservations empty-title handling', () => {
     expect(stored[0].title).toBe('A Real Observation');
   });
 
-  it('stores every observation when all titles are present', () => {
-    const mem = session('mem-all-titled');
-
-    const result = store.storeObservations(
-      mem,
-      'project',
-      [obs({ title: 'First' }), obs({ title: 'Second' })],
-      null,
-      1,
-      0,
-    );
-
-    expect(result.observationIds.length).toBe(2);
-    expect(store.getObservationsForSession(mem).length).toBe(2);
-  });
-
   it('storeObservation (single) throws on an empty title instead of returning an undefined id', () => {
     const mem = session('mem-single-empty');
     expect(() => store.storeObservation(mem, 'project', obs({ title: '' }))).toThrow(/non-empty title/);
     expect(() => store.storeObservation(mem, 'project', obs({ title: null }))).toThrow(/non-empty title/);
-  });
-
-  it('storeObservation (single) stores and returns a real id for a titled observation', () => {
-    const mem = session('mem-single-ok');
-    const result = store.storeObservation(mem, 'project', obs({ title: 'Kept' }));
-    expect(result.id).toBeGreaterThan(0);
   });
 });

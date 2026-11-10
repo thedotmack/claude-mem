@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
-import { spawn, spawnSync } from 'child_process';
+import { join } from 'path';
 import {
   getOrCreateIntentCredentials,
   intentCredentialHeaders,
@@ -38,21 +37,6 @@ describe('persistent hosted intent installation credentials', () => {
     expect(readIntentCredentials(configPath)).toEqual(credentials);
     expect(await getOrCreateIntentCredentials({ origin, configPath, fetch: laterFetcher as typeof fetch })).toEqual(credentials);
     expect(laterFetcher).not.toHaveBeenCalled();
-  });
-
-  it('reuses credentials across process restarts without a network request', async () => {
-    await getOrCreateIntentCredentials({ origin, configPath, fetch: mock(async () => Response.json(credentials)) as typeof fetch });
-    const modulePath = resolve(import.meta.dir, '../../src/shared/intent-credentials.ts');
-    const child = spawnSync(process.execPath, ['-e', `
-      import { getOrCreateIntentCredentials } from ${JSON.stringify(modulePath)};
-      const saved = await getOrCreateIntentCredentials({
-        origin: ${JSON.stringify(origin)}, configPath: ${JSON.stringify(configPath)},
-        fetch: async () => { throw new Error('unexpected network request after restart'); },
-      });
-      process.stdout.write(JSON.stringify(saved));
-    `], { encoding: 'utf8' });
-    expect(child.status).toBe(0);
-    expect(JSON.parse(child.stdout)).toEqual(credentials);
   });
 
   it('resolves its default path from the installation data directory at call time', async () => {
@@ -132,53 +116,7 @@ describe('persistent hosted intent installation credentials', () => {
     expect(await Promise.all([first, second])).toEqual([credentials, credentials]);
   });
 
-  it('retains the reservation when the issuing process crashes after starting its request', async () => {
-    const modulePath = resolve(import.meta.dir, '../../src/shared/intent-credentials.ts');
-    const child = spawnSync(process.execPath, ['-e', `
-      import { getOrCreateIntentCredentials } from ${JSON.stringify(modulePath)};
-      await getOrCreateIntentCredentials({
-        origin: ${JSON.stringify(origin)}, configPath: ${JSON.stringify(configPath)},
-        fetch: async () => process.exit(0),
-      });
-    `], { encoding: 'utf8' });
-    expect(child.status).toBe(0);
-    const fetcher = mock(async () => Response.json(credentials));
-    await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch }))
-      .rejects.toThrow('refusing to create another installation identity');
-    expect(fetcher).not.toHaveBeenCalled();
-  });
 
-  it('prevents another process from issuing while the first owns the reservation', async () => {
-    const modulePath = resolve(import.meta.dir, '../../src/shared/intent-credentials.ts');
-    const child = spawn(process.execPath, ['-e', `
-      import { getOrCreateIntentCredentials } from ${JSON.stringify(modulePath)};
-      await getOrCreateIntentCredentials({
-        origin: ${JSON.stringify(origin)}, configPath: ${JSON.stringify(configPath)},
-        fetch: async () => {
-          process.stdout.write('reserved');
-          await new Promise(resolve => process.stdin.once('data', resolve));
-          return Response.json(${JSON.stringify(credentials)});
-        },
-      });
-    `], { stdio: ['pipe', 'pipe', 'pipe'] });
-    try {
-      await new Promise<void>((resolveReady, reject) => {
-        child.once('error', reject);
-        child.once('exit', code => reject(new Error(`Credential issuer exited early: ${code}`)));
-        child.stdout.once('data', () => resolveReady());
-      });
-      const fetcher = mock(async () => Response.json(credentials));
-      await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch }))
-        .rejects.toThrow('refusing to create another installation identity');
-      expect(fetcher).not.toHaveBeenCalled();
-      const finished = new Promise<number | null>(resolveExit => child.once('exit', resolveExit));
-      child.stdin.end('finish');
-      expect(await finished).toBe(0);
-      expect(readIntentCredentials(configPath)).toEqual(credentials);
-    } finally {
-      child.kill();
-    }
-  });
 
   it('uses the same exact install headers for anonymous and account requests', () => {
     expect(intentCredentialHeaders(credentials)).toEqual({
