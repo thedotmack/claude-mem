@@ -95,7 +95,8 @@ export function buildRules(state, ledger) {
       source: text(fields.source) || base.source,
       timesSeen: count(fields.times_seen) ?? base.timesSeen,
       latestAt: text(fields.latest_at) || base.latestAt,
-      quotes: savedQuotes.length ? savedQuotes : base.quotes,
+      quotes: savedQuotes.length && !(quotesTotal > savedQuotes.length && base.quotes.length > savedQuotes.length)
+        ? savedQuotes : base.quotes,
       // The local story may still supply quotes that did not fit in the synced row.
       quotesTotal: quotesTotal ?? (savedQuotes.length || base.quotes.length),
       quotesOmitted: quotesTotal === null ? 0 : Math.max(0, quotesTotal - savedQuotes.length),

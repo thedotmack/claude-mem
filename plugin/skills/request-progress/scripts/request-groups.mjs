@@ -5680,6 +5680,7 @@ var isMyRulesList = (name) => name === MY_RULES_LIST;
 var ruleIdForPreference = (preference2) => `pref_${createHash5("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
 var text3 = (value) => typeof value === "string" ? value.trim() : "";
 var count = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+var quoteCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 var shortQuote = (quote2) => quote2.length > MAX_QUOTE_CHARS ? `${quote2.slice(0, MAX_QUOTE_CHARS - 1)}\u2026` : quote2;
 function parseQuoteLines(value, kind) {
   if (typeof value !== "string") return [];
@@ -5742,6 +5743,7 @@ function buildRules(state, ledger) {
     };
     const scopeTier = RULE_SCOPE_TIERS.includes(fields.scope_tier) ? fields.scope_tier : base.scopeTier;
     const savedQuotes = parseQuoteLines(fields.quotes, base.kind);
+    const quotesTotal = quoteCount(fields.quotes_total);
     rules.set(ruleId, {
       ...base,
       scopeTier,
@@ -5753,7 +5755,10 @@ function buildRules(state, ledger) {
       source: text3(fields.source) || base.source,
       timesSeen: count(fields.times_seen) ?? base.timesSeen,
       latestAt: text3(fields.latest_at) || base.latestAt,
-      quotes: savedQuotes.length ? savedQuotes : base.quotes,
+      quotes: savedQuotes.length && !(quotesTotal > savedQuotes.length && base.quotes.length > savedQuotes.length) ? savedQuotes : base.quotes,
+      // The local story may still supply quotes that did not fit in the synced row.
+      quotesTotal: quotesTotal ?? (savedQuotes.length || base.quotes.length),
+      quotesOmitted: quotesTotal === null ? 0 : Math.max(0, quotesTotal - savedQuotes.length),
       replacedBy: text3(fields.replaced_by) || null,
       replacedAt: text3(fields.replaced_at) || null,
       savedAt: task.updatedAt

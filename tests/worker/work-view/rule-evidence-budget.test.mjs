@@ -38,6 +38,34 @@ test('a device without the story keeps the omission count when saving the surviv
   assert.equal(next.quotesOmitted, 2);
 });
 
+test('a partial save uses the available story evidence and a shorter save restores every quote', () => {
+  const fields = ruleRowFields({ ...rule, ...partial });
+  const local = read(fields, ledger);
+  assert.deepEqual(local.quotes, quotes);
+  assert.equal(local.quotesOmitted, 2);
+
+  const complete = ruleRowFields({ ...local, then: 'Shorter rule.' });
+  assert.equal(complete.quotes_total, undefined);
+  const restored = readRows([fields, complete]);
+  assert.deepEqual(restored.quotes, quotes);
+  assert.equal(restored.quotesOmitted, 0);
+});
+
+test('a partial save retains its quotes when the local story has no additional evidence', () => {
+  const fields = ruleRowFields({ ...rule, ...partial });
+  const limitedStory = { story: { preferences: [{ preference, quotes: [quotes[2]] }] } };
+  const local = read(fields, limitedStory);
+  assert.deepEqual(local.quotes, [quotes[0]]);
+  assert.equal(local.quotesOmitted, 2);
+});
+
+test('complete and legacy saves keep their own quotes even when the story contains more', () => {
+  const fields = ruleRowFields({ ...rule, quotes: [quotes[2]] });
+  assert.equal(fields.quotes_total, undefined);
+  assert.deepEqual(read(fields, ledger).quotes, [quotes[2]]);
+  assert.deepEqual(read({ ...fields, quotes_total: 1 }, ledger).quotes, [quotes[2]]);
+});
+
 test('dropping every saved quote keeps the local-story fallback and still reports the loss in the row', () => {
   const fields = ruleRowFields({ ...rule, ...full });
   assert.equal(fields.quotes, '');
