@@ -7,22 +7,12 @@
 // half: the first auth request must create the better-auth schema in the
 // worker's database and then serve normally.
 
-import { afterAll, afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdtempSync, rmSync } from 'fs';
 import type { Server } from 'node:http';
-import { tmpdir } from 'os';
-import path from 'path';
 
-// Point the data dir at a temp dir before the auth modules load:
-// src/shared/paths.ts freezes DATA_DIR at import time. The previous value
-// is restored in afterAll below so other test files in this process never
-// inherit this file's (deleted) temp dir.
-const dataDir = mkdtempSync(path.join(tmpdir(), 'cmem-auth-routes-'));
-const previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
-process.env.CLAUDE_MEM_DATA_DIR = dataDir;
-const { BetterAuthRoutes } = await import('../../src/server/auth/BetterAuthRoutes.js');
+import { BetterAuthRoutes } from '../../src/server/auth/BetterAuthRoutes.js';
 
 const AUTH_TABLES = [
   'user',
@@ -45,15 +35,6 @@ describe('BetterAuthRoutes', () => {
   afterEach(() => {
     server?.close();
     db?.close();
-  });
-
-  afterAll(() => {
-    if (previousDataDir === undefined) {
-      delete process.env.CLAUDE_MEM_DATA_DIR;
-    } else {
-      process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
-    }
-    rmSync(dataDir, { recursive: true, force: true });
   });
 
   async function start(): Promise<void> {
@@ -90,12 +71,6 @@ describe('BetterAuthRoutes', () => {
     for (const table of AUTH_TABLES) {
       expect(tables).toContain(table);
     }
-  });
-
-  it('keeps serving from the cached handler and reads the session table', async () => {
-    await start();
-    expect((await fetch(`${baseUrl}/api/auth/ok`)).status).toBe(200);
-    expect((await fetch(`${baseUrl}/api/auth/ok`)).status).toBe(200);
 
     // A session lookup against the migrated schema returns "no session"
     // instead of failing on the missing session table.

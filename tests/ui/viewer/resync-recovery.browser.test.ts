@@ -7,7 +7,8 @@ failOnCiWithoutChrome('CI requires Chrome for bounded resync recovery.');
 (chromeExecutablePath ? it : it.skip)('retains shown history after bounded refresh failure and offers a usable latest reset', async () => {
   const bundle = compileBrowserFixture(`
     import React from 'react'; import {createRoot} from 'react-dom/client'; import {App} from './src/ui/viewer/App';
-    localStorage.setItem('claude-mem-welcome-dismissed','true');
+    import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+    setStoredWelcomeDismissed(true);
     createRoot(document.getElementById('root')).render(<App/>);
     const has = text => document.body.textContent.includes(text);
     async function until(predicate,label) { const end=Date.now()+15000; while(!predicate()) {if(Date.now()>end)throw Error(label);await new Promise(r=>setTimeout(r,10));} }

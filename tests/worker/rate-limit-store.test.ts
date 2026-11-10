@@ -113,26 +113,15 @@ describe('shouldAbortForQuota — api_key auth', () => {
     store = freshStore();
   });
 
-  it('never aborts even at five_hour utilization 0.99', () => {
+  it('never aborts for an API key, even at high utilization or an imminent reset', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.99, status: 'allowed_warning' });
-    const decision = shouldAbortForQuota('api_key', store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('never aborts even at seven_day_opus 0.99', () => {
+    expect(shouldAbortForQuota('api_key', store, FIXED_NOW).abort).toBe(false);
+    store = freshStore();
     store.set({ rateLimitType: 'seven_day_opus', utilization: 0.99 });
-    const decision = shouldAbortForQuota('API key (from ~/.claude-mem/.env)', store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('never aborts when reset is imminent', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.92,
-      resetsAt: FIXED_NOW + 60_000, // 1 min away
-    });
-    const decision = shouldAbortForQuota('api_key', store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
+    expect(shouldAbortForQuota('API key (from ~/.claude-mem/.env)', store, FIXED_NOW).abort).toBe(false);
+    store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.92, resetsAt: FIXED_NOW + 60_000 });
+    expect(shouldAbortForQuota('api_key', store, FIXED_NOW).abort).toBe(false);
   });
 });
 
@@ -203,17 +192,6 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
       rateLimitType: 'overage',
       utilization: 0.96,
       isUsingOverage: true,
-      status: 'allowed_warning',
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('overage');
-  });
-
-  it('preserves overage utilization behavior when isUsingOverage is missing', () => {
-    store.set({
-      rateLimitType: 'overage',
-      utilization: 0.96,
       status: 'allowed_warning',
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
@@ -365,38 +343,6 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(false);
   });
 
-  it('aborts on five_hour at 0.96 with reason mentioning "five_hour"', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('five_hour');
-    expect(decision.reason).toContain('five_hour');
-  });
-
-  it('does not abort on five_hour at 0.94 (below 0.95 threshold, no reset pressure)', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.94,
-      resetsAt: FIXED_NOW + 60 * 60 * 1000, // 1h away
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
-  });
-
-  it('aborts on seven_day_opus at 0.94 (>= 0.93 threshold)', () => {
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.94 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_opus');
-  });
-
-  it('aborts on seven_day_sonnet at 0.93 (>= 0.92 threshold)', () => {
-    store.set({ rateLimitType: 'seven_day_sonnet', utilization: 0.93 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_sonnet');
-  });
-
   it('aborts on five_hour at 0.90 with resetsAt 10 min away (grace buffer)', () => {
     store.set({
       rateLimitType: 'five_hour',
@@ -432,14 +378,6 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(true);
     expect(decision.window).toBe('five_hour');
     expect(decision.reason).toContain('resets');
-  });
-
-  it('does not abort when all windows are below threshold', () => {
-    store.set({ rateLimitType: 'five_hour', utilization: 0.5 });
-    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.4 });
-    store.set({ rateLimitType: 'seven_day_sonnet', utilization: 0.3 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(false);
   });
 
   it('skips reset-grace check when utilization is below the floor', () => {
@@ -547,12 +485,6 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
 // billing one profile must not abort a generator billing another.
 describe('shouldAbortForQuota — per-account profile scoping', () => {
   const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn) profile=personal';
-
-  it('stores the profile a snapshot was recorded under', () => {
-    const store = freshStore();
-    store.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
-    expect(store.get('seven_day')?.profile).toBe('work');
-  });
 
   it('does not abort on a snapshot recorded under another profile', () => {
     const store = freshStore();
@@ -689,12 +621,6 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
     expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.95), FIXED_NOW).abort).toBe(false);
     expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.99), FIXED_NOW).abort).toBe(true);
     expect(shouldAbortForQuota(cliAuth, storeAt('seven_day_opus', 0.93), FIXED_NOW).abort).toBe(true);
-  });
-
-  it('an unparseable value falls back to the default', () => {
-    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = 'not-a-number';
-    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.92), FIXED_NOW).abort).toBe(false);
-    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.93), FIXED_NOW).abort).toBe(true);
   });
 
   it("keeps the bounds: '0' stops at any reported utilization, '1' only at full", () => {

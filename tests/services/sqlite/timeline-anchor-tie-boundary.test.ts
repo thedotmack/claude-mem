@@ -7,50 +7,30 @@ const CONTENT_SESSION_ID = 'content-tie-boundary';
 
 describe('getTimelineAroundTimestamp / getTimelineAroundObservation (epoch anchor)', () => {
   let store: SessionStore;
-  let testDbPath: string;
 
   beforeEach(() => {
-    testDbPath = `/tmp/test-timeline-tie-${crypto.randomUUID()}.db`;
-    store = new SessionStore(testDbPath);
+    store = new SessionStore(':memory:');
     const sdkId = store.createSDKSession(CONTENT_SESSION_ID, PROJECT, 'initial prompt');
     store.updateMemorySessionId(sdkId, MEMORY_SESSION_ID);
   });
 
   afterEach(() => {
     store.close();
-    try {
-      require('fs').unlinkSync(testDbPath);
-    } catch (e) {
-      // Ignore cleanup errors
-    }
   });
 
   const baseEpoch = Date.UTC(2024, 0, 1, 0, 0, 0);
   const stepMs = 60_000;
 
+  function seed(title: string, promptNumber: number, epoch: number): number {
+    return store.storeObservation(MEMORY_SESSION_ID, PROJECT, {
+      type: 'discovery', title, subtitle: null, facts: [], narrative: null,
+      concepts: [], files_read: [], files_modified: [],
+    }, promptNumber, 0, epoch).id;
+  }
+
   function seedSpaced(count: number): number[] {
-    const ids: number[] = [];
-    for (let i = 0; i < count; i++) {
-      const result = store.storeObservation(
-        MEMORY_SESSION_ID,
-        PROJECT,
-        {
-          type: 'discovery',
-          title: `Spaced observation #${i + 1}`,
-          subtitle: null,
-          facts: [],
-          narrative: null,
-          concepts: [],
-          files_read: [],
-          files_modified: [],
-        },
-        i + 1,
-        0,
-        baseEpoch + i * stepMs
-      );
-      ids.push(result.id);
-    }
-    return ids;
+    return Array.from({ length: count }, (_, i) =>
+      seed(`Spaced observation #${i + 1}`, i + 1, baseEpoch + i * stepMs));
   }
 
   it('returns exactly depthBefore/depthAfter real neighbors when a single row ties the anchor epoch', () => {
@@ -59,43 +39,10 @@ describe('getTimelineAroundTimestamp / getTimelineAroundObservation (epoch ancho
     // then 3 more real observations after.
     const before = seedSpaced(3);
     const tieEpoch = baseEpoch + 3 * stepMs;
-    const tied = store.storeObservation(
-      MEMORY_SESSION_ID,
-      PROJECT,
-      {
-        type: 'discovery',
-        title: 'Tied-at-anchor observation',
-        subtitle: null,
-        facts: [],
-        narrative: null,
-        concepts: [],
-        files_read: [],
-        files_modified: [],
-      },
-      4,
-      0,
-      tieEpoch
-    );
+    const tied = seed('Tied-at-anchor observation', 4, tieEpoch);
     const afterIds: number[] = [];
     for (let i = 0; i < 3; i++) {
-      const result = store.storeObservation(
-        MEMORY_SESSION_ID,
-        PROJECT,
-        {
-          type: 'discovery',
-          title: `After observation #${i + 1}`,
-          subtitle: null,
-          facts: [],
-          narrative: null,
-          concepts: [],
-          files_read: [],
-          files_modified: [],
-        },
-        5 + i,
-        0,
-        tieEpoch + (i + 1) * stepMs
-      );
-      afterIds.push(result.id);
+      afterIds.push(seed(`After observation #${i + 1}`, 5 + i, tieEpoch + (i + 1) * stepMs));
     }
 
     const timeline = store.getTimelineAroundTimestamp(tieEpoch, 3, 3, PROJECT);
@@ -104,7 +51,7 @@ describe('getTimelineAroundTimestamp / getTimelineAroundObservation (epoch ancho
     // All 3 real "before" rows, the tied anchor row itself, and all 3 real
     // "after" rows: 7 total, not 6 (the pre-fix bug consumed one before-side
     // slot on the tied row and returned only 2 real predecessors).
-    expect(returnedIds).toEqual([...before, tied.id, ...afterIds].sort((a, b) => a - b));
+    expect(returnedIds).toEqual([...before, tied, ...afterIds].sort((a, b) => a - b));
     expect(returnedIds.filter(id => before.includes(id)).length).toBe(3);
     expect(returnedIds.filter(id => afterIds.includes(id)).length).toBe(3);
   });
@@ -131,15 +78,7 @@ describe('getTimelineAroundTimestamp / getTimelineAroundObservation (epoch ancho
 
     const afterIds: number[] = [];
     for (let i = 0; i < 2; i++) {
-      const result = store.storeObservation(
-        MEMORY_SESSION_ID,
-        PROJECT,
-        { type: 'discovery', title: `After #${i + 1}`, subtitle: null, facts: [], narrative: null, concepts: [], files_read: [], files_modified: [] },
-        4 + i,
-        0,
-        tieEpoch + (i + 1) * stepMs
-      );
-      afterIds.push(result.id);
+      afterIds.push(seed(`After #${i + 1}`, 4 + i, tieEpoch + (i + 1) * stepMs));
     }
 
     const timeline = store.getTimelineAroundTimestamp(tieEpoch, 2, 2, PROJECT);

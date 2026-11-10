@@ -234,28 +234,6 @@ describe('FTS sync triggers survive table rebuilds and converge when missing (#3
     expect(ftsMatches(store.db, 'observations_fts', 'walrus')).toHaveLength(1);
     expect(ftsMatches(store.db, 'session_summaries_fts', 'quokka')).toHaveLength(1);
 
-    store.close();
-  });
-
-  it('a repaired drifted index lets pre-existing rows be updated and deleted (no malformed-index writes)', () => {
-    const dbPath = makeTempDbPath();
-    const db = new Database(dbPath);
-    db.run('PRAGMA foreign_keys = OFF');
-    createBaseTables(db);
-    createFtsTables(db);
-    // The post-rebuild drift: both index tables exist, no sync triggers at all,
-    // and the rows below were written while nothing reached the index.
-    stampVersions(db, [4, 11, 21]);
-    seedObservation(db, 'prehistoric mammoth census');
-    seedSummary(db, 'prehistoric sabertooth ledger');
-    db.run('PRAGMA foreign_keys = ON');
-    db.close();
-
-    const store = new SessionStore(dbPath);
-    const search = new SessionSearch(store.db);
-
-    expect(existingFtsTriggers(store.db)).toEqual(ALL_FTS_TRIGGERS);
-
     // The P1 on #4634: re-attaching the _ad/_au triggers to a drifted index
     // used to serve FTS 'delete' commands for rowids the index never held, so
     // Bun SQLite threw "database disk image is malformed" and rejected every
@@ -307,6 +285,12 @@ describe('FTS sync triggers survive table rebuilds and converge when missing (#3
     expect(ftsMatches(store.db, 'observations_fts', 'updated')).toHaveLength(1);
     expect(ftsMatches(store.db, 'observations_fts', 'ibex')).toHaveLength(1);
 
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, text, type, created_at, created_at_epoch)
+      VALUES ('mem-healthy', 'proj-a', 'post-rebuild caracal sighting', 'discovery', ?, ?)
+    `).run(ISO, EPOCH);
+    expect(ftsMatches(store.db, 'observations_fts', 'caracal')).toHaveLength(1);
+
     store.close();
   });
 
@@ -337,34 +321,6 @@ describe('FTS sync triggers survive table rebuilds and converge when missing (#3
     // row was written while the old triggers were still attached) stay valid —
     // the index carries across the rebuild continuously.
     expect(ftsMatches(store.db, 'session_summaries_fts', 'heron')).toHaveLength(1);
-
-    store.close();
-  });
-
-  it('the v9 text-nullable rebuild no longer drops the observations FTS triggers', () => {
-    const dbPath = makeTempDbPath();
-    const db = new Database(dbPath);
-    db.run('PRAGMA foreign_keys = OFF');
-    createBaseTables(db, { observationsTextNotNull: true });
-    createFtsTables(db);
-    createAllFtsTriggers(db);
-    // v9 must be unstamped so the NOT NULL text column actually rebuilds.
-    stampVersions(db, [4, 7, 11, 21]);
-    seedObservation(db, 'pre-rebuild ibex census');
-    db.run('PRAGMA foreign_keys = ON');
-    db.close();
-
-    const store = new SessionStore(dbPath);
-
-    expect(existingFtsTriggers(store.db)).toEqual(ALL_FTS_TRIGGERS);
-
-    store.db.prepare(`
-      INSERT INTO observations (memory_session_id, project, text, type, created_at, created_at_epoch)
-      VALUES ('mem-healthy', 'proj-a', 'post-rebuild caracal sighting', 'discovery', ?, ?)
-    `).run(ISO, EPOCH);
-    expect(ftsMatches(store.db, 'observations_fts', 'caracal')).toHaveLength(1);
-    // See the v7 case: index entries made before the rebuild stay valid.
-    expect(ftsMatches(store.db, 'observations_fts', 'ibex')).toHaveLength(1);
 
     store.close();
   });

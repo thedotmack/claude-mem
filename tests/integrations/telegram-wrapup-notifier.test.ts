@@ -73,6 +73,10 @@ describe('Telegram wrap-up notifier', () => {
     )) as unknown as typeof fetch;
   }
 
+  function deliver(sessionDbId: number, fetchImpl: typeof fetch) {
+    return deliverSessionWrapup({ sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl });
+  }
+
   it('uses only the exact formatting instruction and the unabridged summary', () => {
     const summaryText = 'Full summary\n'.repeat(1_000);
     const instruction = 'format as a very short bulleted list that narratively explains this summary in < 255 char';
@@ -93,72 +97,23 @@ describe('Telegram wrap-up notifier', () => {
     })).toBe('  request\ncontinued  \ninvestigated\nlearned\ncompleted\nnext steps\n2 files read, 1 edited\nnotes');
   });
 
-  it('never emits a file path and drops credential stores from the counts', () => {
+  it.each([
+    ['POSIX', ['src/app.ts', '/home/me/.ssh/id_ed25519', '/home/me/.aws/credentials', 'project/.env', 'project/.env.local', 'secrets/server.pem'], ['project/.env', 'src/index.ts'], '1 files read, 1 edited'],
+    ['Windows', ['src\\app.ts', 'C:\\Users\\me\\.ssh\\id_ed25519', 'C:\\Users\\me\\.aws\\credentials', 'project\\.env'], ['project\\.env'], '1 files read, 0 edited'],
+    ['mixed case', ['src/App.ts', 'C:\\Users\\Me\\.SSH\\ID_ED25519', 'project/.ENV.local', 'certs/Server.PEM'], ['C:\\Users\\Me\\.AWS\\Credentials'], '1 files read, 0 edited'],
+  ])('omits file paths and excludes credential stores from the counts (%s)', (_name, filesRead, filesEdited, counts) => {
     const joined = joinStoredSummaryForTelegram({
       request: 'request',
       investigated: 'investigated',
       learned: 'learned',
       completed: 'completed',
       next_steps: 'next steps',
-      files_read: JSON.stringify([
-        'src/app.ts',
-        '/home/me/.ssh/id_ed25519',
-        '/home/me/.aws/credentials',
-        'project/.env',
-        'project/.env.local',
-        'secrets/server.pem',
-      ]),
-      files_edited: JSON.stringify(['project/.env', 'src/index.ts']),
+      files_read: JSON.stringify(filesRead),
+      files_edited: JSON.stringify(filesEdited),
       notes: 'notes',
     });
-    expect(joined).toContain('1 files read, 1 edited');
-    expect(joined).not.toContain('.ssh');
-    expect(joined).not.toContain('.aws');
-    expect(joined).not.toContain('.env');
-    expect(joined).not.toContain('.pem');
-    expect(joined).not.toContain('src/app.ts');
-    expect(joined).not.toContain('src/index.ts');
-  });
-
-  it('drops Windows-separated credential paths from the counts', () => {
-    const joined = joinStoredSummaryForTelegram({
-      request: 'request',
-      investigated: 'investigated',
-      learned: 'learned',
-      completed: 'completed',
-      next_steps: 'next steps',
-      files_read: JSON.stringify([
-        'src\\app.ts',
-        'C:\\Users\\me\\.ssh\\id_ed25519',
-        'C:\\Users\\me\\.aws\\credentials',
-        'project\\.env',
-      ]),
-      files_edited: JSON.stringify(['project\\.env']),
-      notes: 'notes',
-    });
-    expect(joined).toContain('1 files read, 0 edited');
-    expect(joined).not.toContain('.ssh');
-    expect(joined).not.toContain('.aws');
-    expect(joined).not.toContain('.env');
-  });
-
-  it('drops credential paths regardless of letter case', () => {
-    const joined = joinStoredSummaryForTelegram({
-      request: 'request',
-      investigated: 'investigated',
-      learned: 'learned',
-      completed: 'completed',
-      next_steps: 'next steps',
-      files_read: JSON.stringify([
-        'src/App.ts',
-        'C:\\Users\\Me\\.SSH\\ID_ED25519',
-        'project/.ENV.local',
-        'certs/Server.PEM',
-      ]),
-      files_edited: JSON.stringify(['C:\\Users\\Me\\.AWS\\Credentials']),
-      notes: 'notes',
-    });
-    expect(joined).toContain('1 files read, 0 edited');
+    expect(joined).toBe(`request\ninvestigated\nlearned\ncompleted\nnext steps\n${counts}\nnotes`);
+    expect(joined).not.toMatch(/(?:\.ssh|\.aws|\.env|\.pem|src[\\/])/i);
   });
 
   it('treats a missing or malformed file list as zero counts', () => {
@@ -191,7 +146,7 @@ describe('Telegram wrap-up notifier', () => {
     store.storeSummary(memorySessionId, 'project-a', summary, 4, 0, Date.now() + 1);
     const fetchMock = successfulFetch();
 
-    await deliverSessionWrapup({ sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl: fetchMock });
+    await deliver(sessionDbId, fetchMock);
 
     expect(formatSummary).toHaveBeenCalledWith({
       sessionDbId,
@@ -256,7 +211,7 @@ describe('Telegram wrap-up notifier', () => {
     formatSummary.mockResolvedValueOnce(`• Shipped\n• ${'more details '.repeat(100)}`);
     const fetchMock = successfulFetch();
 
-    await deliverSessionWrapup({ sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl: fetchMock });
+    await deliver(sessionDbId, fetchMock);
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.text).toBe('• Shipped');
@@ -373,13 +328,7 @@ describe('Telegram wrap-up notifier', () => {
     const { sessionDbId } = createSession('project-a', 'content-no-summary');
     const fetchMock = successfulFetch();
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('no_summary');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('no_summary');
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(formatSummary).not.toHaveBeenCalled();
@@ -390,20 +339,8 @@ describe('Telegram wrap-up notifier', () => {
     storeSummary(memorySessionId, 'project-a');
     const fetchMock = successfulFetch();
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('sent');
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('already_sent');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('sent');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('already_sent');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -420,20 +357,8 @@ describe('Telegram wrap-up notifier', () => {
     const fetchMock = successfulFetch();
 
     await Promise.all([
-      deliverSessionWrapup({
-        sessionStore: store,
-        sessionDbId,
-        formatSummary,
-        settings: settings(),
-        fetchImpl: fetchMock,
-      }),
-      deliverSessionWrapup({
-        sessionStore: store,
-        sessionDbId,
-        formatSummary,
-        settings: settings(),
-        fetchImpl: fetchMock,
-      }),
+      deliver(sessionDbId, fetchMock),
+      deliver(sessionDbId, fetchMock),
     ]);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -460,13 +385,7 @@ describe('Telegram wrap-up notifier', () => {
       WHERE content_session_id = ?
     `).run(Date.now() - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS - 1, ledgerInput.contentSessionId);
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('sent');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('sent');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -476,13 +395,7 @@ describe('Telegram wrap-up notifier', () => {
     storeSummary(memorySessionId, 'unrouted-project');
     const fetchMock = successfulFetch();
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('no_route');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('no_route');
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -498,22 +411,10 @@ describe('Telegram wrap-up notifier', () => {
       return Promise.resolve(response);
     }) as unknown as typeof fetch;
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).rejects.toThrow('Telegram API responded 500 Server Error');
+    await expect(deliver(sessionDbId, fetchMock)).rejects.toThrow('Telegram API responded 500 Server Error');
 
     failPost = false;
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('sent');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('sent');
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -527,13 +428,7 @@ describe('Telegram wrap-up notifier', () => {
       throw new Error('simulated ledger write failure');
     };
 
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).rejects.toThrow('simulated ledger write failure');
+    await expect(deliver(sessionDbId, fetchMock)).rejects.toThrow('simulated ledger write failure');
 
     const claim = store.db.query(
       "SELECT status FROM telegram_wrapups WHERE content_session_id = 'content-mark-failure'",
@@ -541,13 +436,7 @@ describe('Telegram wrap-up notifier', () => {
     expect(claim?.status).toBe('claimed');
 
     store.markTelegramWrapupSent = originalMarkTelegramWrapupSent;
-    await expect(deliverSessionWrapup({
-      sessionStore: store,
-      sessionDbId,
-      formatSummary,
-      settings: settings(),
-      fetchImpl: fetchMock,
-    })).resolves.toBe('already_sent');
+    await expect(deliver(sessionDbId, fetchMock)).resolves.toBe('already_sent');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

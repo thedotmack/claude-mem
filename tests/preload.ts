@@ -1,4 +1,5 @@
 import { beforeEach, mock } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -12,12 +13,19 @@ import { join } from 'path';
  * [test].preload), so when the env var is unset we pin it to a fresh per-run
  * temp dir. Tests that want tighter isolation still override it per-file /
  * per-test; this only fills the default so nothing can fall through to the
- * real data dir. The leaked temp dir per run is deliberate: correctness over
- * cleanup (an afterAll here could rip the dir out from under frozen module
- * constants while later test files still run).
+ * real data dir. Cleanup waits for process exit so frozen module constants
+ * stay valid while later test files run.
  */
 if (!process.env.CLAUDE_MEM_DATA_DIR) {
-  process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-test-run-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-test-run-'));
+  process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+  process.on('exit', () => {
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`Could not remove test data directory ${dataDir}:`, error);
+    }
+  });
 }
 
 // The suite asserts each capture at the call. Production leaves this unset and
@@ -140,3 +148,16 @@ mock.module('posthog-node', () => ({
  */
 const { setClaudeFallbackReadinessForTesting } = await import('../src/shared/claude-fallback-readiness-override.js');
 setClaudeFallbackReadinessForTesting(() => false);
+
+// SQLite 3.37 rejects .get() on RETURNING statements. Catch prepared-variable
+// reads too, which the source scanner cannot associate with their SQL.
+for (const method of ['prepare', 'query'] as const) {
+  const original = Database.prototype[method];
+  Database.prototype[method] = function (this: Database, sql: string, ...args: unknown[]) {
+    const statement = Reflect.apply(original, this, [sql, ...args]);
+    if (/\bRETURNING\b/i.test(sql)) {
+      statement.get = () => { throw new Error('Read SQLite RETURNING statements with .all(), not .get()'); };
+    }
+    return statement;
+  } as typeof original;
+}

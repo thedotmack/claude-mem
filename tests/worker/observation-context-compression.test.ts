@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const provider of ['gemini', 'gemini-control', 'claude']) {
+for (const provider of ['gemini', 'claude']) {
   it(`keeps the claimed observation's prompt context during ${provider} field compression`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-compression-context-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

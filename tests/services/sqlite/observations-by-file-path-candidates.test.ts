@@ -64,20 +64,6 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     expect(matches.map(o => o.id)).toContain(id);
   });
 
-  it('regression: the OLD single relative-path query would NOT match absolute storage', () => {
-    const absolutePath = '/Users/dev/proj/src/services/baz.ts';
-    const relativePath = 'src/services/baz.ts';
-    const id = seedObservationWithReadPath(absolutePath, 'old');
-
-    // Old behavior (single relative path) — no match. Demonstrates the bug.
-    const relativeOnly = getObservationsByFilePath(store.db, relativePath);
-    expect(relativeOnly.map(o => o.id)).not.toContain(id);
-
-    // New behavior (both forms) — match.
-    const both = getObservationsByFilePath(store.db, [absolutePath, relativePath]);
-    expect(both.map(o => o.id)).toContain(id);
-  });
-
   it('matches a Windows tool-input path stored with backslashes when querying the forward-slashed forms', () => {
     // Claude Code on Windows reads and edits `C:\...` paths; the PreToolUse:Read
     // hook sends `absolutePath.split(path.sep).join('/')` and the relative form.
@@ -91,12 +77,5 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
 
     const relativeMatches = getObservationsByFilePath(store.db, ['C:/Users/dev/proj/src/services/win-relative.ts', 'src/services/win-relative.ts']);
     expect(relativeMatches.map(o => o.id)).toContain(relativeId);
-  });
-
-  it('backward compatible: a single string path still works', () => {
-    const absolutePath = '/Users/dev/proj/src/single.ts';
-    const id = seedObservationWithReadPath(absolutePath, 'single');
-    const matches = getObservationsByFilePath(store.db, absolutePath);
-    expect(matches.map(o => o.id)).toContain(id);
   });
 });

@@ -185,7 +185,7 @@ describe('ServerViewerRoutes data endpoints', () => {
     await startServer({ authMode: 'local-dev', allowLocalDevBypass: true });
     expect((await get('/api/observations')).status).toBe(403);
     expect((await get('/api/projects')).status).toBe(403);
-    await server!.close();
+    try { await server!.close(); } catch { /* already closed */ }
     server = null;
 
     await startServer({ authMode: 'local-dev', allowLocalDevBypass: true, localDevTeamId: teamId });

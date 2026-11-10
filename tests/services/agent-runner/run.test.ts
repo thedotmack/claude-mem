@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, jest } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
@@ -496,11 +496,19 @@ describe('agent runner', () => {
     const spawnImpl = fakeSpawn(calls, call => {
       setTimeout(() => { call.child.stdout.emit('data', JSON.stringify({ response: 'slow but done' })); call.child.emit('close', 0); }, 1500);
     });
-    const started = Date.now();
-    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
-    expect(result.state).toBe('ok');
-    expect(calls[0].child.killed).toBe(false);
+    jest.useFakeTimers();
+    try {
+      const started = Date.now();
+      const pending = runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      jest.advanceTimersByTime(1_500);
+      const result = await pending;
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
+      expect(result.state).toBe('ok');
+      expect(calls[0].child.killed).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

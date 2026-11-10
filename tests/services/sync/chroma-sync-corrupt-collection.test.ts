@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -67,9 +67,13 @@ function makeDoc(id: string) {
 }
 
 let backfillSweeps = 0;
+let dataDir: string;
+let previousDataDir: string | undefined;
 
 beforeEach(() => {
-  process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-corrupt-'));
+  previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-corrupt-'));
+  process.env.CLAUDE_MEM_DATA_DIR = dataDir;
   ChromaSyncState.resetCacheForTests();
   toolCalls = [];
   backfillSweeps = 0;
@@ -83,6 +87,13 @@ beforeEach(() => {
     backfillSweeps += 1;
     return true;
   };
+});
+
+afterEach(() => {
+  ChromaSyncState.resetCacheForTests();
+  if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 afterAll(() => {

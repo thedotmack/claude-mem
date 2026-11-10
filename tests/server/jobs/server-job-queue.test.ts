@@ -75,30 +75,33 @@ function buildFakeWorker(state: FakeWorkerState) {
   };
 }
 
+function setup() {
+  const queueState: FakeQueueState = { added: [], removed: [], closed: false };
+  const workerState: FakeWorkerState = {
+    processor: null, options: null, errorHandlers: [], ranWith: null, closed: false,
+  };
+  const sjq = new ServerJobQueue<{ x: number }>({
+    name: 'q', config: fakeConfig,
+    queueFactory: buildFakeQueue(queueState),
+    workerFactory: buildFakeWorker(workerState),
+  });
+  return { queueState, workerState, sjq };
+}
+
 describe('ServerJobQueue', () => {
   afterEach(() => {
     mock.restore();
   });
 
   it('rejects jobIds that contain colons (BullMQ key separator)', async () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState)
-    });
+    const { queueState, sjq } = setup();
     await expect(sjq.add('bad:id', { x: 1 })).rejects.toThrow(/must not contain ':'/);
     expect(queueState.added.length).toBe(0);
     await sjq.close();
   });
 
   it('passes the jobId through to BullMQ Queue.add', async () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState)
-    });
+    const { queueState, sjq } = setup();
     await sjq.add('evt_abc', { x: 1 });
     expect(queueState.added).toHaveLength(1);
     expect(queueState.added[0]!.jobId).toBe('evt_abc');
@@ -107,20 +110,7 @@ describe('ServerJobQueue', () => {
   });
 
   it('starts the worker with autorun: false and attaches an error listener', () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const workerState: FakeWorkerState = {
-      processor: null,
-      options: null,
-      errorHandlers: [],
-      ranWith: null,
-      closed: false
-    };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState),
-      workerFactory: buildFakeWorker(workerState)
-    });
+    const { workerState, sjq } = setup();
     sjq.start(async () => {});
 
     expect(workerState.options?.autorun).toBe(false);
@@ -131,39 +121,13 @@ describe('ServerJobQueue', () => {
   });
 
   it('refuses double-start to avoid duplicate Worker instances', () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const workerState: FakeWorkerState = {
-      processor: null,
-      options: null,
-      errorHandlers: [],
-      ranWith: null,
-      closed: false
-    };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState),
-      workerFactory: buildFakeWorker(workerState)
-    });
+    const { sjq } = setup();
     sjq.start(async () => {});
     expect(() => sjq.start(async () => {})).toThrow(/already started/);
   });
 
   it('error listener absorbs worker errors without throwing', () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const workerState: FakeWorkerState = {
-      processor: null,
-      options: null,
-      errorHandlers: [],
-      ranWith: null,
-      closed: false
-    };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState),
-      workerFactory: buildFakeWorker(workerState)
-    });
+    const { workerState, sjq } = setup();
     sjq.start(async () => {});
     expect(() =>
       workerState.errorHandlers[0]!(new Error('worker crashed'))
@@ -171,15 +135,7 @@ describe('ServerJobQueue', () => {
   });
 
   it('Phase 12 — emits completed/failed/stalled lifecycle events through observe()', () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const workerState: FakeWorkerState = {
-      processor: null, options: null, errorHandlers: [], ranWith: null, closed: false,
-    };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q', config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState),
-      workerFactory: buildFakeWorker(workerState),
-    });
+    const { workerState, sjq } = setup();
 
     const events: { kind: string; jobId?: string; arg?: unknown }[] = [];
     sjq.observe({
@@ -208,20 +164,7 @@ describe('ServerJobQueue', () => {
   });
 
   it('closes worker and queue on close()', async () => {
-    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
-    const workerState: FakeWorkerState = {
-      processor: null,
-      options: null,
-      errorHandlers: [],
-      ranWith: null,
-      closed: false
-    };
-    const sjq = new ServerJobQueue<{ x: number }>({
-      name: 'q',
-      config: fakeConfig,
-      queueFactory: buildFakeQueue(queueState),
-      workerFactory: buildFakeWorker(workerState)
-    });
+    const { queueState, workerState, sjq } = setup();
     sjq.start(async () => {});
     await sjq.add('evt_test', { x: 1 });
     await sjq.close();

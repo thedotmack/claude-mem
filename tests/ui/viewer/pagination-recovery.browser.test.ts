@@ -13,7 +13,8 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { App } from './src/ui/viewer/App';
-        localStorage.setItem('claude-mem-welcome-dismissed', 'true');
+        import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+        setStoredWelcomeDismissed(true);
         if (${JSON.stringify(scenario)} === 'empty-session') location.hash = '#/sessions/claude/owned-session';
         let settled = 0;
         const originalFetch = window.fetch.bind(window);

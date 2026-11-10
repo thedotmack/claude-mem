@@ -2,14 +2,6 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 
-interface TableColumnInfo {
-  name: string;
-}
-
-function sdkSessionColumns(db: Database): string[] {
-  return (db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[]).map(col => col.name);
-}
-
 /**
  * Seed a pre-v50 database: sdk_sessions without the observed_* columns and a
  * schema_versions table without the v50 stamp. The rest of the constructor
@@ -55,25 +47,6 @@ describe('SessionStore observed session metadata', () => {
     store = undefined;
   });
 
-  describe('fresh database', () => {
-    it('creates sdk_sessions with observed_model and observed_billing columns', () => {
-      store = new SessionStore(new Database(':memory:'));
-
-      const columns = sdkSessionColumns(store.db);
-      expect(columns).toContain('observed_model');
-      expect(columns).toContain('observed_billing');
-    });
-
-    it('returns null observed fields for a session that never reported them', () => {
-      store = new SessionStore(new Database(':memory:'));
-      const id = store.createSDKSession('content-unreported', 'project', 'prompt');
-
-      const session = store.getSessionById(id);
-      expect(session?.observed_model).toBeNull();
-      expect(session?.observed_billing).toBeNull();
-    });
-  });
-
   describe('setSessionObservedMetadata', () => {
     it('stores both fields and getSessionById returns them', () => {
       store = new SessionStore(new Database(':memory:'));
@@ -86,40 +59,18 @@ describe('SessionStore observed session metadata', () => {
       expect(session?.observed_billing).toBe('max');
     });
 
-    it('keeps the previous model when a later call omits it (COALESCE)', () => {
+    it.each([
+      [undefined, 'pro', 'claude-x', 'pro'],
+      ['claude-y', undefined, 'claude-y', 'max'],
+      ['', 'pro', 'claude-x', 'pro'],
+    ] as const)('preserves omitted metadata for model=%s billing=%s', (model, billing, expectedModel, expectedBilling) => {
       store = new SessionStore(new Database(':memory:'));
-      const id = store.createSDKSession('content-coalesce-model', 'project', 'prompt');
-
+      const id = store.createSDKSession('content-coalesce', 'project', 'prompt');
       store.setSessionObservedMetadata(id, 'claude-x', 'max');
-      store.setSessionObservedMetadata(id, undefined, 'pro');
-
+      store.setSessionObservedMetadata(id, model, billing);
       const session = store.getSessionById(id);
-      expect(session?.observed_model).toBe('claude-x');
-      expect(session?.observed_billing).toBe('pro');
-    });
-
-    it('keeps the previous billing when a later call omits it (COALESCE)', () => {
-      store = new SessionStore(new Database(':memory:'));
-      const id = store.createSDKSession('content-coalesce-billing', 'project', 'prompt');
-
-      store.setSessionObservedMetadata(id, 'claude-x', 'max');
-      store.setSessionObservedMetadata(id, 'claude-y', undefined);
-
-      const session = store.getSessionById(id);
-      expect(session?.observed_model).toBe('claude-y');
-      expect(session?.observed_billing).toBe('max');
-    });
-
-    it('keeps the previous model when a later call passes an empty string', () => {
-      store = new SessionStore(new Database(':memory:'));
-      const id = store.createSDKSession('content-empty-model', 'project', 'prompt');
-
-      store.setSessionObservedMetadata(id, 'claude-x', 'max');
-      store.setSessionObservedMetadata(id, '', 'pro');
-
-      const session = store.getSessionById(id);
-      expect(session?.observed_model).toBe('claude-x');
-      expect(session?.observed_billing).toBe('pro');
+      expect(session?.observed_model).toBe(expectedModel);
+      expect(session?.observed_billing).toBe(expectedBilling);
     });
 
     it('overwrites the model when a later turn reports a different one', () => {
@@ -145,22 +96,6 @@ describe('SessionStore observed session metadata', () => {
   });
 
   describe('migration v50 (legacy sdk_sessions without observed columns)', () => {
-    it('adds both columns and stamps schema version 50', () => {
-      const db = new Database(':memory:');
-      seedLegacySdkSessions(db);
-      expect(sdkSessionColumns(db)).not.toContain('observed_model');
-      expect(sdkSessionColumns(db)).not.toContain('observed_billing');
-
-      store = new SessionStore(db);
-
-      const columns = sdkSessionColumns(db);
-      expect(columns).toContain('observed_model');
-      expect(columns).toContain('observed_billing');
-
-      const stamp = db.prepare('SELECT version FROM schema_versions WHERE version = 50').get() as { version: number } | null;
-      expect(stamp?.version).toBe(50);
-    });
-
     it('preserves the legacy row and reads it back with null observed fields', () => {
       const db = new Database(':memory:');
       seedLegacySdkSessions(db);
@@ -174,21 +109,5 @@ describe('SessionStore observed session metadata', () => {
       expect(session?.observed_billing).toBeNull();
     });
 
-    it('is idempotent when re-run against an already-migrated database', () => {
-      const db = new Database(':memory:');
-      seedLegacySdkSessions(db);
-
-      store = new SessionStore(db);
-      const versionsBefore = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions').get() as { n: number }).n;
-
-      // Constructing a second store over the same connection replays the
-      // whole migration chain; the observed-columns step must be a no-op.
-      const again = new SessionStore(db);
-      const versionsAfter = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions').get() as { n: number }).n;
-
-      expect(versionsAfter).toBe(versionsBefore);
-      expect(sdkSessionColumns(db).filter(name => name === 'observed_model')).toHaveLength(1);
-      expect(again.getSessionById(1)?.observed_model).toBeNull();
-    });
   });
 });

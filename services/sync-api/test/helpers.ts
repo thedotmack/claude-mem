@@ -1,4 +1,3 @@
-import { afterAll } from "bun:test";
 import type { AuthDependencies } from "../src/auth";
 import { loadEnv, type SyncApiEnv } from "../src/env";
 import { DEFAULT_SYNC_API_TIMEOUTS, startSyncApi, type SyncApiApp, type SyncApiTimeouts } from "../src/index";
@@ -26,44 +25,37 @@ export interface ProjectionRequest {
 }
 
 export interface SidecarState {
-	verifyCalls: number;
 	projectionCalls: ProjectionRequest[];
-	denied: number;
 }
 
-export function startSidecar(): {
-	server: ReturnType<typeof Bun.serve>;
-	state: SidecarState;
-	baseUrl: string;
-} {
-	const state: SidecarState = { verifyCalls: 0, projectionCalls: [], denied: 0 };
+interface TestApp {
+	app: SyncApiApp;
+	sidecar: { server: ReturnType<typeof Bun.serve>; state: SidecarState; baseUrl: string };
+	env: SyncApiEnv;
+}
+
+const apps: TestApp[] = [];
+
+export async function trackedApp(
+	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+	authDependencies?: AuthDependencies,
+): Promise<TestApp> {
+	const state: SidecarState = { projectionCalls: [] };
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
 		async fetch(request): Promise<Response> {
 			const url = new URL(request.url);
 			if (url.pathname === "/verify") {
-				state.verifyCalls++;
 				const token = (request.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-				const userId = (request.headers.get("X-User-Id") ?? "").trim();
 				if (token === "denied") {
-					state.denied++;
 					return Response.json({ error: "denied" }, { status: 401 });
 				}
 				if (token === "wrong-user") {
 					return Response.json({ userId: "someone-else" });
 				}
-				if (token === "no-id") {
-					return Response.json({ ok: true });
-				}
 				if (token.startsWith("valid-for:")) {
 					return Response.json({ userId: token.slice("valid-for:".length) });
-				}
-				if (token.startsWith("snake-for:")) {
-					return Response.json({ user_id: token.slice("snake-for:".length) });
-				}
-				if (token.length > 0 && userId.length > 0) {
-					return Response.json({ userId });
 				}
 				return Response.json({ error: "denied" }, { status: 401 });
 			}
@@ -82,18 +74,7 @@ export function startSidecar(): {
 			return Response.json({ error: "not found" }, { status: 404 });
 		},
 	});
-	return { server, state, baseUrl: `http://127.0.0.1:${server.port}` };
-}
-
-export async function startTestApp(
-	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
-	authDependencies?: AuthDependencies,
-): Promise<{
-	app: SyncApiApp;
-	sidecar: ReturnType<typeof startSidecar>;
-	env: SyncApiEnv;
-}> {
-	const sidecar = startSidecar();
+	const sidecar = { server, state, baseUrl: `http://127.0.0.1:${server.port}` };
 	const env = loadEnv({
 		DATABASE_URL: DEFAULT_DATABASE_URL,
 		TOKEN_VERIFY_URL: `${sidecar.baseUrl}/verify`,
@@ -104,7 +85,9 @@ export async function startTestApp(
 		HOST: "127.0.0.1",
 	});
 	const app = await startSyncApi(env, timeouts, authDependencies);
-	return { app, sidecar, env };
+	const started = { app, sidecar, env };
+	apps.push(started);
+	return started;
 }
 
 export function pushRequest(
@@ -176,21 +159,9 @@ export function uniqueUser(): string {
 	return `user-${crypto.randomUUID()}`;
 }
 
-const apps: Array<{ app: SyncApiApp; sidecar: ReturnType<typeof startSidecar> }> = [];
-
-export async function trackedApp(
-	timeouts?: SyncApiTimeouts,
-	authDependencies?: AuthDependencies,
-): Promise<ReturnType<typeof startTestApp>> {
-	const started = await startTestApp(timeouts, authDependencies);
-	apps.push(started);
-	return started;
-}
-
-afterAll(async () => {
-	for (const started of apps) {
+export async function stopTrackedApps(): Promise<void> {
+	for (const started of apps.splice(0)) {
 		await started.app.stop();
 		started.sidecar.server.stop(true);
 	}
-	apps.length = 0;
-});
+}

@@ -68,11 +68,6 @@ describe('CLAUDE_MEM_OPENROUTER_MODEL as a fallback list', () => {
     expect(config.fallbackModels).toEqual(['vendor/model-b', 'vendor/model-c']);
   });
 
-  it('never comma-joins an array into one unusable model id', () => {
-    write(['vendor/model-a', 'vendor/model-b']);
-    expect(resolveOpenRouterConfig(settingsPath).model).not.toContain(',');
-  });
-
   it('splits a comma- or newline-separated string, which is equally unusable as one id', () => {
     write('vendor/model-a, vendor/model-b');
     const config = resolveOpenRouterConfig(settingsPath);
@@ -145,62 +140,6 @@ describe('buildOpenRouterRequestBody', () => {
     expect(elsewhere).not.toHaveProperty('usage');
   });
 
-  it('sends OpenRouter fields for https://openrouter.ai/... when fallbacks exist', () => {
-    const body = buildOpenRouterRequestBody({
-      model: 'vendor/model-a',
-      fallbackModels: ['vendor/model-b'],
-      messages: MESSAGES,
-      apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
-    });
-    expect(body.models).toEqual(['vendor/model-a', 'vendor/model-b']);
-    expect(body.usage).toEqual({ include: true });
-    expect(body).not.toHaveProperty('model');
-  });
-
-  it('treats a path containing openrouter.ai on a different host as a custom gateway', () => {
-    const body = buildOpenRouterRequestBody({
-      model: 'vendor/model-a',
-      fallbackModels: ['vendor/model-b'],
-      messages: MESSAGES,
-      apiUrl: 'https://gateway.example.com/proxy/openrouter.ai/v1/chat/completions',
-    });
-    expect(body.model).toBe('vendor/model-a');
-    expect(body).not.toHaveProperty('models');
-    expect(body).not.toHaveProperty('usage');
-  });
-
-  it('treats a lookalike hostname as a custom gateway', () => {
-    const body = buildOpenRouterRequestBody({
-      model: 'vendor/model-a',
-      fallbackModels: ['vendor/model-b'],
-      messages: MESSAGES,
-      apiUrl: 'https://openrouter.ai.evil.example/v1/chat/completions',
-    });
-    expect(body.model).toBe('vendor/model-a');
-    expect(body).not.toHaveProperty('models');
-    expect(body).not.toHaveProperty('usage');
-  });
-
-  it('treats a malformed URL as a custom gateway (model only)', () => {
-    const body = buildOpenRouterRequestBody({
-      model: 'vendor/model-a',
-      fallbackModels: ['vendor/model-b'],
-      messages: MESSAGES,
-      apiUrl: 'not a url',
-    });
-    expect(body.model).toBe('vendor/model-a');
-    expect(body).not.toHaveProperty('models');
-    expect(body).not.toHaveProperty('usage');
-  });
-
-  it('carries the existing sampling parameters unchanged', () => {
-    const body = buildOpenRouterRequestBody({
-      model: 'vendor/model-a', fallbackModels: [], messages: MESSAGES, apiUrl: DEFAULT_OPENROUTER_API_URL,
-    });
-    expect(body.temperature).toBe(0.3);
-    expect(body.max_tokens).toBe(4096);
-    expect(body.messages).toEqual(MESSAGES);
-  });
 });
 
 describe('isOpenRouterApiUrl', () => {

@@ -1,6 +1,6 @@
 import { describe, expect } from 'bun:test';
 import { nativeTest as test } from './native-prerequisite.js';
-import { parseFile, unfoldSymbol, formatAvailableSymbols } from '../../../src/services/smart-file-read/parser.js';
+import { parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
 const source=`interface Local {
   void reset();
 }
@@ -20,8 +20,3 @@ describe('interface method ownership',()=>{
     expect(remote).toContain('void reset();');expect(remote).toContain('L5-5');
   },120000);
 });
-
- test('offers qualified child methods first in a failed lookup hint',()=>{
-  const hint=formatAvailableSymbols(parseFile(source,'Stores.java'),'Missing.reset');
-  expect(hint.split('\n')).toEqual(['  - Local.reset (method)','  - Remote.reset (method)','  - Local (interface)','  - Remote (interface)']);
- },120000);

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -17,13 +17,16 @@ const BANNER = "can't save memories";
 
 let dataDir: string;
 let healthPath: string;
+let rendered: ChildRender;
 
-beforeEach(() => {
+beforeAll(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-observer-briefing-'));
   healthPath = join(dataDir, 'observer-health.json');
+  writeFileSync(healthPath, JSON.stringify(unhealthyState()));
+  rendered = runChild();
 });
 
-afterEach(() => {
+afterAll(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -41,13 +44,12 @@ function unhealthyState() {
 interface ChildRender {
   primary: string;
   briefing: string;
-  optedOut: string;
   production: string;
 }
 
 function runChild(): ChildRender {
   const result = Bun.spawnSync([process.execPath, '-e', `
-    import { generateContext, healthWarningForContext } from './src/services/context/ContextBuilder.ts';
+    import { generateContext } from './src/services/context/ContextBuilder.ts';
     import { loadSessionStartContext } from './src/services/worker/session/recycle-conversation.ts';
     import { ModeManager } from './src/services/domain/ModeManager.ts';
     ModeManager.getInstance().loadMode('code');
@@ -60,7 +62,6 @@ function runChild(): ChildRender {
     console.log(JSON.stringify({
       primary,
       briefing,
-      optedOut: healthWarningForContext({ includeHealthWarning: false }, false),
       production,
     }));
   `], {
@@ -79,27 +80,19 @@ function runChild(): ChildRender {
 }
 
 describe("observer session-start briefing and the health banner", () => {
-  it('still shows the outage banner on the primary session context', () => {
-    writeFileSync(healthPath, JSON.stringify(unhealthyState()));
-    const { primary } = runChild();
-    expect(primary).toContain(BANNER);
-    expect(primary).toContain('openrouter');
-  });
-
   it("withholds the banner from the observer's own briefing", () => {
-    writeFileSync(healthPath, JSON.stringify(unhealthyState()));
-    const { primary, briefing } = runChild();
+    const { primary, briefing } = rendered;
     // Asserted in the same run: the observer is genuinely unhealthy here, so
     // the empty briefing below is the opt-out working and not a healthy ledger.
     expect(primary).toContain(BANNER);
+    expect(primary).toContain('openrouter');
     expect(briefing).not.toContain(BANNER);
     expect(briefing).not.toContain('tell the user');
     expect(briefing).toBe('');
   });
 
   it('withholds the banner from the briefing the observer actually receives', () => {
-    writeFileSync(healthPath, JSON.stringify(unhealthyState()));
-    const { primary, production } = runChild();
+    const { primary, production } = rendered;
     // Driven through loadSessionStartContext, the real caller that briefs the
     // observer generation. Deleting `includeHealthWarning: false` from
     // recycle-conversation.ts brings the banner straight back and fails this

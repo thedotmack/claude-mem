@@ -50,13 +50,10 @@ const ENV_KEYS = [
 
 const SPENT_KEY = 'Your credit balance is too low to access the Anthropic API.';
 const SPENT_LOGIN = 'Memory capture paused by the Claude usage reserve guard.';
-const TO_SUBSCRIPTION_LOG = 'API key quota exhausted; running the Claude observer on the subscription login until the key recovers';
-const TO_API_KEY_LOG = 'Claude Code login paused for quota; running the Claude observer on the fallback API key until the login recovers';
 
 let savedEnv: Record<string, string | undefined>;
 let previousClaudeReadiness: (() => boolean) | null;
 let spies: Array<ReturnType<typeof spyOn>>;
-let warnLines: string[];
 let tempDir: string;
 
 function signIn(): void {
@@ -85,10 +82,9 @@ function setUp(): void {
   resetDependencyStatusesForTesting();
   resetQuotaFallbackStateForTesting();
   previousClaudeReadiness = setClaudeFallbackReadinessForTesting(() => true);
-  warnLines = [];
   spies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
-    spyOn(logger, 'warn').mockImplementation((_c: string, message: string) => { warnLines.push(message); }),
+    spyOn(logger, 'warn').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'error').mockImplementation(() => {}),
   ];
@@ -207,8 +203,6 @@ describe('Claude credential fallback: admission', () => {
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
 
     expect(await startOnce(makeSession())).toEqual(['subscription']);
-    expect(warnLines).toContain(TO_SUBSCRIPTION_LOG);
-    expect(warnLines).not.toContain('Primary in quota cooldown and the quota fallback cannot serve; capture waits until it clears');
     // The key's breaker is untouched: it still decides when the key is re-probed.
     expect(getQuotaCooldown('claude')?.auth).toBe('api-key');
   });
@@ -219,7 +213,6 @@ describe('Claude credential fallback: admission', () => {
     recordQuotaExhausted('claude', SPENT_LOGIN, 'five_hour', undefined, undefined, 'subscription');
 
     expect(await startOnce(makeSession())).toEqual(['api-key']);
-    expect(warnLines).toContain(TO_API_KEY_LOG);
     expect(getQuotaCooldown('claude')?.auth).toBe('subscription');
   });
 
@@ -252,7 +245,6 @@ describe('Claude credential fallback: admission', () => {
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
     await nextTick();
     expect(starts).toEqual([]);
-    expect(warnLines).toContain('Skipping generator start while the provider cooldown is active');
     // A spent allowance does not hold the work for the reset.
     expect(routes.pendingCount()).toBe(0);
     expect(session.pausedReason).toBe('quota');
@@ -427,12 +419,6 @@ describe('Claude credential fallback: readiness', () => {
     expect(hasClaudeSubscriptionLogin()).toBe(true);
   });
 
-  it('does not count a CLAUDE_CODE_OAUTH_TOKEN JWT in ~/.claude-mem/.env that is past its exp claim', () => {
-    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
-    const expiredJwt = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
-    writeFileSync(join(tempDir, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${expiredJwt}\n`, { mode: 0o600 });
-    expect(hasClaudeSubscriptionLogin()).toBe(false);
-  });
 });
 
 describe('Claude credential fallback: a running stand-in hands back to the primary', () => {

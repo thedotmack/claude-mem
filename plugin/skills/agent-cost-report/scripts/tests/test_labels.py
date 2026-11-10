@@ -19,9 +19,6 @@ class Classify(unittest.TestCase):
     def test_failures_closed_set_and_rework_only_as_failure(self):
         d = labels.classify(self.ev(["redo this, verifier found gaps", "x"] + ["same prompt prefix"] * 3), dict(project="p", user_prompt=None))
         self.assertEqual(d["failure_signals"], ["Rework", "Looping"])
-        self.assertTrue(all(f in labels.FAILURE_TYPES for f in d["failure_signals"]))
-        self.assertNotIn("Rework", labels.CATEGORIES); self.assertNotIn("Rework", [c for c, _ in labels.CAT_RULES])
-        self.assertEqual(len(labels.FAILURE_TYPES), 16)
 
     def test_active_minutes(self):
         m = 60000

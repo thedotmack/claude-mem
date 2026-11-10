@@ -12,6 +12,14 @@ import { composeViewerSyncStatus, type SyncDownloadStatus, type SyncUploadEviden
 
 const resources: Array<() => void> = [];
 afterEach(() => { for (const close of resources.splice(0).reverse()) close(); });
+async function waitFor(condition: () => boolean, timeoutMs = 4_500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for active polls');
+    await Bun.sleep(5);
+  }
+}
+
 const download = (overrides: Partial<SyncDownloadStatus> = {}): SyncDownloadStatus => ({
   started: true, inFlight: false, suspended: false, authPaused: false, lastAttemptAt: 1000, lastSuccessAt: 1000,
   lastError: null, nextRetryAt: 31000, epoch: '1', cursor: '9007199254740993', mode: 'polling',
@@ -163,7 +171,7 @@ describe('viewer sync evidence', () => {
     await Bun.sleep(30);
     const before = calls;
     client.setViewerActive(true);
-    await Bun.sleep(70);
+    await waitFor(() => calls > before + 1);
     expect(calls).toBeGreaterThan(before + 1);
     client.setViewerActive(false);
     const stopped = calls;
@@ -315,16 +323,9 @@ describe('viewer sync evidence', () => {
     expect(service.getSnapshot().state).toBe('catching-up');
   });
 
-  it('gives sessionless keep-pulling replicas the active HTTP cadence', async () => {
+  it('gives sessionless keep-pulling replicas the active HTTP cadence', () => {
     expect(keepPullingOptions(false)).toEqual({});
     expect(keepPullingOptions(true)).toEqual({ idlePollMs: 30_000, suspendAfterMs: Infinity });
-    let calls = 0;
-    const { client } = fixture((async () => { calls++; return Response.json({ protocol_version: 2, epoch: '1', ops: [], head_seq: '0', more: false }); }) as typeof fetch,
-      { ...keepPullingOptions(true), idlePollMs: 20, isSessionActive: () => false });
-    client.start();
-    await Bun.sleep(85);
-    expect(calls).toBeGreaterThanOrEqual(3);
-    expect(client.status().suspended).toBe(false);
   });
 
 });

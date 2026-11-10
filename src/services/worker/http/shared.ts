@@ -19,7 +19,6 @@ import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/me
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
-import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
 import { committedMediaEventResult } from '../../media/linkage.js';
 import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
@@ -108,26 +107,6 @@ export function requireIngestContext(): IngestContext {
   }
   return ctx;
 }
-
-/**
- * The in-process transcript watcher's view of the observation buffer. The
- * buffer lives in RAM, so a watcher checkpoint may only move past lines whose
- * buffered work is stored; otherwise a restart resumes past work it lost.
- */
-export const transcriptCheckpointGate: TranscriptCheckpointGate = {
-  sequence: () => requireIngestContext().sessionManager.getLastBufferedMessageId(),
-  drainedThrough: (sessions, sequence) => {
-    const { sessionManager, dbManager } = requireIngestContext();
-    const store = dbManager.getSessionStore();
-    for (const [contentSessionId, platformSource] of sessions) {
-      const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, normalizePlatformSource(platformSource));
-      if (sessionDbId === null) continue;
-      const oldest = sessionManager.getOldestPendingMessageId(sessionDbId);
-      if (oldest !== null && oldest <= sequence) return false;
-    }
-    return true;
-  },
-};
 
 /**
  * Durable callers (the hook spool drain) pass `markHandedOff`: ingest calls it

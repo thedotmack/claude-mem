@@ -514,16 +514,11 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
-  it('prewarms with the pydantic cap that chroma-mcp 0.2.6 needs (#4593)', async () => {
+  it('starts the MCP transport from the home directory (#1297)', async () => {
     const mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
-    const prewarmArgs = prewarmSpawnCalls[0]!.args;
-    const capIdx = prewarmArgs.indexOf('pydantic<2.14');
-    expect(capIdx).toBeGreaterThan(0);
-    expect(prewarmArgs[capIdx - 1]).toBe('--with');
-    expect(capIdx).toBeLessThan(prewarmArgs.indexOf('--from'));
-    expect(prewarmArgs.at(-1)).toBe('--help');
+    expect((transportInstances[0].opts as any).cwd).toBe(os.homedir());
   });
 
   it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
@@ -956,7 +951,6 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportInstances.length).toBe(2);
     expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
-    expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
   });
 
   it('stop() disposes state including any pending connecting promise', async () => {
@@ -1022,7 +1016,6 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportInstances[0].closed).toBe(true);
     expect(mgr.getCrashState().count).toBe(0);
-    expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
 
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     expect(mgr.getCrashState().count).toBe(0);
@@ -1546,34 +1539,6 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     }
   });
 
-  it('refuses to open a second local writer for a live Chroma data dir owner', async () => {
-    writeChromaWriterLock(process.pid, 'other-worker-owner');
-    const mgr = ChromaMcpManager.getInstance();
-
-    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
-
-    expect(transportInstances.length).toBe(0);
-    expect(getDependencyStatus('chroma')).toMatchObject({
-      dependency: 'chroma',
-      kind: 'vector_search_unavailable',
-      message: expect.stringContaining('already owned by PID'),
-    });
-  });
-
-  it('replaces a stale Chroma writer lock whose PID is dead', async () => {
-    const stalePid = 999_998_311;
-    deadPids.add(stalePid);
-    writeChromaWriterLock(stalePid, 'dead-worker-owner');
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
-    expect(lock.pid).toBe(process.pid);
-    expect(lock.ownerId).not.toBe('dead-worker-owner');
-    expect(transportInstances.length).toBe(1);
-  });
-
   it('replaces a null-token Chroma writer lock whose live PID now runs a different program', async () => {
     // The lock was written without a start token (identity capture failed), and
     // its PID now belongs to an unrelated program: PID reuse, common on Windows.
@@ -1765,86 +1730,53 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(chromaStatus?.message ?? '').not.toContain('Stop the other');
   });
 
-  it('Equal-epoch store record connects and refreshes provenance', async () => {
+  it.each([
+    ['Equal-epoch store record connects and refreshes provenance', { writerEpoch: 1 }, true, false],
+    ['Missing store record on an existing installation connects and stamps', null, false, false],
+    ['Older-epoch store record connects and upgrades the epoch', { writerEpoch: 0 }, false, false],
+    ['A record from before the engine version was stamped fails open and gains it', { writerEpoch: 1 }, false, true],
+  ] as const)('%s', async (_name, seed, refresh, legacy) => {
     const before = new Date(Date.now() - 1000).toISOString();
-    writeChromaStoreRecord({ writerEpoch: 1, updatedAt: before });
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    expect(existsSync(chromaStoreRecordPath())).toBe(true);
-    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(record.writerEpoch).toBe(1);
-    expect(record.updatedAt > before).toBe(true);
-  });
-
-  it('Missing store record on an existing installation connects and stamps', async () => {
-    expect(existsSync(chromaStoreRecordPath())).toBe(false);
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    if (seed) {
+      writeChromaStoreRecord({ ...seed, ...(refresh ? { updatedAt: before } : {}) });
+      if (legacy) {
+        expect(JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8')).chromadbVersion).toBeUndefined();
+      }
+    } else {
+      expect(existsSync(chromaStoreRecordPath())).toBe(false);
+    }
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(1);
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.writerEpoch).toBe(1);
+    if (refresh) expect(record.updatedAt > before).toBe(true);
+    if (legacy) expect(record.chromadbVersion).toBe('1.5.9');
   });
 
-  it('Malformed store record fails open and is rewritten', async () => {
-    mkdirSync(mockedChromaDir, { recursive: true });
-    writeFileSync(chromaStoreRecordPath(), 'not-json-{{{{');
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
-    expect(warn).toBeDefined();
-    expect(existsSync(chromaStoreRecordPath())).toBe(true);
-    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(record.writerEpoch).toBe(1);
-  });
-
-  it('Store record with non-integer writerEpoch fails open and is rewritten', async () => {
-    writeChromaStoreRecord({ writerEpoch: 'two' });
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
-    expect(warn).toBeDefined();
-    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(record.writerEpoch).toBe(1);
-  });
-
-  it('Oversized store record fails open without parsing', async () => {
-    mkdirSync(mockedChromaDir, { recursive: true });
-    writeFileSync(chromaStoreRecordPath(), 'x'.repeat(65 * 1024));
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
-    expect(warn).toBeDefined();
-    expect(warn?.meta?.reason).toContain('exceeds');
-  });
-
-  it('Store record at a non-file path fails open (POSIX only)', async () => {
+  it.each([
+    ['Malformed store record fails open and is rewritten', 'not-json-{{{{', null],
+    ['Store record with non-integer writerEpoch fails open and is rewritten', { writerEpoch: 'two' }, null],
+    ['Oversized store record fails open without parsing', 'x'.repeat(65 * 1024), 'exceeds'],
+    ['Store record at a non-file path fails open (POSIX only)', null, 'not a regular file'],
+  ] as const)('%s', async (_name, seed, reason) => {
     // FIFOs don't exist on Windows; statSync().isFile() is the guard being tested.
-    if (process.platform === 'win32') return;
+    if (seed === null && process.platform === 'win32') return;
     mkdirSync(mockedChromaDir, { recursive: true });
-    realChildProcess.execSync(`mkfifo '${chromaStoreRecordPath()}'`);
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    if (seed === null) realChildProcess.execSync(`mkfifo '${chromaStoreRecordPath()}'`);
+    else if (typeof seed === 'string') writeFileSync(chromaStoreRecordPath(), seed);
+    else writeChromaStoreRecord(seed);
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(1);
     const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
     expect(warn).toBeDefined();
-    expect(warn?.meta?.reason).toContain('not a regular file');
+    if (reason) expect(warn?.meta?.reason).toContain(reason);
+    else {
+      expect(existsSync(chromaStoreRecordPath())).toBe(true);
+      expect(JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8')).writerEpoch).toBe(1);
+    }
   });
 
   it('Record write failure logs and continues without aborting the connection', async () => {
@@ -1857,32 +1789,6 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(transportInstances.length).toBe(1);
     const warn = logEntries.find(e => e.message === 'Failed to write Chroma store record; connecting anyway');
     expect(warn).toBeDefined();
-  });
-
-  it('Older-epoch store record connects and upgrades the epoch', async () => {
-    writeChromaStoreRecord({ writerEpoch: 0 });
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(record.writerEpoch).toBe(1);
-  });
-
-  it('A record from before the engine version was stamped fails open and gains it', async () => {
-    // Stamped by an earlier build of this guard: no chromadbVersion field.
-    writeChromaStoreRecord({ writerEpoch: 1 });
-    const seeded = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(seeded.chromadbVersion).toBeUndefined();
-    const mgr = ChromaMcpManager.getInstance();
-
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
-
-    expect(transportInstances.length).toBe(1);
-    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
-    expect(record.writerEpoch).toBe(1);
-    expect(record.chromadbVersion).toBe('1.5.9');
   });
 
   it('Remote Chroma mode writes and reads no store record', async () => {

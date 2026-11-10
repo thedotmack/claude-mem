@@ -3398,6 +3398,14 @@ var init_redaction = __esm({
       // `.sentryclirc` dumps and source-map upload commands print.
       { name: "supabase_token", regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
       { name: "sentry_token", regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
+      // Grafana tokens: service account tokens (`glsa_` + 32 alphanumerics + `_`
+      // + an 8-hex checksum) and Grafana Cloud access policy / API tokens (`glc_`
+      // + a base64 payload), which GRAFANA_TOKEN / GRAFANA_SERVICE_ACCOUNT_TOKEN
+      // lines, Terraform provider configs and `curl -H "Authorization: Bearer …"`
+      // commands print. Postman API keys (`PMAK-` + 24 hex + `-` + 34 hex), which
+      // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
+      { name: "grafana_token", regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
+      { name: "postman_key", regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
       // Incoming webhook URLs carry their secret in the path, so anyone holding
       // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
       // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
@@ -3860,6 +3868,16 @@ var init_shared_records = __esm({
   }
 });
 
+// src/services/work-view/work-state-status.mjs
+var CLOSED_STATUSES, isClosedWorkStateStatus;
+var init_work_state_status = __esm({
+  "src/services/work-view/work-state-status.mjs"() {
+    "use strict";
+    CLOSED_STATUSES = /* @__PURE__ */ new Set(["done", "dropped"]);
+    isClosedWorkStateStatus = (status) => status != null && CLOSED_STATUSES.has(String(status).toLowerCase());
+  }
+});
+
 // src/services/work-view/work-state-reduce.mjs
 function reduceWorkState(entries, { currentProject, currentProjectScope = [], eventLimit = Infinity, localDeviceId: localDeviceId2 = "" } = {}) {
   entries = entries.filter((entry) => !isSharedWorkList(entry.list_name));
@@ -3930,14 +3948,14 @@ function reduceWorkState(entries, { currentProject, currentProjectScope = [], ev
     const tasks2 = [...list2.tasksByName.values()].map((task) => ({
       ...task,
       status: effectiveStatus(task.fields.status),
-      isOpen: !isClosed(task.fields.status),
+      isOpen: !isClosedWorkStateStatus(task.fields.status),
       updatedAt: iso(task.updatedAtEpoch)
     }));
-    const stateIsOpen = Object.keys(list2.fields).some((key) => key !== "task") && !isClosed(list2.fields.status);
+    const stateIsOpen = Object.keys(list2.fields).some((key) => key !== "task") && !isClosedWorkStateStatus(list2.fields.status);
     const { tasksByName, ...record } = list2;
     return {
       ...record,
-      status: isClosed(list2.fields.status) ? String(list2.fields.status).toLowerCase() : "open",
+      status: isClosedWorkStateStatus(list2.fields.status) ? String(list2.fields.status).toLowerCase() : "open",
       isOpen: stateIsOpen || tasks2.some((task) => task.isOpen),
       inCurrentScope: scope.has(normalizedKey(list2.project)),
       updatedAt: iso(list2.updatedAtEpoch),
@@ -3982,15 +4000,14 @@ function reduceWorkState(entries, { currentProject, currentProjectScope = [], ev
     lastUpdatedAt: events.length ? events.at(-1).at : null
   };
 }
-var CLOSED, normalizedKey, iso, isClosed, effectiveStatus, listId, taskId;
+var normalizedKey, iso, effectiveStatus, listId, taskId;
 var init_work_state_reduce = __esm({
   "src/services/work-view/work-state-reduce.mjs"() {
     "use strict";
     init_shared_records();
-    CLOSED = /* @__PURE__ */ new Set(["done", "dropped"]);
+    init_work_state_status();
     normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
     iso = (epoch2) => epoch2 == null ? null : new Date(epoch2).toISOString();
-    isClosed = (status) => status != null && CLOSED.has(String(status).toLowerCase());
     effectiveStatus = (status) => status == null || status === "" ? "unknown" : String(status).toLowerCase();
     listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
     taskId = (parentId, name) => JSON.stringify([parentId, name]);
@@ -4869,7 +4886,7 @@ function readGoals(database) {
       else target[key] = value;
     }
   }
-  const goals = [...items.values()].filter((item) => !["done", "dropped"].includes(String(item.status).toLowerCase())).map((item) => ({
+  const goals = [...items.values()].filter((item) => !isClosedWorkStateStatus(item.status)).map((item) => ({
     // taskKey is the item's work-state task; goal is only ever a focus area's sentence.
     taskKey: item.task,
     ...goalKindOf(item),
@@ -5554,6 +5571,7 @@ var init_request_groups = __esm({
     init_session_project();
     init_my_focus();
     init_shared_file_hooks();
+    init_work_state_status();
     init_atomic_json();
     DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join11(homedir9(), ".claude-mem");
     LEDGER_DIR = join11(DATA_DIR2, "work-view");
@@ -5816,8 +5834,8 @@ function observationMediaFromMetadata(metadataJson) {
 }
 
 // src/services/work-view/agent-view.mjs
+init_work_state_status();
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
-var CLOSED2 = /* @__PURE__ */ new Set(["done", "dropped", "completed", "failed"]);
 var PLATFORMS = { codex: "Codex", claude: "Claude Code", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
 var stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 var fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
@@ -6097,7 +6115,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
   }
   const candidates = state.lists.filter((list2) => !isOwnerGoalsList(list2.name) && !isMyRulesList(list2.name) && !isMyFocusList(list2.name) && !isAgentLifecycleList(list2.name)).flatMap((list2) => [
     ...list2.tasks.map((task) => ({ ...task, list: list2, recordKind: "task" })),
-    ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !CLOSED2.has(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0, list: list2, recordKind: "list" }] : []
+    ...Object.keys(list2.fields).some((key) => key !== "task") ? [{ id: list2.id, name: list2.name, fields: list2.fields, status: list2.status, isOpen: !isClosedWorkStateStatus(list2.status), updatedAtEpoch: list2.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list2.id && event.task === null)?.id ?? 0, list: list2, recordKind: "list" }] : []
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
   function uniqueCall(event) {
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? []).filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5e3);

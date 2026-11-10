@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
+import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
@@ -107,10 +107,11 @@ describe('TranscriptEventProcessor user_message anchoring', () => {
     expect(sessionInitCalls[0].platform).toBe('codex');
   });
 
-  it('reports a failed anchor as a TranscriptAnchorError', async () => {
+  it('skips a failed anchor without retaining a retry', async () => {
     sessionInitFails = true;
     await expect(processor.processEntry(userMessagePayload('Fix the login bug'), watch, schema))
-      .rejects.toBeInstanceOf(TranscriptAnchorError);
+      .resolves.toBeUndefined();
+    expect(sessionInitCalls).toEqual([]);
   });
 });
 
@@ -127,7 +128,7 @@ describe('TranscriptWatcher with a failed anchor (#3653)', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('does not checkpoint past an unanchored turn, so a restarted watcher replays it', async () => {
+  it('checkpoints past an unanchored turn without replaying it after restart', async () => {
     const filePath = join(tmpRoot, 'rollout.jsonl');
     const statePath = join(tmpRoot, 'state.json');
     const fileWatch: WatchTarget = { name: 'codex-legacy', path: filePath, schema };
@@ -136,20 +137,20 @@ describe('TranscriptWatcher with a failed anchor (#3653)', () => {
     sessionInitFails = true;
     const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     await (watcher as any).addTailer(filePath, fileWatch, schema);
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
     sessionInitFails = false;
 
     expect(sessionInitCalls).toHaveLength(0);
-    // Checkpointed AT the failed turn's line (the first line here), not past it.
+    // The failed handoff is consumed; the transcript itself is preserved.
     const offsets = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')).offsets : {};
-    expect(offsets[filePath] ?? 0).toBe(0);
+    expect(offsets[filePath]).toBe(Buffer.byteLength(readFileSync(filePath)));
 
     const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     await (restarted as any).addTailer(filePath, fileWatch, schema);
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await (restarted as any).tailers.get(filePath).readTask;
     restarted.stop();
 
-    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['Ship the fix']);
+    expect(sessionInitCalls).toEqual([]);
   });
 });

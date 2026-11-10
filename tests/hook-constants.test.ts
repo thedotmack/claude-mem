@@ -1,9 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   HOOK_TIMEOUTS,
-  HOOK_EXIT_CODES,
   defaultSessionInitRequestTimeoutMs,
   getTimeout,
   isToolHookDisabledByEnv,
@@ -46,76 +45,20 @@ describe('hook-constants', () => {
     });
   });
 
-  describe('HOOK_TIMEOUTS', () => {
-    it('should define HEALTH_CHECK timeout as 3s (reduced from 30s)', () => {
-      expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(3000);
+  it.each([
+    ['darwin', 1000, 1000],
+    ['darwin', 5000, 5000],
+    ['win32', 1000, 1500],
+    ['win32', 2000, 3000],
+    ['win32', 333, 500],
+    ['linux', 1000, 1000],
+  ])('getTimeout on %s maps %i to %i', (platform, base, expected) => {
+    Object.defineProperty(process, 'platform', {
+      value: platform,
+      writable: true,
+      configurable: true,
     });
-
-    it('should define POST_SPAWN_WAIT as 15s', () => {
-      expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(15000);
-    });
-
-    it('should define PORT_IN_USE_WAIT as 3s', () => {
-      expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
-    });
-
-    it('should define WINDOWS_MULTIPLIER', () => {
-      expect(HOOK_TIMEOUTS.WINDOWS_MULTIPLIER).toBe(1.5);
-    });
-
-    it('should define POWERSHELL_COMMAND timeout as 10000ms', () => {
-      expect(HOOK_TIMEOUTS.POWERSHELL_COMMAND).toBe(10000);
-    });
-  });
-
-  describe('HOOK_EXIT_CODES', () => {
-    it('should define SUCCESS exit code', () => {
-      expect(HOOK_EXIT_CODES.SUCCESS).toBe(0);
-    });
-  });
-
-  describe('getTimeout', () => {
-    it('should return base timeout on non-Windows platforms', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'darwin',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getTimeout(1000)).toBe(1000);
-      expect(getTimeout(5000)).toBe(5000);
-    });
-
-    it('should apply Windows multiplier on Windows platform', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getTimeout(1000)).toBe(1500);
-      expect(getTimeout(2000)).toBe(3000);
-    });
-
-    it('should round Windows timeout to nearest integer', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getTimeout(333)).toBe(500);
-    });
-
-    it('should return base timeout on Linux', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'linux',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getTimeout(1000)).toBe(1000);
-    });
+    expect(getTimeout(base)).toBe(expected);
   });
 
   describe('isToolHookDisabledByEnv (#3106)', () => {

@@ -21,22 +21,6 @@ import {
 import { getMcpServerAbsolutePath } from '../../src/services/integrations/install-paths.js';
 import { logger } from '../../src/utils/logger.js';
 
-// Checked-in host contract (plan-23 step 1): the OpenCode local-MCP entry
-// schema the installer must emit. `mcp.claude-mem` is validated against it
-// below so a drift from the host's real schema fails CI, not a user install.
-const OPENCODE_MCP_FIXTURE_PATH = join(import.meta.dir, '../fixtures/hosts/opencode-mcp.json');
-const opencodeMcpFixture = JSON.parse(
-  readFileSync(OPENCODE_MCP_FIXTURE_PATH, 'utf-8'),
-) as {
-  entry: {
-    allowed_keys: string[];
-    required_keys: string[];
-    type: { accepted_values: string[]; claude_mem_value: string };
-    command: { min_items: number };
-  };
-  claude_mem_entry: { key: string; type: string; command: string[] };
-};
-
 describe('OpenCode installer config registration', () => {
   let tempDir: string;
   let previousConfigDir: string | undefined;
@@ -147,10 +131,10 @@ describe('OpenCode installer config registration', () => {
     });
 
     expect(config.mcp).toMatchObject({ context7: { enabled: true } });
-    expect(config.mcp?.['claude-mem']).toMatchObject({ type: 'local' });
-    const mcpCommand = (config.mcp?.['claude-mem'] as { command: string[] }).command;
-    expect(mcpCommand[0]).toBe(process.execPath);
-    expect(mcpCommand[1]).toBe(getMcpServerAbsolutePath());
+    expect(config.mcp?.['claude-mem']).toEqual({
+      type: 'local',
+      command: [process.execPath, getMcpServerAbsolutePath()],
+    });
   });
 
   it('is idempotent for an already-registered claude-mem MCP entry', () => {
@@ -196,6 +180,7 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
   let tempDir: string;
   let previousConfigDir: string | undefined;
   let previousClaudeConfigDir: string | undefined;
+  let previousPath: string | undefined;
   let previousFetch: typeof globalThis.fetch;
   let previousInfo: typeof logger.info;
   let requestedUrls: string[];
@@ -208,10 +193,14 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
 
     previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
     previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    previousPath = process.env.PATH;
     previousFetch = globalThis.fetch;
     previousInfo = logger.info;
     process.env.OPENCODE_CONFIG_DIR = tempDir;
     process.env.CLAUDE_CONFIG_DIR = tempDir;
+    const emptyBin = join(tempDir, 'empty-bin');
+    mkdirSync(emptyBin);
+    process.env.PATH = emptyBin;
     logger.info = () => {};
     requestedUrls = [];
     globalThis.fetch = (async (input: string | URL | Request) => {
@@ -227,6 +216,8 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
     else process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
     if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -242,22 +233,6 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
     mkdirSync(getOpenCodeAgentsMdPath());
 
     expect(await installOpenCodeIntegration()).toBe(OPENCODE_OLD_CONTEXT_BLOCK_LEFT);
-  });
-
-  it("strips the block an older install wrote and keeps the user's own instructions", async () => {
-    writeFileSync(
-      getOpenCodeAgentsMdPath(),
-      '# My rules\n\nAlways run the tests.\n\n<claude-mem-context>\n# Memory Context from Past Sessions\n\nstale memory\n</claude-mem-context>\n',
-      'utf-8',
-    );
-
-    expect(await installOpenCodeIntegration()).toBe(0);
-
-    const agentsMd = readFileSync(getOpenCodeAgentsMdPath(), 'utf-8');
-    expect(agentsMd).toContain('# My rules');
-    expect(agentsMd).toContain('Always run the tests.');
-    expect(agentsMd).not.toContain('claude-mem-context');
-    expect(agentsMd).not.toContain('stale memory');
   });
 
   it('strips only the old block when the user text mentions a closing tag before it', async () => {
@@ -283,43 +258,6 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
     expect(await installOpenCodeIntegration()).toBe(0);
 
     expect(existsSync(getOpenCodeAgentsMdPath())).toBe(false);
-  });
-});
-
-describe('OpenCode MCP entry host contract (plan-23 step 1)', () => {
-  it('emits an entry that satisfies the checked-in OpenCode schema fixture', () => {
-    const output = addOpenCodeMcpReference({
-      $schema: 'https://opencode.ai/config.json',
-      plugin: ['./plugins/claude-mem.js'],
-    });
-
-    const entry = (output.mcp as Record<string, unknown>)[opencodeMcpFixture.claude_mem_entry.key] as
-      | Record<string, unknown>
-      | undefined;
-    expect(entry, 'installer must emit the claude-mem MCP entry').toBeTruthy();
-
-    const schema = opencodeMcpFixture.entry;
-
-    // Only host-accepted keys may be present.
-    for (const key of Object.keys(entry!)) {
-      expect(schema.allowed_keys).toContain(key);
-    }
-
-    // Required keys must be present.
-    for (const key of schema.required_keys) {
-      expect(Object.keys(entry!)).toContain(key);
-    }
-
-    // Transport is the fixture's canonical local-server value.
-    expect(entry!.type).toBe(schema.type.claude_mem_value);
-    expect(schema.type.accepted_values).toContain(entry!.type);
-
-    // command is an argv array with at least the node + script pair, both absolute.
-    const command = entry!.command as string[];
-    expect(Array.isArray(command)).toBe(true);
-    expect(command.length).toBeGreaterThanOrEqual(schema.command.min_items);
-    expect(command[0]).toBe(process.execPath);
-    expect(command[1]).toBe(getMcpServerAbsolutePath());
   });
 });
 

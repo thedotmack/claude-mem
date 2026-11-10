@@ -1,69 +1,37 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readLastLines } from '../../src/services/worker/http/routes/LogsRoutes.js';
 
 describe('readLastLines (#1203 OOM fix)', () => {
-  const testDir = join(tmpdir(), `claude-mem-logs-test-${Date.now()}`);
-  const testFile = join(testDir, 'test.log');
+  let testDir: string;
+  let testFile: string;
 
   beforeEach(() => {
-    mkdirSync(testDir, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), 'claude-mem-logs-test-'));
+    testFile = join(testDir, 'test.log');
   });
 
   afterEach(() => {
-    if (existsSync(testDir)) {
-      rmSync(testDir, { recursive: true, force: true });
-    }
+    rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('should return empty string for empty file', () => {
-    writeFileSync(testFile, '', 'utf-8');
-    const result = readLastLines(testFile, 10);
-    expect(result.lines).toBe('');
-    expect(result.totalEstimate).toBe(0);
-  });
-
-  it('should return all lines when file has fewer lines than requested', () => {
-    writeFileSync(testFile, 'line1\nline2\nline3\n', 'utf-8');
-    const result = readLastLines(testFile, 10);
-    expect(result.lines).toBe('line1\nline2\nline3');
-    expect(result.totalEstimate).toBe(3);
-  });
-
-  it('should return exactly the last N lines', () => {
-    const lines = Array.from({ length: 20 }, (_, i) => `line${i + 1}`);
-    writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
-
-    const result = readLastLines(testFile, 5);
-    expect(result.lines).toBe('line16\nline17\nline18\nline19\nline20');
-  });
-
-  it('should return single line when requested', () => {
-    writeFileSync(testFile, 'first\nsecond\nthird\n', 'utf-8');
-    const result = readLastLines(testFile, 1);
-    expect(result.lines).toBe('third');
-  });
-
-  it('should handle file without trailing newline', () => {
-    writeFileSync(testFile, 'line1\nline2\nline3', 'utf-8');
-    const result = readLastLines(testFile, 2);
-    expect(result.lines).toBe('line2\nline3');
-  });
-
-  it('should handle single line file', () => {
-    writeFileSync(testFile, 'only line\n', 'utf-8');
-    const result = readLastLines(testFile, 5);
-    expect(result.lines).toBe('only line');
-    expect(result.totalEstimate).toBe(1);
-  });
-
-  it('should handle file with exactly requested number of lines', () => {
-    writeFileSync(testFile, 'a\nb\nc\n', 'utf-8');
-    const result = readLastLines(testFile, 3);
-    expect(result.lines).toBe('a\nb\nc');
+  it.each([
+    ['empty file', '', 10, '', 0],
+    ['fewer lines than requested', 'line1\nline2\nline3\n', 10, 'line1\nline2\nline3', 3],
+    ['last N lines', Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join('\n') + '\n', 5, 'line16\nline17\nline18\nline19\nline20', 20],
+    ['single line requested', 'first\nsecond\nthird\n', 1, 'third', 3],
+    ['no trailing newline', 'line1\nline2\nline3', 2, 'line2\nline3', 3],
+    ['single line file', 'only line\n', 5, 'only line', 1],
+    ['exactly requested line count', 'a\nb\nc\n', 3, 'a\nb\nc', 3],
+    ['whole-file estimate', Array.from({ length: 5 }, (_, i) => `line${i}`).join('\n') + '\n', 100, 'line0\nline1\nline2\nline3\nline4', 5],
+    ['zero lines requested', 'line1\nline2\n', 0, '', 2],
+    ['only newlines', '\n\n\n', 2, '\n', 3],
+  ] as const)('reads %s', (_name, content, lineCount, lines, totalEstimate) => {
+    writeFileSync(testFile, content, 'utf-8');
+    expect(readLastLines(testFile, lineCount)).toEqual({ lines, totalEstimate });
   });
 
   it('should work with lines larger than initial chunk size', () => {
@@ -97,39 +65,5 @@ describe('readLastLines (#1203 OOM fix)', () => {
     const result = readLastLines(testFile, 3);
     expect(result.lines).toBe([line, line, line].join('\n'));
     expect(result.totalEstimate).toBe(2048);
-  });
-
-  it('should provide accurate totalEstimate when entire file is read', () => {
-    const lines = Array.from({ length: 5 }, (_, i) => `line${i}`);
-    writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
-
-    const result = readLastLines(testFile, 100);
-    expect(result.totalEstimate).toBe(5);
-  });
-
-  it('should handle requesting zero lines', () => {
-    writeFileSync(testFile, 'line1\nline2\n', 'utf-8');
-    const result = readLastLines(testFile, 0);
-    expect(result.lines).toBe('');
-  });
-
-  it('should handle file with only newlines', () => {
-    writeFileSync(testFile, '\n\n\n', 'utf-8');
-    const result = readLastLines(testFile, 2);
-    const resultLines = result.lines.split('\n');
-    expect(resultLines.length).toBe(2);
-  });
-
-  it('should not load entire large file for small tail request', () => {
-    const line = 'A'.repeat(100) + '\n'; 
-    const lineCount = 1000; 
-    writeFileSync(testFile, line.repeat(lineCount), 'utf-8');
-
-    const result = readLastLines(testFile, 5);
-    const resultLines = result.lines.split('\n');
-    expect(resultLines.length).toBe(5);
-    for (const l of resultLines) {
-      expect(l).toBe('A'.repeat(100));
-    }
   });
 });

@@ -1,6 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 
+const obs = (title: string) => ({
+  type: 'discovery',
+  title,
+  subtitle: null,
+  facts: [],
+  narrative: null,
+  concepts: [],
+  files_read: [],
+  files_modified: []
+});
+
 describe('Session ID Critical Invariants', () => {
   let store: SessionStore;
 
@@ -24,27 +35,9 @@ describe('Session ID Critical Invariants', () => {
       store.updateMemorySessionId(id1, memory1);
       store.updateMemorySessionId(id2, memory2);
 
-      store.storeObservation(memory1, 'project-a', {
-        type: 'discovery',
-        title: 'Observation A',
-        subtitle: null,
-        facts: [],
-        narrative: null,
-        concepts: [],
-        files_read: [],
-        files_modified: []
-      }, 1);
+      store.storeObservation(memory1, 'project-a', obs('Observation A'), 1);
 
-      store.storeObservation(memory2, 'project-b', {
-        type: 'discovery',
-        title: 'Observation B',
-        subtitle: null,
-        facts: [],
-        narrative: null,
-        concepts: [],
-        files_read: [],
-        files_modified: []
-      }, 1);
+      store.storeObservation(memory2, 'project-b', obs('Observation B'), 1);
 
       const obsA = store.getObservationsForSession(memory1);
       const obsB = store.getObservationsForSession(memory2);
@@ -60,40 +53,6 @@ describe('Session ID Critical Invariants', () => {
   });
 
   describe('Resume Safety', () => {
-    it('should prevent resume when memorySessionId is NULL (not yet captured)', () => {
-      const contentSessionId = 'new-session-123';
-      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'First prompt');
-
-      const session = store.getSessionById(sessionDbId);
-
-      expect(session?.memory_session_id).toBeNull();
-
-      const hasRealMemorySessionId = session?.memory_session_id !== null;
-      expect(hasRealMemorySessionId).toBe(false);
-
-      const resumeOptions = hasRealMemorySessionId ? { resume: session?.memory_session_id } : {};
-      expect(resumeOptions).toEqual({});
-    });
-
-    it('should allow resume only after memorySessionId is captured', () => {
-      const contentSessionId = 'resume-ready-session';
-      const capturedMemoryId = 'sdk-returned-session-xyz';
-
-      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt');
-
-      let session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBeNull();
-
-      store.updateMemorySessionId(sessionDbId, capturedMemoryId);
-
-      session = store.getSessionById(sessionDbId);
-      const hasRealMemorySessionId = session?.memory_session_id !== null;
-
-      expect(hasRealMemorySessionId).toBe(true);
-      expect(session?.memory_session_id).toBe(capturedMemoryId);
-      expect(session?.memory_session_id).not.toBe(contentSessionId);
-    });
-
     it('should preserve memorySessionId across createSDKSession calls (pure get-or-create)', () => {
       const contentSessionId = 'multi-prompt-session';
       const firstMemoryId = 'first-generator-memory-id';
@@ -148,16 +107,7 @@ describe('Session ID Critical Invariants', () => {
   describe('Foreign Key Integrity', () => {
     it('should reject observations for non-existent sessions', () => {
       expect(() => {
-        store.storeObservation('nonexistent-session-id', 'test-project', {
-          type: 'discovery',
-          title: 'Invalid FK',
-          subtitle: null,
-          facts: [],
-          narrative: null,
-          concepts: [],
-          files_read: [],
-          files_modified: []
-        }, 1);
+        store.storeObservation('nonexistent-session-id', 'test-project', obs('Invalid FK'), 1);
       }).toThrow(); 
     });
   });

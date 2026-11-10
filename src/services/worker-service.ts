@@ -168,7 +168,7 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
-import { setIngestContext, attachIngestGeneratorStarter, transcriptCheckpointGate } from './worker/http/shared.js';
+import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
@@ -1515,7 +1515,7 @@ export class WorkerService implements WorkerRef {
     }
 
     try {
-      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath, 'in-process', transcriptCheckpointGate);
+      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath, 'in-process');
       await this.transcriptWatcher.start();
     } catch (error) {
       this.transcriptWatcher?.stop();
@@ -1890,7 +1890,7 @@ function runServerApiKeyCli(args: string[]): never {
   }
 }
 
-async function main() {
+export async function main() {
   const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
   // Load the bundle without binding a port or depending on a running worker.
   if (command === '--version') {

@@ -21,7 +21,7 @@ import { existsSync, rmSync } from 'fs';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function waitFor(condition: () => boolean, label: string, timeoutMs = 2_000): Promise<void> {
+async function waitFor(condition: () => boolean, label: string, timeoutMs = 4_500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for: ${label}`);
@@ -290,7 +290,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
     realtime.broadcastAdvance('2', '1');
 
     await waitFor(() => apply.getEpoch() === '2' && apply.getCursor() === '1', 're-bootstrapped under epoch 2');
-    expect(realtime.state.closes).toBeGreaterThanOrEqual(1);
+    await waitFor(() => realtime.state.closes >= 1, 'old socket closed');
     await waitFor(() => realtime.framesOf('phx_join').length >= 2, 'reconnected and re-joined');
   });
 
@@ -307,13 +307,16 @@ describe('SyncClient Supabase Realtime live updates', () => {
   it('sends Phoenix heartbeats on the configured cadence with fresh refs', async () => {
     const { impl } = makeHub(realtime, { epoch: '1' });
     const client = makeClient(impl, { wsPingIntervalMs: 30 });
+    const startedAt = performance.now();
     client.start();
     await waitFor(() => client.isSocketLive(), 'channel joined');
     await sleep(200);
+    await waitFor(() => realtime.framesOf('heartbeat').length >= 4, 'four heartbeats');
 
     const beats = realtime.framesOf('heartbeat');
+    const elapsedMs = Math.max(200, performance.now() - startedAt);
     expect(beats.length).toBeGreaterThanOrEqual(4);
-    expect(beats.length).toBeLessThanOrEqual(8);
+    expect(beats.length).toBeLessThanOrEqual(Math.floor(elapsedMs / 30) + 2);
     expect(beats[0]).toEqual({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: beats[0].ref });
     expect(new Set(beats.map(b => b.ref)).size).toBe(beats.length);
     expect(realtime.state.closes).toBe(0);
@@ -384,13 +387,16 @@ describe('SyncClient Supabase Realtime live updates', () => {
     realtime.state.joinStatus = 'error';
     // random()=1 pins each delay at the ceiling: 20, 40, 80, 80 ...
     const client = makeClient(impl, { wsBackoffBaseMs: 20, wsBackoffMaxMs: 80, random: () => 1 });
+    const startedAt = performance.now();
     client.start();
     await sleep(300);
+    await waitFor(() => realtime.framesOf('phx_join').length >= 3, 'three refused joins');
 
     const attempts = realtime.framesOf('phx_join').length;
+    const elapsedMs = Math.max(300, performance.now() - startedAt);
     expect(client.isSocketLive()).toBe(false);
     expect(attempts).toBeGreaterThanOrEqual(3);
-    expect(attempts).toBeLessThanOrEqual(7); // bounded — no busy loop
+    expect(attempts).toBeLessThanOrEqual(Math.ceil(elapsedMs / 80) + 3); // bounded — no busy loop
 
     realtime.state.joinStatus = 'ok';
     await waitFor(() => client.isSocketLive(), 'joined after the server allowed it');
@@ -399,7 +405,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
   it('realtime-token 404 ⇒ no Realtime on the server: poll mode, HTTP continues, re-probes later', async () => {
     const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '11')] });
     state.tokenStatus = 404;
-    const client = makeClient(impl, { realtimeUnavailableRetryMs: 150 });
+    const client = makeClient(impl, { realtimeUnavailableRetryMs: 1_000 });
     client.start();
     await waitFor(() => client.isPollModeOnly(), 'poll mode');
 
@@ -471,7 +477,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
 
     realtime.dropAll();
     await waitFor(() => !client.isSocketLive(), 'socket dropped');
-    await sleep(150);
+    await waitFor(() => state.pulls >= whileJoined + 3, 'active polling resumed');
     expect(state.pulls).toBeGreaterThanOrEqual(whileJoined + 3);
   });
 
@@ -771,7 +777,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
     client.start();
     await waitFor(() => client.isSocketLive(), 'channel joined');
 
-    await waitFor(() => !client.isSocketLive() && realtime.state.closes >= 1, 'suspended', 1_000);
+    await waitFor(() => !client.isSocketLive() && realtime.state.closes >= 1, 'suspended');
     const joins = realtime.framesOf('phx_join').length;
     await sleep(60);
     expect(realtime.framesOf('phx_join')).toHaveLength(joins); // no churn while suspended

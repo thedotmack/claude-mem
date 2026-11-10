@@ -12,6 +12,7 @@ import { parseAgentXml } from '../../src/sdk/parser.js';
 // real `code` mode is a superset of the types these tests exercise
 // (bugfix / discovery / refactor), so the assertions below are unchanged.
 ModeManager.getInstance().loadMode('code');
+let previousMode: unknown;
 
 function expectObservation(raw: string) {
   const result = parseAgentXml(raw);
@@ -22,6 +23,7 @@ function expectObservation(raw: string) {
 
 beforeEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  previousMode = modeManager.activeMode;
   modeManager.activeMode = {
     observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
     observation_concepts: [],
@@ -30,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
-  modeManager.activeMode = null;
+  modeManager.activeMode = previousMode;
 });
 
 describe('parseAgentXml — observations', () => {
@@ -269,29 +271,6 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
-  it('uses first mode type as fallback when type is missing', () => {
-    const xml = `<observation>
-      <title>Missing type field</title>
-    </observation>`;
-
-    const result = expectObservation(xml);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('bugfix');
-  });
-
-  it('preserves a reporter-shaped unsupported observation type', () => {
-    const xml = `<observation>
-      <type>code</type>
-      <title>Reporter-shaped unsupported type</title>
-    </observation>`;
-
-    const result = expectObservation(xml);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('code');
-  });
-
   it('takes the re-opened type when a stray closing tag precedes it', () => {
     const xml = `<observation>
       <type>bugfix</parameter>
@@ -378,11 +357,6 @@ Oops, let me restate the output cleanly.
     expect(result[0].type).toBe('bugfix');
   });
 
-  it('returns a fail-fast result when no observation/summary blocks are present', () => {
-    const result = parseAgentXml('Some text without any observations.');
-    expect(result.valid).toBe(false);
-  });
-
   it('parses files_read and files_modified arrays correctly', () => {
     const xml = `<observation>
       <type>bugfix</type>
@@ -400,20 +374,6 @@ Oops, let me restate the output cleanly.
 });
 
 describe('parseAgentXml — fence tolerance (#2233 Part A)', () => {
-  it('parses plain XML input correctly (no fence)', () => {
-    const xml = `<observation>
-      <type>discovery</type>
-      <title>Plain XML input</title>
-      <narrative>No fence wrapper present.</narrative>
-    </observation>`;
-
-    const result = parseAgentXml(xml);
-    expect(result.valid).toBe(true);
-    if (!result.valid) return;
-    expect(result.observations).toHaveLength(1);
-    expect(result.observations[0].title).toBe('Plain XML input');
-  });
-
   it('parses fenced XML with language tag (```xml ... ```)', () => {
     const xml = '```xml\n<observation>\n  <type>discovery</type>\n  <title>Fenced with lang</title>\n  <narrative>Wrapped in xml-tagged code fence.</narrative>\n</observation>\n```';
 

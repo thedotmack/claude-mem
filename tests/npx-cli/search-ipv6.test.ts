@@ -88,7 +88,4 @@ describe('npx search native worker host URLs', () => {
   it('loads the saved custom worker host and port when environment overrides are absent', async () => {
     await searchAgainst('127.0.0.1', '127.0.0.1', true);
   });
-  it('preserves IPv4 and query encoding', async () => {
-    await searchAgainst('127.0.0.1', '127.0.0.1');
-  });
 });

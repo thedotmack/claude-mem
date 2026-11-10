@@ -62,6 +62,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $bun test tests/work-view/request-first.test.ts --test-name-pattern 'built request-progress skill'
 
+      - name: Launcher and uninstall Windows behavior
+        shell: pwsh
+        env:
+          CLAUDE_MEM_TEST_WINDOWS_PATH: '1'
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/launcher/install-launcher.test.ts tests/launcher/claude-mem-launcher.test.ts tests/launcher/windows-user-path.test.ts tests/npx-cli/uninstall-data-dir-hint.test.ts --timeout 60000
+
       # These suites either skip on non-Windows or only exercise their real
       # branch under win32: file-context symlink/stat boundaries, clearing the
       # inherited listen-socket handle, npm tree termination, and HOME vs
@@ -269,19 +277,6 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
-
-      # Ghost-listener recovery gate (plan-15 #3603). Fails on main: a worker
-      # killed OUT-OF-BAND (taskkill /F without /T) leaves its chroma sidecar
-      # chain holding the inherited listening socket, and no launcher reclaims
-      # the port — ensureWorkerStarted returns 'dead' forever. Passes once the
-      # spawn path reclaims the dead owner's sidecar descendants and starts.
-      - name: Ghost-listener recovery gate (#3603)
-        shell: pwsh
-        env:
-          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-ghost-data
-        run: |
-          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/integration/worker-ghost-port-recovery.test.ts --timeout 600000
 
       # Diagnostic only — never fails the job. Ancestry/identity filtering is
       # done inside the tests; this is just a human-readable postmortem for

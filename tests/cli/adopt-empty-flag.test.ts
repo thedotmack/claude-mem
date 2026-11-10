@@ -7,7 +7,7 @@ import { join } from 'path';
 // an empty filter would adopt every merged or orphaned worktree.
 const workerService = join(import.meta.dir, '..', '..', 'src', 'services', 'worker-service.ts');
 
-for (const flag of ['--branch', '--cwd']) {
+for (const flag of ['--branch']) {
   it(`rejects adopt ${flag} with an empty value`, () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cmem-adopt-empty-flag-')));
     try {

@@ -901,16 +901,6 @@ export class SessionManager {
     return this.buffer.getTotalDepth();
   }
 
-  /** See SessionMessageBuffer.getLastAssignedId. */
-  getLastBufferedMessageId(): number {
-    return this.buffer.getLastAssignedId();
-  }
-
-  /** See SessionMessageBuffer.getOldestPendingId. */
-  getOldestPendingMessageId(sessionDbId: number): number | null {
-    return this.buffer.getOldestPendingId(sessionDbId);
-  }
-
   async getTotalActiveWork(): Promise<number> {
     return this.getTotalQueueDepth();
   }

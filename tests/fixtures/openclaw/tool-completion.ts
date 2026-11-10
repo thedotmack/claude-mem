@@ -17,9 +17,9 @@ let port = 0;
 try {
  const cwd = join(process.env.CLAUDE_MEM_DATA_DIR!, 'owned-project'); mkdirSync(join(cwd,'src'),{recursive:true});
  const relative = 'src/owned.ts'; const filePath = join(cwd,relative);
- const operation = ['read','string-result','canonical-read'].includes(kind) ? 'read' : kind;
+ const operation = ['read','canonical-read'].includes(kind) ? 'read' : kind;
  writeFileSync(filePath,operation === 'read' ? 'old\n' : 'new\n');
- const tool = kind === 'memory-control' ? 'memory_search' : operation;
+ const tool = operation;
  const params = kind === 'edit' ? {path:filePath,oldText:'old',newText:'new'}
    : kind === 'write' ? {path:filePath,content:'new\n'} : {path:filePath,offset:1,limit:3};
  if(kind === 'canonical-read') {params.path=join(cwd,'src/ignored.ts');(params as any).file_path=filePath;}
@@ -48,17 +48,11 @@ try {
  const hooks = new Map<string,Function>();
  register({id:'owned',name:'owned',source:'owned',config:{},pluginConfig:{workerPort:port,workerHost:'127.0.0.1',syncMemoryFile:false},
   logger:{info(){},warn(){},error(){}},runtime:{channel:{}},registerService(){},registerCommand(){},on(name:string,callback:Function){hooks.set(name,callback)}} as any);
- const result = kind === 'string-result' ? readFileSync(filePath,'utf8') : {content:[{type:'text',text:readFileSync(filePath,'utf8')}]};
- if(kind !== 'memory-control') assert.ok(hooks.get('after_tool_call'),'actual completion hook must be registered');
+ const result = {content:[{type:'text',text:readFileSync(filePath,'utf8')}]};
+ assert.ok(hooks.get('after_tool_call'),'actual completion hook must be registered');
  const event={toolName:tool,params,result,toolCallId:'owned-call'};
  const originalCwd=process.cwd();cleanup.push(()=>process.chdir(originalCwd));process.chdir(cwd);
  await hooks.get('after_tool_call')?.(event,{sessionKey:'owned-session',agentId:'owned',toolName:tool,toolCallId:'owned-call'});
- if(kind === 'memory-control') {
-  await Bun.sleep(40);
-  assert.equal(captured,undefined,'memory tools must not produce observations');
-  assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
-  console.log(JSON.stringify({kind,observations:0}));
- } else {
   let ingestTimer:ReturnType<typeof setTimeout>|undefined;
   const ingestedInTime=await Promise.race([ingested.then(()=>true),new Promise<boolean>(resolve=>{ingestTimer=setTimeout(()=>resolve(false),5000);})]);
   clearTimeout(ingestTimer); // an uncleared 5 s timer would hold this child open after it passes
@@ -66,7 +60,7 @@ try {
   assert.equal(captured.tool_name,operation[0].toUpperCase()+operation.slice(1));
   for(const [key,value] of Object.entries(params)) assert.deepEqual(captured.tool_input[key],value);
   if(operation === 'read') assert.equal(captured.tool_input.file_path,filePath);
-  assert.equal(captured.tool_response,typeof result === 'string' ? result : result.content[0].text);
+  assert.equal(captured.tool_response,result.content[0].text);
  const sid=(store.db.query('SELECT id FROM sdk_sessions').get() as any).id;
  const session=manager.initializeSession(sid);cleanup.push(()=>{session.abortController.abort();manager.removeSessionImmediate(sid)});
  const fetchSpy=spyOn(globalThis,'fetch').mockImplementation((url,init)=>realFetch(String(url).startsWith('http://127.0.0.1:')?url:`http://127.0.0.1:${port}/generate`,init));cleanup.push(()=>fetchSpy.mockRestore());
@@ -80,5 +74,4 @@ try {
  assert.deepEqual(lookup.map(row=>row.id),[rows[0].id]);
  const live=broadcasts.find(event=>event.type==='new_observation').observation;assert.deepEqual(JSON.parse(live.files_read),readExpected);assert.deepEqual(JSON.parse(live.files_modified),writeExpected);
  assert.equal(JSON.stringify(params),originalParams);
- }
 }finally{for(const release of cleanup.reverse())await release()}

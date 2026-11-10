@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-for (const kind of ['read', 'write', 'edit', 'string-result', 'canonical-read', 'memory-control']) {
+for (const kind of ['read', 'write', 'edit', 'canonical-read']) {
   it(`OpenClaw actual completion preserves ${kind}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'owned-openclaw-tools-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

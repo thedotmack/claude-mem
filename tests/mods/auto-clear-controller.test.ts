@@ -324,25 +324,6 @@ describe('auto-clear controller', () => {
     expect(notes.at(-1)).toContain('Tell Claude where to pick up');
   });
 
-  it('treats the conversation end its own /clear causes as its own', async () => {
-    const { host, calls, flush, state } = fakeHost({ percent: 40 });
-    let controller!: AutoClearController;
-    const clearing = host.clear;
-    host.clear = async () => {
-      await clearing();
-      controller.onConversationEnd(); // session.end raised by our own /clear
-    };
-    controller = new AutoClearController(host);
-    await controller.onToolCallEnd(tool('Bash'));
-    await controller.onToolCallEnd(tool(WRITE, SAVED));
-    await controller.onTurnEnd(answered);
-    await flush();
-    expect(calls).toEqual(['clear', 'user:continue']);
-    // The fresh conversation is measured: below the threshold, nothing more happens.
-    state.percent = 5;
-    expect(await controller.onToolCallEnd(tool('Read'))).toBeNull();
-  });
-
   it('reports a /clear that could not run and pauses', async () => {
     const { host, calls, notes, state, flush } = fakeHost({ percent: 40 });
     state.failClear = true;

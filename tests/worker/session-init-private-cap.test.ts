@@ -7,10 +7,8 @@ import { Database } from 'bun:sqlite';
 import type { Server } from 'node:http';
 import express from 'express';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
+import { MAX_USER_PROMPT_BYTES, SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { logger } from '../../src/utils/logger.js';
-
-const MAX_USER_PROMPT_BYTES = 256 * 1024; // mirrors SessionRoutes.ts
 
 describe('POST /api/sessions/init: private block straddling the prompt cap', () => {
   let server: Server | undefined;

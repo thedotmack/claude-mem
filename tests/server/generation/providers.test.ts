@@ -195,23 +195,16 @@ describe('buildServerGenerationPrompt', () => {
   // A session_summary job is a different task, and its persistence path only
   // understands a <summary> block. Asking it for <observation> produced responses
   // that the summary path discarded without a trace.
-  it('asks for a <summary> block on session_summary jobs', () => {
-    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
-    expect(result.prompt).toContain('<summary>...</summary>');
-    expect(result.prompt).toContain('<request>');
-    expect(result.prompt).toContain('<learned>');
-    expect(result.prompt).toContain('<next_steps>');
-  });
-
-  it('does not ask a session_summary job for <observation> blocks', () => {
-    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
-    expect(result.prompt).not.toContain('<observation>...</observation>');
-  });
-
-  it('still asks for <observation> blocks on agent_event jobs', () => {
-    const result = buildServerGenerationPrompt(makeContext());
-    expect(result.prompt).toContain('<observation>...</observation>');
-    expect(result.prompt).not.toContain('<summary>...</summary>');
+  it('asks for the appropriate output block for each job type', () => {
+    for (const sourceType of ['agent_event', 'session_summary'] as const) {
+      const { prompt } = buildServerGenerationPrompt(makeContext({ sourceType }));
+      const isSummary = sourceType === 'session_summary';
+      expect(prompt).toContain(isSummary ? '<summary>...</summary>' : '<observation>...</observation>');
+      expect(prompt).not.toContain(isSummary ? '<observation>...</observation>' : '<summary>...</summary>');
+      if (isSummary) {
+        for (const field of ['<request>', '<learned>', '<next_steps>']) expect(prompt).toContain(field);
+      }
+    }
   });
 
   it('keeps offering the skip escape hatch on both job types', () => {
@@ -386,34 +379,19 @@ describe('ClaudeObservationProvider', () => {
     }
   });
 
-  it('POSTs to api.anthropic.com when baseUrl is unset', async () => {
-    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
-    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('https://api.anthropic.com/v1/messages');
-  });
-
-  it('POSTs to a custom gateway baseUrl, appending /v1/messages', async () => {
-    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
-    const provider = new ClaudeObservationProvider({
-      apiKey: 'sk-fake',
-      baseUrl: 'https://gateway.example.com/api/anthropic',
-      fetchImpl: capturing.fetch,
+  for (const [baseUrl, expectedUrl] of [
+    [undefined, 'https://api.anthropic.com/v1/messages'],
+    ['https://gateway.example.com/api/anthropic', 'https://gateway.example.com/api/anthropic/v1/messages'],
+    ['  https://gateway.example.com/api/anthropic/  ', 'https://gateway.example.com/api/anthropic/v1/messages'],
+  ]) {
+    it(`POSTs to ${expectedUrl} for baseUrl ${JSON.stringify(baseUrl)}`, async () => {
+      const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+      const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', baseUrl, fetchImpl: capturing.fetch });
+      await provider.generate(makeContext());
+      expect(capturing.lastUrl).toBe(expectedUrl);
     });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
-  });
+  }
 
-  it('trims whitespace and strips a trailing slash from baseUrl', async () => {
-    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
-    const provider = new ClaudeObservationProvider({
-      apiKey: 'sk-fake',
-      baseUrl: '  https://gateway.example.com/api/anthropic/  ',
-      fetchImpl: capturing.fetch,
-    });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
-  });
 });
 
 describe('GeminiObservationProvider', () => {
@@ -459,7 +437,6 @@ describe('GeminiObservationProvider', () => {
   }
 
   const PER_MINUTE = 'GenerateContentInputTokensPerModelPerMinute-FreeTier';
-  const PER_DAY = 'GenerateContentInputTokensPerModelPerDay-FreeTier';
 
   /**
    * A 429 body in the shape Gemini actually sends, captured from the live
@@ -502,16 +479,6 @@ describe('GeminiObservationProvider', () => {
     expect(err.retryAfterMs).toBe(11000);
   });
 
-  it('reads a 429 that also names a period window as the exhausted allowance', () => {
-    const err = classifyGeminiServerError({
-      status: 429,
-      bodyText: quotaFailureBody([PER_MINUTE, PER_DAY]),
-      cause: new Error(''),
-    });
-
-    expect(err.kind).toBe('quota_exhausted');
-  });
-
   it('lets a Retry-After header win over the body hint when one is present', () => {
     const err = classifyGeminiServerError({
       status: 429,
@@ -544,6 +511,7 @@ describe('GeminiObservationProvider', () => {
 
     expect(result.rawText).toBe('<observation><type>x</type><title>Answer</title></observation>');
     expect(result.tokensUsed).toBe(42);
+    expect(result.providerLabel).toBe('gemini');
   });
 
   it('joins an answer that Gemini split across several parts', async () => {
@@ -564,39 +532,6 @@ describe('GeminiObservationProvider', () => {
     const result = await provider.generate(makeContext());
 
     expect(result.rawText).toBe('<observation><type>x</type><title>Split</title></observation>');
-  });
-
-  it('parses generateContent response into rawText', async () => {
-    const fakeFetch = new FakeFetch(
-      jsonResponse(200, {
-        candidates: [{ content: { parts: [{ text: '<observation><type>x</type><title>g</title></observation>' }] } }],
-        usageMetadata: { totalTokenCount: 42 },
-      }),
-    );
-    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
-    const result = await provider.generate(makeContext());
-    expect(result.rawText).toContain('<observation>');
-    expect(result.tokensUsed).toBe(42);
-    expect(result.providerLabel).toBe('gemini');
-  });
-
-  it('redacts raw Gemini 400 response body from top-level message and cause', async () => {
-    const rawBody = 'Please ensure that multiturn requests alternate between user and model. RAW_PROVIDER_BODY';
-    const fakeFetch = new FakeFetch(new Response(rawBody, { status: 400 }));
-    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
-
-    try {
-      await provider.generate(makeContext());
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
-      const classified = error as ServerClassifiedProviderError;
-      expect(classified.kind).toBe('unrecoverable');
-      expect(classified.message).toBe('Gemini bad request: role_sequence');
-      expect(classified.message).not.toContain('RAW_PROVIDER_BODY');
-      expect(classified.cause).toBeInstanceOf(Error);
-      expect((classified.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
-    }
   });
 
   it('redacts raw Gemini non-400 response body from top-level message and cause', async () => {
@@ -674,6 +609,7 @@ describe('OpenRouterObservationProvider', () => {
     const result = await provider.generate(makeContext());
     expect(result.rawText).toBe('<observation>firstsecond</observation>');
     expect(result.tokensUsed).toBe(11);
+    expect(result.providerLabel).toBe('openrouter');
   });
 
   it('treats non-text compatible response content as empty', async () => {
@@ -759,20 +695,6 @@ describe('OpenRouterObservationProvider', () => {
     expect('stream' in await bodyFor('https://cmem.ai/api/inference/v1')).toBe(false);
   });
 
-  it('parses OpenAI-style response and reports tokensUsed', async () => {
-    const fakeFetch = new FakeFetch(
-      jsonResponse(200, {
-        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' } }],
-        usage: { total_tokens: 100 },
-      }),
-    );
-    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
-    const result = await provider.generate(makeContext());
-    expect(result.rawText).toContain('<observation>');
-    expect(result.tokensUsed).toBe(100);
-    expect(result.providerLabel).toBe('openrouter');
-  });
-
   it('classifies a 429 response as rate_limit', async () => {
     const fakeFetch = new FakeFetch(jsonResponse(429, { error: { message: 'rl' } }));
     const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
@@ -786,40 +708,18 @@ describe('OpenRouterObservationProvider', () => {
   });
 
   // #2382/#2590/#2622/#2393 — configurable OpenAI-compatible base URL.
-  it('POSTs to the default OpenRouter URL when baseUrl is unset', async () => {
-    const capturing = new CapturingFetch(
-      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
-    );
-    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('https://openrouter.ai/api/v1/chat/completions');
-  });
-
-  it('appends /chat/completions to a DeepSeek-style base URL', async () => {
-    const capturing = new CapturingFetch(
-      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
-    );
-    const provider = new OpenRouterObservationProvider({
-      apiKey: 'fake',
-      baseUrl: 'https://api.deepseek.com',
-      fetchImpl: capturing.fetch,
+  for (const [baseUrl, expectedUrl] of [
+    [undefined, 'https://openrouter.ai/api/v1/chat/completions'],
+    ['https://api.deepseek.com', 'https://api.deepseek.com/chat/completions'],
+    ['http://localhost:1234/v1/chat/completions/', 'http://localhost:1234/v1/chat/completions'],
+  ]) {
+    it(`POSTs to ${expectedUrl} for baseUrl ${JSON.stringify(baseUrl)}`, async () => {
+      const capturing = new CapturingFetch(jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }));
+      const provider = new OpenRouterObservationProvider({ apiKey: 'fake', baseUrl, fetchImpl: capturing.fetch });
+      await provider.generate(makeContext());
+      expect(capturing.lastUrl).toBe(expectedUrl);
     });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('https://api.deepseek.com/chat/completions');
-  });
-
-  it('uses a full chat/completions base URL verbatim and normalizes trailing slash', async () => {
-    const capturing = new CapturingFetch(
-      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
-    );
-    const provider = new OpenRouterObservationProvider({
-      apiKey: 'fake',
-      baseUrl: 'http://localhost:1234/v1/chat/completions/',
-      fetchImpl: capturing.fetch,
-    });
-    await provider.generate(makeContext());
-    expect(capturing.lastUrl).toBe('http://localhost:1234/v1/chat/completions');
-  });
+  }
 
   it('sends the configured model verbatim in the request body (#2393)', async () => {
     const capturing = new CapturingFetch(
