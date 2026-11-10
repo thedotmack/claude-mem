@@ -14,6 +14,7 @@ import {
   type AutoUpdateDoctorSources,
 } from '../../src/npx-cli/commands/doctor.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
+import { DEPENDENCY_STATUS_LABELS } from '../../src/shared/dependency-health.js';
 import {
   describeAutoUpdateDecision,
   readAutoUpdateSwitches,
@@ -1001,6 +1002,24 @@ describe('npx doctor probeWorkerDependencies (#5359)', () => {
       'Observer data directory',
     ]);
     expect(rows.every(r => r.status === 'warn' && !r.required)).toBe(true);
+  });
+
+  it('names every dependency the worker can report from the shared label table', () => {
+    for (const [dependency, labels] of Object.entries(DEPENDENCY_STATUS_LABELS)) {
+      const rows = workerDependencyChecks([{ dependency, kind: labels.kind, message: 'broken', remediation: 'fix it' }]);
+
+      expect(rows).toEqual([{ name: labels.doctorCheckName, status: 'warn', detail: 'broken — fix it', required: false }]);
+    }
+  });
+
+  it('shows a status from a newer worker instead of dropping it', () => {
+    const rows = workerDependencyChecks([
+      { dependency: 'future_dependency', kind: 'future_kind', message: 'something new is missing', remediation: 'install it' },
+    ]);
+
+    expect(rows).toEqual([
+      { name: 'future_dependency (future_kind)', status: 'warn', detail: 'something new is missing — install it', required: false },
+    ]);
   });
 
   it('returns no checks when worker dependencies are healthy', async () => {

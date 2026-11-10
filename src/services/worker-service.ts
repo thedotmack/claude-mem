@@ -41,7 +41,7 @@ import { isPidAlive, setRegistryDegradedReporter } from '../supervisor/process-r
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
-import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
+import { dependencyStatusLabels, snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
@@ -2511,23 +2511,12 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
     return null;
   }
 
-  const labels = dependencies.statuses.map(status => {
-    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
-      return 'Claude CLI setup required';
-    }
-    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
-      return 'Codex CLI setup required';
-    }
-    if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
-      return 'uvx unavailable for vector search';
-    }
-    if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
-      return 'Chroma unavailable for vector search';
-    }
-    return `${status.dependency}: ${status.kind}`;
-  });
+  // The fallback names a pair only a worker newer than this CLI can report.
+  const labels = dependencies.statuses.map(status =>
+    dependencyStatusLabels(status.dependency, status.kind)?.statusCommandHint ?? `${status.dependency}: ${status.kind}`);
 
-  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor or open Settings for remediation.`;
+  // doctor prints each status with its remediation; no Settings screen shows them.
+  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor for remediation.`;
 }
 
 /**

@@ -10,6 +10,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
+import type { HistoryImportRunState } from '../../shared/setup-funnel.js';
 import { logger } from '../../utils/logger.js';
 
 export const HISTORY_IMPORT_BATCH = 100;
@@ -17,7 +18,7 @@ export const HISTORY_IMPORT_BATCH = 100;
 export interface SetupHistoryCounts { projects: number; sessions: number; observations: number }
 
 export interface HistoryImportState {
-  state: 'idle' | 'running' | 'done' | 'failed';
+  state: HistoryImportRunState;
   total: number;
   sent: number;
   /** Observations cmem.ai wrote (new to the account). */

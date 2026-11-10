@@ -8,8 +8,8 @@ import { isWorkProductField, productsFromFields, readProductRecords } from './wo
 import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
 import { observationMediaFromMetadata } from '../media/feed.js';
+import { isClosedWorkStateStatus } from './work-state-status.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
-const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
 const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
@@ -299,7 +299,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
 
   const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
     ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
-    ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
+    ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !isClosedWorkStateStatus(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
 
   function uniqueCall(event) {

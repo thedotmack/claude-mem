@@ -4,12 +4,12 @@
 // Go only) → Finish Setup → Import (only when there is history to import) → Launch → What's next?.
 // The retired PROTO routes (savings selection, the second usage scan, device, tools, home, trial, cloud-sync) are gone.
 
-import { SETUP_STEPS, type SetupStep } from '../../../../shared/setup-funnel.ts'
+import { SETUP_STEPS, type SetupBranch, type SetupInstallerStage, type SetupMemoryBilling, type SetupStep } from '../../../../shared/setup-funnel.ts'
 export { SETUP_STEPS, type SetupStep }
 
-export type MemoryBranch = 'home' | 'go'
+export type MemoryBranch = SetupBranch
 /** Who generates memories: CMEM Pro (hosted) or the person's own token plan. On The Go is always hosted (gap G1). */
-export type MemoryBilling = 'hosted' | 'existing'
+export type MemoryBilling = SetupMemoryBilling
 export type HistoryImportStatus = 'none' | 'available' | 'running' | 'complete' | 'skipped'
 
 export interface SetupFlowState {
@@ -39,8 +39,8 @@ export function nextAfterSavings(state: Pick<SetupFlowState, 'branch' | 'already
   return state.branch === 'go' && !state.alreadyPro ? 'checkout' : 'finish-setup'
 }
 
-/** The installer's report on the choice (the worker's SetupInstallerStage). */
-export type InstallerStage = 'waiting-for-choice' | 'home-ready' | 'go-kept-existing-pro' | 'go-awaiting-checkout' | 'failed'
+/** The installer's report on the choice. */
+export type InstallerStage = SetupInstallerStage
 
 /** The installer has applied the choice: the worker refuses a different one for the rest of this installer run. */
 export function choiceLocked(stage: InstallerStage | null | undefined): boolean {

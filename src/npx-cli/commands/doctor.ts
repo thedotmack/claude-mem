@@ -37,6 +37,7 @@ import {
 } from '../../services/auto-update/auto-update-state.js';
 import { productionAutoUpdateSwitchReaders } from '../../services/auto-update/auto-update-switch-readers.js';
 import { InvalidWorkerUrlError } from '../../shared/worker-url.js';
+import { DEPENDENCY_STATUS_LABELS, dependencyStatusLabels } from '../../shared/dependency-health.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js';
 import { getCredential } from '../../shared/EnvManager.js';
@@ -266,67 +267,24 @@ export function workerDependencyChecks(
   codexOnPath: boolean = false,
   codexPath?: string | null,
 ): CheckResult[] {
-  const checks: CheckResult[] = [];
-  for (const status of statuses) {
-    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
-      let codexHint = '';
-      if (codexDetected) {
-        codexHint = codexOnPath || !codexPath
-          ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
-          : ` (Codex CLI is installed at ${codexPath}; you can switch by setting CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${codexPath}" in ~/.claude-mem/settings.json)`;
-      }
-      const detail = status.remediation
-        ? `${status.message}${codexHint} — ${status.remediation}`
-        : `${status.message}${codexHint}`;
-      checks.push({
-        name: 'Claude CLI setup',
-        status: 'warn',
-        detail,
-        required: false,
-      });
-    } else if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
-      const detail = status.remediation
-        ? `${status.message} — ${status.remediation}`
-        : status.message;
-      checks.push({
-        name: 'Codex CLI setup',
-        status: 'warn',
-        detail,
-        required: false,
-      });
-    } else if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
-      const detail = status.remediation
-        ? `${status.message} — ${status.remediation}`
-        : status.message;
-      checks.push({
-        name: 'uvx (vector search)',
-        status: 'warn',
-        detail,
-        required: false,
-      });
-    } else if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
-      const detail = status.remediation
-        ? `${status.message} — ${status.remediation}`
-        : status.message;
-      checks.push({
-        name: 'Chroma vector search',
-        status: 'warn',
-        detail,
-        required: false,
-      });
-    } else if (status.dependency === 'observer_dir' && status.kind === 'setup_required') {
-      const detail = status.remediation
-        ? `${status.message} — ${status.remediation}`
-        : status.message;
-      checks.push({
-        name: 'Observer data directory',
-        status: 'warn',
-        detail,
-        required: false,
-      });
+  return statuses.map((status): CheckResult => {
+    const labels = dependencyStatusLabels(status.dependency, status.kind);
+    let codexHint = '';
+    if (labels === DEPENDENCY_STATUS_LABELS.claude_cli && codexDetected) {
+      codexHint = codexOnPath || !codexPath
+        ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
+        : ` (Codex CLI is installed at ${codexPath}; you can switch by setting CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${codexPath}" in ~/.claude-mem/settings.json)`;
     }
-  }
-  return checks;
+    const message = `${status.message}${codexHint}`;
+    return {
+      // A pair this CLI does not list comes from a newer worker: it is shown
+      // under the worker's own names, never dropped.
+      name: labels?.doctorCheckName ?? `${status.dependency} (${status.kind})`,
+      status: 'warn',
+      detail: status.remediation ? `${message} — ${status.remediation}` : message,
+      required: false,
+    };
+  });
 }
 
 async function probeChromaCensus(): Promise<CheckResult> {
