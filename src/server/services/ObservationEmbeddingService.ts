@@ -278,16 +278,36 @@ export async function backfillMissingEmbeddings(
   // the one holding it.
   let lockClient: PostgresQueryable = client;
   let closeLockClient: (() => Promise<void>) | null = null;
+  const ownershipLost = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, ownershipLost.signal]) : ownershipLost.signal;
+  let connectLockClient: (() => Promise<unknown>) | null = null;
   if (isPool(client)) {
     const dedicated = new pg.Client(client.options);
-    dedicated.on('error', (error: Error) => {
+    let closing = false;
+    const lost = (error: Error) => {
+      if (closing || ownershipLost.signal.aborted) return;
+      // The pool can keep serving queries after this separate session dies,
+      // but its advisory lock no longer excludes another backfill owner.
+      ownershipLost.abort(error);
       logger.warn('SYSTEM', 'embedding backfill lock connection failed', { error: error.message });
-    });
-    await dedicated.connect();
+    };
+    const ended = () => lost(new Error('embedding backfill lock connection ended'));
+    dedicated.on('error', lost);
+    dedicated.on('end', ended);
+    connectLockClient = () => dedicated.connect();
     lockClient = dedicated;
-    closeLockClient = () => dedicated.end();
+    closeLockClient = async () => {
+      closing = true;
+      try { await dedicated.end(); }
+      finally {
+        dedicated.removeListener('error', lost);
+        dedicated.removeListener('end', ended);
+      }
+    };
   }
   try {
+    await connectLockClient?.();
+    if (signal.aborted) return { observations: 0, parts: 0 };
     const lock = await lockClient.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock(${BACKFILL_LOCK_KEY}) AS locked`);
     if (lock.rows[0]?.locked !== true) {
       logger.info('SYSTEM', 'another process is backfilling embeddings; this one leaves it to that one');
@@ -295,9 +315,10 @@ export async function backfillMissingEmbeddings(
     }
     try {
       // Reads and writes go through the pool (or the caller's own client).
-      return await embedMissingObservations(client, { ...options, embedder });
+      return await embedMissingObservations(client, { ...options, embedder, signal });
     } finally {
-      await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
+      // An ended connection released its locks on the server already.
+      if (!ownershipLost.signal.aborted) await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
     }
   } finally {
     await closeLockClient?.();
@@ -347,6 +368,7 @@ async function embedMissingObservations(
     }
     if (options.signal?.aborted) break;
     for (let i = 0; i < rows.length; i++) {
+      if (options.signal?.aborted) break;
       const parts = embedded[i];
       if (!parts) continue;
       await repo.upsert({ observationId: rows[i]!.id, ...parts });
