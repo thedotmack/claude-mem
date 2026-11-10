@@ -23,5 +23,15 @@ before changing capture, queueing, retries, provider dispatch, or recovery.
   that a queue drains are insufficient; test that an outage cannot create
   later, unrequested inference spend.
 
+Read [the state rules](docs/architecture/state-machines.md) before adding or
+changing a status, phase, stage or mode that a person or an agent can see.
+
+- Such a state has one definition. Types, request checks, label tables and
+  tests import it; none of them types the values again.
+- Word each state for people in a `Record<State, …>`, so a new state fails the
+  typecheck until every screen has words for it.
+- Delete a state that is written and never read. Do not add a state-machine
+  library or a transition framework.
+
 Run relevant behavioral tests, the root TypeScript check, and the bundle build.
 Never call a source-only change shipped: installed clients execute the bundles.

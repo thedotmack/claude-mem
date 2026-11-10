@@ -1,6 +1,6 @@
 // Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
 import type { WorkModel } from './live/work-data-source.ts'
-import type { WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
+import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
@@ -112,7 +112,7 @@ export interface FocusArea {
   goal: string | null
   /** What belongs here, as recorded by the focus-area router. Older workers leave it out. */
   about?: string | null
-  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  status: WorkViewFocusArea['status']
   /** The owner's order. When set it wins over priorityRank. */
   ownerRank: number | null
   priorityRank: number | null

@@ -47,6 +47,7 @@ import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-sca
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { SETUP_BRANCHES, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS } from '../../../../shared/setup-funnel.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -300,13 +301,13 @@ const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.e
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
-  branch: z.enum(['home', 'go']),
-  memoryBilling: z.enum(['hosted', 'existing']),
+  branch: z.enum(SETUP_BRANCHES),
+  memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
 }).strict().refine(choice => choice.branch === 'home' || choice.memoryBilling === 'hosted', {
   message: 'On The Go uses CMEM Pro (memoryBilling "hosted").',
 });
 const setupInstallerBody = z.object({
-  stage: z.enum(['waiting-for-choice', 'home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout', 'failed']),
+  stage: z.enum(SETUP_INSTALLER_STAGES),
   error: z.string().max(2000).nullable().optional(),
   /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
   checkout: z.enum(['waiting', 'paid', 'failed']).optional(),

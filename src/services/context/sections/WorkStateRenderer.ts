@@ -1,10 +1,11 @@
-import type { WorkStateEntry, WorkStateFields, WorkStateValue } from '../../sqlite/work-state.js';
+import type { WorkStateEntry, WorkStateFields } from '../../sqlite/work-state.js';
 import { describeDuration } from '../../../shared/observer-health.js';
 import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
 import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
 import { isMyRulesList } from '../../work-view/my-rules.mjs';
 import { isMyFocusList } from '../../work-view/my-focus.mjs';
 import { isSharedWorkList } from '../../work-view/shared-records.mjs';
+import { isClosedWorkStateStatus } from '../../work-view/work-state-status.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -15,8 +16,6 @@ export type WorkStateClock = number | 'placeholders';
 
 /** Keeps the section small enough to leave most of the 10K hook budget to memory. */
 export const WORK_STATE_SECTION_CHARACTER_LIMIT = 3_000;
-
-const CLOSED_STATUSES = new Set(['done', 'dropped']);
 
 /** Heads the open lists in the SessionStart context; how to use work state is in the MCP server's instructions. */
 export const WORK_STATE_SECTION_HEADING = 'Work state, still open:';
@@ -48,10 +47,6 @@ export function foldWorkStateList(entries: WorkStateEntry[]): FoldedWorkStateLis
   return folded;
 }
 
-function isClosed(status: WorkStateValue | undefined): boolean {
-  return status !== undefined && status !== null && CLOSED_STATUSES.has(String(status).toLowerCase());
-}
-
 /** `key=value` pairs; null values are skipped because null clears a key. */
 function formatFields(fields: WorkStateFields, omittedKeys: string[]): string {
   return Object.entries(fields)
@@ -76,7 +71,7 @@ export function renderWorkStateList(
   includeClosed: boolean = false,
 ): string[] {
   const taskLines = [...folded.tasks.entries()]
-    .filter(([, task]) => includeClosed || !isClosed(task.fields.status))
+    .filter(([, task]) => includeClosed || !isClosedWorkStateStatus(task.fields.status))
     .map(([taskName, task]) => {
       const status = task.fields.status === undefined || task.fields.status === null ? '' : `[${String(task.fields.status)}] `;
       const details = formatFields(task.fields, ['task', 'status']);
@@ -84,7 +79,7 @@ export function renderWorkStateList(
     });
 
   const stateFields = formatFields(folded.state, ['task']);
-  const showState = stateFields !== '' && (includeClosed || !isClosed(folded.state.status));
+  const showState = stateFields !== '' && (includeClosed || !isClosedWorkStateStatus(folded.state.status));
   if (!showState && taskLines.length === 0) return [];
 
   // A shown state line always has a state entry behind it; the fallback only satisfies the type.

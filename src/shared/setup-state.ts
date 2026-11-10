@@ -5,35 +5,20 @@ import { dirname, join } from 'node:path';
 import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
-import { isSetupId, type SetupTelemetryContext } from './setup-funnel.js';
+import {
+  isSetupId, type SetupBranch, type SetupCheckoutState, type SetupInstallerStage, type SetupMemoryBilling,
+  type SetupStatus, type SetupTelemetryContext,
+} from './setup-funnel.js';
 
-export type SetupBranch = 'home' | 'go';
-/** Who generates memories: CMEM Pro (hosted) or the person's own token plan. */
-export type SetupMemoryBilling = 'hosted' | 'existing';
-
-/**
- * What the installer has done with the browser's choice. Phase 8 (checkout) picks up from `go-awaiting-checkout`:
- * the installer holds the started pairing in memory and waits for the checkout request.
- */
-export type SetupInstallerStage =
-  | 'waiting-for-choice'
-  | 'home-ready'
-  | 'go-kept-existing-pro'
-  | 'go-awaiting-checkout'
-  | 'failed';
+// The states themselves are defined in setup-funnel.ts, which the setup page can also load.
+export type { SetupBranch, SetupCheckoutState, SetupInstallerStage, SetupMemoryBilling, SetupStatus };
 
 export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; chosenAt: string }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
-
-/**
- * On The Go checkout (funnel Phase 8). The page asks (`requested`, counted so a second ask reopens the checkout);
- * the installer runs the existing pairing checkout and reports `waiting`, then `paid` or `failed`.
- */
-export type SetupCheckoutState = 'requested' | 'waiting' | 'paid' | 'failed';
 export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
 
 export interface SetupStateFile {
-  status: 'pending' | 'complete';
+  status: SetupStatus;
   choice: SetupChoice | null;
   installer: SetupInstallerReport | null;
   checkout: SetupCheckout | null;

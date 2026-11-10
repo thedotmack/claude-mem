@@ -1,7 +1,7 @@
 // The Reveal's three sets, read from the live work view snapshot as the extraction saves each one: goals (owner-goals),
 // then work (request groups), then rules (the build story's preferences). Nothing is invented: a set the run has not
 // reached yet is `null` (placeholders), and a finished run leaves an empty set empty.
-import type { WorkViewSnapshot } from '../live/work-view-api-types.ts'
+import type { WorkViewRefreshState, WorkViewSnapshot } from '../live/work-view-api-types.ts'
 import { toWorkModel } from '../live/to-work-model.ts'
 import type { FocusArea, Request } from '../data.ts'
 
@@ -27,7 +27,7 @@ export interface RevealSets {
 
 /** The worker's setup view on the snapshot (WorkViewRoutes.setupView). */
 export interface WorkerExtraction {
-  state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'
+  state: WorkViewRefreshState
   reason: string | null
   step: 'goals' | 'work' | 'rules' | null
   agent: string | null

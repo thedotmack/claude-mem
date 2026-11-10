@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import type { SetupScanPhase } from '../../shared/setup-funnel.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import type { UsableAgent, UsableAgentId } from '../agent-runner/detect.js';
 import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
@@ -18,7 +19,7 @@ import { scanOwnerPrompts, scanWindowStart, type AgentScanSummary, type MemoryPr
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
 export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
+export type { SetupScanPhase };
 
 export interface SetupScanAgent {
   id: PromptAgentId;
