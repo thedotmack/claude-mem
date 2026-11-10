@@ -30,8 +30,10 @@ import { spawnSync } from 'node:child_process';
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
 const PLUGIN_HEADER = 'cmem-pro/0.2.1';
-// per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
-const SPOOL_DIR = join(homedir(), '.claude-mem');
+// per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output).
+// $HOME first, so the spool sits in the same ~/.claude-mem that loadConfig below reads
+// settings from whenever a host overrides HOME; homedir() covers a host that does not.
+const SPOOL_DIR = join(process.env.HOME || homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
 const SPOOL_MAX = 200;           // max metadata events sent per flush
 const METADATA_EVENTS = new Set(['session-start', 'session-end', 'subagent-stop']);
