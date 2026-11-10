@@ -35,3 +35,58 @@ test('a comment read that answers 410 for the old link leaves the new share on s
   readCall.release({ status: 410, body: { error: 'This area is no longer shared.' } }); await oldRead
   assert.equal(shares().shares['area-2']?.url, 'https://cmem.ai/focus/bbbb')
 }))
+
+test('a late share response cannot bring back the link a later stop removed', withHeldFetch(async () => {
+  const shared = shareFocusArea('ordered-stop'); await tick(); const shareCall = next()
+  const stopped = stopSharingFocusArea('ordered-stop'); await tick()
+  if (held.length) {
+    // When both writes are in flight, their HTTP responses can arrive backwards.
+    next().release({ status: 200, body: { stopped: true } }); await stopped
+    shareCall.release({ status: 200, body: SHARE }); await shared
+  } else {
+    shareCall.release({ status: 200, body: SHARE }); await shared; await tick()
+    next().release({ status: 200, body: { stopped: true } }); await stopped
+  }
+  assert.equal(shares().shares['ordered-stop'], undefined)
+}))
+
+test('the later share keeps its returned link when an earlier share answers last', withHeldFetch(async () => {
+  const first = shareFocusArea('ordered-share'); await tick(); const firstCall = next()
+  const second = shareFocusArea('ordered-share'); await tick()
+  const latest = { ...SHARE, url: 'https://cmem.ai/focus/newest' }
+  if (held.length) {
+    next().release({ status: 200, body: latest }); await second
+    firstCall.release({ status: 200, body: SHARE }); await first
+  } else {
+    firstCall.release({ status: 200, body: SHARE }); await first; await tick()
+    next().release({ status: 200, body: latest }); await second
+  }
+  assert.equal(shares().shares['ordered-share']?.url, latest.url)
+}))
+
+test('an older list response cannot overwrite a newer successful list', withHeldFetch(async () => {
+  const older = loadFocusShares(); await tick(); const oldCall = next()
+  const newer = loadFocusShares(); await tick(); const newCall = next()
+  newCall.release({ status: 200, body: { connected: true, shares: { current: { ...SHARE, publishError: null } } } }); await newer
+  oldCall.release({ status: 200, body: { connected: false, shares: {} } }); await older
+  assert.equal(shares().connected, true)
+  assert.equal(shares().shares.current?.url, SHARE.url)
+}))
+
+test('a failed later list does not discard an older successful read', withHeldFetch(async () => {
+  const older = loadFocusShares(); await tick(); const oldCall = next()
+  const newer = loadFocusShares(); await tick(); next().release({ status: 503, body: { error: 'Unavailable' } }); await newer
+  oldCall.release({ status: 200, body: { connected: true, shares: { recovered: { ...SHARE, publishError: null } } } }); await older
+  assert.equal(shares().shares.recovered?.url, SHARE.url)
+}))
+
+test('one area can stop while another is sharing, and a failed write does not block its successor', withHeldFetch(async () => {
+  const first = shareFocusArea('independent-a').catch((error: unknown) => error); await tick(); const firstCall = next()
+  const other = stopSharingFocusArea('independent-b'); await tick(); const otherCall = next()
+  assert.equal(otherCall.method, 'POST')
+  otherCall.release({ status: 200, body: { stopped: true } }); await other
+  const retry = shareFocusArea('independent-a'); await tick()
+  firstCall.release({ status: 503, body: { error: 'Unavailable' } }); await first; await tick()
+  next().release({ status: 200, body: SHARE }); await retry
+  assert.equal(shares().shares['independent-a']?.url, SHARE.url)
+}))

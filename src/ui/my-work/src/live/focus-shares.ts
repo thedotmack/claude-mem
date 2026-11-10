@@ -31,6 +31,18 @@ interface State {
 let state: State = { loaded: false, connected: false, shares: {} }
 /** Bumped by every share, stop or forget, so a list read that started earlier never overwrites what they did. */
 let changes = 0
+let nextListRead = 0
+let acceptedListRead = 0
+/** Apply same-area writes in invocation order, including their responses. Other areas stay independent. */
+const writes = new Map<string, Promise<unknown>>()
+function inShareOrder<T>(focusAreaId: string, work: () => Promise<T>): Promise<T> {
+  const before = writes.get(focusAreaId) ?? Promise.resolve()
+  const run = before.then(work, work)
+  const settled = run.catch(() => undefined)
+  writes.set(focusAreaId, settled)
+  void settled.then(() => { if (writes.get(focusAreaId) === settled) writes.delete(focusAreaId) })
+  return run
+}
 const listeners = new Set<() => void>()
 const set = (next: Partial<State>) => { state = { ...state, ...next }; listeners.forEach((listener) => listener()) }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) }
@@ -61,9 +73,11 @@ async function call<T>(url: string, init?: { method: 'POST'; body: unknown }): P
  */
 export async function loadFocusShares(): Promise<void> {
   const startedAt = changes
+  const reading = ++nextListRead
   try {
     const answer = await call<{ connected: boolean; shares: Record<string, FocusShare> }>('/api/work-view/focus/shares')
-    if (startedAt !== changes) return
+    if (startedAt !== changes || reading < acceptedListRead) return
+    acceptedListRead = reading
     set({ loaded: true, connected: answer.connected, shares: answer.shares ?? {} })
   } catch {
     set({ loaded: true })
@@ -78,17 +92,21 @@ function forget(focusAreaId: string) {
 }
 
 /** Shares the area: the worker builds the page, cmem.ai answers with its link, and the page goes up at once. */
-export async function shareFocusArea(focusAreaId: string): Promise<FocusShare> {
-  const answer = await call<Omit<FocusShare, 'publishError'> & { sent: boolean }>('/api/work-view/focus/share', { method: 'POST', body: { focusAreaId } })
-  const share = { url: answer.url, sharedAt: answer.sharedAt, publishedAt: answer.publishedAt, publishError: null }
-  changes++
-  set({ shares: { ...state.shares, [focusAreaId]: share } })
-  return share
+export function shareFocusArea(focusAreaId: string): Promise<FocusShare> {
+  return inShareOrder(focusAreaId, async () => {
+    const answer = await call<Omit<FocusShare, 'publishError'> & { sent: boolean }>('/api/work-view/focus/share', { method: 'POST', body: { focusAreaId } })
+    const share = { url: answer.url, sharedAt: answer.sharedAt, publishedAt: answer.publishedAt, publishError: null }
+    changes++
+    set({ shares: { ...state.shares, [focusAreaId]: share } })
+    return share
+  })
 }
 
-export async function stopSharingFocusArea(focusAreaId: string): Promise<void> {
-  await call('/api/work-view/focus/share/stop', { method: 'POST', body: { focusAreaId } })
-  forget(focusAreaId)
+export function stopSharingFocusArea(focusAreaId: string): Promise<void> {
+  return inShareOrder(focusAreaId, async () => {
+    await call('/api/work-view/focus/share/stop', { method: 'POST', body: { focusAreaId } })
+    forget(focusAreaId)
+  })
 }
 
 export async function readFocusShareComments(focusAreaId: string): Promise<FocusShareComment[]> {
