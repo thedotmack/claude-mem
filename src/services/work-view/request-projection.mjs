@@ -204,7 +204,9 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
 
   // 1. Requests from prompts: every ungrouped conversation with a substantive
   // human ask, and every group, whether or not any work was recorded yet.
-  for (const [key, session] of sessionsByKey) {
+  // Equal-time asks must choose the same original on every replica, whose
+  // local session IDs and read order can differ after canonical sync.
+  for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     // Its work is filed under the request ids the producer recorded.
     if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
     const original = originalFor(session, prompts);
@@ -304,7 +306,12 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
     if (!request.agentIds.length) for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);
     request.scopeUpdates = related.filter((prompt) => !(request.original.source === 'user-prompt' && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber))
-      .sort((a, b) => (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || b.id - a.id)
+      .sort((a, b) => {
+        const first = conversationKey(sessions.get(a.session_db_id)) ?? '';
+        const second = conversationKey(sessions.get(b.session_db_id)) ?? '';
+        return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number
+          || (first < second ? 1 : first > second ? -1 : 0) || b.id - a.id;
+      })
       .slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
     const streams = new Map();
     for (const item of request.items) {
