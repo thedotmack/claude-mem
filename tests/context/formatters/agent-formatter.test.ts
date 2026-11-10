@@ -43,9 +43,6 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 }));
 
 import {
-  renderAgentHeader,
-  renderAgentLegend,
-  renderAgentContextEconomics,
   renderAgentDayHeader,
   renderAgentTableRow,
   renderAgentFullObservation,
@@ -95,8 +92,6 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     sessionCount: 3,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery', 'decision', 'bugfix']),
     observationConcepts: new Set(['concept1', 'concept2']),
     fullObservationField: 'narrative',
@@ -108,128 +103,6 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
 }
 
 describe('AgentFormatter', () => {
-  describe('renderAgentHeader', () => {
-    it('should produce valid markdown header with project name', () => {
-      const result = renderAgentHeader('my-project');
-
-      expect(result).toHaveLength(3);
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
-      expect(result[1]).toBe('Mode: Code Development (code)');
-      expect(result[2]).toBe('');
-    });
-
-    it('should handle special characters in project name', () => {
-      const result = renderAgentHeader('project-with-special_chars.v2');
-
-      expect(result[0]).toContain('project-with-special_chars.v2');
-    });
-
-    it('should handle empty project name', () => {
-      const result = renderAgentHeader('');
-
-      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
-    });
-  });
-
-  describe('renderAgentLegend', () => {
-    it('should produce legend with type items', () => {
-      const result = renderAgentLegend();
-
-      expect(result).toHaveLength(4);
-      expect(result[0]).toContain('Legend:');
-      expect(result[3]).toBe('');
-    });
-
-    it('should include session in legend', () => {
-      const result = renderAgentLegend();
-
-      expect(result[0]).toContain('session');
-    });
-
-    it('should keep get_observations hint when fetch-by-id is supported (default)', () => {
-      expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
-    });
-
-    it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
-      const joined = renderAgentLegend(false).join('\n');
-      expect(joined).toContain('short refs are display-only');
-      expect(joined).not.toContain('get_observations');
-    });
-  });
-
-  describe('renderAgentContextEconomics', () => {
-    it('should include observation count', () => {
-      const economics = createTestEconomics({ totalObservations: 25 });
-      const config = createTestConfig();
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('25 obs');
-    });
-
-    it('should include read tokens', () => {
-      const economics = createTestEconomics({ totalReadTokens: 1500 });
-      const config = createTestConfig();
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('1,500t read');
-    });
-
-    it('should include work investment', () => {
-      const economics = createTestEconomics({ totalDiscoveryTokens: 10000 });
-      const config = createTestConfig();
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('10,000t work');
-    });
-
-    it('should show savings when config has showSavingsAmount', () => {
-      const economics = createTestEconomics({ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 });
-      const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: false });
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('4,500t saved');
-    });
-
-    it('should show savings percent when config has showSavingsPercent', () => {
-      const economics = createTestEconomics({ savingsPercent: 85, totalDiscoveryTokens: 1000 });
-      const config = createTestConfig({ showSavingsAmount: false, showSavingsPercent: true });
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('85% savings');
-    });
-
-    it('should show both savings amount and percent when both are enabled', () => {
-      const economics = createTestEconomics({ savings: 4500, savingsPercent: 90, totalDiscoveryTokens: 5000 });
-      const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('4,500t saved');
-      expect(joined).toContain('90% savings');
-    });
-
-    it('should not show savings when discovery tokens is 0', () => {
-      const economics = createTestEconomics({ totalDiscoveryTokens: 0, savings: 0, savingsPercent: 0 });
-      const config = createTestConfig({ showSavingsAmount: true, showSavingsPercent: true });
-
-      const result = renderAgentContextEconomics(economics, config);
-      const joined = result.join('\n');
-
-      expect(joined).not.toContain('savings');
-    });
-  });
-
   describe('renderAgentDayHeader', () => {
     it('should render day as h3 heading', () => {
       const result = renderAgentDayHeader('2025-01-01');
@@ -435,30 +308,10 @@ describe('AgentFormatter', () => {
   });
 
   describe('renderAgentEmptyState', () => {
-    it('should return helpful message with project name', () => {
-      const result = renderAgentEmptyState('my-project');
-
-      expect(result).toContain('# [my-project] recent context,');
-      expect(result).toContain('Mode: Code Development (code)');
-      expect(result).toContain('No previous sessions found.');
-    });
-
-    it('should be valid markdown', () => {
-      const result = renderAgentEmptyState('test');
-
-      expect(result.startsWith('#')).toBe(true);
-    });
-
-    it('should handle empty project name', () => {
-      const result = renderAgentEmptyState('');
-
-      expect(result).toContain('# [] recent context,');
-    });
-
     it('puts lead sections under the header and keeps the empty timeline last', () => {
-      const result = renderAgentEmptyState('my-project', 'NOW', ['WARNING', '', 'OPEN WORK']);
+      const result = renderAgentEmptyState(['HEADER', ''], ['WARNING', '', 'OPEN WORK']);
 
-      expect(result).toBe('# [my-project] recent context, NOW\nMode: Code Development (code)\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
+      expect(result).toBe('HEADER\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
     });
   });
 });

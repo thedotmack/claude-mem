@@ -69,11 +69,6 @@ import { fetchServerContextRows, type ServerContextRows } from './ServerContextR
 import { ModeManager } from '../domain/ModeManager.js';
 import { getContextReadWorker } from './ContextReadWorkerClient.js';
 import type { ContextReadOptions, ContextReadResult } from './ContextReadProtocol.js';
-import { formatHeaderDateTime } from '../../shared/timeline-formatting.js';
-import {
-  CONTEXT_HEADER_TIME_PLACEHOLDER,
-  HEADER_TIME_EXPANSION_RESERVE_CHARS,
-} from '../../shared/context-cache.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -173,17 +168,15 @@ function selectContextParts(
  * shown only when it is newer than every observation.
  */
 function buildAgentContextOutput(
-  project: string,
   observations: Observation[],
   summaries: SessionSummary[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  headerTime: string,
   leads: AgentLeadSections,
 ): string {
   const parts = selectContextParts(observations, summaries, config, cwd, sessionId);
-  const output: string[] = [...renderHeader(project, parts.economics, config, false, headerTime)];
+  const output: string[] = [...renderHeader(config, false)];
   for (const section of [leads.healthWarning, leads.workStateSection]) {
     if (section) output.push(section, '');
   }
@@ -199,16 +192,14 @@ function buildAgentContextOutput(
  * needs (#4252).
  */
 function buildHumanContextOutput(
-  project: string,
   observations: Observation[],
   summaries: SessionSummary[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  headerTime: string,
 ): RenderedContext {
   const parts = selectContextParts(observations, summaries, config, cwd, sessionId);
-  const output: string[] = [...renderHeader(project, parts.economics, config, true, headerTime)];
+  const output: string[] = [...renderHeader(config, true)];
 
   const previousStart = output.join('\n').length + 1;
   output.push(...renderPreviouslySection(parts.priorMessages, true));
@@ -554,21 +545,17 @@ export function renderContextFromRows(
   rows: { observations: Observation[]; summaries: SessionSummary[] },
   input: ContextInput | undefined,
   forHuman: boolean,
-  scope: Pick<ContextScope, 'config' | 'cwd' | 'project'>,
+  scope: Pick<ContextScope, 'config' | 'cwd'>,
 ): { text: string; stats: ContextInjectStats | null } {
   const { observations, summaries } = rows;
-  const { config, cwd, project } = scope;
-  // One header time for every render pass of this build. A cacheable build
-  // carries a placeholder instead, and the fitter keeps room for it to grow.
-  const headerTime = input?.timePlaceholders ? CONTEXT_HEADER_TIME_PLACEHOLDER : formatHeaderDateTime();
-  const headerTimeReserveChars = input?.timePlaceholders ? HEADER_TIME_EXPANSION_RESERVE_CHARS : 0;
+  const { config, cwd } = scope;
   const workStateSection = input?.workStateSection ?? '';
 
   if (observations.length === 0 && summaries.length === 0) {
     return {
       text: forHuman
-        ? prependObserverHealthWarning(healthWarningForContext(input, true), renderHumanEmptyState(project, headerTime))
-        : renderAgentEmptyState(project, headerTime, [healthWarningForContext(input), workStateSection]),
+        ? prependObserverHealthWarning(healthWarningForContext(input, true), renderHumanEmptyState(renderHeader(config, true)))
+        : renderAgentEmptyState(renderHeader(config, false), [healthWarningForContext(input), workStateSection]),
       stats: null,
     };
   }
@@ -583,13 +570,13 @@ export function renderContextFromRows(
     // terminal preview paints this same warning red after truncating (#4252).
     healthWarningForContext(input),
     (items, cfg, healthWarning) =>
-      buildAgentContextOutput(project, items, summaries, cfg, cwd, input?.session_id, headerTime, { healthWarning, workStateSection }),
+      buildAgentContextOutput(items, summaries, cfg, cwd, input?.session_id, { healthWarning, workStateSection }),
     input?.full
       ? Number.POSITIVE_INFINITY
-      : CONTEXT_OUTPUT_LIMIT - (input?.reserveChars ?? 0) - headerTimeReserveChars,
+      : CONTEXT_OUTPUT_LIMIT - (input?.reserveChars ?? 0),
     Boolean(input?.full),
     forHuman ? (items, cfg) =>
-      buildHumanContextOutput(project, items, summaries, cfg, cwd, input?.session_id, headerTime) : undefined
+      buildHumanContextOutput(items, summaries, cfg, cwd, input?.session_id) : undefined
   );
 }
 

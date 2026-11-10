@@ -65,8 +65,3 @@ export function formatObservationTokenDisplay(
 
   return { readTokens, discoveryTokens, discoveryDisplay, workEmoji };
 }
-
-export function shouldShowContextEconomics(config: ContextConfig): boolean {
-  return config.showReadTokens || config.showWorkTokens ||
-         config.showSavingsAmount || config.showSavingsPercent;
-}

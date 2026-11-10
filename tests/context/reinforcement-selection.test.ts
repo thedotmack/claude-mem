@@ -16,8 +16,6 @@ function config(reinforcementAlpha?: number): ContextConfig {
     sessionCount: 10,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery']),
     observationConcepts: new Set(['reinforce-scope']),
     fullObservationField: 'narrative',

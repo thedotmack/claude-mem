@@ -2,66 +2,12 @@
 import type {
   ContextConfig,
   Observation,
-  TokenEconomics,
   PriorMessages,
 } from '../types.js';
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
-
-function formatActiveMode(): string {
-  const manager = ModeManager.getInstance();
-  const mode = manager.getActiveMode();
-  return `${mode.name} (${manager.getActiveModeId()})`;
-}
-
-export function renderHumanHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
-  return [
-    '',
-    `${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}`,
-    `${colors.dim}Mode: ${formatActiveMode()}${colors.reset}`,
-    `${colors.gray}${'─'.repeat(60)}${colors.reset}`,
-    ''
-  ];
-}
-
-export function renderHumanLegend(): string[] {
-  const mode = ModeManager.getInstance().getActiveMode();
-  const typeLegendItems = mode.observation_types.map(t => `${t.emoji} ${t.id}`).join(' | ');
-
-  return [
-    `${colors.dim}Legend: session-request | ${typeLegendItems}${colors.reset}`,
-    ''
-  ];
-}
-
-export function renderHumanContextEconomics(
-  economics: TokenEconomics,
-  config: ContextConfig
-): string[] {
-  const output: string[] = [];
-
-  output.push(`${colors.bright}${colors.cyan}Context Economics${colors.reset}`);
-  output.push(`${colors.dim}  Loading: ${economics.totalObservations} observations (${economics.totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
-  output.push(`${colors.dim}  Work investment: ${economics.totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
-
-  if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
-    let savingsLine = '  Your savings: ';
-    if (config.showSavingsAmount && config.showSavingsPercent) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens (${economics.savingsPercent}% reduction from reuse)`;
-    } else if (config.showSavingsAmount) {
-      savingsLine += `${economics.savings.toLocaleString()} tokens`;
-    } else {
-      savingsLine += `${economics.savingsPercent}% reduction from reuse`;
-    }
-    output.push(`${colors.green}${savingsLine}${colors.reset}`);
-  }
-  output.push('');
-
-  return output;
-}
 
 export function renderHumanDayHeader(day: string): string[] {
   return [
@@ -150,6 +96,6 @@ export function renderHumanPreviouslySection(priorMessages: PriorMessages): stri
   ];
 }
 
-export function renderHumanEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
-  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}\n${colors.dim}Mode: ${formatActiveMode()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
+export function renderHumanEmptyState(header: string[]): string {
+  return `${header.join('\n')}\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

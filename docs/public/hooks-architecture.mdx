@@ -193,8 +193,9 @@ See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command
 - ✅ 300-second timeout (allows for npm install if needed)
 - ✅ Progressive disclosure format (index, not full details)
 - ✅ Configurable observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`
-- ✅ The block is the memory timeline: a header that says how to read it, then any outage warning and the open work-state lists, then the timeline. The newest timeline entry ends the block, with no footer, so later updates can append rows to it. How to use claude-mem's tools (work state, memory search, notes) is in the MCP server's instructions, not in this block.
-- ✅ The terminal banner has the same shape: the viewer link (`View Observations Live @ …`) and the trial lines on top, then the timeline, ending on its newest entry with no closing lines.
+- ✅ The block is the memory timeline. It opens with one line, `Access Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md`, then any outage warning and the open work-state lists, then the timeline. The newest timeline entry ends the block, with no footer, so later updates can append rows to it.
+- ✅ How to read the timeline (format, legend, mode, how to fetch details) and how to use claude-mem's tools (work state, memory search, notes) are in `~/.claude-mem/RULES-AND-TOOLS.md`, written whenever the block is rendered and its text changed. The tool guidance is also the MCP server's instructions.
+- ✅ The terminal banner opens with the trial lines and the same Rules + Tools line, then the timeline. A blank line after the newest entry, then the closing line: the viewer link and how many timeline lines are shown (`View Observations Live @ http://localhost:37777 · 50 lines`).
 
 **Codex compaction:** A Codex compaction replaces the thread's history, timeline included. The root thread gets the timeline back from `SessionStart` (source `compact`). Codex never sends `SessionStart` to a subagent thread, and `PostCompact` output cannot carry context, so the `PostCompact` hook marks the thread (`~/.claude-mem/state/codex-compaction-pending/`) and the thread's next `PostToolUse` returns the timeline as `additionalContext`, once. A thread whose `SessionStart` already re-injected the timeline does not get it again.
 
@@ -204,18 +205,11 @@ See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command
 
 **Output format:**
 ```markdown
-# [claude-mem] recent context
-
-**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution ...
+Access Claude-Mem Rules + Tools: ~/.claude-mem/RULES-AND-TOOLS.md
 
 ### Oct 26, 2025
-
-**General**
-| ID | Time | T | Title | Tokens |
-|----|------|---|-------|--------|
-| #2586 | 12:58 AM | 🔵 | Context hook file empty | ~51 |
-
-*Use MCP search tools to access full details*
+2586 12:58a ○ Context hook file empty
+2587 " ✓ Context hook reads the summary table
 ```
 
 **Source:** `src/cli/handlers/context.ts`, run as `claude-mem hook claude-code context`
