@@ -104,3 +104,32 @@ it('keeps distinct native receipts with identical preview, timestamp and turn nu
     ]);
   } finally { source.close(); target.close(); }
 });
+
+function importPair(seed: (target: SessionStore, sid: number) => number) {
+  const target = new SessionStore(':memory:');
+  const sid = target.createSDKSession('receipt-session', 'prompt-project', 'Opening');
+  const existingId = seed(target, sid);
+  const [stored] = target.getUserPromptsByIds([existingId]);
+  return { target, stored, existingId };
+}
+
+it('skips a known native receipt even when its time or text differs, instead of failing the import', () => {
+  const { target, stored, existingId } = importPair((store, sid) =>
+    store.saveUserPrompt('receipt-session', 1, 'Captured here', sid, 'receipt-x', 'hash-x', 1));
+  try {
+    // The same native prompt captured on another device: a different time and a redacted text.
+    expect(target.importUserPrompt({ ...stored, created_at_epoch: 2, prompt_text: 'Captured there' }))
+      .toEqual({ imported: false, id: existingId });
+    expect(target.db.query('SELECT COUNT(*) AS n FROM user_prompts').get()).toEqual({ n: 1 });
+  } finally { target.close(); }
+});
+
+it('skips an export taken before receipts when the matching row has gained one since', () => {
+  const { target, stored, existingId } = importPair((store, sid) =>
+    store.saveUserPrompt('receipt-session', 1, 'Same ask', sid, 'receipt-y', 'hash-y', 5));
+  try {
+    expect(target.importUserPrompt({ ...stored, native_prompt_id: null, native_prompt_hash: null }))
+      .toEqual({ imported: false, id: existingId });
+    expect(target.db.query('SELECT COUNT(*) AS n FROM user_prompts').get()).toEqual({ n: 1 });
+  } finally { target.close(); }
+});
