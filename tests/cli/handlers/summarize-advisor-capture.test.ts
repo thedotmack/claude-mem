@@ -29,6 +29,8 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
     get: (key: string) => (key === 'CLAUDE_MEM_DATA_DIR' ? join(homedir(), '.claude-mem') : ''),
     getInt: () => 0,
     loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
+    // Project resolution reads the defaults when no settings file exists yet.
+    getAllDefaults: () => realSettingsSnapshot.SettingsDefaultsManager.getAllDefaults(),
   },
 }));
 
