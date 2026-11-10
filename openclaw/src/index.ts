@@ -271,6 +271,12 @@ function workerBaseUrl(port: number): string {
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
+// Covers both response headers and body reads; optional memory must not leave
+// an OpenClaw hook waiting indefinitely on an unresponsive worker. 5 s is the
+// bound the Hermes plugin, the other in-process host, already uses for the same
+// worker endpoints (WRITE_TIMEOUT_S in hermes/claude-mem/client.py; its context
+// reads use READ_TIMEOUT_S = 3 s), so context injection fits inside it too.
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
@@ -339,14 +345,17 @@ async function workerPost(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
       return null;
     }
+    const result = (await response.json()) as Record<string, unknown>;
     circuitOnSuccess(logger);
-    return (await response.json()) as Record<string, unknown>;
+    return result;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
@@ -368,7 +377,10 @@ function workerPostFireAndForget(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).then((response) => {
+    signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+  }).then(async (response) => {
+    // This caller needs only the status, so release the unused response body.
+    await response.body?.cancel();
     if (!response.ok) {
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
@@ -391,14 +403,18 @@ async function workerGetText(
 ): Promise<string | null> {
   if (!circuitAllow(logger)) return null;
   try {
-    const response = await fetch(`${workerBaseUrl(port)}${path}`);
+    const response = await fetch(`${workerBaseUrl(port)}${path}`, {
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
+    const text = await response.text();
     circuitOnSuccess(logger);
-    return await response.text();
+    return text;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
