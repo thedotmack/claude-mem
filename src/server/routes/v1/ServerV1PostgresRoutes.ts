@@ -41,7 +41,7 @@ import { serverUsageGuards } from '../../middleware/usage-guards.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
+import { apiKeyPrefix, hashApiKeyAsync } from '../../auth/api-key-hash.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
@@ -232,7 +232,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         const raw = `cm_${randomBytes(24).toString('hex')}`;
-        const keyHash = hashApiKey(raw);
+        const keyHash = await hashApiKeyAsync(raw);
         const keyPrefix = apiKeyPrefix(raw);
         const expiresAt = body.expiresInDays
           ? new Date(Date.now() + body.expiresInDays * 86_400_000)
