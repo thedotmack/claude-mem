@@ -63,6 +63,7 @@ function runLauncher(
   // from the session running the tests can never leak into resolution.
   const launcherEnvironment: Record<string, string> = {
     PATH: process.env.PATH ?? '',
+    BUN_PATH: process.execPath,
     // where.exe needs PATHEXT to match bun.exe, and the launcher runs it from SystemRoot.
     ...(process.platform === 'win32'
       ? { PATHEXT: process.env.PATHEXT ?? '', SystemRoot: process.env.SystemRoot ?? '' }

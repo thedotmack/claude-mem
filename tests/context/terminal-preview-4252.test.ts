@@ -167,7 +167,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
 
   it('gives newest observations space before a long prior message', () => {
     // Long enough to overflow the colored preview, short enough for the model's block.
-    const { model, preview, fullPreview } = generate(10, { messageLength: 7_000, titleLength: 180 });
+    const { model, preview, fullPreview } = generate(10, { messageLength: 7_500, titleLength: 180 });
     expect(model.stats.observation_count).toBe(10);
     expect(model.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text).toContain('PRIOR_MESSAGE');

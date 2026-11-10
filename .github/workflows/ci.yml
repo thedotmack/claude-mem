@@ -78,6 +78,7 @@ jobs:
         run: bun scripts/test-lanes.ts fast
 
       - name: Install Claude Code for the auto-clear engine test
+        if: ${{ !cancelled() }}
         run: |
           npm install --global @anthropic-ai/claude-code@2.1.321 --no-audit --no-fund
           claude --version
