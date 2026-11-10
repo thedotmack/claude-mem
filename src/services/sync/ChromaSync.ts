@@ -1725,37 +1725,22 @@ export class ChromaSync {
    * after every document for that row lands, otherwise a later batch failure or
    * restart can strand the tail of a split row forever.
    *
+   * Keep only row IDs while waiting for writer turns. Fetch and format each
+   * body inside its turn, so a large project never retains all raw bodies and
+   * a second set of preformatted documents while the first write is in flight.
+   *
    * Abort state is local to this call's return value, not an instance field:
    * backfillAllProjects runs several projects concurrently on one ChromaSync
    * instance, so a shared flag would let one project's abort spuriously stop
    * another (#4069).
    */
   private async backfillKind<T extends { id: number }>(
-    rows: T[],
+    rows: Array<{ id: number }>,
     formatDocs: (row: T) => ChromaDocument[],
     kind: 'observations' | 'summaries' | 'prompts',
     backfillProject: string,
     loadRow: (id: number) => T | undefined
   ): Promise<BackfillKindResult> {
-    const rowsWithDocs: Array<{ row: T; docs: ChromaDocument[] }> = [];
-    for (const row of rows) {
-      try {
-        rowsWithDocs.push({ row, docs: formatDocs(row) });
-      } catch (error) {
-        // A single unformattable row (e.g. a malformed JSON column) must not
-        // abort the whole backfill. Skip and log it so the rest of the run
-        // proceeds. Mark the id pending so a later higher-id row that advances
-        // the watermark does not strand it: the pending path re-fetches it on
-        // the next run, which self-heals once its format issue is resolved.
-        ChromaSyncState.markPending(backfillProject, kind, [row.id]);
-        logger.warn('CHROMA_SYNC', 'Skipped unformattable row during backfill', {
-          project: backfillProject,
-          kind,
-          rowId: row.id
-        }, error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-    const totalDocs = rowsWithDocs.reduce((sum, { docs }) => sum + docs.length, 0);
     let processedDocs = 0;
     let writtenDocs = 0;
     let emptyRows = 0;
@@ -1775,16 +1760,16 @@ export class ChromaSync {
       return { writtenDocs, emptyRows, abortReason: 'collection_dropped', writeFailures: false };
     };
 
-    for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
-      const snapshot = rowsWithDocs[rowIndex];
-      const release = await this.acquireRowWriter(kind, snapshot.row.id);
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const rowId = rows[rowIndex].id;
+      const release = await this.acquireRowWriter(kind, rowId);
       try {
         // A live revision can finish while another row is being backfilled. A
         // lock around the cached documents alone would still write that older
         // snapshot after the newer revision, so read SQLite inside the turn.
-        const row = loadRow(snapshot.row.id);
+        const row = loadRow(rowId);
         if (!row) {
-          ChromaSyncState.clearPending(backfillProject, kind, [snapshot.row.id]);
+          ChromaSyncState.clearPending(backfillProject, kind, [rowId]);
           continue;
         }
         let docs: ChromaDocument[];
@@ -1871,7 +1856,9 @@ export class ChromaSync {
           consecutiveFailures = 0;
           logger.debug('CHROMA_SYNC', 'Backfill progress', {
             project: backfillProject,
-            progress: `${Math.min(processedDocs, totalDocs)}/${totalDocs}`
+            processedDocs,
+            row: rowIndex + 1,
+            totalRows: rows.length
           });
         }
 
@@ -1885,7 +1872,7 @@ export class ChromaSync {
               project: backfillProject,
               kind,
               lastRowId: row.id,
-              remainingRows: rowsWithDocs.length - rowIndex - 1
+              remainingRows: rows.length - rowIndex - 1
             });
             return { writtenDocs, emptyRows, abortReason: 'shutdown', writeFailures: false };
           }
@@ -1904,7 +1891,7 @@ export class ChromaSync {
               kind,
               consecutiveFailures,
               lastRowId: row.id,
-              remainingRows: rowsWithDocs.length - rowIndex - 1
+              remainingRows: rows.length - rowIndex - 1
             });
             return { writtenDocs, emptyRows, abortReason: 'write_failures', writeFailures: hadWriteFailures };
           }
@@ -1968,26 +1955,20 @@ export class ChromaSync {
     this.requeueTitleOnlyObservationsOnce(db, backfillProject, watermark);
     const pendingIds = ChromaSyncState.getPending(backfillProject, 'observations');
     const observations = db.db.prepare(`
-      SELECT
-        o.*,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      SELECT o.id
       FROM observations o
-      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
       WHERE o.project = ? AND o.id > ?
       ORDER BY o.id ASC
-    `).all(backfillProject, watermark) as StoredObservation[];
-    let pendingRows: StoredObservation[] = [];
+    `).all(backfillProject, watermark) as Array<{ id: number }>;
+    let pendingRows: Array<{ id: number }> = [];
     if (pendingIds.length > 0) {
       pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
         db.db.prepare(`
-          SELECT
-            o.*,
-            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          SELECT o.id
           FROM observations o
-          LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
           WHERE o.project = ? AND o.id IN (${placeholders})
           ORDER BY o.id ASC
-        `).all(backfillProject, ...chunk) as StoredObservation[]);
+        `).all(backfillProject, ...chunk) as Array<{ id: number }>);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -2019,7 +2000,7 @@ export class ChromaSync {
       WHERE o.project = ? AND o.id = ?
     `);
     try {
-      return await this.backfillKind(rows, obs => this.formatObservationDocs(obs), 'observations', backfillProject,
+      return await this.backfillKind<StoredObservation>(rows, obs => this.formatObservationDocs(obs), 'observations', backfillProject,
         id => currentRow.get(backfillProject, id) as StoredObservation | undefined);
     } finally {
       currentRow.finalize();
@@ -2033,26 +2014,20 @@ export class ChromaSync {
   ): Promise<BackfillKindResult> {
     const pendingIds = ChromaSyncState.getPending(backfillProject, 'summaries');
     const summaries = db.db.prepare(`
-      SELECT
-        ss.*,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      SELECT ss.id
       FROM session_summaries ss
-      LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
       WHERE ss.project = ? AND ss.id > ?
       ORDER BY ss.id ASC
-    `).all(backfillProject, watermark) as StoredSummary[];
-    let pendingRows: StoredSummary[] = [];
+    `).all(backfillProject, watermark) as Array<{ id: number }>;
+    let pendingRows: Array<{ id: number }> = [];
     if (pendingIds.length > 0) {
       pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
         db.db.prepare(`
-          SELECT
-            ss.*,
-            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          SELECT ss.id
           FROM session_summaries ss
-          LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
           WHERE ss.project = ? AND ss.id IN (${placeholders})
           ORDER BY ss.id ASC
-        `).all(backfillProject, ...chunk) as StoredSummary[]);
+        `).all(backfillProject, ...chunk) as Array<{ id: number }>);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -2084,7 +2059,7 @@ export class ChromaSync {
       WHERE ss.project = ? AND ss.id = ?
     `);
     try {
-      return await this.backfillKind(rows, summary => this.formatSummaryDocs(summary), 'summaries', backfillProject,
+      return await this.backfillKind<StoredSummary>(rows, summary => this.formatSummaryDocs(summary), 'summaries', backfillProject,
         id => currentRow.get(backfillProject, id) as StoredSummary | undefined);
     } finally {
       currentRow.finalize();
@@ -2098,30 +2073,22 @@ export class ChromaSync {
   ): Promise<BackfillKindResult> {
     const pendingIds = ChromaSyncState.getPending(backfillProject, 'prompts');
     const prompts = db.db.prepare(`
-      SELECT
-        up.*,
-        s.project,
-        s.memory_session_id,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      SELECT up.id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ? AND up.id > ?
       ORDER BY up.id ASC
-    `).all(backfillProject, watermark) as StoredUserPrompt[];
-    let pendingRows: StoredUserPrompt[] = [];
+    `).all(backfillProject, watermark) as Array<{ id: number }>;
+    let pendingRows: Array<{ id: number }> = [];
     if (pendingIds.length > 0) {
       pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
         db.db.prepare(`
-          SELECT
-            up.*,
-            s.project,
-            s.memory_session_id,
-            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          SELECT up.id
           FROM user_prompts up
           JOIN sdk_sessions s ON up.session_db_id = s.id
           WHERE s.project = ? AND up.id IN (${placeholders})
           ORDER BY up.id ASC
-        `).all(backfillProject, ...chunk) as StoredUserPrompt[]);
+        `).all(backfillProject, ...chunk) as Array<{ id: number }>);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -2157,7 +2124,7 @@ export class ChromaSync {
       WHERE s.project = ? AND up.id = ?
     `);
     try {
-      return await this.backfillKind(rows, prompt => [this.formatUserPromptDoc(prompt)], 'prompts', backfillProject,
+      return await this.backfillKind<StoredUserPrompt>(rows, prompt => [this.formatUserPromptDoc(prompt)], 'prompts', backfillProject,
         id => currentRow.get(backfillProject, id) as StoredUserPrompt | undefined);
     } finally {
       currentRow.finalize();
