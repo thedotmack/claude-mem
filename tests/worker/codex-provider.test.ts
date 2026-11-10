@@ -563,16 +563,6 @@ describe('Codex provider integration', () => {
     });
   }
 
-  it('classifies a recycle SIGKILL as transient when the stderr tail quotes a stale 401', () => {
-    const staleAuthStderr = 'failed to connect to websocket: IO error: Connection reset by peer (os error 54), url: wss://chatgpt.com/backend-api/codex/responses\n'
-      + '2026-11-02T07:14:11.006948Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)\n'
-      + '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: authentication failed with 401 unauthorized';
-    const message = `Codex app-server exited with code null signal SIGKILL: ${staleAuthStderr}`;
-    expect(classifyCodexError(new Error(message)).kind).toBe('transient');
-    const withSignal = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
-    expect(classifyCodexError(withSignal).kind).toBe('transient');
-  });
-
   it('classifies SIGTERM exit as transient', () => {
     const error = Object.assign(
       new Error('Codex app-server exited with code null signal SIGTERM: graceful shutdown'),

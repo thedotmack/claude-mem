@@ -16,6 +16,20 @@ describe('observation metadata recovery', () => {
       expect(html).toContain('Still readable');
     });
   }
+  it('retains valid facts, concepts and files from mixed and plain-text stored metadata', () => {
+    const mixed = (value: string) => JSON.stringify([null, 4, { invalid: true }, value]);
+    const observations = [
+      { ...base, facts: mixed('VALID FACT'), concepts: mixed('VALID CONCEPT'),
+        files_read: mixed('/owned/src/read.ts'), files_modified: mixed('/owned/src/changed.ts') },
+      { ...base, id: 2, facts: '用户身份定位', concepts: '记忆检索' },
+    ];
+    const html = observations.map(observation => renderToStaticMarkup(
+      <ObservationCard observation={observation} viewMode="facts" onDeleted={() => {}} />,
+    )).join('');
+    expect([...html.matchAll(/<li>(.*?)<\/li>/g)].map(match => match[1])).toEqual(['VALID FACT', '用户身份定位']);
+    for (const text of ['VALID CONCEPT', '记忆检索', 'src/read.ts', 'src/changed.ts']) expect(html).toContain(text);
+    expect(html).not.toContain('[object Object]');
+  });
   // #3423: facts and concepts stored outside the JSON-array contract are still
   // content. The card must offer its facts view for them, not drop them.
   for (const stored of [

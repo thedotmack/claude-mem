@@ -120,7 +120,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     const session = makeSession();
     let starts = 0;
 
-    const { routes } = buildRoutes(session, async () => {
+    const { routes, stats } = buildRoutes(session, async () => {
       starts += 1;
       if (starts === 1) {
         session.abortReason = 'overflow:recycle';
@@ -135,6 +135,9 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(2);
+    expect(stats().finalizeCalls).toBe(0);
+    expect(stats().removed).toBe(0);
+    expect(stats().active).toBe(session);
   });
 
   it('resumes buffered work at once after a generator ends at a message boundary to switch providers (#4846)', async () => {
@@ -160,30 +163,12 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     expect(stats().removed).toBe(0);
   });
 
-  it('does not resume once the recycle budget is exhausted', async () => {
+  it.each(['overflow:exhausted', 'quota:weekly', 'auth:observer_text'])('does not resume on %s', async (reason) => {
     const session = makeSession();
     let starts = 0;
-
     const { routes } = buildRoutes(session, async () => {
       starts += 1;
-      session.abortReason = 'overflow:exhausted';
-    });
-
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
-
-    // Exactly one start: giving up must stay given up, or the pause is not a pause.
-    expect(starts).toBe(1);
-  });
-
-  it('does not resume on a quota pause — that one waits for the user', async () => {
-    const session = makeSession();
-    let starts = 0;
-
-    const { routes } = buildRoutes(session, async () => {
-      starts += 1;
-      session.abortReason = 'quota:weekly';
+      session.abortReason = reason;
     });
 
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
@@ -191,7 +176,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
-    expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'unknown' });
+    if (reason === 'quota:weekly') expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'unknown' });
   });
 
   // The guard aborts with 'quota:<window>:<kind>' (ClaudeProvider); the exit
@@ -299,45 +284,6 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(getQuotaCooldown('claude')?.auth).toBe(override ? undefined : auth);
       observerHealth.recordObserverSuccess();
     }
-  });
-
-  it('does not resume on an auth pause', async () => {
-    const session = makeSession();
-    let starts = 0;
-
-    const { routes } = buildRoutes(session, async () => {
-      starts += 1;
-      session.abortReason = 'auth:observer_text';
-    });
-
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
-
-    expect(starts).toBe(1);
-  });
-
-  it('preserves the session across a recycle instead of finalizing it', async () => {
-    const session = makeSession();
-    let starts = 0;
-
-    const { routes, stats } = buildRoutes(session, async () => {
-      starts += 1;
-      if (starts === 1) {
-        session.abortReason = 'overflow:recycle';
-        return;
-      }
-      await new Promise<void>(() => {});
-    });
-
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
-    await nextTick();
-
-    // Finalizing would drop the batch the recycle just reset to pending.
-    expect(stats().finalizeCalls).toBe(0);
-    expect(stats().removed).toBe(0);
-    expect(stats().active).toBe(session);
   });
 
   describe('after a response stall (#4066)', () => {

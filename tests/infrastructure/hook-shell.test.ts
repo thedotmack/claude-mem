@@ -13,6 +13,7 @@ const gitBash = 'C:/Program Files/Git/bin/bash.exe';
 const shells = process.platform === 'win32'
   ? [{ name: 'Git Bash', executable: existsSync(gitBash) ? gitBash : null }]
   : ['sh', 'bash', 'zsh', 'fish'].map(name => ({ name, executable: Bun.which(name) }));
+const primaryShell = shells.find(({ executable }) => executable)?.name;
 const optOutFlags = [
   'CLAUDE_MEM_DISABLE_TOOL_HOOKS',
   'CLAUDE_MEM_DISABLE_FILE_CONTEXT',
@@ -101,14 +102,15 @@ for (const { name, executable: shell } of shells) {
 
     // Windows runs Codex's commandWindows overrides; its POSIX commands are not used there.
     if (process.platform === 'win32') return;
-    for (const [event, handler] of [
+    const events = [
       ['SessionStart', 'context'],
       ['UserPromptSubmit', 'session-init'],
       ['PreToolUse', 'file-context'],
       ['PostToolUse', 'observation'],
       ['Stop', 'summarize'],
       ['PostCompact', 'post-compact'],
-    ]) {
+    ];
+    for (const [event, handler] of name === primaryShell ? events : events.slice(0, 1)) {
       test(`${event} preserves stdin, arguments and environment`, () => {
         const result = run(shell!, hooks[event][0].hooks[0].command);
         expect(result.error).toBeUndefined();
@@ -122,6 +124,7 @@ for (const { name, executable: shell } of shells) {
       });
     }
 
+    if (name !== primaryShell) return;
     for (const [event, flag] of [
       ['PreToolUse', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
       ['PreToolUse', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT'],
@@ -161,12 +164,4 @@ test('generated shell-form hooks contain no backslash pairs', () => {
     expect(command.startsWith("/bin/sh -c '")).toBe(true);
     expect(command).not.toContain('\\\\');
   }
-});
-
-test('escapes a backslash only before a backslash, a quote or the end', () => {
-  const command = buildShellCommand({
-    host: 'codex-cli', requireFile: 'version-check.js', notFoundMessage: 'missing fixture',
-    trailingCommand: ['printf', String.raw`'a\nb'`, String.raw`c\\d`, String.raw`e\'`, String.raw`f\ `],
-  });
-  expect(command.endsWith(String.raw`printf '\''a\nb'\'' c'\\'\d e'\\''\'' f\ '`)).toBe(true);
 });

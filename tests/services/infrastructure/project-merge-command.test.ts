@@ -6,8 +6,6 @@
 // The worker request is passed in directly: many test files mock the shared
 // worker-utils module for the whole test process.
 import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
-import type { Server } from 'node:http';
-import express from 'express';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -28,12 +26,9 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 type WorkerRequest = NonNullable<Parameters<typeof runProjectMergeCommand>[1]>;
 
-let server: Server | undefined;
 let tempRoot: string | undefined;
 
-afterEach(async () => {
-  await new Promise<void>(resolve => (server ? server.close(() => resolve()) : resolve()));
-  server = undefined;
+afterEach(() => {
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
   tempRoot = undefined;
 });
@@ -42,24 +37,11 @@ afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
 });
 
-/** A fake worker serving the merge route, and a request function aimed at it. */
-async function fakeWorker(handler: express.RequestHandler): Promise<WorkerRequest> {
-  const app = express();
-  app.use(express.json());
-  app.post('/api/projects/merge', handler);
-  const port = await new Promise<number>((resolve, reject) => {
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server!.address();
-      if (!addr || typeof addr === 'string') reject(new Error('fake worker did not bind a port'));
-      else resolve(addr.port);
-    });
-  });
-  return (apiPath, options = {}) => fetch(`http://127.0.0.1:${port}${apiPath}`, {
-    method: options.method,
-    headers: options.headers,
-    body: options.body,
-  });
-}
+const answering = (status: number, body: unknown, received: unknown[] = []): WorkerRequest =>
+  async (_path, options = {}) => {
+    received.push(JSON.parse(String(options.body)));
+    return Response.json(body, { status });
+  };
 
 const noWorker: WorkerRequest = async () => {
   throw new TypeError('fetch failed: connection refused');
@@ -96,10 +78,8 @@ function seedDatabase(): string {
 describe('project merge from the CLI (gate P2-4)', () => {
   it('runs the merge inside the running worker', async () => {
     const received: unknown[] = [];
-    const requestWorker = await fakeWorker((req, res) => {
-      received.push(req.body);
-      res.json({ from: 'frontend', into: 'work', mergedObservations: 3, mergedSummaries: 1, chromaUpdates: 4, chromaFailed: 0, dryRun: false });
-    });
+    const requestWorker = answering(200,
+      { from: 'frontend', into: 'work', mergedObservations: 3, mergedSummaries: 1, chromaUpdates: 4, chromaFailed: 0, dryRun: false }, received);
 
     const result = await runProjectMergeCommand({ from: 'frontend', into: 'work' }, requestWorker);
 
@@ -117,9 +97,7 @@ describe('project merge from the CLI (gate P2-4)', () => {
 
   it('runs the merge in this process when the worker predates the merge route', async () => {
     const dataDirectory = seedDatabase();
-    const requestWorker = await fakeWorker((_req, res) => {
-      res.status(404).json({ error: 'Not found' });
-    });
+    const requestWorker = answering(404, { error: 'Not found' });
 
     const result = await runProjectMergeCommand({ from: 'frontend', into: 'work', dataDirectory }, requestWorker);
 
@@ -127,9 +105,7 @@ describe('project merge from the CLI (gate P2-4)', () => {
   });
 
   it('fails loudly when the worker refuses the merge instead of running it twice', async () => {
-    const requestWorker = await fakeWorker((_req, res) => {
-      res.status(500).json({ error: 'database is locked' });
-    });
+    const requestWorker = answering(500, { error: 'database is locked' });
 
     await expect(runProjectMergeCommand({ from: 'frontend', into: 'work' }, requestWorker)).rejects.toThrow('database is locked');
   });

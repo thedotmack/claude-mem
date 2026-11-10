@@ -121,12 +121,14 @@ describe('BackupManager.createSnapshot standalone output', () => {
     const backupsDir = join(tempRoot, 'backups', 'auto');
     mkdirSync(backupsDir, { recursive: true });
     writeFileSync(join(backupsDir, 'claude-mem-2026-10-01T00-00-00-000Z.db.partial'), 'half written');
+    writeFileSync(join(backupsDir, 'import.db.partial'), 'owned by another process');
     const manager = makeManager(tempRoot);
     expect(manager.status().snapshotCount).toBe(0);
 
     await manager.createSnapshot();
 
-    expect(readdirSync(backupsDir).filter(name => name.endsWith('.partial'))).toEqual([]);
+    expect(readdirSync(backupsDir).filter(name => name.endsWith('.partial'))).toEqual(['import.db.partial']);
+    expect(readFileSync(join(backupsDir, 'import.db.partial'), 'utf-8')).toBe('owned by another process');
     expect(manager.status().snapshotCount).toBe(1);
   });
 });

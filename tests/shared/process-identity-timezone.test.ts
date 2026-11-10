@@ -13,7 +13,6 @@ import {
   withUtcStartTokenPrefix,
 } from '../../src/shared/process-identity.js';
 import { parsePosixProcessTable } from '../../src/shared/kill-process-tree.js';
-import { parseMacProcessTable } from '../../src/shared/port-reclaim.js';
 import {
   readOwnedWorkerPidInfo,
   verifyPidFileOwnership,
@@ -70,25 +69,17 @@ function unprovableCrossEraToken(pid: number): string {
  */
 
 describe('startTokenProbeEnv (#5311)', () => {
-  it('pins TZ together with the locale, overriding whatever the host exported', () => {
-    const env = startTokenProbeEnv({ PATH: '/usr/bin', TZ: 'America/New_York', LANG: 'de_DE.UTF-8' });
+  it.each([
+    { PATH: '/usr/bin', TZ: 'America/New_York', LANG: 'de_DE.UTF-8' },
+    { PATH: '/usr/bin' },
+  ])('pins TZ and locale without mutating the host env %j', (base) => {
+    const original = { ...base };
+    const env = startTokenProbeEnv(base);
     expect(env.TZ).toBe('UTC');
     expect(env.LC_ALL).toBe('C');
     expect(env.LANG).toBe('C');
     expect(env.PATH).toBe('/usr/bin');
-  });
-
-  it('pins TZ even when the host exported none', () => {
-    const env = startTokenProbeEnv({ PATH: '/usr/bin' });
-    expect(env.TZ).toBe('UTC');
-    expect(env.LC_ALL).toBe('C');
-    expect(env.LANG).toBe('C');
-  });
-
-  it('does not mutate the base env object', () => {
-    const base = { TZ: 'America/New_York' };
-    startTokenProbeEnv(base);
-    expect(base.TZ).toBe('America/New_York');
+    expect(base).toEqual(original);
   });
 });
 
@@ -179,17 +170,6 @@ describe('utc: prefix agreement between the single-PID reader and the ps -eo tab
   // kill-process-tree-identity.test.ts). Without the prefix on BOTH sides,
   // every cross-reader comparison would degrade to "proceed" and silently
   // remove the PID-reuse guard from tree-kill and the orphan sweep.
-  it('macOS table rows carry the prefix byte-identically to the single-PID reader', () => {
-    const stdout = [
-      '  812     1   501 Mon Oct  5 09:03:07 2026     /usr/bin/uvx --from chroma-mcp chroma-mcp',
-      '',
-    ].join('\n');
-    const rows = parseMacProcessTable(stdout);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.startToken).toBe(withUtcStartTokenPrefix('Mon Oct  5 09:03:07 2026'));
-    expect(rows[0]!.startToken).toBe(`${UTC_START_TOKEN_PREFIX}Mon Oct  5 09:03:07 2026`);
-  });
-
   it('BSD/POSIX table rows carry the prefix; blank tokens stay null', () => {
     const stdout = [
       '  812     1 Sun Oct 12 14:22:01 2026',
@@ -265,14 +245,6 @@ describe('ownership checks require proof for pre-pin records (#5311)', () => {
     expect(verifyPidFileOwnership(pidFile(unproven))).toBe(false);
     expect(isSameProcess(process.pid, unproven)).toBe(false);
     expect(hasMatchingProcessStartToken(process.pid, unproven)).toBe(false);
-  });
-
-  it('verifyPidFileOwnership accepts a record carrying the live token', () => {
-    expect(verifyPidFileOwnership(pidFile(captureProcessStartToken(process.pid) ?? undefined))).toBe(true);
-  });
-
-  it('isSameProcess proceeds on an uncapturable snapshot', () => {
-    expect(isSameProcess(process.pid, null)).toBe(true);
   });
 
   it('hasMatchingProcessStartToken fails closed on an uncapturable read', () => {

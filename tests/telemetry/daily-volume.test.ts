@@ -18,6 +18,8 @@ const NEXT = Date.parse('2026-11-03T00:00:01.000Z');
 
 let directory: string;
 const savedImmediate = process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE;
+const savedTelemetry = process.env.CLAUDE_MEM_TELEMETRY;
+const savedDoNotTrack = process.env.DO_NOT_TRACK;
 
 function arm(now: number): void {
   __resetTelemetryForTests();
@@ -34,6 +36,10 @@ function arm(now: number): void {
 afterEach(() => {
   if (savedImmediate === undefined) delete process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE;
   else process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = savedImmediate;
+  if (savedTelemetry === undefined) delete process.env.CLAUDE_MEM_TELEMETRY;
+  else process.env.CLAUDE_MEM_TELEMETRY = savedTelemetry;
+  if (savedDoNotTrack === undefined) delete process.env.DO_NOT_TRACK;
+  else process.env.DO_NOT_TRACK = savedDoNotTrack;
   __resetTelemetryForTests();
 });
 

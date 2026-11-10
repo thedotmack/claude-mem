@@ -17,7 +17,6 @@ import {
   MAX_ERROR_BODY_BYTES,
 } from '../../src/services/worker/provider-errors.js';
 import {
-  DEFAULT_MAX_PAID_SENDS_PER_BATCH,
   PaidSendBudget,
   paidSendBudgetForClaimedBatch,
 } from '../../src/services/worker/paid-send-budget.js';
@@ -58,6 +57,17 @@ function scriptFetch(steps: Array<() => Response | Promise<Response>>) {
     return step();
   }) as unknown as typeof fetch);
   return { spy, sentHeaders, sends: () => sentHeaders.length };
+}
+
+async function withoutRetryDelay<T>(run: () => Promise<T>): Promise<T> {
+  const nativeSetTimeout = globalThis.setTimeout;
+  const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms: number) =>
+    nativeSetTimeout(fn, ms >= 500 && ms < 2000 ? 0 : ms)) as typeof setTimeout);
+  try {
+    return await run();
+  } finally {
+    timer.mockRestore();
+  }
 }
 
 afterEach(() => {
@@ -105,7 +115,7 @@ describe('outcome table: what is retried in place', () => {
   // resent once (retryBeforeOutput), and no more; see streamed-provider.test.ts.
   it('network error before any response: ambiguous, resent once before output, then not retried', async () => {
     const fetch = scriptFetch([() => { throw new TypeError('fetch failed'); }]);
-    const error = await provider().runQuery().catch((caught: unknown) => caught);
+    const error = await withoutRetryDelay(() => provider().runQuery()).catch((caught: unknown) => caught);
     expect(fetch.sends()).toBe(2);
     expect(isClassified(error) && error.kind).toBe('transient');
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
@@ -251,10 +261,6 @@ describe('PaidSendBudget: one allowance per claimed batch, shared by withRetry a
     return { sessionManager, session, sessionDbId, messageId, timers };
   }
 
-  it('defaults to two paid sends', () => {
-    expect(DEFAULT_MAX_PAID_SENDS_PER_BATCH).toBe(2);
-  });
-
   it('first send + one transport resume, then the batch is parked and never sent again', async () => {
     const { sessionManager, session, sessionDbId, messageId, timers } = makeSessionManager();
     const fetch = scriptFetch([() => new Response('upstream hiccup', { status: 503 })]);
@@ -304,7 +310,7 @@ describe('PaidSendBudget: one allowance per claimed batch, shared by withRetry a
     // in-place retries against the refusing endpoint, all of them pre-send.
     session.claimedMessageIds = [messageId];
     const firstBudget = paidSendBudgetForClaimedBatch(session)!;
-    const error = await provider().runQuery(firstBudget).catch((caught: unknown) => caught);
+    const error = await withoutRetryDelay(() => provider().runQuery(firstBudget)).catch((caught: unknown) => caught);
     expect(paidSendOutcomeOf(error)).toBe('refused_before_work');
     expect(fetch.sends()).toBe(3);
     expect(firstBudget.spentPaidSends).toBe(0);

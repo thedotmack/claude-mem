@@ -94,6 +94,7 @@ describe('handleGeneratorExit reason branching (#2756)', () => {
 
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
+    expect(session.pausedReason).toBe('provider_switch');
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });

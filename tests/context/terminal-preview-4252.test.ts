@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Exercise the production entry point in a child to isolate settings and mode
 // state from the process-global mocks in other context tests.
@@ -40,7 +41,7 @@ const script = `
 `;
 
 function generate(count: number, options: { narrative?: boolean; messageLength?: number; titleLength?: number; sameMinute?: boolean } = {}) {
-  const dataDir = mkdtempSync(join(import.meta.dir, '.preview-4252-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'preview-4252-'));
   try {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
@@ -75,8 +76,10 @@ function generate(count: number, options: { narrative?: boolean; messageLength?:
 const records = (text: string): string[] => text.match(/RECORD_\d{3}/g) ?? [];
 
 describe('terminal preview shares the model selection (#4252)', () => {
+  let standardPreview: ReturnType<typeof generate>;
+  beforeAll(() => { standardPreview = generate(50); }, 15_000);
   it('truncates verbose presentation without selecting fewer observations', () => {
-    const { model, preview, fullPreview } = generate(50);
+    const { model, preview, fullPreview } = standardPreview;
     expect(model.text.length).toBeLessThanOrEqual(10_000);
     expect(model.stats.observation_count).toBe(50);
     expect(records(model.text)).toHaveLength(50);
@@ -119,7 +122,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
   }, 15_000);
 
   it('restores the date and file heading for the first retained observation', () => {
-    const { preview } = generate(50);
+    const { preview } = standardPreview;
     const first = records(preview.text)[0];
     const firstIndex = preview.text.indexOf(first);
     const preceding = preview.text.slice(preview.text.indexOf('Terminal preview truncated'), firstIndex);
@@ -164,7 +167,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
 
   it('gives newest observations space before a long prior message', () => {
     // Long enough to overflow the colored preview, short enough for the model's block.
-    const { model, preview, fullPreview } = generate(10, { messageLength: 7_000, titleLength: 180 });
+    const { model, preview, fullPreview } = generate(10, { messageLength: 7_500, titleLength: 180 });
     expect(model.stats.observation_count).toBe(10);
     expect(model.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text).toContain('PRIOR_MESSAGE');

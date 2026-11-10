@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 36 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
+That is all you need for the 38 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -65,6 +65,8 @@ That is all you need for the 36 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `perplexity_key` | `pplx-…` Perplexity API keys (48 trailing alphanumerics) |
 | `supabase_token` | `sbp_…` Supabase personal access tokens (40 hex chars) |
 | `sentry_token` | `sntryu_…` Sentry personal auth tokens (64 hex chars) and `sntrys_…` organization auth tokens |
+| `grafana_token` | `glsa_…` Grafana service account tokens (32 chars + `_` + 8 hex checksum) and `glc_…` Grafana Cloud tokens |
+| `postman_key` | `PMAK-…` Postman API keys (24 hex + `-` + 34 hex) |
 | `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
 | `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |

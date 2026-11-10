@@ -27,9 +27,13 @@ describe('cwdToDashed — non-alphanumeric components', () => {
     );
   });
 
-  it('still handles the slash/dot cases from #2401', async () => {
+  it.each([
+    ['/Users/john.doe/my-project', '-Users-john-doe-my-project'],
+    ['/Users/jane/app', '-Users-jane-app'],
+    ['/srv/app.v2.1/src', '-srv-app-v2-1-src'],
+  ])('encodes the slash/dot path %s from #2401', async (cwd, expected) => {
     const { cwdToDashed } = await import('../../src/services/context/ObservationCompiler.js');
-    expect(cwdToDashed('/Users/john.doe/my-project')).toBe('-Users-john-doe-my-project');
+    expect(cwdToDashed(cwd)).toBe(expected);
   });
 
   it('turns a space and each UTF-16 half of an emoji into its own dash', async () => {

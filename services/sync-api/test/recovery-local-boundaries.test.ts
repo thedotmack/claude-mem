@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { CloudSync, getNativeContentOperation } from '../../../src/services/sync/CloudSync.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { SyncConflictRecovery, initializeConflictRecoverySchema } from '../../../src/services/sync/SyncConflictRecovery.js';
 import { buildContentOperation, parseCanonicalOperation } from '../../../src/services/sync/CanonicalContent.js';
-import { trackedApp, uniqueUser, pushRequest } from './helpers';
+import { trackedApp, uniqueUser, pushRequest, stopTrackedApps } from './helpers';
+
+afterAll(stopTrackedApps);
 
 async function fixture(initialRevision = '10') {
   const { app } = await trackedApp(); const user = uniqueUser(), device = 'repair-boundary-device';

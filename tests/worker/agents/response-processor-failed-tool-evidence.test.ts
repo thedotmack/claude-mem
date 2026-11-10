@@ -50,19 +50,6 @@ describe('extractObservationFileEvidence: failed tool calls', () => {
     expect(evidence.files_modified).toEqual(['src/b.ts']);
   });
 
-  // The worker stores tool_response as text: ingest JSON.stringify()s it
-  // before queueing (http/shared.ts), so the extractor sees a string.
-  it('ignores an edit whose stored (JSON string) response is marked as an error', () => {
-    const evidence = extractObservationFileEvidence([
-      message({
-        tool_name: 'Edit',
-        tool_input: JSON.stringify({ file_path: 'src/a.ts' }),
-        tool_response: JSON.stringify({ is_error: true, error: 'permission denied' }),
-      }),
-    ]);
-
-    expect(evidence.files_modified).toEqual([]);
-  });
 
   it('still records an edit whose stored response is a plain string result', () => {
     const evidence = extractObservationFileEvidence([

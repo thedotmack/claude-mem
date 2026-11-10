@@ -144,45 +144,21 @@ describe('Observation TV guard — loopback is never gated', () => {
 });
 
 describe('Observation TV guard — remote allow paths', () => {
-  it('case 3: remote GET /tv with the correct ?token= is allowed', async () => {
-    const res = await fetch(url(`/tv?token=${encodeURIComponent(TOKEN)}`), { headers: REMOTE });
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
-
-  it('case 4: remote GET /tv with a correct Authorization: Bearer is allowed', async () => {
-    const res = await fetch(url('/tv'), {
-      headers: { ...REMOTE, authorization: `Bearer ${TOKEN}` },
+  const cases: Array<[string, string, Record<string, string>]> = [
+    ['case 3: query token', `/tv?token=${encodeURIComponent(TOKEN)}`, REMOTE],
+    ['case 4: bearer token', '/tv', { ...REMOTE, authorization: `Bearer ${TOKEN}` }],
+    ['case 5: X-Api-Key', '/tv', { ...REMOTE, 'x-api-key': TOKEN }],
+    ['case 8: stream', `/stream?token=${encodeURIComponent(TOKEN)}`, REMOTE],
+    ['case 9: observations', `/api/observations?token=${encodeURIComponent(TOKEN)}`, REMOTE],
+    ['tv.html', `/tv.html?token=${encodeURIComponent(TOKEN)}`, REMOTE],
+  ];
+  for (const [label, path, headers] of cases) {
+    it(`${label}: remote GET is allowed`, async () => {
+      const res = await fetch(url(path), { headers });
+      expect(res.status).toBe(200);
+      expect(allowed(res)).toBe(true);
     });
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
-
-  it('case 5: remote GET /tv with a correct X-Api-Key is allowed', async () => {
-    const res = await fetch(url('/tv'), { headers: { ...REMOTE, 'x-api-key': TOKEN } });
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
-
-  it('case 8: remote GET /stream with the correct token is allowed', async () => {
-    const res = await fetch(url(`/stream?token=${encodeURIComponent(TOKEN)}`), { headers: REMOTE });
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
-
-  it('case 9: remote GET /api/observations with the correct token is allowed', async () => {
-    const res = await fetch(url(`/api/observations?token=${encodeURIComponent(TOKEN)}`), { headers: REMOTE });
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
-
-  it('remote GET /tv.html with the correct token is allowed', async () => {
-    const res = await fetch(url(`/tv.html?token=${encodeURIComponent(TOKEN)}`), { headers: REMOTE });
-    // Both halves matter: the guard stamps `no-store` BEFORE calling next(), so
-    // the header alone would still be there if the downstream stack blew up.
-    expect(res.status).toBe(200);
-    expect(allowed(res)).toBe(true);
-  });
+  }
 
   // Token extraction trims deliberately (parseBearerToken trims, x-api-key is
   // .trim()ed, readQueryToken trims), so surrounding whitespace is accepted.
@@ -291,29 +267,16 @@ describe('Observation TV guard — every mutation is 403 (method gate fires firs
     expect(alive.status).toBe(200);
   });
 
-  it('case 13: remote POST /api/settings with the correct token is 403', async () => {
-    const res = await fetch(url(`/api/settings?token=${encodeURIComponent(TOKEN)}`), {
-      method: 'POST',
-      headers: REMOTE,
+  for (const [method, path] of [
+    ['POST', '/api/settings'],
+    ['POST', '/api/observations/batch'],
+    ['DELETE', '/api/observation/1'],
+  ]) {
+    it(`remote ${method} ${path} with the correct token is 403`, async () => {
+      const res = await fetch(url(`${path}?token=${encodeURIComponent(TOKEN)}`), { method, headers: REMOTE });
+      expect(res.status).toBe(403);
     });
-    expect(res.status).toBe(403);
-  });
-
-  it('case 14: remote POST /api/observations/batch with the correct token is 403', async () => {
-    const res = await fetch(url(`/api/observations/batch?token=${encodeURIComponent(TOKEN)}`), {
-      method: 'POST',
-      headers: REMOTE,
-    });
-    expect(res.status).toBe(403);
-  });
-
-  it('remote DELETE /api/observation/1 with the correct token is 403', async () => {
-    const res = await fetch(url(`/api/observation/1?token=${encodeURIComponent(TOKEN)}`), {
-      method: 'DELETE',
-      headers: REMOTE,
-    });
-    expect(res.status).toBe(403);
-  });
+  }
 });
 
 describe('Observation TV guard — fail closed and forwarded-header handling', () => {

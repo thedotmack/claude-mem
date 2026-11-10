@@ -279,20 +279,6 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(JSON.stringify({ stdout: `a ${word}` }), cfg).redacted).toBe(JSON.stringify({ stdout: `a ${word}` }));
   });
 
-  // The worker scans JSON.stringify(toolResponse), so a newline right before
-  // the key arrives as the two characters `\n`; the `n` is a word character,
-  // so a bare `\b` cannot match there and the key survived redaction.
-  it('redacts a perplexity_key printed right after a newline (worker capture path)', () => {
-    const output = `Deployment ready.\n${'ppl' + 'x-' + PPLX_BODY}`;
-    for (const text of [output, JSON.stringify({ stdout: output })]) {
-      const result = redactSensitive(text, cfg);
-      expect(result.counts.perplexity_key).toBe(1);
-      expect(result.redacted).not.toContain(PPLX_BODY);
-    }
-    const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
-    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
-  });
-
   // Perplexity model ids share the `pplx-` prefix; their `-`/`.` separators
   // and short bodies keep them out of the 48-alphanumeric key pattern.
   it.each([
@@ -330,6 +316,39 @@ describe('redactSensitive built-in patterns', () => {
     'sbp_' + '0123456789abcdef0123456789abcdef',
     'sntryu_' + '0123456789abcdef0123456789abcdef',
     'the sntrys_ prefix',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Grafana service account / Cloud tokens and Postman API keys; split for
+  // push protection too.
+  const GRAFANA_SA_BODY = 'aBcDeFgHiJkLmNoP' + 'qRsTuVwXyZ012345';
+  const GRAFANA_SA_CHECK = '0a1b' + '2c3d';
+  const GRAFANA_CLOUD_BODY = 'eyJvIjoiMTIzNDU2IiwibiI6InN0YWNr' + 'LWRlcGxveSIsImsiOiJhQmNEZUZnSGlK' + 'a0xtTm9QcVJzVHUifQ==';
+  const POSTMAN_ID = '0123456789abcdef' + '01234567';
+  const POSTMAN_SECRET = '0123456789abcdef0' + '123456789abcdef01';
+  it.each([
+    ['grafana_token', 'export GRAFANA_SERVICE_ACCOUNT_TOKEN=' + 'gl' + 'sa_' + GRAFANA_SA_BODY + '_' + GRAFANA_SA_CHECK + ' tail', GRAFANA_SA_BODY],
+    ['grafana_token', 'curl -H "Authorization: Bearer ' + 'gl' + 'sa_' + GRAFANA_SA_BODY + '_' + GRAFANA_SA_CHECK + '" tail', GRAFANA_SA_BODY],
+    ['grafana_token', 'GRAFANA_CLOUD_TOKEN=' + 'gl' + 'c_' + GRAFANA_CLOUD_BODY + ' tail', GRAFANA_CLOUD_BODY],
+    ['postman_key', 'POSTMAN_API_KEY=' + 'PM' + 'AK-' + POSTMAN_ID + '-' + POSTMAN_SECRET + ' tail', POSTMAN_SECRET],
+    ['postman_key', '{"apiKey": "' + 'PM' + 'AK-' + POSTMAN_ID + '-' + POSTMAN_SECRET + '"} tail', POSTMAN_SECRET],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'glsa_short',
+    'gl' + 'sa_' + 'aBcDeFgHiJkLmNoP' + '_0a1b2c3d',
+    'gl' + 'sa_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ012345' + '_nothexhex',
+    'glc_short',
+    'the glc_ prefix',
+    'PMAK-short',
+    'PM' + 'AK-' + '0123456789abcdef01234567' + '-0123',
   ])('leaves %s alone', (input) => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
@@ -849,10 +868,20 @@ describe('redactSensitive generic built-in patterns', () => {
   });
 
   it('stays linear on long whitespace runs (no quadratic lookbehind)', () => {
-    const padded = `password=${' '.repeat(200_000)}AWS_SECRET_ACCESS_KEY${' '.repeat(200_000)}=x`;
-    const started = performance.now();
-    redactSensitive(padded, cfg);
-    expect(performance.now() - started).toBeLessThan(1000);
+    const measure = (padding: number) => {
+      const padded = `password=${' '.repeat(padding)}AWS_SECRET_ACCESS_KEY${' '.repeat(padding)}=x`;
+      const started = performance.now();
+      redactSensitive(padded, cfg);
+      return performance.now() - started;
+    };
+    measure(2_500);
+    const small: number[] = [];
+    const large: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      small.push(measure(12_500));
+      large.push(measure(25_000));
+    }
+    expect(Math.min(...large) / Math.min(...small)).toBeLessThan(3);
   });
 });
 

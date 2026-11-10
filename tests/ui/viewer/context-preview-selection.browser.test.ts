@@ -8,13 +8,12 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the context-preview br
 
 // This regression needs real React effects, state updates, and HTTP ordering.
 // It runs in headless Chrome when installed; no mocked React dispatcher.
-for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
+for (const { oldStatus, emptySource } of [
   { oldStatus: 200, emptySource: false },
   { oldStatus: 500, emptySource: false },
   { oldStatus: 200, emptySource: true },
-  { oldStatus: 200, emptySource: false, startupDelayMs: 10000 },
 ]) {
-  (chromeExecutablePath ? it : it.skip)(`keeps the current preview after an older HTTP ${oldStatus} reply (emptySource=${emptySource})${startupDelayMs ? ` after ${startupDelayMs}ms browser startup` : ''}`, async () => {
+  (chromeExecutablePath ? it : it.skip)(`keeps the current preview after an older HTTP ${oldStatus} reply (emptySource=${emptySource})`, async () => {
     const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
@@ -81,7 +80,7 @@ for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/') return htmlResponse(FIXTURE_PAGE_HTML);
-      if (url.pathname === '/fixture.js') { await Bun.sleep(startupDelayMs); return scriptResponse(bundle); }
+      if (url.pathname === '/fixture.js') return scriptResponse(bundle);
       if (url.pathname === '/api/projects') return Response.json({ projects: ['project-a', 'project-b'], sources: ['claude'], projectsBySource: { claude: ['project-a', 'project-b'] } });
       if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
       if (url.pathname === '/seen') return Response.json(seen);

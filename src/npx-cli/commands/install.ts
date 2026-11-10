@@ -300,7 +300,7 @@ export function disableClaudeAutoMemory(): boolean {
 
 type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
 
-async function resolveClaudeAutoMemoryChoice(
+export async function resolveClaudeAutoMemoryChoice(
   selectedIDEs: string[],
   options: InstallOptions,
 ): Promise<ClaudeAutoMemoryChoice> {

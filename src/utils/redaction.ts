@@ -243,6 +243,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // `.sentryclirc` dumps and source-map upload commands print.
   { name: 'supabase_token',  regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
   { name: 'sentry_token',    regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
+  // Grafana tokens: service account tokens (`glsa_` + 32 alphanumerics + `_`
+  // + an 8-hex checksum) and Grafana Cloud access policy / API tokens (`glc_`
+  // + a base64 payload), which GRAFANA_TOKEN / GRAFANA_SERVICE_ACCOUNT_TOKEN
+  // lines, Terraform provider configs and `curl -H "Authorization: Bearer …"`
+  // commands print. Postman API keys (`PMAK-` + 24 hex + `-` + 34 hex), which
+  // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
+  { name: 'grafana_token',   regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
+  { name: 'postman_key',     regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
   // Incoming webhook URLs carry their secret in the path, so anyone holding
   // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
   // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/

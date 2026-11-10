@@ -4,22 +4,21 @@ import { createServer, type Server, type Socket } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { SPOOL_NUDGE_TIMEOUT_MS } from '../../../src/cli/spool-hook-event.js';
+import { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../../../src/cli/live-observer-event.js';
 
-// Phase 5 hook wall-time contract: PostToolUse spools and exits. With the
+// Hook wall-time contract: PostToolUse hands off once and exits. With the
 // worker down (refused) or wedged (accepts, never answers), the handler must
 // still return well inside a tool-call's latency budget.
 //
 // Each measurement runs in its own `bun` process, like a real hook. In a full
 // `bun test tests` run, other files' module mocks, `?fresh` worker-utils
 // imports and the process-wide settings memos (hook-settings, worker-utils port
-// cache) leaked into this file: the handler skipped spooling, or every nudge
+// cache) leaked into this file: the handler skipped capture, or every handoff
 // went to the default port 37777 (a live worker on a dev machine) instead of
 // the black hole below. A child process has none of that state.
 const HOOK_WALL_TIME_BUDGET_MS = 200;
-// Whole hook up to process.exit: handler + hookCommand settling the nudge
-// (capped at SPOOL_NUDGE_TIMEOUT_MS). Must stay well under 500 ms.
-const HOOK_EXIT_WORST_CASE_BUDGET_MS = 400;
+// Handler plus the bounded live handoff, with scheduler headroom on shared CI.
+const HOOK_EXIT_WORST_CASE_BUDGET_MS = LIVE_OBSERVER_HANDOFF_TIMEOUT_MS + 500;
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const moduleUrl = (relativePath: string) => pathToFileURL(join(REPO_ROOT, relativePath)).href;
@@ -67,7 +66,7 @@ async function timeObservationHookInChild(workerPort: number): Promise<HookTimin
     const startedAt = performance.now();
     const result = await observationHandler.execute({
       sessionId: 'timing-session',
-      cwd: '/tmp/timing-project',
+      cwd: ${JSON.stringify(dataDir)},
       platform: 'claude-code',
       toolName: 'Bash',
       toolInput: { command: 'ls' },
@@ -120,6 +119,7 @@ describe('observation hook wall time with the worker unavailable', () => {
 
     expect(timing.handlerMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
     expect(timing.spooledToolUseIds).toEqual([]);
+    expect(timing.throughNudgeSettleMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
   });
 
   it(`returns in < ${HOOK_WALL_TIME_BUDGET_MS}ms when the worker accepts but never answers (wedged)`, async () => {
@@ -127,15 +127,8 @@ describe('observation hook wall time with the worker unavailable', () => {
 
     expect(timing.handlerMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
     expect(timing.spooledToolUseIds).toEqual([]);
-  });
-
-  it(`settles the nudge before exit in < ${HOOK_WALL_TIME_BUDGET_MS}ms when refused and < ${HOOK_EXIT_WORST_CASE_BUDGET_MS}ms when wedged`, async () => {
-    const refused = await timeObservationHookInChild(await closedPort());
-    expect(refused.throughNudgeSettleMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
-
-    const wedged = await timeObservationHookInChild(await blackHolePort());
-    // Proves the nudge really reached the wedged worker and waited out its timeout.
-    expect(wedged.throughNudgeSettleMs).toBeGreaterThanOrEqual(SPOOL_NUDGE_TIMEOUT_MS - 50);
-    expect(wedged.throughNudgeSettleMs).toBeLessThan(HOOK_EXIT_WORST_CASE_BUDGET_MS);
+    // Proves the handoff reached the wedged worker and waited out its timeout.
+    expect(timing.throughNudgeSettleMs).toBeGreaterThanOrEqual(LIVE_OBSERVER_HANDOFF_TIMEOUT_MS - 50);
+    expect(timing.throughNudgeSettleMs).toBeLessThan(HOOK_EXIT_WORST_CASE_BUDGET_MS);
   });
 });

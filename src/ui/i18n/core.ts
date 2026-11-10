@@ -8,6 +8,7 @@ import { viewerKo } from './viewer-ko';
 import { myworkKo } from './mywork-ko';
 import { setupKo } from './setup-ko';
 import { settingsKo } from './settings-ko';
+import { myworkTr } from './mywork-tr';
 import { LANGUAGE_STORAGE_KEY, parseLocale, type Locale } from './locale';
 
 export type { Locale } from './locale';
@@ -15,6 +16,7 @@ export { interpolate, LOCALES, LOCALE_NAMES } from './locale';
 const catalogs: Partial<Record<Locale, Record<string, string>>> = {
   'zh-CN': { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh },
   ko: { ...viewerKo, ...myworkKo, ...setupKo, ...settingsKo },
+  tr: myworkTr,
 };
 const listeners = new Set<() => void>();
 let sessionLocale: Locale = 'en';

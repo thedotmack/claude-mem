@@ -5,13 +5,9 @@ import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
-import type { TranscriptCheckpointGate, TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
+import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import {
-  TranscriptAnchorError,
   TranscriptEventProcessor,
-  TranscriptObservationError,
-  TranscriptSummaryError,
-  TranscriptSpoolError,
   type TranscriptFileContext,
   type TranscriptObservationTransport,
 } from './processor.js';
@@ -39,9 +35,6 @@ const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
  * back) before the tool calls saved for it are retired.
  */
 const MISSING_TRANSCRIPT_GRACE_MS = 1000;
-
-/** How often held checkpoints are checked against the buffer once lines stop arriving. */
-const HELD_CHECKPOINT_POLL_MS = 2000;
 
 /**
  * A transcript discovered after startup with a fresh mtime whose first record
@@ -226,7 +219,7 @@ class FileTailer {
   private pendingRecord: Buffer = Buffer.alloc(0);
   /**
    * zstd only: how many lines of the frame at `offset` were dispatched before
-   * a turn in it failed, so the retry resumes at the failed line. Persisted
+   * reading stopped, so a restart resumes at the next unread line. Persisted
    * with the checkpoint.
    */
   private frameLinesDone: number;
@@ -236,13 +229,6 @@ class FileTailer {
   private fileIdentity?: string;
   /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
   private checkpointFingerprint?: string;
-  /**
-   * Take a recovery point after every JSONL line: set when checkpoints are
-   * held in memory. Those per-line points are only held; the state file is
-   * written at most once per YIELD_EVERY_N_LINES batch, poll tick, or read end.
-   */
-  checkpointEachLine = false;
-
   constructor(
     private filePath: string,
     initialOffset: number,
@@ -253,9 +239,7 @@ class FileTailer {
       frameLinesDone: number,
       fileIdentity?: string,
       checkpointFingerprint?: string,
-      partialBytes?: string,
-      /** Held in memory only; a later checkpoint or the poll writes it. */
-      recoveryPointOnly?: boolean
+      partialBytes?: string
     ) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
@@ -376,14 +360,14 @@ class FileTailer {
   }
 
   /** Durable checkpoint: record and persist where the next pass (or a restart) resumes. */
-  private checkpoint(offset: number, partial = '', partialBytes = this.zstdPartialBytes, recoveryPointOnly = false): void {
+  private checkpoint(offset: number, partial = '', partialBytes = this.zstdPartialBytes): void {
     this.zstdPartialBytes = partialBytes;
     this.tailState.offset = offset;
     this.tailState.partial = partial;
     this.checkpointFingerprint = this.fileIdentity === undefined
       ? undefined
       : fingerprintBeforeOffset(this.filePath, offset, this.fileIdentity) ?? undefined;
-    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint, this.zstdPartialBytes?.toString('base64'), recoveryPointOnly);
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint, this.zstdPartialBytes?.toString('base64'));
   }
 
   /**
@@ -392,9 +376,7 @@ class FileTailer {
    * that went through, byte-exact, so a restart resumes at the first record
    * not yet dispatched, never inside the unterminated one still being written.
    *
-   * A turn that fails (the worker did not record its prompt) ends the pass
-   * with the checkpoint AT that line: the retry resends it and everything
-   * after it, and nothing before it.
+   * Failed live handoffs are consumed too: a later read must not replay them.
    */
   private async readNewJsonl(size: number): Promise<void> {
     const readFrom = this.tailState.readOffset;
@@ -423,10 +405,7 @@ class FileTailer {
         try {
           await this.onLine(line);
         } catch {
-          this.pendingRecord = Buffer.alloc(0);
-          this.tailState.readOffset = base + lineStart;
-          this.checkpoint(base + lineStart);
-          return;
+          // Failed live handoffs do not park the source cursor.
         }
       }
       lineStart = newline + 1;
@@ -434,8 +413,6 @@ class FileTailer {
       if (line && ++dispatched % YIELD_EVERY_N_LINES === 0) {
         this.checkpoint(this.tailState.offset);
         await yieldToEventLoop();
-      } else if (line && this.checkpointEachLine) {
-        this.checkpoint(this.tailState.offset, '', undefined, true);
       }
     }
 
@@ -452,10 +429,8 @@ class FileTailer {
    * change event. A frame that fails to decode stops the pass without
    * advancing past it, so it is retried rather than skipped.
    *
-   * The checkpoint moves past a frame once its lines are dispatched. A turn
-   * that fails keeps the checkpoint at its frame, with the partial record that
-   * frame began with, and the retry resumes at the failed line: frames before
-   * it are never sent twice.
+   * The checkpoint moves past a frame once its lines are consumed, including
+   * failed live handoffs. Decode failures still wait for a readable frame.
    */
   private async readNewZstdFrames(size: number): Promise<void> {
     const start = this.tailState.offset;
@@ -509,10 +484,7 @@ class FileTailer {
         try {
           await this.onLine(line);
         } catch {
-          this.frameLinesDone = index;
-          this.tailState.readOffset = frame.start;
-          this.checkpoint(frame.start, partialBefore, partialBytesBefore);
-          return;
+          // Failed live handoffs do not park the source cursor.
         }
         if (++dispatched % YIELD_EVERY_N_LINES === 0) await yieldToEventLoop();
       }
@@ -540,9 +512,6 @@ export class TranscriptWatcher {
   /** Transcripts with saved tool calls that may be gone, checked together once the grace has passed. */
   private retirementCandidates = new Set<string>();
   private retirementTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Checkpoints taken but not saved yet, oldest first, while a gate holds them. */
-  private heldCheckpoints = new Map<string, Array<{ sequence: number; apply: () => void }>>();
-  private heldCheckpointTimer: ReturnType<typeof setInterval> | null = null;
   private missingTranscriptGraceMs = MISSING_TRANSCRIPT_GRACE_MS;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   /** One-shot re-checks of a root watch on a missing root's ancestor, or one that just moved (WATCH_ROOT_SETTLE_MS). */
@@ -556,8 +525,7 @@ export class TranscriptWatcher {
   constructor(
     private config: TranscriptWatchConfig,
     private statePath: string,
-    observationTransport: TranscriptObservationTransport = 'in-process',
-    private checkpointGate?: TranscriptCheckpointGate
+    observationTransport: TranscriptObservationTransport = 'in-process'
   ) {
     this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
@@ -591,62 +559,6 @@ export class TranscriptWatcher {
     if (this.retirementTimer) clearTimeout(this.retirementTimer);
     this.retirementTimer = null;
     this.retirementCandidates.clear();
-    // Held checkpoints stay unsaved: the buffered work they wait for dies with this process.
-    if (this.heldCheckpointTimer) clearInterval(this.heldCheckpointTimer);
-    this.heldCheckpointTimer = null;
-    this.heldCheckpoints.clear();
-  }
-
-  /**
-   * Saves, for each file, the newest held checkpoint whose buffered work is
-   * stored. Work is stored in sequence order per session, so once a checkpoint
-   * qualifies every older one does too.
-   */
-  private commitHeldCheckpoints(): void {
-    const gate = this.checkpointGate;
-    if (!gate) return;
-    let changed = false;
-    try {
-      for (const [file, held] of this.heldCheckpoints) {
-        const sessions = this.fileContexts.get(file)?.sessions ?? new Map<string, string>();
-        let lo = 0;
-        let hi = held.length - 1;
-        let newest = -1;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (gate.drainedThrough(sessions, held[mid].sequence)) { newest = mid; lo = mid + 1; } else hi = mid - 1;
-        }
-        if (newest < 0) continue;
-        held[newest].apply();
-        held.splice(0, newest + 1);
-        if (held.length === 0) this.heldCheckpoints.delete(file);
-        changed = true;
-      }
-    } catch (error) {
-      logger.warn('TRANSCRIPT', 'Could not check buffered work for held checkpoints', {}, error instanceof Error ? error : undefined);
-    }
-    if (changed) saveWatchState(this.statePath, this.state);
-    if (this.heldCheckpoints.size === 0 && this.heldCheckpointTimer) {
-      clearInterval(this.heldCheckpointTimer);
-      this.heldCheckpointTimer = null;
-    }
-  }
-
-  private holdCheckpoint(file: string, apply: () => void, commitNow: boolean): void {
-    const gate = this.checkpointGate!;
-    const sequence = gate.sequence();
-    const held = this.heldCheckpoints.get(file) ?? [];
-    // A checkpoint that buffered nothing new supersedes the one before it.
-    if (held.length > 0 && held[held.length - 1].sequence === sequence) held[held.length - 1] = { sequence, apply };
-    else held.push({ sequence, apply });
-    this.heldCheckpoints.set(file, held);
-    // A per-line recovery point stays in memory: committing writes the whole
-    // state file, so that waits for the batch's checkpoint or the poll.
-    if (commitNow) this.commitHeldCheckpoints();
-    if (this.heldCheckpoints.size > 0 && !this.heldCheckpointTimer) {
-      this.heldCheckpointTimer = setInterval(() => this.commitHeldCheckpoints(), HELD_CHECKPOINT_POLL_MS);
-      this.heldCheckpointTimer.unref?.();
-    }
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -841,9 +753,6 @@ export class TranscriptWatcher {
       const context = this.fileContexts.get(file);
       if (context) this.processor.retireFileContext(context);
       this.fileContexts.delete(file);
-      // A held checkpoint carries its own copy of these tool calls: committing it
-      // would write the retired inputs back.
-      this.heldCheckpoints.delete(file);
       if (this.state.pendingTools?.[file]) {
         delete this.state.pendingTools[file];
         retired = true;
@@ -854,7 +763,6 @@ export class TranscriptWatcher {
 
   /** A replaced transcript's tool calls and directory belonged to the old file. */
   private forgetReplacedTranscript(filePath: string, fileContext: TranscriptFileContext): void {
-    this.heldCheckpoints.delete(filePath);
     this.processor.resetFileContext(fileContext);
     delete this.state.pendingTools?.[filePath];
     delete this.state.cwds?.[filePath];
@@ -1112,8 +1020,8 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
-          // Saved with the next checkpoint. A gated checkpoint carries its own copy.
-          if (fileContext.pendingTools && !this.checkpointGate) {
+          // Saved with the next checkpoint.
+          if (fileContext.pendingTools) {
             (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
           }
           if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
@@ -1121,12 +1029,8 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string, recoveryPointOnly = false) => {
-        const pendingTools = this.checkpointGate && fileContext.pendingTools
-          ? Object.fromEntries(Object.entries(fileContext.pendingTools).map(([key, tools]) => [key, { ...tools }]))
-          : undefined;
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string) => {
         const apply = () => {
-          if (pendingTools) (this.state.pendingTools ??= {})[filePath] = pendingTools;
           if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
           if (checkpointFingerprint !== undefined) {
             (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
@@ -1147,10 +1051,6 @@ export class TranscriptWatcher {
             delete this.state.frameLines[filePath];
           }
         };
-        if (this.checkpointGate) {
-          this.holdCheckpoint(filePath, apply, !recoveryPointOnly);
-          return;
-        }
         apply();
         saveWatchState(this.statePath, this.state);
       },
@@ -1162,7 +1062,6 @@ export class TranscriptWatcher {
       this.state.partialBytes?.[filePath]
     );
 
-    tailer.checkpointEachLine = Boolean(this.checkpointGate);
     tailer.start();
     this.tailers.set(filePath, tailer);
     logger.info('TRANSCRIPT', 'Watching transcript file', {
@@ -1217,17 +1116,6 @@ export class TranscriptWatcher {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined, fileContext);
     } catch (error: unknown) {
-      // A turn whose prompt the worker did not record, or an event it did not
-      // accept, stops the pass with the checkpoint at its line (or frame), so
-      // it is retried, not misfiled or lost.
-      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSummaryError || error instanceof TranscriptSpoolError) {
-        logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
-          watch: watch.name,
-          file: basename(filePath),
-          error: error.message,
-        });
-        throw error;
-      }
       if (error instanceof Error) {
         logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
           watch: watch.name,

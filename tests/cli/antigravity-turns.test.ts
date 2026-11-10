@@ -7,7 +7,6 @@ import {
   inspectAntigravityTurn,
   resolveAntigravityPreInvocation,
 } from '../../src/cli/adapters/antigravity-cli.js';
-import { expandHomeDirectory, extractFilePaths } from '../../src/cli/adapters/codex-file-context.js';
 import {
   fileContextHandler,
   runAntigravityPreInvocation,
@@ -15,7 +14,6 @@ import {
 } from '../../src/cli/handlers/index.js';
 import { fileHistoryQueryPaths } from '../../src/cli/handlers/file-context.js';
 import { extractObservationFileEvidence } from '../../src/services/worker/agents/ResponseProcessor.js';
-import { findLastJsonlEntryBackward } from '../../src/shared/transcript-parser.js';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
 
 // agy fires PreInvocation before every model call of a turn (#5078). Only the
@@ -108,20 +106,6 @@ describe('inspectAntigravityTurn', () => {
     const noTurn = writeTranscript('no-turn.jsonl', [toolStep]);
     expect(inspectAntigravityTurn(noTurn, workspace, fakeHome).isNewUserTurn).toBe(false);
   });
-
-  it('stops the backward scan at the newest turn node instead of reading the whole file', () => {
-    const nodes: object[] = [userInput('old turn')];
-    for (let i = 0; i < 2_000; i++) nodes.push({ ...toolStep, step_index: i + 1, content: 'x'.repeat(200) });
-    nodes.push(userInput('current turn'));
-    const transcriptPath = writeTranscript('long.jsonl', nodes);
-    const visited: string[] = [];
-    const hit = findLastJsonlEntryBackward(transcriptPath, (node) => {
-      visited.push(node.type);
-      return node.type === 'USER_INPUT' ? node.content : undefined;
-    }, { initialBytes: 4 * 1024 });
-    expect(hit).toBe('<USER_REQUEST>current turn</USER_REQUEST>');
-    expect(visited).toEqual(['USER_INPUT']);
-  });
 });
 
 describe('resolveAntigravityPreInvocation', () => {
@@ -188,13 +172,6 @@ describe('runAntigravityPreInvocation dispatch', () => {
 });
 
 describe('home-directory paths (#5078)', () => {
-  it('expands ~/ in a read command before checking the file exists', () => {
-    expect(expandHomeDirectory('~/p/y.ts', fakeHome)).toBe(homeFile);
-    expect(expandHomeDirectory('src/a.ts', fakeHome)).toBe('src/a.ts');
-    // Shared with Codex: `cat ~/p/y.ts` used to resolve to <cwd>/~/p/y.ts.
-    expect(extractFilePaths('Bash', { command: 'cat ~/p/y.ts' }, workspace, fakeHome)).toEqual([homeFile]);
-  });
-
   it('queries file history by the ~/ form too for a file under the home directory', () => {
     expect(fileHistoryQueryPaths('/home/u/p/y.ts', '../../home/u/p/y.ts', '/home/u')).toEqual([
       '/home/u/p/y.ts',

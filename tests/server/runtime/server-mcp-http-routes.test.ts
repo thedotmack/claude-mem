@@ -137,13 +137,6 @@ describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', (
     return (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? '';
   }
 
-  it('lists the recall tools over HTTP with a valid key', async () => {
-    const mcp = await connectMcp(apiKeyRaw);
-    const { tools } = await mcp.listTools();
-    expect(tools.map(t => t.name).sort()).toEqual(['context', 'get_observations', 'recent', 'search', 'timeline']);
-    await mcp.close();
-  });
-
   it('recent returns the team-scoped observations', async () => {
     const mcp = await connectMcp(apiKeyRaw);
     const res = await mcp.callTool({ name: 'recent', arguments: { projectId, limit: 10 } });

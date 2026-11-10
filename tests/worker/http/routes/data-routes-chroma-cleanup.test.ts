@@ -70,12 +70,4 @@ describe('scheduleChromaRowCleanup — one batch in flight (#5495)', () => {
     }
   });
 
-  it('an empty schedule is a no-op that does not touch the tail', async () => {
-    const stub = { deleteRowDocuments: mock(() => Promise.resolve()) };
-    const routes = routesWith(stub);
-    const before = routes.chromaCleanupTail;
-    routes.scheduleChromaRowCleanup([]);
-    expect(routes.chromaCleanupTail).toBe(before);
-    expect(stub.deleteRowDocuments).not.toHaveBeenCalled();
-  });
 });

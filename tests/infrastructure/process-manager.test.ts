@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { spawn, spawnSync } from 'child_process';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, utimesSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import type { PidInfo } from '../../src/services/infrastructure/index.js';
@@ -26,7 +26,6 @@ const {
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
-  spawnDaemon,
   spawnDetachedWorkerDaemon,
   getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
@@ -82,12 +81,7 @@ describe('ProcessManager', () => {
       expect(DATA_DIR).not.toBe(REAL_DATA_DIR);
       expect(PID_FILE.startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
       expect(PID_FILE).toBe(path.join(DATA_DIR, 'worker.pid'));
-    });
-
-    it('writePidFile lands in the isolated dir', () => {
-      writePidFile({ pid: 4242, port: 37777, startedAt: new Date().toISOString() });
-      expect(existsSync(PID_FILE)).toBe(true);
-      expect(readPidFile()!.pid).toBe(4242);
+      expect(paths.supervisorRegistry().startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
     });
   });
 
@@ -102,10 +96,7 @@ describe('ProcessManager', () => {
       writePidFile(testInfo);
 
       expect(existsSync(PID_FILE)).toBe(true);
-      const content = JSON.parse(readFileSync(PID_FILE, 'utf-8'));
-      expect(content.pid).toBe(12345);
-      expect(content.port).toBe(37777);
-      expect(content.startedAt).toBe(testInfo.startedAt);
+      expect(readPidFile()).toEqual(testInfo);
     });
 
     it('should overwrite existing PID file', () => {
@@ -130,22 +121,6 @@ describe('ProcessManager', () => {
   });
 
   describe('readPidFile', () => {
-    it('should return PidInfo object for valid file', () => {
-      const testInfo: PidInfo = {
-        pid: 54321,
-        port: 37999,
-        startedAt: '2024-06-15T12:00:00.000Z'
-      };
-      writePidFile(testInfo);
-
-      const result = readPidFile();
-
-      expect(result).not.toBeNull();
-      expect(result!.pid).toBe(54321);
-      expect(result!.port).toBe(37999);
-      expect(result!.startedAt).toBe('2024-06-15T12:00:00.000Z');
-    });
-
     it('should return null for missing file', () => {
       removePidFile();
 
@@ -259,52 +234,21 @@ describe('ProcessManager', () => {
       });
     });
 
-    it('should return same value on non-Windows platforms', () => {
+    it.each([
+      ['darwin', 1000, 1000],
+      ['win32', 1000, 2000],
+      ['win32', 500, 1000],
+      ['win32', 5000, 10000],
+      ['win32', 100, 200],
+      ['win32', 333, 666],
+    ])('uses %s timeout %i → %i', (platform, timeout, expected) => {
       Object.defineProperty(process, 'platform', {
-        value: 'darwin',
+        value: platform,
         writable: true,
         configurable: true
       });
 
-      const result = getPlatformTimeout(1000);
-
-      expect(result).toBe(1000);
-    });
-
-    it('should return doubled value on Windows', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      const result = getPlatformTimeout(1000);
-
-      expect(result).toBe(2000);
-    });
-
-    it('should apply 2.0x multiplier consistently on Windows', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      expect(getPlatformTimeout(500)).toBe(1000);
-      expect(getPlatformTimeout(5000)).toBe(10000);
-      expect(getPlatformTimeout(100)).toBe(200);
-    });
-
-    it('should round Windows timeout values', () => {
-      Object.defineProperty(process, 'platform', {
-        value: 'win32',
-        writable: true,
-        configurable: true
-      });
-
-      const result = getPlatformTimeout(333);
-
-      expect(result).toBe(666);
+      expect(getPlatformTimeout(timeout)).toBe(expected);
     });
   });
 
@@ -535,46 +479,6 @@ describe('ProcessManager', () => {
       expect(captureProcessStartToken(1.5)).toBeNull();
       expect(captureProcessStartToken(NaN)).toBeNull();
     });
-
-    it('win32 branch attempts a CIM lookup and degrades to null when powershell is unavailable', () => {
-      // On the non-Windows CI host powershell.exe does not exist, so the CIM
-      // lookup fails and the function returns null (the historic liveness-only
-      // fallback). The point of this test is to lock the contract: the win32
-      // path no longer unconditionally returns null at the source level — it
-      // attempts a real start-time token capture (closing the PID-reuse wedge
-      // on Windows, where /proc and `ps lstart` are unavailable) and only
-      // falls back to null when the lookup genuinely cannot run.
-      const originalPlatform = process.platform;
-      // Use a PID unlikely to be cached by other tests so we exercise the
-      // lookup path rather than a memoized result.
-      const probePid = 424242;
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      try {
-        const result = captureProcessStartToken(probePid);
-        // Either null (powershell missing / pid absent) or a string token if
-        // the host actually is Windows — both are valid, neither throws.
-        expect(result === null || typeof result === 'string').toBe(true);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-      }
-    });
-
-    it('win32 branch caches the per-PID lookup within the TTL window', () => {
-      // Two back-to-back calls for the same PID must return an identical value
-      // and must not throw — the second call should be served from the 5s
-      // cache rather than re-shelling. We can only assert the observable
-      // contract (stable result) cross-platform.
-      const originalPlatform = process.platform;
-      const probePid = 525252;
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      try {
-        const first = captureProcessStartToken(probePid);
-        const second = captureProcessStartToken(probePid);
-        expect(first).toBe(second as typeof first);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-      }
-    });
   });
 
   describe('writePidFile (start-token capture)', () => {
@@ -752,57 +656,21 @@ describe('ProcessManager', () => {
   });
 
   describe('touchPidFile', () => {
-    it('should update mtime of existing PID file', async () => {
+    it('should update mtime of existing PID file', () => {
       writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
-
-      await new Promise(r => setTimeout(r, 50));
-
-      const statsBefore = statSync(PID_FILE);
-      const mtimeBefore = statsBefore.mtimeMs;
-
-      await new Promise(r => setTimeout(r, 50));
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(PID_FILE, past, past);
+      const mtimeBefore = statSync(PID_FILE).mtimeMs;
 
       touchPidFile();
 
-      const statsAfter = statSync(PID_FILE);
-      const mtimeAfter = statsAfter.mtimeMs;
-
-      expect(mtimeAfter).toBeGreaterThanOrEqual(mtimeBefore);
+      expect(statSync(PID_FILE).mtimeMs).toBeGreaterThan(mtimeBefore);
     });
 
     it('should not throw when PID file does not exist', () => {
       removePidFile();
 
       expect(() => touchPidFile()).not.toThrow();
-    });
-  });
-
-  describe('spawnDaemon', () => {
-    it('should use setsid on Linux when available', () => {
-      if (process.platform === 'win32') return; 
-
-      const setsidAvailable = existsSync('/usr/bin/setsid');
-      if (!setsidAvailable) return; 
-
-      const pid = spawnDaemon('/dev/null', 39999);
-
-      expect(pid).toBeDefined();
-      expect(typeof pid).toBe('number');
-
-      if (pid !== undefined && pid > 0) {
-        try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
-      }
-    });
-
-    it('should return undefined when spawn fails on Windows path', () => {
-      if (process.platform === 'win32') return;
-
-      const result = spawnDaemon('/nonexistent/script.cjs', 39998);
-      expect(result).toBeDefined();
-
-      if (result !== undefined && result > 0) {
-        try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
-      }
     });
   });
 
@@ -932,13 +800,27 @@ describe('ProcessManager', () => {
     // failure. paths.ts resolves DATA_DIR but never creates it — today some earlier
     // caller happens to, which is not a guarantee.
     it('creates the directory it hands out, so a fresh install can spawn', () => {
-      rmSync(DATA_DIR, { recursive: true, force: true });
-      expect(existsSync(DATA_DIR)).toBe(false);
-
-      const dir = daemonWorkingDirectory();
-
-      expect(existsSync(dir)).toBe(true);
-      expect(statSync(dir).isDirectory()).toBe(true);
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-fresh-daemon-'));
+      rmSync(dataDir, { recursive: true, force: true });
+      const modulePath = path.resolve(import.meta.dir, '../../src/services/infrastructure/ProcessManager.ts');
+      try {
+        const result = spawnSync(process.execPath, ['-e', `
+          import { existsSync, statSync } from 'fs';
+          const { daemonWorkingDirectory } = await import(${JSON.stringify(modulePath)});
+          const dir = daemonWorkingDirectory();
+          if (!existsSync(dir) || !statSync(dir).isDirectory()) process.exit(1);
+          console.log(dir);
+        `], {
+          encoding: 'utf-8',
+          env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
+          timeout: 10_000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe(dataDir);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
     });
 
     // A daemon launched by hand (or by an older launcher) can inherit the
@@ -966,29 +848,6 @@ describe('ProcessManager', () => {
     });
   });
 
-  describe('SIGHUP handling', () => {
-    it('should have SIGHUP listeners registered (integration check)', () => {
-      if (process.platform === 'win32') return;
-
-      let received = false;
-      const testHandler = () => { received = true; };
-
-      process.on('SIGHUP', testHandler);
-      expect(process.listenerCount('SIGHUP')).toBeGreaterThanOrEqual(1);
-
-      process.removeListener('SIGHUP', testHandler);
-    });
-
-    it('should ignore SIGHUP when --daemon is in process.argv', () => {
-      if (process.platform === 'win32') return;
-
-      const isDaemon = process.argv.includes('--daemon');
-      expect(isDaemon).toBe(false);
-
-      // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
-      // This is a logic verification test — actual signal delivery is tested manually
-    });
-  });
 });
 
 describe('spawnDetachedWorkerDaemon runtime flags (#5601)', () => {

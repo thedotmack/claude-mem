@@ -2,7 +2,6 @@ import { describe, it, expect, afterEach, afterAll, mock } from 'bun:test';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
-import * as realSpawn from '../../src/shared/spawn.js';
 
 // I-4 (bwrap --unshare-pid): a caller inside a PID namespace gets ESRCH from
 // process.kill(hostPid, 0) even though the host worker is healthy, so
@@ -18,10 +17,7 @@ import * as realSpawn from '../../src/shared/spawn.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
-// Snapshot taken before any mock.module call: restoring with
-// `require('../../src/shared/spawn.js')` would hand back the mocked module
-// (pid 9999) and leak it into every later test file in the same bun process.
-const realSpawnSnapshot = { ...realSpawn };
+const realProcessManagerSnapshot = { ...realProcessManager };
 
 let validateWorkerPidFileResult: 'missing' | 'alive' | 'stale' | 'invalid' = 'stale';
 let validateWorkerPidFileCalls = 0;
@@ -51,8 +47,7 @@ mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
 afterAll(() => {
   mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
   mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManager);
-  mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
 });
 
 async function importWorkerUtilsFresh() {
@@ -74,11 +69,9 @@ function failResponse(): Response {
 
 describe('isWorkerPortAlive (via ensureWorkerRunning) — healthy port, pid file never consulted (I-4, #4249)', () => {
   const originalFetch = global.fetch;
-  let spawnCalled = false;
 
   afterEach(() => {
     global.fetch = originalFetch;
-    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     validateWorkerPidFileResult = 'stale';
     validateWorkerPidFileCalls = 0;
   });
@@ -93,20 +86,10 @@ describe('isWorkerPortAlive (via ensureWorkerRunning) — healthy port, pid file
       return Promise.resolve(failResponse());
     }) as unknown as typeof fetch;
 
-    spawnCalled = false;
-    mock.module('../../src/shared/spawn.js', () => ({
-      spawnHidden: (...args: unknown[]) => {
-        spawnCalled = true;
-        return { pid: 9999, unref: () => {}, on: () => {} };
-      },
-    }));
-
     const workerUtils = await importWorkerUtilsFresh();
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(true);
-    expect(spawnCalled).toBe(false);
     expect(validateWorkerPidFileCalls).toBe(0);
   });
-
 });

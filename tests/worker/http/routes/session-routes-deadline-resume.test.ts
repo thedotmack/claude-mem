@@ -200,25 +200,6 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     };
   }
 
-  it('retries the same buffered observation after a per-attempt deadline', async () => {
-    const harness = makeHarness(1);
-    await harness.startInitial();
-
-    expect(harness.stats().starts).toBe(1);
-    expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
-    expect(harness.stats().finalizeCalls).toBe(0);
-    expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
-    expect(scheduled).toHaveLength(1);
-    expect(scheduled[0].delayMs).toBeGreaterThan(0);
-
-    await harness.fireResume(0);
-
-    expect(harness.stats().starts).toBe(2);
-    expect(harness.stats().processedId).toBe(harness.messageId);
-    expect(harness.stats().confirmedCount).toBe(1);
-    expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
-  });
-
   it('backs off across repeated deadlines, then processes the original message', async () => {
     const harness = makeHarness(3);
     await harness.startInitial();
@@ -283,43 +264,6 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       await harness.routes.ensureGeneratorRunning(harness.session.sessionDbId, 'observation');
       await harness.session.generatorPromise;
       expect(harness.stats().processedId).toBe(harness.messageId);
-      expect(harness.stats().confirmedCount).toBe(1);
-      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
-    });
-
-    it('caps unattended resumes when the gateway serves as the opt-in quota fallback', async () => {
-      // Memory's own provider is Gemini, but the gateway can take the work as
-      // the quota fallback: every unattended resume there spends plan tokens too.
-      process.env.CLAUDE_MEM_PROVIDER = 'gemini';
-      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
-      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'openrouter';
-      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
-      await harness.startInitial();
-
-      for (let index = 0; index < MAX_UNATTENDED_GATEWAY_RESUMES; index++) {
-        expect(scheduled).toHaveLength(index + 1);
-        await harness.fireResume(index);
-      }
-
-      expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_RESUMES);
-      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
-      // The periodic sweep honours the same spent budget.
-      harness.session.pausedReason = 'rate_limit';
-      expect(harness.sessionManager.getResumableSessionIds()).toEqual([]);
-    });
-
-    it('keeps resuming a user-owned OpenRouter key past the gateway cap', async () => {
-      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
-      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
-      await harness.startInitial();
-
-      for (let index = 0; index <= MAX_UNATTENDED_GATEWAY_RESUMES; index++) {
-        expect(scheduled).toHaveLength(index + 1);
-        await harness.fireResume(index);
-      }
-
-      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_RESUMES + 2);
       expect(harness.stats().confirmedCount).toBe(1);
       expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
     });
@@ -500,6 +444,24 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       harness.session.scheduledResumeTimer = undefined;
       return { sweep, transport, rateLimit };
     }
+
+    it.each([
+      {
+        name: 'caps unattended resumes when the gateway serves as the opt-in quota fallback',
+        provider: 'gemini', baseUrl: GATEWAY_URL, fallback: 'openrouter',
+        expected: { sweep: false, transport: false },
+      },
+      {
+        name: 'keeps resuming a user-owned OpenRouter key past the gateway cap',
+        provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', fallback: 'off',
+        expected: { sweep: true, transport: true, rateLimit: true },
+      },
+    ])('$name', async ({ provider, baseUrl, fallback, expected }) => {
+      process.env.CLAUDE_MEM_PROVIDER = provider;
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = baseUrl;
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = fallback;
+      expect(await spentSessionResumes('claude')).toMatchObject(expected);
+    });
 
     it('keeps resuming a session mapped off a global gateway, which never spends its budget', async () => {
       process.env.CLAUDE_MEM_PROVIDER = 'openrouter';

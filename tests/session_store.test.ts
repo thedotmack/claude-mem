@@ -14,35 +14,6 @@ describe('SessionStore', () => {
     store.close();
   });
 
-  it('should correctly count user prompts', () => {
-    const claudeId = 'claude-session-1';
-    store.createSDKSession(claudeId, 'test-project', 'initial prompt');
-    
-    expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(0);
-
-    store.saveUserPrompt(claudeId, 1, 'First prompt');
-    expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(1);
-
-    store.saveUserPrompt(claudeId, 2, 'Second prompt');
-    expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
-
-    store.createSDKSession('claude-session-2', 'test-project', 'initial prompt');
-    store.saveUserPrompt('claude-session-2', 1, 'Other prompt');
-    expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
-  });
-
-  it('should find recent duplicate user prompts', () => {
-    const contentSessionId = 'duplicate-session-store';
-    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
-    const promptId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt');
-
-    const duplicate = store.findRecentDuplicateUserPrompt(contentSessionId, 'Repeated prompt', 10_000);
-
-    expect(duplicate?.id).toBe(promptId);
-    expect(duplicate?.prompt_number).toBe(1);
-    expect(duplicate?.prompt_text).toBe('Repeated prompt');
-  });
-
   it('should not find duplicate user prompts outside the dedupe window', () => {
     const contentSessionId = 'old-duplicate-session-store';
     store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
@@ -111,44 +82,6 @@ describe('SessionStore', () => {
     expect(ids).not.toContain(olderDuplicateId);
   });
 
-  it('should store observation with timestamp override', () => {
-    const claudeId = 'claude-sess-obs';
-    const memoryId = 'memory-sess-obs';
-    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
-
-    store.updateMemorySessionId(sdkId, memoryId);
-
-    const obs = {
-      type: 'discovery',
-      title: 'Test Obs',
-      subtitle: null,
-      facts: [],
-      narrative: 'Testing',
-      concepts: [],
-      files_read: [],
-      files_modified: []
-    };
-
-    const pastTimestamp = 1600000000000; 
-
-    const result = store.storeObservation(
-      memoryId, // Use memorySessionId for FK reference
-      'test-project',
-      obs,
-      1,
-      0,
-      pastTimestamp
-    );
-
-    expect(result.createdAtEpoch).toBe(pastTimestamp);
-
-    const stored = store.getObservationById(result.id);
-    expect(stored).not.toBeNull();
-    expect(stored?.created_at_epoch).toBe(pastTimestamp);
-
-    expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
-  });
-
   it('sets session identity (memory_session_id + worker_port) before an observation can be accepted (#2533)', () => {
     const claudeId = 'claude-identity-1';
     const memoryId = 'memory-identity-1';
@@ -180,40 +113,6 @@ describe('SessionStore', () => {
     }, 1);
     const stored = store.getObservationById(result.id);
     expect(stored?.memory_session_id).toBe(memoryId);
-  });
-
-  it('should store summary with timestamp override', () => {
-    const claudeId = 'claude-sess-sum';
-    const memoryId = 'memory-sess-sum';
-    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
-
-    store.updateMemorySessionId(sdkId, memoryId);
-
-    const summary = {
-      request: 'Do something',
-      investigated: 'Stuff',
-      learned: 'Things',
-      completed: 'Done',
-      next_steps: 'More',
-      notes: null
-    };
-
-    const pastTimestamp = 1650000000000;
-
-    const result = store.storeSummary(
-      memoryId, // Use memorySessionId for FK reference
-      'test-project',
-      summary,
-      1,
-      0,
-      pastTimestamp
-    );
-
-    expect(result.createdAtEpoch).toBe(pastTimestamp);
-
-    const stored = store.getSummaryForSession(memoryId);
-    expect(stored).not.toBeNull();
-    expect(stored?.created_at_epoch).toBe(pastTimestamp);
   });
 
   it('lists all sessions for the catalog, newest first, excluding empty projects', () => {

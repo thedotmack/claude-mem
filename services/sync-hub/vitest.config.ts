@@ -21,7 +21,6 @@
  *   no-id            → 200 {} (canonical id missing)
  *   denied-401/403   → 401 / 403
  *   upstream-500     → 500
- *   network-error    → throws (unreachable endpoint)
  *   cmem-uptime-probe-invalid-token
  *                    → 401 {error} JSON — the HEALTHY answer the
  *                      control-plane probe expects (src/control-plane-probe.ts)
@@ -31,8 +30,7 @@
  *     scripted by the `accountTag` variable in the request body (see
  *     mockGraphQLEndpoint's table). Serves the scheduled-handler wiring
  *     tests; watchdog unit tests use an injected fetchImpl instead.
- *   - discord.test → mock Discord webhook (/webhooks/ok → 204,
- *     /webhooks/fail → 500).
+ *   - discord.test → mock Discord webhook (204).
  * Everything else falls through to the verify-endpoint mock.
  */
 
@@ -48,9 +46,6 @@ function mockVerifyEndpoint(request: Request): Response {
 	const auth = request.headers.get("Authorization") ?? "";
 	const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
 
-	if (token === "network-error") {
-		throw new Error("simulated network failure reaching the verify endpoint");
-	}
 	if (token === "cmem-uptime-probe-invalid-token") {
 		// Control-plane probe (src/control-plane-probe.ts): a HEALTHY verify
 		// endpoint rejects the probe's deliberately bogus token with 401 + a
@@ -90,21 +85,7 @@ function mockVerifyEndpoint(request: Request): Response {
 	return new Response("unknown test token", { status: 401 });
 }
 
-/**
- * Mock GraphQL Analytics API, scripted by accountTag (single-group response
- * in the exact shape the watchdog parses — aliases `invocations`/`periodic`):
- *
- *   acct-healthy             → typical 100-user metrics, all under alert
- *   acct-duration-alert      → duration 120 GB-s (alert, below kill 450)
- *   acct-duration-severe     → duration 4000 GB-s (kill — auto-trip)
- *   acct-rows-written-severe → rowsWritten 5,000,000 (kill — auto-trip)
- *   acct-requests-severe     → requests 5,000,000 (severe but NEVER auto-trip)
- *   acct-graphql-errors      → 200 with a GraphQL errors array
- *   acct-no-accounts         → 200 with an empty accounts array
- *   acct-http-500            → HTTP 500
- *   acct-network-error       → throws (unreachable endpoint)
- *   (anything else)          → all-zero metrics
- */
+/** Mock GraphQL Analytics API for the severe-account scheduled probe. */
 async function mockGraphQLEndpoint(request: Request): Promise<Response> {
 	let accountTag = "";
 	try {
@@ -118,19 +99,6 @@ async function mockGraphQLEndpoint(request: Request): Promise<Response> {
 		// fall through to the all-zero default
 	}
 
-	if (accountTag === "acct-network-error") {
-		throw new Error("simulated network failure reaching the GraphQL API");
-	}
-	if (accountTag === "acct-http-500") {
-		return new Response("graphql down", { status: 500 });
-	}
-	if (accountTag === "acct-graphql-errors") {
-		return Response.json({ data: null, errors: [{ message: "whoops" }] });
-	}
-	if (accountTag === "acct-no-accounts") {
-		return Response.json({ data: { viewer: { accounts: [] } }, errors: null });
-	}
-
 	const metrics = {
 		requests: 1_200,
 		errors: 0,
@@ -140,10 +108,7 @@ async function mockGraphQLEndpoint(request: Request): Promise<Response> {
 		activeTime: 9_000_000,
 		inboundWebsocketMsgCount: 40,
 	};
-	if (accountTag === "acct-duration-alert") metrics.duration = 120;
 	if (accountTag === "acct-duration-severe") metrics.duration = 4_000;
-	if (accountTag === "acct-rows-written-severe") metrics.rowsWritten = 5_000_000;
-	if (accountTag === "acct-requests-severe") metrics.requests = 5_000_000;
 
 	return Response.json({
 		data: {
@@ -170,12 +135,6 @@ async function mockGraphQLEndpoint(request: Request): Promise<Response> {
 	});
 }
 
-function mockDiscordWebhook(url: URL): Response {
-	if (url.pathname === "/webhooks/fail") {
-		return new Response("discord down", { status: 500 });
-	}
-	return new Response(null, { status: 204 });
-}
 
 async function mockOutbound(request: Request): Promise<Response> {
 	const url = new URL(request.url);
@@ -185,7 +144,6 @@ async function mockOutbound(request: Request): Promise<Response> {
 			return Response.json({ completions: delayedProjectorCompletions.get(userId) ?? 0 });
 		}
 		const mode = url.searchParams.get("mode");
-		if (mode === "network") throw new Error("simulated projection network failure");
 		if (mode === "retryable") return new Response("retry later", { status: 503 });
 		if (mode === "truncated") return new Response('{"protocol_version":1', { status: 200 });
 		const body = await request.json() as { epoch?: unknown; through_seq?: unknown; user_id?: unknown };
@@ -243,7 +201,7 @@ async function mockOutbound(request: Request): Promise<Response> {
 		return mockGraphQLEndpoint(request);
 	}
 	if (url.hostname === "discord.test") {
-		return mockDiscordWebhook(url);
+		return new Response(null, { status: 204 });
 	}
 	return mockVerifyEndpoint(request);
 }

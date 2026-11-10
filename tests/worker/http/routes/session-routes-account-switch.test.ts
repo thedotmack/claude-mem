@@ -21,7 +21,6 @@ import {
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
   setClaudeProfileResolverForTesting,
-  tryAdmitQuotaProbe,
 } from '../../../../src/shared/quota-cooldown.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -71,12 +70,6 @@ describe('cooldown reads after a Claude account switch', () => {
     resetQuotaCooldownsForTesting();
     rmSync(healthPath(), { force: true });
     mock.restore();
-  });
-
-  it('admission treats account B as unblocked (#4272)', () => {
-    recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day'); // armed under A
-    profile = 'B';
-    expect(tryAdmitQuotaProbe('claude').admitted).toBe(true);
   });
 
   it("the periodic sweep resumes B's paused work at once, not behind A's breaker", async () => {

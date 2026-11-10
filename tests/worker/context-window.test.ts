@@ -62,36 +62,16 @@ describe('resolveContextWindowTokens', () => {
     expect((global.fetch as any).mock.calls[0][0]).toBe('https://openrouter.ai/api/v1/models');
   });
 
-  it('falls back when the model is absent from the catalogue', async () => {
-    mockCatalogueFetch();
-
-    const window = await resolveContextWindowTokens('openrouter', 'nonexistent/model', OPENROUTER_URL);
-
-    expect(window).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
-  });
-
-  it('falls back when the catalogue entry has no numeric context_length', async () => {
-    mockCatalogueFetch();
-
-    const window = await resolveContextWindowTokens('openrouter', 'broken/no-window', OPENROUTER_URL);
-
-    expect(window).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
-  });
-
-  it('falls back on a non-OK catalogue response', async () => {
-    mockCatalogueFetch('upstream error', 500);
-
-    const window = await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', OPENROUTER_URL);
-
-    expect(window).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
-  });
-
-  it('falls back without throwing when fetch rejects (offline/timeout)', async () => {
-    global.fetch = mock(() => Promise.reject(new Error('network down')));
-
-    const window = await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', OPENROUTER_URL);
-
-    expect(window).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
+  it.each([
+    ['the model is absent from the catalogue', 'nonexistent/model', () => mockCatalogueFetch()],
+    ['the catalogue entry has no numeric context_length', 'broken/no-window', () => mockCatalogueFetch()],
+    ['the catalogue response is not OK', 'deepseek/deepseek-v4-flash', () => mockCatalogueFetch('upstream error', 500)],
+    ['fetch rejects (offline/timeout)', 'deepseek/deepseek-v4-flash', () => {
+      global.fetch = mock(() => Promise.reject(new Error('network down')));
+    }],
+  ] as const)('falls back when %s', async (_label, model, arrange) => {
+    arrange();
+    expect(await resolveContextWindowTokens('openrouter', model, OPENROUTER_URL)).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
   });
 
   it('serves a second call within the TTL from the cache (single fetch)', async () => {

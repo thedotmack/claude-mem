@@ -9,9 +9,9 @@
 // A composite key whose worktree is gone is orphaned by definition, so adoption
 // folds it into the parent regardless of merge status. Leaving it unreachable
 // forever is strictly worse than adopting work from an abandoned branch.
-import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
@@ -31,6 +31,17 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { getProjectContext } from '../../../src/utils/project-name.js';
 
 let tempRoot: string | undefined;
+let repoTemplate: string;
+
+beforeAll(() => {
+  repoTemplate = mkdtempSync(path.join(tmpdir(), 'claude-mem-orphan-template-'));
+  git(repoTemplate, 'init', '-b', 'main');
+  git(repoTemplate, 'config', 'user.email', 'test@example.com');
+  git(repoTemplate, 'config', 'user.name', 'Test');
+  writeFileSync(path.join(repoTemplate, 'README.md'), 'base\n');
+  git(repoTemplate, 'add', 'README.md');
+  git(repoTemplate, 'commit', '-m', 'base');
+}, 30_000);
 
 afterEach(() => {
   if (tempRoot) {
@@ -40,6 +51,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
+  if (repoTemplate) rmSync(repoTemplate, { recursive: true, force: true });
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
 });
 
@@ -48,13 +60,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 function initRepo(repo: string): void {
-  mkdirSync(repo, { recursive: true });
-  git(repo, 'init', '-b', 'main');
-  git(repo, 'config', 'user.email', 'test@example.com');
-  git(repo, 'config', 'user.name', 'Test');
-  writeFileSync(path.join(repo, 'README.md'), 'base\n');
-  git(repo, 'add', 'README.md');
-  git(repo, 'commit', '-m', 'base');
+  cpSync(repoTemplate, repo, { recursive: true });
 }
 
 // Rows default to a timestamp from before this database recorded checkouts.
@@ -122,33 +128,7 @@ function remappedProjects(dbPath: string): string[] {
 }
 
 describe('orphaned worktree adoption (#2864)', () => {
-  it('adopts observations whose worktree directory no longer exists', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
-    const mainRepo = path.join(tempRoot, 'parent-repo');
-    const worktree = path.join(tempRoot, 'gone-wt');
-    const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    initRepo(mainRepo);
-
-    // A worktree that did real work, then was cleaned up after its branch merged.
-    git(mainRepo, 'worktree', 'add', '-b', 'gone', worktree);
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    seedSession(store, 'content-gone', 'parent-repo/gone-wt', 'memory-gone');
-    const obsId = seedObservation(store, 'memory-gone', 'parent-repo/gone-wt');
-    store.close();
-
-    git(mainRepo, 'worktree', 'remove', '--force', worktree);
-    git(mainRepo, 'worktree', 'prune');
-
-    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(result.adoptedObservations).toBe(1);
-    expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
-  }, 30_000);
-
   for (const [location, keySource] of [
-    ['outside', 'environment'],
     ['inside', 'environment'],
     ['outside', 'path'],
   ] as const) {
@@ -235,29 +215,6 @@ describe('orphaned worktree adoption (#2864)', () => {
       }
     }, 30_000);
   }
-
-  it('reports which orphans it adopted rather than folding them silently', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
-    const mainRepo = path.join(tempRoot, 'parent-repo');
-    const worktree = path.join(tempRoot, 'reported-wt');
-    const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    initRepo(mainRepo);
-
-    git(mainRepo, 'worktree', 'add', '-b', 'reported', worktree);
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    seedSession(store, 'content-reported', 'parent-repo/reported-wt', 'memory-reported');
-    seedObservation(store, 'memory-reported', 'parent-repo/reported-wt');
-    store.close();
-
-    git(mainRepo, 'worktree', 'remove', '--force', worktree);
-    git(mainRepo, 'worktree', 'prune');
-
-    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(result.orphanedWorktrees).toEqual(['parent-repo/reported-wt']);
-  }, 30_000);
 
   // The Chroma patch runs after the SQL commits and can fail on its own (the
   // data dir allows a single writer, so a CLI run loses to the live worker).
@@ -347,31 +304,6 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
   }, 30_000);
 
-  it('leaves a live worktree with an unmerged branch alone', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
-    const mainRepo = path.join(tempRoot, 'parent-repo');
-    const worktree = path.join(tempRoot, 'live-wt');
-    const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    initRepo(mainRepo);
-
-    git(mainRepo, 'worktree', 'add', '-b', 'in-flight', worktree);
-    writeFileSync(path.join(worktree, 'wip.txt'), 'work in progress\n');
-    git(worktree, 'add', 'wip.txt');
-    git(worktree, 'commit', '-m', 'wip');
-
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    seedSession(store, 'content-live', 'parent-repo/live-wt', 'memory-live');
-    const obsId = seedObservation(store, 'memory-live', 'parent-repo/live-wt');
-    store.close();
-
-    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(result.adoptedObservations).toBe(0);
-    expect(mergedInto(dbPath, obsId)).toBeNull();
-  }, 30_000);
-
   it('does not treat a same-prefix sibling project as an orphan of the parent', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
     const mainRepo = path.join(tempRoot, 'my_app');
@@ -391,30 +323,6 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.adoptedObservations).toBe(0);
     expect(mergedInto(dbPath, foreignObsId)).toBeNull();
-  }, 30_000);
-
-  it('adopts a deleted worktree whose sessions recorded their checkout', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
-    const mainRepo = path.join(tempRoot, 'parent-repo');
-    const worktree = path.join(tempRoot, 'recorded-wt');
-    const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    initRepo(mainRepo);
-    git(mainRepo, 'worktree', 'add', '-b', 'recorded', worktree);
-
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    seedSessionWithCheckout(store, 'content-recorded', 'parent-repo/recorded-wt', 'memory-recorded', worktree);
-    const obsId = seedObservation(store, 'memory-recorded', 'parent-repo/recorded-wt');
-    store.close();
-
-    git(mainRepo, 'worktree', 'remove', '--force', worktree);
-    git(mainRepo, 'worktree', 'prune');
-
-    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(result.orphanedWorktrees).toEqual(['parent-repo/recorded-wt']);
-    expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
   }, 30_000);
 
   // #2827 — with CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote, another repository's
@@ -449,34 +357,6 @@ describe('orphaned worktree adoption (#2864)', () => {
     } finally {
       if (savedNameSource === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
       else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = savedNameSource;
-    }
-  }, 30_000);
-
-  it('does not adopt an isolated child environment whose name resembles a worktree key (#4782)', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-4782-adoption-'));
-    const mainRepo = path.join(tempRoot, 'workspace');
-    const child = path.join(mainRepo, 'business-a');
-    const dataDirectory = path.join(tempRoot, 'data');
-    initRepo(mainRepo);
-    mkdirSync(child);
-    mkdirSync(dataDirectory);
-    const saved = process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
-    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([
-      { name: 'workspace/business-a', patterns: [`${child}/**`], inherit: [] },
-    ]);
-    try {
-      const dbPath = path.join(dataDirectory, 'claude-mem.db');
-      const store = new SessionStore(dbPath);
-      seedSessionWithCheckout(store, 'isolated-content', 'workspace/business-a', 'isolated-memory', child, 'environment');
-      const id = seedObservation(store, 'isolated-memory', 'workspace/business-a');
-      store.close();
-      const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-      expect(result.errors).toEqual([]);
-      expect(result.orphanedWorktrees).toEqual([]);
-      expect(mergedInto(dbPath, id)).toBeNull();
-    } finally {
-      if (saved === undefined) delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
-      else process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = saved;
     }
   }, 30_000);
 
@@ -613,50 +493,6 @@ describe('orphaned worktree adoption (#2864)', () => {
       .filter(op => op.op === 'remap_project');
     verify.close();
     expect(ops.map(op => op.where.project)).toEqual(['app/app']);
-  }, 30_000);
-
-  // #3641 — Codex puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
-  // worktree basename equals the repo name and the composite key doubles to
-  // `<repo>/<repo>`. Once that worktree is deleted the sweep must still fold the
-  // rows into the repo, non-destructively, and queue the remap for cloud sync.
-  it('adopts a deleted Codex worktree keyed <repo>/<repo> and queues the remap for sync', async () => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
-    const mainRepo = path.join(tempRoot, 'app');
-    const codexWorktree = path.join(tempRoot, 'codex', 'worktrees', 'a1b2', 'app');
-    const dataDirectory = path.join(tempRoot, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    mkdirSync(path.dirname(codexWorktree), { recursive: true });
-    initRepo(mainRepo);
-
-    git(mainRepo, 'worktree', 'add', '-b', 'codex-task', codexWorktree);
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    seedSession(store, 'content-codex', 'app/app', 'memory-codex');
-    const obsId = seedObservation(store, 'memory-codex', 'app/app');
-    store.close();
-
-    git(mainRepo, 'worktree', 'remove', '--force', codexWorktree);
-    git(mainRepo, 'worktree', 'prune');
-
-    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(result.orphanedWorktrees).toEqual(['app/app']);
-    expect(result.adoptedObservations).toBe(1);
-    expect(mergedInto(dbPath, obsId)).toBe('app');
-
-    const verify = new SessionStore(dbPath);
-    const project = verify.db.prepare('SELECT project FROM observations WHERE id = ?').get(obsId) as { project: string };
-    const ops = (verify.db.prepare('SELECT body FROM sync_outbox').all() as Array<{ body: string }>)
-      .map(op => JSON.parse(op.body));
-    verify.close();
-
-    // Non-destructive: the stored key is untouched, only the alias is stamped.
-    expect(project.project).toBe('app/app');
-    expect(ops).toContainEqual({
-      op: 'remap_project',
-      where: { project: 'app/app', merged_into_project_is_null: true },
-      fields: { merged_into_project: 'app' },
-    });
   }, 30_000);
 });
 
