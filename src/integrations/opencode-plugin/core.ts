@@ -86,10 +86,13 @@ function includeAllSources(): boolean {
 const PLATFORM_SOURCE = "opencode";
 
 // Built-in OpenCode names differ from the shared file-evidence vocabulary.
+// The worker's shell filter reads commands from `Bash`, so a lowercase `bash`
+// left CLAUDE_MEM_SKIP_BASH_PATTERNS with nothing to match (#5666).
 const CAPTURE_TOOL_NAMES = new Map([
   ["read", "Read"],
   ["write", "Write"],
   ["edit", "Edit"],
+  ["bash", "Bash"],
 ]);
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
