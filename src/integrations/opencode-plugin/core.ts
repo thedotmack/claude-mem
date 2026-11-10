@@ -85,10 +85,13 @@ function includeAllSources(): boolean {
 const PLATFORM_SOURCE = "opencode";
 
 // Built-in OpenCode names differ from the shared file-evidence vocabulary.
+// The worker's shell filter reads commands from `Bash`, so a lowercase `bash`
+// left CLAUDE_MEM_SKIP_BASH_PATTERNS with nothing to match (#5666).
 const CAPTURE_TOOL_NAMES = new Map([
   ["read", "Read"],
   ["write", "Write"],
   ["edit", "Edit"],
+  ["bash", "Bash"],
 ]);
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
@@ -113,6 +116,7 @@ async function postToWorker(fetchImpl: typeof fetch, path: string, payload: stri
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
+    await response.body?.cancel();
   } catch (error: unknown) {
     if (!isConnectionRefusedError(error)) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
@@ -151,6 +155,7 @@ async function workerGetText(path: string): Promise<string | null> {
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
+      await response.body?.cancel();
       return null;
     }
     return await response.text();
@@ -161,8 +166,6 @@ async function workerGetText(path: string): Promise<string | null> {
     return null;
   }
 }
-
-const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -182,33 +185,17 @@ const contextByOpenCodeSessionId = new Map<string, CachedMemoryContext>();
 // would otherwise add the full request timeout to each one (plan-17 contract).
 const FAILED_CONTEXT_RETRY_MS = 60_000;
 
-function getOrCreateContentSessionId(openCodeSessionId: string): string {
-  if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
-      if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-      } else {
-        break;
-      }
-    }
-    contentSessionIdsByOpenCodeSessionId.set(
-      openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
-    );
-  }
-  return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
-}
-
 /**
- * Resolves the stable local ID for all OpenCode activity without contacting the
- * worker. Session init means "a user prompt happened", not "ensure a session
+ * OpenCode retains its native ID when a session resumes. Use it directly,
+ * scoped by platformSource at the worker, so a restart or cache eviction cannot
+ * split later prompts and tools into a fresh memory session. Session init
+ * means "a user prompt happened", not "ensure a session
  * row exists": observations and summarize create their own rows. Posting init
  * without a prompt manufactures a "[media prompt]" at prompt #1 and attributes
  * a preceding tool observation to it (#3803).
  */
 function resolveContentSessionId(openCodeSessionId: string): string {
-  return getOrCreateContentSessionId(openCodeSessionId);
+  return openCodeSessionId;
 }
 
 /**
@@ -422,7 +409,6 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     },
 
     forgetSession(sessionID) {
-      contentSessionIdsByOpenCodeSessionId.delete(sessionID);
       contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
@@ -444,7 +430,10 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
           method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
           signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
         });
-        if (!response.ok) return 'The worker could not fetch the selected observations.';
+        if (!response.ok) {
+          await response.body?.cancel();
+          return 'The worker could not fetch the selected observations.';
+        }
         return formatWorkerMcpResponse('observations', await response.json()).content[0].text;
       } catch { return 'claude-mem worker is not running. Start it with: npx claude-mem start'; }
     },

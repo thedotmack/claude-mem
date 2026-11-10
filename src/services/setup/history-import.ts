@@ -101,8 +101,9 @@ export class HistoryImport {
   private async run(token: string): Promise<void> {
     const request = this.options.fetch ?? fetch;
     const url = `${this.options.origin()}/api/import`;
-    const database = this.options.openDatabase();
+    let database: Database | undefined;
     try {
+      database = this.options.openDatabase();
       const total = readHistoryCounts(database).observations;
       this.update({ state: 'running', total, sent: 0, imported: 0, skipped: 0, percent: 0, error: null, startedAt: this.iso(), finishedAt: null });
       const page = database.prepare(`SELECT id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified,
@@ -118,12 +119,19 @@ export class HistoryImport {
         });
         const answer = await response.json().catch(() => null) as { stats?: { observationsImported?: number; observationsSkipped?: number }; error?: string; message?: string } | null;
         if (!response.ok) throw new Error(`cmem.ai refused the import (HTTP ${response.status}${answer?.message || answer?.error ? `: ${answer.message ?? answer.error}` : ''}).`);
+        const imported = answer?.stats?.observationsImported;
+        const skipped = answer?.stats?.observationsSkipped;
+        if (typeof imported !== 'number' || typeof skipped !== 'number'
+          || !Number.isSafeInteger(imported) || !Number.isSafeInteger(skipped)
+          || imported < 0 || skipped < 0 || imported + skipped !== rows.length) {
+          throw new Error('cmem.ai did not acknowledge every observation in the import batch. Continue to resend it safely.');
+        }
         after = rows[rows.length - 1].id;
         const sent = this.current.sent + rows.length;
         this.update({
           sent,
-          imported: this.current.imported + (answer?.stats?.observationsImported ?? 0),
-          skipped: this.current.skipped + (answer?.stats?.observationsSkipped ?? 0),
+          imported: this.current.imported + imported,
+          skipped: this.current.skipped + skipped,
           percent: total ? Math.min(99, Math.floor((sent / total) * 100)) : 99,
         });
       }
@@ -134,7 +142,7 @@ export class HistoryImport {
       logger.warn('IMPORT', 'History import stopped', { error: message, sent: this.current.sent });
       this.update({ state: 'failed', error: message, finishedAt: this.iso() });
     } finally {
-      database.close();
+      database?.close();
     }
   }
 }

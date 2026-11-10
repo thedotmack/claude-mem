@@ -8,6 +8,7 @@ import { CloudSync, type CloudSyncOptions, type CloudSyncSettingKeys } from '../
 import { buildContentOperation, sha256Base64Url, type CanonicalContentBody, type CanonicalMutation, type CanonicalWireOp } from '../../../src/services/sync/CanonicalContent.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
+import { readSyncQueueInventory } from '../../../src/services/sync/SyncQueueEvidence.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const EPOCH = Date.parse(ISO);
@@ -229,6 +230,26 @@ describe('CloudSync page fairness', () => {
     expect(workState.map(body => body.payload?.list_name)).toEqual(['release']);
     expect(db.query('SELECT body, operation_sha256 FROM sync_content_outbox').all()).toEqual([held]);
     expect(db.query('SELECT synced_at FROM work_state_entries WHERE id = ?').get(reserved)).toEqual({ synced_at: null });
+    expect(sync.status().lastError).toBeNull();
+  });
+
+  it('uploads authored version-like list names from native and frozen rows while holding reserved lists', async () => {
+    const names = ['__my_work_v1draft:notes', '__my_work_v12beta:tasks'];
+    const ids = names.map(listName => store.appendWorkStateEntry({ project: 'project', listName, fields: { task: 'retained' }, createdAtEpoch: EPOCH }));
+    freeze(buildContentOperation({ kind: 'work_state', originDeviceId: DEVICE, originLocalId: String(ids[1]), entityRev: '1',
+      payload: { project: 'project', list_name: names[1], fields: { task: 'retained' }, created_at: ISO, created_at_epoch: String(EPOCH) } }));
+    const reserved = store.appendWorkStateEntry({ project: 'project', listName: '__my_work_v12:request', fields: { task: 'held' }, createdAtEpoch: EPOCH });
+    const endpoint = hub();
+    const sync = syncFor(endpoint.fetchImpl);
+    const queue = readSyncQueueInventory(db, { deviceId: DEVICE, sharedWorkWritesEnabled: false, workStateSupported: true });
+    expect(queue.kinds.work_state).toMatchObject({ eligiblePending: 2, heldPending: 1, heldSharedState: 1 });
+
+    await sync.flush();
+
+    const operations = endpoint.pages.flatMap(page => page.ops);
+    expect(operations.map(op => JSON.parse(op.body).payload.list_name).sort()).toEqual(names.toSorted());
+    expect((replica(operations) as any).work.map((row: any) => row.list_name).sort()).toEqual(names.toSorted());
+    expect(db.prepare('SELECT synced_at FROM work_state_entries WHERE id = ?').get(reserved)).toEqual({ synced_at: null });
     expect(sync.status().lastError).toBeNull();
   });
 

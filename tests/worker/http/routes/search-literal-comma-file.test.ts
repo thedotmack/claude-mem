@@ -21,7 +21,7 @@ afterEach(() => {
   Reflect.set(ModeManager.getInstance(), 'activeModeId', priorModeId);
 });
 
-async function requestFile(query: URLSearchParams) {
+async function requestFile(query: URLSearchParams, endpoint = '/api/search/by-file') {
   const store = new SessionStore(':memory:');
   const seed = (memory: string, title: string, file: string) => {
     const id = store.createSDKSession(`content-${memory}`, 'owned-project', title);
@@ -43,7 +43,7 @@ async function requestFile(query: URLSearchParams) {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('No owned HTTP address');
   try {
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/search/by-file?${query}`);
+    const response = await fetch(`http://127.0.0.1:${address.port}${endpoint}?${query}`);
     expect(response.status).toBe(200);
     const body = await response.json() as { content: Array<{ text: string }> };
     return body.content[0].text;
@@ -67,4 +67,13 @@ describe('literal filePath through the HTTP boundary', () => {
     expect(text).toContain('PREFIX_PATH_RECORD');
     expect(text).toContain('for file "src/release"');
   });
+});
+
+it('preserves a literal comma in the unified search filePath filter', async () => {
+  const text = await requestFile(new URLSearchParams({
+    filePath: 'src/release,final.md',
+    project: 'owned-project',
+  }), '/api/search');
+  expect(text).toContain('COMMA_PATH_RECORD');
+  expect(text).not.toContain('PREFIX_PATH_RECORD');
 });

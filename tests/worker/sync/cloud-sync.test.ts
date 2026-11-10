@@ -27,6 +27,8 @@ import {
 } from '../../../src/services/sync/CloudSync.js';
 import { PROMPT_TEXT_MAX_BYTES, PROMPT_TRUNCATION_MARKER } from '../../../src/services/sync/prompt-text-clamp.js';
 import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import { SyncApply } from '../../../src/services/sync/SyncApply.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -377,6 +379,43 @@ describe('CloudSync', () => {
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  for (const kind of ['observation', 'summary'] as const) {
+    it(`syncs finalized discovery tokens after the ${kind}'s first push was acknowledged`, async () => {
+      if (kind === 'observation') seedObservation();
+      else seedSummary();
+      const table = kind === 'observation' ? 'observations' : 'session_summaries';
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      const receiver = new SessionStore(':memory:');
+      const apply = new SyncApply(receiver.db, { deviceId: 'receiver' });
+      const pull = () => apply.applyOps(decodeChanges(calls.flatMap(call => call.wireParsed.ops)
+        .map((op, index) => ({ ...op, seq: String(index + 1) }))), { epoch: '1' });
+      const received = () => receiver.db.prepare(`SELECT discovery_tokens FROM ${table}`).get();
+      try {
+        await sync.flush();
+        expect(pendingCount(table)).toBe(0);
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: kind === 'observation' ? 42 : 0 });
+
+        // Claude's final result can arrive after the earlier assistant row
+        // has already synced. Patch through the production store entry point.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null, 1040);
+        await sync.flush();
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: 1040 });
+        expect(calls.flatMap(call => call.parsed.ops).map(op => op.rev)).toEqual(['1', '2']);
+
+        // An equal correction (or a lower summary total) changes no payload.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null,
+          kind === 'summary' ? 40 : 1040);
+        await sync.flush();
+        expect(calls).toHaveLength(2);
+      } finally {
+        receiver.close();
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Wire contract: ops POST bodies must follow the SyncApply BODY FIELD
@@ -1758,6 +1797,70 @@ describe('CloudSync', () => {
     });
 
   });
+
+  // ---------------------------------------------------------------------------
+  // A failed repair must not commit the identity that makes future calls no-op.
+  for (const method of ['ensureMemorySessionIdRegistered', 'updateMemorySessionId'] as const) {
+    it(`${method} commits the identity and prompt repair together`, async () => {
+      const initialMemoryId = method === 'ensureMemorySessionIdRegistered' ? null : 'mem-1';
+      db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE id = 1').run(initialMemoryId);
+      if (initialMemoryId) {
+        seedObservation();
+        store.upsertToolUse({ toolUseId: 'read-one', contentSessionId: 'sess-abc', sessionDbId: 1,
+          memorySessionId: initialMemoryId, project: 'proj-x', toolName: 'Read' });
+      }
+      seedPrompt('first prompt', 1, 1);
+      seedPrompt('second prompt', 2, 1);
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+      expect(pendingCount('user_prompts')).toBe(0);
+
+      const promptState = () => db.query('SELECT id, sync_rev, synced_at FROM user_prompts ORDER BY id').all();
+      const identityState = () => ({
+        session: db.query('SELECT memory_session_id FROM sdk_sessions WHERE id = 1').get(),
+        observations: db.query('SELECT memory_session_id FROM observations ORDER BY id').all(),
+        receipts: db.query('SELECT memory_session_id FROM tool_uses ORDER BY id').all(),
+      });
+      const before = promptState();
+      const identityBefore = identityState();
+      const callsBefore = calls.length;
+      // Fail on the second prompt, after the repair has already changed the first.
+      db.run(`CREATE TRIGGER reject_prompt_repair BEFORE INSERT ON sync_outbox
+        WHEN json_extract(NEW.body, '$.target.origin_local_id') = '2'
+        BEGIN SELECT RAISE(ABORT, 'prompt repair write failed'); END`);
+      expect(() => store[method](1, 'mem-registered')).toThrow('prompt repair write failed');
+      const failedIdentity = identityState();
+      const failedPrompts = promptState();
+      const failedOutbox = outboxRows();
+
+      db.run('DROP TRIGGER reject_prompt_repair');
+      store[method](1, 'mem-registered');
+      await sync.flush();
+      const pushed = calls.slice(callsBefore).flatMap(call => call.parsed.ops);
+      const repairs = pushed.filter(op => op.kind === 'mutation');
+      const prompts = pushed.filter(op => op.kind === 'prompt');
+      expect(repairs).toHaveLength(2);
+      expect(prompts).toHaveLength(2);
+      expect(failedIdentity).toEqual(identityBefore);
+      expect(failedPrompts).toEqual(before);
+      expect(failedOutbox).toEqual([]);
+      for (const op of repairs) {
+        expect(op.body.op).toBe('set_prompt_session');
+        expect(op.body.fields.memory_session_id).toBe('mem-registered');
+      }
+      for (const op of prompts) {
+        expect(op.rev).toBe('2');
+        expect(op.body.memory_session_id).toBe('mem-registered');
+      }
+      expect(pendingCount('user_prompts')).toBe(0);
+      expect(outboxRows()).toEqual([]);
+      const repairedCalls = calls.length;
+      store[method](1, 'mem-registered');
+      await sync.flush();
+      expect(calls).toHaveLength(repairedCalls);
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Rev-matched stamping — the ordering that replaced stampGuard: a mutation

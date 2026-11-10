@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { extractFilePaths } from '../../../src/cli/adapters/codex-file-context.js';
+import { codexAdapter } from '../../../src/cli/adapters/codex.js';
 
 let tmpDir: string;
 
@@ -25,6 +27,31 @@ describe('extractFilePaths', () => {
     }, tmpDir);
 
     expect(paths).toEqual(['README.md', 'src.ts']);
+  });
+
+  for (const [command, expected, output] of [
+    ['cat > captured.txt README.md', ['README.md'], 'readme'],
+    ['cat >| captured.txt README.md', ['README.md'], 'readme'],
+    ['cat >> captured.txt src.ts', ['src.ts'], 'source'],
+    ['> captured.txt cat README.md', ['README.md'], 'readme'],
+    ['cat README.md > captured.txt src.ts', ['README.md', 'src.ts'], 'readmesource'],
+    ['cat > captured.txt README.md && head -n 1 src.ts >> captured.txt', ['README.md', 'src.ts'], 'readmesource'],
+  ] as const) {
+    it.skipIf(process.platform === 'win32')(`keeps the files actually read across output redirection: ${command}`, () => {
+      execFileSync('sh', ['-c', command], { cwd: tmpDir });
+      expect(readFileSync(join(tmpDir, 'captured.txt'), 'utf8')).toBe(output);
+      const normalized = codexAdapter.normalizeInput({
+        hook_event_name: 'PreToolUse', session_id: 'redirect-session', cwd: tmpDir,
+        tool_name: 'Bash', tool_input: { command },
+      });
+      expect((normalized.toolInput as { filePaths?: string[] }).filePaths).toEqual([...expected]);
+      expect(extractFilePaths('Bash', { command }, tmpDir)).not.toContain('captured.txt');
+    });
+  }
+
+  it.skipIf(process.platform === 'win32')('keeps a literal argv filename spelled like a redirection operator', () => {
+    writeFileSync(join(tmpDir, '>'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: ['cat', '>', 'README.md'] }, tmpDir)).toEqual(['>', 'README.md']);
   });
 
   it('expands ~/ to the home directory, as the shell does, instead of resolving it under cwd', () => {

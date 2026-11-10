@@ -112,7 +112,8 @@ describe('CorpusRoutes Type Coercion', () => {
 
   it.each([
     { name: 'bad-array', concepts: ['hooks', 42] },
-    { name: 'bad-type', types: ['typo'] },
+    { name: 'bad-type', types: ['decision', 42] },
+    { name: 'empty-type', types: [''] },
     { name: 'bad-limit', limit: 'many' },
     { name: 'bad name/with spaces' },
     { name: '  bad  ' },
