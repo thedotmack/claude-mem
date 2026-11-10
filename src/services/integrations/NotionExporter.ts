@@ -373,10 +373,8 @@ export class NotionExporter {
         maxQueue: this.maxQueue,
       });
     }
-    if (!this.draining) {
-      this.draining = this.drain().finally(() => {
-        this.draining = null;
-      });
+    if (!this.draining && this.queue.length > 0) {
+      this.draining = this.drain();
     }
   }
 
@@ -386,33 +384,39 @@ export class NotionExporter {
   }
 
   private async drain(): Promise<void> {
-    let record: NotionObservationRecord | undefined;
-    while ((record = this.queue.shift())) {
-      if (this.disabledReason) {
-        this.queue.length = 0;
-        return;
-      }
-      try {
-        await this.upsertWithRetry(record);
-      } catch (error) {
-        const reason = notionFailureReason(error);
-        if (error instanceof NotionHttpError && [401, 403, 404].includes(error.status)) {
-          this.disabledReason = reason;
-          const droppedObservationIds = [record.observationId, ...this.queue.map(queued => queued.observationId)];
+    try {
+      let record: NotionObservationRecord | undefined;
+      while ((record = this.queue.shift())) {
+        if (this.disabledReason) {
           this.queue.length = 0;
-          logger.error('NOTION', 'Notion export disabled until settings change: check the token and that the database is shared with the integration', {
-            databaseId: this.databaseId,
-            reason,
-            droppedObservationIds,
-          });
           return;
         }
-        logger.error('NOTION', 'Notion export failed, observation skipped', {
-          observationId: record.observationId,
-          project: record.project,
-          reason,
-        });
+        try {
+          await this.upsertWithRetry(record);
+        } catch (error) {
+          const reason = notionFailureReason(error);
+          if (error instanceof NotionHttpError && [401, 403, 404].includes(error.status)) {
+            this.disabledReason = reason;
+            const droppedObservationIds = [record.observationId, ...this.queue.map(queued => queued.observationId)];
+            this.queue.length = 0;
+            logger.error('NOTION', 'Notion export disabled until settings change: check the token and that the database is shared with the integration', {
+              databaseId: this.databaseId,
+              reason,
+              droppedObservationIds,
+            });
+            return;
+          }
+          logger.error('NOTION', 'Notion export failed, observation skipped', {
+            observationId: record.observationId,
+            project: record.project,
+            reason,
+          });
+        }
       }
+    } finally {
+      // Release ownership in the same turn that observes the empty queue.
+      // A separate Promise.finally leaves a gap where enqueue sees a stale owner.
+      this.draining = null;
     }
   }
 
