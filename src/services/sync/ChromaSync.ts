@@ -552,7 +552,18 @@ export class ChromaSync {
     const pass = async (): Promise<void> => {
       // Cheap when nothing was refused: a recovery is common, records are not.
       if (ChromaSyncState.getPendingRowDeletes().length === 0) return;
-      await new ChromaSync('claude-mem').drainPendingRowDeletes(store);
+      const sync = new ChromaSync('claude-mem');
+      // One pass drains a bounded batch so a large outage backlog cannot stall
+      // the backfill's writes. The next batch is only worth starting when the
+      // previous one cleared something: a still-failing provider would
+      // otherwise retry the same head forever, and shutdown must leave the rest
+      // recorded. Loop here, at the entry that owns the retry, rather than
+      // leaving the remainder for "the next sweep", which can be days away.
+      for (;;) {
+        const cleared = await sync.drainPendingRowDeletes(store);
+        if (cleared === 0 || shutdownBegan()) return;
+        if (ChromaSyncState.getPendingRowDeletes().length === 0) return;
+      }
     };
 
     let drain: Promise<void>;
@@ -1179,12 +1190,12 @@ export class ChromaSync {
    * the stale delete is dropped instead, since its own sync now owns them. A
    * cleanup that fails again stays recorded for the next attempt.
    */
-  private async drainPendingRowDeletes(store: SessionStore): Promise<void> {
+  private async drainPendingRowDeletes(store: SessionStore): Promise<number> {
     const pending = ChromaSyncState.getPendingRowDeletes();
-    if (pending.length === 0) return;
+    if (pending.length === 0) return 0;
     const batch = pending.slice(0, MAX_PENDING_ROW_DELETE_RETRIES_PER_PASS);
     if (batch.length < pending.length) {
-      logger.info('CHROMA_SYNC', 'Post-delete cleanup retry pass bounded; the rest waits for the next sweep', {
+      logger.info('CHROMA_SYNC', 'Post-delete cleanup retry pass bounded; the rest continues in the next batch', {
         retrying: batch.length,
         remaining: pending.length - batch.length
       });
@@ -1234,6 +1245,9 @@ export class ChromaSync {
         remaining: ChromaSyncState.getPendingRowDeletes().length
       });
     }
+    // Progress signal for the caller's loop: zero means the rest failed again
+    // or shutdown began, so another batch would retry the same head.
+    return finished.length;
   }
 
   async syncObservation(

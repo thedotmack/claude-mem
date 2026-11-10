@@ -62,6 +62,14 @@ let cache: Record<string, ProjectWatermarks> | null = null;
  */
 let pendingDeletesCache: PendingRowDelete[] | null = null;
 
+/**
+ * The last attempt to persist a retry record failed, so the record exists only
+ * in memory. A repeated mark of the same rows must then retry the write instead
+ * of taking the duplicate shortcut: while Chroma is down nothing else writes
+ * the file, and an exit would lose the documents' only record (#5664).
+ */
+let pendingDeletesPersistFailed = false;
+
 function createProjectMap(): Record<string, ProjectWatermarks> {
   // Project names come from directory names, so every string (including
   // __proto__) must be an own, serializable entry in the checkpoint map.
@@ -282,16 +290,20 @@ export const ChromaSyncState = {
       seen.add(key);
       merged.push(row);
     }
-    if (merged.length === existing.length) return;
+    if (merged.length === existing.length && !pendingDeletesPersistFailed) return;
 
     pendingDeletesCache = merged;
     // The record must reach the disk before the caller proceeds: the process
     // that just failed the cleanup is the one that may exit next, and `persist`
     // silently defers behind its failure backoff. Keep the cleanup lane
-    // non-throwing, but report a write that could not happen.
+    // non-throwing, but report a write that could not happen. A failed write
+    // leaves the record in memory only, so a repeated mark of the same rows has
+    // to try again instead of taking the duplicate shortcut above.
     try {
       persistOrThrow();
+      pendingDeletesPersistFailed = false;
     } catch (error) {
+      pendingDeletesPersistFailed = true;
       logger.warn('CHROMA_SYNC', 'Could not record a pending post-delete cleanup', {},
         error instanceof Error ? error : new Error(String(error)));
     }
