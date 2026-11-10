@@ -101,8 +101,9 @@ export class HistoryImport {
   private async run(token: string): Promise<void> {
     const request = this.options.fetch ?? fetch;
     const url = `${this.options.origin()}/api/import`;
-    const database = this.options.openDatabase();
+    let database: Database | undefined;
     try {
+      database = this.options.openDatabase();
       const total = readHistoryCounts(database).observations;
       this.update({ state: 'running', total, sent: 0, imported: 0, skipped: 0, percent: 0, error: null, startedAt: this.iso(), finishedAt: null });
       const page = database.prepare(`SELECT id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified,
@@ -134,7 +135,7 @@ export class HistoryImport {
       logger.warn('IMPORT', 'History import stopped', { error: message, sent: this.current.sent });
       this.update({ state: 'failed', error: message, finishedAt: this.iso() });
     } finally {
-      database.close();
+      database?.close();
     }
   }
 }
