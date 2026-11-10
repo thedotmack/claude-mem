@@ -334,6 +334,39 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
+  // Grafana service account / Cloud tokens and Postman API keys; split for
+  // push protection too.
+  const GRAFANA_SA_BODY = 'aBcDeFgHiJkLmNoP' + 'qRsTuVwXyZ012345';
+  const GRAFANA_SA_CHECK = '0a1b' + '2c3d';
+  const GRAFANA_CLOUD_BODY = 'eyJvIjoiMTIzNDU2IiwibiI6InN0YWNr' + 'LWRlcGxveSIsImsiOiJhQmNEZUZnSGlK' + 'a0xtTm9QcVJzVHUifQ==';
+  const POSTMAN_ID = '0123456789abcdef' + '01234567';
+  const POSTMAN_SECRET = '0123456789abcdef0' + '123456789abcdef01';
+  it.each([
+    ['grafana_token', 'export GRAFANA_SERVICE_ACCOUNT_TOKEN=' + 'gl' + 'sa_' + GRAFANA_SA_BODY + '_' + GRAFANA_SA_CHECK + ' tail', GRAFANA_SA_BODY],
+    ['grafana_token', 'curl -H "Authorization: Bearer ' + 'gl' + 'sa_' + GRAFANA_SA_BODY + '_' + GRAFANA_SA_CHECK + '" tail', GRAFANA_SA_BODY],
+    ['grafana_token', 'GRAFANA_CLOUD_TOKEN=' + 'gl' + 'c_' + GRAFANA_CLOUD_BODY + ' tail', GRAFANA_CLOUD_BODY],
+    ['postman_key', 'POSTMAN_API_KEY=' + 'PM' + 'AK-' + POSTMAN_ID + '-' + POSTMAN_SECRET + ' tail', POSTMAN_SECRET],
+    ['postman_key', '{"apiKey": "' + 'PM' + 'AK-' + POSTMAN_ID + '-' + POSTMAN_SECRET + '"} tail', POSTMAN_SECRET],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'glsa_short',
+    'gl' + 'sa_' + 'aBcDeFgHiJkLmNoP' + '_0a1b2c3d',
+    'gl' + 'sa_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ012345' + '_nothexhex',
+    'glc_short',
+    'the glc_ prefix',
+    'PMAK-short',
+    'PM' + 'AK-' + '0123456789abcdef01234567' + '-0123',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
