@@ -77,7 +77,7 @@ export function loadTelegramWrapupConfig(settings: SettingsDefaults): TelegramWr
   for (const [project, routeValue] of Object.entries(parsedRoutes)) {
     const route = toRoute(routeValue);
     if (route) {
-      routes[project] = route;
+      Object.defineProperty(routes, project, { value: route, enumerable: true, writable: true, configurable: true });
     }
   }
 
@@ -93,7 +93,7 @@ function resolveRouteEntry(
   config: TelegramWrapupConfig,
   project: string,
 ): ResolvedTelegramWrapupRoute | null {
-  const route = config.routes[project];
+  const route = Object.hasOwn(config.routes, project) ? config.routes[project] : undefined;
   if (!route) return null;
   return {
     chatId: route.chat_id,
