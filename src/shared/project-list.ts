@@ -1,29 +1,37 @@
 /**
  * Project keys travel as a list, and as text in a query string. A checkout's
- * key can carry outer whitespace (`topic ` is not `topic`), but a person typing
- * `api, web` means `web`. The two meet here:
+ * key can carry commas and outer whitespace (`topic ` is not `topic`), but a
+ * person typing `api, web` means two projects. The forms meet here:
  *
- * - a list entry, or a lone key with no comma, is exact;
+ * - a list entry, a JSON list, or a lone key with no comma is exact;
  * - text with a comma is a typed list, so its entries are trimmed.
  *
- * A lone key must stay exact because Express hands one `projects=` value to the
- * route as a string, whichever form the caller meant. Names containing commas
- * are not representable in either form.
+ * Express returns one `projects=` value as a string. A JSON list preserves
+ * exact entries in that case, including a single key that contains a comma.
  */
 export function parseProjectList(value: unknown): string[] {
-  const entries: unknown[] = Array.isArray(value) ? value : [value];
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (Array.isArray(parsed) && parsed.every(entry => typeof entry === 'string')) value = parsed;
+    } catch { /* Plain project text or a hand-typed comma list. */ }
+  }
+  const entries: unknown[] = Array.isArray(value) ? value
+    : typeof value === 'string' && value.includes(',') ? value.split(',').map(project => project.trim())
+    : [value];
   return entries
     .filter((entry): entry is string => typeof entry === 'string')
-    .flatMap(entry => entry.includes(',') ? entry.split(',').map(project => project.trim()) : [entry])
     .filter(project => project.trim().length > 0);
 }
 
 /**
- * The `projects` query values for a list of exact keys: the usual one comma
- * list, or the key repeated once per project when a comma list's trimming would
- * change one of them.
+ * The `projects` query values for exact keys: JSON when a key contains a comma
+ * or could be mistaken for JSON, otherwise the existing comma/repeated forms.
  */
 export function projectsQueryValues(projects: readonly string[]): string[] {
+  if (projects.some(project => project.includes(',') || project.trimStart().startsWith('['))) {
+    return [JSON.stringify(projects)];
+  }
   return projects.every(project => project === project.trim()) ? [projects.join(',')] : [...projects];
 }
 

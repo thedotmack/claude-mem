@@ -398,7 +398,8 @@ export class SearchRoutes extends BaseRouteHandler {
       });
       return;
     }
-    let projectsParam: unknown = req.query.projects || req.query.project;
+    // The singular parameter names one exact key, even when it contains a comma.
+    let projectsParam: unknown = req.query.projects || (req.query.project ? [req.query.project] : undefined);
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
     // session that asks, so only then is its id used, and that answer stays live.
@@ -788,7 +789,7 @@ export class SearchRoutes extends BaseRouteHandler {
         'INVALID_PROJECTS'
       );
     }
-    return scopedProjects({ projects: parseProjectList(entries) });
+    return scopedProjects({ projects: parseProjectList(value) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
