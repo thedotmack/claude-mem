@@ -580,7 +580,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
       (text, budgetChars, signal, deadlineMs) => this.compressField(
-        text, budgetChars, config, signal, deadlineMs, generationLabel(session, 'field_compression'),
+        text, budgetChars, config, AbortSignal.any([signal, session.abortController.signal]),
+        deadlineMs, generationLabel(session, 'field_compression'),
       ),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
       fieldMaxChars,
@@ -588,6 +589,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.observerContextWindowTokens,
       () => this.fieldCompressionMaxOutputTokens(),
     );
+    // A cancelled field pass falls back to its raw value. Its ended session
+    // must not turn that fallback into another paid observation request.
+    session.abortController.signal.throwIfAborted();
     if (await this.stopIfCaptureDisabled(session)) return false;
 
     const obsPrompt = buildObservationPromptParts({
