@@ -315,7 +315,7 @@ export function contentToText(msgContent: unknown): string | null {
 
 /**
  * Kimi Code wire.jsonl is event-sourced; role is carried by envelope type:
- * - user:      {"type":"context.append_message","message":{"role":"user",...}}
+ * - user/assistant: {"type":"context.append_message","message":{"role":...,"content":...}}
  * - assistant: {"type":"context.append_loop_event","event":{"type":"content.part",
  *              ...,"part":{"type":"text","text":"..."}}}  (part.type "think" is reasoning — skipped)
  */
@@ -335,7 +335,7 @@ function kimiWireRole(line: any): 'user' | 'assistant' | undefined {
 }
 
 function kimiWireText(line: any, role: 'user' | 'assistant'): string {
-  if (role === 'user' && line?.type === 'context.append_message') {
+  if (line?.type === 'context.append_message') {
     return contentToText(line.message?.content) ?? '';
   }
   if (role === 'assistant' && line?.type === 'context.append_loop_event') {
