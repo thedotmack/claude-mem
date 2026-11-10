@@ -20,13 +20,20 @@ export function useMediaStates(ids: readonly string[]) {
   const [states, setStates] = useState<Record<string, MediaDisplayState>>({});
   const pollCounts = useRef<Record<string, number>>({});
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const reads = useRef(new Map<string, AbortController>());
   const mounted = useRef(true);
   const idsKey = ids.join(',');
 
   const load = useCallback(async (id: string) => {
+    if (!mounted.current) return;
+    clearTimeout(timers.current[id]);
+    delete timers.current[id];
+    reads.current.get(id)?.abort();
+    const controller = new AbortController();
+    reads.current.set(id, controller);
     let next: MediaDisplayState;
     try {
-      const response = await fetch(mediaMetadataUrl(id), { credentials: 'same-origin' });
+      const response = await fetch(mediaMetadataUrl(id), { credentials: 'same-origin', signal: controller.signal });
       let body: unknown = null;
       try {
         body = await response.json();
@@ -37,7 +44,10 @@ export function useMediaStates(ids: readonly string[]) {
     } catch {
       next = mediaDisplayStateFrom(0, null);
     }
-    if (!mounted.current) return;
+    // A newer retry or attachment selection owns the image now. Cancellation
+    // alone is insufficient if the old response body already finished.
+    if (!mounted.current || reads.current.get(id) !== controller) return;
+    reads.current.delete(id);
     if (shouldPollMediaState(next)) {
       const polls = (pollCounts.current[id] ?? 0) + 1;
       pollCounts.current[id] = polls;
@@ -56,6 +66,8 @@ export function useMediaStates(ids: readonly string[]) {
     for (const id of ids) void load(id);
     return () => {
       mounted.current = false;
+      for (const controller of reads.current.values()) controller.abort();
+      reads.current.clear();
       for (const timer of Object.values(timers.current)) clearTimeout(timer);
       timers.current = {};
     };
