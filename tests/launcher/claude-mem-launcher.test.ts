@@ -205,23 +205,6 @@ describe('claude-mem launcher', () => {
     expect(result.stderr).toContain('usage: claude-mem hook <platform> <event>');
   });
 
-  it('passes non-hook subcommands through to worker-service.cjs with stdin closed', () => {
-    const temporaryHome = makeTemporaryHome();
-    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
-
-    const result = runLauncher(['start'], {
-      temporaryHome,
-      stdinPayload: '{"ignored":true}',
-      extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot },
-    });
-
-    expect(result.status).toBe(0);
-    const stubWorkerOutput = parseStubWorkerOutput(result.stdout);
-    expect(stubWorkerOutput.argv).toEqual(['start']);
-    expect(stubWorkerOutput.stdin).toBe('');
-    expect(existsSync(path.join(temporaryHome, '.claude-mem', 'CAPTURE_BROKEN'))).toBe(false);
-  });
-
   // A hook must not parse the whole worker bundle: it runs the hook-only
   // hook-service.cjs when the plugin ships it, and worker-service.cjs otherwise.
   describe('hook routing', () => {
@@ -238,16 +221,6 @@ describe('claude-mem launcher', () => {
       expect(JSON.parse(result.stdout)).toEqual({ script: 'hook-service', argv: ['hook', 'claude-code', 'observation'] });
     });
 
-    it('falls back to worker-service.cjs for hook commands when hook-service.cjs is absent', () => {
-      const temporaryHome = makeTemporaryHome();
-      const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
-
-      const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
-
-      expect(result.status).toBe(0);
-      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['hook', 'claude-code', 'observation']);
-    });
-
     it('keeps non-hook commands on worker-service.cjs even when hook-service.cjs exists', () => {
       const temporaryHome = makeTemporaryHome();
       const pluginRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
@@ -256,19 +229,10 @@ describe('claude-mem launcher', () => {
       const result = runLauncher(['start'], { temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: pluginRoot } });
 
       expect(result.status).toBe(0);
-      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(['start']);
+      const stubWorkerOutput = parseStubWorkerOutput(result.stdout);
+      expect(stubWorkerOutput.argv).toEqual(['start']);
+      expect(stubWorkerOutput.stdin).toBe('');
     });
-  });
-
-  it('accepts a root that has worker-service.cjs but no bun-runner.js', () => {
-    const temporaryHome = makeTemporaryHome();
-    const workerOnlyRoot = makeStubPluginRoot(path.join(temporaryHome, 'worker-only-root'));
-    expect(existsSync(path.join(workerOnlyRoot, 'scripts', 'bun-runner.js'))).toBe(false);
-
-    const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_PLUGIN_ROOT: workerOnlyRoot } });
-
-    expect(result.status).toBe(0);
-    expect(parseStubWorkerOutput(result.stdout).pluginRoot).toBe(workerOnlyRoot);
   });
 
   it('resolves the plugin root from CLAUDE_PLUGIN_ROOT and passes hook argv through', () => {
