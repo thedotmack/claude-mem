@@ -1068,7 +1068,7 @@ describe('SyncApply', () => {
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });
 
-  it('set_title in reverse order (row ops first) lands via the replicated prompt fallback', () => {
+  it('set_title in reverse order (row ops first) lands on the adopted content identity', () => {
     const apply = makeApply();
     apply.applyOps([
       op(1, 'observation', '11', obsBody()),
@@ -1080,10 +1080,10 @@ describe('SyncApply', () => {
       }),
     ]);
 
-    // The obs-created stub carries a synthetic content id (mem-remote-1), so
-    // the direct content match misses — the replicated prompt resolves it.
+    // The prompt supplied the real content identity to the observation-created
+    // stub, so the later title addresses that same session directly.
     const session = db.prepare(`SELECT custom_title, content_session_id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
-    expect(session.content_session_id).toBe('mem-remote-1');
+    expect(session.content_session_id).toBe('sess-remote-1');
     expect(session.custom_title).toBe('Late title');
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });
