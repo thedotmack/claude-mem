@@ -371,6 +371,47 @@ describe('pruneSupersededPluginCache', () => {
     expect(readFileSync(join(neighbor, 'keep.txt'), 'utf-8')).toBe('neighbor');
   });
 
+  it('never removes the folder the worker runs from when that version is a symlink out of the cache', async () => {
+    // Running from the link's target: the script is outside the cache root, so only the
+    // resolved-path check stands between the sweep and the live worker's own folder.
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-running-link-'));
+    const root = join(scratch, 'cache');
+    const elsewhere = join(scratch, 'dev-checkout');
+    const running = writeWorkerScript(elsewhere, '15.4.0');
+    mkdirSync(root);
+    symlinkSync(join(elsewhere, '15.4.0'), join(root, '15.4.0'));
+    writeWorkerScript(root, '15.15.0');
+    writeWorkerScript(root, '15.15.1');
+
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      runningScriptPath: join(elsewhere, '15.4.0', 'scripts'),
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.failed.map(failure => failure.version)).toEqual(['15.4.0']);
+    expect(existsSync(join(root, '15.4.0', 'scripts', 'worker-service.cjs'))).toBe(true);
+    expect(existsSync(running)).toBe(true);
+  });
+
+  it("keeps the worker's own package version even when it is older than the newest two", async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-package-version-'));
+    const root = join(scratch, 'cache');
+    for (const version of ['15.5.0', '15.14.0', '15.15.0', '15.15.1']) writeWorkerScript(root, version);
+
+    const result = await pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      additionalProtectedVersions: ['15.5.0'],
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    expect(result.removed).toEqual(['15.14.0']);
+    expect(existsSync(join(root, '15.5.0', 'scripts', 'worker-service.cjs'))).toBe(true);
+  });
+
   it('removes an old version when nothing is running from it', async () => {
     scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-unprotected-'));
     const root = join(scratch, 'cache');
