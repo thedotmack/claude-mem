@@ -1,6 +1,6 @@
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, posix } from 'path';
 import {
@@ -13,6 +13,7 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, resolveDataDir } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
@@ -94,8 +95,7 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
-function stripLegacyClaudeMemAlias(): void {
-  const home = homedir();
+export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
   const candidateFiles = [
     join(home, '.bashrc'),
     join(home, '.zshrc'),
@@ -117,7 +117,9 @@ function stripLegacyClaudeMemAlias(): void {
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
     if (filtered.length === lines.length) continue; 
     try {
-      writeFileSync(filePath, filtered.join('\n'));
+      // The user's own shell rc: a crash mid-write must leave the previous
+      // contents, never a truncated file, so write through the shared helper.
+      writeTextFileAtomic(filePath, filtered.join('\n'));
       console.error(`Removed legacy claude-mem alias from ${filePath}`);
     } catch (error: unknown) {
       console.warn(`[uninstall] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
