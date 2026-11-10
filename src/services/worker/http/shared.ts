@@ -52,6 +52,12 @@ const KIMI_BOOKKEEPING_TOOLS = new Set([
   'CronDelete',
 ]);
 
+// Hermes keeps native names in its source evidence. Match their capabilities
+// against the common capture filters without rewriting that evidence.
+const HERMES_FILTER_TOOL_NAMES = new Map([
+  ['terminal', 'Bash'], ['read_file', 'Read'], ['write_file', 'Write'], ['patch', 'Edit'],
+]);
+
 // Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
 // ingestObservation runs on the hot path. A cached `null` marks a value that
 // failed to compile, so an invalid regex warns once instead of on every Bash
@@ -224,7 +230,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
 
-  if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
+  const filterToolName = platformSource === 'hermes'
+    ? HERMES_FILTER_TOOL_NAMES.get(payload.toolName) ?? payload.toolName : payload.toolName;
+  if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)
+    || isToolSkipped(filterToolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
         skillNameFromToolInput(payload.toolName, payload.toolInput),
@@ -243,7 +252,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }
 
   const skipBashPatterns = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS.trim();
-  const command = skipBashPatterns ? shellCommandOf(payload.toolName, payload.toolInput) : '';
+  const command = skipBashPatterns ? shellCommandOf(filterToolName, payload.toolInput) : '';
   if (command) {
     // A bad user regex never throws here — getBashSkipPattern returns null, so the
     // command is captured as if no pattern was set.
@@ -263,9 +272,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
-  if (fileOperationTools.has(payload.toolName) && payload.toolInput && typeof payload.toolInput === 'object') {
-    const input = payload.toolInput as { file_path?: string; notebook_path?: string };
-    const filePath = input.file_path || input.notebook_path;
+  if (fileOperationTools.has(filterToolName) && payload.toolInput && typeof payload.toolInput === 'object') {
+    const input = payload.toolInput as { file_path?: string; notebook_path?: string; path?: unknown };
+    const filePath = input.file_path || input.notebook_path
+      || (platformSource === 'hermes' && typeof input.path === 'string' ? input.path : '');
     if (filePath && filePath.includes('session-memory')) {
       return { ok: true, status: 'skipped', reason: 'session_memory_meta' };
     }
