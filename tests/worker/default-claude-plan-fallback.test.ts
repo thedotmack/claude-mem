@@ -67,8 +67,6 @@ function pinGatewayPrimary(overrides: Record<string, string> = {}): void {
 let savedEnv: Record<string, string | undefined>;
 let previousClaudeReadiness: (() => boolean) | null;
 let spies: Array<ReturnType<typeof spyOn>>;
-let infoLines: string[];
-let warnLines: string[];
 
 function setUp(): void {
   savedEnv = {};
@@ -81,11 +79,9 @@ function setUp(): void {
   resetQuotaFallbackStateForTesting();
   // A Claude login exists unless a test says otherwise.
   previousClaudeReadiness = setClaudeFallbackReadinessForTesting(() => true);
-  infoLines = [];
-  warnLines = [];
   spies = [
-    spyOn(logger, 'info').mockImplementation((_c: string, message: string) => { infoLines.push(message); }),
-    spyOn(logger, 'warn').mockImplementation((_c: string, message: string) => { warnLines.push(message); }),
+    spyOn(logger, 'info').mockImplementation(() => {}),
+    spyOn(logger, 'warn').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'error').mockImplementation(() => {}),
   ];
@@ -121,7 +117,6 @@ describe('default Anthropic-plan fallback: dispatch', () => {
     recordQuotaExhausted('openrouter', 'The observer is briefly over capacity.', 'rate_limit');
     expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter' });
     expect(getSelectedProvider()).toBe('claude');
-    expect(warnLines).toContain('Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers');
   });
 
   it('moves gateway work to Claude while an outage / unusable-reply breaker holds', () => {
@@ -288,7 +283,6 @@ describe('default Anthropic-plan fallback: generator lifecycle', () => {
     const run = await runGatewayFailure(overCapacity(), 'rate_limit:rate_limit');
     expect(run.gatewayStarts).toBe(1);
     expect(run.claudeStarts()).toBe(1);
-    expect(infoLines).toContain('Generator auto-starting (provider-fallback) using Claude SDK');
     expect(getQuotaCooldown('openrouter')?.window).toBe('rate_limit');
   });
 

@@ -4,7 +4,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  buildCodexAppServerArgs,
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
@@ -291,10 +290,6 @@ function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>
 }
 
 describe('CodexAppServerClient configuration', () => {
-  it('starts the persistent stdio app-server transport', () => {
-    expect(buildCodexAppServerArgs()).toEqual(['app-server', '--listen', 'stdio://']);
-  });
-
   it('disables inherited MCP servers, tools, hooks, skills, and project instructions', () => {
     const config = buildCodexAppServerThreadConfig(['zeta', 'alpha', 'alpha']);
 
@@ -315,6 +310,8 @@ describe('CodexAppServerClient configuration', () => {
     const env = buildCodexAppServerEnv({
       PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/home/tester/.codex', LANG: 'C.UTF-8',
       OPENROUTER_API_KEY: 'secret', OPENAI_API_KEY: 'secret', ANTHROPIC_API_KEY: 'secret',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/v1',
       SSH_AUTH_SOCK: '/tmp/agent.sock', CUSTOM_TOKEN: 'secret',
     }, '/tmp/claude-mem-private-codex');
 
