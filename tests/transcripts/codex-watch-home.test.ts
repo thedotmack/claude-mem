@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join, relative } from 'path';
 import { runTranscriptCommand } from '../../src/services/transcripts/cli.js';
 import { scopeNativeHookBackedCodexWatches, shouldSuppressNativeCodexAgentsContext } from '../../src/services/transcripts/config.js';
@@ -60,6 +60,21 @@ describe('native Codex watch gate with CODEX_HOME', () => {
     expect(gated.config.watches[0]).toMatchObject({
       subagentOnly: true, subagentSource: { path: 'payload.source.subagent.thread_spawn' },
     });
+  });
+
+  it('retains the default-home gate when a configured profile is also selected', () => {
+    const config = configFor(codexHome);
+    const legacy = configFor(join(homedir(), '.codex')).watches[0];
+    config.watches.push(legacy);
+    const disabled = scopeNativeHookBackedCodexWatches(config, defaultSettings);
+    expect(disabled.removed).toBe(2);
+    expect(disabled.config.watches).toEqual([]);
+    const subagents = scopeNativeHookBackedCodexWatches(config, {
+      ...defaultSettings, CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'true',
+    });
+    expect(subagents.scoped).toBe(2);
+    expect(subagents.config.watches.every(watch => watch.subagentOnly)).toBe(true);
+    expect(shouldSuppressNativeCodexAgentsContext({ ...legacy, context: { mode: 'agents' } })).toBe(true);
   });
 
   it('preserves explicit full ingestion and suppresses duplicate native AGENTS updates', () => {

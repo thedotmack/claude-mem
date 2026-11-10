@@ -22,9 +22,9 @@ export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: stri
   if (!nameOrSchemaIsCodex || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
-  const codexHome = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
-  const codexSessionsRoot = join(codexHome, 'sessions').replace(/\\/g, '/');
-  return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
+  const codexHomes = [join(homedir(), '.codex')];
+  if (process.env.CODEX_HOME) codexHomes.push(resolve(process.env.CODEX_HOME));
+  return codexHomes.some(home => normalizedPath === `${join(home, 'sessions').replace(/\\/g, '/')}/**/*.jsonl`);
 }
 
 export function shouldSuppressNativeCodexAgentsContext(watch: {
