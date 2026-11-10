@@ -176,7 +176,7 @@ The My Work refresh (goals, grouping, review, focus and story steps) runs on one
 | `CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL` | empty | Model for every refresh step on Claude Code. Use an alias such as `haiku` or `sonnet`. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_CODEX_MODEL` | empty | Model id for every refresh step on Codex. Each step keeps its reasoning effort. Empty keeps the per-step defaults. |
 | `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
-| `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty lets each step use the language most of your prompts are in. It is never detected by a model, so it costs nothing. |
+| `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty uses your system locale's language instead, so the steps still agree. It is never detected by a model, so it costs nothing. |
 
 ### Quota Fallback Settings
 

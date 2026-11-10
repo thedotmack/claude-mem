@@ -125,12 +125,26 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
 /** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
 const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
 
-/** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
- * every run. It is never detected by a model: a detection call would spend the owner's agent quota on every
- * automatic refresh. Empty or not a language name gives null, and the skills' own Language rule applies. */
+/** The English name of a locale's language, such as "Spanish" for es-ES, from the runtime's own locale data,
+ * never from a model. Null when the locale names no language (undetermined, or a name the rule cannot use). */
+export function languageNameForLocale(locale?: string): string | null {
+  try {
+    const language = new Intl.Locale(locale ?? Intl.DateTimeFormat().resolvedOptions().locale).language;
+    if (!language || language === 'und') return null;
+    const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(language);
+    return name && LANGUAGE_NAME.test(name) ? name : null;
+  } catch { return null; }
+}
+
+/** The language My Work's generated text is written in, read at the start of every run:
+ * CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when it names one, else the system locale's language. It is never detected
+ * by a model: a detection call would spend the owner's agent quota on every automatic refresh. The locale
+ * fallback keeps one run on one language: without it, each step guesses from the slice of asks its own question
+ * holds, and a focus batch can guess a different language than the reviews did (#5660). Only when neither the
+ * setting nor the locale names a language do the skills' own Language rule apply. */
 export function resolveTextLanguage(dataDir: string): string | null {
   const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
-  return LANGUAGE_NAME.test(value) ? value : null;
+  return LANGUAGE_NAME.test(value) ? value : languageNameForLocale();
 }
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
@@ -351,9 +365,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
     /**
-     * The owner's language, when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE names one, is named in every grouping, review,
-     * focus and story question. Those run as separate agents that each see only their own input (a review batch in
-     * "amend" mode sees only its later asks), so left to the skill's rule they could each pick a different language.
+     * The owner's language for this run (resolveTextLanguage: the setting, else the system locale) is named in
+     * every grouping, review, focus and story question. Those run as separate agents that each see only their
+     * own input (a review batch in "amend" mode sees only its later asks), so left to the skill's rule they
+     * could each pick a different language.
      * The goals step reads every owner prompt in one question, so it keeps the skill's own rule.
      */
     const textLanguage = resolveTextLanguage(dataDir);
