@@ -116,6 +116,7 @@ async function postToWorker(fetchImpl: typeof fetch, path: string, payload: stri
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
+    await response.body?.cancel();
   } catch (error: unknown) {
     if (!isConnectionRefusedError(error)) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
@@ -154,6 +155,7 @@ async function workerGetText(path: string): Promise<string | null> {
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
+      await response.body?.cancel();
       return null;
     }
     return await response.text();
@@ -443,7 +445,10 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
           method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
           signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
         });
-        if (!response.ok) return 'The worker could not fetch the selected observations.';
+        if (!response.ok) {
+          await response.body?.cancel();
+          return 'The worker could not fetch the selected observations.';
+        }
         return formatWorkerMcpResponse('observations', await response.json()).content[0].text;
       } catch { return 'claude-mem worker is not running. Start it with: npx claude-mem start'; }
     },
