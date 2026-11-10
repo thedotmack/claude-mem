@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ensureLocalDeviceIdentity } from '../../../src/services/sync/local-device-identity.js';
@@ -59,18 +59,38 @@ test('does not establish an identity when settings cannot be persisted', () => {
 test('concurrent pre-sync processes acquire one identity through the database lock', async () => {
   const { db, dir, path } = fixture();
   const moduleUrl = new URL('../../../src/services/sync/local-device-identity.ts', import.meta.url).href;
-  const code = `import { Database } from 'bun:sqlite'; import { ensureLocalDeviceIdentity } from ${JSON.stringify(moduleUrl)};
-const db=new Database(${JSON.stringify(join(dir, 'state.db'))}); db.exec('PRAGMA busy_timeout=5000');
-try { console.log('IDENTITY='+ensureLocalDeviceIdentity(db,${JSON.stringify(path)})); } finally { db.close(); }`;
-  const run = async () => {
-    const child = Bun.spawn([process.execPath, '--eval', code], { stdout: 'pipe', stderr: 'pipe', env: { PATH: process.env.PATH, CLAUDE_MEM_DATA_DIR: dir } });
-    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(exit, stderr).toBe(0);
-    const id = /IDENTITY=([^\n]+)/.exec(stdout)?.[1];
-    expect(id).toBeTruthy();
-    return id;
-  };
-  const ids = await Promise.all([run(), run()]);
-  expect(ids[0]).toBe(ids[1]);
-  expect(ensureLocalDeviceIdentity(db, path)).toBe(ids[0]);
+  const start = join(dir, 'start');
+  const ready = [join(dir, 'ready-0'), join(dir, 'ready-1')];
+  const children = ready.map(pathname => Bun.spawn([process.execPath, '--eval', `
+import { Database } from 'bun:sqlite';
+import { existsSync, writeFileSync } from 'node:fs';
+import { ensureLocalDeviceIdentity } from ${JSON.stringify(moduleUrl)};
+const db = new Database(${JSON.stringify(join(dir, 'state.db'))});
+db.exec('PRAGMA busy_timeout=5000');
+writeFileSync(${JSON.stringify(pathname)}, '');
+while (!existsSync(${JSON.stringify(start)})) await Bun.sleep(1);
+try { console.log('IDENTITY=' + ensureLocalDeviceIdentity(db, ${JSON.stringify(path)})); } finally { db.close(); }
+`], { stdout: 'pipe', stderr: 'pipe', env: { PATH: process.env.PATH, CLAUDE_MEM_DATA_DIR: dir } }));
+  try {
+    const deadline = Date.now() + 4_000;
+    while (!ready.every(pathname => existsSync(pathname))) {
+      if (Date.now() > deadline) throw new Error('identity processes did not reach the start barrier');
+      await Bun.sleep(5);
+    }
+    writeFileSync(start, '');
+    const ids = await Promise.all(children.map(async child => {
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit, stderr).toBe(0);
+      const id = /IDENTITY=([^\n]+)/.exec(stdout)?.[1];
+      expect(id).toBeTruthy();
+      return id;
+    }));
+    expect(ids[0]).toBe(ids[1]);
+    expect(ensureLocalDeviceIdentity(db, path)).toBe(ids[0]);
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null) child.kill();
+    }
+    await Promise.all(children.map(child => child.exited));
+  }
 });

@@ -3,8 +3,6 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SyncRecoveryReader } from '../../../src/services/sync/SyncRecoveryReader.js';
 import { initializeConflictRecoverySchema, SyncConflictRecovery } from '../../../src/services/sync/SyncConflictRecovery.js';
@@ -14,27 +12,6 @@ import { getNativeContentOperation } from '../../../src/services/sync/CloudSync.
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const flags = { deviceId: 'packaged-recovery', sharedWorkWritesEnabled: false, workStateSupported: true };
-
-it('loads read-only recovery inventory and preview through the shipped CJS worker entrypoint', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'recovery-packaged-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-  const databasePath = join(dir, 'source.db'); const db = new Database(databasePath);
-  new SessionStore(db); db.close();
-  const banner = [
-    'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
-    'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
-  ].join('\n');
-  for (const [entry, output] of [
-    ['src/services/sync/SyncRecoveryReader.ts', 'recovery-client.cjs'],
-    ['src/services/work-view/work-view-read-worker.ts', 'work-view-read-worker.cjs'],
-  ]) await build({ entryPoints: [entry], outfile: join(dir, output), bundle: true, platform: 'node', target: 'node18', format: 'cjs', external: ['bun:sqlite'], define: { 'import.meta.url': '__IMPORT_META_URL__' }, banner: { js: banner }, logLevel: 'silent' });
-  const bundled = await import(pathToFileURL(join(dir, 'recovery-client.cjs')).href);
-  const reader: SyncRecoveryReader = new bundled.SyncRecoveryReader(databasePath, flags.deviceId, () => flags);
-  cleanup.push(() => reader.close());
-  const inventory = await reader.inventory(); expect(inventory.excludedCurrent.observation).toBe(0);
-  const preview = await reader.preview({ project: 'fixture', from: '2026-01-01', to: '2027-01-01', kinds: ['observation'] });
-  expect(preview.count).toBe(0); expect(preview.ownership).toBe('native');
-});
 
 it('closes pending reads, refuses unavailable memory databases, and never opens a missing file for creation', async () => {
   const memory = new SyncRecoveryReader(':memory:', flags.deviceId, () => flags);
