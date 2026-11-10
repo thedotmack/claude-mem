@@ -43,7 +43,9 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
     subtitle: 'Manual memory', facts: [] as string[], narrative: text, concepts: [] as string[],
     files_read: [] as string[], files_modified: [] as string[], metadata: metadata ? JSON.stringify(metadata) : null,
   };
-  const result = store.storeObservation(sessionId, project, observation, 0, 0);
+  // A person can reuse a note title while changing its facts. Keep exact
+  // content replay detection, but never discard an explicit save by title.
+  const result = store.storeObservation(sessionId, project, observation, 0, 0, undefined, undefined, { skipTitleDedup: true });
   logger.info('HTTP', 'Manual observation saved', { id: result.id, project, title: observation.title });
   dbManager.getCloudSync()?.notify();
   notifyGrokBotIndex();
