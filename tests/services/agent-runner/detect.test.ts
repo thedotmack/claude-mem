@@ -328,11 +328,12 @@ describe('detectUsableAgents', () => {
     });
 
     it('does not borrow the default login when the selected Gemini profile has no credentials', async () => {
+      const selected = resolve('owned-missing-profile');
       const agent = await detectOne('gemini', { ...signedIn({ exitCode: 42, stderr: NO_INPUT }),
-        environment: { GEMINI_CLI_HOME: '/owned/missing-profile' },
+        environment: { GEMINI_CLI_HOME: selected },
       });
       expect(agent.authenticated).toBe(false);
-      expect(agent.reason).toContain('/owned/missing-profile');
+      expect(agent.reason).toContain(join(selected, '.gemini', 'settings.json'));
     });
 
     it('a slow `which gemini` is waited for and still reports logged in', async () => {
