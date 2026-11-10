@@ -50,6 +50,20 @@ describe('patch file headers versus document content', () => {
     ].join('\r\n'))).toEqual(['one.md', 'two.md', 'four.md']);
   });
 
+  it('counts a blank context line whose leading space was stripped', () => {
+    expect(modifiedFiles([
+      '--- a/one.md', '+++ b/one.md', '@@ -1,3 +1,3 @@', ' first', '', '-old', '+new',
+      '--- a/two.md', '+++ b/two.md', '@@ -1 +1 @@', '-before', '+after',
+    ].join('\n'))).toEqual(['one.md', 'two.md']);
+  });
+
+  it('keeps the next git file when a hunk overstates its line counts', () => {
+    expect(modifiedFiles([
+      'diff --git a/one.md b/one.md', '--- a/one.md', '+++ b/one.md', '@@ -1,9 +1,9 @@', '-old', '+new',
+      'diff --git a/two.md b/two.md', '--- a/two.md', '+++ b/two.md', '@@ -1 +1 @@', '-before', '+after',
+    ].join('\n'))).toEqual(['one.md', 'two.md']);
+  });
+
   it('keeps custom update, rename, add and delete headers after their hunks', () => {
     expect(modifiedFiles([
       '*** Begin Patch', '*** Update File: old.md', '*** Move to: moved.md', '@@', '-old', '+new',

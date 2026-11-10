@@ -250,9 +250,18 @@ function parsePatchFiles(patch: string): string[] {
     // Unified hunks can contain header-shaped context and +/- content. Count
     // their lines so a later file header is still recognized without treating
     // an added "++ b/path" line as another modified file.
+    // A `diff --git` line always starts a new file, so overstated hunk counts
+    // from a model-written diff cannot swallow the next file's headers.
+    if (line.startsWith('diff --git ')) {
+      oldLines = 0;
+      newLines = 0;
+    }
     if (oldLines > 0 || newLines > 0) {
-      if (line.startsWith(' ') || line.startsWith('-')) oldLines--;
-      if (line.startsWith(' ') || line.startsWith('+')) newLines--;
+      // An empty line is a context line whose single leading space was
+      // stripped by an editor or model.
+      const context = line === '' || line.startsWith(' ');
+      if (context || line.startsWith('-')) oldLines--;
+      if (context || line.startsWith('+')) newLines--;
       continue;
     }
     if (line === '*** Begin Patch') {
