@@ -1689,7 +1689,10 @@ export class SyncApply {
     if (!target || typeof target !== 'object' || Array.isArray(target) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
       throw invalidOp(op, 'set_title requires target and fields objects');
     }
-    const customTitle = fieldString(op, fields, 'custom_title');
+    // Titles can arrive from peers with capture redaction disabled. Apply the
+    // receiving policy before either writing the session or parking its title;
+    // the canonical mutation and its hash remain unchanged.
+    const customTitle = fieldString(op, redactInboundFields(fields, ['custom_title']), 'custom_title');
     if (customTitle === null) {
       throw invalidOp(op, 'set_title requires fields.custom_title');
     }
