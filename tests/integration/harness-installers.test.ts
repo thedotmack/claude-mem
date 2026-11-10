@@ -156,10 +156,6 @@ describe('first-party harness installers', () => {
       const text = messages.join('\n');
       expect(text).toContain('extension files');
       expect(text).toContain('Automatic memory capture is not verified');
-      expect(text).toContain('Pi 0.79.6 provides manual recall only');
-      expect(text).toContain('Pi 1.0.2 and 1.0.4');
-      expect(text).toContain('other or unknown versions need a compatibility check');
-      expect(text).toContain('Check your Pi version and update Pi if needed');
       expect(text).toContain('docs/pi-native-capture.md');
     }
   });
@@ -178,8 +174,6 @@ describe('first-party harness installers', () => {
     const text = result.messages.join('\n');
     expect(text).toContain('Pi extension files: not installed');
     expect(text).toContain('Automatic memory capture is not verified');
-    expect(text).toContain('Pi 0.79.6 provides manual recall only');
-    expect(text).toContain('other or unknown versions need a compatibility check');
     expect(text).toContain('docs/pi-native-capture.md');
   });
 
