@@ -1039,7 +1039,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     symlinkSync(cliScript, path.join(cliBin, 'claude-mem'));
     writeFakeLauncher(path.join(launcherDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
 
-    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${cliBin}:${launcherDirectory}` }), cliScript);
+    const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${cliBin}:${launcherDirectory}` }), cliScript, codesignNoop);
 
     expect(row).toMatchObject({ status: temporary ? 'ok' : 'fail', required: true });
     expect(row.detail).toContain(path.join(temporary ? launcherDirectory : cliBin, 'claude-mem'));
