@@ -63,6 +63,8 @@ const SAMPLES: Record<string, Sample[]> = {
   perplexity_key: [{ text: 'pplx-' + rep('P', 48) }],
   supabase_token: [{ text: 'sbp_' + rep('e', 40) }],
   sentry_token: [{ text: 'sntryu_' + rep('c', 64) }],
+  grafana_token: [{ text: 'glsa_' + rep('G', 32) + '_' + rep('a', 8) }, { text: 'glc_' + rep('Q', 40) + '==' }],
+  postman_key: [{ text: 'PMAK-' + rep('b', 24) + '-' + rep('c', 34) }],
   slack_webhook: [{ text: 'https://hooks.slack.com/services/T0000000/B0000000/' + rep('K', 24), secret: rep('K', 24) }],
   discord_webhook: [{ text: 'https://discord.com/api/webhooks/12345678901234567/' + rep('C', 60), secret: rep('C', 60) }],
   claude_mem_key: [{ text: 'cmem_' + rep('M', 32) }, { text: 'cm_pro_' + rep('m', 16) }],
