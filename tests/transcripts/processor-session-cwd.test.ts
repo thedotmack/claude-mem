@@ -228,6 +228,36 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     });
   }
 
+  for (const copiedAfterStartup of [false, true]) {
+    it(`reads a first header spanning zstd frames before admitting live events (copied=${copiedAfterStartup})`, async () => {
+      const filePath = join(tmpRoot, 'split-header.jsonl.zstd');
+      const cwd = PROJECT_DIR + '/项目';
+      const header = Buffer.from(JSON.stringify({ ...sessionLine('split-header'), cwd, createdAt: Date.now() - 60_000 }) + '\n');
+      const seam = header.indexOf(Buffer.from('项')) + 1;
+      const encode = (entries: unknown[]) => zstdCompressSync(Buffer.from(entries.map(entry => JSON.stringify(entry) + '\n').join('')));
+      const historical = Buffer.concat([
+        zstdCompressSync(header.subarray(0, seam)), zstdCompressSync(header.subarray(seam)),
+        encode([userLine('split-header', 'old prompt'), toolLine('split-header')]),
+      ]);
+      const watch: WatchTarget = { name: 'dsh', path: filePath, schema, startAtEnd: true };
+      const watcher = new TranscriptWatcher({ version: 1, watches: [] }, join(tmpRoot, 'split-state.json'));
+      watchers.push(watcher);
+      await watcher.start();
+      writeFileSync(filePath, historical);
+      await (watcher as any).addTailer(filePath, watch, schema, copiedAfterStartup);
+      await (watcher as any).tailers.get(filePath).readTask;
+      expect(inits).toEqual([]);
+      expect(observations).toEqual([]);
+
+      appendFileSync(filePath, encode([userLine('split-header', 'live prompt'), toolLine('split-header')]));
+      (watcher as any).tailers.get(filePath).poke();
+      await (watcher as any).tailers.get(filePath).readTask;
+      expect(inits).toEqual([{ prompt: 'live prompt', cwd }]);
+      expect(observations).toEqual([{ toolName: 'Bash', cwd }]);
+      expect(capturedSessionIds).toEqual(['split-header']);
+    });
+  }
+
   it('keeps a file\'s session directory across a watcher restart', async () => {
     const filePath = join(tmpRoot, 'session.jsonl');
     const statePath = join(tmpRoot, 'state.json');

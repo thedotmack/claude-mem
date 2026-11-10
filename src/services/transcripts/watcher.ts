@@ -12,7 +12,7 @@ import {
   type TranscriptObservationTransport,
 } from './processor.js';
 import { recordTimeEpochMs } from './field-utils.js';
-import { decompressZstdFrame, decompressZstdFrameBytes, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
+import { decompressZstdFrameBytes, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
   /**
@@ -110,19 +110,29 @@ async function zstdResumeOffset(filePath: string, size: number): Promise<number>
 const FIRST_LINE_MAX_BYTES = 1024 * 1024;
 
 /**
- * A transcript's first line: of a JSONL file, or of the text in a zstd file's
- * first frame. Only the first `limit` bytes count; null when the line (or the
- * frame) does not end within them.
+ * A transcript's first line, including a JSONL header split across zstd
+ * frames. Only the first `limit` file bytes count; null when the line (or
+ * its final frame) does not end within them.
  */
 async function readFirstLine(filePath: string, isZstd: boolean, limit: number): Promise<string | null> {
-  let text: string;
   if (isZstd) {
-    const { frames } = scanZstdFramesInFile(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES), 1);
-    if (frames.length === 0) return null;
-    text = decompressZstdFrame(await readByteRange(filePath, 0, frames[0].end), frames[0]);
-  } else {
-    text = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
+    const parts: Buffer[] = [];
+    const end = Math.min(limit, FIRST_LINE_MAX_BYTES);
+    for (let offset = 0; offset < end;) {
+      const { frames } = scanZstdFramesInFile(filePath, offset, end, 1);
+      if (frames.length === 0) return null;
+      const frame = frames[0];
+      const compressed = await readByteRange(filePath, frame.start, frame.end - frame.start);
+      const bytes = decompressZstdFrameBytes(compressed, { start: 0, end: compressed.length });
+      const newline = bytes.indexOf(0x0a);
+      parts.push(newline < 0 ? bytes : bytes.subarray(0, newline));
+      // Decode only after the line is complete: a frame can also split UTF-8.
+      if (newline >= 0) return Buffer.concat(parts).toString('utf8');
+      offset = frame.end;
+    }
+    return null;
   }
+  const text = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
   const newline = text.indexOf('\n');
   return newline < 0 ? null : text.slice(0, newline);
 }
