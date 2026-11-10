@@ -93,6 +93,28 @@ test('unchanged reconciliation creates no canonical rows or metadata writes', ()
   expect(f.store.db.query('SELECT * FROM my_work_file_state ORDER BY name').all()).toEqual(metadata);
 });
 
+test('a concurrent native write after activity capture remains visible to the next pass', () => {
+  const f = fixture();
+  const writer = new SessionStore(f.databasePath);
+  disposals.push(() => writer.close());
+  const publish = f.adapter.publish.bind(f.adapter);
+  let inserted = false;
+  f.adapter.publish = updates => {
+    const changed = publish(updates);
+    if (!inserted) {
+      inserted = true;
+      const id = writer.createSDKSession('after-capture', 'repo', 'Keep concurrent work');
+      writer.saveUserPrompt('after-capture', 1, 'Keep concurrent work', id);
+    }
+    return changed;
+  };
+  f.adapter.reconcile();
+  expect([...state(f).records.values()].filter(record => record.kind === 'provenance')).toHaveLength(0);
+  f.adapter.reconcile();
+  const provenance = [...state(f).records.values()].find(record => record.kind === 'provenance');
+  expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
+});
+
 test('formatting and object-key order do not become a new imported generation', () => {
   const f = fixture(); f.adapter.saveFile('request-groups.json', groups('a'));
   f.adapter.reconcile({ captureActivity: false });

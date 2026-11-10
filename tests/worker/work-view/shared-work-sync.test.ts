@@ -29,6 +29,31 @@ function createSync(f: ReturnType<typeof fixture>) {
   const sync = new SharedWorkSync(f.store.db, f.options); disposals.push(() => sync.close()); return sync;
 }
 
+for (const ownerAction of [false, true]) {
+  test(`a caller after the current snapshot waits for fresh session provenance (ownerAction=${ownerAction})`, async () => {
+    const f = fixture(), sync = createSync(f);
+    const first = sync.reconcile();
+    let fresh: Promise<void> | undefined;
+    // The real worker has already captured its snapshot when it sends this
+    // reply. Insert the new activity before SharedWorkSync handles that reply,
+    // so the new caller overlaps a pass that cannot contain its writes.
+    const worker = (sync as unknown as { worker: import('node:worker_threads').Worker }).worker;
+    worker.prependOnceListener('message', () => {
+      const session = f.store.createSDKSession('new-live-session', 'org/repo', 'Keep the latest work');
+      f.store.saveUserPrompt('new-live-session', 1, 'Keep the latest work', session);
+      fresh = ownerAction ? sync.prepareOwnerAction() : sync.reconcile();
+    });
+    await first;
+    expect(fresh).toBeDefined();
+    await fresh;
+
+    const records = readSharedRecords(f.store.db, { deviceId: f.options.deviceId }).records;
+    const provenance = [...records.values()].find(record => record.kind === 'provenance');
+    expect(provenance?.value).toMatchObject({ session: { content_session_id: 'new-live-session', project: 'org/repo' } });
+    expect(sync.status()).toMatchObject({ invalid: 0, files: [] });
+  }, 15_000);
+}
+
 test('disabled runtime leaves legacy file writers active and does not capture shared rows', async () => {
   const f = fixture();
   const sync = new SharedWorkSync(f.store.db, { ...f.options, enabled: false });
@@ -84,11 +109,11 @@ test('close settles an in-flight locked pass, releases registration, and rejects
   f.store.db.exec('BEGIN IMMEDIATE');
   try {
     writeFileSync(join(f.ledger, 'request-groups.json'), JSON.stringify(f.group));
-    const first = sync.reconcile(), duplicate = sync.reconcile();
-    expect(first).toBe(duplicate);
+    const first = sync.reconcile(), duplicate = sync.reconcile(), another = sync.reconcile();
+    expect(duplicate).toBe(another);
     await Bun.sleep(40);
     sync.close();
-    await Promise.race([first, Bun.sleep(500).then(() => { throw new Error('close did not settle pending reconciliation'); })]);
+    await Promise.race([Promise.all([first, duplicate]), Bun.sleep(500).then(() => { throw new Error('close did not settle pending reconciliation'); })]);
   } finally { f.store.db.exec('ROLLBACK'); }
   expect(() => createSync(f).start()).not.toThrow();
 }, 15_000);
