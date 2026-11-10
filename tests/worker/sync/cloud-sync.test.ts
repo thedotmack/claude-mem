@@ -27,6 +27,8 @@ import {
 } from '../../../src/services/sync/CloudSync.js';
 import { PROMPT_TEXT_MAX_BYTES, PROMPT_TRUNCATION_MARKER } from '../../../src/services/sync/prompt-text-clamp.js';
 import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import { SyncApply } from '../../../src/services/sync/SyncApply.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -377,6 +379,43 @@ describe('CloudSync', () => {
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  for (const kind of ['observation', 'summary'] as const) {
+    it(`syncs finalized discovery tokens after the ${kind}'s first push was acknowledged`, async () => {
+      if (kind === 'observation') seedObservation();
+      else seedSummary();
+      const table = kind === 'observation' ? 'observations' : 'session_summaries';
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      const receiver = new SessionStore(':memory:');
+      const apply = new SyncApply(receiver.db, { deviceId: 'receiver' });
+      const pull = () => apply.applyOps(decodeChanges(calls.flatMap(call => call.wireParsed.ops)
+        .map((op, index) => ({ ...op, seq: String(index + 1) }))), { epoch: '1' });
+      const received = () => receiver.db.prepare(`SELECT discovery_tokens FROM ${table}`).get();
+      try {
+        await sync.flush();
+        expect(pendingCount(table)).toBe(0);
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: kind === 'observation' ? 42 : 0 });
+
+        // Claude's final result can arrive after the earlier assistant row
+        // has already synced. Patch through the production store entry point.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null, 1040);
+        await sync.flush();
+        expect(pull().quarantined).toBe(0);
+        expect(received()).toEqual({ discovery_tokens: 1040 });
+        expect(calls.flatMap(call => call.parsed.ops).map(op => op.rev)).toEqual(['1', '2']);
+
+        // An equal correction (or a lower summary total) changes no payload.
+        store.updateDiscoveryTokens(kind === 'observation' ? [1] : [], kind === 'summary' ? 1 : null,
+          kind === 'summary' ? 40 : 1040);
+        await sync.flush();
+        expect(calls).toHaveLength(2);
+      } finally {
+        receiver.close();
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Wire contract: ops POST bodies must follow the SyncApply BODY FIELD
