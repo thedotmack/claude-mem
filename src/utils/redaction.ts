@@ -109,7 +109,26 @@ function matchAfterEscapedWhitespace(pattern: RedactionPattern): RedactionPatter
   return { ...pattern, regex: new RegExp(source, pattern.regex.flags) };
 }
 
+// A Cookie/Set-Cookie header value runs to a line end, a quote, a backtick, a
+// backslash (an escaped `\n` or `\"` in JSON text) or a `<` (a marker).
+const COOKIE_VALUE_CHAR = String.raw`[^\\\n\r"'\`<]`;
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
+  // A `Cookie`/`Set-Cookie` header value is a session credential whatever the
+  // cookie is named (`Cookie: sessionid=...`, `set-cookie: sid=...`), as printed
+  // by `curl -v`, a proxy log or a captured response dump. Only the value is
+  // replaced, so the key stays readable. The Cowork shim has redacted these
+  // since the plugin landed (its COOKIE_RE, #3733), so the same session text
+  // was redacted on the way to cmem.ai and stored verbatim by the local worker.
+  // keyedLookbehind takes JSON-escaped keys (`\"Cookie\":\"…\"`); an optional
+  // `[` takes the first entry of Node's `"set-cookie": ["…"]` array. The value
+  // stops at a line end, a quote or a backslash, so in `JSON.stringify` text it
+  // ends before an escaped `\n` or `\"` and leaves the rest of the payload and
+  // its JSON intact, and at `<`, so it never re-redacts its own marker. The
+  // 4-char floor keeps a bare `Cookie: x` placeholder out. First in the list:
+  // the whole header value goes before a vendor pattern can split it with its
+  // marker and leave a later cookie in the same header readable.
+  { name: 'cookie_header',   regex: new RegExp(`(?<=(?:\\b(?:set-)?cookie)${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}(?:\\[${BOUNDED_SPACE})?${OPTIONAL_QUOTE})(?![ \\t])${COOKIE_VALUE_CHAR}{4,}`, 'gi') },
   // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
   // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
   // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
@@ -527,6 +546,20 @@ function awsSecretKeyMarkerForKeyedValue(key: string, value: string, config: Red
   return "<redacted type='aws_secret_key'/>";
 }
 
+// The cookie_header text pattern anchors on `Cookie: …`, so a header object
+// like `{"headers": {"Cookie": "sessionid=…"}}` (or Node's `"set-cookie":
+// [...]` array) needs the key paired with the value again. It is a built-in,
+// so it applies whether or not the generic group is on, and it replaces the
+// whole value even when a vendor pattern matched part of it, so a later cookie
+// in the same header never stays readable.
+const COOKIE_KEY = /^(?:set-)?cookie$/i;
+
+function cookieMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (config.disabledBuiltinPatterns?.includes('cookie_header')) return null;
+  if (!COOKIE_KEY.test(key) || value.trim().length < 4) return null;
+  return "<redacted type='cookie_header'/>";
+}
+
 /**
  * The value with every string in it (object values and array items, at any
  * depth) redacted, while redaction is on; the caller's value is not mutated.
@@ -537,6 +570,8 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
   if (!config.enabled) return value;
   const walk = (node: unknown, key?: string): unknown => {
     if (typeof node === 'string') {
+      const cookieMarker = key === undefined ? null : cookieMarkerForKeyedValue(key, node, config);
+      if (cookieMarker) return cookieMarker;
       const result = redactSensitive(node, config);
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
@@ -546,7 +581,9 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }
-    if (Array.isArray(node)) return node.map((child) => walk(child));
+    // Array items carry no key of their own; only a cookie header's entries
+    // (Node's `set-cookie` array) keep the parent key for the pairing above.
+    if (Array.isArray(node)) return node.map((child) => walk(child, key !== undefined && COOKIE_KEY.test(key) ? key : undefined));
     if (node !== null && typeof node === 'object') {
       return Object.fromEntries(Object.entries(node).map(([childKey, child]) => [childKey, walk(child, childKey)]));
     }

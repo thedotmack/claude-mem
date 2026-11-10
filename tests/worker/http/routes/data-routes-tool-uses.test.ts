@@ -99,12 +99,16 @@ describe('DataRoutes tool_uses (progressive disclosure layer 4)', () => {
     ];
 
     mockGetToolUsesByIds = mock(() => [SAMPLE_ROW]);
-    mockQueryToolUses = mock(() => [SAMPLE_ROW]);
+    mockQueryToolUses = mock(() => [{
+      ...SAMPLE_ROW,
+      tool_input_bytes: Buffer.byteLength(SAMPLE_ROW.tool_input, 'utf8'),
+      tool_response_bytes: Buffer.byteLength(SAMPLE_ROW.tool_response, 'utf8'),
+    }]);
 
     const mockDbManager = {
       getSessionStore: () => ({
         getToolUsesByIds: mockGetToolUsesByIds,
-        queryToolUses: mockQueryToolUses,
+        queryToolUseIndex: mockQueryToolUses,
       }),
     };
 

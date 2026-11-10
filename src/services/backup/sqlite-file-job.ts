@@ -15,7 +15,7 @@ export type SqliteFileJob =
   /** VACUUM INTO `target` from `source`, then make it standalone. */
   | { kind: 'snapshot'; source: string; target: string }
   /** Fold any `-wal` into `target`, switch it to rollback-journal mode, require quick_check ok. */
-  | { kind: 'standalone'; target: string }
+  | { kind: 'standalone'; target: string; maxSchemaVersion?: number }
   /** PRAGMA wal_checkpoint(TRUNCATE) on `target`; reports whether another connection blocked it. */
   | { kind: 'checkpoint'; target: string };
 
@@ -27,9 +27,15 @@ const CHILD_SCRIPT = String.raw`
 const { Database } = require('bun:sqlite');
 const fs = require('fs');
 function rm(p) { try { fs.unlinkSync(p); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
-function standalone(p) {
+function standalone(p, maxSchemaVersion) {
   const db = new Database(p, { readwrite: true, create: false });
   try {
+    if (maxSchemaVersion !== undefined) {
+      const stamp = db.query('PRAGMA user_version').get().user_version;
+      if (stamp > maxSchemaVersion) {
+        throw new Error('Snapshot has schema v' + stamp + '; this claude-mem knows up to schema v' + maxSchemaVersion + '. Upgrade claude-mem before restoring this snapshot.');
+      }
+    }
     db.run('PRAGMA journal_mode = DELETE');
     const r = db.query('PRAGMA quick_check').get();
     if (!r || r.quick_check !== 'ok') throw new Error('database failed quick_check: ' + (r ? r.quick_check : 'no result'));
@@ -47,6 +53,10 @@ try {
     } finally { db.close(); }
   } else {
     if (job.kind === 'snapshot') {
+      // VACUUM INTO creates a new file rather than preserving source modes.
+      // Keep the complete memory copy private from its first write. This is
+      // a dedicated child, so the worker's process-wide umask is unchanged.
+      if (process.platform !== 'win32') process.umask(0o077);
       // VACUUM INTO is the only consistent online copy. A raw copy of a live
       // db and its WAL can pair two different states, so there is no copy
       // fallback: a failed VACUUM INTO fails the snapshot.
@@ -54,7 +64,7 @@ try {
       try { src.run("VACUUM INTO '" + job.target.replace(/'/g, "''") + "'"); }
       finally { src.close(); }
     }
-    standalone(job.target);
+    standalone(job.target, job.maxSchemaVersion);
   }
   process.stdout.write(JSON.stringify(result) + '\n');
 } catch (e) {
@@ -68,10 +78,11 @@ function lastLine(text: string): string {
   return lines[lines.length - 1] ?? '';
 }
 
-export async function runSqliteFileJob(job: SqliteFileJob): Promise<SqliteFileJobResult> {
+export async function runSqliteFileJob(job: SqliteFileJob, signal?: AbortSignal): Promise<SqliteFileJobResult> {
   if (typeof Bun === 'undefined') {
     throw new Error('SQLite file jobs need the Bun runtime (the worker), not Node');
   }
+  signal?.throwIfAborted();
   const child = Bun.spawn([process.execPath, '-e', CHILD_SCRIPT], {
     // BUN_BE_BUN makes a `bun build --compile` worker binary act as the bun
     // CLI for this child, so `-e` runs the script there too.
@@ -80,14 +91,32 @@ export async function runSqliteFileJob(job: SqliteFileJob): Promise<SqliteFileJo
     stderr: 'pipe',
     windowsHide: true,
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    const errorLine = stderr.split('\n').find(line => line.startsWith('ERROR: '));
-    throw new Error(errorLine ? errorLine.slice('ERROR: '.length) : `sqlite ${job.kind} job exited ${exitCode}: ${lastLine(stderr)}`);
+  const abortChild = () => {
+    // This handle names only our SQLite child. A snapshot's live source is
+    // readonly; its disposable partial is removed after the child exits.
+    try { child.kill('SIGKILL'); } catch { /* already exited */ }
+  };
+  signal?.addEventListener('abort', abortChild, { once: true });
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    signal?.throwIfAborted();
+    if (exitCode !== 0) {
+      const errorLine = stderr.split('\n').find(line => line.startsWith('ERROR: '));
+      throw new Error(errorLine ? errorLine.slice('ERROR: '.length) : `sqlite ${job.kind} job exited ${exitCode}: ${lastLine(stderr)}`);
+    }
+    return JSON.parse(lastLine(stdout)) as SqliteFileJobResult;
+  } catch (error) {
+    // Failed pipe reads must not abandon a child either. Reap it before the
+    // caller removes the partial, and keep cancellation's original reason.
+    abortChild();
+    await child.exited.catch(() => {});
+    signal?.throwIfAborted();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abortChild);
   }
-  return JSON.parse(lastLine(stdout)) as SqliteFileJobResult;
 }

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.13.0",
+  "version": "15.14.0",
   "description": "Persistent memory for AI coding agents: the next session starts where the last one left off. Works with Claude Code, Codex, Cursor, OpenCode and more.",
   "keywords": [
     "claude",
@@ -76,7 +76,7 @@
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
     "build:binaries": "node scripts/build-worker-binary.js",
-    "build:cli-binary": "bun build --compile --minify --entry-naming \"[name].js\" ./src/services/worker-service.ts ./src/services/context/context-read-worker.ts ./src/services/work-view/work-view-read-worker.ts --outfile plugin/scripts/claude-mem",
+    "build:cli-binary": "bun scripts/build-native-worker.js --native",
     "worker:logs": "node scripts/worker-logs.cjs",
     "worker:tail": "node scripts/worker-logs.cjs --follow",
     "changelog:generate": "node scripts/generate-changelog.js",

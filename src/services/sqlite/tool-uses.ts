@@ -1,3 +1,4 @@
+import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 // Durable raw tool-use rows (schema v51).
 //
 // `pending_messages` is the GENERATION QUEUE: rows are claimed, fed to the
@@ -69,6 +70,16 @@ export interface ToolUseRow {
   created_at: string;
   created_at_epoch: number;
 }
+
+/** Metadata disclosed before a caller chooses which raw tool bodies to read. */
+export type ToolUseIndexRow = Pick<ToolUseRow,
+  'id' | 'tool_use_id' | 'tool_name' | 'project' | 'content_session_id' |
+  'memory_session_id' | 'platform_source' | 'agent_id' | 'agent_type' |
+  'observation_id' | 'or_generation_id' | 'or_session_id' | 'prompt_number' |
+  'created_at' | 'created_at_epoch'> & {
+    tool_input_bytes: number;
+    tool_response_bytes: number;
+  };
 
 export interface UpsertToolUseInput {
   toolUseId: string;
@@ -328,7 +339,7 @@ export const TOOL_USES_BATCH_DEFAULT_ROWS = 100;
 export function getToolUsesByIds(
   db: Database,
   ids: Array<number | string>,
-  options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+  options: { limit?: number; project?: string; projects?: string[]; platformSource?: string; contentSessionId?: string } = {}
 ): ToolUseRow[] {
   const numericIds: number[] = [];
   const stringIds: string[] = [];
@@ -361,9 +372,10 @@ export function getToolUsesByIds(
 
   const conditions = [`(${idClauses.join(' OR ')})`];
 
-  if (options.project) {
-    conditions.push('project COLLATE NOCASE = ?');
-    params.push(options.project);
+  const projects = scopedProjects(options);
+  if (projects.length) {
+    const scope = projectScopeSql('tool_uses', projects, { includeMerged: false });
+    conditions.push(scope.sql); params.push(...scope.params);
   }
   if (options.contentSessionId) {
     conditions.push('content_session_id = ?');
@@ -385,12 +397,27 @@ export function getToolUsesByIds(
   `).all(...params) as ToolUseRow[];
 }
 
-/**
- * Index-shaped listing for Receipt tallies and for finding ids to hand to
- * `getToolUsesByIds`. Deliberately still returns full rows — callers that want
- * the cheap shape project it themselves — but it is always bounded by a limit.
- */
+/** Bounded full-row listing for callers that explicitly need stored bodies. */
 export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): ToolUseRow[] {
+  return queryToolUseRows(db, filters, '*') as ToolUseRow[];
+}
+
+/**
+ * Keep raw payloads inside SQLite for the progressive-disclosure index. Count
+ * BLOB bytes, not TEXT characters, so Unicode and embedded NULs agree with
+ * the sizes an explicit body fetch returns.
+ */
+export function queryToolUseIndex(db: Database, filters: ToolUseQueryFilters = {}): ToolUseIndexRow[] {
+  return queryToolUseRows(db, filters, `
+    id, tool_use_id, tool_name, project, content_session_id, memory_session_id,
+    platform_source, agent_id, agent_type, observation_id, or_generation_id,
+    or_session_id, prompt_number, created_at, created_at_epoch,
+    COALESCE(length(CAST(tool_input AS BLOB)), 0) AS tool_input_bytes,
+    COALESCE(length(CAST(tool_response AS BLOB)), 0) AS tool_response_bytes
+  `) as ToolUseIndexRow[];
+}
+
+function queryToolUseRows(db: Database, filters: ToolUseQueryFilters, projection: string): unknown[] {
   const conditions: string[] = [];
   const params: Array<string | number> = [];
 
@@ -441,11 +468,11 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const offset = Math.max(Math.floor(filters.offset ?? 0), 0);
 
   return db.prepare(`
-    SELECT * FROM tool_uses
+    SELECT ${projection} FROM tool_uses
     ${whereClause}
     ORDER BY created_at_epoch ${order}, id ${order}
     LIMIT ${limit} OFFSET ${offset}
-  `).all(...params) as ToolUseRow[];
+  `).all(...params);
 }
 
 /**
@@ -521,7 +548,7 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
   try {
     if (!toolUsesTableExists(db)) return 0;
     const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
-    const { changes } = db
+    db
       .prepare(
         `DELETE FROM tool_uses
           WHERE observation_id IS NOT NULL
@@ -529,6 +556,8 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
             AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
       )
       .run(cutoffEpoch);
+    // Bun's run().changes includes FTS shadow-table writes from triggers.
+    const { changes } = db.query('SELECT changes() AS changes').get() as { changes: number };
     if (changes > 0) {
       logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
         rows: changes,
@@ -537,7 +566,7 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
     }
     return changes;
   } catch (error) {
-    logger.debug('DB', 'tool_uses retention purge skipped', {},
+    logger.warn('DB', 'tool_uses retention purge failed', {},
       error instanceof Error ? error : new Error(String(error)));
     return 0;
   }

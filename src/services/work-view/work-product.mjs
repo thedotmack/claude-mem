@@ -75,9 +75,23 @@ function parse(value) {
 }
 
 function urlsIn(value, found = []) {
-  if (typeof value === 'string') { const url = safeWebUrl(value); if (url) found.push(url); }
-  else if (Array.isArray(value)) for (const item of value) urlsIn(item, found);
-  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) if (/url$/i.test(key) || typeof item === 'object') urlsIn(item, found);
+  // Captured JSON can be much deeper than the JavaScript call stack.
+  const pending = [value];
+  const visited = new WeakSet();
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === 'string') {
+      const url = safeWebUrl(item);
+      if (url) found.push(url);
+    } else if (item && typeof item === 'object' && !visited.has(item)) {
+      visited.add(item);
+      const children = Array.isArray(item) ? item : Object.entries(item)
+        .filter(([key, child]) => /url$/i.test(key) || typeof child === 'object')
+        .map(([, child]) => child);
+      // Reverse insertion preserves the previous depth-first source order.
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    }
+  }
   return found;
 }
 
@@ -98,7 +112,7 @@ export function githubRepo(remote) {
 
 function gitUrl(product) {
   if (!product.repo) return undefined;
-  return product.kind === 'commit' ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch}`;
+  return product.kind === 'commit' ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 function outputText(call, response) {
@@ -161,38 +175,65 @@ function commitsFrom(command, response, out) {
   return [...commits.values()];
 }
 
-// The remote and branch a `git push` command names (`git push -u origin <branch>`,
-// `git push <url> HEAD:<branch>`); null for a push that deletes or sends tags.
-function pushTarget(command) {
-  const args = command.match(gitPattern(String.raw`push((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`))?.[1];
-  const tokens = (args ?? '').trim().split(/\s+/).filter(Boolean).map(unquote);
-  if (tokens.some((token) => ['-d', '--delete', '--tags', '--mirror', '--all'].includes(token))) return null;
-  const [remote, refspec] = tokens.filter((token) => !token.startsWith('-'));
-  const branch = refspec && !refspec.startsWith(':') ? refspec.replace(/^\+/, '').split(':').at(-1).replace(/^refs\/heads\//, '') : null;
-  return { repo: githubRepo(remote), branch: branch && branch !== 'HEAD' ? branch : null };
+// The remote and destination branches named in each `git push` command.
+function pushTargets(command) {
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
+  return [...command.matchAll(pattern)].map(([, args]) => {
+    const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
+    const [remote, ...refspecs] = tokens.filter(token => !token.startsWith('-'));
+    const destinations = refspecs.map(spec => spec.startsWith(':') ? '' : spec.replace(/^\+/, '').split(':').at(-1));
+    const deleting = tokens.some(token => ['-d', '--delete'].includes(token));
+    const branches = deleting ? [] : destinations.map(ref =>
+      ref && ref !== 'HEAD' && (!ref.startsWith('refs/') || ref.startsWith('refs/heads/')) ? ref.replace(/^refs\/heads\//, '') : null);
+    const deletesOrTags = deleting || tokens.includes('--tags') || destinations.some(ref => ref.startsWith('refs/tags/'));
+    return { repo: githubRepo(remote), branches,
+      dryRun: tokens.some(token => token === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)), deletesOrTags };
+  });
 }
 
-/** Branches a recorded `git push` updated, each with the GitHub repo it went to
- * (from git's `To <remote>` line or the remote URL in the command) and the
- * commit the push left it at. */
+/** Changed remote branches, as reported by regular or --porcelain Git output. */
 function pushesFrom(command, response, out) {
-  const runs = gitPattern(String.raw`push\b`).test(command);
-  const recorded = typeof response?.gitOperation?.push?.branch === 'string' ? response.gitOperation.push.branch : null;
-  if (!runs && !recorded) return [];
-  const target = runs ? pushTarget(command) : null;
+  const targets = pushTargets(command);
+  const recorded = response?.gitOperation?.push?.branch;
+  if (!targets.length && typeof recorded !== 'string') return [];
+  let target = targets.length === 1 ? targets[0] : null;
+  let index = 0;
+  let repo = target?.repo ?? null;
   const pushes = new Map();
-  let repo = null;
-  for (const line of out.split('\n')) {
-    const remote = line.match(/^To (\S+)$/);
-    if (remote) { repo = githubRepo(remote[1]); continue; }
-    const ref = line.match(new RegExp(String.raw`^\s*[ +*=]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
-    if (!ref) continue;
-    const branch = ref[3].replace(/^refs\/heads\//, '');
-    pushes.set(branch, { branch, repo: repo ?? target?.repo ?? null, heads: ref[1] ? [ref[1]] : [] });
+  const add = (branch, head) => {
+    const key = JSON.stringify([repo, branch]);
+    pushes.set(key, { branch, repo, heads: head ? [head] : [] });
+  };
+  const lines = out.split('\n');
+  const mixedSimulation = targets.some(t => t.dryRun) && targets.some(t => !t.dryRun);
+  if (mixedSimulation) {
+    const reportsPush = text => typeof text === 'string' && /^(?:To |Everything up-to-date$)/m.test(text);
+    // Missing reports or reports split across streams cannot be paired with commands in order.
+    if (lines.filter(reportsPush).length !== targets.length || (reportsPush(response?.stdout) && reportsPush(response?.stderr))) return [];
   }
-  // A quiet push prints no ref line: use the branch gitOperation or the command names.
-  const branch = recorded ?? target?.branch;
-  if (!pushes.size && branch && !/\[rejected\]|failed to push|^fatal:/m.test(out)) pushes.set(branch, { branch, repo: target?.repo ?? null, heads: [] });
+  for (const line of lines) {
+    if (line === 'Everything up-to-date') { index++; continue; }
+    const remote = line.match(/^To (\S+)$/);
+    if (remote) {
+      target = targets[index++] ?? (targets.length === 1 ? targets[0] : null);
+      repo = githubRepo(remote[1]) ?? target?.repo ?? null;
+      continue;
+    }
+    if (target?.dryRun) continue;
+    const porcelain = line.match(/^[ +*]\t[^:\t]*:refs\/heads\/([^\t]+)\t(.+)$/);
+    if (porcelain) {
+      add(porcelain[1], porcelain[2].match(new RegExp(String.raw`^${SHA}\.\.\.?(${SHA})`))?.[1]);
+      continue;
+    }
+    const ref = line.match(new RegExp(String.raw`^\s*[ +*]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
+    if (ref && !ref[3].startsWith('refs/tags/')) {
+      const branch = ref[3].replace(/^refs\/heads\//, '');
+      if (!target?.deletesOrTags || target.branches.includes(branch) || line.includes('[new branch]')) add(branch, ref[1]);
+    }
+  }
+  const branch = recorded ?? target?.branches[0];
+  if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch
+    && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
   return [...pushes.values()];
 }
 
@@ -218,7 +259,7 @@ function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
 /** Commits and branches one recorded Bash command made. */
 export function gitProductsFromCommand(command, response, out, { atEpoch = null, sourceRef = null } = {}) {
   const pushes = pushesFrom(command, response, out);
-  const branches = new Map([...createdBranchesFrom(command, out), ...pushes].map((branch) => [branch.branch, branch]));
+  const branches = [...createdBranchesFrom(command, out).filter(created => !pushes.some(pushed => pushed.branch === created.branch)), ...pushes];
   const products = [];
   for (const commit of commitsFrom(command, response, out)) {
     const pushed = (commit.branch && pushes.find((push) => push.branch === commit.branch)) || pushes.find((push) => push.heads.some((head) => head.startsWith(commit.sha.slice(0, 7))))
@@ -226,7 +267,7 @@ export function gitProductsFromCommand(command, response, out, { atEpoch = null,
       || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
     products.push({ kind: 'commit', title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef });
   }
-  for (const branch of branches.values()) products.push({ kind: 'branch', title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef });
+  for (const branch of branches) products.push({ kind: 'branch', title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef });
   return products.map((product) => ({ ...product, url: gitUrl(product) }));
 }
 
@@ -255,9 +296,10 @@ export function productsFromObservation(observation) {
   if (!Array.isArray(files)) return [];
   return files.flatMap((path, index) => {
     const kind = fileKind(path);
+    if (!kind) return [];
     // A generic entry file is named by its folder (…/launch-review/index.html).
     const title = /^index\.\w+$/i.test(basename(path)) ? basename(path.slice(0, -basename(path).length - 1)) || basename(path) : basename(path);
-    return kind ? [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }] : [];
+    return [{ kind, title, path, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: 'observation', id: observation.id, index } }];
   });
 }
 
@@ -290,7 +332,7 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
 
 // A commit is one entry per sha, a branch one per name, anything else one per link or file.
 const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha.slice(0, 7)}`
-  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.productId ?? product.url ?? product.path;
+  : product.kind === 'branch' && product.branch ? `branch:${product.repo ?? ''}:${product.branch}` : product.productId ?? product.url ?? product.path;
 
 /** Opaque identity for a recorded local file. The path never enters the shared identity. */
 export function localProductId(ref) {
@@ -313,16 +355,20 @@ export function mergeProducts(lists, limit = 60) {
     for (const head of product.heads ?? []) repoByHead.set(head.slice(0, 7), product.repo);
   }
   const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
-  const pushedAfter = (product) => pushesByBranch.get(product.branch)?.find((push) => product.kind === 'branch' || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0))?.repo;
+  const pushedAfter = (product) => {
+    const repos = new Set((pushesByBranch.get(product.branch) ?? [])
+      .filter(push => product.kind === 'branch' || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map(push => push.repo));
+    return repos.size === 1 ? [...repos][0] : null;
+  };
   const repoOf = (product) => product.repo ?? pushedAfter(product) ?? (product.sha ? repoByHead.get(product.sha.slice(0, 7)) : undefined) ?? null;
   for (const product of products) if (product.kind === 'commit' && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
   const unique = new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
-    const key = productKey(product);
-    if (unique.has(key)) continue;
     const isGit = product.kind === 'commit' || product.kind === 'branch';
     const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === 'commit' ? repoBySource.get(sourceKey(product)) : null) : null;
-    unique.set(key, repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product);
+    const resolved = repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product;
+    const key = productKey(resolved);
+    if (!unique.has(key)) unique.set(key, resolved);
   }
   return [...unique.values()].slice(0, limit);
 }

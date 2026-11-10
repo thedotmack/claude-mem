@@ -330,17 +330,27 @@ describe('display preferences', () => {
     const first = testStore({ storage }).store
     first.getState().setListView('list')
     first.getState().setFilter('closed')
+    first.getState().setFocusArtwork('compact')
     first.getState().goToPage('rules')
     const saved = JSON.parse(storage.items.get('claude-mem:my-work:preferences')!)
-    assert.deepEqual(saved.state, { listView: 'list', filter: 'closed', sort: 'attention' })
+    assert.deepEqual(saved.state, { listView: 'list', filter: 'closed', sort: 'attention', focusArtwork: 'compact' })
     const next = testStore({ storage }).store.getState().view
-    assert.deepEqual([next.listView, next.filter, next.section], ['list', 'closed', 'work'])
+    assert.deepEqual([next.listView, next.filter, next.focusArtwork, next.section], ['list', 'closed', 'compact', 'work'])
   })
 
   it('leaves unknown saved values at their defaults, drops the team view, and starts the theme from ?theme=', () => {
-    const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { dark: false, listView: 'team', filter: 'mine', sort: 7 } }) })
+    const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { dark: false, listView: 'team', filter: 'mine', sort: 7, focusArtwork: 'animated' } }) })
     const view = testStore({ storage, href: 'http://localhost/?theme=dark' }).store.getState().view
-    assert.deepEqual([view.dark, view.listView, view.filter, view.sort], [true, 'cards', 'all', 'attention'])
+    assert.deepEqual([view.dark, view.listView, view.filter, view.sort, view.focusArtwork], [true, 'cards', 'all', 'attention', 'full'])
+  })
+
+  it('keeps existing preferences when artwork density is absent and remembers turning artwork off', () => {
+    const storage = memoryStorage({ 'claude-mem:my-work:preferences': JSON.stringify({ version: 1, state: { listView: 'list', filter: 'working', sort: 'started' } }) })
+    const first = testStore({ storage }).store
+    assert.deepEqual([first.getState().view.listView, first.getState().view.focusArtwork], ['list', 'full'])
+    first.getState().setFocusArtwork('off')
+    const next = testStore({ storage }).store.getState().view
+    assert.deepEqual([next.listView, next.filter, next.sort, next.focusArtwork], ['list', 'working', 'started', 'off'])
   })
 })
 
