@@ -18,7 +18,7 @@ export function displayTime(value: string): string {
   let text = value.replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2})\b/g, (_, month, day) =>
     new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(new Date(2026, months.indexOf(month), Number(day))))
     .replace(/\b(Today|Yesterday)\b/g, (word: string) => words[word] ?? word)
-  // Korean puts 오전/오후 before the time: "3:45 pm" reads "오후 3:45".
-  if (locale === 'ko') text = text.replace(/\b(\d{1,2}:\d{2}) ?(am|pm)\b/g, (_, time: string, half: string) => `${words[half]} ${time}`)
+  // Korean and Turkish put the am/pm word before the time: "3:45 pm" reads "오후 3:45" and "ÖS 3:45".
+  if (locale === 'ko' || locale === 'tr') text = text.replace(/\b(\d{1,2}:\d{2}) ?(am|pm)\b/g, (_, time: string, half: string) => `${words[half]} ${time}`)
   return text.replace(/\b(am|pm)\b/g, (half: string) => words[half] ?? half)
 }
