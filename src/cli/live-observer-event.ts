@@ -3,17 +3,22 @@ import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { remoteHookSpoolReceipt, type HookSpoolEntry } from '../shared/hook-spool.js';
 import { remoteHookSpoolToken, usesRemoteHookSpool, REMOTE_SPOOL_PROTOCOL_VERSION } from '../shared/hook-spool-remote.js';
 import { logger } from '../utils/logger.js';
-import { deliverLiveObserverHandoff } from '../shared/live-observer-handoff.js';
+import { deliverLiveObserverHandoff, LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../shared/live-observer-handoff.js';
 
 /** One live handoff, no disk outbox, background child, or delivery retry. */
-export { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../shared/live-observer-handoff.js';
+export { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS };
 const handoffs = new Set<Promise<void>>();
+
+export function parseHandoffTimeoutMs(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : LIVE_OBSERVER_HANDOFF_TIMEOUT_MS;
+}
 
 export function sendLiveObserverEvent(entry: HookSpoolEntry): string {
   const receipt = remoteHookSpoolReceipt(entry);
   const handoff = deliver(entry).catch(() => {
     // An ambiguous handoff is never resent: the worker may already have it.
-    logger.debug('HOOK', 'Live observer handoff unavailable; skipped event', { kind: entry.kind });
+    logger.warn('HOOK', 'Live observer handoff unavailable; skipped event', { kind: entry.kind });
   });
   handoffs.add(handoff);
   void handoff.finally(() => handoffs.delete(handoff));
@@ -26,6 +31,9 @@ export async function settleLiveObserverEvents(): Promise<void> {
 
 async function deliver(entry: HookSpoolEntry): Promise<void> {
   const settings = loadFromFileOnce();
+  const handoffTimeoutMs = parseHandoffTimeoutMs(
+    process.env.CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS ?? settings.CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS,
+  );
   let path: string;
   let body: unknown;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -51,5 +59,5 @@ async function deliver(entry: HookSpoolEntry): Promise<void> {
     throw new Error(`Not a live observer event: ${entry.kind}`);
   }
   await deliverLiveObserverHandoff(timeoutMs => workerHttpRequest(path, { method: 'POST', headers,
-    body: JSON.stringify(body), timeoutMs, idleTimeoutMs: timeoutMs }));
+    body: JSON.stringify(body), timeoutMs, idleTimeoutMs: timeoutMs }), handoffTimeoutMs);
 }

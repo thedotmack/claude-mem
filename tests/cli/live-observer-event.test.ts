@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import * as worker from '../../src/shared/worker-utils.js';
 import * as settings from '../../src/shared/hook-settings.js';
+import { logger } from '../../src/utils/logger.js';
 import { HookSpool } from '../../src/shared/hook-spool.js';
 import { spoolHookEvent, settleHookSpoolNudges } from '../../src/cli/spool-hook-event.js';
 
@@ -62,5 +63,40 @@ describe('live observation handoff', () => {
     expect(Buffer.byteLength(String(post.mock.calls[0][1]?.body))).toBeLessThan(5 * 1024 * 1024);
     expect(summary).toMatchObject({ last_assistant_message: 'done' });
     expect(Object.keys(summary)).not.toContain('lastAssistantMessage');
+  });
+
+  it('logs skipped handoffs at WARN level', async () => {
+    spyOn(worker, 'workerHttpRequest').mockRejectedValue(new Error('ECONNREFUSED'));
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    spoolHookEvent('observation', { contentSessionId: 's', platformSource: 'claude', toolName: 'Read' });
+    await settleHookSpoolNudges();
+    expect(warn).toHaveBeenCalledWith('HOOK', 'Live observer handoff unavailable; skipped event', { kind: 'observation' });
+  });
+
+  it('uses configured CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS for handoff deadline', async () => {
+    const post = spyOn(worker, 'workerHttpRequest').mockImplementation(async () => new Response('{}'));
+    spyOn(settings, 'loadFromFileOnce').mockReturnValue({
+      CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: '',
+      CLAUDE_MEM_WORKER_URL: '',
+      CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS: '600',
+    } as any);
+    spoolHookEvent('observation', { contentSessionId: 's', platformSource: 'claude', toolName: 'Read' });
+    await settleHookSpoolNudges();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][1]?.timeoutMs).toBe(600);
+    expect(post.mock.calls[0][1]?.idleTimeoutMs).toBe(600);
+  });
+
+  it('falls back to 250ms when CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS is unconfigured or invalid', async () => {
+    const post = spyOn(worker, 'workerHttpRequest').mockImplementation(async () => new Response('{}'));
+    spyOn(settings, 'loadFromFileOnce').mockReturnValue({
+      CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: '',
+      CLAUDE_MEM_WORKER_URL: '',
+      CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS: 'invalid',
+    } as any);
+    spoolHookEvent('observation', { contentSessionId: 's', platformSource: 'claude', toolName: 'Read' });
+    await settleHookSpoolNudges();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][1]?.timeoutMs).toBe(250);
   });
 });

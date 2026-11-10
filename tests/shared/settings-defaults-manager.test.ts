@@ -1157,6 +1157,10 @@ describe('SettingsDefaultsManager', () => {
       expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('');
     });
 
+    it('CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS defaults to 250ms', () => {
+      expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS).toBe('250');
+    });
+
     it('cloud sync content flush knobs default to 40 ops / 90s', () => {
       const defaults = SettingsDefaultsManager.getAllDefaults();
       expect(defaults.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE).toBe('40');
