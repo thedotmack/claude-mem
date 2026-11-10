@@ -38,7 +38,9 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, c
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && entries[0].target.isConnected && hasMore && !isLoading && !loadError) {
+        // Several queued notifications arrive oldest first; act on where the sentinel is now.
+        const latest = entries[entries.length - 1];
+        if (latest.isIntersecting && latest.target.isConnected && hasMore && !isLoading && !loadError) {
           onLoadMoreRef.current?.();
         }
       },

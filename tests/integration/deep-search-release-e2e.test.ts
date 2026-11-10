@@ -8,7 +8,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { configureToolUseIndex } from '../../src/services/sqlite/tool-use-search.js';
+import { configureToolUseIndex, searchToolUses } from '../../src/services/sqlite/tool-use-search.js';
+import { DEEP_SEARCH_DEADLINE_MS } from '../../src/services/deep-search/protocol.js';
 
 async function vacantPort(): Promise<number> {
   const server = createServer();
@@ -17,6 +18,24 @@ async function vacantPort(): Promise<number> {
   await new Promise<void>(resolveClosed => server.close(() => resolveClosed()));
   return port;
 }
+
+// The slow query must still be running when DEEP_SEARCH_DEADLINE_MS expires,
+// on whatever machine runs this. Its cost is CPU-bound LIKE work, so a fixed
+// row count races the runner: 8,000 rows took 5.5 s on a loaded M1 Max but
+// under 4 s on CI, which then answered 'ok' instead of 'timeout'. So the
+// fixture is sized from a timed sample on this machine instead.
+// Each term ('ab', 'aab', ... 'a'.repeat(85) + 'b') matches only at the end of
+// the long 'a' run, so every LIKE re-scans the run at each start position: one
+// row costs about RUN x (1 + 2 + ... + 85 = 3,655) character steps (45 ms on that M1 Max), which
+// keeps the database small. 85 terms is the most that fit the 4,096-character
+// query limit in searchToolUses.
+const SLOW_RUN_LENGTH = 4096;
+const SLOW_TERM_COUNT = 85;
+const SLOW_SAMPLE_ROWS = 5;
+// Measured spread between repeated in-process runs of the sample: 1.9x
+// (first run cold). 10x leaves room for the child running faster than the
+// sample did; the extra rows cost under a second and a few MB to seed.
+const SLOW_QUERY_DEADLINE_MULTIPLE = 10;
 
 // End the seeding scope before opening the long-lived checkpoint connection.
 // SessionStore retains cached statements, which Windows keeps open until GC.
@@ -28,14 +47,26 @@ function seedReleaseData(file: string) {
     store.storeObservation('context-memory', 'app', { type: 'discovery', title: 'ORDINARY_CONTEXT_RECORD',
       subtitle: null, narrative: 'ordinary context fixture', facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [] }, 1);
     store.markSessionCompleted(session); // historical evidence must not resume an observer
-    const terms = Array.from({ length: 400 }, (_, i) => `x${i}`).join(' ');
-    const slowQuery = '一 ' + terms + ' absent';
+    const slowBody = '一 ' + 'a'.repeat(SLOW_RUN_LENGTH) + 'b';
+    const slowQuery = '一 ' + Array.from({ length: SLOW_TERM_COUNT }, (_, k) => 'a'.repeat(k + 1) + 'b').join(' ') + ' absent';
     const write = (id: string, project: string, body: string) => store.upsertToolUse({ toolUseId: id,
       contentSessionId: 'raw-session', project, toolName: 'Read', toolResponse: body });
+    const writeSlowRows = (from: number, to: number) => store.db.transaction(() => {
+      for (let i = from; i < to; i++) write(`slow-${i}`, 'slow', slowBody);
+    })();
     const id = write('hit', 'app', 'RECOVERY_MARKER 中文');
-    store.db.transaction(() => { for (let i = 0; i < 8000; i++) write(`slow-${i}`, 'slow', '一 ' + terms); })();
+    writeSlowRows(0, SLOW_SAMPLE_ROWS);
     configureToolUseIndex(store.db, true);
-    return { id, slowQuery };
+    let sampleMs = Infinity;
+    for (let run = 0; run < 2; run++) {
+      const started = performance.now();
+      const sample = searchToolUses(store.db, slowQuery, { project: 'slow' });
+      if (sample.deep.status !== 'ok' || sample.deep.count !== 0) throw new Error('Slow fixture sample: ' + JSON.stringify(sample.deep));
+      sampleMs = Math.min(sampleMs, performance.now() - started);
+    }
+    const slowRows = Math.ceil(SLOW_SAMPLE_ROWS * SLOW_QUERY_DEADLINE_MULTIPLE * DEEP_SEARCH_DEADLINE_MS / sampleMs);
+    writeSlowRows(SLOW_SAMPLE_ROWS, slowRows); // the ready index's triggers cover these rows
+    return { id, slowQuery, slowFixture: { sampleMs, slowRows } };
   } finally { store.close(); }
 }
 
@@ -58,7 +89,7 @@ for (const artifact of ['bundle', 'standalone']) {
         CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: 'true', CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
       writeFileSync(join(data, 'settings.json'), JSON.stringify(settings));
       const file = join(data, 'claude-mem.db');
-      const { id, slowQuery } = seedReleaseData(file);
+      const { id, slowQuery, slowFixture } = seedReleaseData(file);
       Bun.gc(true);
       const db = ownedDb = new Database(file);
       const env = { ...process.env, ...settings, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: join(dir, 'config'),
@@ -142,7 +173,7 @@ for (const artifact of ['bundle', 'standalone']) {
         const ordinaryResponse = await fetch(origin + '/api/search?query=ORDINARY_CONTEXT_RECORD&project=app&deep=false&format=json');
         const ordinary = await ordinaryResponse.json() as any;
         expect(ordinary.observations).toHaveLength(1); expect(ordinary).not.toHaveProperty('deep');
-        console.log(JSON.stringify({ artifact, contextBaselineMs: baseline, contextWhileDeepPendingMs: during }));
+        console.log(JSON.stringify({ artifact, slowFixture, contextBaselineMs: baseline, contextWhileDeepPendingMs: during }));
         const httpResults = await timed;
         expect(httpResults.map(result => result.deep.status).sort()).toEqual(['busy', 'timeout']);
         expect(httpResults.find(result => result.deep.status === 'timeout').deep)
