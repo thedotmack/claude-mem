@@ -473,6 +473,8 @@ describe("OpenCode V2 event bus", () => {
     await host.call("session.prompt", { sessionID: "ses_bus_kept", prompt: { text: "Kept" } });
     const [deletedInit, keptInit] = worker.to("/api/sessions/init");
     const before = deletedInit.body!.contentSessionId;
+    await host.call("session.context", { sessionID: "ses_bus_deleted", system: [] });
+    expect(worker.to("/api/context/inject")).toHaveLength(1);
 
     host.stream.send(busEvent("session.deleted", "ses_bus_deleted", {}, null));
     host.stream.send(busEvent("session.execution.succeeded", "ses_bus_deleted", {}, null));
@@ -483,10 +485,12 @@ describe("OpenCode V2 event bus", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].body!.contentSessionId).toBe(keptInit.body!.contentSessionId);
 
-    // The session mapping is gone too: a new prompt starts a new content session.
+    // Deletion clears cached context and reply tracking, not the host's ID.
+    await host.call("session.context", { sessionID: "ses_bus_deleted", system: [] });
+    expect(worker.to("/api/context/inject")).toHaveLength(2);
     await host.call("session.prompt", { sessionID: "ses_bus_deleted", prompt: { text: "After delete" } });
     const after = worker.to("/api/sessions/init").at(-1)!.body!.contentSessionId;
-    expect(after).not.toBe(before);
+    expect(after).toBe(before);
   });
 
   it("subscribes again after the stream ends or fails", async () => {
@@ -635,7 +639,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
       cwd: "/work/project",
       platform_source: "opencode",
     });
-    expect(observation.body!.contentSessionId).toStartWith("opencode-ses_cb_tool-");
+    expect(observation.body!.contentSessionId).toBe("ses_cb_tool");
   });
 
   it("records a failed tool's error message, from an Error or a plain object", async () => {
@@ -670,7 +674,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
       cwd: "/work/project",
       platform_source: "opencode",
     });
-    expect(init.body!.contentSessionId).toStartWith("opencode-ses_cb_prompt-");
+    expect(init.body!.contentSessionId).toBe("ses_cb_prompt");
   });
 
   it("pushes memory onto the system prompt as one tagged text part", async () => {
