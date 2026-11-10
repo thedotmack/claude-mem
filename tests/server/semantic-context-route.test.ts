@@ -24,6 +24,15 @@ import { newApiKey, createIsolatedSchema, dropSchema } from '../sdk/pg-isolation
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
+// The first test to probe the model may download all-MiniLM-L6-v2 (about
+// 90 MB) into a cold cache. On a GitHub runner that took about 12 s (server
+// search CI job 129461778315, 2026-11-09), past bun's 5 s default. With the
+// model already cached and the batched seed (#5658), the clamp test measured
+// 3.1 s (server search job) and 4.4 s (sync-api job), so the download is the
+// case to budget for. Five times 12 s lets a slow runner finish while a hung
+// download still fails the test.
+const COLD_MODEL_LOAD_TEST_TIMEOUT_MS = 60_000;
+
 describe('POST /v1/context/semantic limits', () => {
   if (!testDatabaseUrl) {
     it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL', () => {});
@@ -109,7 +118,10 @@ describe('POST /v1/context/semantic limits', () => {
     // creates only where pgvector 0.8+ is usable, not merely installable.
     const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
     const vectors = table.rows[0]?.present === true;
-    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
+    // Probe the model only where vectors exist, in the order the route checks
+    // them: without pgvector the route never embeds, and loading the model here
+    // (a network download on a cold runner) only spends the test's timeout.
+    const model = vectors && await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
     // The search CI job (CLAUDE_MEM_TEST_PGVECTOR=1) has both; there a
     // missing one fails these tests instead of passing them untested.
     if (process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
@@ -149,11 +161,7 @@ describe('POST /v1/context/semantic limits', () => {
     const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
     expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
-    // Timeout: with the batched seed this test measured 3.1 s (server search job)
-    // and 4.4 s (sync-api job) on CI, most of it the first embed loading the
-    // model. The 5 s default left under 1 s of headroom; 15 s is about 3x the
-    // slowest measured run.
-  }, 15_000);
+  }, COLD_MODEL_LOAD_TEST_TIMEOUT_MS);
 
   it('renders the content of a memory or summary that has no narrative', async () => {
     if (!(await canAnswer())) return;
@@ -165,7 +173,7 @@ describe('POST /v1/context/semantic limits', () => {
     expect(result.context).toContain('The queue retry limit is now five, set in the gateway config.');
     expect(result.context).toContain('### Session summary (');
     expect(result.context).toContain('raised the queue retry limit and redeployed.');
-  });
+  }, COLD_MODEL_LOAD_TEST_TIMEOUT_MS);
 
   it('answers a short prompt with no context', async () => {
     expect(await semantic({ query: 'yes go on' })).toEqual({ status: 200, count: 0, context: '' });
