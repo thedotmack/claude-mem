@@ -4,17 +4,17 @@
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
- * Every backend (Claude Code, Codex, Gemini) runs the same way: the worker
- * runs the skills' CLI and scripts, asks the read-only agent one JSON
- * question per step, and saves the answer through the same validators the
- * skills' CLI uses.
+ * Every backend (Claude Code, Codex, Gemini, and the selected API provider)
+ * runs the same way: the worker runs the skills' CLI and scripts, asks the
+ * read-only agent one JSON question per step, and saves the answer through the
+ * same validators the skills' CLI uses.
  */
 
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentTask, AnswerSchema, AskAgent, StepModels } from '../agent-runner/run.js';
+import type { AgentTask, AnswerSchema, AskAgent, StepModels, TaskAgentId } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
@@ -62,13 +62,14 @@ export const STEP_MODEL_SETTINGS = {
   'claude-code': 'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
   codex: 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
   gemini: 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
-} as const satisfies Record<UsableAgentId, keyof SettingsDefaults>;
+  api: 'CLAUDE_MEM_WORK_VIEW_API_MODEL',
+} as const satisfies Record<TaskAgentId, keyof SettingsDefaults>;
 
 /** The models each step runs on, read from settings at the start of every run so a change applies without a restart.
  * An override replaces only the model: Codex keeps each step's reasoning effort. */
 export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
-  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[UsableAgentId, keyof SettingsDefaults]>)
+  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[TaskAgentId, keyof SettingsDefaults]>)
     .map(([agent, key]) => [agent, String(settings[key] ?? '').trim()] as const)
     .filter(([, model]) => model);
   if (!overrides.length) return STEP_MODELS;
@@ -81,13 +82,13 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
 }
 
 /** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
-export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'off', 'all'] as const;
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'api', 'off', 'all'] as const;
 
 export interface RefreshAgentChoice {
   /** The only agents the refresh may run on; absent means every logged-in agent. */
-  allowedAgents?: UsableAgentId[];
+  allowedAgents?: TaskAgentId[];
   /** Tried first when it is logged in (#5435). */
-  preferredAgent?: UsableAgentId;
+  preferredAgent?: TaskAgentId;
   /** A failed run is never handed to a second agent. */
   stayOnFirstUsableAgent: boolean;
 }
@@ -100,19 +101,22 @@ const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemi
  * - CLAUDE_MEM_WORK_VIEW_AGENT names an agent: only that agent runs;
  * - `off`: no agent runs;
  * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
+ * - `api`: only the API provider CLAUDE_MEM_PROVIDER selects ('openrouter', 'openai-compatible', 'cmem');
  * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
  *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ *   The API provider itself runs the refresh only when the owner sets `api`: it spends that provider's credit.
  * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
 export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
   const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
-  const providerAgent: UsableAgentId | undefined = provider === 'claude' ? 'claude-code'
+  const providerAgent: TaskAgentId | undefined = provider === 'claude' ? 'claude-code'
     : provider === 'codex' || provider === 'gemini' ? provider : undefined;
   const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
   if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
   if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
   const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
   if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'api') return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true };
   if (configuredAgent) {
     logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
       value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
@@ -159,7 +163,7 @@ export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
 });
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
-export interface StepTiming { step: string; agent: UsableAgentId; startedAt: string; finishedAt: string; groups?: number }
+export interface StepTiming { step: string; agent: TaskAgentId; startedAt: string; finishedAt: string; groups?: number }
 
 export interface RefreshTaskOptions {
   needs: RefreshNeeds;
@@ -278,7 +282,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   };
 
   const steps: StepTiming[] = [];
-  const run = async (askBackend: AskAgent, agent: UsableAgentId): Promise<string> => {
+  const run = async (askBackend: AskAgent, agent: TaskAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -288,14 +292,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const refused = (error: Error) => { answerWasRefused = true; return Object.assign(error, { answerRefused: true }); };
     const stepModels = resolveStepModels(dataDir);
     const inlineEvidence = new Map<string, string>();
-    if (agent === 'gemini' && needs.goalsStale) {
+    // Gemini and the API agent have no file tools, so the input files travel with the question.
+    if ((agent === 'gemini' || agent === 'api') && needs.goalsStale) {
       for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
         const path = join(goalsFolder, name);
         if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
       }
     }
     const ask: AskAgent = (prompt, models, schema) => {
-      const supplied = agent === 'gemini' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
+      const supplied = agent === 'gemini' || agent === 'api' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
       return askBackend(supplied.length ? `${prompt}\n\nThe following input files are supplied inline; no file tools are available:\n${supplied.map(([path, contents]) => `--- ${path} ---\n${contents}`).join('\n\n')}` : prompt, models, schema);
     };
     const writeInput = (name: string, value: unknown) => {

@@ -20,6 +20,10 @@
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
+ *   - API: one chat-completions call to the selected provider (OpenRouter or an
+ *     OpenAI-compatible endpoint), with the answer's schema when the step has one.
+ *     No subprocess, so no local CLI is started and no Claude Code OAuth token is
+ *     injected: an API install runs on the provider it chose.
  *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
  * No agent can save anything itself. The task's `run` function drives every
@@ -38,13 +42,31 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { runtimeReadRoots } from './runtime-read-roots.js';
 import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { ApiProviderError, askApiTarget, resolveApiTarget } from './api-agent.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
 export { GEMINI_NO_MCP_SERVERS };
 
+/**
+ * The agents a task may run on: the local CLIs detect.ts finds, plus 'api' — the
+ * selected API provider (api-agent.ts). 'api' is not a CLI: it is a chat
+ * completions endpoint, and it exists so a task on an API install never falls
+ * back to the local Claude Code, whose runs spend the owner's Anthropic
+ * subscription.
+ */
+export type TaskAgentId = UsableAgentId | 'api';
+
+/** One agent a task can run on. The local CLIs come from detect.ts; 'api' is synthetic. */
+export interface TaskAgent {
+  id: TaskAgentId;
+  path: string | null;
+  authenticated: boolean;
+  reason: string;
+}
+
 export interface StepModel { model?: string; reasoningEffort?: string }
-export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
+export type StepModels = Partial<Record<TaskAgentId, StepModel>>;
 
 /** A JSON Schema for a step's answer, strict-mode shaped (every property required, no extra properties). */
 export type AnswerSchema = Record<string, unknown>;
@@ -72,27 +94,27 @@ export interface AgentTask {
   cwd: string;
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives the agent step by step; returns a short result line. */
-  run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  run: (ask: AskAgent, agent: TaskAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
   prepare?: () => Promise<void>;
   /** Tried first when it is logged in; the other usable agents keep detect order behind it. Absent: detect
    * order alone decides. The My Work refresh sets this from CLAUDE_MEM_PROVIDER (#5435). */
-  preferredAgent?: UsableAgentId;
+  preferredAgent?: TaskAgentId;
   /** The only agents this task may run on; absent means every logged-in agent. An empty list runs nothing
    * and does not even detect agents (#5189: a background refresh must not spend an agent the owner did not pick). */
-  allowedAgents?: UsableAgentId[];
+  allowedAgents?: TaskAgentId[];
   /** Never hand a failed run to a second agent: each fallback spends another agent's quota (#5189). */
   stayOnFirstUsableAgent?: boolean;
 }
 
-export interface AgentAttempt { agent: UsableAgentId; error: string }
+export interface AgentAttempt { agent: TaskAgentId; error: string }
 
 /** A task throws an error carrying `answerRefused: true` when claude-mem's own checks refused the agent's answer. */
 const isAnswerRefusal = (error: unknown) => (error as { answerRefused?: boolean } | null)?.answerRefused === true;
 
 export interface AgentRunResult {
   state: 'ok' | 'failed' | 'waiting-for-agent';
-  agent: UsableAgentId | null;
+  agent: TaskAgentId | null;
   result: string | null;
   error: string | null;
   attempts: AgentAttempt[];
@@ -150,7 +172,7 @@ export function fileToolStaysInside(toolName: string, input: Record<string, unkn
 }
 
 /** One Agent SDK query per step, with read-only tools only. */
-function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+function claudeCodeAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   const { claudeCode } = task;
   const canUseTool: CanUseTool = async (toolName, input) => {
     if (FILE_TOOLS.includes(toolName) && fileToolStaysInside(toolName, input, task.cwd, claudeCode.readableFolders)) {
@@ -261,7 +283,7 @@ export function codexModelForLogin(step: StepModel | undefined, env: NodeJS.Proc
   return { model: namesake.slug, ...(keepsEffort ? { reasoningEffort: step.reasoningEffort } : {}) };
 }
 
-function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+function codexAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
     const env = await dependencies.buildEnv();
     const directory = join(task.cwd, 'agent-runs');
@@ -300,7 +322,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
   };
 }
 
-function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+function geminiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
@@ -332,12 +354,41 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
 }
 
 /**
+ * One chat-completions call to the selected API provider.
+ *
+ * The provider is resolved per step, so a key or model changed between two
+ * steps applies to the next one. This backend never builds the worker's
+ * environment and never starts a subprocess: there is no Claude Code OAuth
+ * token to inject and no local CLI to spend.
+ */
+function apiAsk(agent: TaskAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+  // A credential, credit or quota refusal fails every later step of this run the
+  // same way, so once one is seen the run's remaining steps (a refresh sends many
+  // review batches) report it without sending. The latch lives and dies with this
+  // run: it is not stored, and the next run asks the provider afresh.
+  let refused: ApiProviderError | null = null;
+  return async (prompt, models, answerSchema) => {
+    if (refused) throw refused;
+    const resolution = resolveApiTarget();
+    if (!resolution.target) {
+      throw new Error(`The selected API provider cannot answer this step: ${resolution.reason}`);
+    }
+    try {
+      return await askApiTarget(resolution.target, prompt, { model: models.api?.model, answerSchema });
+    } catch (error) {
+      if (error instanceof ApiProviderError && [401, 402, 403, 429].includes(error.status)) refused = error;
+      throw error;
+    }
+  };
+}
+
+/**
  * Run the task on the first usable agent — the task's preferred agent when it names one and that agent
  * is usable, among the task's allowed agents — falling through to the next only
  * when a run fails, not when the agent's answer was refused, and never when the task stays on its first agent. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
-const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
+const agentNames: Record<TaskAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini', api: 'the selected API provider' };
 
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
@@ -346,16 +397,30 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   if (task.allowedAgents?.length === 0) {
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No agent is allowed to run this task.', attempts: [] };
   }
-  const detected = (await dependencies.detect())
+  // The API agent is not a local CLI. Detecting one probes this machine's Claude Code, Codex and
+  // Gemini installs, which an API-only task has no use for.
+  const wantsApi = task.allowedAgents?.includes('api') ?? false;
+  const localAllowed = task.allowedAgents ? task.allowedAgents.filter(agent => agent !== 'api') : undefined;
+  const detected = localAllowed?.length === 0 ? [] : (await dependencies.detect())
     .filter(agent => agent.authenticated && agent.path)
-    .filter(agent => !task.allowedAgents || task.allowedAgents.includes(agent.id));
-  const usable = task.preferredAgent
-    ? [...detected.filter(agent => agent.id === task.preferredAgent), ...detected.filter(agent => agent.id !== task.preferredAgent)]
-    : detected;
-  if (!usable.length) {
-    const error = task.allowedAgents
-      ? `None of the allowed agents (${task.allowedAgents.map(agent => agentNames[agent]).join(', ')}) is logged in on this computer.`
-      : 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
+    .filter(agent => !localAllowed || localAllowed.includes(agent.id));
+  // The API provider is usable only when it is configured. When it is not, the agent is left out
+  // entirely: the task waits for it, and it never falls back to a local CLI.
+  const api = wantsApi ? resolveApiTarget() : null;
+  const apiAgent: TaskAgent | null = api?.target
+    ? { id: 'api', path: null, authenticated: true, reason: `${api.target.provider}: ${api.target.url}` }
+    : null;
+  const usable: TaskAgent[] = [...detected, ...(apiAgent ? [apiAgent] : [])];
+  const ordered = task.preferredAgent
+    ? [...usable.filter(agent => agent.id === task.preferredAgent), ...usable.filter(agent => agent.id !== task.preferredAgent)]
+    : usable;
+  if (!ordered.length) {
+    const localNames = task.allowedAgents ? task.allowedAgents.filter(agent => agent !== 'api') : [];
+    const error = api && !localNames.length
+      ? `The selected API provider cannot run this task: ${api.reason}`
+      : task.allowedAgents
+        ? `None of the allowed agents (${task.allowedAgents.map(agent => agentNames[agent]).join(', ')}) is logged in on this computer.`
+        : 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
     return { state: 'waiting-for-agent', agent: null, result: null, error, attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
@@ -365,10 +430,10 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     logger.warn('WORKER', `Agent run (${task.reason}) could not prepare its input`, { error: message });
     return { state: 'failed', agent: null, result: null, error: `Preparing the run failed: ${message}`, attempts };
   }
-  for (const agent of usable) {
+  for (const agent of ordered) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies);
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk, api: apiAsk }[agent.id](agent, task, dependencies);
       const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };

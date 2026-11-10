@@ -433,6 +433,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_API_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
@@ -755,6 +756,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
     CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+    CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
     CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. Never detected by a model; empty lets the skills pick the owner's language
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
