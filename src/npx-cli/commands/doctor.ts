@@ -532,9 +532,17 @@ function realPathOrNull(path: string): string | null {
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
  * form, so a missing launcher surfaces in Claude Code as
  * `Executable not found in $PATH: "claude-mem"` on every hook. Required: a
- * missing launcher, a failed macOS signature check, or a `claude-mem` on PATH
- * that is not the launcher fails doctor. An older protocol only warns, because
- * the SessionStart self-heal (ensure-launcher.cjs) replaces it on the next startup.
+ * missing launcher, a launcher macOS killed for its signature, or a
+ * `claude-mem` on PATH that is not the launcher fails doctor. An older protocol
+ * only warns, because the SessionStart self-heal (ensure-launcher.cjs) replaces
+ * it on the next startup.
+ *
+ * On macOS the launcher also gets `codesign --verify --strict` (#5247). A
+ * launcher that still answers but fails it only warns: it works on this OS, and
+ * macOS 27 is the one that kills it. When `codesign` cannot run, nothing is
+ * proven either way, so that warns too. With a Bun older than
+ * MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN (`bunVersion`), a rebuild
+ * gets the same rejected signature, so the hint names `bun upgrade` first.
  * Exported for tests.
  *
  * `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, where `claude-mem` is this CLI.
@@ -545,6 +553,7 @@ export function hookLauncherCheck(
   host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
   runningCliPath: string | undefined = process.argv[1],
   verifySignature: LauncherCodesignRunner = verifyLauncherSignature,
+  bunVersion: string | null = null,
 ): CheckResult {
   const name = 'Hook launcher';
   const reinstallHint = 'run `npx claude-mem install`';
@@ -564,18 +573,42 @@ export function hookLauncherCheck(
   const probeStartedAt = performance.now();
   const { protocol: printedProtocol, failure: probeFailure, signal } = probeLauncherVersion(launcherOnPath);
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
-  if (host.platform === 'darwin' && (printedProtocol !== null || (signal !== null && launcherFileEmbedsBundle(launcherOnPath)))) {
-    const { status, stderr } = verifySignature(launcherOnPath);
-    if (status !== 0) {
-      const reason = stderr.trim() || (status === null ? 'could not run codesign' : `exit ${status}`);
-      const fix = status === null ? '' : ` Move the launcher aside, then ${reinstallHint}.`;
-      return {
-        name,
-        status: 'fail',
-        detail: `${launcherOnPath} failed codesign --verify --strict: ${reason}.${fix}`,
-        required: true,
-      };
-    }
+  // Only a file that is our launcher is verified: one that answered, or one a
+  // signal killed that embeds the launcher bundle (install-launcher.ts
+  // inspectExistingLauncherBinary uses the same rule to rebuild it).
+  const killedLauncher = printedProtocol === null && signal !== null && launcherFileEmbedsBundle(launcherOnPath);
+  const signature = host.platform === 'darwin' && (printedProtocol !== null || killedLauncher)
+    ? verifySignature(launcherOnPath)
+    : null;
+  const signatureReason = signature && signature.status !== 0
+    ? signature.stderr.trim().split('\n').pop() || (signature.status === null ? 'codesign did not run' : `exit ${signature.status}`)
+    : null;
+  const signatureRejected = signature !== null && signature.status !== null && signature.status !== 0;
+  const plainBunVersion = bunVersion?.replace(/^v/, '') ?? null;
+  const bunUpgradeFirst = plainBunVersion !== null && !bunVersionHonoursMacosSignatureFix(plainBunVersion)
+    ? `run \`bun upgrade\` first (Bun ${plainBunVersion} builds a launcher macOS 27 rejects; ${MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN} or newer does not), then `
+    : '';
+  if (killedLauncher && signatureRejected) {
+    // `npx claude-mem install` rebuilds a killed launcher in place (#5253), so
+    // nothing needs moving.
+    return {
+      name,
+      status: 'fail',
+      detail: `${launcherOnPath} was killed by ${signal} before it answered --version and fails codesign --verify --strict (${signatureReason}); macOS 27 kills a launcher whose signature it rejects. ${bunUpgradeFirst}${reinstallHint}, which rebuilds it`,
+      required: true,
+    };
+  }
+  if (printedProtocol !== null && signatureRejected) {
+    // The installer keeps a launcher that answers the current protocol or a
+    // newer one, so that one has to be moved aside before it is rebuilt; an
+    // older protocol is rebuilt on its own.
+    const rebuildHint = printedProtocol >= LAUNCHER_PROTOCOL ? `move it aside, then ${reinstallHint}` : reinstallHint;
+    return {
+      name,
+      status: 'warn',
+      detail: `${launcherOnPath} runs (protocol ${printedProtocol}) but fails codesign --verify --strict (${signatureReason}); macOS 27 will kill it. ${bunUpgradeFirst}${rebuildHint}`,
+      required: true,
+    };
   }
   if (printedProtocol === null) {
     return {
@@ -593,12 +626,11 @@ export function hookLauncherCheck(
       required: true,
     };
   }
-  return {
-    name,
-    status: 'ok',
-    detail: `${launcherOnPath} (protocol ${printedProtocol}, --version ${roundTripMilliseconds} ms)`,
-    required: true,
-  };
+  const detail = `${launcherOnPath} (protocol ${printedProtocol}, --version ${roundTripMilliseconds} ms)`;
+  if (signatureReason !== null) {
+    return { name, status: 'warn', detail: `${detail}; could not check its code signature (${signatureReason})`, required: true };
+  }
+  return { name, status: 'ok', detail, required: true };
 }
 
 /** Where the "Auto-update" row reads from: autoUpdateDoctorSources in production, fixtures in tests. */
@@ -1048,7 +1080,8 @@ export async function runDoctorCommand(): Promise<void> {
   const dataDir = resolveDataDir();
 
   // 1. Bun (required — hooks run on Bun).
-  checks.push(bunRuntimeCheck(probeVersion('bun')));
+  const bunVersion = probeVersion('bun');
+  checks.push(bunRuntimeCheck(bunVersion));
 
   // 2. uv (warn-only — only needed for vector search).
   const uvVersion = probeVersion('uv');
@@ -1071,7 +1104,7 @@ export async function runDoctorCommand(): Promise<void> {
   if (pluginRoot) checks.push(await treeSitterCliCheck(pluginRoot.root));
 
   // 3c. The on-PATH `claude-mem` hook launcher (plan-17 #3605).
-  checks.push(hookLauncherCheck());
+  checks.push(hookLauncherCheck(currentLauncherHostEnvironment(), process.argv[1], verifyLauncherSignature, bunVersion));
 
   // 3d. claude-mem's own updater: on or off, what it last did, and the fix
   // when an automatic update may have left the install not working.
