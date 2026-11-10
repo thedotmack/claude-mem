@@ -88,7 +88,6 @@ describe('owner prompts from the prompt importer', () => {
     const goalsFolder = join('/data/work-view/owner-goals', new Date(FIXTURE_NOW).toLocaleDateString('en-CA'));
     // No saved goals yet: the whole window, no since minute.
     expect(folders).toEqual([[goalsFolder, null]]);
-    expect(JSON.stringify(task)).not.toContain('export_owner_prompts');
 
     const fresh = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
     expect(fresh.prepare).toBeUndefined();

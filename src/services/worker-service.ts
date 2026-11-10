@@ -1888,7 +1888,7 @@ function runServerApiKeyCli(args: string[]): never {
   }
 }
 
-async function main() {
+export async function main() {
   const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
   // Load the bundle without binding a port or depending on a running worker.
   if (command === '--version') {

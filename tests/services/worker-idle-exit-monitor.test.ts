@@ -124,22 +124,32 @@ describe('IdleExitMonitor — idle decision', () => {
     expect(h.idleCalls.length).toBe(1);
   });
 
-  it('refreshes the activity clock while sessions saw recent activity', () => {
+  it.each([
+    { name: 'recent session activity', elapsed: IDLE_EXIT_MS - 1_000,
+      set: (h: Harness) => { h.state.lastSessionActivityAt = h.now(); },
+      clear: (h: Harness) => { h.state.lastSessionActivityAt = h.now() - (IDLE_EXIT_MS - 1_000); } },
+    { name: 'recent host requests', elapsed: IDLE_EXIT_MS - 1_000,
+      set: (h: Harness) => { h.state.lastRequestAt = h.now(); }, clear: (_h: Harness) => {} },
+    { name: 'a request between ticks', elapsed: 300_000,
+      set: (h: Harness) => { h.state.lastRequestAt = h.now(); }, clear: (_h: Harness) => {} },
+    { name: 'queued compression work', elapsed: IDLE_EXIT_MS - 1_000,
+      set: (h: Harness) => { h.state.queueDepth = 3; }, clear: (h: Harness) => { h.state.queueDepth = 0; } },
+    { name: 'a finished AI interaction between ticks', elapsed: 300_000,
+      set: (h: Harness) => { h.state.lastAiAt = h.now(); }, clear: (_h: Harness) => {} },
+  ])('restarts the idle window after $name', ({ elapsed, set, clear }) => {
     const h = makeHarness();
-
     h.monitor.start();
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.state.lastSessionActivityAt = h.now();
-    h.monitor.tick(); // refresh: lastActivityAt = now
+    h.advance(elapsed);
+    set(h);
+    h.monitor.tick();
 
-    // Session activity now older than the window.
-    h.state.lastSessionActivityAt = h.now() - (IDLE_EXIT_MS - 1_000);
+    clear(h);
     h.advance(IDLE_EXIT_MS - 1_000);
-    h.monitor.tick(); // idle since refresh < window
+    h.monitor.tick();
     expect(h.idleCalls.length).toBe(0);
 
     h.advance(1_000);
-    h.monitor.tick(); // exactly the window since the refresh
+    h.monitor.tick();
     expect(h.idleCalls.length).toBe(1);
   });
 
@@ -154,62 +164,6 @@ describe('IdleExitMonitor — idle decision', () => {
     h.advance(IDLE_EXIT_MS);
     h.monitor.tick();
 
-    expect(h.idleCalls.length).toBe(1);
-  });
-
-  it('refreshes the activity clock while a host keeps sending requests', () => {
-    const h = makeHarness();
-
-    h.monitor.start();
-    // A plugin poller hitting the worker keeps it alive: the request
-    // timestamp observed at this tick resets the window.
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.state.lastRequestAt = h.now();
-    h.monitor.tick();
-
-    // No new request since — the window runs from the one above.
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(0);
-
-    h.advance(1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(1);
-  });
-
-  it('starts the window at a request that landed after the previous tick', () => {
-    const h = makeHarness();
-
-    h.monitor.start(); // lastActivityAt = T0
-    h.advance(300_000);
-    // A request lands between ticks (the worker's own boot probes do this).
-    h.state.lastRequestAt = h.now();
-    h.monitor.tick();
-
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(0);
-
-    h.advance(1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(1);
-  });
-
-  it('refreshes the activity clock while queue depth is nonzero (queued compression work)', () => {
-    const h = makeHarness();
-
-    h.monitor.start();
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.state.queueDepth = 3;
-    h.monitor.tick();
-
-    h.state.queueDepth = 0;
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(0);
-
-    h.advance(1_000);
-    h.monitor.tick();
     expect(h.idleCalls.length).toBe(1);
   });
 
@@ -245,25 +199,6 @@ describe('IdleExitMonitor — idle decision', () => {
 
     h.state.viewerClients = 0;
     h.advance(IDLE_EXIT_MS);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(1);
-  });
-
-  it('treats a finished AI interaction newer than the last observed tick as activity', () => {
-    const h = makeHarness();
-
-    h.monitor.start(); // lastActivityAt = T0
-    h.advance(300_000);
-    // A compression finished AFTER the last activity tick (e.g. it outlived
-    // the session): its timestamp becomes the activity baseline.
-    h.state.lastAiAt = h.now();
-    h.monitor.tick();
-
-    h.advance(IDLE_EXIT_MS - 1_000);
-    h.monitor.tick();
-    expect(h.idleCalls.length).toBe(0);
-
-    h.advance(1_000);
     h.monitor.tick();
     expect(h.idleCalls.length).toBe(1);
   });
