@@ -328,16 +328,16 @@ describe('antigravityCliAdapter - normalizeInput (camelCase protojson stdin)', (
     expect(result.toolResponse).toEqual({ is_error: true, error: 'command failed' });
   });
 
-  it('maps an invocation payload to the AntigravityProvider provider fields', () => {
+  it('makes no observation for an invocation payload without a transcript (#5665)', () => {
     const result = antigravityCliAdapter.normalizeInput({
       workspacePaths: ['/tmp'],
       conversationId: 'c',
       invocationNum: 1,
       initialNumSteps: 0,
     });
-    expect(result.toolName).toBe('AntigravityProvider');
+    expect(result.toolName).toBeUndefined();
     expect(result.toolInput).toEqual({ prompt: 'User Query' });
-    expect(result.toolResponse).toEqual({ response: 'Completed' });
+    expect(result.toolResponse).toBeUndefined();
   });
 
   it('pulls prompt (USER_INPUT) and response (PLANNER_RESPONSE) from the transcript on an invocation', () => {
