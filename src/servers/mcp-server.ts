@@ -1075,7 +1075,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
         name: { type: 'string', description: 'Corpus name (used as filename)' },
         description: { type: 'string', description: 'What this corpus is about' },
         project: { type: 'string', description: 'Filter by project' },
-        types: { type: 'string', description: 'Comma-separated observation types: decision,bugfix,feature,refactor,discovery,change' },
+        types: { type: 'string', description: 'Comma-separated observation type IDs, such as decision, bugfix, or types from other modes' },
         concepts: { type: 'string', description: 'Comma-separated concepts to filter by' },
         files: { type: 'string', description: 'Comma-separated file paths to filter by' },
         query: { type: 'string', description: 'Semantic search query' },
