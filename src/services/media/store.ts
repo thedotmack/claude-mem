@@ -13,6 +13,9 @@ export type MediaVariantName = 'viewer' | 'llm';
 export const MEDIA_CLEANUP_MAX_ATTEMPTS = 8;
 const CLEANUP_RETRY_BASE_MS = 30_000;
 const CLEANUP_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
+// Bounds the synchronous rmSync work one cleanup job does per reconcile() pass,
+// which runs on the worker's thread at start and every 30 s; the rest waits for
+// the next pass. 128 is the per-pass value main used since #4341, not a measurement.
 const MAX_TEMP_CLEANUPS_PER_JOB = 128;
 /**
  * How long a 'converting' row is protected from reconcile(), which fails rows
