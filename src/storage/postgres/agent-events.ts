@@ -104,7 +104,7 @@ export class PostgresAgentEventsRepository {
         // applied to the raw event body, at the one write every ingest path
         // goes through, so a client that did not strip still stores none.
         JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.payload ?? {}))),
-        JSON.stringify(stripMemoryTagsFromJsonStrings(input.metadata ?? {})),
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))),
         new Date(input.occurredAt)
       ]
     );
