@@ -138,8 +138,11 @@ function matchingSnippet(columns: string[], terms: string[], markers?: [string, 
     const key = fold(hit);
     // Share 480 code points across distinct matches, with room for context.
     if (matches.has(key) || matches.size >= 10) return;
-    matches.set(key, { before: Array.from(text.slice(0, start)).slice(-60), hit: Array.from(hit),
-      after: Array.from(text.slice(start + length)).slice(0, 60) });
+    // At most two UTF-16 code units per code point. Bound the string windows
+    // before expanding them so a short excerpt never materializes the whole
+    // raw payload as an array for each matched term.
+    matches.set(key, { before: Array.from(text.slice(Math.max(0, start - 120), start)).slice(-60), hit: Array.from(hit),
+      after: Array.from(text.slice(start + length, start + length + 120)).slice(0, 60) });
   };
   for (const column of columns) {
     if (markers) {

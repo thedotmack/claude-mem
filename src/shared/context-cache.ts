@@ -130,7 +130,7 @@ export function contextCacheDir(): string {
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
   return createHash('sha256')
-    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.colors && keys.cwd ? [keys.cwd] : [])]))
+    .update(JSON.stringify([keys.projects, keys.platformSource, keys.colors, ...(keys.colors && keys.cwd ? [keys.cwd] : [])]))
     .digest('hex');
 }
 

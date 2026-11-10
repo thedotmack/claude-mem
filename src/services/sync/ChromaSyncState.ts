@@ -8,6 +8,26 @@ export type DocKind = 'observations' | 'summaries' | 'prompts';
 
 type PendingIdsByKind = Partial<Record<DocKind, number[]>>;
 
+/**
+ * One post-delete Chroma cleanup that failed and must be retried (#5664). The
+ * SQLite row is already committed gone, so the Chroma doc_type and sqlite_id
+ * are all a retry needs: the row's DELETE route answers 404 from now on, and
+ * backfill only walks rows that still exist, so nothing else can reach the
+ * documents these name.
+ */
+export interface PendingRowDelete {
+  /** Chroma doc_type, e.g. 'observation' — what deleteRowDocuments takes. */
+  docType: string;
+  sqliteId: number;
+}
+
+/**
+ * Key of the retry list inside chroma-sync-state.json, whose other entries are
+ * project watermarks. The list is an array and a project entry is an object, so
+ * a project that happens to carry this name still loads as a project.
+ */
+const PENDING_DELETES_KEY = '__pending_row_deletes__';
+
 export interface ProjectWatermarks {
   observations: number;
   summaries: number;
@@ -36,6 +56,19 @@ function statePath(): string {
 }
 
 let cache: Record<string, ProjectWatermarks> | null = null;
+/**
+ * Failed post-delete cleanups, in the same file as the watermarks so they
+ * survive the worker that gave up on them. Null until the file is read.
+ */
+let pendingDeletesCache: PendingRowDelete[] | null = null;
+
+/**
+ * The last attempt to persist a retry record failed, so the record exists only
+ * in memory. A repeated mark of the same rows must then retry the write instead
+ * of taking the duplicate shortcut: while Chroma is down nothing else writes
+ * the file, and an exit would lose the documents' only record (#5664).
+ */
+let pendingDeletesPersistFailed = false;
 
 function createProjectMap(): Record<string, ProjectWatermarks> {
   // Project names come from directory names, so every string (including
@@ -58,6 +91,32 @@ function normalizePendingIds(ids: unknown): number[] {
   return [...new Set(
     ids.filter((id): id is number => Number.isInteger(id) && id > 0)
   )].sort((a, b) => a - b);
+}
+
+/** Drop malformed and duplicate entries; keep the first occurrence's order. */
+function normalizePendingRowDeletes(value: unknown): PendingRowDelete[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const rows: PendingRowDelete[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const docType = (entry as { docType?: unknown }).docType;
+    const sqliteId = (entry as { sqliteId?: unknown }).sqliteId;
+    if (typeof docType !== 'string' || docType.length === 0) continue;
+    if (typeof sqliteId !== 'number' || !Number.isInteger(sqliteId) || sqliteId <= 0) continue;
+    const key = pendingDeleteKey({ docType, sqliteId });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ docType, sqliteId });
+  }
+  return rows;
+}
+
+function pendingDeleteKey(row: PendingRowDelete): string {
+  return `${row.docType}:${row.sqliteId}`;
 }
 
 function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefined): ProjectWatermarks {
@@ -102,11 +161,12 @@ function load(): Record<string, ProjectWatermarks> {
   const path = statePath();
   if (!existsSync(path)) {
     cache = createProjectMap();
+    pendingDeletesCache = [];
     return cache;
   }
-  let parsed: Record<string, Partial<ProjectWatermarks>>;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+    parsed = readJsonFileWithBom<Record<string, unknown>>(path);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error('checkpoint must be a project-watermark object');
     }
@@ -117,11 +177,19 @@ function load(): Record<string, ProjectWatermarks> {
       path
     }, error instanceof Error ? error : new Error(String(error)));
     cache = createProjectMap();
+    pendingDeletesCache = [];
     return cache;
   }
   const normalized = createProjectMap();
+  pendingDeletesCache = [];
   for (const [project, marks] of Object.entries(parsed)) {
-    normalized[project] = normalizeProjectWatermarks(marks);
+    // The retry list is the file's one array-valued entry; a project entry is
+    // always an object, so a project named like the reserved key still loads.
+    if (project === PENDING_DELETES_KEY && Array.isArray(marks)) {
+      pendingDeletesCache = normalizePendingRowDeletes(marks);
+      continue;
+    }
+    normalized[project] = normalizeProjectWatermarks(marks as Partial<ProjectWatermarks>);
   }
   cache = normalized;
   return cache;
@@ -129,7 +197,26 @@ function load(): Record<string, ProjectWatermarks> {
 
 function persistOrThrow(): void {
   if (!cache) return;
-  writeJsonFileAtomic(statePath(), cache);
+  // The common path (a watermark or pending-row change) writes the project map
+  // exactly as before; only retry records need the extra entry.
+  if (!pendingDeletesCache || pendingDeletesCache.length === 0) {
+    writeJsonFileAtomic(statePath(), cache);
+    return;
+  }
+  const body: Record<string, unknown> = createProjectMap();
+  for (const [project, marks] of Object.entries(cache)) {
+    body[project] = marks;
+  }
+  if (Object.hasOwn(body, PENDING_DELETES_KEY)) {
+    // A project own-names the reserved key. Keeping its watermarks matters
+    // more than the retry list, which is only ever a fallback.
+    logger.warn('CHROMA_SYNC', 'A project shadows the pending-delete key; its watermarks are kept and the retry list is not persisted', {
+      project: PENDING_DELETES_KEY
+    });
+  } else {
+    body[PENDING_DELETES_KEY] = pendingDeletesCache;
+  }
+  writeJsonFileAtomic(statePath(), body);
 }
 
 /**
@@ -152,11 +239,22 @@ export const ChromaSyncState = {
   /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
   resetCacheForTests(): void {
     cache = null;
+    pendingDeletesCache = null;
     persistBlockedUntil = 0;
   },
 
   exists(): boolean {
     return existsSync(statePath());
+  },
+
+  /**
+   * True when the file records at least one project watermark. A file holding
+   * only pending row deletes says nothing about which rows are already
+   * indexed, so it still needs the one-time bootstrap.
+   */
+  hasProjectState(): boolean {
+    if (!this.exists()) return false;
+    return Object.keys(load()).length > 0;
   },
 
   get(project: string): ProjectWatermarks {
@@ -166,6 +264,65 @@ export const ChromaSyncState = {
 
   getPending(project: string, kind: DocKind): number[] {
     return this.get(project).pending?.[kind] ?? [];
+  },
+
+  /**
+   * Post-delete cleanups Chroma refused, oldest first. They are retried by the
+   * next backfill sweep, the same pass that drains pending writes.
+   */
+  getPendingRowDeletes(): PendingRowDelete[] {
+    load();
+    return (pendingDeletesCache ?? []).map(row => ({ ...row }));
+  },
+
+  /** Record failed cleanups. One write per batch, not per row. */
+  markPendingRowDeletes(rows: ReadonlyArray<PendingRowDelete>): void {
+    const added = normalizePendingRowDeletes(rows);
+    if (added.length === 0) return;
+
+    load();
+    const existing = pendingDeletesCache ?? [];
+    const seen = new Set(existing.map(pendingDeleteKey));
+    const merged = [...existing];
+    for (const row of added) {
+      const key = pendingDeleteKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+    }
+    if (merged.length === existing.length && !pendingDeletesPersistFailed) return;
+
+    pendingDeletesCache = merged;
+    // The record must reach the disk before the caller proceeds: the process
+    // that just failed the cleanup is the one that may exit next, and `persist`
+    // silently defers behind its failure backoff. Keep the cleanup lane
+    // non-throwing, but report a write that could not happen. A failed write
+    // leaves the record in memory only, so a repeated mark of the same rows has
+    // to try again instead of taking the duplicate shortcut above.
+    try {
+      persistOrThrow();
+      pendingDeletesPersistFailed = false;
+    } catch (error) {
+      pendingDeletesPersistFailed = true;
+      logger.warn('CHROMA_SYNC', 'Could not record a pending post-delete cleanup', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+  },
+
+  /** Forget cleanups that succeeded (or whose row came back) in one write. */
+  clearPendingRowDeletes(rows: ReadonlyArray<PendingRowDelete>): void {
+    const done = normalizePendingRowDeletes(rows);
+    if (done.length === 0) return;
+
+    load();
+    const existing = pendingDeletesCache ?? [];
+    if (existing.length === 0) return;
+    const finished = new Set(done.map(pendingDeleteKey));
+    const remaining = existing.filter(row => !finished.has(pendingDeleteKey(row)));
+    if (remaining.length === existing.length) return;
+
+    pendingDeletesCache = remaining;
+    persist();
   },
 
   isTitleOnlyRequeued(project: string): boolean {
