@@ -307,6 +307,11 @@ interface DatabaseSchema {
   writable: Set<string>;
 }
 
+/** Only the current upsert's retries may finish a create whose answer was lost. */
+interface NotionUpsertAttempt {
+  pendingBody?: { children: unknown[]; sent: number };
+}
+
 /**
  * Pushes observations to one Notion database. `enqueue` never blocks and never
  * throws; a single drain loop works the queue in order, throttled to
@@ -425,7 +430,7 @@ export class NotionExporter {
     return this.sourceId;
   }
 
-  async upsert(record: NotionObservationRecord): Promise<'created' | 'exists'> {
+  async upsert(record: NotionObservationRecord, attempt: NotionUpsertAttempt = {}): Promise<'created' | 'exists'> {
     const schema = await this.ensureSchema();
     const sourceId = this.resolveSourceId();
     const allProperties = buildNotionProperties(record, schema.titleProperty, sourceId);
@@ -434,7 +439,14 @@ export class NotionExporter {
     );
 
     if (schema.writable.has(NOTION_PROPERTIES.exportKey.name)) {
-      if (await this.findPageId(notionExportKey(sourceId, record.observationId))) return 'exists';
+      const existingPageId = await this.findPageId(notionExportKey(sourceId, record.observationId));
+      if (existingPageId) {
+        if (attempt.pendingBody) {
+          const { children, sent } = attempt.pendingBody;
+          await this.appendRemainingChildren(record, existingPageId, children, sent);
+        }
+        return 'exists';
+      }
     }
 
     const children = buildNotionChildren(record.observation);
@@ -442,6 +454,10 @@ export class NotionExporter {
     fitPageProperties(payload, record.observationId);
     // If the properties leave no room for the first block, append it after the page exists.
     const firstEnd = fittingBatchEnd(children, 0, payload);
+    // Notion may commit this prefix and then lose its response. Retain the
+    // unsent tail for this retry scope before sending, so finding that same
+    // page does not mistake a partial export for a completed one.
+    attempt.pendingBody = firstEnd < children.length ? { children, sent: firstEnd } : undefined;
     const page = await this.request('POST', '/pages', {
       ...payload, children: children.slice(0, firstEnd),
     }) as { id?: string };
@@ -452,8 +468,8 @@ export class NotionExporter {
   /**
    * Notion takes at most 100 children per request, so the rest of a long body
    * is appended to the new page 100 blocks at a time. Each batch gets the same
-   * retries as an upsert (a whole-upsert retry would find the page by its
-   * Export Key and stop, so the retry has to happen here). A batch that still
+   * retries as an upsert. Retrying just the current batch avoids replaying
+   * the blocks already appended during this attempt. A batch that still
    * fails is logged with how much of the body is missing. A batch that timed
    * out but landed can be appended twice; a repeated block beats a missing one.
    */
@@ -531,7 +547,8 @@ export class NotionExporter {
    * but landed is found by the next attempt's query instead of duplicated.
    */
   private async upsertWithRetry(record: NotionObservationRecord): Promise<void> {
-    await this.withRetry(() => this.upsert(record));
+    const attempt: NotionUpsertAttempt = {};
+    await this.withRetry(() => this.upsert(record, attempt));
   }
 
   /** Runs `operation`, retrying 409/429/5xx/network failures with backoff; rethrows anything else or the last failure. */
