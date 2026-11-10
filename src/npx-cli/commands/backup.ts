@@ -108,10 +108,6 @@ async function runBackupRun(): Promise<void> {
   });
   const data = await readJsonOrExit(response, 'Backup run');
 
-  if (response.status === 409) {
-    console.log(styleText('yellow', 'A snapshot is already running.'));
-    return;
-  }
   if (!response.ok) {
     console.error(styleText('red', `Backup run failed: ${data.error ?? `HTTP ${response.status}`}`));
     process.exit(1);
