@@ -123,7 +123,7 @@ describe('server API key auth', () => {
     expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])).toBeNull();
   });
 
-  function runAuth(
+  async function runAuth(
     options: Parameters<typeof requireServerAuth>[1] = {},
     { ip = '127.0.0.1', headers = {} }: { ip?: string; headers?: Record<string, string> } = {},
   ) {
@@ -135,45 +135,45 @@ describe('server API key auth', () => {
       status: (code: number) => { status = code; return res; },
       json: (value: unknown) => { body = value; },
     };
-    requireServerAuth(() => db, options)(req, res, () => { nexted = true; });
+    await requireServerAuth(() => db, options)(req, res, () => { nexted = true; });
     return { nexted, status, body, ctx: req.authContext };
   }
 
-  it('middleware allows localhost local-dev without a bearer token', () => {
-    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+  it('middleware allows localhost local-dev without a bearer token', async () => {
+    const result = await runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
       headers: { host: '127.0.0.1:37777' },
     });
     expect(result.nexted).toBe(true);
     expect(result.ctx).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
   });
 
-  it('middleware requires explicit opt-in before local-dev bypass is honored', () => {
-    const result = runAuth({ authMode: 'local-dev' }, { headers: { host: 'localhost:37777' } });
+  it('middleware requires explicit opt-in before local-dev bypass is honored', async () => {
+    const result = await runAuth({ authMode: 'local-dev' }, { headers: { host: 'localhost:37777' } });
     expect(result.nexted).toBe(false);
     expect(result.status).toBe(401);
   });
 
-  it('middleware blocks local-dev bypass when forwarded proxy headers are present', () => {
-    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+  it('middleware blocks local-dev bypass when forwarded proxy headers are present', async () => {
+    const result = await runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
       headers: { host: 'claude-mem.example.com', 'x-forwarded-for': '203.0.113.10' },
     });
     expect(result.nexted).toBe(false);
     expect(result.status).toBe(401);
   });
 
-  it('middleware accepts bracketed IPv6 loopback host headers in explicit local-dev mode', () => {
-    const result = runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
+  it('middleware accepts bracketed IPv6 loopback host headers in explicit local-dev mode', async () => {
+    const result = await runAuth({ authMode: 'local-dev', allowLocalDevBypass: true }, {
       ip: '::1', headers: { host: '[::1]:37777' },
     });
     expect(result.nexted).toBe(true);
     expect(result.ctx).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
   });
 
-  it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {
+  it('middleware defaults to API-key auth when auth mode is not explicitly set', async () => {
     const originalAuthMode = process.env.CLAUDE_MEM_AUTH_MODE;
     delete process.env.CLAUDE_MEM_AUTH_MODE;
     try {
-      const result = runAuth({}, { headers: { host: 'localhost:37777' } });
+      const result = await runAuth({}, { headers: { host: 'localhost:37777' } });
       expect(result.nexted).toBe(false);
       expect(result.status).toBe(401);
       expect(result.body).toMatchObject({ error: 'Unauthorized' });
@@ -186,13 +186,13 @@ describe('server API key auth', () => {
     }
   });
 
-  it('middleware requires a scoped bearer API key outside local-dev fallback', () => {
+  it('middleware requires a scoped bearer API key outside local-dev fallback', async () => {
     const teamId = seedTeam(db, 'team-core');
     const project = new ProjectsRepository(db).create({ name: 'Project' });
     const created = createServerApiKey(db, {
       name: 'Write key', teamId, projectId: project.id, scopes: ['memories:write'],
     });
-    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+    const result = await runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
       ip: '10.0.0.5', headers: { authorization: `Bearer ${created.rawKey}` },
     });
     expect(result.nexted).toBe(true);
@@ -201,7 +201,7 @@ describe('server API key auth', () => {
     });
   });
 
-  it('middleware accepts X-Api-Key header as fallback when Bearer is absent', () => {
+  it('middleware accepts X-Api-Key header as fallback when Bearer is absent', async () => {
     // Clients using @better-auth/api-key defaults (e.g. the worker bundle
     // shipped from the Windows-canary line) send raw API keys via X-Api-Key
     // instead of "Authorization: Bearer ...". The middleware accepts either
@@ -211,7 +211,7 @@ describe('server API key auth', () => {
     const created = createServerApiKey(db, {
       name: 'XApiKey client', teamId, projectId: project.id, scopes: ['memories:write'],
     });
-    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+    const result = await runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
       ip: '10.0.0.5', headers: { 'x-api-key': created.rawKey },
     });
     expect(result.nexted).toBe(true);
@@ -220,7 +220,7 @@ describe('server API key auth', () => {
     });
   });
 
-  it('middleware prefers Bearer over X-Api-Key when both are present', () => {
+  it('middleware prefers Bearer over X-Api-Key when both are present', async () => {
     // Defense-in-depth: if a client sends both, Bearer wins. Avoids surprises
     // where an unrelated X-Api-Key sneaks in via a proxy or a stale env var.
     const teamId = seedTeam(db, 'team-core');
@@ -230,15 +230,15 @@ describe('server API key auth', () => {
     const xApiKeyKey = createServerApiKey(db, {
       name: 'X-Api-Key key', teamId, projectId: null, scopes: ['memories:write'],
     });
-    const result = runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
+    const result = await runAuth({ authMode: 'api-key', requiredScopes: ['memories:write'] }, {
       ip: '10.0.0.5', headers: { authorization: `Bearer ${bearerKey.rawKey}`, 'x-api-key': xApiKeyKey.rawKey },
     });
     expect(result.nexted).toBe(true);
     expect(result.ctx?.apiKeyId).toBe(bearerKey.record.id);
   });
 
-  it('middleware rejects requests with neither Bearer nor X-Api-Key', () => {
-    const result = runAuth({ authMode: 'api-key' }, { ip: '10.0.0.5' });
+  it('middleware rejects requests with neither Bearer nor X-Api-Key', async () => {
+    const result = await runAuth({ authMode: 'api-key' }, { ip: '10.0.0.5' });
     expect(result.nexted).toBe(false);
     expect(result.status).toBe(401);
     expect(result.body).toMatchObject({
