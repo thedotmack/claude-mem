@@ -213,8 +213,8 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
     const label = `event1_image${recognizedImageCount}`;
     const encodedLength = image.encodedBytes?.length ?? 0;
     const rejectionCode = rejectionCodeFor(image);
-    acceptedEncodedCharacters += encodedLength;
     if (!rejectionCode) {
+      acceptedEncodedCharacters += encodedLength;
       candidates.push({
         shape: image.shape,
         ...(image.encodedBytes !== undefined ? { encoded: image.encodedBytes } : {}),
