@@ -210,6 +210,36 @@ describe('ContextCacheService invalidation', () => {
     store.close();
   });
 
+  it('a local summary replacement stops serving the old next steps immediately', async () => {
+    const store = memoryStore();
+    const summary = {
+      request: 'Publish release', investigated: 'release status', learned: 'ready',
+      completed: 'prepared', next_steps: 'publish the release', notes: null,
+    };
+    try {
+      const initialBody = readContextCache(keys, Date.now())?.body;
+      const first = store.storeObservations('memory-1', project, [], { ...summary }, 1);
+      expect(first.summaryUpdated).toBe(false);
+      // A new summary is still additive; the previous block remains usable.
+      expect(readContextCache(keys, Date.now())?.body).toBe(initialBody);
+      await waitPastDebounce();
+      service.recordLiveRender(keys, { body: summary.next_steps, cacheable: true }, Date.now());
+      const unrelatedBody = readContextCache(otherKeys, Date.now())?.body;
+
+      const revised = store.storeObservations('memory-1', project, [], {
+        ...summary, completed: 'published', next_steps: '',
+      }, 1);
+      expect(revised.summaryUpdated).toBe(true);
+      expect(revised.summaryId).toBe(first.summaryId);
+      expect(store.db.prepare('SELECT completed, next_steps FROM session_summaries WHERE id = ?')
+        .get(first.summaryId)).toEqual({ completed: 'published', next_steps: '' });
+      expect(readContextCache(keys, Date.now())).toBeNull();
+      expect(readContextCache(otherKeys, Date.now())?.body).toBe(unrelatedBody);
+      await waitPastDebounce();
+      expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+    } finally { store.close(); }
+  });
+
   it('SessionStore.appendWorkStateEntry', async () => {
     const store = memoryStore();
     await expectRerenderedOnlyFor(() => {
