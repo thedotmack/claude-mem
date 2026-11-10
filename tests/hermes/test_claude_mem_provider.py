@@ -46,6 +46,7 @@ class FakeClaudeMem:
         self.requests = []
         self.replies = {}
         self.delay = 0.0
+        self.before_reply = None
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -60,6 +61,8 @@ class FakeClaudeMem:
                     "method": self.command, "path": self.path, "body": body,
                     "authorization": self.headers.get("authorization"),
                 })
+                if owner.before_reply:
+                    owner.before_reply(owner.requests[-1])
                 if owner.delay:
                     time.sleep(owner.delay)
                 status, reply = 200, {}
@@ -362,6 +365,57 @@ class ProviderTest(unittest.TestCase):
         self.provider.on_turn_start(1, "a prompt")
         self.drain()
         self.assertEqual(self.fake.requests[0]["body"]["cwd"], other)
+
+
+class SenderShutdownTest(unittest.TestCase):
+    def test_full_queue_shutdown_retires_unsent_work_and_stops_the_sender(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        release, started = threading.Event(), threading.Event()
+        fake.before_reply = lambda _: (started.set(), release.wait(3.0))
+        client = client_module.ClaudeMemClient(client_module.Config(fake.base), queue_size=1)
+        try:
+            client.record_tool("session", REPO, "terminal", {"command": "in flight"}, "done")
+            self.assertTrue(started.wait(1.0))
+            client.record_tool("session", REPO, "terminal", {"command": "queued"}, "done")
+            self.assertEqual(client._queue.qsize(), 1)
+            before = time.monotonic()
+            client.close(timeout=0.02)
+            self.assertLess(time.monotonic() - before, 0.5)
+            client.record_tool("session", REPO, "terminal", {"command": "after close"}, "done")
+            release.set()
+            client._thread.join(1.0)
+            self.assertFalse(client._thread.is_alive(), "a full queue must not lose the shutdown sentinel")
+            self.assertTrue(client.flush(0.1))
+            self.assertEqual([r["body"]["tool_input"]["command"] for r in fake.requests], ["in flight"])
+        finally:
+            release.set()
+            client.close(timeout=0.05)
+            client._thread.join(1.0)
+
+    def test_capture_after_completed_shutdown_is_not_accepted(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        client = client_module.ClaudeMemClient(client_module.Config(fake.base))
+        client.close(timeout=0.1)
+        client._thread.join(1.0)
+        self.assertFalse(client._thread.is_alive())
+        client.record_tool("session", REPO, "terminal", {}, "after close")
+        self.assertTrue(client.flush(0.1), "closed clients must not retain jobs with no sender")
+        self.assertEqual(fake.requests, [])
+
+    def test_shutdown_drains_healthy_work_and_is_idempotent(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        client = client_module.ClaudeMemClient(client_module.Config(fake.base))
+        for command in ("first", "second"):
+            client.record_tool("session", REPO, "terminal", {"command": command}, "done")
+        client.close(timeout=1.0)
+        client._thread.join(1.0)
+        self.assertFalse(client._thread.is_alive())
+        self.assertEqual([r["body"]["tool_input"]["command"] for r in fake.requests], ["first", "second"])
+        client.close(timeout=0.1)
+        self.assertTrue(client.flush(0.1), "repeated close must not enqueue another sentinel")
 
 
 class TagScanTest(unittest.TestCase):

@@ -416,6 +416,9 @@ class ClaudeMemClient:
         self.transport = transport or Transport(self.config)
         self._queue: "queue.Queue[Optional[Callable[[], None]]]" = queue.Queue(maxsize=queue_size)
         self._queue_full = queue.Full
+        self._queue_empty = queue.Empty
+        self._enqueue_lock = threading.Lock()
+        self._closed = False
         self._sessions: Dict[str, Session] = {}
         self._thread = threading.Thread(target=self._run, name="claude-mem-sender", daemon=True)
         self._thread.start()
@@ -435,10 +438,13 @@ class ClaudeMemClient:
                 self._queue.task_done()
 
     def _enqueue(self, job: Callable[[], None]) -> None:
-        try:
-            self._queue.put_nowait(job)
-        except self._queue_full:
-            pass  # a worker that is that far behind loses the newest writes, never the turn
+        with self._enqueue_lock:
+            if self._closed:
+                return
+            try:
+                self._queue.put_nowait(job)
+            except self._queue_full:
+                pass  # a worker that is that far behind loses the newest writes, never the turn
 
     def flush(self, timeout: float = 4.0) -> bool:
         """Wait up to ``timeout`` seconds for queued writes. True when drained."""
@@ -450,11 +456,20 @@ class ClaudeMemClient:
         return True
 
     def close(self, timeout: float = 4.0) -> None:
-        self.flush(timeout)
-        try:
-            self._queue.put_nowait(None)
-        except self._queue_full:
-            pass
+        with self._enqueue_lock:
+            if self._closed:
+                return
+            self._closed = True
+        if not self.flush(timeout):
+            # The shutdown budget expired. Retire unsent inputs rather than
+            # letting them run after shutdown, and reserve space for the stop.
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except self._queue_empty:
+                    break
+                self._queue.task_done()
+        self._queue.put_nowait(None)
 
     def _excluded(self, cwd: str) -> bool:
         # Checked here as well as by the worker, so nothing from an excluded
