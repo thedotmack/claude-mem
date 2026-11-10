@@ -104,6 +104,21 @@ const GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@
 const SHA = '[0-9a-f]{7,40}';
 const unquote = (token) => token.replace(/^(["'])(.*)\1$/, '$2');
 
+// Git abbreviations are identities only when the recorded longer hashes agree.
+// Keep ambiguous prefixes separate rather than choosing whichever commit was
+// encountered last. Building the prefix index costs at most 40 steps per hash.
+function commitShaResolver(shas) {
+  const prefixes = new Map();
+  for (const sha of shas) for (let length = 7; length <= sha.length; length++) {
+    const prefix = sha.slice(0, length), known = prefixes.get(prefix);
+    if (known === undefined || (known !== null && sha.startsWith(known))) prefixes.set(prefix, sha);
+    else if (known !== null && !known.startsWith(sha)) prefixes.set(prefix, null);
+  }
+  return sha => prefixes.has(sha) ? prefixes.get(sha) : sha;
+}
+
+const matchingCommitSha = (left, right) => left.startsWith(right) || right.startsWith(left);
+
 /** The GitHub `owner/repo` a remote URL names, or null for any other host. */
 export function githubRepo(remote) {
   const match = typeof remote === 'string' ? remote.trim().match(GITHUB_REMOTE) : null;
@@ -149,9 +164,8 @@ function commitSubjects(command) {
 function commitsFrom(command, response, out) {
   const commits = new Map();
   const add = (sha, branch, subject) => {
-    const key = sha.slice(0, 7);
-    const known = commits.get(key);
-    commits.set(key, { sha: known?.sha.length > sha.length ? known.sha : sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
+    const known = commits.get(sha);
+    commits.set(sha, { sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
   };
   const recorded = response?.gitOperation?.commit;
   const subjects = commitSubjects(command);
@@ -172,7 +186,13 @@ function commitsFrom(command, response, out) {
       }
     }
   }
-  return [...commits.values()];
+  const resolveSha = commitShaResolver([...commits.keys()]);
+  const unique = new Map();
+  for (const commit of commits.values()) {
+    const sha = resolveSha(commit.sha) ?? commit.sha, known = unique.get(sha);
+    unique.set(sha, { ...commit, sha, branch: commit.branch ?? known?.branch ?? null, subject: commit.subject ?? known?.subject ?? null });
+  }
+  return [...unique.values()];
 }
 
 // The remote and destination branches named in each `git push` command.
@@ -275,7 +295,8 @@ export function gitProductsFromCommand(command, response, out, { atEpoch = null,
   const branches = [...createdBranchesFrom(command, out).filter(created => !pushes.some(pushed => pushed.branch === created.branch)), ...pushes];
   const products = [];
   for (const commit of commitsFrom(command, response, out)) {
-    const pushed = (commit.branch && pushes.find((push) => push.branch === commit.branch)) || pushes.find((push) => push.heads.some((head) => head.startsWith(commit.sha.slice(0, 7))))
+    const matchingPushes = pushes.filter((push) => push.heads.some((head) => matchingCommitSha(head, commit.sha)));
+    const pushed = (commit.branch && pushes.find((push) => push.branch === commit.branch)) || (matchingPushes.length === 1 ? matchingPushes[0] : null)
       // A quiet commit pushed by the same command went to the one branch it pushed.
       || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
     products.push({ kind: 'commit', title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef });
@@ -344,7 +365,7 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
 }
 
 // A commit is one entry per sha, a branch one per name, anything else one per link or file.
-const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha.slice(0, 7)}`
+const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha}`
   : product.kind === 'branch' && product.branch ? `branch:${product.repo ?? ''}:${product.branch}` : product.productId ?? product.url ?? product.path;
 
 /** Opaque identity for a recorded local file. The path never enters the shared identity. */
@@ -360,12 +381,19 @@ export function localProductId(ref) {
  * branch was pushed at or after it was made, the push left the branch at that
  * commit, or another commit made by the same command was. */
 export function mergeProducts(lists, limit = 60) {
-  const products = lists.flat();
+  const recorded = lists.flat();
+  const resolveSha = commitShaResolver(recorded.flatMap(product => product.kind === 'commit' && product.sha ? [product.sha] : product.heads ?? []));
+  const products = recorded.map(product => product.kind === 'commit' && product.sha ? { ...product, sha: resolveSha(product.sha) ?? product.sha } : product);
   const pushesByBranch = new Map(), repoByHead = new Map(), repoBySource = new Map();
   for (const product of products) if (product.kind === 'branch' && product.repo) {
     if (!pushesByBranch.has(product.branch)) pushesByBranch.set(product.branch, []);
     pushesByBranch.get(product.branch).push(product);
-    for (const head of product.heads ?? []) repoByHead.set(head.slice(0, 7), product.repo);
+    for (const head of product.heads ?? []) {
+      const sha = resolveSha(head);
+      if (sha === null) continue;
+      if (!repoByHead.has(sha)) repoByHead.set(sha, new Set());
+      repoByHead.get(sha).add(product.repo);
+    }
   }
   const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
   const pushedAfter = (product) => {
@@ -373,13 +401,16 @@ export function mergeProducts(lists, limit = 60) {
       .filter(push => product.kind === 'branch' || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map(push => push.repo));
     return repos.size === 1 ? [...repos][0] : null;
   };
-  const repoOf = (product) => product.repo ?? pushedAfter(product) ?? (product.sha ? repoByHead.get(product.sha.slice(0, 7)) : undefined) ?? null;
+  const repoOf = (product) => {
+    const repos = product.sha ? repoByHead.get(product.sha) : null;
+    return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
+  };
   for (const product of products) if (product.kind === 'commit' && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
   const unique = new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
     const isGit = product.kind === 'commit' || product.kind === 'branch';
     const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === 'commit' ? repoBySource.get(sourceKey(product)) : null) : null;
-    const resolved = repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product;
+    const resolved = repo || (isGit && product.repo) ? { ...product, ...(repo ? { repo } : {}), url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
     const key = productKey(resolved);
     if (!unique.has(key)) unique.set(key, resolved);
   }
