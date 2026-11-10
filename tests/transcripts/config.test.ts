@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import {
   SAMPLE_CONFIG,
   expandHomePath,
@@ -32,6 +32,23 @@ describe('transcript watcher config', () => {
       schema: CODEX_SAMPLE_SCHEMA,
     })).toBe(true);
   });
+
+  for (const configuredHome of [join(homedir(), 'codex-profile'), './codex-profile']) {
+    it(`recognizes the active CODEX_HOME without changing archive watches (${configuredHome})`, () => {
+      const original = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = configuredHome;
+      try {
+        const watch = { name: 'codex', schema: 'codex', path: join(resolve(configuredHome), 'sessions', '**', '*.jsonl') };
+        expect(isNativeHookBackedCodexWatch(watch)).toBe(true);
+        expect(shouldSuppressNativeCodexAgentsContext({ ...watch, context: { mode: 'agents' } })).toBe(true);
+        expect(isNativeHookBackedCodexWatch({ ...watch, path: '~/.codex/sessions/**/*.jsonl' })).toBe(true);
+        expect(isNativeHookBackedCodexWatch({ ...watch, path: join(resolve(configuredHome), 'archive', '**', '*.jsonl') })).toBe(false);
+      } finally {
+        if (original === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = original;
+      }
+    });
+  }
 
   it('does not treat custom transcript watches as native Codex hooks', () => {
     expect(isNativeHookBackedCodexWatch({

@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
-import { CODEX_SUBAGENT_SOURCE } from '../../src/services/transcripts/config.js';
+import { CODEX_SUBAGENT_SOURCE, scopeNativeHookBackedCodexWatches } from '../../src/services/transcripts/config.js';
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
 import * as realIngest from '../../src/services/worker/http/shared.js';
 import * as realProjectName from '../../src/utils/project-name.js';
@@ -142,6 +142,32 @@ describe('TranscriptEventProcessor subagent gating', () => {
   });
 
   const subagentSource = { ...CODEX_SUBAGENT_SOURCE };
+
+  for (const subagentsEnabled of [false, true]) {
+    it(`applies the native capture opt-in to CODEX_HOME rollouts (subagents=${subagentsEnabled})`, async () => {
+      const original = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = join(tmpdir(), 'custom-codex-profile');
+      try {
+        const { config } = scopeNativeHookBackedCodexWatches({
+          version: 1,
+          watches: [makeWatch({ path: join(process.env.CODEX_HOME, 'sessions', '**', '*.jsonl') })],
+        }, {
+          CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
+          CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: String(subagentsEnabled),
+          CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',
+        });
+        for (const watch of config.watches) await replay(processor, watch, 'cli');
+        expect(sessionInitIds).toEqual([]);
+        expect(observationSessionIds).toEqual([]);
+        for (const watch of config.watches) await replay(processor, watch, SUBAGENT_SOURCE);
+        expect(sessionInitIds).toEqual(subagentsEnabled ? ['s1'] : []);
+        expect(observationSessionIds).toEqual(subagentsEnabled ? ['s1'] : []);
+      } finally {
+        if (original === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = original;
+      }
+    });
+  }
 
   it('ingests a subagent session under a subagent-only watch', async () => {
     const watch = makeWatch({ subagentOnly: true, subagentSource });
