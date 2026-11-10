@@ -90,6 +90,36 @@ describe('POST /api/advisor-calls', () => {
     expect(store.getAdvisorCalls(0, 10).items).toHaveLength(0);
   });
 
+  it('drops untagged advice when the originating prompt was entirely private', () => {
+    const result = ingest({
+      ...session,
+      calls: [call({
+        lastUserMessage: '<private>why does confidential-project stall?</private>',
+        advice: 'The confidential-project lease expires before its sync finishes.',
+      })],
+    });
+
+    expect(result).toMatchObject({ stored: 0, privateOnly: 1 });
+    expect(store.getAdvisorCalls(0, 10).items).toHaveLength(0);
+  });
+
+  it('filters each originating turn without discarding public or media-only calls in a batch', () => {
+    const result = ingest({
+      ...session,
+      calls: [
+        call({ toolUseId: 'private', lastUserMessage: '<private>secret question</private>' }),
+        call({ toolUseId: 'public', lastUserMessage: 'public question <private>secret detail</private>' }),
+        call({ toolUseId: 'media', lastUserMessage: null }),
+      ],
+    });
+
+    expect(result).toMatchObject({ stored: 2, privateOnly: 1 });
+    const rows = store.getAdvisorCalls(0, 10).items;
+    expect(rows.map(row => row.tool_use_id).sort()).toEqual(['media', 'public']);
+    expect(rows.find(row => row.tool_use_id === 'public')?.last_user_message).toBe('public question');
+    expect(rows.find(row => row.tool_use_id === 'media')?.last_user_message).toBeNull();
+  });
+
   it('treats a replayed tool_use_id as a duplicate', () => {
     ingest({ ...session, calls: [call()] });
     const replay = ingest({ ...session, calls: [call({ advice: 'replayed' })] });

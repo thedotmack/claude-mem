@@ -16,6 +16,7 @@ import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/r
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
 import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
+import { isPrivatePrompt } from '../../shared/deliverables-transcript.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 import { captureDeliverables } from '../deliverables-capture.js';
@@ -44,7 +45,8 @@ function recordAdvisorCalls(
   if (loadFromFileOnce().CLAUDE_MEM_CAPTURE_ADVISOR_CALLS !== 'true') return;
   if (resolveRuntimeContext().runtime === 'server') return;
 
-  const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
+  const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true })
+    .filter(call => !isPrivatePrompt(call.lastUserMessage ?? ''));
   if (calls.length === 0) return;
 
   logger.debug('HOOK', 'Stop: spooling advisor calls', { count: calls.length });
