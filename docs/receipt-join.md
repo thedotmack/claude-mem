@@ -1,7 +1,7 @@
 # RECEIPT-JOIN — tool_uses ↔ expense tallies
 
 **Stamp:** 2026-09-06 (PT), implementation landed 2026-09-07 · Tool SQLite ↔ Receipt  
-**Status:** SHIPPED — schema v51 matches this contract; `tool_uses` exists in `~/.claude-mem/claude-mem.db`  
+**Status:** SHIPPED — `tool_uses` exists in `~/.claude-mem/claude-mem.db`; schema v75 scopes its identity by platform.
 **Authority split:** Claude-Mem `tool_uses` = identity / DISTINCT COUNT. OpenRouter stamps + spend log = **$**. Never put `cost_usd` / micros on `tool_uses` as authority.
 
 For observation-token expense reports that multiply tokens × published list price (no generation ids), use `docs/expense-pricing/`.
@@ -13,6 +13,7 @@ For observation-token expense reports that multiply tokens × published list pri
 | Claude-Mem `tool_uses` | Receipt / spend log | Use |
 |---|---|---|
 | `content_session_id` | ↔ `or_session_id` via convention below | Session/job grouping |
+| `platform_source` | filter | Host identity scope |
 | `tool_name` | ↔ tally `groupBy: 'tool'` label | Feature/tool rollup |
 | `tool_use_id` | DISTINCT COUNT preferred over `or_trace.tool_calls` int | Usage counts |
 | `project` | filter | Scope |
@@ -68,7 +69,7 @@ MemBench offline aggregates may use `job:membench:<runHash>` — those will **no
 
 ## Cash attribution
 
-- **COUNT tool usages:** `COUNT(DISTINCT tool_use_id)` filtered by session/project/tool_name/period.
+- **COUNT tool usages:** `COUNT(DISTINCT tool_use_id)` within one platform and session, filtered by project/tool_name/period. Across sessions or platforms, count distinct `(platform_source, content_session_id, tool_use_id)` tuples.
 - **Attribute $ to a tool row:** only when `or_generation_id` is set and matches a measured spend-log / Ledger line. Without it, COUNT by session+tool is still valid; micros stay on the OR generation line.
 - Interim Receipt path (`or_trace.tool` + `or_trace.tool_calls`) remains until `tool_uses` is the durable COUNT source.
 
@@ -76,7 +77,7 @@ MemBench offline aggregates may use `job:membench:<runHash>` — those will **no
 
 ## Schema columns (SHIPPED)
 
-Migration **v51**, `src/services/sqlite/tool-uses.ts` (DDL) + `SessionStore.ensureToolUsesTable()`.
+Table introduced in **v51**, with platform-qualified identity in **v75**; `src/services/sqlite/tool-uses.ts` (DDL) + `SessionStore.ensureToolUsesTable()`.
 Exactly the frozen set — nullable `or_generation_id`, nullable `or_session_id`, no cost columns:
 
 ```sql
@@ -101,7 +102,7 @@ CREATE TABLE tool_uses (
   content_hash TEXT,
   created_at TEXT NOT NULL,
   created_at_epoch INTEGER NOT NULL,
-  UNIQUE(content_session_id, tool_use_id)
+  UNIQUE(platform_source, content_session_id, tool_use_id)
 );
 ```
 
@@ -168,7 +169,7 @@ summarizes a *batch* of tool calls into one or more observations; every tool use
 in that batch is linked to the batch's FIRST observation id, and the link is
 never overwritten once set. Use it to navigate back to a summary — do not treat
 it as "this observation cost this tool call". The reliable per-call identity
-stays `(content_session_id, tool_use_id)`.
+is `(platform_source, content_session_id, tool_use_id)`.
 
 **Rows can be missing, and that is by design.** A tool call is absent from
 `tool_uses` when: the platform gave no `tool_use_id`; the project is excluded;
@@ -183,10 +184,10 @@ truncated value is no longer valid JSON. `content_hash` is computed over the
 original pre-truncation payload, so it still distinguishes two oversized bodies
 that share a prefix.
 
-**Replay updates, it does not duplicate.** `UNIQUE(content_session_id,
-tool_use_id)` + upsert; a later replay can fill a `tool_response` the first
-write lacked. `COUNT(DISTINCT tool_use_id)` is still the recommended tally
-because it is correct regardless.
+**Replay updates, it does not duplicate.** `UNIQUE(platform_source,
+content_session_id, tool_use_id)` + upsert; a later replay can fill a
+`tool_response` the first write lacked. Count tool IDs within one platform
+and session, or distinct identity tuples across them.
 
 ---
 

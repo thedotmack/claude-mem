@@ -1096,7 +1096,7 @@ export async function processAgentResponse(
   // memorySessionId. The batch's FIRST observation id owns the link (see
   // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
-  // per-call join stays (content_session_id, tool_use_id).
+  // per-call join is (platform_source, content_session_id, tool_use_id).
   //
   // Never fatal: a failed link costs a back-reference, not an observation.
   const linkObservationId = firstStoredObservationId(result);
@@ -1104,6 +1104,7 @@ export async function processAgentResponse(
     try {
       const linked = sessionStore.linkToolUsesToObservation({
         contentSessionId: session.contentSessionId,
+        platformSource: session.platformSource,
         toolUseIds: claimedToolUseIds,
         observationId: linkObservationId,
         memorySessionId: registeredMemorySessionId,
