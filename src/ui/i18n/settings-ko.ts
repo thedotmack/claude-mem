@@ -98,8 +98,6 @@ export const settingsKo: Record<string, string> = {
   'Tokens to read this observation': '이 관찰을 읽는 데 드는 토큰',
   'Work investment': '생성 비용',
   'Tokens spent creating this observation': '이 관찰을 만드는 데 쓴 토큰',
-  'Savings': '절감량',
-  'Total tokens saved by reusing context': '컨텍스트 재사용으로 절약한 총 토큰',
   'Interval (hours)': '간격 (시간)',
   'Hours between automatic snapshots (1-168)': '자동 스냅샷 사이의 시간 간격 (1-168)',
   'Snapshots to keep': '보관할 스냅샷 수',

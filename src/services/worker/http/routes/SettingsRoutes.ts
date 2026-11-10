@@ -138,7 +138,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 // from the file alone, never the environment: auto-update-check.ts
 // readAutoUpdateSettings), and CLAUDE_MEM_AUTO_UPDATE decides whether that
 // runs at all.
-const FILE_ONLY_SETTING_KEYS = new Set([
+export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
@@ -342,8 +342,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
@@ -578,8 +576,6 @@ export class SettingsRoutes extends BaseRouteHandler {
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',

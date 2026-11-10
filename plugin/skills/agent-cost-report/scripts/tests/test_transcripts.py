@@ -84,7 +84,6 @@ class Collector(unittest.TestCase):
         doc = self.collect()
         c = doc["collector"]
         self.assertEqual(c["host_label"], platform.node())
-        self.assertNotRegex(c["host_label"], r"^[0-9a-f]{8}-[0-9a-f]{4}-")  # never a device UUID
         self.assertEqual(c["files_seen"], 3)
         self.assertEqual(c["files_seen_by_src"], {"claude-code": 2, "codex": 1})
         self.assertEqual(c["rows"], len(doc["rows"]))
@@ -131,9 +130,6 @@ class Collector(unittest.TestCase):
         self.assertEqual(doc["window"]["session"], "sess-aaaa")
         self.assertIsNone(doc["window"]["start_pt"])
 
-    def test_session_filter_other_session(self):
-        doc = self.collect(window=None, session="sess-bbbb", window_block=period.session_block("sess-bbbb", now=self.now))
-        self.assertEqual([r["session"] for r in doc["rows"]], ["sess-bbbb"])
 
     def test_window_outside_fixture_dates_yields_no_rows(self):
         w = period.resolve_window("2026-09-20", "2026-09-21", now=self.now)

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { join, posix, win32 } from 'node:path';

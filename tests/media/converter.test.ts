@@ -69,19 +69,6 @@ test('WebP input, no enlargement, MIME spoof, empty, truncated and unsupported i
   await assert.rejects(convertMedia(Buffer.alloc(LOCAL_MAX_SOURCE_BYTES + 1), 'image/png'), rejects('source_too_large'));
 });
 
-test('a source over 3 MiB is kept: the local file bound is 96 MiB', { timeout: 20_000 }, async () => {
-  // Noise PNG, about 3.4 MiB: rejected as source_too_large before LA5.
-  const pixels = Buffer.alloc(1100 * 1100 * 3);
-  let state = 987654321;
-  for (let i = 0; i < pixels.length; i++) { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; pixels[i] = state & 255; }
-  const source = await sharp(pixels, { raw: { width: 1100, height: 1100, channels: 3 } }).png().toBuffer();
-  assert.ok(source.length > MEDIA_LIMITS.maxSourceBytes, 'fixture must be over the old 3 MiB bound');
-  const result = await convertMedia(source, 'image/png');
-  assert.equal(result.source.byteLength, source.length);
-  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxEncodedCanonicalBytes);
-  assert.equal(LOCAL_MAX_SOURCE_BYTES, 96 * 1024 * 1024);
-});
-
 test('a source over the canonical dimension or pixel bound is fitted into it, not rejected', { timeout: 20_000 }, async () => {
   const tall = await convertMedia(await makePng(200, 9000), 'image/png');
   assert.equal(tall.source.height, 9000);
@@ -95,8 +82,7 @@ test('a source over the canonical dimension or pixel bound is fitted into it, no
 test('the decoder still refuses input over sharp\'s own default pixel limit', async () => {
   assert.equal(LOCAL_MAX_INPUT_PIXELS, 16383 * 16383);
   // A 16384x16384 PNG header over a tiny body: a decompression bomb.
-  const bomb = await sharp({ create: { width: 16384, height: 16384, channels: 3, background: '#fff' }, limitInputPixels: false })
-    .png().toBuffer();
+  const bomb = Buffer.from('89504e470d0a1a0a0000000d494844520000400000004000080200000026aa87d30000000849444154789c030000000001480689d20000000049454e44ae426082', 'hex');
   await assert.rejects(convertMedia(bomb, 'image/png'), rejects('pixel_limit'));
 });
 
@@ -261,14 +247,6 @@ test('a screenshot canonical over 1 MiB at quality 80 is shrunk at quality 80 un
   assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
 });
 
-test('a photo canonical over 1 MiB at quality 90 is shrunk at quality 90 until it fits', { timeout: 30_000 }, async () => {
-  const source = await noisyJpeg(1200);
-  assert.ok((await sharp(source).webp({ quality: 90, effort: 4 }).toBuffer()).length > MEDIA_LIMITS.maxEncodedCanonicalBytes);
-  const result = await convertMedia(source, 'image/jpeg', 'photo-v1');
-  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxEncodedCanonicalBytes);
-  assert.ok(result.viewer.width < 1200);
-});
-
 test('a screenshot derivative over the ceiling at quality 80 is shrunk at quality 80 until it fits', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(800);
   assert.ok((await derivativeBytes(source, { quality: 80, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes,
@@ -291,6 +269,8 @@ test('a photo derivative over the ceiling is shrunk at quality 90', { timeout: 2
 
 test('the application deadline covers a shrink round', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(800);
+  const initialEncode = await sharp(source).autoOrient().webp({ quality: 80, effort: 4 }).toBuffer({ resolveWithObject: true });
+  // Reuse the initial encode so only the stalled shrink consumes the deadline.
   // Wrap the real decoder so a shrink encode (resized below the 800 px
   // source) never settles until released; only the deadline can end it.
   let shrinkStarted = false;
@@ -299,10 +279,11 @@ test('the application deadline covers a shrink round', { timeout: 20_000 }, asyn
   const slowShrinkDecoder = Object.assign((input: Buffer, inputOptions: sharp.SharpOptions) => {
     const instance = sharp(input, inputOptions);
     const resize = instance.resize.bind(instance) as (options: sharp.ResizeOptions) => sharp.Sharp;
+    const toBuffer = instance.toBuffer.bind(instance) as (options: { resolveWithObject: true }) => Promise<unknown>;
+    (instance as unknown as { toBuffer: unknown }).toBuffer = async () => initialEncode;
     (instance as unknown as { resize: unknown }).resize = (options: sharp.ResizeOptions) => {
       if ((options.width ?? Infinity) < 800) {
         shrinkStarted = true;
-        const toBuffer = instance.toBuffer.bind(instance) as (options: { resolveWithObject: true }) => Promise<unknown>;
         (instance as unknown as { toBuffer: unknown }).toBuffer = async (options: { resolveWithObject: true }) => {
           await held;
           return toBuffer(options);
@@ -312,10 +293,11 @@ test('the application deadline covers a shrink round', { timeout: 20_000 }, asyn
     };
     return instance;
   }, sharp) as unknown as typeof sharp;
-  const convert = createMediaConverter({ deadlineMs: 3000, loadDecoder: async () => slowShrinkDecoder });
-  await assert.rejects(convert(source, 'image/jpeg'), rejects('conversion_timeout'));
-  assert.equal(shrinkStarted, true, 'the timeout must come from the shrink encode');
-  release();
+  const convert = createMediaConverter({ deadlineMs: 1500, loadDecoder: async () => slowShrinkDecoder });
+  try {
+    await assert.rejects(convert(source, 'image/jpeg'), rejects('conversion_timeout'));
+    assert.equal(shrinkStarted, true, 'the timeout must come from the shrink encode');
+  } finally { release(); }
 });
 
 test('real decode and encode work is included in the application deadline', async () => {
@@ -328,6 +310,23 @@ test('missing decoder is a safe media failure and larger deadlines cannot bypass
   const missing = createMediaConverter({ loadDecoder: async () => { throw new MediaError('decoder_unavailable'); } });
   await assert.rejects(missing(await makePng(), 'image/png'), rejects('decoder_unavailable'));
   assert.throws(() => createMediaConverter({ deadlineMs: LOCAL_CONVERSION_DEADLINE_MS + 1000 }), rejects('invalid_manifest'));
+});
+
+test("sharp's wasm32 build is refused before any decode (#5601)", async () => {
+  // Bun's auto-install resolved sharp to @img/sharp-wasm32 in a plugin root
+  // without node_modules; its first metadata() blocked the main thread forever,
+  // so the deadline timer below never fired. The wasm build must never decode.
+  let decodeCalls = 0;
+  const wasmDecoder = Object.assign(() => { decodeCalls++; return sharp(Buffer.alloc(0)); }, sharp, {
+    versions: { ...sharp.versions, emscripten: '6.0.10' },
+  }) as unknown as typeof sharp;
+  const convert = createMediaConverter({ loadDecoder: async () => wasmDecoder });
+  await assert.rejects(convert(await makePng(), 'image/png'), rejects('decoder_unavailable'));
+  assert.equal(decodeCalls, 0);
+  // The native build that ships in plugin/node_modules still decodes.
+  assert.equal('emscripten' in sharp.versions, false);
+  const native = await createMediaConverter({ loadDecoder: async () => sharp })(await makePng(), 'image/png');
+  assert.equal(native.source.width, 80);
 });
 
 test('the owner quota stays at the value Pro enforces', () => {

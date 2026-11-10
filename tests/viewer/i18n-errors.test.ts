@@ -5,8 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { translateSettingsStatus, translateViewerError } from '../../src/ui/i18n/errors';
 import { viewerZh } from '../../src/ui/i18n/viewer-zh';
 import { settingsZh } from '../../src/ui/i18n/settings-zh';
-import { describeDeleteFailure, deleteFeedItem } from '../../src/ui/viewer/utils/feed-deletion';
-import { describeSessionDeleteFailure, deleteSession } from '../../src/ui/viewer/utils/sessions';
+import { describeDeleteFailure } from '../../src/ui/viewer/utils/feed-deletion';
+import { describeSessionDeleteFailure } from '../../src/ui/viewer/utils/sessions';
 import { usePagination } from '../../src/ui/viewer/hooks/usePagination';
 import { Feed } from '../../src/ui/viewer/components/Feed';
 
@@ -50,29 +50,17 @@ describe('render-time viewer errors', () => {
   });
 
   it('retranslates the same stored delete errors without changing their English source', () => {
-    for (const describeFailure of [describeDeleteFailure, describeSessionDeleteFailure]) {
-      for (const status of [404, 409, 503, 500]) {
-        const stored = describeFailure(status);
-        assert.equal(translateViewerError(stored, english), stored);
-        assert.notEqual(translateViewerError(stored, chinese), stored);
-        assert.equal(translateViewerError(stored, english), stored);
-      }
+    for (const stored of [
+      ...[describeDeleteFailure, describeSessionDeleteFailure].flatMap(describeFailure =>
+        [404, 409, 503, 500].map(status => describeFailure(status))),
+      'Not deleted: the claude-mem worker could not be reached.',
+    ]) {
+      assert.equal(translateViewerError(stored, english), stored);
+      assert.notEqual(translateViewerError(stored, chinese), stored);
     }
     assert.equal(translateViewerError(describeDeleteFailure(418), chinese),
       chinese('Not deleted: the worker answered HTTP {status}.').replace('{status}', '418'),
     );
-  });
-
-  it('retains English delete rejection messages independently of the UI locale', async () => {
-    const failing = (async () => new Response(null, { status: 500 })) as typeof fetch;
-    const offline = (async () => { throw new Error('opaque network details'); }) as typeof fetch;
-    for (const operation of [
-      (fetchImpl: typeof fetch) => deleteFeedItem('observation', 1, fetchImpl),
-      (fetchImpl: typeof fetch) => deleteSession({ platformSource: 'claude', contentSessionId: '1' }, fetchImpl),
-    ]) {
-      await assert.rejects(operation(failing), { message: 'Not deleted: the worker answered HTTP 500.' });
-      await assert.rejects(operation(offline), { message: 'Not deleted: the claude-mem worker could not be reached.' });
-    }
   });
 
   it('retranslates assembled pagination errors and only translates the known data type', () => {

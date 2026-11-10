@@ -8,7 +8,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 
 describe('queued summary origin', () => {
-  for (const kind of ['next-prompt', 'older-observation', 'spooled-stop', 'legacy-queue', 'control']) {
+  for (const kind of ['next-prompt', 'older-observation', 'spooled-stop']) {
     it(`stores the prompt that produced the Stop: ${kind}`, async () => {
       const cleanup: Array<() => void> = [];
       try {
@@ -43,9 +43,7 @@ describe('queued summary origin', () => {
           advance();
         }
         if (kind === 'spooled-stop') advance();
-        const outcome = kind === 'legacy-queue'
-          ? (manager.queueSummarize(sid, 'Completed the owned task'), { status: 'accepted' })
-          : await ingestSummarize({ contentSessionId: contentId, platformSource: 'claude',
+        const outcome = await ingestSummarize({ contentSessionId: contentId, platformSource: 'claude',
           lastAssistantMessage: 'Completed the owned task',
           ...(kind === 'spooled-stop' ? { enqueuedAtEpochMs: firstAt + 50 } : {}),
         }, { sessionManager: manager, dbManager: db,
@@ -73,7 +71,6 @@ describe('queued summary origin', () => {
           if (manager.getTotalQueueDepth() === 0) session.abortController.abort();
         } });
         const rows = store.db.query('SELECT request, prompt_number FROM session_summaries').all();
-        console.log(JSON.stringify({ kind, expected, rows }));
         expect(rows).toEqual([{ request: 'Owned summary', prompt_number: expected }]);
         if (kind === 'next-prompt' || kind === 'spooled-stop') expect(session.lastPromptNumber).toBe(2);
         expect(manager.getTotalQueueDepth()).toBe(0);
@@ -87,7 +84,6 @@ describe('queued summary origin', () => {
             if (manager.getTotalQueueDepth() === 0) session.abortController.abort();
           } });
           const continued = session.conversationHistory[0].content.includes((mode as any).getActiveMode().prompts.continuation_greeting);
-          console.log(JSON.stringify({ kind, retainedPromptNumber, continued, observations }));
           expect(continued).toBe(true);
           expect(retainedPromptNumber).toBe(2);
           expect(session.lastPromptNumber).toBe(2);

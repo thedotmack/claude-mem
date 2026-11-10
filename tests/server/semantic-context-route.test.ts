@@ -19,6 +19,7 @@ import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { SEMANTIC_CONTEXT_MAX_LIMIT } from '../../src/shared/semantic-context.js';
 import { embedObservationRows, getSharedEmbedder } from '../../src/server/services/ObservationEmbeddingService.js';
 import { PostgresObservationEmbeddingsRepository } from '../../src/storage/postgres/observation-embeddings.js';
+import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { logger } from '../../src/utils/logger.js';
 import { newApiKey, createIsolatedSchema, dropSchema } from '../sdk/pg-isolation.js';
 
@@ -42,6 +43,11 @@ describe('POST /v1/context/semantic limits', () => {
   beforeEach(async () => {
     spies = (['info', 'warn', 'error', 'debug'] as const).map((level) =>
       spyOn(logger, level).mockImplementation(() => {}),
+    );
+    spies.push(
+      spyOn(LocalEmbedder.prototype, 'embed').mockImplementation(async (texts: string[]) =>
+        texts.map(() => new Float32Array(384).fill(0.05))),
+      spyOn(LocalEmbedder.prototype, 'isReady').mockReturnValue(true),
     );
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_semantic_ctx');
     // public too, where pgvector's type lives once any test has created it.
@@ -102,21 +108,17 @@ describe('POST /v1/context/semantic limits', () => {
     return { status: 200, count: json.count, context: json.context };
   }
 
-  // An answer with content needs pgvector and the embedding model; without
-  // either the route answers empty and these tests say so and return.
+  // Fixed vectors exercise the route without loading the embedding model.
   async function canAnswer(): Promise<boolean> {
     // Whether this database got the embeddings table, which the bootstrap
     // creates only where pgvector 0.8+ is usable, not merely installable.
     const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
     const vectors = table.rows[0]?.present === true;
-    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
-    // The search CI job (CLAUDE_MEM_TEST_PGVECTOR=1) has both; there a
-    // missing one fails these tests instead of passing them untested.
     if (process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
-      expect({ vectors, model }).toEqual({ vectors: true, model: true });
+      expect(vectors).toBe(true);
     }
-    if (!vectors || !model) console.warn('vector search or the embedding model is unavailable; semantic answers not tested');
-    return vectors && model;
+    if (!vectors) console.warn('vector search is unavailable; semantic answers not tested');
+    return vectors;
   }
 
   async function seed(rows: Array<{ content: string; kind?: string; metadata?: Record<string, string> }>): Promise<void> {
@@ -127,10 +129,6 @@ describe('POST /v1/context/semantic limits', () => {
     for (const row of rows) {
       observations.push(await storage.observations.create({ projectId, teamId: team, ...row }));
     }
-    // With vectors, so the search finds them by meaning on any Postgres with
-    // pgvector, not only where bm25 matches any keyword. One embed call for the
-    // whole seed: one call per row made the 30-row clamp test pass the default
-    // 5 s timeout on loaded CI runners.
     const embedded = (await embedObservationRows(pool, observations)) ?? [];
     for (const [index, parts] of embedded.entries()) {
       await embeddings.upsert({ observationId: observations[index]!.id, model: getSharedEmbedder().modelId, ...parts });
@@ -149,11 +147,7 @@ describe('POST /v1/context/semantic limits', () => {
     const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
     expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
-    // Timeout: with the batched seed this test measured 3.1 s (server search job)
-    // and 4.4 s (sync-api job) on CI, most of it the first embed loading the
-    // model. The 5 s default left under 1 s of headroom; 15 s is about 3x the
-    // slowest measured run.
-  }, 15_000);
+  });
 
   it('renders the content of a memory or summary that has no narrative', async () => {
     if (!(await canAnswer())) return;

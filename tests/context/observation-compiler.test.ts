@@ -47,117 +47,42 @@ function createTestSummaryTimelineItem(overrides: Partial<SummaryTimelineItem> =
   };
 }
 
-describe('buildTimeline', () => {
-    it('should combine observations and summaries into timeline', () => {
-      const observations = [
-        createTestObservation({ id: 1, created_at_epoch: 1000 }),
-      ];
-      const summaries = [
-        createTestSummaryTimelineItem({ id: 1, displayEpoch: 2000 }),
-      ];
-
-      const timeline = buildTimeline(observations, summaries);
-
-      expect(timeline).toHaveLength(2);
-    });
-
-    it('should sort timeline items chronologically by epoch', () => {
-      const observations = [
-        createTestObservation({ id: 1, created_at_epoch: 3000 }),
-        createTestObservation({ id: 2, created_at_epoch: 1000 }),
-      ];
-      const summaries = [
-        createTestSummaryTimelineItem({ id: 1, displayEpoch: 2000 }),
-      ];
-
-      const timeline = buildTimeline(observations, summaries);
-
-      expect(timeline).toHaveLength(3);
-      expect(timeline[0].type).toBe('observation');
-      expect((timeline[0].data as Observation).id).toBe(2);
-      expect(timeline[1].type).toBe('summary');
-      expect(timeline[2].type).toBe('observation');
-      expect((timeline[2].data as Observation).id).toBe(1);
-    });
-
-    it('should handle empty observations array', () => {
-      const summaries = [
-        createTestSummaryTimelineItem({ id: 1, displayEpoch: 1000 }),
-      ];
-
-      const timeline = buildTimeline([], summaries);
-
-      expect(timeline).toHaveLength(1);
-      expect(timeline[0].type).toBe('summary');
-    });
-
-    it('should handle empty summaries array', () => {
-      const observations = [
-        createTestObservation({ id: 1, created_at_epoch: 1000 }),
-      ];
-
-      const timeline = buildTimeline(observations, []);
-
-      expect(timeline).toHaveLength(1);
-      expect(timeline[0].type).toBe('observation');
-    });
-
-    it('should handle both empty arrays', () => {
-      const timeline = buildTimeline([], []);
-
-      expect(timeline).toHaveLength(0);
-    });
-
-    it('should correctly tag items with their type', () => {
-      const observations = [createTestObservation()];
-      const summaries = [createTestSummaryTimelineItem()];
-
-      const timeline = buildTimeline(observations, summaries);
-
-      const observationItem = timeline.find(item => item.type === 'observation');
-      const summaryItem = timeline.find(item => item.type === 'summary');
-
-      expect(observationItem).toBeDefined();
-      expect(summaryItem).toBeDefined();
-      expect(observationItem!.data).toHaveProperty('narrative');
-      expect(summaryItem!.data).toHaveProperty('request');
-    });
-
-    it('should use displayEpoch for summary sorting, not created_at_epoch', () => {
-      const observations = [
-        createTestObservation({ id: 1, created_at_epoch: 2000 }),
-      ];
-      const summaries = [
-        createTestSummaryTimelineItem({
-          id: 1,
-          created_at_epoch: 3000, // Created later
-          displayEpoch: 1000,     // But displayed earlier
-        }),
-      ];
-
-      const timeline = buildTimeline(observations, summaries);
-
-      expect(timeline[0].type).toBe('summary');
-      expect(timeline[1].type).toBe('observation');
-    });
-});
-
-describe('context compiler platform scoping', () => {
-  const config: ContextConfig = {
+function config(concept: string): ContextConfig {
+  return {
     totalObservationCount: 20,
     fullObservationCount: 3,
     sessionCount: 20,
     showReadTokens: true,
     showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
     observationTypes: new Set(['discovery']),
-    observationConcepts: new Set(['platform-scope']),
+    observationConcepts: new Set([concept]),
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
     mainAgentOnly: true,
   };
+}
+
+describe('buildTimeline', () => {
+  it.each([
+    ['combines both kinds', [{ id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:1', 'summary:1']],
+    ['sorts chronologically', [{ id: 1, created_at_epoch: 3000 }, { id: 2, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:2', 'summary:1', 'observation:1']],
+    ['no observations', [], [{ id: 1, displayEpoch: 1000 }], ['summary:1']],
+    ['no summaries', [{ id: 1, created_at_epoch: 1000 }], [], ['observation:1']],
+    ['both empty', [], [], []],
+    ['tags both kinds', [{}], [{}], ['observation:1', 'summary:1']],
+    ['uses summary display epoch', [{ id: 1, created_at_epoch: 2000 }], [{ id: 1, created_at_epoch: 3000, displayEpoch: 1000 }], ['summary:1', 'observation:1']],
+  ] as [string, Partial<Observation>[], Partial<SummaryTimelineItem>[], string[]][])('%s', (_, observations, summaries, expected) => {
+    const timeline = buildTimeline(observations.map(createTestObservation), summaries.map(createTestSummaryTimelineItem));
+    expect(timeline.map(item => `${item.type}:${item.data.id}`)).toEqual(expected);
+    for (const item of timeline) {
+      expect(item.data).toHaveProperty(item.type === 'observation' ? 'narrative' : 'request');
+    }
+  });
+});
+
+describe('context compiler platform scoping', () => {
+  const contextConfig = config('platform-scope');
 
   function seed(
     store: SessionStore,
@@ -235,11 +160,11 @@ describe('context compiler platform scoping', () => {
         createdAtEpoch: 1_700_000_001_000,
       });
 
-      const codexObservations = queryObservationsMulti(store, ['context-platform-project'], config, 'codex');
+      const codexObservations = queryObservationsMulti(store, ['context-platform-project'], contextConfig, 'codex');
       expect(codexObservations.map(obs => obs.title)).toEqual(['CODEX_CONTEXT_OBS']);
       expect(codexObservations[0].platform_source).toBe('codex');
 
-      const codexSummaries = querySummariesMulti(store, ['context-platform-project'], config, 'codex');
+      const codexSummaries = querySummariesMulti(store, ['context-platform-project'], contextConfig, 'codex');
       expect(codexSummaries.map(summary => summary.request)).toEqual(['CODEX_CONTEXT_SUMMARY']);
       expect(codexSummaries[0].platform_source).toBe('codex');
 
@@ -283,11 +208,11 @@ describe('context compiler platform scoping', () => {
       });
 
       const projects = ['context-parent', 'context-worktree'];
-      expect(queryObservationsMulti(store, projects, config, 'codex').map(obs => obs.title)).toEqual([
+      expect(queryObservationsMulti(store, projects, contextConfig, 'codex').map(obs => obs.title)).toEqual([
         'WORKTREE_CODEX_OBS',
         'PARENT_CODEX_OBS',
       ]);
-      expect(querySummariesMulti(store, projects, config, 'codex').map(summary => summary.request)).toEqual([
+      expect(querySummariesMulti(store, projects, contextConfig, 'codex').map(summary => summary.request)).toEqual([
         'WORKTREE_CODEX_SUMMARY',
         'PARENT_CODEX_SUMMARY',
       ]);
@@ -298,21 +223,7 @@ describe('context compiler platform scoping', () => {
 });
 
 describe('case-insensitive project retrieval (#3531)', () => {
-  const config: ContextConfig = {
-    totalObservationCount: 20,
-    fullObservationCount: 3,
-    sessionCount: 20,
-    showReadTokens: true,
-    showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
-    observationTypes: new Set(['discovery']),
-    observationConcepts: new Set(['case-scope']),
-    fullObservationField: 'narrative',
-    showLastSummary: true,
-    showLastMessage: false,
-    mainAgentOnly: true,
-  };
+  const contextConfig = config('case-scope');
 
   it('resolves rows stored under a mixed-case key when queried with a different case', () => {
     const store = new SessionStore(':memory:');
@@ -355,8 +266,8 @@ describe('case-insensitive project retrieval (#3531)', () => {
         1_700_000_000_000,
       );
 
-      expect(queryObservationsMulti(store, ['pasteypal'], config).map(o => o.title)).toEqual(['CASE_OBS']);
-      expect(querySummariesMulti(store, ['pasteypal'], config).map(s => s.request)).toEqual(['CASE_SUMMARY']);
+      expect(queryObservationsMulti(store, ['pasteypal'], contextConfig).map(o => o.title)).toEqual(['CASE_OBS']);
+      expect(querySummariesMulti(store, ['pasteypal'], contextConfig).map(s => s.request)).toEqual(['CASE_SUMMARY']);
       expect(countObservationsByProjects(store, ['pasteypal'])).toBe(1);
     } finally {
       store.close();
@@ -365,21 +276,7 @@ describe('case-insensitive project retrieval (#3531)', () => {
 });
 
 describe('concept exact-match injection (#3379)', () => {
-  const config: ContextConfig = {
-    totalObservationCount: 20,
-    fullObservationCount: 3,
-    sessionCount: 20,
-    showReadTokens: true,
-    showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
-    observationTypes: new Set(['discovery']),
-    observationConcepts: new Set(['gotcha']),
-    fullObservationField: 'narrative',
-    showLastSummary: true,
-    showLastMessage: false,
-    mainAgentOnly: true,
-  };
+  const contextConfig = config('gotcha');
 
   it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
     // The injection query matches concepts exactly (`WHERE value IN (...)`).
@@ -398,7 +295,7 @@ describe('concept exact-match injection (#3379)', () => {
         VALUES ('mem-3379', 'concept-project', 'discovery', 'MALFORMED_CONCEPT_OBS', '["gotcha: x"]', ?, ?)
       `).run(new Date().toISOString(), 1_700_000_000_000);
 
-      expect(queryObservationsMulti(store, ['concept-project'], config)).toEqual([]);
+      expect(queryObservationsMulti(store, ['concept-project'], contextConfig)).toEqual([]);
     } finally {
       db.close();
     }
@@ -417,8 +314,8 @@ describe('concept exact-match injection (#3379)', () => {
       insert.run('GOOD_OBS', '["gotcha"]', new Date().toISOString(), 1_700_000_000_000);
       insert.run('BAD_JSON_OBS', 'gotcha, [unterminated', new Date().toISOString(), 1_700_000_100_000);
 
-      expect(queryObservationsMulti(store, ['concept-project'], config).map(obs => obs.title)).toEqual(['GOOD_OBS']);
-      expect(queryObservationsNewest(store, config, { limit: 10 }).map(obs => obs.title)).toEqual(['GOOD_OBS']);
+      expect(queryObservationsMulti(store, ['concept-project'], contextConfig).map(obs => obs.title)).toEqual(['GOOD_OBS']);
+      expect(queryObservationsNewest(store, contextConfig, { limit: 10 }).map(obs => obs.title)).toEqual(['GOOD_OBS']);
     } finally {
       db.close();
     }
@@ -426,21 +323,7 @@ describe('concept exact-match injection (#3379)', () => {
 });
 
 describe('queryObservationsNewest house feed', () => {
-  const config: ContextConfig = {
-    totalObservationCount: 20,
-    fullObservationCount: 3,
-    sessionCount: 20,
-    showReadTokens: true,
-    showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
-    observationTypes: new Set(['discovery']),
-    observationConcepts: new Set(['platform-scope']),
-    fullObservationField: 'narrative',
-    showLastSummary: true,
-    showLastMessage: false,
-    mainAgentOnly: true,
-  };
+  const contextConfig = config('platform-scope');
 
   it('returns newest rows across projects when no project filter is passed', () => {
     const store = new SessionStore(':memory:');
@@ -471,13 +354,13 @@ describe('queryObservationsNewest house feed', () => {
         files_modified: [],
       }, 1, 0, 1_700_000_100_000);
 
-      const scoped = queryObservationsNewest(store, config, {
+      const scoped = queryObservationsNewest(store, contextConfig, {
         limit: 10,
         projects: ['cmem_work_thin'],
       });
       expect(scoped.map(obs => obs.title)).toEqual(['SEAT_ONLY']);
 
-      const houseFeed = queryObservationsNewest(store, config, { limit: 10 });
+      const houseFeed = queryObservationsNewest(store, contextConfig, { limit: 10 });
       expect(houseFeed.map(obs => obs.title)).toEqual(['HOUSE_NEWEST', 'SEAT_ONLY']);
     } finally {
       store.close();
@@ -486,21 +369,7 @@ describe('queryObservationsNewest house feed', () => {
 });
 
 describe('context compiler main-agent-only injection filtering', () => {
-  const baseConfig: ContextConfig = {
-    totalObservationCount: 20,
-    fullObservationCount: 3,
-    sessionCount: 20,
-    showReadTokens: true,
-    showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
-    observationTypes: new Set(['discovery']),
-    observationConcepts: new Set(['agent-scope']),
-    fullObservationField: 'narrative',
-    showLastSummary: true,
-    showLastMessage: false,
-    mainAgentOnly: true,
-  };
+  const baseConfig = config('agent-scope');
 
   function seedObs(
     store: SessionStore,

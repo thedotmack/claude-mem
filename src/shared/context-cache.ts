@@ -43,26 +43,15 @@ if (inheritedNonce !== undefined && (typeof inheritedNonce !== 'string' || !PLAC
 }
 export const CONTEXT_PLACEHOLDER_NONCE = typeof inheritedNonce === 'string' ? inheritedNonce : randomBytes(6).toString('hex');
 
-function headerTimePlaceholderFor(nonce: string): string {
+/**
+ * Blocks cached before the header became the one Rules + Tools line carry this
+ * header-time placeholder. The worker re-renders every cached block when it
+ * starts, so only a block read before the upgraded worker boots still has it;
+ * it is filled so that read never shows a raw placeholder.
+ */
+function legacyHeaderTimePlaceholderFor(nonce: string): string {
   return `⟦CMEM_NOW_HEADER:${nonce}⟧`;
 }
-
-/** Where the header's "recent context, <date time tz>" goes. */
-export const CONTEXT_HEADER_TIME_PLACEHOLDER = headerTimePlaceholderFor(CONTEXT_PLACEHOLDER_NONCE);
-
-/**
- * The longest header time `formatHeaderDateTime` prints: `2026-10-03 12:45pm
- * GMT+10:30` is 27 characters; 40 leaves room for unusual zone names.
- */
-export const HEADER_TIME_MAX_FILLED_CHARS = 40;
-
-/**
- * Characters the header placeholder can grow by when filled. The budget fitter
- * measures the block WITH the placeholder, so this is taken off its limit and
- * the filled block still fits the 10,000-character delivery limit.
- */
-export const HEADER_TIME_EXPANSION_RESERVE_CHARS =
-  Math.max(0, HEADER_TIME_MAX_FILLED_CHARS - CONTEXT_HEADER_TIME_PLACEHOLDER.length);
 
 const RELATIVE_TIME_EPOCH_DIGITS = 13;
 
@@ -93,7 +82,7 @@ export function fillContextPlaceholders(
   const headerTime = formatHeaderDateTime(new Date(nowEpochMs));
   const relativeTimePattern = new RegExp(`⟦CMEM_AGO:${placeholderNonce}:(\\d{${RELATIVE_TIME_EPOCH_DIGITS}})⟧`, 'g');
   return body
-    .replaceAll(headerTimePlaceholderFor(placeholderNonce), () => headerTime)
+    .replaceAll(legacyHeaderTimePlaceholderFor(placeholderNonce), () => headerTime)
     .replace(relativeTimePattern, (_match, epochDigits: string) =>
       describeDuration(nowEpochMs - Number(epochDigits)));
 }

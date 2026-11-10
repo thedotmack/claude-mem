@@ -66,48 +66,71 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 }
 
 /**
- * The viewer lines at the top of the SessionStart terminal banner: the live
- * viewer link, the trial line, the trial countdown and the TeamBrain discovery
- * line. They go above the preview, which ends on its newest timeline entry with
- * no closing lines after it. The preview leaves TERMINAL_BANNER_RESERVE_CHARS
- * for them, and composeSessionStartSystemMessage keeps the whole
- * `systemMessage` within Claude Code's 10,000-character field cap (#5079).
+ * The lines at the top of the SessionStart terminal banner: the trial line,
+ * the trial countdown and the TeamBrain discovery line. Empty when none apply.
  */
 export function sessionStartBannerHeader(
-  viewerUrl: string,
   trialDaysLine: string | null,
   teamBrainDiscoveryLine: string | null,
   plan = '',
 ): string {
-  return [`View Observations Live @ ${viewerUrl}`, proTrialLine('session-start', plan), trialDaysLine, teamBrainDiscoveryLine]
+  return [proTrialLine('session-start', plan), trialDaysLine, teamBrainDiscoveryLine]
     .filter(Boolean).join('\n');
+}
+
+const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
+/**
+ * A timeline row, opening with its id (digits, or a server's hex display ref):
+ * the colored preview's `  #<id>  <time> …` or summary `#S<id> …`, or the
+ * plain block's `<id> <time> …`, `S<id> …` or `**<id>** …` (antigravity-cli
+ * shows the model's block). A `### <day>` heading has no id, so it is not one.
+ */
+const TERMINAL_TIMELINE_ROW = /^(?:\s*#|\*\*)?S?[0-9a-f][0-9a-f-]*(?:\*\*)? /;
+
+/** How many timeline rows a terminal preview shows. */
+export function countTerminalTimelineRows(preview: string): number {
+  return preview.split('\n').filter(line => TERMINAL_TIMELINE_ROW.test(line.replace(ANSI_ESCAPE, ''))).length;
+}
+
+/**
+ * The line that closes the terminal banner, under a blank line after the
+ * newest timeline row: the live viewer link and how many rows are shown.
+ */
+export function sessionStartBannerFooter(viewerUrl: string, timelineRowCount: number): string {
+  const count = timelineRowCount > 0 ? ` · ${timelineRowCount} line${timelineRowCount === 1 ? '' : 's'}` : '';
+  return `View Observations Live @ ${viewerUrl}${count}`;
 }
 
 /**
  * The user-visible SessionStart `systemMessage`: the once-per-session
- * worker-outage notice, the viewer lines, then the terminal preview, which ends
- * on its newest timeline entry. Claude Code replaces a field over
- * CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub (#5079), and neither the
- * notice nor a server-runtime viewer URL is bounded by
+ * worker-outage notice and the header lines, the terminal preview, then a
+ * blank line and the closing viewer line with the count of rows shown. Claude
+ * Code replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
+ * (#5079), and neither the notice nor a server-runtime viewer URL is bounded by
  * TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it is
- * over, whole lines are dropped from the preview's oldest end until it fits,
- * so it still ends on its newest entry. The notice and the viewer lines are
- * never cut. With no preview (banner off) the notice is the whole message.
+ * over, whole lines are dropped from the preview's oldest end until it fits, so
+ * the preview still ends on its newest entry. The notice, the header lines and
+ * the closing line are never cut. With no preview (banner off) the notice is
+ * the whole message.
  */
 export function composeSessionStartSystemMessage(
   preview: string | null,
   bannerHeader: string,
+  viewerUrl: string,
   workerOutageNotice: string | null,
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string | undefined {
   if (preview === null) return workerOutageNotice ?? undefined;
-  const top = `${workerOutageNotice ? `${workerOutageNotice}\n\n` : ''}${bannerHeader}\n\n`;
-  const previewRoom = limit - top.length;
-  let fittedPreview = preview.replace(/^\n+/, '');
+  const top = [workerOutageNotice, bannerHeader].filter(Boolean).map(part => `${part}\n\n`).join('');
+  let fittedPreview = preview.replace(/^\n+/, '').trimEnd();
+  // Measured with every row counted; cutting rows only shortens the count.
+  const longestBottom = `\n\n${sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(fittedPreview))}`;
+  const previewRoom = limit - top.length - longestBottom.length;
   if (fittedPreview.length > previewRoom) {
-    const previewCutToRoom = previewRoom > 0 ? fittedPreview.slice(fittedPreview.length - previewRoom) : '';
-    const firstLineBreak = previewCutToRoom.indexOf('\n');
-    const keptPreview = firstLineBreak >= 0 ? previewCutToRoom.slice(firstLineBreak + 1) : '';
+    // The kept text starts after the first line break at or after the char just
+    // before the room, so a room that begins exactly on a line keeps that line.
+    const lineBreakBeforeKept = previewRoom > 0 ? fittedPreview.indexOf('\n', fittedPreview.length - previewRoom - 1) : -1;
+    const keptPreview = lineBreakBeforeKept >= 0 ? fittedPreview.slice(lineBreakBeforeKept + 1) : '';
     logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary, oldest lines first, to keep systemMessage within the field cap', {
       previewChars: fittedPreview.length,
       keptPreviewChars: keptPreview.length,
@@ -116,7 +139,8 @@ export function composeSessionStartSystemMessage(
     });
     fittedPreview = keptPreview;
   }
-  const systemMessage = `${top}${fittedPreview}`.trimEnd();
+  const footer = sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(fittedPreview));
+  const systemMessage = `${top}${fittedPreview ? `${fittedPreview}\n\n` : ''}${footer}`;
   if (systemMessage.length > limit) {
     logger.warn('HOOK', 'SessionStart systemMessage is over the field cap even with no preview', {
       systemMessageChars: systemMessage.length,
@@ -513,7 +537,8 @@ export const contextHandler: EventHandler = {
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
     const systemMessage = composeSessionStartSystemMessage(
       showsBanner ? displayContent : null,
-      sessionStartBannerHeader(viewerUrl, trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
+      sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
+      viewerUrl,
       workerOutageNotice,
     );
 

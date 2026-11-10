@@ -50,7 +50,7 @@ function postScan(headers: Record<string, string> = { 'Content-Type': 'applicati
 }
 
 /** Reads `setup-scan` events from the work view stream until one reports done. */
-async function scanEventsUntilDone(): Promise<any[]> {
+async function scanEventsUntilDone(connected: () => void): Promise<any[]> {
   const controller = new AbortController();
   controllers.push(controller);
   const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
@@ -58,12 +58,14 @@ async function scanEventsUntilDone(): Promise<any[]> {
   const decoder = new TextDecoder();
   const events: any[] = [];
   let buffer = '';
+  let connectedOnce = false;
   while (!events.some(event => event.done)) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let boundary = buffer.indexOf('\n\n');
     while (boundary !== -1) {
+      if (!connectedOnce) { connectedOnce = true; connected(); }
       const block = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       if (block.startsWith('event: setup-scan\n')) events.push(JSON.parse(block.split('\ndata: ')[1]));
@@ -115,8 +117,10 @@ describe('setup scan endpoints', () => {
 
   it('start the scan, stream its progress on the work view events, and report where prompts came from', async () => {
     await start(scanWithFixtures());
-    const events = scanEventsUntilDone();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    let connected!: () => void;
+    const ready = new Promise<void>(resolve => { connected = resolve; });
+    const events = scanEventsUntilDone(connected);
+    await ready;
     const started = await postScan();
     expect(started.status).toBe(202);
     const streamed = await events;

@@ -51,6 +51,22 @@ interface AfterToolCallEvent {
   error?: string;
 }
 
+function stripPrivateSpans(text: string): string {
+  const tags = /<private(?=[\s>]|$)[^>]*(?:>|$)|<\/private\s*>/gi;
+  let depth = 0;
+  let cursor = 0;
+  let result = "";
+  for (const match of text.matchAll(tags)) {
+    if (match[0].startsWith("</")) {
+      if (depth > 0 && --depth === 0) cursor = match.index! + match[0].length;
+    } else {
+      if (depth === 0) result += text.slice(cursor, match.index);
+      depth++;
+    }
+  }
+  return result + (depth === 0 ? text.slice(cursor) : "");
+}
+
 const CAPTURE_TOOL_NAMES = new Map([
   ["read", "Read"],
   ["write", "Write"],
@@ -832,6 +848,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
     }
 
+    toolResponseText = stripPrivateSpans(toolResponseText);
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
     if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);

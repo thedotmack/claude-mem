@@ -39,8 +39,6 @@ const exampleConfig = JSON.parse(
 ) as ExampleConfig;
 const codexSchema = exampleConfig.schemas.codex;
 
-const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
-
 const responseItem = (role: string, text: string) =>
   JSON.stringify({ type: 'response_item', payload: { type: 'message', role, content: [{ text }] } });
 
@@ -91,7 +89,7 @@ describe('shipped codex schema: prompt delivery to session-init', () => {
     );
 
     await (watcher as any).addTailer(filePath, watch, codexSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
   }
 

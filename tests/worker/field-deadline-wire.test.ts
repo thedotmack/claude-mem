@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { FIELD_OPTIMIZE_TIMEOUT_MS, optimizeField } from '../../src/services/worker/field-optimizer.js';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
+import { markEndpointRefusesStreamingForTests, resetStreamingEndpointMemoryForTests } from '../../src/services/worker/streamed-chat-completion.js';
 
 test('field deadline cancels real OpenRouter fetch and prevents retries', async () => {
   let requests = 0;
@@ -61,26 +62,27 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
 }, 5000);
 
 // #4134: CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS only helps if the OpenAI-compatible
-// request path uses it too. Scaled down: a 3s field deadline must outlast a 600ms
-// CLAUDE_MEM_LLM_TIMEOUT_MS when the backend answers in 1.2s.
-test('a field deadline longer than CLAUDE_MEM_LLM_TIMEOUT_MS governs the OpenRouter request (#4134)', async () => {
+// request path uses it too. A non-streamed request must use the field deadline
+// when the backend takes longer than CLAUDE_MEM_LLM_TIMEOUT_MS to answer.
+test('a field deadline longer than CLAUDE_MEM_LLM_TIMEOUT_MS governs a non-streamed OpenRouter request (#4134)', async () => {
   const server = createServer((req, res) => {
     req.resume();
     const reply = setTimeout(() => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'condensed by the model' } }] }));
-    }, 1200);
+    }, 700);
     res.on('close', () => clearTimeout(reply));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
   const originalLlmTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
-  process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '600';
+  process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '500';
   const provider = new OpenRouterProvider({} as any, {} as any);
   const config = {
     apiKey: 'fixture-not-a-secret', model: 'fixture',
     apiUrl: `http://127.0.0.1:${address.port}/v1/chat/completions`,
   };
+  markEndpointRefusesStreamingForTests(config.apiUrl);
   const raw = JSON.stringify({ content: 'x'.repeat(20_000) });
   const context = { sessionDbId: 0, field: 'outcome' };
   try {
@@ -89,16 +91,13 @@ test('a field deadline longer than CLAUDE_MEM_LLM_TIMEOUT_MS governs the OpenRou
       (provider as any).compressField(text, budget, config, signal, deadlineMs), context, undefined, 3000);
     expect(String(condensed)).toContain('condensed by the model');
 
-    // Liveness over deadlines (Phase 3): a streamed request has no
-    // CLAUDE_MEM_LLM_TIMEOUT_MS wall-clock deadline any more (an idle timeout
-    // and an absolute cap bound it instead), so even without the forwarded
-    // deadline the 600ms setting no longer cuts a 1.2s reply off.
     const withoutForwardedDeadline = await optimizeField(raw, (text, budget, signal) =>
       (provider as any).compressField(text, budget, config, signal), context, undefined, 3000);
-    expect(String(withoutForwardedDeadline)).toContain('condensed by the model');
+    expect(withoutForwardedDeadline).toBe(raw);
   } finally {
     if (originalLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = originalLlmTimeout;
+    resetStreamingEndpointMemoryForTests();
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

@@ -79,46 +79,46 @@ describe('remote spool body limit', () => {
     expect(spool.entries()).toEqual([]);
   });
 
-  it('persists a complete envelope at the configured twenty MiB boundary', async () => {
-    const { url, spool } = await start(String(20 * mib));
-    const payload = body(20 * mib);
-    expect(Buffer.byteLength(payload)).toBe(20 * mib);
+  it('persists a complete envelope at the configured six MiB boundary', async () => {
+    const { url, spool } = await start(String(6 * mib));
+    const payload = body(6 * mib);
+    expect(Buffer.byteLength(payload)).toBe(6 * mib);
     expect((await send(`${url}/api/spool/ingest`, payload)).status).toBe(202);
     expect(spool.entries()).toEqual([JSON.parse(payload).entry]);
   });
 
   it('accepts a complete observation envelope at the configured boundary and keeps only its receipt', async () => {
-    const { url, spool, markers } = await start(String(20 * mib));
-    const payload = observationBody(20 * mib);
-    expect(Buffer.byteLength(payload)).toBe(20 * mib);
+    const { url, spool, markers } = await start(String(6 * mib));
+    const payload = observationBody(6 * mib);
+    expect(Buffer.byteLength(payload)).toBe(6 * mib);
     const response = await send(`${url}/api/spool/ingest`, payload);
     expect(response.status).toBe(202);
     const { receipt } = await response.json() as { receipt: string };
     expect([...markers]).toEqual([receipt]);
     expect(spool.entries()).toEqual([]);
-    expect((await send(`${url}/api/spool/ingest`, observationBody(20 * mib + 1))).status).toBe(413);
+    expect((await send(`${url}/api/spool/ingest`, observationBody(6 * mib + 1))).status).toBe(413);
   });
 
   it('rejects one byte over the configured limit without persisting', async () => {
-    const { url, spool } = await start(20 * mib);
-    expect((await send(`${url}/api/spool/ingest`, body(20 * mib + 1))).status).toBe(413);
+    const { url, spool } = await start(6 * mib);
+    expect((await send(`${url}/api/spool/ingest`, body(6 * mib + 1))).status).toBe(413);
     expect(spool.entries()).toEqual([]);
   });
 
   it('authenticates before parsing malformed or oversized JSON', async () => {
-    const { url, spool } = await start(20 * mib);
+    const { url, spool } = await start(6 * mib);
     expect((await send(`${url}/api/spool/ingest`, '{invalid', 'wrong')).status).toBe(401);
-    expect((await send(`${url}/api/spool/ingest`, body(20 * mib + 1), 'wrong')).status).toBe(401);
+    expect((await send(`${url}/api/spool/ingest`, body(6 * mib + 1), 'wrong')).status).toBe(401);
     expect(spool.entries()).toEqual([]);
   });
 
   it('keeps unrelated API requests at five MiB', async () => {
-    const { url } = await start(20 * mib);
+    const { url } = await start(6 * mib);
     expect((await send(`${url}/other`, body(5 * mib + 1))).status).toBe(413);
   });
 
   it('uses the same limit for Express case-insensitive and trailing-slash routes', async () => {
-    const { url } = await start(20 * mib);
+    const { url } = await start(6 * mib);
     expect((await send(`${url}/API/SPOOL/INGEST/`, body(6 * mib))).status).toBe(202);
   });
 });

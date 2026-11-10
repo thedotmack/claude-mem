@@ -30,6 +30,7 @@ import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
+import { isClosedWorkStateStatus } from './work-state-status.mjs';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
@@ -184,7 +185,7 @@ export function readGoals(database) {
     const target = fields.task ? items.get(fields.task) ?? items.set(fields.task, {}).get(fields.task) : listState;
     for (const [key, value] of Object.entries(fields)) { if (value === null) delete target[key]; else target[key] = value; }
   }
-  const goals = [...items.values()].filter((item) => !['done', 'dropped'].includes(String(item.status).toLowerCase())).map((item) => ({
+  const goals = [...items.values()].filter((item) => !isClosedWorkStateStatus(item.status)).map((item) => ({
     // taskKey is the item's work-state task; goal is only ever a focus area's sentence.
     taskKey: item.task, ...goalKindOf(item), rank: Number(item.rank) || null,
     title: item.title ?? item.task, goal: item.goal ?? null, focusArea: item.focus_area ?? null, focusAreaId: item.focus_area_id ?? null,

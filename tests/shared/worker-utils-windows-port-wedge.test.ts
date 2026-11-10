@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } fr
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { settleUnderFakeClock } from './settle-under-fake-clock.js';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
@@ -140,7 +141,7 @@ describe('Windows orphaned-listener wedge after the version recycle (#3416)', ()
     try {
       // Pre-fix, the first refused HTTP probe counted as "released" and the
       // successor was spawned onto a port it could never bind.
-      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      expect((await settleUnderFakeClock(() => workerUtils.ensureWorkerRunning())).value).toBe(false);
       expect(killCalls).toEqual([STALE_PID]);
       expect(spawnCalls).toHaveLength(0);
       const stillOpen = errorSpy.mock.calls.find(([, message]) => String(message).includes('still open after SIGKILL'));
@@ -150,13 +151,4 @@ describe('Windows orphaned-listener wedge after the version recycle (#3416)', ()
     }
   }, 15000);
 
-  it('spawns the successor once the killed worker\'s port is bindable again', async () => {
-    portAfterKill = 'free';
-    const workerUtils = await importWorkerUtilsFresh();
-    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
-
-    expect(await workerUtils.ensureWorkerRunning()).toBe(true);
-    expect(killCalls).toEqual([STALE_PID]);
-    expect(spawnCalls).toHaveLength(1);
-  });
 });

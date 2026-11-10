@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { gitProductsFromCommand, mergeProducts, productsFromToolUse } from '../../../src/services/work-view/work-product.mjs';
 

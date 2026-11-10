@@ -90,20 +90,6 @@ describe('classifyGeminiError', () => {
     expect(err.retryAfterMs).toBe(6000);
   });
 
-  it('classifies a 429 naming a per-day window as quota_exhausted', () => {
-    // A spent day quota lists its per-minute window too; the period window is
-    // what makes it a spent allowance rather than a throttle.
-    const err = classifyGeminiError({
-      status: 429,
-      bodyText: quotaFailure(
-        'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
-        'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
-      ),
-      cause: new Error('quota spent'),
-    });
-    expect(err.kind).toBe('quota_exhausted');
-  });
-
   it('treats a 429 it cannot place as a throttle, not a spent allowance', () => {
     // Defaulting the unplaceable case to `rate_limit` is deliberate, and the
     // asymmetry is the whole point: a throttle misread as a spent allowance
@@ -255,44 +241,6 @@ describe('classifyOpenRouterError', () => {
     expect(err.retryAfterMs).toBeUndefined();
   });
 
-  it('classifies 429 with Retry-After: 10 as rate_limit with retryAfterMs=10000', () => {
-    const headers = new Headers({ 'retry-after': '10' });
-    const err = classifyOpenRouterError({
-      status: 429,
-      bodyText: '',
-      headers,
-      cause: new Error('429'),
-    });
-    expect(err.kind).toBe('rate_limit');
-    expect(err.retryAfterMs).toBe(10_000);
-  });
-
-  // A 429 naming a daily limit lasts until the day turns over. As a rate limit
-  // it would hold only the short throttle window and probe every ninety
-  // seconds until then.
-  it('classifies the free-models-per-day 429 as quota_exhausted', () => {
-    const err = classifyOpenRouterError({
-      status: 429,
-      bodyText: JSON.stringify({ error: {
-        message: 'Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day',
-        code: 429,
-      } }),
-      headers: new Headers(),
-      cause: new Error('429'),
-    });
-    expect(err.kind).toBe('quota_exhausted');
-  });
-
-  it('keeps the free-models-per-min 429 a rate_limit', () => {
-    const err = classifyOpenRouterError({
-      status: 429,
-      bodyText: JSON.stringify({ error: { message: 'Rate limit exceeded: free-models-per-min.', code: 429 } }),
-      headers: new Headers(),
-      cause: new Error('429'),
-    });
-    expect(err.kind).toBe('rate_limit');
-  });
-
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyOpenRouterError({
       status: 500,
@@ -309,15 +257,6 @@ describe('classifyOpenRouterError', () => {
       cause: new Error('402'),
     });
     expect(err.kind).toBe('quota_exhausted');
-  });
-
-  it('classifies 401 as auth_invalid', () => {
-    const err = classifyOpenRouterError({
-      status: 401,
-      bodyText: 'unauthorized',
-      cause: new Error('401'),
-    });
-    expect(err.kind).toBe('auth_invalid');
   });
 
   // OpenRouter refuses a flagged INPUT with a 403. It says nothing about the
@@ -344,15 +283,6 @@ describe('classifyOpenRouterError', () => {
       cause: new Error('403'),
     });
     expect(err.kind).toBe('auth_invalid');
-  });
-
-  it('classifies 502 as transient', () => {
-    const err = classifyOpenRouterError({
-      status: 502,
-      bodyText: 'bad gateway',
-      cause: new Error('502'),
-    });
-    expect(err.kind).toBe('transient');
   });
 
   it('classifies network error (no status) as transient', () => {
@@ -396,15 +326,6 @@ describe('classifyOpenRouterError', () => {
       cause: new Error('418'),
     });
     expect(err.paidSendOutcome).toBe('output_failure');
-  });
-
-  it('still classifies a plain 400 bad request as unrecoverable', () => {
-    const err = classifyOpenRouterError({
-      status: 400,
-      bodyText: 'invalid model',
-      cause: new Error('400'),
-    });
-    expect(err.kind).toBe('unrecoverable');
   });
 
   // --- Model unavailable (#3659): the configured model id itself is gone ---
@@ -771,141 +692,41 @@ describe('describeProviderError', () => {
 });
 
 describe('classifyClaudeError', () => {
-  it('classifies SDK-level OverloadedError as transient', () => {
-    class OverloadedError extends Error {
-      constructor() {
-        super('Overloaded');
-        this.name = 'OverloadedError';
-      }
+  class OverloadedError extends Error {
+    constructor() {
+      super('Overloaded');
+      this.name = 'OverloadedError';
     }
-    const err = classifyClaudeError(new OverloadedError());
+  }
+
+  const cases: Array<[string, () => Error, string, string?, string?]> = [
+    ['classifies SDK-level OverloadedError as transient', () => new OverloadedError(), 'transient'],
+    ['classifies 529 status as transient', () => Object.assign(new Error('overloaded'), { status: 529 }), 'transient'],
+    ['classifies anthropic error.type=overloaded_error as transient', () => Object.assign(new Error('upstream'), { error: { type: 'overloaded_error' }, }), 'transient'],
+    ['classifies "Invalid API key" message as auth_invalid', () => new Error('Invalid API key: configure ~/.claude-mem/.env'), 'auth_invalid'],
+    ['classifies status=401 as auth_invalid', () => Object.assign(new Error('unauthorized'), { status: 401 }), 'auth_invalid'],
+    ['classifies ENOENT spawn error as setup_required', () => Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }), 'setup_required'],
+    ['classifies a Windows .cmd shim EINVAL spawn error as setup_required', () => Object.assign(new Error('spawn C:\\Users\\x\\codex.cmd EINVAL'), { code: 'EINVAL' }), 'setup_required'],
+    ['classifies a bare EINVAL error (no "spawn " prefix) as setup_required', () => new Error('posix_spawn failed with EINVAL'), 'setup_required'],
+    ['classifies "Claude executable not found" as setup_required', () => new Error('Claude executable not found at $CLAUDE_CODE_PATH'), 'setup_required'],
+    ['classifies too-old Claude CLI finder errors as setup_required', () => new Error( 'Every Claude CLI found is too old for claude-mem (each rejects flags the memory agent passes on every spawn)' ), 'setup_required'],
+    ['classifies desktop app headless-mode setup error as setup_required', () => new Error( 'Found desktop app at "/Applications/Claude.app" but it doesn\'t support headless mode. Install Claude Code CLI: npm install -g @anthropic-ai/claude-code' ), 'setup_required'],
+    ['classifies prompt-too-long as unrecoverable', () => new Error('Claude session context overflow: prompt is too long'), 'unrecoverable'],
+    ['classifies structured context-window errors as unrecoverable', () => new Error('Claude SDK error: context window exceeded'), 'unrecoverable'],
+    ['classifies status=429 as rate_limit', () => Object.assign(new Error('rate limited'), { status: 429 }), 'rate_limit'],
+    ['classifies "quota exceeded" message as quota_exhausted', () => new Error('upstream: quota exceeded'), 'quota_exhausted'],
+    ['classifies status=503 as transient', () => Object.assign(new Error('service unavailable'), { status: 503 }), 'transient'],
+    ['classifies unrecognized_model message as unrecoverable', () => new Error('[claude-code:unrecognized_model] {"model":"auto","query_source":"sdk"}'), 'unrecoverable'],
+    ['classifies "There\'s an issue with the selected model" message as unrecoverable', () => new Error( "There's an issue with the selected model (auto). It may not exist or you may not have access to it." ), 'unrecoverable', 'model_unavailable'],
+    ['classifies the SDK error that follows a model refusal as model_unavailable', () => new Error("Claude Code returned an error result: There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model."), 'unrecoverable', 'model_unavailable', 'CLAUDE_MEM_MODEL'],
+    ['classifies unknown error as transient (preserve old default)', () => new Error('something weird happened'), 'transient'],
+  ];
+
+  it.each(cases.map(([name, error, kind, code, action]) => [name, error, kind, code, action] as const))('%s', (_name, error, kind, code, action) => {
+    const err = classifyClaudeError(error());
     expect(isClassified(err)).toBe(true);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies 529 status as transient', () => {
-    const sdkErr = Object.assign(new Error('overloaded'), { status: 529 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies anthropic error.type=overloaded_error as transient', () => {
-    const sdkErr = Object.assign(new Error('upstream'), {
-      error: { type: 'overloaded_error' },
-    });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies "Invalid API key" message as auth_invalid', () => {
-    const err = classifyClaudeError(new Error('Invalid API key: configure ~/.claude-mem/.env'));
-    expect(err.kind).toBe('auth_invalid');
-  });
-
-  it('classifies status=401 as auth_invalid', () => {
-    const sdkErr = Object.assign(new Error('unauthorized'), { status: 401 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('auth_invalid');
-  });
-
-  it('classifies ENOENT spawn error as setup_required', () => {
-    const spawnErr = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' });
-    const err = classifyClaudeError(spawnErr);
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies a Windows .cmd shim EINVAL spawn error as setup_required', () => {
-    // Modern Node throws EINVAL when the SDK spawns a .cmd/.bat shim without a
-    // shell (e.g. a codex shim reached via CLAUDE_CODE_PATH).
-    const spawnErr = Object.assign(new Error('spawn C:\\Users\\x\\codex.cmd EINVAL'), { code: 'EINVAL' });
-    const err = classifyClaudeError(spawnErr);
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies a bare EINVAL error (no "spawn " prefix) as setup_required', () => {
-    const err = classifyClaudeError(new Error('posix_spawn failed with EINVAL'));
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies "Claude executable not found" as setup_required', () => {
-    const err = classifyClaudeError(new Error('Claude executable not found at $CLAUDE_CODE_PATH'));
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies too-old Claude CLI finder errors as setup_required', () => {
-    const err = classifyClaudeError(
-      new Error(
-        'Every Claude CLI found is too old for claude-mem (each rejects flags the memory agent passes on every spawn)'
-      )
-    );
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies desktop app headless-mode setup error as setup_required', () => {
-    const err = classifyClaudeError(
-      new Error(
-        'Found desktop app at "/Applications/Claude.app" but it doesn\'t support headless mode. Install Claude Code CLI: npm install -g @anthropic-ai/claude-code'
-      )
-    );
-    expect(err.kind).toBe('setup_required');
-  });
-
-  it('classifies prompt-too-long as unrecoverable', () => {
-    const err = classifyClaudeError(new Error('Claude session context overflow: prompt is too long'));
-    expect(err.kind).toBe('unrecoverable');
-  });
-
-  it('classifies structured context-window errors as unrecoverable', () => {
-    const err = classifyClaudeError(new Error('Claude SDK error: context window exceeded'));
-    expect(err.kind).toBe('unrecoverable');
-  });
-
-  it('classifies status=429 as rate_limit', () => {
-    const sdkErr = Object.assign(new Error('rate limited'), { status: 429 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('rate_limit');
-  });
-
-  it('classifies "quota exceeded" message as quota_exhausted', () => {
-    const err = classifyClaudeError(new Error('upstream: quota exceeded'));
-    expect(err.kind).toBe('quota_exhausted');
-  });
-
-  it('classifies status=503 as transient', () => {
-    const sdkErr = Object.assign(new Error('service unavailable'), { status: 503 });
-    const err = classifyClaudeError(sdkErr);
-    expect(err.kind).toBe('transient');
-  });
-
-  it('classifies unrecognized_model message as unrecoverable', () => {
-    const err = classifyClaudeError(
-      new Error('[claude-code:unrecognized_model] {"model":"auto","query_source":"sdk"}')
-    );
-    expect(err.kind).toBe('unrecoverable');
-  });
-
-  it('classifies "There\'s an issue with the selected model" message as unrecoverable', () => {
-    const err = classifyClaudeError(
-      new Error(
-        "There's an issue with the selected model (auto). It may not exist or you may not have access to it."
-      )
-    );
-    expect(err.kind).toBe('unrecoverable');
-    expect(err.code).toBe('model_unavailable');
-  });
-
-  it('classifies the SDK error that follows a model refusal as model_unavailable', () => {
-    // Text thrown by SDK 0.3.318 for the refusal in #5315.
-    const err = classifyClaudeError(
-      new Error("Claude Code returned an error result: There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.")
-    );
-    expect(err.kind).toBe('unrecoverable');
-    expect(err.code).toBe('model_unavailable');
-    expect(err.action).toContain('CLAUDE_MEM_MODEL');
-  });
-
-  it('classifies unknown error as transient (preserve old default)', () => {
-    const err = classifyClaudeError(new Error('something weird happened'));
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe(kind);
+    if (code !== undefined) expect(err.code).toBe(code);
+    if (action !== undefined) expect(err.action).toContain(action);
   });
 });

@@ -87,6 +87,7 @@ export async function assertContextReadResponsive(options: { entry?: string; cwd
     const health = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1_500) });
     expect(health.ok).toBe(true);
     expect(await health.json()).toEqual({ status: 'ok' });
+    unlock();
     const context = await contextRequest;
     const contextBody = await context.text();
     if (!context.ok) throw new Error(`Context read failed with ${context.status}: ${contextBody}\nfixture stderr: ${output.stderr}`);

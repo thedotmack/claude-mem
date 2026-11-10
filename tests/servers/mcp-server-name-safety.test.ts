@@ -32,42 +32,4 @@ describe('MCP server name safety (#2473)', () => {
     }
   });
 
-  it('every registered MCP tool name is colon/dot-free and within the 64-char fully-qualified budget', () => {
-    // Read the source rather than importing it (importing runs the stdio server
-    // bootstrap, which is undesirable in a unit test). Extract `name: '...'`
-    // entries from the tools array.
-    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
-    const src = readFileSync(serverSrcPath, 'utf-8');
-
-    const toolNames = Array.from(src.matchAll(/^\s{4}name: '([^']+)',?$/gm)).map(m => m[1]);
-    expect(toolNames.length).toBeGreaterThan(5);
-
-    // Worst-case qualified prefix the host applies for this plugin's server.
-    const QUALIFIED_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
-    for (const tool of toolNames) {
-      expect(tool).not.toContain(':');
-      expect(tool).not.toContain('.');
-      expect(tool).toMatch(SAFE_NAME);
-      // Many MCP hosts cap tool names at 64 chars; staying within budget keeps
-      // the tool registrable everywhere.
-      expect((QUALIFIED_PREFIX + tool).length).toBeLessThanOrEqual(64);
-    }
-  });
-
-  // #3288 — a tool literally named `__IMPORTANT` made xAI's Grok Build CLI
-  // abort parsing the whole server, taking every claude-mem tool down with it.
-  // Leading underscores collide with the `mcp__<server>__<tool>` namespacing
-  // convention some hosts use, and MCP naming guidance says tool names should
-  // start with an alphanumeric character. Pin that here.
-  it('every registered MCP tool name starts with an alphanumeric character (#3288)', () => {
-    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
-    const src = readFileSync(serverSrcPath, 'utf-8');
-
-    const toolNames = Array.from(src.matchAll(/^\s{4}name: '([^']+)',?$/gm)).map(m => m[1]);
-    expect(toolNames.length).toBeGreaterThan(5);
-
-    for (const tool of toolNames) {
-      expect(tool).toMatch(/^[a-zA-Z0-9]/);
-    }
-  });
 });

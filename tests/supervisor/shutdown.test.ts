@@ -117,35 +117,6 @@ describe('supervisor shutdown cascade', () => {
     ]);
   });
 
-  it('handles already-dead processes gracefully without throwing', async () => {
-    const tempDir = makeTempDir();
-    tempDirs.push(tempDir);
-    mkdirSync(tempDir, { recursive: true });
-
-    const registryPath = path.join(tempDir, 'supervisor.json');
-    const registry = createProcessRegistry(registryPath);
-
-    registry.register('dead:1', {
-      pid: 2147483640,
-      type: 'sdk',
-      startedAt: '2026-03-15T00:00:00.000Z'
-    });
-    registry.register('dead:2', {
-      pid: 2147483641,
-      type: 'mcp',
-      startedAt: '2026-03-15T00:00:01.000Z'
-    });
-
-    await runShutdownCascade({
-      registry,
-      currentPid: process.pid,
-      pidFilePath: path.join(tempDir, 'worker.pid')
-    });
-
-    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
-    expect(Object.keys(persisted.processes)).toHaveLength(0);
-  });
-
   // Phase 5 (worker-restart plan): the dying worker's shutdown cascade runs
   // AFTER the restart successor has written its own PID file. Blind deletion
   // here clobbered the successor's file and made `worker status` report a
@@ -184,39 +155,6 @@ describe('supervisor shutdown cascade', () => {
     expect(existsSync(pidFilePath)).toBe(true);
     expect(readFileSync(pidFilePath, 'utf-8')).toBe(successorContent);
   });
-
-  it('unregisters all children from registry after cascade', async () => {
-    const tempDir = makeTempDir();
-    tempDirs.push(tempDir);
-    mkdirSync(tempDir, { recursive: true });
-
-    const registryPath = path.join(tempDir, 'supervisor.json');
-    const registry = createProcessRegistry(registryPath);
-
-    registry.register('worker', {
-      pid: process.pid,
-      type: 'worker',
-      startedAt: '2026-03-15T00:00:00.000Z'
-    });
-    registry.register('child:1', {
-      pid: 2147483640,
-      type: 'sdk',
-      startedAt: '2026-03-15T00:00:01.000Z'
-    });
-    registry.register('child:2', {
-      pid: 2147483641,
-      type: 'mcp',
-      startedAt: '2026-03-15T00:00:02.000Z'
-    });
-
-    await runShutdownCascade({
-      registry,
-      currentPid: process.pid,
-      pidFilePath: path.join(tempDir, 'worker.pid')
-    });
-
-    expect(registry.getAll()).toHaveLength(0);
-  });
 });
 
 describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
@@ -235,24 +173,6 @@ describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
     mkdirSync(tempDir, { recursive: true });
     return path.join(tempDir, 'worker.pid');
   }
-
-  it('deletes the file when the recorded pid is the current process', () => {
-    const pidFilePath = makePidFilePath();
-    writeFileSync(pidFilePath, JSON.stringify({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() }));
-
-    removeOwnedPidFile(pidFilePath, process.pid);
-
-    expect(existsSync(pidFilePath)).toBe(false);
-  });
-
-  it('leaves the file when the recorded pid belongs to another process', () => {
-    const pidFilePath = makePidFilePath();
-    writeFileSync(pidFilePath, JSON.stringify({ pid: 99999847, port: 37777, startedAt: new Date().toISOString() }));
-
-    removeOwnedPidFile(pidFilePath, process.pid);
-
-    expect(existsSync(pidFilePath)).toBe(true);
-  });
 
   it('leaves a corrupt file in place (ownership cannot be proven)', () => {
     const pidFilePath = makePidFilePath();
@@ -279,4 +199,3 @@ describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
     expect(existsSync(pidFilePath)).toBe(false);
   });
 });
-

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { buildAgentView } from '../../../src/services/work-view/agent-view.mjs';
 import { reduceWorkState } from '../../../src/services/work-view/data-source.mjs';

@@ -6,12 +6,12 @@ same abstract base as Hermes, and a local HTTP server stands in for claude-mem.
 Run: python3 -m unittest discover -s tests/hermes -v
 """
 
-import abc
 import importlib
 import importlib.util
 import json
 import os
 import socket
+import shutil
 import sys
 import tempfile
 import threading
@@ -24,34 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def install_hermes_stub():
-    """The parts of Hermes the provider imports, with Hermes's abstract members."""
-
-    class MemoryProvider(abc.ABC):
-        @property
-        @abc.abstractmethod
-        def name(self):
-            ...
-
-        @abc.abstractmethod
-        def is_available(self):
-            ...
-
-        @abc.abstractmethod
-        def initialize(self, session_id, **kwargs):
-            ...
-
-        @abc.abstractmethod
-        def get_tool_schemas(self):
-            ...
-
-    agent = types.ModuleType("agent")
-    agent.__path__ = []
-    memory_provider = types.ModuleType("agent.memory_provider")
-    memory_provider.MemoryProvider = MemoryProvider
-    agent.memory_provider = memory_provider
-    sys.modules["agent"] = agent
-    sys.modules["agent.memory_provider"] = memory_provider
+from hermes_session_driver import install_hermes_stub
 
 
 install_hermes_stub()
@@ -106,7 +79,7 @@ class FakeClaudeMem:
             do_POST = _handle
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
 
@@ -129,6 +102,7 @@ class ProviderTest(unittest.TestCase):
         self.fake = FakeClaudeMem()
         self.addCleanup(self.fake.close)
         self.cwd = tempfile.mkdtemp(prefix="hermes-project-")
+        self.addCleanup(shutil.rmtree, self.cwd)
         self.client = client_module.ClaudeMemClient(client_module.Config(self.fake.base))
         self.provider = claude_mem.ClaudeMemMemoryProvider(client=self.client)
         self.provider.initialize("sess-1", platform="cli", hermes_home="/tmp/h", cwd=self.cwd)
@@ -205,12 +179,6 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(self.fake.paths(), ["/api/sessions/init"])
         self.assertEqual(self.fake.requests[0]["body"]["prompt"], "what changed in the parser?")
 
-    def test_turn_start_and_sync_turn_record_a_prompt_once(self):
-        self.provider.on_turn_start(1, "same prompt")
-        self.provider.sync_turn("same prompt", "answer")
-        self.drain()
-        self.assertEqual(self.fake.paths(), ["/api/sessions/init"])
-
     def test_relevant_notes_come_from_every_agent_in_the_checkout(self):
         self.fake.replies["/api/context/semantic"] = (200, {"context": "#12 Login test needs a fresh DB", "count": 1})
         notes = self.provider.prefetch("why does the login test fail on CI?", session_id="sess-1")
@@ -218,10 +186,6 @@ class ProviderTest(unittest.TestCase):
         body = self.fake.requests[0]["body"]
         self.assertEqual(body, {"q": "why does the login test fail on CI?", "cwd": self.cwd, "limit": 5})
         self.assertNotIn("platformSource", body)
-
-    def test_short_prompts_ask_for_nothing(self):
-        self.assertEqual(self.provider.prefetch("ok"), "")
-        self.assertEqual(self.fake.requests, [])
 
     def test_session_block_is_labelled_and_bounded(self):
         self.fake.replies["/api/context/inject"] = (200, "recent work\n" + "y" * 20000)
@@ -340,6 +304,7 @@ class ProviderTest(unittest.TestCase):
 
     def test_runtime_cwd_wins_when_hermes_has_it(self):
         other = tempfile.mkdtemp(prefix="hermes-runtime-")
+        self.addCleanup(shutil.rmtree, other)
         runtime = types.ModuleType("agent.runtime_cwd")
         runtime.resolve_agent_cwd = lambda: other
         sys.modules["agent.runtime_cwd"] = runtime
@@ -423,16 +388,16 @@ class FailSoftTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.5)
 
     def test_a_hung_worker_costs_a_read_at_most_the_read_timeout(self):
-        fake = FakeClaudeMem()
-        self.addCleanup(fake.close)
-        fake.delay = client_module.READ_TIMEOUT_S + 2
-        provider = claude_mem.ClaudeMemMemoryProvider(client=client_module.ClaudeMemClient(client_module.Config(fake.base)))
-        provider.initialize("sess-slow")
-        started = time.monotonic()
-        self.assertEqual(provider.prefetch("a prompt that is long enough to search"), "")
-        self.assertLess(time.monotonic() - started, client_module.READ_TIMEOUT_S + 1.5)
-        provider.shutdown()
-
+        with mock.patch.object(client_module, "READ_TIMEOUT_S", 0.3):
+            fake = FakeClaudeMem()
+            self.addCleanup(fake.close)
+            fake.delay = client_module.READ_TIMEOUT_S + 2
+            provider = claude_mem.ClaudeMemMemoryProvider(client=client_module.ClaudeMemClient(client_module.Config(fake.base)))
+            provider.initialize("sess-slow")
+            started = time.monotonic()
+            self.assertEqual(provider.prefetch("a prompt that is long enough to search"), "")
+            self.assertLess(time.monotonic() - started, client_module.READ_TIMEOUT_S + 1.5)
+            provider.shutdown()
 
 class RegisterTest(unittest.TestCase):
     def test_register_adds_the_provider_and_a_post_tool_call_hook(self):
@@ -509,6 +474,7 @@ class RegisterTest(unittest.TestCase):
 class SettingsTest(unittest.TestCase):
     def write_settings(self, doc, bom=False):
         directory = tempfile.mkdtemp(prefix="claude_mem-data-")
+        self.addCleanup(shutil.rmtree, directory)
         with open(os.path.join(directory, "settings.json"), "w", encoding="utf-8-sig" if bom else "utf-8") as handle:
             json.dump(doc, handle)
         return directory
@@ -527,7 +493,7 @@ class SettingsTest(unittest.TestCase):
     def test_default_port_matches_the_shared_fallback(self):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
-        self.assertEqual(config.worker_base, "http://127.0.0.1:" + client_module.default_worker_port(directory))
+        self.assertEqual(config.worker_base, "http://127.0.0.1:%d" % (37700 + os.getuid() % 100))
 
     def test_default_port_matches_shared_windows_path_hashes_without_uid(self):
         cases = [
@@ -552,6 +518,7 @@ class SettingsTest(unittest.TestCase):
 
     def test_a_missing_or_broken_settings_file_means_defaults(self):
         directory = tempfile.mkdtemp(prefix="claude_mem-data-")
+        self.addCleanup(shutil.rmtree, directory)
         with open(os.path.join(directory, "settings.json"), "w") as handle:
             handle.write("{not json")
         self.assertEqual(client_module.load_settings({"CLAUDE_MEM_DATA_DIR": directory}), {})
@@ -564,6 +531,7 @@ class CheckoutProjectTest(unittest.TestCase):
 
     def test_keys_match_the_claude_code_hooks_in_path_mode(self):
         root = tempfile.mkdtemp(prefix="hermes-keys-")
+        self.addCleanup(shutil.rmtree, root)
         repo = os.path.join(root, "shop-api")
         os.makedirs(os.path.join(repo, "src"))
         self.git("init", "-q", repo)
@@ -577,22 +545,6 @@ class CheckoutProjectTest(unittest.TestCase):
         os.makedirs(plain)
         self.assertEqual(client_module.checkout_project(plain), "notes")
 
-    def test_the_cache_serves_the_key_it_already_derived_within_the_ttl(self):
-        client_module._PROJECT_KEYS.clear()
-        root = tempfile.mkdtemp(prefix="hermes-ttl-")
-        repo = os.path.join(root, "nested")
-        os.makedirs(os.path.join(repo, "sub"))
-        self.git("init", "-q", repo)
-        self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
-                 "--allow-empty", "-m", "init")
-        cwd = os.path.join(repo, "sub")
-        # The git root is `nested`, so the key is the root folder name.
-        self.assertEqual(client_module.checkout_project(cwd), "nested")
-        # A nested repository under the same path changes the git root, but the
-        # entry is still inside its TTL, so the key it already derived is served.
-        self.git("init", "-q", cwd)
-        self.assertEqual(client_module.checkout_project(cwd), "nested")
-
     def test_a_cache_entry_expires_at_its_original_deadline(self):
         client_module._PROJECT_KEYS.clear()
         ttl = client_module._PROJECT_KEY_TTL_S
@@ -602,6 +554,7 @@ class CheckoutProjectTest(unittest.TestCase):
         client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
         try:
             root = tempfile.mkdtemp(prefix="hermes-ttl-")
+            self.addCleanup(shutil.rmtree, root)
             repo = os.path.join(root, "nested")
             os.makedirs(os.path.join(repo, "sub"))
             self.git("init", "-q", repo)

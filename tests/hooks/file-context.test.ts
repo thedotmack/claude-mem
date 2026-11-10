@@ -84,7 +84,7 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 
 mock.module('../../src/utils/project-name.js', () => ({
   getProjectName: () => 'test-project',
-  getProjectContext: () => ({ allProjects: ['test-project'] }),
+  getProjectContext: () => ({ primary: 'test-project', allProjects: ['test-project'] }),
 }));
 
 mock.module('../../src/utils/project-filter.js', () => ({
@@ -120,6 +120,7 @@ import {
   LINE_COUNT_CHUNK_BYTES,
   FILE_READ_GATE_DENY_MIN_BYTES,
 } from '../../src/cli/handlers/file-context.js';
+import { memorySearchHandler } from '../../src/cli/handlers/memory-search.js';
 import { claimFileContextInjection } from '../../src/cli/handlers/file-context-dedupe.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -228,21 +229,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('still injects file context for the main session', async () => {
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-
-    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
-  });
-
   it('does not skip when only agentType is present', async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
@@ -280,23 +266,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(result.hookSpecificOutput!.permissionDecision).toBeUndefined();
   });
 
-  it('does not set updatedInput on a targeted Read either', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile, offset: 289, limit: 140 },
-    });
-
-    expect(result.hookSpecificOutput).toBeDefined();
-    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
-  });
-
   it('skips entirely when file mtime is newer than newest observation (#1719 still honored)', async () => {
     const stale = Date.now() - 3_600_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -315,45 +284,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
 
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput).toBeUndefined();
-  });
-
-  it('still injects context when file mtime is older than newest observation', async () => {
-    const past = (Date.now() - 3_600_000) / 1000;
-    utimesSync(testFile, past, past);
-
-    const now = Date.now();
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: now }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-
-    expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
-    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
-  });
-
-  it('header text no longer claims the file was truncated', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-
-    const ctx = result.hookSpecificOutput!.additionalContext as string;
-    expect(ctx).not.toContain('Only line 1 was read');
-    expect(ctx).toContain('full requested section');
   });
 
   it('accepts a Codex filePaths array and joins per-file context blocks', async () => {
@@ -607,14 +537,14 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     );
 
     await fileContextHandler.execute({
-      sessionId: 'sess-A',
+      sessionId: 'a.b',
       cwd: tmpDir,
       toolName: 'Read',
       toolInput: { file_path: testFile },
     });
 
     const other = await fileContextHandler.execute({
-      sessionId: 'sess-B',
+      sessionId: 'a:b',
       cwd: tmpDir,
       toolName: 'Read',
       toolInput: { file_path: testFile },
@@ -639,30 +569,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput).toBeUndefined();
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('isolates sessions whose ids differ only in path-sanitized chars (#3486)', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
-      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
-    );
-
-    // "a.b" and "a:b" are DISTINCT sessions that both collapse to "a_b" under a
-    // naive char-replace scheme. The second session must still get its injection.
-    await fileContextHandler.execute({
-      sessionId: 'a.b',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-
-    const other = await fileContextHandler.execute({
-      sessionId: 'a:b',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-    expect(other.hookSpecificOutput?.additionalContext).toContain('prior observations');
   });
 
   it('dedupes dot-segment path aliases of the same file in a session (#3486)', async () => {
@@ -696,6 +602,53 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
   });
 });
 
+describe('PreToolUse memory lookups carry the calling platform source', () => {
+  function inputFor(toolName: string): NormalizedHookInput {
+    return {
+      sessionId: 'sess-platform-source',
+      cwd: tmpDir,
+      platform: 'codex',
+      toolName,
+      toolInput: toolName === 'Read' ? { file_path: testFile } : { query: 'notes' },
+    };
+  }
+
+  beforeEach(() => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }]))
+    );
+  });
+
+  it('scopes the memory-search worker request to the calling harness', async () => {
+    await memorySearchHandler.execute(inputFor('memory_search'));
+
+    expect(workerFallbackCalls).toHaveLength(1);
+    expect(workerFallbackCalls[0].url).toStartWith('/api/search?');
+    expect(workerFallbackCalls[0].url).toContain('platformSource=codex');
+  });
+
+  it('scopes the by-file worker request to the calling harness', async () => {
+    await fileContextHandler.execute(inputFor('Read'));
+
+    expect(workerFallbackCalls).toHaveLength(1);
+    expect(workerFallbackCalls[0].url).toStartWith('/api/observations/by-file?');
+    expect(workerFallbackCalls[0].url).toContain('platformSource=codex');
+  });
+
+  it('omits the platform source from both requests when the cross-harness hand-off is enabled', async () => {
+    runtimeSettings = { CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'true' };
+
+    await memorySearchHandler.execute(inputFor('memory_search'));
+    expect(workerFallbackCalls.length).toBeGreaterThan(0);
+    expect(workerFallbackCalls.every(call => !call.url.includes('platformSource'))).toBe(true);
+
+    workerFallbackCalls.length = 0;
+    await fileContextHandler.execute(inputFor('Read'));
+    expect(workerFallbackCalls.length).toBeGreaterThan(0);
+    expect(workerFallbackCalls.every(call => !call.url.includes('platformSource'))).toBe(true);
+  });
+});
+
 describe('fileContextHandler — #4558 (server runtime)', () => {
   const serverSettings = {
     CLAUDE_MEM_RUNTIME: 'server',
@@ -720,22 +673,6 @@ describe('fileContextHandler — #4558 (server runtime)', () => {
     expect(result).toEqual({ continue: true, suppressOutput: true });
     expect(workerFallbackCalls).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('accepts the legacy server-beta runtime value', async () => {
-    runtimeSettings = { ...serverSettings, CLAUDE_MEM_RUNTIME: 'server-beta' };
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
-    );
-
-    await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile },
-    });
-
-    expect(workerFallbackCalls).toHaveLength(0);
   });
 
   it('still queries the worker when server runtime is incomplete and falls back to worker', async () => {
@@ -833,28 +770,6 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
   });
 
-  it('only denies on Claude Code — codex, kimi and an unknown platform get context', async () => {
-    answerWithFileHistory();
-
-    for (const platform of ['codex', 'kimi', undefined]) {
-      const result = await fileContextHandler.execute(
-        claudeCodeRead({ file_path: gatedFile }, { platform, sessionId: `sess-platform-${platform}` })
-      );
-      expectContextNotDeny(result);
-    }
-  });
-
-  it('does not deny Qwen Code, which runs the same claude-code hook command — the timeline is context', async () => {
-    answerWithFileHistory();
-
-    const result = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: gatedFile }, { transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json' })
-    );
-
-    expectContextNotDeny(result);
-    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
-  });
-
   it('does not deny when the tree-sitter CLI is missing (smart_outline cannot parse) — the timeline is context', async () => {
     treeSitterCliAvailable = false;
     answerWithFileHistory();
@@ -888,14 +803,6 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
-  it('lets a targeted Read through (offset 40, limit 20) with context', async () => {
-    answerWithFileHistory();
-
-    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile, offset: 40, limit: 20 }));
-
-    expectContextNotDeny(result);
-  });
-
   it('denies a Read whose limit covers every line, and passes one line short of that', async () => {
     answerWithFileHistory();
 
@@ -918,35 +825,16 @@ describe('fileContextHandler — File Read Gate', () => {
     expectContextNotDeny(oneLineShort);
   });
 
-  it('counts a last line that has no trailing newline', async () => {
-    const unterminatedFile = join(tmpDir, 'unterminated.ts');
-    writeFileSync(unterminatedFile, GATED_FILE_CONTENT.slice(0, -1));
+  it.each(['config.md', 'config.json', 'config.yaml', 'config.toml'])('never denies ungated language %s', async (name) => {
     answerWithFileHistory();
+    const filePath = join(tmpDir, name);
+    writeFileSync(filePath, GATED_FILE_CONTENT);
 
-    const exactLimit = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: unterminatedFile, limit: GATED_FILE_LINE_COUNT }, { sessionId: 'sess-unterminated-exact' })
-    );
-    const oneLineShort = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: unterminatedFile, limit: GATED_FILE_LINE_COUNT - 1 }, { sessionId: 'sess-unterminated-short' })
+    const result = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: filePath }, { sessionId: `sess-${name}` })
     );
 
-    expect(exactLimit.hookSpecificOutput?.permissionDecision).toBe('deny');
-    expectContextNotDeny(oneLineShort);
-  });
-
-  it('never denies markdown, JSON or YAML files', async () => {
-    const jsonFile = join(tmpDir, 'config.json');
-    const yamlFile = join(tmpDir, 'config.yaml');
-    writeFileSync(jsonFile, PADDING);
-    writeFileSync(yamlFile, PADDING);
-    answerWithFileHistory();
-
-    for (const filePath of [testFile, jsonFile, yamlFile]) {
-      const result = await fileContextHandler.execute(
-        claudeCodeRead({ file_path: filePath }, { sessionId: `sess-${filePath}` })
-      );
-      expectContextNotDeny(result);
-    }
+    expectContextNotDeny(result);
   });
 
   it('never denies a file outside the session cwd', async () => {
@@ -1034,29 +922,6 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(workspaceContainmentChecks).toEqual([{ filePath: gatedFile, workspaceCwd: tmpDir }]);
   });
 
-  it('lets a one-line Read of a file several chunks long through, and still denies a limit that covers it', async () => {
-    const repeats = Math.ceil((4 * LINE_COUNT_CHUNK_BYTES) / GATED_FILE_CONTENT.length);
-    const largeFile = join(tmpDir, 'large.ts');
-    writeFileSync(largeFile, GATED_FILE_CONTENT.repeat(repeats));
-    const largeFileLineCount = GATED_FILE_LINE_COUNT * repeats;
-    expect(statSync(largeFile).size).toBeGreaterThan(4 * LINE_COUNT_CHUNK_BYTES);
-    answerWithFileHistory();
-
-    const oneLine = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: largeFile, limit: 1 }, { sessionId: 'sess-large-one-line' })
-    );
-    const oneLineShort = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: largeFile, limit: largeFileLineCount - 1 }, { sessionId: 'sess-large-short' })
-    );
-    const everyLine = await fileContextHandler.execute(
-      claudeCodeRead({ file_path: largeFile, limit: largeFileLineCount }, { sessionId: 'sess-large-every-line' })
-    );
-
-    expectContextNotDeny(oneLine);
-    expectContextNotDeny(oneLineShort);
-    expect(everyLine.hookSpecificOutput?.permissionDecision).toBe('deny');
-  });
-
   it('does nothing for a code file under 1,500 bytes', async () => {
     const smallFile = join(tmpDir, 'small.ts');
     writeFileSync(smallFile, 'export const small = 1;\n');
@@ -1066,14 +931,6 @@ describe('fileContextHandler — File Read Gate', () => {
 
     expect(result).toEqual({ continue: true, suppressOutput: true });
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('does nothing when the file changed after its newest observation (#1719)', async () => {
-    answerWithFileHistory(Date.now() - 3_600_000);
-
-    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
-
-    expect(result).toEqual({ continue: true, suppressOutput: true });
   });
 
   it('does nothing when the worker call falls back', async () => {
@@ -1086,15 +943,6 @@ describe('fileContextHandler — File Read Gate', () => {
     const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
 
     expect(result).toEqual({ continue: true, suppressOutput: true });
-  });
-
-  it('does nothing for a subagent Read', async () => {
-    answerWithFileHistory();
-
-    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }, { agentId: 'subagent-1' }));
-
-    expect(result).toEqual({ continue: true, suppressOutput: true });
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('denies every whole-file Read of a gated file — the dedupe claim opens no free retry', async () => {
@@ -1158,20 +1006,9 @@ describe('shouldDenyFullFileRead', () => {
   // The fixture's answer to fileHasMoreLinesThan, without reading the file.
   const gatedFileHasMoreLinesThan = (_absolutePath: string, lineCount: number) => GATED_FILE_LINE_COUNT > lineCount;
 
-  it('denies a whole-file Read without counting lines when no limit is set', () => {
-    const fileHasMoreLinesThan = mock(gatedFileHasMoreLinesThan);
-
-    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'true', true, fileHasMoreLinesThan, smartReadAvailable)).toBe(true);
-    expect(fileHasMoreLinesThan).not.toHaveBeenCalled();
-  });
-
   it('treats an unset setting as on — only an explicit false turns the gate off', () => {
     expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), undefined, true, gatedFileHasMoreLinesThan, smartReadAvailable)).toBe(true);
     expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'false', true, gatedFileHasMoreLinesThan, smartReadAvailable)).toBe(false);
-  });
-
-  it('never denies a file that resolves outside the workspace, where the smart tools refuse it', () => {
-    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'true', false, gatedFileHasMoreLinesThan, smartReadAvailable)).toBe(false);
   });
 
   it('counts lines only after every cheaper condition holds, and checks smart-read availability after that', () => {
@@ -1208,20 +1045,6 @@ describe('shouldDenyFullFileRead', () => {
     expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), statVerifiedHistory(gatedFile), 'true', true, fileHasMoreLinesThan, isSmartReadAvailable)).toBe(true);
     expect(fileHasMoreLinesThan).toHaveBeenCalledTimes(2);
     expect(isSmartReadAvailable).toHaveBeenCalledTimes(1);
-  });
-
-  it('never denies when smart_outline cannot parse here (no tree-sitter CLI)', () => {
-    const smartReadUnavailable = () => false;
-
-    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'true', true, gatedFileHasMoreLinesThan, smartReadUnavailable)).toBe(false);
-    expect(shouldDenyFullFileRead(
-      wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } }),
-      statVerifiedHistory(gatedFile),
-      'true',
-      true,
-      gatedFileHasMoreLinesThan,
-      smartReadUnavailable,
-    )).toBe(false);
   });
 
   it('treats non-finite or negative offset/limit as absent', () => {

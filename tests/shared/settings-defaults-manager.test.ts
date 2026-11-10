@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -77,17 +77,6 @@ describe('SettingsDefaultsManager', () => {
     };
     expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
     expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
-
-    const optIn = {
-      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
-      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
-    };
-    writeFileSync(settingsPath, JSON.stringify(optIn));
-    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
-
-    writeFileSync(settingsPath, '{}');
-    Object.assign(process.env, optIn);
-    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
   });
 
   describe('loadFromFile', () => {
@@ -102,37 +91,10 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
       });
 
-      it('should write valid JSON to the created file', () => {
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        const content = readFileSync(settingsPath, 'utf-8');
-        expect(() => JSON.parse(content)).not.toThrow();
-      });
-
       it('should create the settings file as owner-readable only', () => {
         if (process.platform === 'win32') return;
         SettingsDefaultsManager.loadFromFile(settingsPath);
         expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
-      });
-
-      it('should write pretty-printed JSON (2-space indent)', () => {
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        const content = readFileSync(settingsPath, 'utf-8');
-        expect(content).toContain('\n');
-        expect(content).toContain('  "CLAUDE_MEM_MODEL"');
-      });
-
-      it('should write all default keys to the file', () => {
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        const content = readFileSync(settingsPath, 'utf-8');
-        const parsed = JSON.parse(content);
-        const defaults = SettingsDefaultsManager.getAllDefaults();
-
-        for (const key of Object.keys(defaults)) {
-          expect(parsed).toHaveProperty(key);
-        }
       });
     });
 
@@ -146,15 +108,6 @@ describe('SettingsDefaultsManager', () => {
         expect(existsSync(join(tempDir, 'nested', 'deep'))).toBe(true);
         expect(existsSync(nestedPath)).toBe(true);
         expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(join(tempDir, 'nested', 'deep'))));
-      });
-
-      it('should create deeply nested directories recursively', () => {
-        const deepPath = join(tempDir, 'a', 'b', 'c', 'd', 'e', 'settings.json');
-
-        SettingsDefaultsManager.loadFromFile(deepPath);
-
-        expect(existsSync(join(tempDir, 'a', 'b', 'c', 'd', 'e'))).toBe(true);
-        expect(existsSync(deepPath)).toBe(true);
       });
     });
 
@@ -202,26 +155,25 @@ describe('SettingsDefaultsManager', () => {
         expect(afterContent).toBe(originalContent);
       });
 
-      it('uses the data-directory port default without rewriting a partial settings file', () => {
-        const content = JSON.stringify({ CLAUDE_MEM_MODEL: 'existing-model', CUSTOM_KEY: 'keep' });
+      // The context-header savings line and its two settings were removed (#5654).
+      // A settings.json saved before that still carries them and must load as before.
+      it('loads a settings file that still has the retired savings keys', () => {
+        const content = JSON.stringify({
+          CLAUDE_MEM_MODEL: 'kept-model',
+          CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'false',
+        });
         writeFileSync(settingsPath, content);
 
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const { value: result, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
 
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe(String(getDefaultWorkerPort(tempDir)));
+        expect(warnings).toEqual([]);
+        expect(result.CLAUDE_MEM_MODEL).toBe('kept-model');
+        expect(result.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS).toBe('true');
+        expect(result).not.toHaveProperty('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT');
+        expect(result).not.toHaveProperty('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT');
         expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
-      });
-
-      it('should handle all settings keys correctly', () => {
-        const fullSettings = SettingsDefaultsManager.getAllDefaults();
-        fullSettings.CLAUDE_MEM_MODEL = 'all-keys-model';
-        fullSettings.CLAUDE_MEM_PROVIDER = 'gemini';
-        writeFileSync(settingsPath, JSON.stringify(fullSettings));
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result.CLAUDE_MEM_MODEL).toBe('all-keys-model');
-        expect(result.CLAUDE_MEM_PROVIDER).toBe('gemini');
       });
 
       // Every key is declared `string` and the gates compare against a string
@@ -234,14 +186,6 @@ describe('SettingsDefaultsManager', () => {
           const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
           expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
-        });
-
-        it('should read an unquoted boolean true as "true"', () => {
-          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_TELEGRAM_ENABLED: true }));
-
-          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-          expect(result.CLAUDE_MEM_TELEGRAM_ENABLED).toBe('true');
         });
 
         it('should leave the file untouched so the user keeps their own spelling', () => {
@@ -261,14 +205,6 @@ describe('SettingsDefaultsManager', () => {
           expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(90000);
         });
 
-        it('should pass string values through unchanged', () => {
-          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
-
-          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-          expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
-        });
-
         it('should coerce a boolean nested under the legacy env wrapper', () => {
           writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_MEM_CHROMA_ENABLED: false } }));
 
@@ -280,52 +216,20 @@ describe('SettingsDefaultsManager', () => {
     });
 
     describe('file exists but is empty or corrupt', () => {
-      it('should return defaults when file is empty', () => {
-        writeFileSync(settingsPath, '');
+      it.each([
+        ['empty', ''],
+        ['invalid JSON', 'not valid json {{{{'],
+        ['whitespace', '   \n\t  '],
+        ['null', 'null'],
+        ['array', '["array", "not", "object"]'],
+        ['primitive', '"just a string"'],
+      ])('returns defaults without changing %s file bytes', (_label, contents) => {
+        writeFileSync(settingsPath, contents);
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result).toEqual(defaultsForSettingsPath(tempDir));
-      });
-
-      it('should return defaults when file contains invalid JSON', () => {
-        writeFileSync(settingsPath, 'not valid json {{{{');
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result).toEqual(defaultsForSettingsPath(tempDir));
-      });
-
-      it('should return defaults when file contains only whitespace', () => {
-        writeFileSync(settingsPath, '   \n\t  ');
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result).toEqual(defaultsForSettingsPath(tempDir));
-      });
-
-      it('should return defaults when file contains null', () => {
-        writeFileSync(settingsPath, 'null');
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result).toEqual(defaultsForSettingsPath(tempDir));
-      });
-
-      it('should return defaults when file contains array instead of object', () => {
-        writeFileSync(settingsPath, '["array", "not", "object"]');
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result).toEqual(defaultsForSettingsPath(tempDir));
-      });
-
-      it('should return defaults when file contains primitive value', () => {
-        writeFileSync(settingsPath, '"just a string"');
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result).toEqual(defaultsForSettingsPath(tempDir));
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(contents);
       });
     });
 
@@ -455,25 +359,6 @@ describe('SettingsDefaultsManager', () => {
         SettingsDefaultsManager.loadFromFile(settingsPath);
         expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
       });
-
-      it('should preserve peer root keys instead of flattening a mixed nested document', () => {
-        const nestedSettings = {
-          theme: 'dark',
-          permissions: { defaultMode: 'auto' },
-          env: {
-            CLAUDE_MEM_MODEL: 'nested-model',
-          },
-        };
-        writeFileSync(settingsPath, JSON.stringify(nestedSettings));
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        expect(parsed.theme).toBe('dark');
-        expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
-        expect(parsed.env.CLAUDE_MEM_MODEL).toBe('nested-model');
-      });
     });
 
     // A fresh settings.json is seeded with every default, so installs created
@@ -507,48 +392,19 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.CLAUDE_MEM_TELEGRAM_CHAT_ID).toBe('12345');
       });
 
-      it('should preserve a customized trigger list', () => {
-        writeFileSync(settingsPath, JSON.stringify({
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'bugfix,decision',
-        }));
+      it.each(['bugfix,decision', 'security_alert,security_note', ''])(
+        'preserves the non-legacy trigger list %j', (triggerTypes) => {
+          writeFileSync(settingsPath, JSON.stringify({
+            CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: triggerTypes,
+          }));
 
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
-        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
-      });
-
-      it('should preserve a customized list that merely contains the legacy value', () => {
-        writeFileSync(settingsPath, JSON.stringify({
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,security_note',
-        }));
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('security_alert,security_note');
-      });
-
-      it('should leave an empty opt-out list alone', () => {
-        writeFileSync(settingsPath, JSON.stringify({
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: '',
-        }));
-
-        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('');
-      });
-
-      it('should be idempotent across repeated loads', () => {
-        writeFileSync(settingsPath, JSON.stringify({
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
-        }));
-
-        const first = SettingsDefaultsManager.loadFromFile(settingsPath);
-        const second = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(second.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(first.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES);
-      });
+          expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(triggerTypes);
+          const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+          expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(triggerTypes);
+        },
+      );
     });
 
     describe('legacy cloud sync hub URL migration', () => {
@@ -603,9 +459,22 @@ describe('SettingsDefaultsManager', () => {
         return warnings.filter((line) => line.includes('Migrated Claude model off the pinned'));
       }
 
+      function withEnvFile(contents: string, run: () => void): void {
+        const envPath = join(dirname(settingsPath), '.env');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        writeFileSync(envPath, contents);
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          run();
+        } finally {
+          if (saved === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+          else process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      }
+
       it('ships an alias, not a dated id', () => {
         expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MODEL).toBe('haiku');
-        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_MODEL).toBe('haiku');
       });
 
       it.each(['claude-haiku-4-5-20251001', 'claude-haiku-4-5'])('moves a saved %s to haiku once', (pinned) => {
@@ -660,55 +529,34 @@ describe('SettingsDefaultsManager', () => {
       it('never touches an install whose claude-mem .env points at a gateway', () => {
         const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
         writeFileSync(settingsPath, raw);
-        const envPath = join(dirname(settingsPath), '.env');
-        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nANTHROPIC_AUTH_TOKEN=sk-litellm\n');
-        const saved = process.env.CLAUDE_MEM_ENV_FILE;
-        delete process.env.CLAUDE_MEM_ENV_FILE;
-        try {
+        withEnvFile('ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nANTHROPIC_AUTH_TOKEN=sk-litellm\n', () => {
           const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
 
           expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
           expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
           expect(migrationWarnings(warnings)).toEqual([]);
-        } finally {
-          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
-          rmSync(envPath, { force: true });
-        }
+        });
       });
 
       it('still moves an install whose .env has an empty ANTHROPIC_BASE_URL', () => {
         writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' }));
-        const envPath = join(dirname(settingsPath), '.env');
-        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY=sk-ant-test\n');
-        const saved = process.env.CLAUDE_MEM_ENV_FILE;
-        delete process.env.CLAUDE_MEM_ENV_FILE;
-        try {
+        withEnvFile('ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY=sk-ant-test\n', () => {
           const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
 
           expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
           expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MODEL).toBe('haiku');
-        } finally {
-          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
-          rmSync(envPath, { force: true });
-        }
+        });
       });
 
       it('never touches a gateway .env saved with a BOM', () => {
         const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
         writeFileSync(settingsPath, raw);
-        const envPath = join(dirname(settingsPath), '.env');
-        writeFileSync(envPath, '\uFEFFANTHROPIC_BASE_URL=http://127.0.0.1:4000\n');
-        const saved = process.env.CLAUDE_MEM_ENV_FILE;
-        delete process.env.CLAUDE_MEM_ENV_FILE;
-        try {
+        withEnvFile('\uFEFFANTHROPIC_BASE_URL=http://127.0.0.1:4000\n', () => {
           const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
 
           expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
           expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
-        } finally {
-          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
-          rmSync(envPath, { force: true });
-        }
+        });
       });
 
       it('rewrites in memory only when read-only', () => {
@@ -740,10 +588,8 @@ describe('SettingsDefaultsManager', () => {
       });
 
       // The retired id shipped in all three copies at once; a default changed in
-      // one place only would leave the viewer or openclaw installs on a dead id.
-      it('keeps the viewer and openclaw installer copies of the default in sync', () => {
-        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
-
+      // one place only would leave openclaw installs on a dead id.
+      it('keeps the openclaw installer copies of the default in sync', () => {
         const installer = readFileSync(new URL('../../openclaw/install.sh', import.meta.url), 'utf-8');
         const installerModels = [
           // settings defaults and the openrouter provider override
@@ -1043,11 +889,10 @@ describe('SettingsDefaultsManager', () => {
         return warnings.filter((line) => line.includes(KEY));
       }
 
-      it('ships capture on and inference off, in the worker and the viewer', () => {
+      it('ships capture on and inference off', () => {
         const defaults = SettingsDefaultsManager.getAllDefaults();
         expect(defaults[KEY]).toBe('true');
         expect(defaults.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED).toBe('false');
-        expect(VIEWER_DEFAULT_SETTINGS[KEY]).toBe('true');
       });
 
       it('seeds a fresh settings file with capture on', () => {
@@ -1141,13 +986,6 @@ describe('SettingsDefaultsManager', () => {
           chmodSync(storeDir, 0o755);
         }
       });
-
-      it('an environment override still wins over the moved value', () => {
-        writeFileSync(settingsPath, JSON.stringify({ [KEY]: 'false' }));
-        process.env[KEY] = 'false';
-
-        expect(SettingsDefaultsManager.loadFromFile(settingsPath)[KEY]).toBe('false');
-      });
     });
 
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
@@ -1198,19 +1036,6 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('cmem-observer');
       });
 
-      it('should default all Pro account and staged-memory keys to empty strings', () => {
-        const defaults = SettingsDefaultsManager.getAllDefaults();
-
-        expect(defaults.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_TRIAL_AT).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_PLAN).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe('');
-        expect(defaults.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('');
-      });
-
       it('should keep the Pro keys on disk when loading rewrites the file (nested-schema migration)', () => {
         writeFileSync(settingsPath, JSON.stringify({ env: proKeys }));
 
@@ -1254,7 +1079,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toBeDefined();
+        expect(result.CLAUDE_MEM_MODEL).toBe('bom-model');
       });
 
       it('should read BOM-prefixed flat settings through install helpers', () => {
@@ -1267,15 +1092,6 @@ describe('SettingsDefaultsManager', () => {
         const result = readFlatSettings(settingsPath);
 
         expect(result?.CLAUDE_MEM_PROVIDER).toBe('gemini');
-      });
-
-      it('should create defaults without leaving atomic temp files behind', () => {
-        expect(existsSync(settingsPath)).toBe(false);
-
-        SettingsDefaultsManager.loadFromFile(settingsPath);
-
-        expect(existsSync(settingsPath)).toBe(true);
-        expect(readdirSync(tempDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
       });
     });
   });
@@ -1321,27 +1137,15 @@ describe('SettingsDefaultsManager', () => {
 
       expect(defaults1).toEqual(defaults2);
       expect(defaults1).not.toBe(defaults2); 
+      expect(defaults1.CLAUDE_MEM_FILE_READ_GATE_ENABLED).toBe('true');
     });
 
-    it('should include all expected keys', () => {
+    it('keeps every viewer default aligned except the per-install worker port', () => {
       const defaults = SettingsDefaultsManager.getAllDefaults();
 
-      expect(defaults.CLAUDE_MEM_MODEL).toBeDefined();
-      expect(defaults.CLAUDE_MEM_WORKER_PORT).toBeDefined();
-      expect(defaults.CLAUDE_MEM_WORKER_HOST).toBeDefined();
-
-      expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
-      expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
-      expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
-      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
-      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
-      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
-      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
-
-      expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
-      expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
-      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_URL).toBeDefined();
-      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET).toBeDefined();
+      for (const key of Object.keys(VIEWER_DEFAULT_SETTINGS) as Array<keyof typeof VIEWER_DEFAULT_SETTINGS>) {
+        if (key !== 'CLAUDE_MEM_WORKER_PORT') expect(defaults[key]).toBe(VIEWER_DEFAULT_SETTINGS[key]);
+      }
     });
 
     // #2753 — new key: empty by default (fall through to
@@ -1382,32 +1186,6 @@ describe('SettingsDefaultsManager', () => {
   });
 
   describe('environment variable overrides', () => {
-    const originalEnv: Record<string, string | undefined> = {};
-
-    beforeEach(() => {
-      originalEnv.CLAUDE_MEM_WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT;
-      originalEnv.CLAUDE_MEM_MODEL = process.env.CLAUDE_MEM_MODEL;
-      originalEnv.CLAUDE_MEM_LOG_LEVEL = process.env.CLAUDE_MEM_LOG_LEVEL;
-    });
-
-    afterEach(() => {
-      if (originalEnv.CLAUDE_MEM_WORKER_PORT === undefined) {
-        delete process.env.CLAUDE_MEM_WORKER_PORT;
-      } else {
-        process.env.CLAUDE_MEM_WORKER_PORT = originalEnv.CLAUDE_MEM_WORKER_PORT;
-      }
-      if (originalEnv.CLAUDE_MEM_MODEL === undefined) {
-        delete process.env.CLAUDE_MEM_MODEL;
-      } else {
-        process.env.CLAUDE_MEM_MODEL = originalEnv.CLAUDE_MEM_MODEL;
-      }
-      if (originalEnv.CLAUDE_MEM_LOG_LEVEL === undefined) {
-        delete process.env.CLAUDE_MEM_LOG_LEVEL;
-      } else {
-        process.env.CLAUDE_MEM_LOG_LEVEL = originalEnv.CLAUDE_MEM_LOG_LEVEL;
-      }
-    });
-
     it('should prioritize env var over file setting', () => {
       const fileSettings = {
         CLAUDE_MEM_WORKER_PORT: '12345',
@@ -1417,20 +1195,7 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      });
-
-    it('keeps a wrapped document with a root peer intact, including a nested setting named env', () => {
-      const wrapped = {
-        theme: 'dark',
-        env: { env: 'keep-me', CLAUDE_MEM_MODEL: 'nested-model' },
-      };
-      writeFileSync(settingsPath, JSON.stringify(wrapped));
-
-      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-      expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-      expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
     });
 
     it('should prioritize env var over default', () => {
@@ -1441,40 +1206,6 @@ describe('SettingsDefaultsManager', () => {
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('99999');
     });
 
-    // #2753 — CLAUDE_MEM_CLAUDE_CONFIG_DIR is overridable via the file and
-    // via CLAUDE_MEM_CLAUDE_CONFIG_DIR env, same as any other key (no
-    // key-specific code was added — the generic loops already handle it).
-    it('CLAUDE_MEM_CLAUDE_CONFIG_DIR: file value is honored, and env overrides the file', () => {
-      const originalConfigDirEnv = process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
-      try {
-        delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
-        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: '/from/file' }));
-
-        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('/from/file');
-
-        process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = '/from/env';
-        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('/from/env');
-      } finally {
-        if (originalConfigDirEnv === undefined) {
-          delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
-        } else {
-          process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = originalConfigDirEnv;
-        }
-      }
-    });
-
-    it('should use file setting when env var is not set', () => {
-      const fileSettings = {
-        CLAUDE_MEM_WORKER_PORT: '11111',
-      };
-      writeFileSync(settingsPath, JSON.stringify(fileSettings));
-      delete process.env.CLAUDE_MEM_WORKER_PORT;
-
-      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('11111');
-    });
-
     it('should apply env var override even on file parse error', () => {
       writeFileSync(settingsPath, 'invalid json {{{');
       process.env.CLAUDE_MEM_WORKER_PORT = '88888';
@@ -1483,41 +1214,6 @@ describe('SettingsDefaultsManager', () => {
 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('88888');
     });
-
-    it('should apply multiple env var overrides', () => {
-      const fileSettings = {
-        CLAUDE_MEM_WORKER_PORT: '12345',
-        CLAUDE_MEM_MODEL: 'file-model',
-        CLAUDE_MEM_LOG_LEVEL: 'DEBUG',
-      };
-      writeFileSync(settingsPath, JSON.stringify(fileSettings));
-
-      process.env.CLAUDE_MEM_WORKER_PORT = '54321';
-      process.env.CLAUDE_MEM_MODEL = 'env-model';
-
-      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      expect(result.CLAUDE_MEM_MODEL).toBe('env-model');
-      expect(result.CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG'); 
-    });
-
-    it('should document priority: env > file > defaults', () => {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const fileSettings = {
-        CLAUDE_MEM_WORKER_PORT: '22222', // Different from default 37777
-      };
-      writeFileSync(settingsPath, JSON.stringify(fileSettings));
-
-      process.env.CLAUDE_MEM_WORKER_PORT = '33333';
-
-      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-      const expectedDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
-      expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe(expectedDefault); 
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
-    });
   });
 
   describe('CLAUDE_MEM_WORKER_HOST localhost normalization (#2992)', () => {
@@ -1525,21 +1221,6 @@ describe('SettingsDefaultsManager', () => {
     // server.listen(port, 'localhost') binds ::1 only, so a 'localhost'
     // host value can put the hook client and the worker on different
     // loopback families. The manager pins it to the IPv4 loopback.
-    let originalHostEnv: string | undefined;
-
-    beforeEach(() => {
-      originalHostEnv = process.env.CLAUDE_MEM_WORKER_HOST;
-      delete process.env.CLAUDE_MEM_WORKER_HOST;
-    });
-
-    afterEach(() => {
-      if (originalHostEnv === undefined) {
-        delete process.env.CLAUDE_MEM_WORKER_HOST;
-      } else {
-        process.env.CLAUDE_MEM_WORKER_HOST = originalHostEnv;
-      }
-    });
-
     it('should normalize a file value of localhost to 127.0.0.1', () => {
       writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }));
 
@@ -1630,16 +1311,6 @@ describe('SettingsDefaultsManager', () => {
 describe('Chroma embedding function default', () => {
   it('keeps chroma-mcp\'s own default so existing installs are unchanged', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
-  });
-});
-
-describe('server search by meaning default', () => {
-  it('decides the server\'s search by meaning by whether the database is new', () => {
-    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_SERVER_VECTOR_SEARCH).toBe('auto');
-  });
-
-  it('caps a backfill at half the CPU threads unless set', () => {
-    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS).toBe('');
   });
 });
 

@@ -11,7 +11,7 @@
  *               fallback: POST {base}/api/mcp     (memory_search via JSON-RPC — works today)
  *
  * Design rule #1: NEVER break the session. Every hook path exits 0 no matter what.
- * Failed ingest posts are spooled to ~/.claude-mem (0600) and re-flushed on later hook fires.
+ * Failed inference inputs are dropped. Only metadata is spooled to ~/.claude-mem (0600).
  * On a machine with a local claude-mem install every hook is a no-op (localClaudeMemInstalled).
  *
  * Usage: node cmem-hook.mjs <event>
@@ -29,11 +29,12 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'cmem-pro/0.2.0';
+const PLUGIN_HEADER = 'cmem-pro/0.2.1';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
-const SPOOL_MAX = 200;           // max spooled events kept
+const SPOOL_MAX = 200;           // max metadata events sent per flush
+const METADATA_EVENTS = new Set(['session-start', 'session-end', 'subagent-stop']);
 const FIELD_CAP = 16000;         // max chars per big payload field
 const PROMPT_CAP = 4000;         // max chars of user prompt / agent prompt sent
 const HTTP_TIMEOUT_MS = { fast: 4000, normal: 8000, context: 12000 };
@@ -253,7 +254,7 @@ function truncate(v, cap) {
 // ---------- secret redaction ----------
 // Observations are memory: keep the signal (paths, code, output) but strip
 // anything secret-shaped BEFORE the envelope exists, so neither the ingest
-// POST nor the retry spool ever holds raw credentials. All patterns are
+// POST nor the metadata spool ever holds raw credentials. All patterns are
 // single-pass linear regexes over capped input (FIELD_CAP/PROMPT_CAP).
 const REDACTED = '[cmem-redacted]';
 // Prefix shapes start with (?<=\\[nrt]|\b), the worker's perplexity_key start
@@ -309,6 +310,8 @@ const SECRET_PATTERNS = [
   /(?<=\\[nrt]|\b)(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g,        // HashiCorp Vault service/batch tokens
   /(?<=\\[nrt]|\b)sbp_[a-f0-9]{40}(?!\w)/g,                                     // Supabase personal access tokens
   /(?<=\\[nrt]|\b)(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+/]{20,}={0,2}_[A-Za-z0-9+/]{43}(?![\w+/]))/g, // Sentry auth tokens
+  /(?<=\\[nrt]|\b)(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+/]{32,400}={0,2}(?![\w+/=]))/g, // Grafana service account / Cloud tokens
+  /(?<=\\[nrt]|\b)PMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g,                     // Postman API keys
   /(?<=\\[nrt]|\b)cmem_[A-Za-z0-9_-]{32,}(?!\w)/g,                              // claude-mem server API keys
   /(?<=\\[nrt]|\b)cm_pro_[A-Za-z0-9_-]{8,}(?!\w)/g,                             // claude-mem Pro memory keys
   // Incoming webhook URLs carry their secret in the path, so only the last
@@ -384,9 +387,8 @@ let CLOUD_REACHED = null;
 // never outlast the hook's own timeout and lose the output.
 let DEADLINE = Infinity;
 const SYNC_BUDGET_MS = 9000;
-// SessionEnd's hook timeout is 5 s: its requests (the end, any deferred start,
-// the queue replay) share 3.5 s, so a slow one fails and is re-queued instead
-// of the hook being killed with the queue claimed mid-replay.
+// SessionEnd's hook timeout is 5 s: its metadata requests share 3.5 s,
+// leaving time to return failed metadata to the spool.
 const END_BUDGET_MS = 3500;
 
 async function http(method, url, body, timeoutMs, headers = {}) {
@@ -441,6 +443,7 @@ function envelope(event, payload) {
 }
 
 function spool(env) {
+  if (!METADATA_EVENTS.has(env.event)) return;
   try {
     mkdirSync(SPOOL_DIR, { recursive: true });
     appendFileSync(SPOOL, JSON.stringify(env) + '\n', { mode: 0o600 });
@@ -465,8 +468,13 @@ async function flushSpool() {
   // oldest-first replay regardless of file order (a failed-flush merge can
   // interleave); Array.prototype.sort is stable, so same-second events keep
   // their file order
-  const all = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
+  const all = lines.map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(env => env && METADATA_EVENTS.has(env.event))
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  // Retire legacy inference inputs before any send or failure recovery.
+  try { writeFileSync(claim, all.map(env => JSON.stringify(env) + '\n').join(''), { mode: 0o600 }); }
+  catch { try { rmSync(claim, { force: true }); } catch {} return; }
+  if (!all.length) { try { rmSync(claim, { force: true }); } catch {} return; }
   // bounded send: the oldest SPOOL_MAX go now; any remainder is re-spooled for
   // the next flush instead of being silently dropped with the claim
   const batch = all.slice(0, SPOOL_MAX);
@@ -502,7 +510,7 @@ async function flushSpool() {
   }
 }
 
-// Several events in one request, spooled together if it fails.
+// Several metadata events in one request, spooled together if it fails.
 async function ingestBatch(envs) {
   if (!CFG.apiKey) return;
   try {
@@ -517,10 +525,11 @@ async function ingestBatch(envs) {
 async function ingest(event, payload) {
   const env = envelope(event, payload);
   if (!CFG.apiKey) return;                      // unpaired — inert by design
+  const metadata = METADATA_EVENTS.has(event);
   try {
     const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, env, HTTP_TIMEOUT_MS.normal);
     if (!res.ok && res.status !== 404) spool(env);   // 404 = endpoint not shipped yet; don't spool forever
-    else if (res.ok) await flushSpool();
+    else if (res.ok && metadata) await flushSpool();
   } catch {
     spool(env);
   }
@@ -621,7 +630,7 @@ async function mcpSearch(query, limit, project) {
     const init = await mcpRpc('initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
-      clientInfo: { name: 'cmem-pro', version: '0.2.0' }
+      clientInfo: { name: 'cmem-pro', version: '0.2.1' }
     }, 1);
     if (!init.ok) return null;
     await mcpRpc('notifications/initialized', {}, undefined).catch?.(() => {});

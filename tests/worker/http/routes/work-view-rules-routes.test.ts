@@ -187,7 +187,8 @@ describe('My Rules routes', () => {
     const fields = JSON.parse((source.prepare("SELECT fields FROM work_state_entries WHERE list_name = 'my-rules' ORDER BY id DESC LIMIT 1").get() as { fields: string }).fields);
     source.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?)').run(nextId++, 'home', 'my-rules', JSON.stringify({ ...fields, status: 'off' }), Date.now() + 1000);
     emitContextInvalidation('all', 'SyncApply.applyOps');
-    await new Promise(resolve => setTimeout(resolve, 50));
+    const deadline = Date.now() + 2000;
+    while (readFileSync(rulesFilePath, 'utf8').includes(PREFERENCE) && Date.now() < deadline) await Bun.sleep(5);
     expect(readFileSync(rulesFilePath, 'utf8')).not.toContain(PREFERENCE);
   });
 

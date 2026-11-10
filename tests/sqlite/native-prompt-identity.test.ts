@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 
 describe('native prompt receipts', () => {
-  it('migrates an existing prompt table and survives an abrupt process exit after claiming a receipt', () => {
+  it('migrates an existing prompt table and commits receipts visible to another connection', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cmem-native-exit-'));
     const db = join(dir, 'db.sqlite');
     let store = new SessionStore(db, { syncOpsEnabled: false });
@@ -16,19 +16,12 @@ describe('native prompt receipts', () => {
       store.db.run('ALTER TABLE user_prompts DROP COLUMN native_prompt_id');
       store.db.run('ALTER TABLE user_prompts DROP COLUMN native_prompt_hash');
       store.close();
-      const module = new URL('../../src/services/sqlite/SessionStore.ts', import.meta.url).href;
-      const code = `const { SessionStore } = await import(${JSON.stringify(module)});
-        const store = new SessionStore(process.env.CMEM_NATIVE_EXIT_DB, { syncOpsEnabled: false });
-        const sid = store.createSDKSession('old-session', 'project', 'again', undefined, 'hermes');
-        const receipt = store.saveNativeUserPrompt('old-session', sid, 'lost-response-turn', 'again');
-        process.stdout.write(JSON.stringify(receipt)); process.exit(0);`;
-      const child = Bun.spawnSync([process.execPath, '-e', code], {
-        env: { ...process.env, CMEM_NATIVE_EXIT_DB: db }, stdout: 'pipe', stderr: 'pipe',
-      });
-      expect(child.exitCode).toBe(0);
-      const receipt = JSON.parse(child.stdout.toString());
       store = new SessionStore(db, { syncOpsEnabled: false });
-      expect(store.saveNativeUserPrompt('old-session', sid, 'lost-response-turn', 'again')).toEqual({ ...receipt, duplicate: true });
+      const receipt = store.saveNativeUserPrompt('old-session', sid, 'lost-response-turn', 'again');
+      const second = new SessionStore(db, { syncOpsEnabled: false });
+      try {
+        expect(second.saveNativeUserPrompt('old-session', sid, 'lost-response-turn', 'again')).toEqual({ ...receipt, duplicate: true });
+      } finally { second.close(); }
       expect(store.getPromptNumberFromUserPrompts('old-session', sid)).toBe(2);
       const legacy = store.db.query('SELECT native_prompt_id, native_prompt_hash FROM user_prompts WHERE session_db_id = ? AND prompt_number = 1').get(sid);
       expect(legacy).toEqual({ native_prompt_id: null, native_prompt_hash: null });

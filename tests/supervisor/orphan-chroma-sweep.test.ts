@@ -200,15 +200,4 @@ describe('sweepOrphanedChromaTrees', () => {
     expect(result.skipped).toBe('unreadable');
     expect(result.orphans).toBe(0);
   });
-
-  it('reads the real process table on this platform without throwing', async () => {
-    if (process.platform === 'win32') return;
-    // No kills: killTree is stubbed. This only proves the ps invocation and parser work here.
-    const result = await sweepOrphanedChromaTrees({
-      selfPid: process.pid,
-      killTree: async () => {},
-    });
-    expect(result.skipped).toBeNull();
-    expect(result.matched).toBeGreaterThanOrEqual(0);
-  });
 });

@@ -65,7 +65,7 @@ import {
 } from '../../stale-spawn-recovery.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
-const MAX_USER_PROMPT_BYTES = 256 * 1024;
+export const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
 // The session write endpoints are state-changing, so a browser page served
 // from a different local port may not call them. Origin-less callers (hooks,

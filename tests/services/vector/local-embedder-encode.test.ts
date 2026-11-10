@@ -4,7 +4,7 @@ import { DEFAULT_EMBEDDING_MODEL } from '../../../src/services/vector/models.js'
 
 // Runs the real tokenizer and model (all-MiniLM-L6-v2, about 90 MB, fetched
 // on first use). Without them, say offline, these tests skip, except under
-// CLAUDE_MEM_TEST_PGVECTOR=1 (the search CI job), where a model that cannot
+// CLAUDE_MEM_TEST_PGVECTOR=1 (the integration CI step), where a model that cannot
 // load fails them instead of letting them pass untested.
 const requireModel = process.env.CLAUDE_MEM_TEST_PGVECTOR === '1';
 const embedder = new LocalEmbedder(DEFAULT_EMBEDDING_MODEL);

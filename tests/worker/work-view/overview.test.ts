@@ -12,15 +12,15 @@ import { composeViewerSyncStatus } from '../../../src/shared/viewer-sync-status.
 
 const fixture = () => JSON.parse(readFileSync(new URL('../../../src/ui/my-work/test-fixtures/work-view-snapshot.trimmed.json', import.meta.url), 'utf8')) as WorkViewSnapshot;
 
-function largeSnapshot() {
+function largeSnapshot(withDetails = false) {
   const snapshot = fixture();
   const seed = snapshot.humanRequests[0] as any;
   snapshot.humanRequests = Array.from({ length: 140 }, (_, id) => ({
     ...structuredClone(seed), id: `request-${id}`, contentFingerprint: id.toString(16).padStart(64, '0'),
-    activity: Array.from({ length: 80 }, (_, index) => ({
+    activity: withDetails ? Array.from({ length: 80 }, (_, index) => ({
       ...seed.activity[0], id: `activity-${index}`, title: 'A recorded result', detail: 'Long recorded details. '.repeat(20),
-    })),
-    scopeUpdates: Array.from({ length: 25 }, () => ({ ...seed.original, text: 'A long source prompt. '.repeat(100) })),
+    })) : [],
+    scopeUpdates: withDetails ? Array.from({ length: 25 }, () => ({ ...seed.original, text: 'A long source prompt. '.repeat(100) })) : [],
     workProduct: Array.from({ length: 40 }, (_, index) => ({ kind: 'pull-request', title: `Published output ${index}`, url: `https://example.test/pull/${index}` })),
   }));
   return snapshot;
@@ -100,7 +100,7 @@ describe('compact work view transport', () => {
   });
 
   it('keeps a 140-request overview under 300 KiB despite large detail arrays', () => {
-    const snapshot = largeSnapshot();
+    const snapshot = largeSnapshot(true);
     const overview = workViewOverview(snapshot);
     expect(overview.model.requestReadErrors).toEqual([]);
     expect(overview.model.requests).toHaveLength(140);

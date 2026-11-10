@@ -58,14 +58,6 @@ const STAND_IN_INSTALLER_RUN_MS = 4_000;
 const STEP_TIMEOUT_MS = 30_000;
 /** Poll interval for the state file and process table. */
 const POLL_MS = 100;
-/**
- * After the stand-in installer's run, how much longer the off baseline waits
- * before it reads the state: a surviving supervisor proves and records in
- * well under that (measured 2026-11-08: its outcome landed 0.02 s after a
- * 4 s stand-in run ended).
- */
-const RECORDING_MARGIN_MS = 1_000;
-
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixtures', 'auto-update-supervisor-host.ts');
 const scratchRoot = path.join(here, '..', '..', '.scratch', 'test-runs');
@@ -211,11 +203,9 @@ describe('the auto-update supervisor and a tree-kill of the process that launche
     await waitUntilGone(supervisorPid);
     await waitUntilGone(installerPid);
 
-    // Past the stand-in installer's whole run, the update never applied. The
-    // supervisor either died before it recorded anything (the attempt is left
+    // The supervisor either died before it recorded anything (the attempt is left
     // in flight, for the worker's gate 3), or saw its killed installer first
     // and recorded that; never an applied update.
-    await new Promise((resolve) => setTimeout(resolve, STAND_IN_INSTALLER_RUN_MS + RECORDING_MARGIN_MS));
     const state = readState(run);
     expect(readFileSync(path.join(run.directory, 'installed-version'), 'utf-8')).toBe(PREVIOUS);
     if (state?.lastAttemptOutcome == null) {

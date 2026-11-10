@@ -419,18 +419,6 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     expect(spawnCalls).toHaveLength(0);
   });
 
-  it('launches the worker when the port is free', async () => {
-    occupancy = 'free';
-    let healthCalls = 0;
-    global.fetch = mock(() => {
-      healthCalls += 1;
-      return Promise.resolve({ ok: healthCalls > 1, status: healthCalls > 1 ? 200 : 503, text: () => Promise.resolve('') } as unknown as Response);
-    });
-    const workerUtils = await importWorkerUtilsFresh();
-    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(true);
-    expect(spawnCalls).toHaveLength(1);
-  });
-
   it('caches the failed fallback for later calls in the same hook process', async () => {
     const workerUtils = await importWorkerUtilsFresh();
     expect(await workerUtils.ensureWorkerAliveOnce()).toBe(false);

@@ -9,14 +9,14 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "15.14.0",
+      "version": "15.15.1",
       "source": "./plugin",
       "description": "Persistent memory for Claude Code: the next session starts where the last one left off."
     },
     {
       "name": "cmem-pro",
       "displayName": "CMEM Pro",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./cowork",
       "description": "CMEM Pro for the Claude app - hooks stream tool use to cmem.ai and inject observations into new sessions and agents"
     }

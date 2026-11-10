@@ -1,7 +1,4 @@
 import { describe, expect, it, spyOn } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionManager } from '../../../src/services/worker/SessionManager.js';
 import { extractObservationFileEvidence, processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
@@ -23,11 +20,7 @@ describe('captured file paths containing edge whitespace', () => {
   });
 
   it('stores the queued Write under its exact path for file context lookup', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'claude-mem-edge-path-'));
-    const filePath = join(directory, 'file.ts ');
-    writeFileSync(filePath, 'export const value = 1;');
-    expect(existsSync(filePath)).toBe(true);
-    expect(existsSync(filePath.trim())).toBe(false);
+    const filePath = '/repo/file.ts ';
     const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     }));
@@ -65,7 +58,6 @@ describe('captured file paths containing edge whitespace', () => {
       mode.activeMode = priorMode;
       mode.activeModeId = priorModeId;
       settings.mockRestore();
-      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

@@ -30,8 +30,6 @@ afterAll(() => {
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 
-const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
-
 const createUserMessage = (sessionId: string, prompt: string) => JSON.stringify({
   type: 'event',
   payload: {
@@ -152,7 +150,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
 
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     expect(sessionInitCalls).toHaveLength(0);
 
@@ -171,40 +169,12 @@ describe('TranscriptWatcher startAtEnd', () => {
     );
 
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts).toContain('live prompt');
     expect(prompts).not.toContain('historical prompt that must not be replayed');
-  });
-
-  it('reads a file discovered by the root watcher from byte 0, keeping its opening turns', async () => {
-    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576e';
-    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
-    const statePath = join(tmpRoot, 'state.json');
-    const schema = createSchema();
-    const watch: WatchTarget = {
-      name: 'codex',
-      path: join(tmpRoot, '*.jsonl'),
-      schema,
-      startAtEnd: true,
-    };
-
-    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
-    await watcher.start();
-
-    // A rollout created after startup. By the time the recursive root watcher
-    // reports it, session_meta and the opening turns are already on disk, so
-    // startAtEnd must not apply to it - jumping to EOF drops the head of the
-    // transcript, including the user prompt (#4211).
-    writeFileSync(filePath, `${createUserMessage(sessionId, 'opening prompt')}\n`, 'utf8');
-
-    await (watcher as any).addTailer(filePath, watch, schema, true);
-    await waitForAsyncTail();
-    watcher.stop();
-
-    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['opening prompt']);
   });
 
   it('starts a historical transcript moved in after startup at EOF', async () => {
@@ -234,13 +204,13 @@ describe('TranscriptWatcher startAtEnd', () => {
     // file apart from a rollout created after startup.
     renameSync(archivedPath, movedPath);
     await (watcher as any).addTailer(movedPath, watch, schema, true);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(movedPath).readTask;
 
     expect(sessionInitCalls).toHaveLength(0);
 
     appendFileSync(movedPath, `${createUserMessage(sessionId, 'live prompt')}\n`, 'utf8');
     (watcher as any).tailers.get(movedPath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(movedPath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live prompt']);
@@ -262,7 +232,7 @@ describe('TranscriptWatcher startAtEnd', () => {
 
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     const tailer = (watcher as any).tailers.get(filePath);
     // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
@@ -273,7 +243,7 @@ describe('TranscriptWatcher startAtEnd', () => {
 
     tailer.poke();
     tailer.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     const livePrompts = sessionInitCalls.filter(call => call.prompt === 'live prompt');
@@ -292,7 +262,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     writeFileSync(filePath, `${firstLine}\n${secondLine.slice(0, splitAt)}`, 'utf8');
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt']);
     const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -300,7 +270,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     appendFileSync(filePath, `${secondLine.slice(splitAt)}\n`, 'utf8');
     const resumed = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (resumed as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (resumed as any).tailers.get(filePath).readTask;
     resumed.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt', 'resumed 日本語 prompt']);
@@ -317,13 +287,13 @@ describe('TranscriptWatcher startAtEnd', () => {
     writeFileSync(filePath, line.slice(0, splitAt), 'utf8');
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     expect(sessionInitCalls).toHaveLength(0);
 
     appendFileSync(filePath, `${line.slice(splitAt)}\n`, 'utf8');
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live resumed 日本語 prompt']);
@@ -345,7 +315,7 @@ describe('TranscriptWatcher startAtEnd', () => {
 
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     const tailer = (watcher as any).tailers.get(filePath);
     // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
@@ -355,7 +325,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     writeFileSync(filePath, `${createUserMessage(sessionId, 'after truncation')}\n`, 'utf8');
 
     tailer.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['after truncation']);

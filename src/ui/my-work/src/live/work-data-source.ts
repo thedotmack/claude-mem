@@ -5,6 +5,7 @@ import type { Agent, CurrentPeriod, Device, FocusArea, FocusAsk, FocusChange, Pa
 import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from '../data-rules.ts'
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult, SaveReceipt } from './review-response.ts'
+import type { WorkViewRefreshState } from './work-view-api-types.ts'
 
 export type SourceKind = 'sample' | 'local' | 'cloud'
 
@@ -56,7 +57,7 @@ export interface WorkModel {
 }
 
 /** What the automatic refresh is doing. `finishedAt` is display text. */
-export interface AutoRefresh { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; finishedAt: string | null; error: string | null }
+export interface AutoRefresh { state: WorkViewRefreshState; finishedAt: string | null; error: string | null }
 
 /** The last build story request-progress wrote. `writtenAt` is display text; null when not recorded. */
 export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }

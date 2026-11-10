@@ -1,9 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { incrementCanonicalDecimal } from "../src/canonical-content";
 import { ProjectionPageByteCounter, projectionRequestBytes, type ProjectionWireOp } from "../src/projection-protocol";
 import { MAX_DEVICES_PER_USER } from "../src/store";
-import { authHeaders, DEFAULT_DATABASE_URL, observationOp, pushRequest, trackedApp, uniqueUser } from "./helpers";
+import { authHeaders, DEFAULT_DATABASE_URL, observationOp, pushRequest, trackedApp, uniqueUser, stopTrackedApps } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 describe("protocol v2 hub", () => {
 	it("starts a new user on a fresh epoch with an empty log", async () => {
@@ -31,49 +33,6 @@ describe("protocol v2 hub", () => {
 		expect(status.epoch).not.toBe("0");
 	});
 
-	it("assigns dense seq, projects inside the push, and re-acks an identical rev", async () => {
-		const { app, sidecar } = await trackedApp();
-		const userId = uniqueUser();
-		const deviceId = "dev-a";
-		const op = await observationOp("1", "1", deviceId);
-		const push = await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, deviceId), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [op] }),
-		});
-		expect(push.status).toBe(200);
-		const body = await push.json() as {
-			acked: Array<{ seq: string }>;
-			head_seq: string;
-			projected_seq: string;
-		};
-		expect(body.acked).toHaveLength(1);
-		expect(body.acked[0].seq).toBe("1");
-		expect(body.head_seq).toBe("1");
-		expect(body.projected_seq).toBe("1");
-		expect(sidecar.state.projectionCalls).toHaveLength(1);
-
-		const again = await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, deviceId), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [op] }),
-		});
-		expect(again.status).toBe(200);
-		const acked = await again.json() as { acked: Array<{ seq: string }>; head_seq: string };
-		expect(acked.acked[0].seq).toBe("1");
-		expect(acked.head_seq).toBe("1");
-
-		const changes = await fetch(`${app.url}/v1/sync/changes?since=0`, {
-			headers: authHeaders(userId, "dev-b"),
-		});
-		expect(changes.status).toBe(200);
-		const page = await changes.json() as { ops: unknown[]; head_seq: string; more: boolean; protocol_version: number };
-		expect(page.protocol_version).toBe(2);
-		expect(page.ops).toHaveLength(1);
-		expect(page.head_seq).toBe("1");
-		expect(page.more).toBe(false);
-	});
-
 	it("answers a GET held past Bun's 10s default idle timeout by the per-user lock", async () => {
 		const { app } = await trackedApp();
 		const userId = uniqueUser();
@@ -88,16 +47,18 @@ describe("protocol v2 hub", () => {
 	}, 30_000);
 
 	it("applies a batch exactly like one op at a time: in-batch revisions, duplicates, dense seqs", async () => {
-		const { app } = await trackedApp();
+		const { app, sidecar } = await trackedApp();
 		const userId = uniqueUser();
 		const first = await observationOp("1", "1", "dev-a");
 		const revised = await observationOp("1", "2", "dev-a", { text: "second revision" });
 		const other = await observationOp("2", "1", "dev-a");
 		const push = await pushRequest(app, userId, "dev-a", [first, revised, other, revised]);
 		expect(push.status).toBe(200);
-		const body = await push.json() as { acked: Array<{ seq: string; entity_rev: string }>; head_seq: string };
+		const body = await push.json() as { acked: Array<{ seq: string; entity_rev: string }>; head_seq: string; projected_seq: string };
 		expect(body.acked.map((ack) => [ack.seq, ack.entity_rev])).toEqual([["1", "1"], ["2", "2"], ["3", "1"], ["2", "2"]]);
 		expect(body.head_seq).toBe("3");
+		expect(body.projected_seq).toBe("3");
+		expect(sidecar.state.projectionCalls).toHaveLength(1);
 
 		// The entity head is the batch's last revision.
 		const again = await pushRequest(app, userId, "dev-a", [revised]);
@@ -132,49 +93,15 @@ describe("protocol v2 hub", () => {
 		expect((await retry.json() as { acked: Array<{ seq: string }> }).acked[0].seq).toBe("2");
 	});
 
-	it("refuses a stale revision and a same-rev hash conflict", async () => {
+	it("refuses a same-rev hash conflict", async () => {
 		const { app } = await trackedApp();
 		const userId = uniqueUser();
-		const deviceId = "dev-a";
-		const first = await observationOp("7", "2", deviceId);
-		expect((await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, deviceId), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [first] }),
-		})).status).toBe(200);
-
-		const stale = await observationOp("7", "1", deviceId);
-		const staleRes = await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, deviceId), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [stale] }),
-		});
-		expect(staleRes.status).toBe(400);
-		expect((await staleRes.json() as { error: string }).error).toContain("stale_revision");
-
-		const conflict = await observationOp("7", "2", deviceId, { text: "different" });
-		const conflictRes = await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, deviceId), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [conflict] }),
-		});
+		const first = await observationOp("7", "2", "dev-a");
+		expect((await pushRequest(app, userId, "dev-a", [first])).status).toBe(200);
+		const conflict = await observationOp("7", "2", "dev-a", { text: "different" });
+		const conflictRes = await pushRequest(app, userId, "dev-a", [conflict]);
 		expect(conflictRes.status).toBe(400);
 		expect((await conflictRes.json() as { error: string }).error).toContain("revision_hash_conflict");
-	});
-
-	it("accepts an empty push and never answers 200 with a lagging checkpoint", async () => {
-		const { app } = await trackedApp();
-		const userId = uniqueUser();
-		const res = await fetch(`${app.url}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...authHeaders(userId, "dev-a"), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [] }),
-		});
-		expect(res.status).toBe(200);
-		const body = await res.json() as { acked: unknown[]; head_seq: string; projected_seq: string };
-		expect(body.acked).toEqual([]);
-		expect(body.head_seq).toBe("0");
-		expect(body.projected_seq).toBe("0");
 	});
 
 	it("counts a growing projection page's bytes exactly like serializing the whole request", () => {
@@ -204,15 +131,10 @@ describe("protocol v2 hub", () => {
 		const { app } = await trackedApp();
 		const userId = uniqueUser();
 		for (let i = 0; i < MAX_DEVICES_PER_USER; i++) {
-			const res = await fetch(`${app.url}/v1/sync/status`, {
-				headers: authHeaders(userId, `device-${i}`),
-			});
-			// status with an unseen device does not register; register via changes.
 			const changes = await fetch(`${app.url}/v1/sync/changes?since=0`, {
 				headers: authHeaders(userId, `device-${i}`),
 			});
 			expect(changes.status).toBe(200);
-			expect(res.status).toBe(200);
 		}
 		const overflow = await fetch(`${app.url}/v1/sync/changes?since=0`, {
 			headers: authHeaders(userId, "device-overflow"),

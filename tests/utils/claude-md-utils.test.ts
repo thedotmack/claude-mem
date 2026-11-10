@@ -364,13 +364,63 @@ describe('issue #1165 - prevent CLAUDE.md inside .git directories', () => {
 });
 
 describe('updateFolderClaudeMdFiles', () => {
-  it('should skip when filePaths is empty', async () => {
+  it.each<[string, () => { paths: string[]; root?: string }]>([
+    ['should skip when filePaths is empty', () => ({ paths: [], root: undefined })],
+    ['should reject tilde paths', () => ({ paths: ['~/.claude-mem/logs/worker.log'], root: tempDir })],
+    ['should reject URLs', () => ({ paths: ['https://example.com/file.ts'], root: tempDir })],
+    ['should reject paths with spaces', () => ({ paths: ['PR #610 on thedotmack/CLAUDE.md'], root: tempDir })],
+    ['should reject paths with hash symbols', () => ({ paths: ['issue#123/file.ts'], root: tempDir })],
+    ['should reject path traversal outside project', () => ({ paths: ['../../../etc/passwd'], root: tempDir })],
+    ['should reject absolute paths outside project root', () => ({ paths: ['/etc/passwd'], root: tempDir })],
+    ['should reject paths with consecutive duplicate segments like frontend/frontend/', () => ({ paths: ['frontend/src/file.ts'], root: path.join(tempDir, 'frontend') })],
+    ['should reject paths with consecutive duplicate segments like src/src/', () => ({ paths: ['src/components/file.ts'], root: path.join(tempDir, 'src') })],
+    ['should skip folder when CLAUDE.md was read in observation', () => ({ paths: ['/project/src/utils/CLAUDE.md'], root: '/project' })],
+    ['should skip folder when CLAUDE.md was modified in observation', () => ({ paths: ['/project/src/CLAUDE.md'], root: '/project' })],
+    ['should handle relative CLAUDE.md paths with projectRoot', () => ({ paths: ['src/components/CLAUDE.md'], root: '/project' })],
+    ['should still exclude project root even when CLAUDE.md filter would allow it', () => {
+      const root = join(tempDir, 'git-project');
+      mkdirSync(join(root, '.git'), { recursive: true });
+      return { paths: [join(root, 'file.ts')], root };
+    }],
+    ['should skip node_modules directories', () => ({ paths: ['node_modules/lodash/index.js'], root: tempDir })],
+    ['should skip .git directories', () => ({ paths: ['.git/refs/heads/main'], root: tempDir })],
+    ['should skip Android res/ directories', () => ({ paths: ['app/src/main/res/layout/activity_main.xml'], root: tempDir })],
+    ['should skip build/ directories', () => ({ paths: ['build/outputs/apk/debug/app-debug.apk'], root: tempDir })],
+    ['should skip __pycache__/ directories', () => ({ paths: ['src/__pycache__/module.cpython-311.pyc'], root: tempDir })],
+    ['should skip deeply nested unsafe directories', () => ({ paths: ['packages/frontend/node_modules/react/index.js'], root: tempDir })],
+    ['should skip folder when CLAUDE.local.md was read in observation', () => ({ paths: ['/project/src/utils/CLAUDE.local.md'], root: '/project' })],
+  ])('%s', async (_name, fixture) => {
+    const { paths, root } = fixture();
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles([], 'test-project', 37777);
-
+    await updateFolderClaudeMdFiles(paths, 'test-project', 37777, root);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, () => { paths: string[]; root?: string; folder: string }]>([
+    ['should resolve relative paths using projectRoot', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project', folder: '/home/user/my-project/src/utils' })],
+    ['should accept absolute paths within projectRoot and use them directly', () => ({ paths: [join(tempDir, 'absolute-path-test', 'file.ts')], root: tempDir, folder: join(tempDir, 'absolute-path-test') })],
+    ['should work without projectRoot for backward compatibility', () => ({ paths: [join(tempDir, 'backward-compat-test', 'file.ts')], root: undefined, folder: join(tempDir, 'backward-compat-test') })],
+    ['should handle projectRoot with trailing slash correctly', () => ({ paths: ['src/utils/file.ts'], root: '/home/user/my-project/', folder: '/home/user/my-project/src/utils' })],
+    ['should deduplicate relative paths from same folder with projectRoot', () => ({ paths: ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'], root: '/home/user/project', folder: '/home/user/project/src/utils' })],
+    ['should handle empty string paths gracefully with projectRoot', () => ({ paths: ['', 'src/file.ts', ''], root: '/home/user/project', folder: '/home/user/project/src' })],
+    ['should accept absolute paths within project root', () => ({ paths: [path.join(tempDir, 'src', 'utils', 'file.ts')], root: tempDir, folder: join(tempDir, 'src', 'utils') })],
+    ['should accept absolute paths when no projectRoot is provided', () => ({ paths: ['/home/user/valid/file.ts'], root: undefined, folder: '/home/user/valid' })],
+    ['should accept valid relative paths', () => ({ paths: ['src/utils/logger.ts'], root: tempDir, folder: join(tempDir, 'src', 'utils') })],
+    ['should allow paths with non-consecutive duplicate segments', () => ({ paths: ['src/components/src/utils/file.ts'], root: tempDir, folder: join(tempDir, 'src', 'components', 'src', 'utils') })],
+    ['should allow safe directories like src/', () => ({ paths: ['src/utils/file.ts'], root: tempDir, folder: join(tempDir, 'src', 'utils') })],
+  ])('%s', async (_name, fixture) => {
+    const { paths, root, folder } = fixture();
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |' }] }),
+    } as Response));
+    global.fetch = fetchMock;
+    await updateFolderClaudeMdFiles(paths, 'test-project', 37777, root);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent(folder));
+    expect(callUrl.replace('http://', '')).not.toContain('//');
   });
 
   it('should fetch timeline and write CLAUDE.md', async () => {
@@ -449,113 +499,6 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(existsSync(claudeMdPath)).toBe(false);
   });
 
-  it('should resolve relative paths using projectRoot', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
-
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/utils/file.ts'],  // relative path
-      'test-project',
-      37777,
-      '/home/user/my-project'  
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
-  });
-
-  it('should accept absolute paths within projectRoot and use them directly', async () => {
-    const folderPath = join(tempDir, 'absolute-path-test');
-    const filePath = join(folderPath, 'file.ts');
-
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
-
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      [filePath],  // absolute path within tempDir
-      'test-project',
-      37777,
-      tempDir  
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent(folderPath));
-  });
-
-  it('should work without projectRoot for backward compatibility', async () => {
-    const folderPath = join(tempDir, 'backward-compat-test');
-    const filePath = join(folderPath, 'file.ts');
-
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
-
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      [filePath],  // absolute path
-      'test-project',
-      37777
-      // No projectRoot - backward compatibility
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent(folderPath));
-  });
-
-  it('should handle projectRoot with trailing slash correctly', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
-      }]
-    };
-
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/utils/file.ts'],
-      'test-project',
-      37777,
-      '/home/user/my-project/'  
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
-    expect(callUrl.replace('http://', '')).not.toContain('//');
-  });
-
   it('should write CLAUDE.md to resolved projectRoot path', async () => {
     const subfolderPath = join(tempDir, 'project-root-write-test', 'src', 'utils');
     mkdirSync(subfolderPath, { recursive: true }); 
@@ -585,251 +528,9 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(content).toContain('Written to correct path');
     expect(content).toContain('#456');
   });
-
-  it('should deduplicate relative paths from same folder with projectRoot', async () => {
-    const apiResponse = {
-      content: [{
-        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
-      }]
-    };
-
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'],
-      'test-project',
-      37777,
-      '/home/user/project'
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src/utils'));
-  });
-
-  it('should handle empty string paths gracefully with projectRoot', async () => {
-    // The empty strings are filtered out, leaving one valid folder that
-    // triggers exactly one fetch — which then reads the JSON body, so the
-    // mock must provide json() like a real ok Response.
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['', 'src/file.ts', ''],  // includes empty strings
-      'test-project',
-      37777,
-      '/home/user/project'
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
-  });
-});
-
-describe('path validation in updateFolderClaudeMdFiles', () => {
-  it('should reject tilde paths', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['~/.claude-mem/logs/worker.log'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject URLs', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['https://example.com/file.ts'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject paths with spaces', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['PR #610 on thedotmack/CLAUDE.md'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject paths with hash symbols', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['issue#123/file.ts'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject path traversal outside project', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['../../../etc/passwd'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject absolute paths outside project root', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['/etc/passwd'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should accept absolute paths within project root', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    const absolutePathInProject = path.join(tempDir, 'src', 'utils', 'file.ts');
-
-    await updateFolderClaudeMdFiles(
-      [absolutePathInProject],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('should accept absolute paths when no projectRoot is provided', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['/home/user/valid/file.ts'],
-      'test-project',
-      37777
-      // No projectRoot provided
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('should accept valid relative paths', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/utils/logger.ts'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('issue #814 - reject consecutive duplicate path segments', () => {
-  it('should reject paths with consecutive duplicate segments like frontend/frontend/', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['frontend/src/file.ts'],
-      'test-project',
-      37777,
-      path.join(tempDir, 'frontend')  
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should reject paths with consecutive duplicate segments like src/src/', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/components/file.ts'],
-      'test-project',
-      37777,
-      path.join(tempDir, 'src')  
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should allow paths with non-consecutive duplicate segments', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/components/src/utils/file.ts'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 
   it('only checks duplicate segments from the project folder down', async () => {
     // A project checked out at a path like ~/code/app/app must still get folder CLAUDE.md files.
@@ -857,33 +558,6 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
 });
 
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
-  it('should skip folder when CLAUDE.md was read in observation', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['/project/src/utils/CLAUDE.md'],
-      'test-project',
-      37777,
-      '/project'
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should skip folder when CLAUDE.md was modified in observation', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['/project/src/CLAUDE.md'],
-      'test-project',
-      37777,
-      '/project'
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
 
   it('should process other folders even when one has active CLAUDE.md', async () => {
     const apiResponse = {
@@ -911,20 +585,6 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
   });
 
-  it('should handle relative CLAUDE.md paths with projectRoot', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/components/CLAUDE.md'],
-      'test-project',
-      37777,
-      '/project'
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it('should skip only the specific folder containing active CLAUDE.md', async () => {
     const apiResponse = {
       content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
@@ -950,116 +610,9 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
   });
-
-  it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    const projectRoot = join(tempDir, 'git-project');
-    const gitDir = join(projectRoot, '.git');
-    mkdirSync(gitDir, { recursive: true });
-
-    await updateFolderClaudeMdFiles(
-      [join(projectRoot, 'file.ts')],
-      'test-project',
-      37777,
-      projectRoot
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
 });
 
 describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => {
-  it('should skip node_modules directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['node_modules/lodash/index.js'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should skip .git directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['.git/refs/heads/main'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should skip Android res/ directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['app/src/main/res/layout/activity_main.xml'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should skip build/ directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['build/outputs/apk/debug/app-debug.apk'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should skip __pycache__/ directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/__pycache__/module.cpython-311.pyc'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('should allow safe directories like src/', async () => {
-    const apiResponse = {
-      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
-    };
-    const fetchMock = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(apiResponse)
-    } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['src/utils/file.ts'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 
   it('only checks directory names below the project root', async () => {
     // A project that itself lives under ~/build or ~/res must still get folder CLAUDE.md files.
@@ -1086,20 +639,6 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
       expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
     }
   });
-
-  it('should skip deeply nested unsafe directories', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['packages/frontend/node_modules/react/index.js'],
-      'test-project',
-      37777,
-      tempDir
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
 });
 
 describe('getTargetFilename', () => {
@@ -1120,66 +659,25 @@ describe('getTargetFilename', () => {
 });
 
 describe('CLAUDE.local.md support', () => {
-  it('should write CLAUDE.local.md when targetFilename is specified', () => {
+  it('writes CLAUDE.local.md and preserves user content outside its tags', () => {
     const folderPath = join(tempDir, 'local-md-test');
     mkdirSync(folderPath, { recursive: true });
-    const content = '# Recent Activity\n\nTest content';
-
-    writeClaudeMdToFolder(folderPath, content, 'CLAUDE.local.md');
-
     const localMdPath = join(folderPath, 'CLAUDE.local.md');
-    const regularMdPath = join(folderPath, 'CLAUDE.md');
-
+    writeClaudeMdToFolder(folderPath, '# Recent Activity\n\nTest content', 'CLAUDE.local.md');
     expect(existsSync(localMdPath)).toBe(true);
-    expect(existsSync(regularMdPath)).toBe(false);
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+    const initial = readFileSync(localMdPath, 'utf-8');
+    expect(initial).toContain('<claude-mem-context>');
+    expect(initial).toContain('Test content');
+    expect(initial).toContain('</claude-mem-context>');
 
-    const fileContent = readFileSync(localMdPath, 'utf-8');
-    expect(fileContent).toContain('<claude-mem-context>');
-    expect(fileContent).toContain('Test content');
-    expect(fileContent).toContain('</claude-mem-context>');
-  });
-
-  it('should preserve user content in CLAUDE.local.md outside tags', () => {
-    const folderPath = join(tempDir, 'local-preserve-test');
-    mkdirSync(folderPath, { recursive: true });
-
-    const localMdPath = join(folderPath, 'CLAUDE.local.md');
-    const userContent = 'My personal notes\n<claude-mem-context>\nOld content\n</claude-mem-context>\nMore notes';
-    writeFileSync(localMdPath, userContent);
-
+    writeFileSync(localMdPath, 'My personal notes\n<claude-mem-context>\nOld content\n</claude-mem-context>\nMore notes');
     writeClaudeMdToFolder(folderPath, 'New generated content', 'CLAUDE.local.md');
-
-    const fileContent = readFileSync(localMdPath, 'utf-8');
-    expect(fileContent).toContain('My personal notes');
-    expect(fileContent).toContain('New generated content');
-    expect(fileContent).toContain('More notes');
-    expect(fileContent).not.toContain('Old content');
-  });
-
-  it('should not leave .tmp file after writing CLAUDE.local.md', () => {
-    const folderPath = join(tempDir, 'local-atomic-test');
-    mkdirSync(folderPath, { recursive: true });
-
-    writeClaudeMdToFolder(folderPath, 'Atomic write test', 'CLAUDE.local.md');
-
-    const localMdPath = join(folderPath, 'CLAUDE.local.md');
-
-    expect(existsSync(localMdPath)).toBe(true);
-    expect(readdirSync(folderPath).filter(name => name.endsWith('.tmp'))).toEqual([]);
-  });
-
-  it('should skip folder when CLAUDE.local.md was read in observation', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
-    global.fetch = fetchMock;
-
-    await updateFolderClaudeMdFiles(
-      ['/project/src/utils/CLAUDE.local.md'],
-      'test-project',
-      37777,
-      '/project'
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
+    const content = readFileSync(localMdPath, 'utf-8');
+    expect(content).toContain('My personal notes');
+    expect(content).toContain('New generated content');
+    expect(content).toContain('More notes');
+    expect(content).not.toContain('Old content');
   });
 
   it('should skip folder when either CLAUDE.md or CLAUDE.local.md was read', async () => {

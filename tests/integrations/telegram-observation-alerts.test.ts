@@ -45,45 +45,19 @@ describe('Telegram observation alerts', () => {
     global.fetch = originalFetch;
   });
 
-  it('does not send when the observation-alert setting is unset', async () => {
-    const configured = settings();
-    delete (configured as Partial<SettingsDefaults>).CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED;
-    const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) => (
-      Promise.resolve(new Response('', { status: 200 }))
-    )) as unknown as typeof fetch;
-    global.fetch = fetchMock;
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(configured);
+  it.each([[undefined, 0], ['false', 0], ['true', 1]] as const)(
+    'with observation alerts set to %s, sends %i time(s)', async (enabled, expectedCalls) => {
+      const configured = settings();
+      if (enabled === undefined) delete (configured as Partial<SettingsDefaults>).CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED;
+      else configured.CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED = enabled;
+      const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) => (
+        Promise.resolve(new Response('', { status: 200 }))
+      )) as unknown as typeof fetch;
+      global.fetch = fetchMock;
+      spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(configured);
 
-    await notifyMatchingObservation();
+      await notifyMatchingObservation();
 
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('does not send when observation alerts are false', async () => {
-    const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) => (
-      Promise.resolve(new Response('', { status: 200 }))
-    )) as unknown as typeof fetch;
-    global.fetch = fetchMock;
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(settings({
-      CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED: 'false',
-    }));
-
-    await notifyMatchingObservation();
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('sends once when observation alerts are true and an observation matches', async () => {
-    const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) => (
-      Promise.resolve(new Response('', { status: 200 }))
-    )) as unknown as typeof fetch;
-    global.fetch = fetchMock;
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(settings({
-      CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED: 'true',
-    }));
-
-    await notifyMatchingObservation();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
+      expect(fetchMock).toHaveBeenCalledTimes(expectedCalls);
+    });
 });

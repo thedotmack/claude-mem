@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Exercise the production entry point in a child to isolate settings and mode
 // state from the process-global mocks in other context tests.
@@ -40,7 +41,7 @@ const script = `
 `;
 
 function generate(count: number, options: { narrative?: boolean; messageLength?: number; titleLength?: number; sameMinute?: boolean } = {}) {
-  const dataDir = mkdtempSync(join(import.meta.dir, '.preview-4252-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'preview-4252-'));
   try {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
@@ -75,15 +76,16 @@ function generate(count: number, options: { narrative?: boolean; messageLength?:
 const records = (text: string): string[] => text.match(/RECORD_\d{3}/g) ?? [];
 
 describe('terminal preview shares the model selection (#4252)', () => {
+  let standardPreview: ReturnType<typeof generate>;
+  beforeAll(() => { standardPreview = generate(50); }, 15_000);
   it('truncates verbose presentation without selecting fewer observations', () => {
-    const { model, preview, fullPreview } = generate(50);
+    const { model, preview, fullPreview } = standardPreview;
     expect(model.text.length).toBeLessThanOrEqual(10_000);
     expect(model.stats.observation_count).toBe(50);
     expect(records(model.text)).toHaveLength(50);
     expect(fullPreview.text.length).toBeGreaterThan(10_000);
     expect(records(fullPreview.text)).toEqual(records(model.text));
     expect(preview.stats).toEqual(model.stats);
-    expect(preview.text).toContain('Loading: 50 observations');
     expect(preview.text.length).toBeLessThanOrEqual(10_000);
     expect(preview.text).toContain('Terminal preview truncated');
     expect(preview.text).toContain('additional observations are not shown here');
@@ -93,7 +95,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(visible).toEqual(records(model.text).slice(-visible.length));
     expect(visible).toContain('RECORD_049');
     expect(visible).not.toContain('RECORD_000');
-    // Header count still describes the model selection, and the newest
+    // The header above the cut is the full preview's, and the newest
     // timeline entry ends the preview: no closing lines follow it.
     const noticeStart = preview.text.indexOf('\x1b[0m\n\n[Terminal preview truncated');
     expect(noticeStart).toBeGreaterThan(0);
@@ -101,7 +103,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text.indexOf('RECORD_049')).toBeGreaterThan(noticeStart);
     expect(preview.text.split('\n').at(-1)).toContain('RECORD_049');
     expect(fullPreview.text.split('\n').at(-1)).toContain('RECORD_049');
-    expect(preview.text).not.toContain('Access ');
+    expect(preview.text).not.toContain('tokens of past');
     for (const line of preview.text.split('\n').filter(line => line.includes('RECORD_'))) {
       expect(fullPreview.text.split('\n')).toContain(line);
     }
@@ -113,16 +115,14 @@ describe('terminal preview shares the model selection (#4252)', () => {
     const { model, preview, fullPreview } = generate(3);
     expect(preview.text.length).toBeLessThanOrEqual(10_000);
     expect(preview.stats).toEqual(model.stats);
-    expect(preview.text).toContain('Loading: 3 observations');
     expect(records(preview.text)).toEqual(records(model.text));
     expect(records(preview.text)).toHaveLength(3);
-    const withoutRenderTime = (text: string) => text.replace(/(\[preview-test\] recent context, )[^\n]+/, '$1<rendered-at>');
-    expect(withoutRenderTime(preview.text)).toBe(withoutRenderTime(fullPreview.text));
+    expect(preview.text).toBe(fullPreview.text);
     expect(preview.text).not.toContain('Terminal preview truncated');
   }, 15_000);
 
   it('restores the date and file heading for the first retained observation', () => {
-    const { preview } = generate(50);
+    const { preview } = standardPreview;
     const first = records(preview.text)[0];
     const firstIndex = preview.text.indexOf(first);
     const preceding = preview.text.slice(preview.text.indexOf('Terminal preview truncated'), firstIndex);
@@ -167,13 +167,12 @@ describe('terminal preview shares the model selection (#4252)', () => {
 
   it('gives newest observations space before a long prior message', () => {
     // Long enough to overflow the colored preview, short enough for the model's block.
-    const { model, preview, fullPreview } = generate(10, { messageLength: 7_000, titleLength: 180 });
+    const { model, preview, fullPreview } = generate(10, { messageLength: 7_500, titleLength: 180 });
     expect(model.stats.observation_count).toBe(10);
     expect(model.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text.length).toBeGreaterThan(10_000);
     expect(preview.text).toContain('Terminal preview truncated');
-    expect(preview.text).toContain(`Loading: ${model.stats.observation_count} observations`);
     expect(preview.text.length).toBeLessThanOrEqual(10_000);
     expect(records(preview.text).length).toBeGreaterThan(0);
     expect(records(preview.text)).toEqual(records(model.text).slice(-records(preview.text).length));
@@ -201,17 +200,16 @@ describe('terminal preview shares the model selection (#4252)', () => {
   }, 15_000);
 
   it('reports presentation-only truncation when every selected observation remains visible', () => {
-    const { model, preview, fullPreview } = generate(3, { messageLength: 9_000, titleLength: 80 });
+    const { model, preview, fullPreview } = generate(3, { messageLength: 9_300, titleLength: 80 });
     expect(model.stats.observation_count).toBe(3);
     expect(fullPreview.text.length).toBeGreaterThan(10_000);
     expect(preview.text.length).toBeLessThanOrEqual(10_000);
-    expect(preview.text).toContain('Loading: 3 observations');
     expect(preview.text).toContain('Terminal preview truncated');
     expect(preview.text).toContain('some presentation text is not shown here');
     expect(preview.text).not.toContain('additional observations are not shown here');
     expect(records(preview.text)).toEqual(records(model.text));
     expect(preview.text).toContain('PRIOR_MESSAGE');
-    expect(preview.text).not.toContain('m'.repeat(9_000));
+    expect(preview.text).not.toContain('m'.repeat(9_300));
     expect(preview.stats).toEqual(model.stats);
   }, 15_000);
 });

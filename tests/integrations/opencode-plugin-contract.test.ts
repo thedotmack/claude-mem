@@ -3,13 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import * as pluginEntry from "../../src/integrations/opencode-plugin/index";
 import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
-import {
-  parseSearchResponse,
-  REGISTERED_OPENCODE_HOOKS,
-  REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/contract";
+import { parseSearchResponse } from "../../src/integrations/opencode-plugin/contract";
 import { normalizePlatformSource } from "../../src/shared/platform-source";
 import { isConnectionRefusedError } from "../../src/shared/connection-errors";
 
@@ -41,14 +36,6 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   // `tool` is the custom-tool registration map, part of the plugin return shape.
   "tool",
 ]);
-
-// Bus event names the old code used that DO NOT exist in OpenCode's contract.
-const PHANTOM_BUS_EVENT_NAMES = [
-  "session.created",
-  "message.updated",
-  "session.compacted",
-  "file.edited",
-];
 
 const pluginCtx = {
   client: {},
@@ -82,7 +69,9 @@ describe("OpenCode plugin event contract", () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
     const outfile = join(dir, "index.js");
     try {
-      buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile });
+      const build = buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile, metafile: true });
+      expect(Object.keys(build.metafile!.inputs)).not.toContain("src/shared/worker-utils.ts");
+      expect(Object.keys(build.metafile!.inputs)).toContain("src/shared/connection-errors.ts");
       const bundle = await import(pathToFileURL(outfile).href);
       const exportNames = Object.keys(bundle).sort();
       expect(exportNames).toEqual(["default"]);
@@ -94,51 +83,6 @@ describe("OpenCode plugin event contract", () => {
       expect(typeof definition.setup).toBe("function");
     } finally {
       rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a bundle that leaks a non-function export (negative control)", async () => {
-    // Guards the guard: proves the assertion above can actually catch a
-    // leaked non-function export, so a future green run is meaningful.
-    const { buildSync } = await import("esbuild");
-    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-neg-"));
-    const entry = join(dir, "entry.ts");
-    const outfile = join(dir, "index.js");
-    try {
-      writeFileSync(
-        entry,
-        "export const LEAKED = [1, 2, 3];\nexport default function plugin() { return {}; }\n",
-      );
-      buildSync({
-        entryPoints: [entry],
-        bundle: true,
-        platform: "node",
-        target: "node18",
-        format: "esm",
-        outfile,
-        minify: true,
-        logLevel: "error",
-        external: [],
-      });
-      const bundle = await import(pathToFileURL(outfile).href);
-      // Exact export list: proves the synthetic leak was actually emitted, so a
-      // green run of this control is meaningful (per review feedback).
-      expect(Object.keys(bundle).sort()).toEqual(["LEAKED", "default"]);
-      expect(Array.isArray((bundle as Record<string, unknown>).LEAKED)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps worker-utils out of every OpenCode plugin module", () => {
-    // The worker URL resolution lives in core.ts, the dependency-free module
-    // both the V1 and the V2 adapter share. Neither adapter may reach for
-    // worker-utils, which drags worker-only imports into the plugin bundle.
-    for (const module of ["core.ts", "v1.ts", "v2.ts", "index.ts"]) {
-      const source = readFileSync(`src/integrations/opencode-plugin/${module}`, "utf8");
-      expect(source, `${module} must not import worker-utils`).not.toContain(
-        'from "../../shared/worker-utils.js"',
-      );
     }
   });
 
@@ -412,34 +356,11 @@ describe("OpenCode plugin event contract", () => {
       ).toBe(true);
     }
 
-    // The exported allowlist of hooks we bind to must itself be real.
-    for (const hook of REGISTERED_OPENCODE_HOOKS) {
-      expect(REAL_OPENCODE_HOOK_NAMES.has(hook)).toBe(true);
-    }
-
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
     expect(hookKeys).toContain("chat.message");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
-  });
-
-  it("does not register the phantom bus event names as hooks", async () => {
-    const plugin = await ClaudeMemPlugin.server(pluginCtx);
-    const hookKeys = Object.keys(plugin);
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(hookKeys).not.toContain(phantom);
-    }
-  });
-
-  it("only reacts to real bus event types", () => {
-    // session.idle / session.deleted are real OpenCode bus events; the phantom
-    // names must never appear in the reacted-to allowlist.
-    expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.idle");
-    expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(REAL_OPENCODE_EVENT_TYPES as readonly string[]).not.toContain(phantom);
-    }
   });
 
   it("posts observations to the worker via tool.execute.after", async () => {
@@ -478,6 +399,7 @@ describe("OpenCode plugin event contract", () => {
       expect(obsBody.tool_use_id).toBe("c1");
       expect(obsBody.telemetryToolEpochMs).toEqual(expect.any(Number));
       expect(obsBody.platformSource).toBe(normalizePlatformSource("opencode"));
+      expect(obsBody.platform_source).toBe("opencode");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -513,6 +435,10 @@ describe("OpenCode plugin event contract", () => {
             parts: [{ type: "text", text: "assistant output" }],
           },
         ),
+        "chat.message (user)": () => plugin["chat.message"](
+          {},
+          { message: { role: "user", sessionID: "ses_contract_user" }, parts: [{ type: "text", text: "hi" }] },
+        ),
         "experimental.session.compacting": () => plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" }),
         event: () => plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } }),
         // Reads context (a GET); it writes nothing.
@@ -521,22 +447,20 @@ describe("OpenCode plugin event contract", () => {
           { system: [] },
         ),
       };
-      for (const hook of REGISTERED_OPENCODE_HOOKS) {
-        const invoke = postHookInvocations[hook];
-        expect(invoke, `registered hook "${hook}" must have a POST contract case`).toBeDefined();
-        await invoke!();
-      }
+      for (const invoke of Object.values(postHookInvocations)) await invoke();
 
       const posts = requests.filter((request) => request.method === "POST");
-      expect(posts).toHaveLength(4);
+      expect(posts).toHaveLength(5);
       expect(posts.map((request) => request.url)).toEqual([
         expect.stringContaining("/api/sessions/observations"),
         expect.stringContaining("/api/sessions/observations"),
+        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/summarize"),
         expect.stringContaining("/api/sessions/summarize"),
       ]);
       for (const post of posts) {
         expect(post.body?.platformSource).toBe(expectedPlatformSource);
+        expect(post.body?.platform_source).toBe("opencode");
       }
 
       const postCountBeforeSearchAndDeletion = posts.length;
@@ -551,7 +475,19 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("prefers input args when both hook payloads contain arguments", async () => {
+  it.each([
+    ["prefers input args", "write", "ses_precedence", "c2", { path: "/input" }, { path: "/output" }, "ok", { tool_input: { path: "/input" } }],
+    ["ignores output args", "read", "ses_output_fallback", "c3", undefined, { path: "/fallback" }, "ok", { tool_input: {} }],
+    ["defaults missing args", "list", "ses_empty_fallback", "c4", undefined, undefined, "ok", { tool_input: {}, tool_name: "list", tool_response: "ok", cwd: pluginCtx.directory }],
+    ["keeps empty input args", "read", "ses_empty_input", "c5", {}, { path: "/output" }, "ok", { tool_input: {} }],
+    ["reads hook input args (#3678)", "edit", "ses_args", "c2", { filePath: "/a/b.ts" }, undefined, "applied", { tool_input: { filePath: "/a/b.ts" } }],
+    ["normalizes read evidence", "read", "ses_read", "c6", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["normalizes write evidence", "write", "ses_write", "c7", { filePath: "/a", content: "new\n" }, undefined, "new\n", { tool_name: "Write", tool_input: { filePath: "/a", content: "new\n" } }],
+    ["normalizes edit evidence", "edit", "ses_edit", "c8", { filePath: "/a", oldString: "old", newString: "new" }, undefined, "new\n", { tool_name: "Edit", tool_input: { filePath: "/a", oldString: "old", newString: "new" } }],
+    ["normalizes patch evidence", "apply_patch", "ses_patch", "c9", { patchText: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" }, undefined, "new\n", { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch" } }],
+    ["preserves legacy Read evidence", "Read", "ses_legacy", "c10", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "Read", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+    ["leaves custom tool evidence unchanged", "read_custom", "ses_custom", "c11", { filePath: "/a", offset: 1, limit: 3 }, undefined, "old\n", { tool_name: "read_custom", tool_input: { filePath: "/a", offset: 1, limit: 3 } }],
+  ] as const)("%s", async (_label, tool, sessionID, callID, inputArgs, outputArgs, output, expected) => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -561,138 +497,21 @@ describe("OpenCode plugin event contract", () => {
 
     try {
       const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const originalInput = JSON.stringify(inputArgs);
       await plugin["tool.execute.after"](
-        { tool: "write", sessionID: "ses_precedence", callID: "c2", args: { path: "/input" } },
-        { title: "Write", output: "ok", metadata: {}, args: { path: "/output" } },
-      );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/input" });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("does not read output args when input args are absent", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin.server(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_output_fallback", callID: "c3" },
-        { title: "Read", output: "ok", metadata: {}, args: { path: "/fallback" } },
-      );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("uses an empty object when neither hook payload contains args", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin.server(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "list", sessionID: "ses_empty_fallback", callID: "c4" },
-        { title: "List", output: "ok", metadata: {} },
-      );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
-      expect((obsPost!.body as Record<string, unknown>).tool_name).toBe("list");
-      expect((obsPost!.body as Record<string, unknown>).tool_response).toBe("ok");
-      expect((obsPost!.body as Record<string, unknown>).cwd).toBe("/tmp/x");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("keeps the selected empty input object when output args are also present", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin.server(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_empty_input", callID: "c5", args: {} },
-        { title: "Read", output: "ok", metadata: {}, args: { path: "/output" } },
-      );
-
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("reads tool arguments from the hook INPUT, not the output (#3678)", async () => {
-    // OpenCode passes tool arguments on the first hook argument; the output
-    // never carries them. The old `output.args || {}` read shipped an empty
-    // tool_input for every observation, and the compressor dismissed them
-    // all — the "loads but captures nothing" symptom of #3678.
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({
-        url: String(url),
-        body: init?.body ? JSON.parse(String(init.body)) : null,
-      });
-      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin.server(pluginCtx);
-      await plugin["tool.execute.after"](
-        { tool: "edit", sessionID: "ses_args", callID: "c2", args: { filePath: "/a/b.ts" } },
-        { title: "Edit", output: "applied", metadata: {} },
+        { tool, sessionID, callID, ...(inputArgs === undefined ? {} : { args: inputArgs }) },
+        { title: tool, output, metadata: {}, ...(outputArgs === undefined ? {} : { args: outputArgs }) },
       );
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
       expect(obsPost, "observation should POST").toBeTruthy();
-      const obsBody = obsPost!.body as Record<string, unknown>;
-      expect(obsBody.tool_input).toEqual({ filePath: "/a/b.ts" });
+      const body = obsPost!.body as Record<string, unknown>;
+      const { tool_input, ...expectedFields } = expected;
+      expect(body.tool_input).toEqual(tool_input);
+      expect(body).toMatchObject(expectedFields);
+      expect(JSON.stringify(inputArgs)).toBe(originalInput);
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
-});
-
-describe("OpenCode plugin entry-module export contract", () => {
-  // OpenCode's loader treats EVERY named export of the plugin entry module as a
-  // plugin: a non-default export fails the load. The data constants therefore
-  // live in contract.ts, and this test pins the entry module to a default-only
-  // export (#3330).
-  //
-  // That default export is a plugin DEFINITION object, not a factory: OpenCode
-  // V2 validates it with Schema.Struct({ id, effect }) / Schema.Struct({ id,
-  // setup }). V1 (1.3.4+) reads `server` and uses the hooks it returns.
-  it("exports only a default plugin definition (id + server + setup)", () => {
-    const exports = Object.entries(pluginEntry);
-    expect(exports.length, "the entry module must have exports").toBeGreaterThan(0);
-    expect(exports.map(([name]) => name).sort()).toEqual(["default"]);
-
-    const definition = pluginEntry.default as unknown as Record<string, unknown>;
-    expect(typeof definition, "the default export must be a definition object").toBe("object");
-    expect(typeof definition.id).toBe("string");
-    expect(definition.id).toBe("claude-mem");
-    expect(typeof definition.server).toBe("function");
-    expect(typeof definition.setup).toBe("function");
   });
 });
 
@@ -714,45 +533,6 @@ describe("OpenCode plugin attribution contract", () => {
   const restoreFetch = () => {
     globalThis.fetch = originalFetch;
   };
-
-  it("sends platform_source=opencode on every worker POST", async () => {
-    captureFetch();
-    try {
-      const plugin = await ClaudeMemPlugin.server({
-        ...pluginCtx,
-        directory: "/tmp/repo",
-        worktree: "/tmp/repo",
-      });
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_src", callID: "c1" },
-        { title: "Read", output: "x", metadata: {}, args: {} },
-      );
-      await plugin["chat.message"](
-        {},
-        { message: { role: "user", sessionID: "ses_src" }, parts: [{ type: "text", text: "hi" }] },
-      );
-      await plugin["chat.message"](
-        {},
-        { message: { role: "assistant", sessionID: "ses_src" }, parts: [{ type: "text", text: "hello" }] },
-      );
-      await plugin["experimental.session.compacting"]({ sessionID: "ses_src" });
-      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_src" } } });
-
-      // observation(tool) + init(user prompt) + observation(assistant) +
-      // summarize(compacting) + summarize(idle). Only a real user prompt may
-      // post init; all other endpoints create their session row themselves
-      // (#3803).
-      const workerPosts = posts.filter((p) => p.url.includes("/api/sessions/"));
-      expect(workerPosts.length).toBe(5);
-      for (const post of workerPosts) {
-        expect(post.body.platform_source, `${post.url} must carry the platform source`).toBe(
-          "opencode",
-        );
-      }
-    } finally {
-      restoreFetch();
-    }
-  });
 
   it("sends the checkout for the worker to key, never project.name", async () => {
     // project.name is "opencode" for every project. The worker keys the
@@ -1022,15 +802,6 @@ describe("isConnectionRefusedError (worker-down warning suppression)", () => {
     expect(isConnectionRefusedError(new Error("TLS handshake exploded"))).toBe(false);
     expect(isConnectionRefusedError(new Error("Unable to connect. Is the computer able to access the url?"))).toBe(false);
     expect(isConnectionRefusedError("string error")).toBe(false);
-  });
-
-  it("keeps the plugin bundle free of worker-only modules (dependency-free shared helper)", () => {
-    // core.ts is the module that posts to the worker; it must reach for the
-    // dependency-free helper rather than worker-utils.
-    const pluginSource = readFileSync("src/integrations/opencode-plugin/core.ts", "utf8");
-    expect(pluginSource).toContain('from "../../shared/connection-errors.js"');
-    const helperSource = readFileSync("src/shared/connection-errors.ts", "utf8");
-    expect(helperSource).not.toMatch(/^import /m);
   });
 
   it("stays quiet on a Bun-shaped refusal but still warns on a real failure", async () => {

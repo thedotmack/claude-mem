@@ -300,7 +300,7 @@ export function disableClaudeAutoMemory(): boolean {
 
 type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
 
-async function resolveClaudeAutoMemoryChoice(
+export async function resolveClaudeAutoMemoryChoice(
   selectedIDEs: string[],
   options: InstallOptions,
 ): Promise<ClaudeAutoMemoryChoice> {
@@ -2941,14 +2941,31 @@ function placeHookLauncherOnPath(pluginRoot: string, summary: InstallSummary): s
 }
 
 /**
+ * The worker script the installer starts: the plugin cache copy for this
+ * version, because that is the root "Setting up runtime" runs `bun install` in.
+ * The marketplace clone has no node_modules, so a worker started there cannot
+ * load its native dependencies (sharp resolved to its wasm build and froze the
+ * worker, #5601). The marketplace copy is used only when the cache has none.
+ */
+export function installedWorkerScriptPath(
+  version: string,
+  locations: { cacheDirectory: string; marketplaceDirectory: string } = {
+    cacheDirectory: pluginCacheDirectory(version),
+    marketplaceDirectory: marketplaceDirectory(),
+  },
+): string {
+  const cacheScriptPath = join(locations.cacheDirectory, 'scripts', 'worker-service.cjs');
+  if (existsSync(cacheScriptPath)) return cacheScriptPath;
+  return join(locations.marketplaceDirectory, 'plugin', 'scripts', 'worker-service.cjs');
+}
+
+/**
  * The browser funnel's early worker start, before any login or provider
  * question. Same steps as the final "Starting worker daemon" task.
  */
 async function startInstallWorker(version: string, summary: InstallSummary, message: (msg: string) => void): Promise<WorkerStartResult> {
   const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
-  const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
-  const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
-  const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
+  const scriptPath = installedWorkerScriptPath(version);
   message(`Spawning worker on port ${port}...`);
   await requireWorkerStopped(port, 'provider-cutover', summary);
   return ensureWorkerStarted(port, scriptPath);
@@ -3496,9 +3513,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           await waitForBackgroundWorkToFinish({ workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`, log: { info: message, warn: message } });
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
-        const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
-        const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
-        const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
+        const scriptPath = installedWorkerScriptPath(version);
         // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);

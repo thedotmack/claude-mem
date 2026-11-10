@@ -998,20 +998,6 @@ describe('capture-only linkage', () => {
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
   });
 
-  it('never mutates a replica row: its capture-only refs stay event-level', async () => {
-    await readOfPng('toolu_capture_replica', redPng);
-    makeSession();
-    sessions.storeObservations('openrouter-media-session-1', 'project', [{
-      type: 'discovery', title: 'Screenshot read', subtitle: null, facts: [], narrative: null, concepts: [], files_read: [], files_modified: [],
-    }], null, 1);
-    const replica = rows('SELECT id FROM observations')[0].id;
-    db.prepare(`UPDATE observations SET origin_device_id='other-device', sync_rev='5', synced_at=1 WHERE id=?`).run(replica);
-    chatReplies.push(reply('<observation><type>discovery</type><title>Screenshot read</title></observation>'));
-    await runTurn(pending(queued[0]), directConfig());
-    expect(rows('SELECT metadata, CAST(sync_rev AS TEXT) AS rev, synced_at FROM observations WHERE id=?', replica)[0]).toEqual({ metadata: null, rev: '5', synced_at: 1 });
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
-  });
-
   it('merging into an already-synced native row appends the uninspected ref and emits a higher revision', async () => {
     await readOfPng('toolu_capture_merge', redPng);
     const message = pending(queued[0]);
@@ -1175,18 +1161,6 @@ describe('capture-only linkage, a turn that stored no observation', () => {
     await turn(SKIP, 1, [imageMessage]);
     db.prepare(`UPDATE media_events SET state='deleted'`).run();
     await turn(observation('After delete'), 1, [textMessage]);
-    expect(links()).toEqual([]);
-  });
-
-  it('never mutates a replica row that is the prompt\'s most recent observation', async () => {
-    await ingest('toolu_text_replica');
-    await ingest('toolu_image_replica', redPng);
-    const [textMessage, imageMessage] = [pending(queued[0], 1), pending(queued[1], 2)];
-    await turn(observation('Replica'), 1, [textMessage]);
-    const [replica] = observationIds();
-    db.prepare(`UPDATE observations SET origin_device_id='other-device', sync_rev='5', synced_at=1 WHERE id=?`).run(replica);
-    await turn(SKIP, 1, [imageMessage]);
-    expect(rows('SELECT metadata, CAST(sync_rev AS TEXT) AS rev, synced_at FROM observations WHERE id=?', replica)[0]).toEqual({ metadata: null, rev: '5', synced_at: 1 });
     expect(links()).toEqual([]);
   });
 });

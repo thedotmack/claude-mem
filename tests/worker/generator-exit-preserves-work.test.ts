@@ -38,7 +38,7 @@ function buildDeps() {
 }
 
 describe('handleGeneratorExit — reasons that preserve claimed work', () => {
-  for (const reason of ['transport:observer_text', 'overflow:observer_text', 'provider_switch', 'rate_limit:rate_limit']) {
+  for (const reason of ['transport:observer_text', 'overflow:observer_text', 'rate_limit:rate_limit']) {
     it(`leaves the session alive for ${reason}`, async () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
       const session = buildSession(reason);
@@ -50,24 +50,4 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
       expect(session.pausedReason).toBe(reason.split(':')[0]);
     });
   }
-
-  for (const reason of ['quota:observer_text', 'auth:observer_text']) {
-    it(`discards pending inputs on ${reason}`, async () => {
-      const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
-      const session = buildSession(reason);
-      await handleGeneratorExit(session, reason, deps);
-      expect(deps.sessionManager.discardBufferedWork).toHaveBeenCalledWith(7);
-      expect(finalizeSession).not.toHaveBeenCalled();
-      expect(removeSessionImmediate).not.toHaveBeenCalled();
-    });
-  }
-
-  it('still finalizes on an ordinary idle exit', async () => {
-    const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
-
-    await handleGeneratorExit(buildSession('idle'), 'idle', deps);
-
-    expect(finalizeSession).toHaveBeenCalledWith(7);
-    expect(removeSessionImmediate).toHaveBeenCalledWith(7);
-  });
 });

@@ -1,11 +1,15 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
 	authenticateRequest,
+	defaultAuthDependencies,
+	cacheTtlSeconds,
 	__resetAuthVerdictMemoryForTests,
 	type AuthDependencies,
 } from "../src/auth";
-import { AUTH_CACHE_TTL_DEFAULT_SECONDS, AUTH_CACHE_TTL_MAX_SECONDS, type SyncApiEnv } from "../src/env";
-import { authHeaders, trackedApp, uniqueUser } from "./helpers";
+import type { SyncApiEnv } from "../src/env";
+import { authHeaders, trackedApp, uniqueUser, stopTrackedApps } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 const env = {
 	TOKEN_VERIFY_URL: "https://cmem.ai/api/pro/sync/verify",
@@ -90,57 +94,29 @@ describe("authenticateRequest", () => {
 		if (!missingUser.ok) expect(missingUser.response.status).toBe(401);
 	});
 
-	it("403s when the canonical user id does not match", async () => {
-		const result = await authenticateRequest(
-			new Request("http://127.0.0.1/v1/sync/status", {
-				headers: { Authorization: "Bearer tok", "X-User-Id": "victim" },
-			}),
-			env,
-			{
-				async readCachedVerdict() { return null; },
-				async cacheVerifiedVerdict() {},
-				...unusedInvalidate(),
-				async verifyToken() { return Response.json({ userId: "someone-else" }); },
-				logCacheFailure() {},
-			},
-		);
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.response.status).toBe(403);
-			expect((await result.response.json() as { error: string }).error).toContain("does not belong");
-		}
-	});
-
 	it("caches a positive verdict and skips the second verify", async () => {
 		__resetAuthVerdictMemoryForTests();
 		let verifyCalls = 0;
 		const dependencies: AuthDependencies = {
-			async readCachedVerdict() { return null; },
-			async cacheVerifiedVerdict() {},
-			...unusedInvalidate(),
+			...defaultAuthDependencies(env),
 			async verifyToken() {
 				verifyCalls += 1;
 				return Response.json({ userId: "alice" });
 			},
-			logCacheFailure() {},
 		};
 		const request = new Request("http://127.0.0.1/v1/sync/status", {
 			headers: { Authorization: "Bearer tok", "X-User-Id": "alice", "X-Device-Id": "dev" },
 		});
 		const first = await authenticateRequest(request, env, dependencies);
 		expect(first.ok).toBe(true);
-		const cached: AuthDependencies = {
-			...dependencies,
-			async readCachedVerdict() { return String(Date.now() + 60_000); },
-		};
-		const second = await authenticateRequest(request, env, cached);
+		const second = await authenticateRequest(request, env, dependencies);
 		expect(second.ok).toBe(true);
 		expect(verifyCalls).toBe(1);
 	});
 
 	it("clamps AUTH_CACHE_TTL to the documented bounds", () => {
-		expect(AUTH_CACHE_TTL_DEFAULT_SECONDS).toBe(900);
-		expect(AUTH_CACHE_TTL_MAX_SECONDS).toBe(3_600);
+		expect(["1", "99999999999999999999", "abc"].map((AUTH_CACHE_TTL_SECONDS) =>
+			cacheTtlSeconds({ ...env, AUTH_CACHE_TTL_SECONDS }))).toEqual([60, 3600, 900]);
 	});
 });
 

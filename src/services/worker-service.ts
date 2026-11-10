@@ -41,7 +41,7 @@ import { isPidAlive, setRegistryDegradedReporter } from '../supervisor/process-r
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
-import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
+import { dependencyStatusLabels, snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
@@ -77,6 +77,7 @@ export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 import { MediaError } from '../shared/media-contract.js';
+import { BUN_NO_AUTO_INSTALL_FLAG } from '../shared/bun-auto-install.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 declare const __CMEM_MEDIA_STANDALONE__: boolean;
@@ -167,7 +168,7 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
-import { setIngestContext, attachIngestGeneratorStarter, transcriptCheckpointGate } from './worker/http/shared.js';
+import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
@@ -1514,7 +1515,7 @@ export class WorkerService implements WorkerRef {
     }
 
     try {
-      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath, 'in-process', transcriptCheckpointGate);
+      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath, 'in-process');
       await this.transcriptWatcher.start();
     } catch (error) {
       this.transcriptWatcher?.stop();
@@ -1750,7 +1751,8 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
     }
   }
 
-  const child = spawn(process.execPath, [serverScript, command, ...extraArgs], {
+  // `server start` runs the server in this child; its embedder loads sharp (#5601).
+  const child = spawn(process.execPath, [BUN_NO_AUTO_INSTALL_FLAG, serverScript, command, ...extraArgs], {
     stdio: 'inherit',
     windowsHide: true,
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
@@ -1888,7 +1890,7 @@ function runServerApiKeyCli(args: string[]): never {
   }
 }
 
-async function main() {
+export async function main() {
   const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
   // Load the bundle without binding a port or depending on a running worker.
   if (command === '--version') {
@@ -2509,23 +2511,12 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
     return null;
   }
 
-  const labels = dependencies.statuses.map(status => {
-    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
-      return 'Claude CLI setup required';
-    }
-    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
-      return 'Codex CLI setup required';
-    }
-    if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
-      return 'uvx unavailable for vector search';
-    }
-    if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
-      return 'Chroma unavailable for vector search';
-    }
-    return `${status.dependency}: ${status.kind}`;
-  });
+  // The fallback names a pair only a worker newer than this CLI can report.
+  const labels = dependencies.statuses.map(status =>
+    dependencyStatusLabels(status.dependency, status.kind)?.statusCommandHint ?? `${status.dependency}: ${status.kind}`);
 
-  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor or open Settings for remediation.`;
+  // doctor prints each status with its remediation; no Settings screen shows them.
+  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor for remediation.`;
 }
 
 /**

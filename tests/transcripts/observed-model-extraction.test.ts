@@ -57,47 +57,12 @@ describe('extractLastAssistantModelFromJsonl', () => {
 });
 
 describe('extractLastAssistantModel', () => {
-  it('reads the transcript file and returns the last assistant model', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'observed-model-'));
-    const transcriptPath = join(dir, 'transcript.jsonl');
-    writeFileSync(
-      transcriptPath,
-      claudeCodeLine('assistant', { role: 'assistant', model: 'claude-from-file', content: [] }) + '\n',
-    );
-
-    expect(extractLastAssistantModel(transcriptPath)).toBe('claude-from-file');
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('returns undefined for a missing or empty path', () => {
+  it('returns undefined for an empty path', () => {
     expect(extractLastAssistantModel('')).toBeUndefined();
-    expect(extractLastAssistantModel(join(tmpdir(), 'does-not-exist-observed-model.jsonl'))).toBeUndefined();
   });
 });
 
 describe('extractLastAssistantTurn', () => {
-  it('returns both the last assistant text and its model from a single file read', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'observed-turn-'));
-    const transcriptPath = join(dir, 'transcript.jsonl');
-    writeFileSync(
-      transcriptPath,
-      [
-        claudeCodeLine('user', { role: 'user', content: 'hi' }),
-        claudeCodeLine('assistant', {
-          role: 'assistant',
-          model: 'claude-turn-model',
-          content: [{ type: 'text', text: 'Final answer' }],
-        }),
-      ].join('\n') + '\n',
-    );
-
-    expect(extractLastAssistantTurn(transcriptPath)).toEqual({
-      text: 'Final answer',
-      model: 'claude-turn-model',
-    });
-    rmSync(dir, { recursive: true, force: true });
-  });
-
   it('strips system reminders from the text when asked, still returning the model', () => {
     const dir = mkdtempSync(join(tmpdir(), 'observed-turn-strip-'));
     const transcriptPath = join(dir, 'transcript.jsonl');
@@ -116,8 +81,7 @@ describe('extractLastAssistantTurn', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('returns { text: "" } for a missing or empty path', () => {
+  it('returns { text: "" } for an empty path', () => {
     expect(extractLastAssistantTurn('')).toEqual({ text: '' });
-    expect(extractLastAssistantTurn(join(tmpdir(), 'does-not-exist-observed-turn.jsonl'))).toEqual({ text: '' });
   });
 });

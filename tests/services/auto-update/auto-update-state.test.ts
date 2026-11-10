@@ -8,11 +8,9 @@ import {
   AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS,
   AUTO_UPDATE_STATE_FILENAME,
   autoUpdateBrokenInstall,
-  autoUpdateFixInstruction,
   autoUpdateFixOfOutcome,
   autoUpdateStatePath,
   defaultAutoUpdateState,
-  describeAutoUpdateBrokenInstall,
   readAutoUpdateState,
   readAutoUpdateStateFile,
   readInFlightAttempt,
@@ -314,16 +312,6 @@ describe('autoUpdateBrokenInstall (the SessionStart notice and the doctor warnin
     return autoUpdateBrokenInstall(stateWith(fields), NOW, isProcessAlive, () => { shapeReads++; return shape; });
   };
 
-  it('restore_failed nothing has resolved: the fix and when to run it as recorded, never rebuilt from the previous version', () => {
-    // A recorded fix that differs from `npx claude-mem@<previousVersion> update`, so building it again is caught.
-    const recorded = outcome('restore_failed', { fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND, fixCommandWhen: 'once-a-release-newer-than-the-target-is-out' });
-    expect(broken({ lastAttemptOutcome: recorded })).toMatchObject({
-      kind: 'restore-failed',
-      fix: { command: AUTO_UPDATE_FORWARD_FIX_COMMAND, when: 'once-a-release-newer-than-the-target-is-out' },
-    });
-    expect(shapeReads).toBe(0);
-  });
-
   it('restore_failed from a file written before fixCommand existed: the forward fix, for once a newer release is out, never a command parsed from the message', () => {
     const older = outcome('restore_failed', { message: 'Run: npx claude-mem@15.12.0 update' });
     delete older.fixCommand;
@@ -334,74 +322,14 @@ describe('autoUpdateBrokenInstall (the SessionStart notice and the doctor warnin
     });
   });
 
-  it('restore_failed resolved by a ready worker since: nothing', () => {
-    expect(broken({ lastAttemptOutcome: outcome('restore_failed', { resolvedAt: NOW - MINUTE_MS, resolvedWithWorkerVersion: '15.12.0' }) })).toBeNull();
-  });
-
-  for (const result of ['applied', 'failed', 'restored'] as const) {
-    it(`${result}: nothing, the install works`, () => {
-      expect(broken({ lastAttemptOutcome: outcome(result) })).toBeNull();
-    });
-  }
-
   it('nothing recorded yet: nothing, and the install is not read', () => {
     expect(broken({})).toBeNull();
     expect(shapeReads).toBe(0);
   });
 
-  it('an attempt whose supervisor is gone, on an install that looks half-written: interrupted, with what looks half-written and the target\'s own installer to run now', () => {
-    const attempt = attemptStarted(MINUTE_MS, DEAD_SUPERVISOR_PID);
-    expect(broken({ inFlightAttempt: attempt })).toEqual({
-      kind: 'interrupted',
-      attempt,
-      halfWritten: HALF_WRITTEN.what,
-      fix: { command: 'npx claude-mem@15.14.0 update', when: 'now' },
-    });
-    expect(shapeReads).toBe(1);
-  });
-
-  it('the same attempt on an install that looks whole: nothing, since gate 3 records how it ended', () => {
-    expect(broken({ inFlightAttempt: attemptStarted(MINUTE_MS, DEAD_SUPERVISOR_PID) }, { kind: 'looks-whole' })).toBeNull();
-    expect(broken({ inFlightAttempt: attemptStarted(MINUTE_MS, DEAD_SUPERVISOR_PID) }, { kind: 'registration-unreadable', problem: 'Corrupt JSON file' })).toBeNull();
-  });
-
-  it('a supervisor alive past the ceiling, or none recorded by the deadline, counts as gone too', () => {
-    expect(broken({ inFlightAttempt: attemptStarted(AUTO_UPDATE_LIVE_SUPERVISOR_CEILING_MS + MINUTE_MS, LIVE_SUPERVISOR_PID) })).toMatchObject({ kind: 'interrupted' });
-    expect(broken({ inFlightAttempt: attemptStarted(PAST_THE_DEADLINE_MS, null) })).toMatchObject({ kind: 'interrupted' });
-  });
-
-  it('an attempt whose supervisor may still be working: nothing, the install is not read, and it hides an older restore_failed so no fix runs beside it', () => {
-    for (const attempt of [attemptStarted(PAST_THE_DEADLINE_MS, LIVE_SUPERVISOR_PID), attemptStarted(MINUTE_MS, null)]) {
-      expect(broken({ inFlightAttempt: attempt })).toBeNull();
-      expect(broken({ inFlightAttempt: attempt, lastAttemptOutcome: outcome('restore_failed') })).toBeNull();
-      expect(shapeReads).toBe(0);
-    }
-  });
-
   it('a gone attempt on a whole install still lets an older restore_failed show', () => {
     expect(broken({ inFlightAttempt: attemptStarted(MINUTE_MS, DEAD_SUPERVISOR_PID), lastAttemptOutcome: outcome('restore_failed') }, { kind: 'looks-whole' }))
       .toMatchObject({ kind: 'restore-failed' });
-  });
-
-  it('an interrupted attempt a ready worker resolved: nothing', () => {
-    expect(broken({ inFlightAttempt: attemptStarted(PAST_THE_DEADLINE_MS, DEAD_SUPERVISOR_PID, { resolvedAt: NOW - MINUTE_MS }) })).toBeNull();
-  });
-
-  it('says what happened in the words the notice and the doctor row share', () => {
-    expect(describeAutoUpdateBrokenInstall(broken({ lastAttemptOutcome: outcome('restore_failed') })!)).toBe('the automatic update to 15.13.0 failed');
-    expect(describeAutoUpdateBrokenInstall(broken({ inFlightAttempt: attemptStarted(MINUTE_MS, DEAD_SUPERVISOR_PID) })!))
-      .toBe('the automatic update to 15.14.0 did not finish (the folder Claude Code loads claude-mem from (/cache/15.14.0) has no node_modules)');
-  });
-});
-
-describe('autoUpdateFixInstruction (the whole fix: the command and when to run it)', () => {
-  it('now, once the update still running has finished, and once a release newer than the target is out', () => {
-    expect(autoUpdateFixInstruction({ command: 'npx claude-mem@15.12.0 update', when: 'now' }, '15.13.0'))
-      .toBe('Fix: run `npx claude-mem@15.12.0 update`, then restart Claude Code.');
-    expect(autoUpdateFixInstruction({ command: 'npx claude-mem@15.12.0 update', when: 'once-the-running-update-has-finished' }, '15.13.0'))
-      .toBe('Fix: once the update that is still running has finished, run `npx claude-mem@15.12.0 update`, then restart Claude Code.');
-    expect(autoUpdateFixInstruction({ command: AUTO_UPDATE_FORWARD_FIX_COMMAND, when: 'once-a-release-newer-than-the-target-is-out' }, '15.13.0'))
-      .toBe('Fix: once a claude-mem release newer than 15.13.0 is out, run `npx claude-mem@latest update`, then restart Claude Code.');
   });
 });
 

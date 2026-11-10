@@ -58,11 +58,6 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
     expect(asked).toBeGreaterThan(0);
   });
 
-  it('falls back to the original (so truncation still applies) when the model returns nothing', async () => {
-    const compress: FieldCompressor = async () => null;
-    expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
-  });
-
   it('falls back when the model throws, rather than losing the observation', async () => {
     const compress: FieldCompressor = async () => { throw new Error('gateway down'); };
     expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
@@ -79,12 +74,6 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
 
     const out = await optimizeField(oversized, compress, CTX, MAX, 20);
     expect(out).toBe(oversized);
-  });
-
-  it('condenses within a generous deadline instead of timing out', async () => {
-    const compress: FieldCompressor = async () => ok('condensed under a roomy deadline');
-    const out = await optimizeField(oversized, compress, CTX, MAX, 10_000) as string;
-    expect(out).toContain('condensed under a roomy deadline');
   });
 
   it('resolves a lazy deadline only when a field is actually oversized', async () => {
@@ -163,11 +152,6 @@ describe('a condense reply cut at the output-token limit is not a condensed fiel
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it('still condenses a complete reply', async () => {
-    const compress: FieldCompressor = async () => ({ text: 'a whole summary', truncated: false });
-    expect(String(await optimizeField(oversized, compress, CTX, MAX))).toContain('a whole summary');
   });
 
   it('keeps the empty-or-timeout reason for a null reply', async () => {

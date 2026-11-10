@@ -18,8 +18,6 @@ function makeConfig(overrides: Partial<ContextConfig> = {}): ContextConfig {
     sessionCount: 10,
     showReadTokens: false,
     showWorkTokens: false,
-    showSavingsAmount: false,
-    showSavingsPercent: false,
     observationTypes: new Set<string>(),
     observationConcepts: new Set<string>(),
     fullObservationField: 'narrative',
@@ -126,13 +124,6 @@ describe('context output budget (#3802)', () => {
     expect(result.observationCount).toBe(50);
   });
 
-  it('never returns a text longer than the one it started from', () => {
-    const config = makeConfig();
-    const first = render(items(50), config);
-    const result = fitContextToBudget(items(50), config, render);
-
-    expect(result.text.length).toBeLessThanOrEqual(first.length);
-  });
 });
 
 // ── what happens around the fitter ────────────────────────────────

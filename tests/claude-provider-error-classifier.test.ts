@@ -89,170 +89,43 @@ describe('classifyClaudeError — HTTP 400 handling (#2357)', () => {
   });
 });
 
-describe('classifyClaudeError — sibling status codes (regression sanity)', () => {
-  let warnSpy: ReturnType<typeof spyOn>;
+const wrappedCreditError =
+  'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}';
 
-  beforeEach(() => {
-    __resetEffortHintLatchForTesting();
-    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-    __resetEffortHintLatchForTesting();
-  });
-
-  it('classifies status=401 as auth_invalid', () => {
-    const sdkErr = Object.assign(new Error('unauthorized'), { status: 401 });
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('auth_invalid');
-  });
-
-  it('classifies status=429 as rate_limit', () => {
-    const sdkErr = Object.assign(new Error('rate limited'), { status: 429 });
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('rate_limit');
-  });
-
-  it('classifies a network error with no status as transient', () => {
-    const networkErr = new Error('ECONNRESET: socket hang up');
-    const classified = classifyClaudeError(networkErr);
-    expect(classified.kind).toBe('transient');
-  });
-});
-
-/**
- * Regression coverage for #2656: when the Anthropic Agent SDK wraps a 400
- * `invalid_request_error` (e.g. "The provided model identifier is invalid")
- * the `.status` field can be lost in the wrapping. Without a message-based
- * fallback the error fell through to the default `transient` branch and the
- * worker retried indefinitely while `/health` kept reporting `ok`.
- */
-describe('classifyClaudeError — model identifier rejections without .status (#2656)', () => {
-  let warnSpy: ReturnType<typeof spyOn>;
-
-  beforeEach(() => {
-    __resetEffortHintLatchForTesting();
-    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-    __resetEffortHintLatchForTesting();
-  });
-
-  it('classifies "The provided model identifier is invalid" as unrecoverable even without a status field', () => {
-    const sdkErr = new Error('The provided model identifier is invalid');
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('unrecoverable');
-  });
-
-  it('classifies wrapped errors exposing error.type=invalid_request_error as unrecoverable', () => {
-    const sdkErr = Object.assign(
-      new Error('Anthropic SDK error'),
-      { error: { type: 'invalid_request_error' } },
-    );
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('unrecoverable');
-  });
-
-  it('classifies errors carrying the "invalid_request_error" string in the message as unrecoverable', () => {
-    const sdkErr = new Error('Request failed: invalid_request_error from upstream');
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('unrecoverable');
-  });
-
-  it('does not match unrelated messages containing the word "invalid"', () => {
-    const sdkErr = new Error('Some unrelated invalid input from a tool');
-    const classified = classifyClaudeError(sdkErr);
-    // Must NOT be unrecoverable just because the word "invalid" appears —
-    // matching is anchored on the canonical Anthropic phrases only.
-    expect(classified.kind).toBe('transient');
-  });
-
-  it('still routes statused 400s through the existing branch (does not fall through)', () => {
-    const sdkErr = Object.assign(
-      new Error('The provided model identifier is invalid'),
-      { status: 400 },
-    );
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('unrecoverable');
-    // The pre-existing status=400 branch handles this case before the new
-    // fallback runs; no effort-hint should fire (no effort marker present).
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
-
-  it('keeps a statused 5xx carrying invalid_request_error transient (status guard)', () => {
-    const sdkErr = Object.assign(
-      new Error('gateway error: invalid_request_error from upstream'),
-      { status: 503, error: { type: 'invalid_request_error' } },
-    );
-    const classified = classifyClaudeError(sdkErr);
-    expect(classified.kind).toBe('transient');
-  });
-});
-
-/**
- * An observer working directory that cannot be created (the data dir is a file
- * or unwritable) is a setup problem: retrying cannot fix it. The CLI's own
- * `Path "..." does not exist` result is not: telemetry shows it once per install
- * and never again, so it stays transient.
- */
-describe('classifyClaudeError — observer working directory', () => {
-  it('classifies the ensureObserverSessionsDir setup message as setup_required', () => {
-    const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
-    expect(classifyClaudeError(err).kind).toBe('setup_required');
-  });
-
-  it('keeps the CLI "Path ... does not exist" result transient', () => {
-    const err = new Error('Claude Code returned an error result: Path "/home/u/.claude-mem/observer-sessions/1" does not exist');
-    expect(classifyClaudeError(err).kind).toBe('transient');
-  });
-
-  it('only matches the message at its start', () => {
-    const err = new Error('upstream said: Observer working directory could not be prepared: /x (EACCES): denied');
-    expect(classifyClaudeError(err).kind).toBe('transient');
-  });
-
-  it('does not treat an unrelated "does not exist" message as setup_required', () => {
-    const err = new Error('the requested record does not exist');
-    expect(classifyClaudeError(err).kind).toBe('transient');
-  });
-});
-
-/**
- * A spent Anthropic API key: the CLI wraps the billing notice in a 400
- * invalid_request_error. It is a spent allowance, so it books a quota pause
- * (and the quota fallback), not a permanent bad request.
- */
-describe('classifyClaudeError — spent API key credit balance', () => {
-  const WRAPPED =
-    'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}';
-
-  it('classifies the status-less wrapped 400 as quota_exhausted', () => {
-    expect(classifyClaudeError(new Error(WRAPPED)).kind).toBe('quota_exhausted');
-  });
-
-  it('classifies the statused wrapped 400 as quota_exhausted', () => {
-    const sdkErr = Object.assign(new Error(WRAPPED), { status: 400 });
-    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
-  });
-
-  it('classifies a statused 400 that carries the notice only in its body as quota_exhausted', () => {
-    const sdkErr = Object.assign(new Error('Bad request'), {
+describe('classifyClaudeError — status and message classification', () => {
+  it.each([
+    [new Error('ECONNRESET: socket hang up'), 'transient'],
+    [new Error('The provided model identifier is invalid'), 'unrecoverable'],
+    [Object.assign(new Error('Anthropic SDK error'), { error: { type: 'invalid_request_error' } }), 'unrecoverable'],
+    [new Error('Request failed: invalid_request_error from upstream'), 'unrecoverable'],
+    [new Error('Some unrelated invalid input from a tool'), 'transient'],
+    [Object.assign(new Error('gateway error: invalid_request_error from upstream'), {
+      status: 503, error: { type: 'invalid_request_error' },
+    }), 'transient'],
+    [new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory'), 'setup_required'],
+    [new Error('Claude Code returned an error result: Path "/home/u/.claude-mem/observer-sessions/1" does not exist'), 'transient'],
+    [new Error('upstream said: Observer working directory could not be prepared: /x (EACCES): denied'), 'transient'],
+    [new Error('the requested record does not exist'), 'transient'],
+    [new Error(wrappedCreditError), 'quota_exhausted'],
+    [Object.assign(new Error(wrappedCreditError), { status: 400 }), 'quota_exhausted'],
+    [Object.assign(new Error('Bad request'), {
       status: 400,
       body: { error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } },
-    });
-    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
+    }), 'quota_exhausted'],
+    [new Error('Claude Code returned an error result: Credit balance is too low'), 'quota_exhausted'],
+    [new Error('API Error: 400 {"error":{"type":"invalid_request_error","message":"max_tokens: too large"}}'), 'unrecoverable'],
+  ])('%s → %s', (error, kind) => {
+    expect(classifyClaudeError(error).kind).toBe(kind);
   });
 
-  it('classifies the CLI error result wording as quota_exhausted', () => {
-    const err = new Error('Claude Code returned an error result: Credit balance is too low');
-    expect(classifyClaudeError(err).kind).toBe('quota_exhausted');
-  });
-
-  it('keeps other invalid_request_error 400s unrecoverable', () => {
-    const err = new Error('API Error: 400 {"error":{"type":"invalid_request_error","message":"max_tokens: too large"}}');
-    expect(classifyClaudeError(err).kind).toBe('unrecoverable');
+  it('routes statused model rejections through the 400 branch without an effort hint', () => {
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const error = Object.assign(new Error('The provided model identifier is invalid'), { status: 400 });
+      expect(classifyClaudeError(error).kind).toBe('unrecoverable');
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

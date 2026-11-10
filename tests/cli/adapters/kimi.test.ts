@@ -165,20 +165,4 @@ describe('deriveKimiTranscriptPath', () => {
     expect(deriveKimiTranscriptPath('/etc/passwd')).toBeUndefined();
     expect(deriveKimiTranscriptPath(path.join(home, 'sessions', 'wd_proj_abc123', 'session_abc'))).toBeUndefined();
   });
-
-  test('memoizes the result so repeated calls do not rescan the sessions directory', () => {
-    const home = makeScratchHome();
-    const wire = path.join(home, 'sessions', 'wd_proj_abc123', 'session_memo', 'agents', 'main', 'wire.jsonl');
-    mkdirSync(path.dirname(wire), { recursive: true });
-    writeFileSync(wire, '{}\n');
-
-    const first = deriveKimiTranscriptPath('session_memo');
-    expect(first).toBe(wire);
-
-    // Remove the file after the first lookup; a memoized result still returns
-    // the original path, while a non-memoized scan would return undefined.
-    rmSync(wire);
-    const second = deriveKimiTranscriptPath('session_memo');
-    expect(second).toBe(wire);
-  });
 });

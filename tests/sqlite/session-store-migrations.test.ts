@@ -137,7 +137,7 @@ function insertSchemaVersions(db: Database, throughVersion: number): void {
 function seedHistoricalSdkSchema(
   db: Database,
   throughVersion: number,
-  options: { customTitle?: boolean; platformSource?: boolean; deadPendingColumns?: boolean } = {},
+  options: { customTitle?: boolean; platformSource?: boolean } = {},
 ): void {
   const now = new Date().toISOString();
   const epoch = Date.now();
@@ -242,8 +242,7 @@ function seedHistoricalSdkSchema(
         last_assistant_message TEXT,
         prompt_number INTEGER,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
-        created_at_epoch INTEGER NOT NULL
-        ${options.deadPendingColumns ? ', retry_count INTEGER DEFAULT 0, failed_at_epoch INTEGER, completed_at_epoch INTEGER' : ''},
+        created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
     `);
@@ -691,16 +690,6 @@ describe('SessionStore migrations', () => {
     }
   });
 
-  it('fresh-DB init creates the SessionStore core tables', () => {
-    store = new SessionStore(':memory:');
-    const expected = ['schema_versions', 'sdk_sessions', 'observations', 'session_summaries', 'user_prompts', 'pending_messages'];
-
-    for (const table of expected) {
-      const row = store.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table) as { name: string } | undefined;
-      expect(row?.name).toBe(table);
-    }
-  });
-
   it('applies required SQLite pragmas to injected worker and search connections', () => {
     const db = new Database(':memory:');
     try {
@@ -727,20 +716,14 @@ describe('SessionStore migrations', () => {
     }
   });
 
-  it('a fresh observations FK uses ON UPDATE CASCADE and ON DELETE CASCADE', () => {
+  it('fresh observation and summary FKs use ON UPDATE CASCADE and ON DELETE CASCADE', () => {
     store = new SessionStore(':memory:');
-    const fks = store.db.query('PRAGMA foreign_key_list(observations)').all() as Array<{ table: string; on_update: string; on_delete: string }>;
-    const sessionFk = fks.find(fk => fk.table === 'sdk_sessions');
-    expect(sessionFk?.on_update).toBe('CASCADE');
-    expect(sessionFk?.on_delete).toBe('CASCADE');
-  });
-
-  it('a fresh session_summaries FK uses ON UPDATE CASCADE and ON DELETE CASCADE', () => {
-    store = new SessionStore(':memory:');
-    const fks = store.db.query('PRAGMA foreign_key_list(session_summaries)').all() as Array<{ table: string; on_update: string; on_delete: string }>;
-    const sessionFk = fks.find(fk => fk.table === 'sdk_sessions');
-    expect(sessionFk?.on_update).toBe('CASCADE');
-    expect(sessionFk?.on_delete).toBe('CASCADE');
+    for (const table of ['observations', 'session_summaries']) {
+      const fks = store.db.query(`PRAGMA foreign_key_list(${table})`).all() as Array<{ table: string; on_update: string; on_delete: string }>;
+      const sessionFk = fks.find(fk => fk.table === 'sdk_sessions');
+      expect(sessionFk?.on_update).toBe('CASCADE');
+      expect(sessionFk?.on_delete).toBe('CASCADE');
+    }
   });
 
   it('fresh DB uses composite sdk session identity and session-scoped prompt/pending indexes', () => {
@@ -788,24 +771,6 @@ describe('SessionStore migrations', () => {
       expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
       expect((db.prepare('SELECT session_db_id FROM user_prompts WHERE content_session_id = ?').get('historical-content') as { session_db_id: number }).session_db_id).toBe(7);
       expect((db.prepare('SELECT session_db_id FROM pending_messages WHERE content_session_id = ?').get('historical-content') as { session_db_id: number }).session_db_id).toBe(7);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('directly upgrades a v31-era schema with dead pending columns and old tool indexes', () => {
-    const db = new Database(':memory:');
-    try {
-      seedHistoricalSdkSchema(db, 31, { customTitle: true, platformSource: true, deadPendingColumns: true });
-
-      new SessionStore(db);
-
-      const pendingCols = new Set((db.query('PRAGMA table_info(pending_messages)').all() as Array<{ name: string }>).map(col => col.name));
-      expect(pendingCols.has('retry_count')).toBe(false);
-      expect(pendingCols.has('failed_at_epoch')).toBe(false);
-      expect(pendingCols.has('completed_at_epoch')).toBe(false);
-      expect(pendingCols.has('tool_use_id')).toBe(true);
-      expect(hasUniqueIndexOnColumns(db, 'pending_messages', ['session_db_id', 'tool_use_id'])).toBe(true);
     } finally {
       db.close();
     }
@@ -874,39 +839,6 @@ describe('SessionStore migrations', () => {
     }
   });
 
-  it('drops the dead pending_messages columns (retry_count / failed_at_epoch / completed_at_epoch / worker_pid) on a legacy db', () => {
-    const db = new Database(':memory:');
-    try {
-      db.run(`
-        CREATE TABLE schema_versions (id INTEGER PRIMARY KEY, version INTEGER UNIQUE NOT NULL, applied_at TEXT NOT NULL)
-      `);
-      db.run(`
-        CREATE TABLE pending_messages (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_db_id INTEGER NOT NULL,
-          content_session_id TEXT NOT NULL,
-          message_type TEXT NOT NULL,
-          status TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          retry_count INTEGER DEFAULT 0,
-          failed_at_epoch INTEGER,
-          completed_at_epoch INTEGER,
-          worker_pid INTEGER
-        )
-      `);
-
-      new SessionStore(db);
-
-      const cols = new Set((db.query('PRAGMA table_info(pending_messages)').all() as Array<{ name: string }>).map(c => c.name));
-      expect(cols.has('retry_count')).toBe(false);
-      expect(cols.has('failed_at_epoch')).toBe(false);
-      expect(cols.has('completed_at_epoch')).toBe(false);
-      expect(cols.has('worker_pid')).toBe(false);
-    } finally {
-      db.close();
-    }
-  });
-
   it('v49 truncates prefixed concept tags so the injection query matches them again (#3379)', () => {
     const db = new Database(':memory:');
     try {
@@ -943,8 +875,6 @@ describe('SessionStore migrations', () => {
         sessionCount: 20,
         showReadTokens: true,
         showWorkTokens: true,
-        showSavingsAmount: true,
-        showSavingsPercent: true,
         observationTypes: new Set(['discovery']),
         observationConcepts: new Set(['gotcha']),
         fullObservationField: 'narrative',

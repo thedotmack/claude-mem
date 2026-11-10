@@ -1,16 +1,10 @@
 // Phase 2 verification (plan 2026-07-17): migration v41 + the SyncApply
-// apply path. Harness style copied from cloud-sync.test.ts — in-temp-dir
-// SessionStore over an in-memory database, real CloudSync with an injected
-// fetch mock for the echo-guard drain assertions.
+// apply path, using SessionStore over an in-memory database.
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
-import { CloudSync, type CloudSyncSettingKeys } from '../../../src/services/sync/CloudSync.js';
 import { SyncApply, type SyncOp, type ChromaSyncLike } from '../../../src/services/sync/SyncApply.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
@@ -18,8 +12,6 @@ import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** This device's id — matches the CloudSync fixture id so the echo-guard test
- * uses ONE identity for both apply and drain (the fail-closed contract). */
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
 const FIXED_NOW = 1752000000000;
@@ -108,9 +100,7 @@ function op(
 }
 
 describe('SyncApply', () => {
-  let tempDir: string;
   let db: Database;
-  let settingsPath: string;
 
   function makeApply(options: { deviceId?: string; chromaSync?: ChromaSyncLike | null } = {}): SyncApply {
     return new SyncApply(db, {
@@ -118,16 +108,6 @@ describe('SyncApply', () => {
       chromaSync: options.chromaSync,
       now: () => FIXED_NOW,
     });
-  }
-
-  function makeSettings(): CloudSyncSettingKeys {
-    return {
-      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token-1234',
-      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user-42',
-      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
-      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: SELF,
-      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-host',
-    };
   }
 
   /** Batch of one observation + one summary + one prompt from REMOTE. */
@@ -158,8 +138,6 @@ describe('SyncApply', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sync-apply-'));
-    settingsPath = join(tempDir, 'settings.json');
     db = new Database(':memory:');
     new SessionStore(db);
     db.prepare(`
@@ -170,7 +148,6 @@ describe('SyncApply', () => {
 
   afterEach(() => {
     db.close();
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------------
@@ -455,6 +432,36 @@ describe('SyncApply', () => {
     expect(count('sync_pull_quarantine')).toBe(0);
   });
 
+  for (const kind of ['summary', 'work_state', 'prompt'] as const) {
+    it(`a ${kind} tombstone deletes only its own table's row`, () => {
+      const apply = makeApply();
+      const rows = [
+        ['observation', 'observations', obsBody()],
+        ['summary', 'session_summaries', sumBody()],
+        ['prompt', 'user_prompts', promptBody()],
+        ['work_state', 'work_state_entries', {
+          project: 'proj-remote', list_name: 'tasks', fields: '{"title":"Remote task"}',
+          created_at_epoch: REMOTE_EPOCH,
+        }],
+      ] as const;
+      const canonical = (seq: number, rowKind: SyncOp['kind'], body: Record<string, unknown> | string, deleted = false): SyncOp => ({
+        ...op(seq, rowKind, 'shared-id', body, { rev: deleted ? 2 : 1 }),
+        entity_id: `${rowKind}:shared-id`, entity_rev: deleted ? '2' : '1',
+        operation_sha256: `${rowKind}-${deleted ? 'deleted' : 'live'}`, deleted,
+      });
+      const seeded = apply.applyOps(rows.map(([rowKind, , body], index) => canonical(index + 1, rowKind, body)));
+      expect(seeded.applied).toBe(4);
+      const before = rows.map(([, table]) => snapshot(table));
+      for (const saved of before) expect(saved).toHaveLength(1);
+
+      const result = apply.applyOps([canonical(5, kind, '{}', true)]);
+      expect(result.applied).toBe(1);
+      rows.forEach(([rowKind, table], index) => {
+        expect(snapshot(table)).toEqual(rowKind === kind ? [] : before[index]);
+      });
+    });
+  }
+
   it('resolves a set-aside retry as stale once a newer revision of the entity applied', () => {
     const apply = makeApply();
     const canonical = (seq: number, originId: string, rev: string, body: Record<string, unknown>): SyncOp => ({
@@ -665,60 +672,6 @@ describe('SyncApply', () => {
   // ---------------------------------------------------------------------------
   // Echo guard
   // ---------------------------------------------------------------------------
-
-  it('never re-pushes applied rows: the REAL CloudSync drain selects only native rows', async () => {
-    makeApply().applyOps(remoteBatch());
-
-    // One native, unsynced observation — the only thing the drain may find.
-    db.prepare(`
-      INSERT INTO observations (memory_session_id, project, type, title, subtitle, facts, narrative,
-        concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES ('mem-1', 'proj-x', 'discovery', 'Native title', NULL, NULL, 'native narrative',
-        NULL, NULL, NULL, 1, 0, ?, 1751234567890)
-    `).run(ISO);
-
-    const calls: Array<{ url: string; parsed: any }> = [];
-    let seq = 0;
-    const fetchImpl = (async (input: any, init?: any) => {
-      const parsed = JSON.parse(String(init?.body));
-      calls.push({ url: String(input), parsed });
-      const acked = (parsed.ops as any[]).map((op) => {
-        const body = JSON.parse(op.body);
-        return {
-          id: body.id,
-          kind: body.kind,
-          origin_local_id: body.origin_local_id,
-          entity_rev: body.entity_rev,
-          seq: String(++seq),
-        };
-      });
-      return new Response(JSON.stringify({
-        acked,
-        head_seq: String(seq),
-        projected_seq: String(seq),
-      }), { status: 200 });
-    }) as typeof fetch;
-
-    const sync = new CloudSync(db, makeSettings(), {
-      fetchImpl,
-      settingsPath,
-      debounceMs: 25,
-      backoffInitialMs: 20,
-      backoffMaxMs: 200,
-    });
-    await sync.flush();
-
-    // Exactly one POST: the native observation. The applied remote
-    // observation/summary/prompt are pre-stamped synced_at (and carry origin
-    // columns) — structurally invisible to the drain's
-    // WHERE synced_at IS NULL AND origin_device_id IS NULL.
-    expect(calls.length).toBe(1);
-    expect(calls[0].url).toEndWith('/v1/sync/ops');
-    expect(calls[0].parsed.ops.length).toBe(1);
-    const envelope = JSON.parse(calls[0].parsed.ops[0].body);
-    expect(envelope.kind).toBe('observation');
-    expect(envelope.payload.title).toBe('Native title');
-  });
 
   it('skips ops originated by this device (echo of our own pushes) while advancing the cursor', () => {
     const apply = makeApply();
@@ -1092,33 +1045,6 @@ describe('SyncApply', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Epoch guard
-  // ---------------------------------------------------------------------------
-
-  it('resets the cursor (and applies nothing) when the pull epoch changes', () => {
-    const apply = makeApply();
-    apply.applyOps(remoteBatch(), { epoch: 'epoch-1' });
-    expect(apply.getCursor()).toBe('3');
-
-    const result = apply.applyOps([op(4, 'observation', '99', obsBody({ content_hash: 'hash-99' }))], { epoch: 'epoch-2' });
-    expect(result.epochReset).toBe(true);
-    expect(result.applied).toBe(0);
-    expect(apply.getCursor()).toBe('0');
-    expect(apply.getEpoch()).toBe('epoch-2');
-    // Nothing from the stale-cursor page was applied.
-    expect(db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE origin_local_id = '99'`).get() as any).toEqual({ n: 0 });
-  });
-
-  it('adopts the first-ever epoch without a reset', () => {
-    const apply = makeApply();
-    expect(apply.getEpoch()).toBeNull();
-    const result = apply.applyOps(remoteBatch(), { epoch: 'epoch-initial' });
-    expect(result.epochReset).toBe(false);
-    expect(result.applied).toBe(3);
-    expect(apply.getEpoch()).toBe('epoch-initial');
-  });
-
-  // ---------------------------------------------------------------------------
   // FTS
   // ---------------------------------------------------------------------------
 
@@ -1157,7 +1083,8 @@ describe('SyncApply', () => {
       async syncUserPrompt(id, mem, project) { calls.push({ kind: 'prompt', id, mem, project }); },
     };
 
-    makeApply({ chromaSync: chroma }).applyOps(remoteBatch());
+    const apply = makeApply({ chromaSync: chroma });
+    apply.applyOps(remoteBatch());
     await sleep(10);
 
     expect(calls.map(c => c.kind).sort()).toEqual(['obs', 'prompt', 'sum']);
@@ -1165,6 +1092,15 @@ describe('SyncApply', () => {
       expect(call.mem).toBe('mem-remote-1');
       expect(call.project).toBe('proj-remote');
     }
+    const revised = apply.applyOps(remoteBatch().map((row, index) => ({ ...row, seq: String(index + 4), rev: '2' })));
+    expect(revised.applied).toBe(3);
+    await sleep(10);
+    expect(calls).toHaveLength(6);
+    calls.length = 0;
+    const stale = apply.applyOps(remoteBatch().map((row, index) => ({ ...row, seq: String(index + 7) })));
+    expect(stale.skippedStale).toBe(3);
+    await sleep(10);
+    expect(calls).toEqual([]);
   });
 
   it('a failing Chroma forward never fails or unwinds durable application', async () => {
@@ -1265,37 +1201,6 @@ describe('SyncApply', () => {
       _resetRedactionConfigCache();
     });
 
-    it('redacts observation text fields and keeps JSON-valued fields parseable', () => {
-      useRedaction(true);
-      makeApply().applyOps([op(1, 'observation', '11', obsBody({
-        title: `leaked ${AWS_KEY}`,
-        narrative: `used ${AWS_KEY}`,
-        facts: JSON.stringify([`key ${AWS_KEY}`]),
-        concepts: JSON.stringify(['concept-r']),
-      }))]);
-
-      const obs = db.prepare(`SELECT * FROM observations WHERE origin_device_id = ? AND origin_local_id = '11'`).get(REMOTE) as any;
-      expect(obs.title).toBe(`leaked ${MARKER}`);
-      expect(obs.narrative).toBe(`used ${MARKER}`);
-      expect(obs.content_hash).toBe('hash-r1');
-      expect(JSON.parse(obs.facts)).toEqual([`key ${MARKER}`]);
-      expect(JSON.parse(obs.concepts)).toEqual(['concept-r']);
-    });
-
-    it('redacts a summary and a prompt', () => {
-      useRedaction(true);
-      makeApply().applyOps([
-        op(1, 'summary', '21', sumBody({ request: `ask ${AWS_KEY}`, notes: `note ${AWS_KEY}` })),
-        op(2, 'prompt', '31', promptBody({ prompt_text: `run ${AWS_KEY}`, content_session_id: 'sess-remote-redact' })),
-      ]);
-
-      const sum = db.prepare(`SELECT * FROM session_summaries WHERE origin_local_id = '21'`).get() as any;
-      expect(sum.request).toBe(`ask ${MARKER}`);
-      expect(sum.notes).toBe(`note ${MARKER}`);
-      const prompt = db.prepare(`SELECT * FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
-      expect(prompt.prompt_text).toBe(`run ${MARKER}`);
-    });
-
     it('stores the peer body unchanged when this device has redaction off', () => {
       useRedaction(false);
       const body = obsBody({
@@ -1360,14 +1265,6 @@ describe('SyncApply', () => {
       expect(seen).toEqual([`n ${MARKER}`, `r ${MARKER}`, `p ${MARKER}`]);
     });
 
-    it('does not re-redact a body that already carries a marker', () => {
-      useRedaction(true);
-      makeApply().applyOps([op(1, 'observation', '11', obsBody({ title: `leaked ${MARKER}` }))]);
-      const obs = db.prepare(`SELECT title FROM observations WHERE origin_local_id = '11'`).get() as any;
-      expect(obs.title).toBe(`leaked ${MARKER}`);
-      expect((obs.title.match(/<redacted/g) ?? []).length).toBe(1);
-    });
-
     it('redacts a higher-revision update', () => {
       useRedaction(true);
       const apply = makeApply();
@@ -1399,6 +1296,7 @@ describe('SyncApply', () => {
       ]);
 
       const obs = db.prepare(`SELECT * FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(obs.content_hash).toBe('hash-r1');
       for (const field of ['text', 'title', 'subtitle', 'narrative']) expect(obs[field]).toBe(`x ${MARKER}`);
       for (const field of ['facts', 'concepts']) expect(JSON.parse(obs[field])[0]).toBe(`x ${MARKER}`);
       expect(JSON.parse(obs.metadata).note).toBe(`x ${MARKER}`);

@@ -1,5 +1,13 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { Request, Response } from 'express';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
+import { LogsRoutes } from '../../../../src/services/worker/http/routes/LogsRoutes.js';
+import { SettingsRoutes } from '../../../../src/services/worker/http/routes/SettingsRoutes.js';
+import { MemoryIngestRoutes } from '../../../../src/services/worker/http/routes/MemoryIngestRoutes.js';
+import { MemoryRoutes } from '../../../../src/services/worker/http/routes/MemoryRoutes.js';
 import { AdvisorRoutes } from '../../../../src/services/worker/http/routes/AdvisorRoutes.js';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
 import { DedupRoutes } from '../../../../src/services/worker/http/routes/DedupRoutes.js';
@@ -441,4 +449,292 @@ describe('POST /api/processing origin guard', () => {
       expect(sessionManager.getResumableSessionIds).toHaveBeenCalledTimes(1);
     });
   }
+});
+
+const emptyImport = { sessions: [], summaries: [], observations: [], prompts: [] };
+
+describe('POST /api/import origin guard', () => {
+  it('rejects an import from a different localhost origin before touching the store', () => {
+    const getSessionStore = mock(() => {
+      throw new Error('the import must not reach the store');
+    });
+    const routes = new DataRoutes(
+      null as any,
+      { getSessionStore } as any,
+      null as any,
+      null as any,
+      null as any,
+      0,
+    );
+    const handler = captureHandler(routes, 'post', '/api/import');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: emptyImport,
+      headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+    } as unknown as Request, res as Response);
+
+    expect(statusSpy).toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('origin'),
+    }));
+    expect(getSessionStore).not.toHaveBeenCalled();
+  });
+
+  it('allows an Origin-less import and a same-port browser import', () => {
+    const store = {};
+    const getSessionStore = mock(() => store);
+    const routes = new DataRoutes(
+      null as any,
+      { getSessionStore, getChromaSync: mock(() => null) } as any,
+      null as any,
+      null as any,
+      null as any,
+      0,
+    );
+    const handler = captureHandler(routes, 'post', '/api/import');
+
+    const originless = createMockRes();
+    handler({ body: emptyImport, headers: {} } as unknown as Request, originless.res as Response);
+    expect(getSessionStore).toHaveBeenCalledTimes(1);
+    expect(originless.statusSpy).not.toHaveBeenCalled();
+    expect(originless.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+
+    const samePort = createMockRes();
+    handler({
+      body: emptyImport,
+      headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+    } as unknown as Request, samePort.res as Response);
+    expect(getSessionStore).toHaveBeenCalledTimes(2);
+    expect(samePort.statusSpy).not.toHaveBeenCalled();
+    expect(samePort.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+});
+
+function withIsolatedLog(run: (routes: LogsRoutes, logFile: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'logs-clear-origin-guard-'));
+  const logFile = join(dir, 'claude-mem-test.log');
+  try {
+    const routes = new LogsRoutes();
+    (routes as unknown as { getLogFilePath: () => string }).getLogFilePath = () => logFile;
+    run(routes, logFile);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('POST /api/logs/clear origin guard', () => {
+  it('rejects a clear from a different localhost origin without touching the log', () => {
+    withIsolatedLog((routes, logFile) => {
+      writeFileSync(logFile, 'existing log line\n', 'utf-8');
+      const handler = captureHandler(routes, 'post', '/api/logs/clear');
+
+      const { res, statusSpy, jsonSpy } = createMockRes();
+      handler({
+        headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+      } as unknown as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(403);
+      expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+        error: expect.stringContaining('origin'),
+      }));
+      expect(readFileSync(logFile, 'utf-8')).toBe('existing log line\n');
+    });
+  });
+
+  it('allows an Origin-less clear and a same-port browser clear', () => {
+    withIsolatedLog((routes, logFile) => {
+      const handler = captureHandler(routes, 'post', '/api/logs/clear');
+
+      writeFileSync(logFile, 'first line\n', 'utf-8');
+      const originless = createMockRes();
+      handler({ headers: {} } as unknown as Request, originless.res as Response);
+      expect(originless.statusSpy).not.toHaveBeenCalled();
+      expect(originless.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true, message: 'Log file cleared' }));
+      expect(readFileSync(logFile, 'utf-8')).toBe('');
+
+      writeFileSync(logFile, 'second line\n', 'utf-8');
+      const samePort = createMockRes();
+      handler({
+        headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+      } as unknown as Request, samePort.res as Response);
+      expect(samePort.statusSpy).not.toHaveBeenCalled();
+      expect(samePort.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true, message: 'Log file cleared' }));
+      expect(readFileSync(logFile, 'utf-8')).toBe('');
+    });
+  });
+});
+
+describe('POST /api/mcp/toggle origin guard', () => {
+  it('rejects a browser toggle from a different localhost origin', () => {
+    const routes = new SettingsRoutes({} as any);
+    const toggleSpy = mock(() => {});
+    (routes as any).toggleMcp = toggleSpy;
+    const handler = captureHandler(routes, 'post', '/api/mcp/toggle');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: { enabled: false },
+      headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+    } as unknown as Request, res as Response);
+
+    expect(statusSpy).toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+    expect(toggleSpy).not.toHaveBeenCalled();
+  });
+
+  it('allows an Origin-less toggle and a same-port browser toggle', () => {
+    const routes = new SettingsRoutes({} as any);
+    const toggleSpy = mock(() => {});
+    (routes as any).toggleMcp = toggleSpy;
+    (routes as any).isMcpEnabled = () => true;
+    const handler = captureHandler(routes, 'post', '/api/mcp/toggle');
+
+    const originless = createMockRes();
+    handler({ body: { enabled: false }, headers: {} } as unknown as Request, originless.res as Response);
+    expect(toggleSpy).toHaveBeenCalledWith(false);
+    expect(originless.statusSpy).not.toHaveBeenCalled();
+
+    const samePort = createMockRes();
+    handler({
+      body: { enabled: true },
+      headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+    } as unknown as Request, samePort.res as Response);
+    expect(toggleSpy).toHaveBeenCalledWith(true);
+    expect(samePort.statusSpy).not.toHaveBeenCalled();
+  });
+});
+
+function stubIngestDbManager() {
+  const getSessionStore = mock(() => {
+    throw new Error('the ingest must not reach the store');
+  });
+  return {
+    dbManager: {
+      getSessionStore,
+      getCloudSync: () => null,
+      getChromaSync: () => null,
+    } as any,
+    getSessionStore,
+  };
+}
+
+describe('POST /api/memory/ingest origin guard', () => {
+  it('rejects an ingest from a different localhost origin before touching the store', () => {
+    const { dbManager, getSessionStore } = stubIngestDbManager();
+    const routes = new MemoryIngestRoutes(dbManager);
+    const handler = captureHandler(routes, 'post', '/api/memory/ingest');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: { source: '/any/tree' },
+      headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+    } as unknown as Request, res as Response);
+
+    expect(statusSpy).toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('origin'),
+    }));
+    expect(getSessionStore).not.toHaveBeenCalled();
+  });
+
+  it('lets an Origin-less ingest past the guard (it fails later on its own validation)', () => {
+    const { dbManager, getSessionStore } = stubIngestDbManager();
+    const routes = new MemoryIngestRoutes(dbManager);
+    const handler = captureHandler(routes, 'post', '/api/memory/ingest');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: {},
+      headers: {},
+    } as unknown as Request, res as Response);
+
+    // The guard passed: the handler answered with its own 400
+    // ("source is required"), not the guard's 403.
+    expect(statusSpy).not.toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('source'),
+    }));
+    expect(getSessionStore).not.toHaveBeenCalled();
+  });
+
+  it('lets a same-port browser ingest past the guard', () => {
+    const { dbManager, getSessionStore } = stubIngestDbManager();
+    const routes = new MemoryIngestRoutes(dbManager);
+    const handler = captureHandler(routes, 'post', '/api/memory/ingest');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: {},
+      headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+    } as unknown as Request, res as Response);
+
+    expect(statusSpy).not.toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('source'),
+    }));
+    expect(getSessionStore).not.toHaveBeenCalled();
+  });
+});
+
+function stubSaveDbManager() {
+  const getSessionStore = mock(() => ({
+    getOrCreateManualSession: () => 42,
+    storeObservation: () => ({ id: 7, mergedIntoExisting: false, createdAtEpoch: 123 }),
+  }));
+  return {
+    dbManager: {
+      getSessionStore,
+      getCloudSync: () => null,
+      getChromaSync: () => null,
+    } as any,
+    getSessionStore,
+  };
+}
+
+describe('POST /api/memory/save origin guard', () => {
+  it('rejects a save from a different localhost origin before touching the store', () => {
+    const { dbManager, getSessionStore } = stubSaveDbManager();
+    getSessionStore.mockImplementation(() => {
+      throw new Error('the save must not reach the store');
+    });
+    const routes = new MemoryRoutes(dbManager, 'default-project');
+    const handler = captureHandler(routes, 'post', '/api/memory/save');
+
+    const { res, statusSpy, jsonSpy } = createMockRes();
+    handler({
+      body: { text: 'a note a page should not be able to plant' },
+      headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
+    } as unknown as Request, res as Response);
+
+    expect(statusSpy).toHaveBeenCalledWith(403);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('origin'),
+    }));
+    expect(getSessionStore).not.toHaveBeenCalled();
+  });
+
+  it('allows an Origin-less save and a same-port browser save', () => {
+    const { dbManager, getSessionStore } = stubSaveDbManager();
+    const routes = new MemoryRoutes(dbManager, 'default-project');
+    const handler = captureHandler(routes, 'post', '/api/memory/save');
+
+    const originless = createMockRes();
+    handler({
+      body: { text: 'remember the deploy checklist' },
+      headers: {},
+    } as unknown as Request, originless.res as Response);
+    expect(getSessionStore).toHaveBeenCalledTimes(1);
+    expect(originless.statusSpy).not.toHaveBeenCalled();
+    expect(originless.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true, id: 7 }));
+
+    const samePort = createMockRes();
+    handler({
+      body: { text: 'remember the rollback steps' },
+      headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+    } as unknown as Request, samePort.res as Response);
+    expect(getSessionStore).toHaveBeenCalledTimes(2);
+    expect(samePort.statusSpy).not.toHaveBeenCalled();
+    expect(samePort.jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true, id: 7 }));
+  });
 });
