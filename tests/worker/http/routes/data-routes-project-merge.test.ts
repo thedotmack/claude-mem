@@ -126,4 +126,12 @@ describe('POST /api/projects/merge (gate P2-4)', () => {
     expect(response.status).toBe(400);
     expect(mergedInto()).toBeNull();
   });
+
+  it('rejects whitespace-only project keys without merging', async () => {
+    for (const body of [{ from: ' \t\n', into: 'work' }, { from: 'frontend', into: ' \t\n' }]) {
+      const response = await postMerge(body);
+      expect(response.status).toBe(400);
+    }
+    expect(mergedInto()).toBeNull();
+  });
 });

@@ -147,8 +147,8 @@ const jsonStringifyFields = (fields: readonly string[]) =>
   };
 
 const projectMergeSchema = z.object({
-  from: z.string().trim().min(1),
-  into: z.string().trim().min(1),
+  from: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
+  into: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
   dryRun: z.boolean().optional(),
 });
 

@@ -159,4 +159,11 @@ describe('project merge (plan-20)', () => {
     new SessionStore(dbPath).close();
     await expect(mergeProjectInto({ from: 'work', into: 'work', dataDirectory })).rejects.toThrow('both "work"');
   });
+
+  it('still refuses whitespace-only project keys', async () => {
+    const { dataDirectory, dbPath } = freshDatabase();
+    new SessionStore(dbPath).close();
+    await expect(mergeProjectInto({ from: ' \t\n', into: 'work', dataDirectory })).rejects.toThrow('needs both');
+    await expect(mergeProjectInto({ from: 'work', into: ' \t\n', dataDirectory })).rejects.toThrow('needs both');
+  });
 });
