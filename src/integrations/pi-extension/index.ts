@@ -96,6 +96,8 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   const worker = createHarnessWorkerClient();
   let current: Session | undefined;
   let notificationShown = false;
+  const ownsCapture = (session: Session, ctx: PiContext): boolean =>
+    current === session && ctx.sessionManager.getSessionId() === session.id && ctx.cwd === session.cwd;
   const warn = (ctx: PiContext, error: unknown): void => {
     if (!notificationShown && ctx.hasUI && ctx.ui) {
       ctx.ui.notify('Claude-Mem is unavailable. Run npx claude-mem doctor. ' + String(error), 'warning');
@@ -103,7 +105,10 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     }
   };
   const enqueue = (session: Session, ctx: PiContext, task: () => Promise<void>): Promise<void> => {
-    session.queue = session.queue.then(task).catch(error => warn(ctx, error));
+    // A session switch retires unsent capture, even when an earlier request
+    // is still settling. Already-dispatched work may finish on its own.
+    session.queue = session.queue.then(() => ownsCapture(session, ctx) ? task() : undefined)
+      .catch(error => { if (current === session) warn(ctx, error); });
     return session.queue;
   };
   const begin = async (_event: PiEvent, ctx: PiContext): Promise<void> => {
@@ -129,7 +134,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
 
   const resetTurn = (_event: PiEvent, ctx: PiContext): Promise<void> | undefined => {
     const session = current;
-    if (!session) return;
+    if (!session || !ownsCapture(session, ctx)) return;
     return enqueue(session, ctx, async () => {
       session.entryId = undefined;
       session.initialized = false;
@@ -247,7 +252,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   pi.on('tool_result', (event, ctx) => {
     const telemetryToolEpochMs = Date.now();
     const session = current;
-    if (!session || !event.toolName || event.toolName.startsWith('mem_')) return;
+    if (!session || !ownsCapture(session, ctx) || !event.toolName || event.toolName.startsWith('mem_')) return;
     const text = extractTextContent(event.content);
     const toolName = CAPTURE_TOOL_NAMES.get(event.toolName) ?? event.toolName;
     const toolInput = captureToolInput(event.toolName, event.input);
@@ -264,14 +269,14 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       });
     });
   });
-  pi.on('message_end', (event) => {
-    if (current && event.message?.role === 'assistant') {
+  pi.on('message_end', (event, ctx) => {
+    if (current && ownsCapture(current, ctx) && event.message?.role === 'assistant') {
       current.lastAssistant = extractTextContent(event.message.content);
     }
   });
   const summarize = (_event: PiEvent, ctx: PiContext): Promise<void> | undefined => {
     const session = current;
-    if (!session) return;
+    if (!session || !ownsCapture(session, ctx)) return;
     return enqueue(session, ctx, async () => {
       if (!session.anchored || session.excluded || !session.needsSummary) return;
       await worker.post('/api/sessions/summarize', {
