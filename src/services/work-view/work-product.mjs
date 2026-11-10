@@ -32,6 +32,7 @@ const PUBLISHING_TOOLS = [
   { match: /chatgpt_space__create_page$/, kind: 'page' },
   { match: /sites__save_version_and_deploy/, kind: 'deployment' },
 ];
+const GITHUB_PULL_REQUEST_TOOL = /(?:^|__)create_pull_request$/;
 // Work-state fields that name work product directly. `work_product` is the
 // field agents use to attach anything; *_url fields are read as links.
 const WORK_PRODUCT_FIELDS = new Set(['work_product', 'work_products', 'deliverable', 'deliverables']);
@@ -289,6 +290,31 @@ function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
   return [{ kind: 'pull-request', title: short(titleText) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
 }
 
+/** GitHub's create tool returns a numeric ID and browser URL only after creation;
+ * an interactive form awaiting submission is not a completed publication. */
+function pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef }) {
+  const repoPart = value => typeof value === 'string' && /^[\w.-]+$/.test(value);
+  const numericId = value => (typeof value === 'string' && /^[1-9]\d*$/.test(value)) || (Number.isSafeInteger(value) && value > 0);
+  if (!repoPart(input.owner) || !repoPart(input.repo)) return [];
+  const refused = value => value?.isError === true || value?.is_error === true
+    || value?.error != null || value?.status === 'awaiting_user_submission';
+  if (refused(response) || refused(response?.structuredContent)) return [];
+  const blocks = Array.isArray(response) ? response : response?.content;
+  const candidates = [response?.structuredContent, response,
+    ...(Array.isArray(blocks) ? blocks.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => parse(block.text)) : [])];
+  for (const result of candidates) {
+    if (!result || typeof result !== 'object' || refused(result) || !numericId(result.id)) continue;
+    const url = safeWebUrl(result.html_url ?? result.url);
+    if (!url) continue;
+    const parsed = new URL(url), path = /^\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || parsed.port || parsed.search || parsed.hash || !path
+      || path[1].toLowerCase() !== input.owner.toLowerCase() || path[2].toLowerCase() !== input.repo.toLowerCase()
+      || (result.number !== undefined && (!numericId(result.number) || String(result.number) !== path[3]))) continue;
+    return [{ kind: 'pull-request', title: short(result.title ?? input.title) ?? `PR #${path[3]}`, url, atEpoch, sourceRef }];
+  }
+  return [];
+}
+
 /** Commits and branches one recorded Bash command made. */
 export function gitProductsFromCommand(command, response, out, { atEpoch = null, sourceRef = null } = {}) {
   const pushes = pushesFrom(command, response, out);
@@ -310,6 +336,7 @@ export function productsFromToolUse(call) {
   const input = parse(call.tool_input) ?? {}, response = parse(call.tool_response);
   const sourceRef = { kind: 'tool-use', id: call.id };
   const atEpoch = call.created_at_epoch ?? null;
+  if (GITHUB_PULL_REQUEST_TOOL.test(call.tool_name)) return pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef });
   if (call.tool_name === 'Bash' && typeof input.command === 'string') {
     const out = outputText(call, response);
     return [...pullRequestFrom(input.command, response, out, { atEpoch, sourceRef }), ...gitProductsFromCommand(input.command, response, out, { atEpoch, sourceRef })];
@@ -473,6 +500,7 @@ export function fileUrl(product) {
 const FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(' OR ');
 const PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
   OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
+  OR tool_name = 'create_pull_request' OR tool_name GLOB '*__create_pull_request'
   OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
 const GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
   AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
