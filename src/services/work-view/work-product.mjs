@@ -239,8 +239,12 @@ function pushesFrom(command, response, out) {
 
 /** Branches a recorded `git checkout -b` / `git switch -c` created. */
 function createdBranchesFrom(command, out) {
-  if (/^fatal:/m.test(out)) return [];
-  return [...command.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, 'g'))].map((match) => ({ branch: unquote(match[1]), repo: null, heads: [] }));
+  // A command can be skipped by a shell condition, refused with `error:` (dirty
+  // worktree), or succeed before a later command fails. Credit each branch only
+  // when Git confirms that particular creation/reset, regardless of later errors.
+  const confirmed = new Set([...out.matchAll(/^(?:Switched to a new branch|Switched to and reset branch|Reset branch) '(.+)'\r?$/gm)].map((match) => match[1]));
+  const requested = [...command.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, 'g'))].map((match) => unquote(match[1]));
+  return [...new Set(requested)].filter(branch => confirmed.has(branch)).map(branch => ({ branch, repo: null, heads: [] }));
 }
 
 function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
