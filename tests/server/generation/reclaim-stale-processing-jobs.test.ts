@@ -10,6 +10,7 @@ import {
 } from '../../../src/storage/postgres/index.js';
 import { reclaimStaleProcessingJobs } from '../../../src/server/generation/reclaimStaleProcessingJobs.js';
 import { ActiveServerGenerationWorkerManager } from '../../../src/server/runtime/ActiveServerGenerationWorkerManager.js';
+import { ServerService } from '../../../src/server/runtime/ServerService.js';
 import { logger } from '../../../src/utils/logger.js';
 import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
@@ -224,5 +225,68 @@ describe('reclaimStaleProcessingJobs', () => {
     } finally {
       await manager.close();
     }
+  });
+
+  it('records an interrupted reclaim before shutdown closes PostgreSQL', async () => {
+    const lockDurationMs = 5 * 60 * 1000;
+    const id = await processingJob(3 * lockDurationMs + 60_000);
+    const runtimePool = new pg.Pool({
+      connectionString: testDatabaseUrl,
+      options: `-c search_path=${quoteIdentifier(schemaName)}`,
+    });
+    let poolCloseStarted = false;
+    const endPool = runtimePool.end.bind(runtimePool);
+    const closeSpy = spyOn(runtimePool, 'end').mockImplementation(async () => {
+      poolCloseStarted = true;
+      await endPool();
+    });
+    let publishing!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { publishing = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let queueClosed = false;
+    const lane = {
+      ...queue, observe: () => {}, getLockDurationMs: () => lockDurationMs,
+      add: async (jobId: string) => {
+        publishing();
+        await blocked;
+        if (queueClosed) throw new Error('queue closed during publication');
+        published.push({ op: 'add', jobId });
+      },
+    };
+    const queueManager = {
+      start: () => {}, getQueue: () => lane,
+      close: async () => { queueClosed = true; },
+    };
+    const manager = new ActiveServerGenerationWorkerManager({
+      pool: runtimePool, queueManager: queueManager as never, provider: {} as never,
+    });
+    const service = new ServerService({
+      persistRuntimeState: false, port: 0,
+      graph: {
+        runtime: 'server-beta', authMode: 'api-key',
+        postgres: { pool: runtimePool, bootstrap: { initialized: true, schemaVersion: 1, appliedAt: null } },
+        queueManager, generationWorkerManager: manager,
+      } as never,
+    });
+    manager.start();
+    await started;
+    const stopping = service.stop();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const poolClosedBeforePublication = poolCloseStarted;
+    release();
+    await stopping;
+    await manager.close();
+    closeSpy.mockRestore();
+
+    expect(poolClosedBeforePublication).toBe(false);
+    expect(queueClosed).toBe(true);
+    expect(published.filter(item => item.op === 'add')).toHaveLength(0);
+    expect((await row(id)).status).toBe('failed');
+    const events = await client.query(
+      "SELECT event_type FROM observation_generation_job_events WHERE generation_job_id = $1 AND details->>'source' = 'stale_lock_reclaim'",
+      [id],
+    );
+    expect(events.rows).toEqual([{ event_type: 'failed' }]);
   });
 });

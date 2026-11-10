@@ -46,7 +46,7 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   private readonly generator: ProviderObservationGenerator;
   private readonly workerId: string;
   private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
-  private staleSweepInFlight = false;
+  private staleSweepInFlight: Promise<void> | null = null;
 
   constructor(private readonly options: ActiveServerGenerationWorkerManagerOptions) {
     this.workerId = options.workerId ?? `server-${process.pid}`;
@@ -123,16 +123,20 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
       lockDurationMs * STALE_LOCK_MULTIPLIER,
       DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS + lockDurationMs,
     );
-    const sweep = () => { void this.sweepStaleJobs(staleAfterMs); };
+    const sweep = () => {
+      // A slow sweep must not overlap the next tick. Retain ownership through
+      // shutdown so its final outbox transition precedes pool closure.
+      if (this.staleSweepInFlight || this.closed) return;
+      this.staleSweepInFlight = this.sweepStaleJobs(staleAfterMs).finally(() => {
+        this.staleSweepInFlight = null;
+      });
+    };
     sweep();
     this.staleSweepTimer = setInterval(sweep, lockDurationMs);
     this.staleSweepTimer.unref?.();
   }
 
   private async sweepStaleJobs(staleAfterMs: number): Promise<void> {
-    // A slow sweep must not overlap the next tick.
-    if (this.staleSweepInFlight || this.closed) return;
-    this.staleSweepInFlight = true;
     try {
       await reclaimStaleProcessingJobs({
         pool: this.options.pool,
@@ -143,8 +147,6 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
       logger.warn('SYSTEM', 'stale generation job sweep failed', {
         error: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      this.staleSweepInFlight = false;
     }
   }
 
@@ -209,9 +211,9 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
     this.closed = true;
     if (this.staleSweepTimer) clearInterval(this.staleSweepTimer);
+    await this.staleSweepInFlight;
     // The underlying Worker is owned by ServerJobQueue.close() (driven by
     // the queue manager). We do not double-close here; the queue manager's
     // close cascade handles it.
