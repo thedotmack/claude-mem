@@ -347,6 +347,21 @@ received = [];
 await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_11', tool_input: { command: 'pwd' } });
 check('recovery only sends the fresh event', received.length === 1 && received[0].body?.payload?.tool_use_id === 'tu_11', JSON.stringify(received));
 
+console.log('\n[8a] remote inference waits for a 400 ms response');
+for (const event of ['observation', 'session-init', 'summarize']) {
+  received = [];
+  holdIngest = env => env?.event === event;
+  const pending = run(event, { session_id: 'slow-remote', tool_name: 'Bash', tool_use_id: 'tu_slow', prompt: 'hello' });
+  check(`${event}: request reaches the server`, await until(() => held.length === 1));
+  const response = held.shift();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  check(`${event}: connection stays open for the response`, !!response && !response.destroyed);
+  response?.writeHead(202).end('{"accepted":1}');
+  await pending;
+  check(`${event}: sends once without spooling`, received.length === 1 && !existsSync(SPOOL));
+  holdIngest = null;
+}
+
 // ---- 8b. legacy inference is retired; metadata keeps its order ----
 console.log('\n[8b] legacy inference retirement');
 mkdirSync(TESTHOME + '/.claude-mem', { recursive: true });

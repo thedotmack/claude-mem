@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import { loadWatchState } from '../../src/services/transcripts/state.js';
-import type { TranscriptCheckpointGate, TranscriptSchema } from '../../src/services/transcripts/types.js';
+import type { TranscriptSchema } from '../../src/services/transcripts/types.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionMessageBuffer } from '../../src/services/worker/SessionMessageBuffer.js';
 import { setIngestContext } from '../../src/services/worker/http/shared.js';
@@ -18,7 +18,6 @@ const line = (record: unknown) => JSON.stringify(record) + '\n';
 const tool = (session: string, id: string) =>
   line({ session, type: 'use', id, name: 'Read', input: { path: id } })
   + line({ session, type: 'result', id, output: id });
-const heldGate: TranscriptCheckpointGate = { sequence: () => 0, drainedThrough: () => false };
 let root: string;
 let store: SessionStore;
 let buffer: SessionMessageBuffer;
@@ -53,7 +52,7 @@ afterEach(() => {
 
 async function start(path: string, statePath: string): Promise<TranscriptWatcher> {
   const watch = { name: 'live', path, workspace: '/repo', schema };
-  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', heldGate);
+  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
   watchers.push(watcher);
   await (watcher as any).addTailer(path, watch, schema);
   await (watcher as any).tailers.get(path).readTask;

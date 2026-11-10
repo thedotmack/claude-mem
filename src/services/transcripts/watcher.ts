@@ -5,7 +5,7 @@ import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
-import type { TranscriptCheckpointGate, TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
+import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import {
   TranscriptEventProcessor,
   type TranscriptFileContext,
@@ -525,8 +525,7 @@ export class TranscriptWatcher {
   constructor(
     private config: TranscriptWatchConfig,
     private statePath: string,
-    observationTransport: TranscriptObservationTransport = 'in-process',
-    _checkpointGate?: TranscriptCheckpointGate
+    observationTransport: TranscriptObservationTransport = 'in-process'
   ) {
     this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);

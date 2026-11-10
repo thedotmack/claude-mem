@@ -35,7 +35,6 @@ const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
 const SPOOL_MAX = 200;           // max metadata events sent per flush
 const METADATA_EVENTS = new Set(['session-start', 'session-end', 'subagent-stop']);
-const LIVE_HANDOFF_MS = 250;
 const FIELD_CAP = 16000;         // max chars per big payload field
 const PROMPT_CAP = 4000;         // max chars of user prompt / agent prompt sent
 const HTTP_TIMEOUT_MS = { fast: 4000, normal: 8000, context: 12000 };
@@ -526,7 +525,7 @@ async function ingest(event, payload) {
   if (!CFG.apiKey) return;                      // unpaired — inert by design
   const metadata = METADATA_EVENTS.has(event);
   try {
-    const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, env, metadata ? HTTP_TIMEOUT_MS.normal : LIVE_HANDOFF_MS);
+    const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, env, HTTP_TIMEOUT_MS.normal);
     if (!res.ok && res.status !== 404) spool(env);   // 404 = endpoint not shipped yet; don't spool forever
     else if (res.ok && metadata) await flushSpool();
   } catch {
