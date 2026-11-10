@@ -85,8 +85,10 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 }));
 
 mock.module('../../src/utils/project-name.js', () => ({
+  ...realProjectNameSnapshot,
   getProjectName: () => 'test-project',
   getProjectContext: () => ({ primary: 'test-project', allProjects: ['test-project'] }),
+  getProjectContextWithRoot: () => ({ context: { primary: 'test-project', allProjects: ['test-project'] }, repoRoot: null }),
 }));
 
 mock.module('../../src/utils/project-filter.js', () => ({
