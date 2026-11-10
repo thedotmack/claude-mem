@@ -33,17 +33,22 @@ describe('openai-compatible settings surface', () => {
     expect(position('codex')).toBeGreaterThan(position('openrouter'));
   });
 
-  it('edits the preset, base URL and model, and never the key', () => {
+  it('edits the model while endpoint, preset and key stay outside the viewer', () => {
     const source = modalSource();
-    for (const key of ['CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL']) {
-      expect(source).toContain(`updateSetting('${key}'`);
+    expect(source).toContain("updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL'");
+    for (const key of ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY']) {
+      expect(source).not.toContain(`updateSetting('${key}'`);
     }
-    expect(source).not.toContain("updateSetting('CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
+    for (const key of ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL']) {
+      expect(source.match(new RegExp(`<input[^>]*value=\\{formState\\.${key}[^>]*>`, 's'))?.[0]).toContain('readOnly');
+    }
+    expect(source.match(/<select[^>]*value=\{openAICompatPresetOption[^>]*>/s)?.[0]).toContain('disabled');
 
     const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
     const writeList = routeSource.slice(routeSource.indexOf('const settingKeys = ['), routeSource.indexOf('];', routeSource.indexOf('const settingKeys = [')));
-    for (const key of ['CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL']) {
-      expect(writeList).toContain(`'${key}'`);
+    expect(writeList).toContain("'CLAUDE_MEM_OPENAI_COMPAT_MODEL'");
+    for (const key of ['CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL']) {
+      expect(writeList).not.toContain(`'${key}'`);
     }
     expect(writeList).not.toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
     expect(writeList).not.toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
@@ -67,7 +72,7 @@ describe('isClaudeMemObserverBaseUrl', () => {
     expect(isClaudeMemObserverBaseUrl(' https://CMEM.ai/api/inference/v1 ')).toBe(true);
   });
 
-  it('leaves every other endpoint editable', () => {
+  it('does not label other endpoints as managed by the observer', () => {
     for (const value of [
       undefined, '', 'https://openrouter.ai/api/v1', 'https://api.deepseek.com',
       'http://localhost:1234/v1', 'https://cmem.ai.evil.example/v1', 'not a url',

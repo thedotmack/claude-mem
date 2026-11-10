@@ -12,12 +12,11 @@ import type { TelegramWrapupFormatterInput } from '../../../../src/services/inte
  * The account-owned cmem memory key (cm_pro_…) must never authenticate a
  * request to any host but the cmem gateway.
  *
- * The credential tuple lock only covered ENVIRONMENT overrides. The settings
- * API (the viewer) writes CLAUDE_MEM_OPENROUTER_BASE_URL straight into
- * settings.json, and the viewer posts the masked key back unchanged — so a
- * base-URL edit left the cm_pro key paired with the new host, and the next
- * request carried it there. These tests make the edit through the real POST
- * handler and then watch the wire of the real provider's request path.
+ * Endpoint changes are file/env-only. A hand-edited base URL can still leave
+ * a cm_pro key paired with the wrong host; the provider's tuple lock must
+ * protect that boundary too. These tests edit the file, save the unchanged
+ * masked key through the real POST handler, and watch the real provider's
+ * request path. HTTP endpoint-write rejection has its own route suite.
  */
 
 const GATEWAY_BASE_URL = 'https://cmem.ai/api/inference/v1';
@@ -126,11 +125,13 @@ describe('the cmem memory key stays with the cmem gateway', () => {
     ['another host', 'https://attacker.example/v1'],
     ['a gateway lookalike', 'https://cmem.ai.attacker.example/api/inference/v1'],
     ['the default openrouter.ai endpoint', ''],
-  ])('is never sent to %s after a settings-API base-URL change', async (_label, newBaseUrl) => {
-    // Exactly what the viewer's Save does: the edited field plus the masked
-    // key echoed back from GET, which the API treats as "unchanged".
+  ])('is never sent to %s after a file-based base-URL change', async (_label, newBaseUrl) => {
+    const edited = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    edited.CLAUDE_MEM_OPENROUTER_BASE_URL = newBaseUrl;
+    writeFileSync(settingsPath, JSON.stringify(edited));
+    // A later viewer save must keep the stored key without making the
+    // provider send that credential to the hand-edited destination.
     postSettings({
-      CLAUDE_MEM_OPENROUTER_BASE_URL: newBaseUrl,
       CLAUDE_MEM_OPENROUTER_API_KEY: viewerMask(MEMORY_KEY),
     });
     const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
@@ -155,18 +156,17 @@ describe('the cmem memory key stays with the cmem gateway', () => {
     expect(requests).toEqual([{ url: `${GATEWAY_BASE_URL}/chat/completions`, authorization: `Bearer ${MEMORY_KEY}` }]);
   });
 
-  it('never sends a personal key to the gateway after a settings-API base-URL change', async () => {
+  it('never sends a personal key to the gateway after a file-based base-URL change', async () => {
     writeFileSync(settingsPath, JSON.stringify({
       CLAUDE_MEM_PROVIDER: 'openrouter',
-      CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GATEWAY_BASE_URL,
       CLAUDE_MEM_OPENROUTER_MODEL: 'some/model',
       CLAUDE_MEM_OPENROUTER_API_KEY: PERSONAL_KEY,
     }, null, 2), 'utf-8');
 
-    // The viewer pairs the stored personal key (posted back masked) with the
-    // gateway's base URL.
+    // Keep a mismatched tuple hand-edited into the file while the viewer
+    // echoes its masked personal key unchanged.
     postSettings({
-      CLAUDE_MEM_OPENROUTER_BASE_URL: GATEWAY_BASE_URL,
       CLAUDE_MEM_OPENROUTER_API_KEY: viewerMask(PERSONAL_KEY),
     });
 
