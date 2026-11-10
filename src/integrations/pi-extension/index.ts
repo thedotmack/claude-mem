@@ -105,10 +105,10 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     }
   };
   const enqueue = (session: Session, ctx: PiContext, task: () => Promise<void>): Promise<void> => {
-    // A session switch retires unsent capture, even when an earlier request
-    // is still settling. Already-dispatched work may finish on its own.
-    session.queue = session.queue.then(() => ownsCapture(session, ctx) ? task() : undefined)
-      .catch(error => { if (current === session) warn(ctx, error); });
+    // Ownership is checked when work is admitted, not when it runs: admitted
+    // work posts under its own session id and cwd, so an old session's last
+    // observations and summary still land after a switch.
+    session.queue = session.queue.then(task).catch(error => warn(ctx, error));
     return session.queue;
   };
   const begin = async (_event: PiEvent, ctx: PiContext): Promise<void> => {
@@ -170,8 +170,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     // request's prompt is therefore the user message carrying the persisted
     // entry's timestamp, not whichever user message comes last.
     const selectEntry = (): { entry: PiSessionEntry; prompt: string } | undefined => {
-      if (current !== session || ctx.sessionManager.getSessionId() !== session.id || ctx.cwd !== session.cwd
-        || typeof ctx.sessionManager.getBranch !== 'function') return;
+      if (!ownsCapture(session, ctx) || typeof ctx.sessionManager.getBranch !== 'function') return;
       const branch = ctx.sessionManager.getBranch();
       if (!Array.isArray(branch)) return;
       const entry = [...branch].reverse().find(item => item.type === 'message' && item.message?.role === 'user');

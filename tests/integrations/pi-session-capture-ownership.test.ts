@@ -36,7 +36,7 @@ async function begin(id: string) {
   return ctx;
 }
 
-it('drops unsent old-session capture when another session becomes current', async () => {
+it('finishes capture the old session admitted before another session became current', async () => {
   const old = await begin('old-session');
   let release!: (response: Response) => void;
   let started!: () => void;
@@ -44,17 +44,21 @@ it('drops unsent old-session capture when another session becomes current', asyn
   holdObservation = () => { started(); return new Promise(resolve => { release = resolve; }); };
   const inFlight = handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'sent', content: 'already sent' }, old);
   await reached;
-  const unsent = handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'unsent', content: 'old pending input' }, old);
+  const queued = handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'unsent', content: 'old pending input' }, old);
   const summary = handlers.get('agent_end')!({}, old);
   const current = await begin('new-session');
   holdObservation = undefined;
   release(new Response(''));
-  await Promise.all([inFlight, unsent, summary]);
-  expect(posted.map(call => call.body.tool_use_id)).toEqual(['sent']);
+  await Promise.all([inFlight, queued, summary]);
+  // Admitted work posts under the session that owned capture when it was admitted.
+  expect(posted.map(call => [call.route, call.body.contentSessionId, call.body.tool_use_id])).toEqual([
+    ['/api/sessions/observations', 'old-session', 'sent'],
+    ['/api/sessions/observations', 'old-session', 'unsent'],
+    ['/api/sessions/summarize', 'old-session', undefined],
+  ]);
 
   await handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'fresh', content: 'fresh input' }, current);
-  expect(posted.map(call => call.body.contentSessionId)).toEqual(['old-session', 'new-session']);
-  expect(posted.at(-1)!.body.tool_use_id).toBe('fresh');
+  expect(posted.at(-1)!.body).toMatchObject({ contentSessionId: 'new-session', tool_use_id: 'fresh' });
 });
 
 it('ignores callbacks whose session context no longer owns capture', async () => {
