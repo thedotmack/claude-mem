@@ -222,7 +222,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       await watcher.start();
       appendFileSync(filePath, encode([userLine('s3', 'live turn')]));
       (watcher as any).tailers.get(filePath)?.poke();
-      await new Promise(resolve => setTimeout(resolve, 120));
+      await (watcher as any).tailers.get(filePath).readTask;
 
       expect(inits).toEqual([{ prompt: 'live turn', cwd: PROJECT_DIR }]);
     });
@@ -237,7 +237,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     const first = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     watchers.push(first);
     await (first as any).addTailer(filePath, watch, schema);
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await (first as any).tailers.get(filePath).readTask;
     first.stop();
     expect(JSON.parse(readFileSync(statePath, 'utf8')).cwds[filePath]).toBe(PROJECT_DIR);
 
@@ -246,7 +246,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     watchers.push(restarted);
     await (restarted as any).addTailer(filePath, watch, schema);
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await (restarted as any).tailers.get(filePath).readTask;
 
     expect(inits).toEqual([
       { prompt: 'first', cwd: PROJECT_DIR },
@@ -284,7 +284,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       const first = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
       watchers.push(first);
       await (first as any).addTailer(filePath, watch, nativeSchema);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await (first as any).tailers.get(filePath).readTask;
       first.stop();
       expect(JSON.parse(readFileSync(statePath, 'utf8')).cwds[filePath]).toBe(PROJECT_DIR);
 
@@ -292,7 +292,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
       watchers.push(restarted);
       await (restarted as any).addTailer(filePath, watch, nativeSchema);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await (restarted as any).tailers.get(filePath).readTask;
 
       expect(capturedSessionIds).toEqual([sessionId, sessionId]);
       expect(inits.map(input => input.prompt)).toEqual(['Read the file\nand report it', 'Read the file\nand report it']);

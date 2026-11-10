@@ -28,13 +28,7 @@ describe('SessionStart systemMessage stays within the field cap (#5079)', () => 
   });
 
   it('keeps preview plus viewer lines within the limit when the preview is full', () => {
-    const observations = Array.from({ length: 200 }, (_, i) => ({ id: i }) as unknown as Observation);
-    const config = { fullObservationCount: 0, showLastSummary: false, showLastMessage: false, sessionCount: 0 } as ContextConfig;
-    const render = (items: Observation[]) => items.map(() => 'x'.repeat(80)).join('\n');
-    const { text } = fitContextForDelivery(
-      observations, [], config, '', render, CONTEXT_OUTPUT_LIMIT, false,
-      (items) => items.map(() => 'y'.repeat(120)).join('\n'),
-    );
+    const text = fullPreview();
     expect(text.length).toBeGreaterThan(CONTEXT_OUTPUT_LIMIT - TERMINAL_BANNER_RESERVE_CHARS - 200);
     expect(text.length + header.length + 2).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
   });
