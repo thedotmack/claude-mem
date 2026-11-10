@@ -185,7 +185,7 @@ describe('shipped codex schema in transcript-watch.example.json', () => {
 
     expect(matchesRule(prompt, rule, ctx.schema)).toBe(true);
     expect(resolveFields(userMessage!.fields, prompt, ctx)).toEqual({
-      prompt: 'Repeat this token back exactly once: ZORBAX-QQ-7731',
+      prompt: [{ text: 'Repeat this token back exactly once: ZORBAX-QQ-7731' }],
     });
 
     // The injected preamble, the developer preamble, and the approval
@@ -204,7 +204,7 @@ describe('shipped codex schema in transcript-watch.example.json', () => {
     const rule = assistantMessage!.match!;
     const reply = responseItem('assistant', 'ZORBAX-QQ-7731');
     expect(matchesRule(reply, rule, ctx.schema)).toBe(true);
-    expect(resolveFields(assistantMessage!.fields, reply, ctx)).toEqual({ message: 'ZORBAX-QQ-7731' });
+    expect(resolveFields(assistantMessage!.fields, reply, ctx)).toEqual({ message: [{ text: 'ZORBAX-QQ-7731' }] });
     expect(matchesRule(responseItem('user', 'hi'), rule, ctx.schema)).toBe(false);
   });
 });

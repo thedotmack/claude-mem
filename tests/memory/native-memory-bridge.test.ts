@@ -158,7 +158,8 @@ describe('memory folder watcher', () => {
     const root = temp();
     writeFileSync(path.join(root, 'note.md'), 'durable preference');
     const db = new Database(':memory:');
-    db.exec('CREATE TABLE observations (id INTEGER PRIMARY KEY, title TEXT, project TEXT, metadata TEXT)');
+    db.exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY, title TEXT, project TEXT, metadata TEXT, memory_session_id TEXT);
+      CREATE TABLE sdk_sessions (memory_session_id TEXT PRIMARY KEY, platform_source TEXT)`);
     const manager = {
       getConnection: () => db,
       getSessionStore: () => ({ getOrCreateManualSession: () => 'manual', storeObservation: (_session: string, project: string, observation: {title: string; metadata: string}) => {
@@ -192,7 +193,8 @@ describe('memory folder watcher', () => {
     const root = temp();
     const database = path.join(root, 'race.db');
     const db = new Database(database);
-    db.exec('PRAGMA journal_mode=WAL; CREATE TABLE observations (id INTEGER PRIMARY KEY, title TEXT, project TEXT, metadata TEXT)');
+    db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE observations (id INTEGER PRIMARY KEY, title TEXT, project TEXT, metadata TEXT, memory_session_id TEXT);
+      CREATE TABLE sdk_sessions (memory_session_id TEXT PRIMARY KEY, platform_source TEXT)`);
     const module = path.resolve(import.meta.dir, '../../src/services/memory/save-memory.ts');
     const worker = path.join(root, 'save-race.ts');
     writeFileSync(worker, `import {Database} from 'bun:sqlite';

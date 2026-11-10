@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { getSupervisor } from '../../src/supervisor/index.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
@@ -10,6 +10,7 @@ import {
   sweepStaleAppServerWorkdirs,
   CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
+  CODEX_SETUP_REQUIRED_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
@@ -25,8 +26,10 @@ interface FakeCodex {
 }
 
 interface FakeCodexOptions {
+  authHomeName?: string;
   instructionSources?: string[];
   writeOnShutdown?: boolean;
+  networkUrl?: string;
   /** Give this fake its own executable file, for tests that replace the binary in place. */
   privateExecutable?: boolean;
   mode?: 'normal' | 'terminal-response' | 'hold-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
@@ -73,7 +76,18 @@ const FAKE_CODEX_SOURCE = [
   '    record(message);',
   "    if (message.method === 'initialized') continue;",
   "    if (message.method === 'initialize' && mode === 'silent-init') continue;",
-  "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "    if (message.method === 'initialize') {",
+  "      void (async () => {",
+  "        if (config.networkUrl) {",
+  "          try {",
+  "            const response = await fetch(config.networkUrl, { signal: AbortSignal.timeout(3000) });",
+  "            record({ method: 'network/check', body: await response.text(), apiKeyPresent: !!process.env.OPENAI_API_KEY });",
+  "            if (!response.ok) throw new Error('owned network request failed');",
+  "          } catch (error) { send({ id: message.id, error: { code: -32603, message: String(error) } }); return; }",
+  "        }",
+  "        send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "      })();",
+  "    }",
   "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
   "    else if (message.method === 'thread/start') {",
   "      const mode = statSync(message.params.cwd).mode & 0o777;",
@@ -129,7 +143,7 @@ afterAll(() => {
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-'));
   const trace = join(root, 'trace.jsonl');
-  const authHome = join(root, 'native-codex-home');
+  const authHome = join(root, options.authHomeName ?? 'native-codex-home');
   mkdirSync(authHome, { mode: 0o700 });
   writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
   writeFileSync(join(root, FAKE_CODEX_CONFIG_FILE), JSON.stringify({
@@ -137,6 +151,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     instructionSources: options.instructionSources ?? [],
     mode: options.mode ?? 'normal',
     writeOnShutdown: options.writeOnShutdown === true,
+    networkUrl: options.networkUrl,
   }));
   let executable = sharedFakeCodexExecutable();
   if (options.privateExecutable) {
@@ -177,6 +192,38 @@ itPosix('leaves model and effort selection to Codex when no override is configur
   }
 });
 
+for (const source of ['option', 'environment'] as const) {
+  for (const kind of ['relative', 'literal whitespace'] as const) {
+    itPosix(`uses the selected ${kind} auth profile from the ${source}`, async () => {
+      const fake = createFakeCodex({ authHomeName: kind === 'literal whitespace' ? 'native-codex-home ' : undefined });
+      const configuredHome = kind === 'relative' ? relative(process.cwd(), fake.authHome) : fake.authHome;
+      const previousHome = process.env.CODEX_HOME;
+      if (kind === 'literal whitespace') {
+        // Both names exist: trimming silently chooses a different account,
+        // rather than merely reporting that the selected login is missing.
+        mkdirSync(fake.authHome.trim(), { mode: 0o700 });
+        writeFileSync(join(fake.authHome.trim(), 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { account_id: 'neighbor' } }), { mode: 0o600 });
+      }
+      if (source === 'environment') process.env.CODEX_HOME = configuredHome;
+      const client = new CodexAppServerClient(source === 'option' ? { nativeCodexHome: configuredHome } : {});
+      try {
+        const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+          prompt: 'Summarize using the selected profile.', timeoutMs: 5000 });
+        expect(result.content).toContain('<title>Turn 1</title>');
+        const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+        expect(started).toBeDefined();
+        expect(realpathSync(join(started!.codexHome, 'auth.json'))).toBe(realpathSync(join(fake.authHome, 'auth.json')));
+        expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      } finally {
+        await client.close();
+        if (previousHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousHome;
+        rmSync(fake.root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 it('rejects API-key login before launching a model process', async () => {
   const fake = createFakeCodex();
   writeFileSync(join(fake.authHome, 'auth.json'), JSON.stringify({ auth_mode: 'apikey' }), { mode: 0o600 });
@@ -190,6 +237,55 @@ it('rejects API-key login before launching a model process', async () => {
     rmSync(fake.root, { recursive: true, force: true });
   }
 });
+
+for (const mode of [undefined, null, 'chatgpt', 'chatgptAuthTokens']) {
+  itPosix(`accepts native ChatGPT login with auth_mode=${String(mode)} without rewriting it`, async () => {
+    const fake = createFakeCodex();
+    const authFile = join(fake.authHome, 'auth.json');
+    // Native AuthDotJson and pro_account_with_no_api_key_uses_chatgpt_auth:
+    // mode is optional; the selected CLI owns validation and token refresh.
+    writeFileSync(authFile, JSON.stringify({ auth_mode: mode, OPENAI_API_KEY: null,
+      tokens: { id_token: 'owned-test-id-token', access_token: 'owned-test-access-token', refresh_token: 'owned-test-refresh-token' },
+      last_refresh: '2026-11-10T00:00:00Z' }), { mode: 0o600 });
+    const original = readFileSync(authFile);
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+      expect(result.content).toContain('<title>Turn 1</title>');
+      const trace = readTrace(fake.trace);
+      expect(trace.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      const started = trace.find(entry => entry.method === 'process/start')!;
+      expect(realpathSync(join(started.codexHome, 'auth.json'))).toBe(realpathSync(authFile));
+      await client.close();
+      expect(existsSync(started.codexHome)).toBe(false);
+      expect(readFileSync(authFile)).toEqual(original);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const otherAuth of [
+  { OPENAI_API_KEY: 'owned-api-key' }, { OPENAI_API_KEY: '' },
+  { personal_access_token: 'owned-pat' }, { bedrock_api_key: { api_key: 'owned-bedrock-key' } },
+  { bedrock_access_keys: { access_key_id: 'owned-id', secret_access_key: 'owned-secret' } },
+  { auth_mode: 'apikey' }, { auth_mode: 'agentIdentity' }, { auth_mode: '' }, { tokens: null },
+]) {
+  it(`rejects non-ChatGPT or missing legacy credentials before spawn: ${Object.keys(otherAuth).join(',')}/${String(otherAuth.auth_mode ?? '')}`, async () => {
+    const fake = createFakeCodex();
+    writeFileSync(join(fake.authHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'owned-chatgpt-token' }, ...otherAuth }), { mode: 0o600 });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, error => error);
+      expect(error).toHaveProperty('code', CODEX_SETUP_REQUIRED_CODE);
+      expect(readTrace(fake.trace)).toHaveLength(0);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
 
 itPosix('keeps usage-limit details from app-server error notifications', async () => {
   const fake = createFakeCodex({ mode: 'usage-limit' });
@@ -306,8 +402,12 @@ describe('CodexAppServerClient configuration', () => {
     expect(config['skills.include_instructions']).toBe(false);
   });
 
-  it('passes only the OS and Codex paths needed for ChatGPT login', () => {
+  it('passes OS paths and proxy routing while excluding unrelated credentials', () => {
+    const proxy = Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']
+      .map(key => [key, 'http://owned-proxy:3128']));
+    Object.assign(proxy, { NO_PROXY: 'localhost', no_proxy: '127.0.0.1' });
     const env = buildCodexAppServerEnv({
+      ...proxy,
       PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/home/tester/.codex', LANG: 'C.UTF-8',
       OPENROUTER_API_KEY: 'secret', OPENAI_API_KEY: 'secret', ANTHROPIC_API_KEY: 'secret',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
@@ -315,11 +415,51 @@ describe('CodexAppServerClient configuration', () => {
       SSH_AUTH_SOCK: '/tmp/agent.sock', CUSTOM_TOKEN: 'secret',
     }, '/tmp/claude-mem-private-codex');
 
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
+    expect(env).toEqual({ ...proxy, PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
   });
 });
 
 describe('CodexAppServerClient transport', () => {
+  for (const casing of ['upper', 'lower']) {
+    for (const bypass of [false, true]) {
+      itPosix(`retains ${casing}-case proxy routing in the real child (bypass=${bypass})`, async () => {
+        const received: string[] = [];
+        const origin = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('direct') });
+        const originUrl = new URL('/owned-bootstrap', origin.url).href;
+        if (!bypass) await origin.stop(true); // This endpoint is reachable only through the owned proxy.
+        const proxy = Bun.serve({ hostname: '127.0.0.1', port: 0,
+          fetch: request => { received.push(request.url); return new Response('proxied'); },
+        });
+        const keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'OPENAI_API_KEY'];
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        const fake = createFakeCodex({ networkUrl: originUrl });
+        const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+        try {
+          for (const key of keys) delete process.env[key];
+          process.env[casing === 'upper' ? 'HTTP_PROXY' : 'http_proxy'] = proxy.url.href;
+          if (bypass) process.env[casing === 'upper' ? 'NO_PROXY' : 'no_proxy'] = '127.0.0.1';
+          process.env.OPENAI_API_KEY = 'owned-key-must-not-reach-child';
+          const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+            prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+          expect(result.content).toContain('Captured.');
+          expect(readTrace(fake.trace).find(entry => entry.method === 'network/check')).toEqual({
+            method: 'network/check', body: bypass ? 'direct' : 'proxied', apiKeyPresent: false,
+          });
+          expect(received).toEqual(bypass ? [] : [originUrl]);
+          expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+        } finally {
+          await client.close();
+          for (const key of keys) {
+            if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+          }
+          await proxy.stop(true);
+          if (bypass) await origin.stop(true);
+          rmSync(fake.root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
   itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
     const fake = createFakeCodex({ mode: 'reject-first-init', writeOnShutdown: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
