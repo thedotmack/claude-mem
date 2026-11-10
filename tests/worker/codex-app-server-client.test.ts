@@ -27,6 +27,7 @@ interface FakeCodex {
 interface FakeCodexOptions {
   instructionSources?: string[];
   writeOnShutdown?: boolean;
+  networkUrl?: string;
   /** Give this fake its own executable file, for tests that replace the binary in place. */
   privateExecutable?: boolean;
   mode?: 'normal' | 'terminal-response' | 'hold-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
@@ -73,7 +74,18 @@ const FAKE_CODEX_SOURCE = [
   '    record(message);',
   "    if (message.method === 'initialized') continue;",
   "    if (message.method === 'initialize' && mode === 'silent-init') continue;",
-  "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "    if (message.method === 'initialize') {",
+  "      void (async () => {",
+  "        if (config.networkUrl) {",
+  "          try {",
+  "            const response = await fetch(config.networkUrl, { signal: AbortSignal.timeout(3000) });",
+  "            record({ method: 'network/check', body: await response.text(), apiKeyPresent: !!process.env.OPENAI_API_KEY });",
+  "            if (!response.ok) throw new Error('owned network request failed');",
+  "          } catch (error) { send({ id: message.id, error: { code: -32603, message: String(error) } }); return; }",
+  "        }",
+  "        send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "      })();",
+  "    }",
   "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
   "    else if (message.method === 'thread/start') {",
   "      const mode = statSync(message.params.cwd).mode & 0o777;",
@@ -137,6 +149,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     instructionSources: options.instructionSources ?? [],
     mode: options.mode ?? 'normal',
     writeOnShutdown: options.writeOnShutdown === true,
+    networkUrl: options.networkUrl,
   }));
   let executable = sharedFakeCodexExecutable();
   if (options.privateExecutable) {
@@ -306,8 +319,12 @@ describe('CodexAppServerClient configuration', () => {
     expect(config['skills.include_instructions']).toBe(false);
   });
 
-  it('passes only the OS and Codex paths needed for ChatGPT login', () => {
+  it('passes OS paths and proxy routing while excluding unrelated credentials', () => {
+    const proxy = Object.fromEntries(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']
+      .map(key => [key, 'http://owned-proxy:3128']));
+    Object.assign(proxy, { NO_PROXY: 'localhost', no_proxy: '127.0.0.1' });
     const env = buildCodexAppServerEnv({
+      ...proxy,
       PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/home/tester/.codex', LANG: 'C.UTF-8',
       OPENROUTER_API_KEY: 'secret', OPENAI_API_KEY: 'secret', ANTHROPIC_API_KEY: 'secret',
       CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
@@ -315,11 +332,51 @@ describe('CodexAppServerClient configuration', () => {
       SSH_AUTH_SOCK: '/tmp/agent.sock', CUSTOM_TOKEN: 'secret',
     }, '/tmp/claude-mem-private-codex');
 
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
+    expect(env).toEqual({ ...proxy, PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
   });
 });
 
 describe('CodexAppServerClient transport', () => {
+  for (const casing of ['upper', 'lower']) {
+    for (const bypass of [false, true]) {
+      itPosix(`retains ${casing}-case proxy routing in the real child (bypass=${bypass})`, async () => {
+        const received: string[] = [];
+        const origin = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('direct') });
+        const originUrl = new URL('/owned-bootstrap', origin.url).href;
+        if (!bypass) await origin.stop(true); // This endpoint is reachable only through the owned proxy.
+        const proxy = Bun.serve({ hostname: '127.0.0.1', port: 0,
+          fetch: request => { received.push(request.url); return new Response('proxied'); },
+        });
+        const keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'OPENAI_API_KEY'];
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        const fake = createFakeCodex({ networkUrl: originUrl });
+        const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+        try {
+          for (const key of keys) delete process.env[key];
+          process.env[casing === 'upper' ? 'HTTP_PROXY' : 'http_proxy'] = proxy.url.href;
+          if (bypass) process.env[casing === 'upper' ? 'NO_PROXY' : 'no_proxy'] = '127.0.0.1';
+          process.env.OPENAI_API_KEY = 'owned-key-must-not-reach-child';
+          const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+            prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+          expect(result.content).toContain('Captured.');
+          expect(readTrace(fake.trace).find(entry => entry.method === 'network/check')).toEqual({
+            method: 'network/check', body: bypass ? 'direct' : 'proxied', apiKeyPresent: false,
+          });
+          expect(received).toEqual(bypass ? [] : [originUrl]);
+          expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+        } finally {
+          await client.close();
+          for (const key of keys) {
+            if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+          }
+          await proxy.stop(true);
+          if (bypass) await origin.stop(true);
+          rmSync(fake.root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
   itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
     const fake = createFakeCodex({ mode: 'reject-first-init', writeOnShutdown: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
