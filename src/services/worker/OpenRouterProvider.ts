@@ -1344,6 +1344,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
             });
           }
         } catch (error) {
+          signal?.throwIfAborted();
           logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
             model,
             requestId: finalRequestId,
