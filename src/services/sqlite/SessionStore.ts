@@ -4600,7 +4600,9 @@ export class SessionStore {
     });
 
     const stored = storeTx();
-    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    // A later stop replaces the same prompt's summary, including clearing
+    // completed next steps. Do not serve that previous text while rendering.
+    emitContextInvalidation({ projects: [project] }, 'storeObservations', stored.summaryUpdated ? 'removal' : 'additive');
     return stored;
   }
 
