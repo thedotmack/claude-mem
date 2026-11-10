@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { sha256Base64Url, stableDocumentId, type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
 import { readSyncQueueInventory, type SyncQueueFlags } from './SyncQueueEvidence.js';
+import { sharedWorkListSql } from '../work-view/shared-records.mjs';
 
 const TABLES: Record<ContentKind, string> = { observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', work_state: 'work_state_entries' };
 export const RECOVERY_MAX_ITEMS = 1000;
@@ -82,7 +83,7 @@ export class SyncRecovery {
         const table = TABLES[kind];
         const from = kind === 'prompt' ? `${table} t LEFT JOIN sdk_sessions s ON t.session_db_id = s.id` : `${table} t`;
         const project = kind === 'prompt' ? "COALESCE(s.project, 'unknown')" : "COALESCE(t.project, 'unknown')";
-        const held = kind === 'work_state' && !flags.sharedWorkWritesEnabled ? "AND COALESCE(t.list_name, '') NOT GLOB '__my_work_v[0-9]*:*'" : '';
+        const held = kind === 'work_state' && !flags.sharedWorkWritesEnabled ? `AND NOT ${sharedWorkListSql('t.list_name')}` : '';
         const candidates = this.db.prepare(`SELECT CAST(t.id AS TEXT) AS id FROM ${from}
           JOIN sync_launch_exclusions e ON e.kind = ? AND e.origin_local_id = CAST(t.id AS TEXT)
           WHERE t.origin_device_id IS NULL AND ${project} = ? AND t.created_at_epoch >= ? AND t.created_at_epoch < ?
@@ -163,7 +164,7 @@ export class SyncRecovery {
     return !!this.db.prepare(`SELECT 1 FROM sync_recovery_jobs j JOIN sync_recovery_items i ON i.job_id = j.id
       JOIN work_state_entries w ON w.id = i.origin_local_id AND w.origin_device_id IS NULL
       WHERE j.device_id = ? AND j.status = 'running' AND i.status = 'selected' AND i.kind = 'work_state'
-      AND (? = 1 OR COALESCE(w.list_name, '') NOT GLOB '__my_work_v[0-9]*:*') LIMIT 1`).get(this.deviceId, Number(sharedAllowed));
+      AND (? = 1 OR NOT ${sharedWorkListSql('w.list_name')}) LIMIT 1`).get(this.deviceId, Number(sharedAllowed));
   }
 
   transition(id: string, action: 'resume' | 'pause' | 'cancel', expectedEpoch: string | null) {
@@ -207,7 +208,7 @@ export class SyncRecovery {
         const rows = this.db.prepare(`SELECT i.* FROM sync_recovery_items i WHERE i.job_id = ? AND i.status = 'selected'
           AND (? = 1 OR i.kind != 'work_state')
           AND (? = 1 OR NOT EXISTS (SELECT 1 FROM work_state_entries w WHERE i.kind = 'work_state'
-            AND w.id = i.origin_local_id AND COALESCE(w.list_name, '') GLOB '__my_work_v[0-9]*:*'))
+            AND w.id = i.origin_local_id AND ${sharedWorkListSql('w.list_name')}))
           ORDER BY i.kind, i.origin_local_id LIMIT ?`).all(job.id, Number(flags.workStateSupported), Number(flags.sharedWorkWritesEnabled), Math.max(0, limit - selections.length)) as StoredItem[];
         for (const row of rows) {
           let snapshot: ReturnType<RecoverySource['snapshotNative']>;

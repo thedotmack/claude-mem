@@ -47,6 +47,7 @@ interface BeforePromptBuildResult {
 interface AfterToolCallEvent {
   toolName: string;
   params?: Record<string, unknown>;
+  toolCallId?: string;
   result?: unknown;
   error?: string;
 }
@@ -884,6 +885,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
       tool_input: toolInput,
       tool_response: toolResponseText,
+      // The worker needs the native ID to retain and link the raw tool receipt.
+      ...(typeof event.toolCallId === "string" && event.toolCallId ? { tool_use_id: event.toolCallId } : {}),
       cwd: workspaceDir,
       platformSource: PLATFORM_SOURCE,
     }, api.logger);

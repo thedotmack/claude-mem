@@ -394,7 +394,7 @@ async function fetchProjectCatalog(
   // Most recently active first, which is the order the viewer's project
   // picker shows.
   const projects: string[] = [];
-  const projectsBySource: Record<string, string[]> = {};
+  const projectsBySource: Record<string, string[]> = Object.create(null);
   for (const row of result.rows) {
     if (!projects.includes(row.project)) projects.push(row.project);
     (projectsBySource[row.platform_source] ??= []).push(row.project);

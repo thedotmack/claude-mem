@@ -4,6 +4,11 @@ import path from 'path';
 
 import { PRO_FALLBACK_NOTICE_MARKER } from '../../../src/shared/cmem-gateway.js';
 import { paths } from '../../../src/shared/paths.js';
+import {
+  contextCacheKeys,
+  removeContextCache,
+  writeContextCache,
+} from '../../../src/shared/context-cache.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
@@ -540,5 +545,65 @@ describe('contextHandler SessionStart path', () => {
     } finally {
       includeAllSources = false;
     }
+  });
+
+  describe('context cache reserve (#5672)', () => {
+    const fallbackMarker = path.join(paths.dataDir(), PRO_FALLBACK_NOTICE_MARKER);
+    const cacheKeys = () => contextCacheKeys(['parent-project', 'repo-project'], 'claude', false);
+    const seedCache = (body: string) => writeContextCache(cacheKeys(), body, Date.now());
+    const clearCache = () => removeContextCache(cacheKeys());
+
+    beforeEach(() => {
+      rmSync(fallbackMarker, { force: true });
+      clearCache();
+    });
+    afterEach(() => {
+      rmSync(fallbackMarker, { force: true });
+      clearCache();
+    });
+
+    it('shares one room definition between the cache read and the compose step', async () => {
+      const { sessionStartBodyRoom } = await import('../../../src/cli/handlers/context.js');
+      expect(sessionStartBodyRoom('', 1_000)).toBe(1_000);
+      expect(sessionStartBodyRoom('notice', 1_000)).toBe(992);
+      expect(sessionStartBodyRoom('x'.repeat(999), 1_000)).toBe(0);
+    });
+
+    it('treats a cached body over the reserve-adjusted room as a miss and fetches live', async () => {
+      staleReason = 'x'.repeat(2_000);
+      proFallbackAt = new Date().toISOString();
+      workerContext = 'LIVE BODY FROM WORKER';
+      // Rendered for the full budget, over the room the notices leave (about
+      // 8.7k here) but under the raw 10k limit: exactly the body #5672 saw
+      // served and then dropped.
+      const cachedBody = 'CACHED BODY MARKER\n' + 'y'.repeat(9_342);
+      expect(cachedBody.length).toBe(9_361);
+      seedCache(cachedBody);
+      calls.length = 0;
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({ sessionId: 'cache-over-room', cwd: '/tmp/repo', platform: 'claude-code' });
+      const output = result.hookSpecificOutput!.additionalContext!;
+      expect(output).toContain('LIVE BODY FROM WORKER');
+      expect(output).not.toContain('CACHED BODY MARKER');
+      expect(output).not.toContain('Recent context omitted');
+      const injectUrl = new URL(String(calls.find(call => String(call[0]).startsWith('/api/context/inject'))?.[0]), 'http://worker');
+      expect(Number(injectUrl.searchParams.get('reserveChars'))).toBeGreaterThan(0);
+    });
+
+    it('still serves a cached body that fits the reserve-adjusted room', async () => {
+      staleReason = 'x'.repeat(2_000);
+      proFallbackAt = new Date().toISOString();
+      workerContext = 'LIVE BODY FROM WORKER';
+      const cachedBody = 'CACHED BODY MARKER\n' + 'y'.repeat(4_981);
+      expect(cachedBody.length).toBe(5_000);
+      seedCache(cachedBody);
+      calls.length = 0;
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({ sessionId: 'cache-fits-room', cwd: '/tmp/repo', platform: 'claude-code' });
+      const output = result.hookSpecificOutput!.additionalContext!;
+      expect(output).toContain('CACHED BODY MARKER');
+      expect(output).not.toContain('LIVE BODY FROM WORKER');
+      expect(calls).toEqual([]);
+    });
   });
 });
