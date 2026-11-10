@@ -4,17 +4,17 @@
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
- * Every backend (Claude Code, Codex, Gemini) runs the same way: the worker
- * runs the skills' CLI and scripts, asks the read-only agent one JSON
- * question per step, and saves the answer through the same validators the
- * skills' CLI uses.
+ * Every backend (Claude Code, Codex, Gemini, and the selected API provider)
+ * runs the same way: the worker runs the skills' CLI and scripts, asks the
+ * read-only agent one JSON question per step, and saves the answer through the
+ * same validators the skills' CLI uses.
  */
 
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentTask, AnswerSchema, AskAgent, StepModels } from '../agent-runner/run.js';
+import type { AgentTask, AnswerSchema, AskAgent, StepModels, TaskAgentId } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
@@ -62,13 +62,14 @@ export const STEP_MODEL_SETTINGS = {
   'claude-code': 'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
   codex: 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
   gemini: 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
-} as const satisfies Record<UsableAgentId, keyof SettingsDefaults>;
+  api: 'CLAUDE_MEM_WORK_VIEW_API_MODEL',
+} as const satisfies Record<TaskAgentId, keyof SettingsDefaults>;
 
 /** The models each step runs on, read from settings at the start of every run so a change applies without a restart.
  * An override replaces only the model: Codex keeps each step's reasoning effort. */
 export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
-  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[UsableAgentId, keyof SettingsDefaults]>)
+  const overrides = (Object.entries(STEP_MODEL_SETTINGS) as Array<[TaskAgentId, keyof SettingsDefaults]>)
     .map(([agent, key]) => [agent, String(settings[key] ?? '').trim()] as const)
     .filter(([, model]) => model);
   if (!overrides.length) return STEP_MODELS;
@@ -81,13 +82,13 @@ export function resolveStepModels(dataDir: string): Record<Step, StepModels> {
 }
 
 /** The values CLAUDE_MEM_WORK_VIEW_AGENT accepts. The settings route validates against this same list. */
-export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'off', 'all'] as const;
+export const WORK_VIEW_AGENT_CHOICES = ['', 'claude-code', 'codex', 'gemini', 'api', 'off', 'all'] as const;
 
 export interface RefreshAgentChoice {
   /** The only agents the refresh may run on; absent means every logged-in agent. */
-  allowedAgents?: UsableAgentId[];
+  allowedAgents?: TaskAgentId[];
   /** Tried first when it is logged in (#5435). */
-  preferredAgent?: UsableAgentId;
+  preferredAgent?: TaskAgentId;
   /** A failed run is never handed to a second agent. */
   stayOnFirstUsableAgent: boolean;
 }
@@ -100,19 +101,22 @@ const LOCAL_AGENT_IDS: readonly UsableAgentId[] = ['claude-code', 'codex', 'gemi
  * - CLAUDE_MEM_WORK_VIEW_AGENT names an agent: only that agent runs;
  * - `off`: no agent runs;
  * - `all`: every logged-in agent, falling through on failure (the agent CLAUDE_MEM_PROVIDER names first);
+ * - `api`: only the API provider CLAUDE_MEM_PROVIDER selects ('openrouter', 'openai-compatible', 'cmem');
  * - empty: the agent CLAUDE_MEM_PROVIDER names (#5435). A provider that names an API endpoint instead
  *   ('openrouter', 'openai-compatible', 'cmem') runs the first logged-in agent in detect order, and only that one.
+ *   The API provider itself runs the refresh only when the owner sets `api`: it spends that provider's credit.
  * The worker builds a fresh task for every run, so a settings change applies to the next refresh. */
 export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
   const settings = SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true });
   const provider = String(settings.CLAUDE_MEM_PROVIDER ?? '').trim();
-  const providerAgent: UsableAgentId | undefined = provider === 'claude' ? 'claude-code'
+  const providerAgent: TaskAgentId | undefined = provider === 'claude' ? 'claude-code'
     : provider === 'codex' || provider === 'gemini' ? provider : undefined;
   const configuredAgent = String(settings.CLAUDE_MEM_WORK_VIEW_AGENT ?? '').trim();
   if (configuredAgent === 'off') return { allowedAgents: [], stayOnFirstUsableAgent: true };
   if (configuredAgent === 'all') return { preferredAgent: providerAgent, stayOnFirstUsableAgent: false };
   const namedAgent = LOCAL_AGENT_IDS.find(agent => agent === configuredAgent);
   if (namedAgent) return { allowedAgents: [namedAgent], preferredAgent: namedAgent, stayOnFirstUsableAgent: true };
+  if (configuredAgent === 'api') return { allowedAgents: ['api'], preferredAgent: 'api', stayOnFirstUsableAgent: true };
   if (configuredAgent) {
     logger.warn('WORKER', 'Unrecognized CLAUDE_MEM_WORK_VIEW_AGENT; the My Work refresh follows CLAUDE_MEM_PROVIDER instead', {
       value: configuredAgent, accepted: WORK_VIEW_AGENT_CHOICES.filter(Boolean).join(', '),
@@ -125,32 +129,35 @@ export function resolveRefreshAgents(dataDir: string): RefreshAgentChoice {
 /** A language name CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE may hold: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
 const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
 
-/** The English name of a locale's language, such as "Spanish" for es-ES, from the runtime's own locale data,
- * never from a model. Null when the locale names no language (undetermined, or a name the rule cannot use). */
-export function languageNameForLocale(locale?: string): string | null {
-  try {
-    const language = new Intl.Locale(locale ?? Intl.DateTimeFormat().resolvedOptions().locale).language;
-    if (!language || language === 'und') return null;
-    const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(language);
-    return name && LANGUAGE_NAME.test(name) ? name : null;
-  } catch { return null; }
-}
-
-/** The language My Work's generated text is written in, read at the start of every run:
- * CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when it names one, else the system locale's language. It is never detected
- * by a model: a detection call would spend the owner's agent quota on every automatic refresh. The locale
- * fallback keeps one run on one language: without it, each step guesses from the slice of asks its own question
- * holds, and a focus batch can guess a different language than the reviews did (#5660). Only when neither the
- * setting nor the locale names a language do the skills' own Language rule apply. */
+/** The language My Work's generated text is written in, from CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE, read at the start of
+ * every run. Empty or not a language name gives null: the run then uses the language its grouping step decides from
+ * the owner's asks (decidedTextLanguage), and only with neither does each step apply the skills' own Language rule. */
 export function resolveTextLanguage(dataDir: string): string | null {
   const value = String(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE ?? '').trim();
-  return LANGUAGE_NAME.test(value) ? value : languageNameForLocale();
+  return LANGUAGE_NAME.test(value) ? value : null;
+}
+
+/** Where a run records the language its grouping step decided, for later runs that have nothing to group. */
+const DECIDED_LANGUAGE_FILE = 'text-language.json';
+
+/** A language name from a model answer, or null: only a value that passes LANGUAGE_NAME is ever put in a question. */
+export function decidedTextLanguage(value: unknown): string | null {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return LANGUAGE_NAME.test(name) ? name : null;
+}
+
+/** The language an earlier run's grouping step decided, or null when none was recorded (or the file is unreadable). */
+export function readDecidedTextLanguage(ledgerDir: string): string | null {
+  try { return decidedTextLanguage(JSON.parse(readFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), 'utf8'))?.language); }
+  catch { return null; }
 }
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
 const stringArray = { type: 'array', items: { type: 'string' } };
 /** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
 export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  // The human language most of the batch's asks are written in (#5660): the run names it in every later question.
+  language: { type: 'string' },
   groups: { type: 'array', items: strictObject({
     title: { type: 'string' },
     conversations: stringArray,
@@ -173,7 +180,7 @@ export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
 });
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
-export interface StepTiming { step: string; agent: UsableAgentId; startedAt: string; finishedAt: string; groups?: number }
+export interface StepTiming { step: string; agent: TaskAgentId; startedAt: string; finishedAt: string; groups?: number }
 
 export interface RefreshTaskOptions {
   needs: RefreshNeeds;
@@ -292,7 +299,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   };
 
   const steps: StepTiming[] = [];
-  const run = async (askBackend: AskAgent, agent: UsableAgentId): Promise<string> => {
+  const run = async (askBackend: AskAgent, agent: TaskAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -302,14 +309,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const refused = (error: Error) => { answerWasRefused = true; return Object.assign(error, { answerRefused: true }); };
     const stepModels = resolveStepModels(dataDir);
     const inlineEvidence = new Map<string, string>();
-    if (agent === 'gemini' && needs.goalsStale) {
+    // Gemini and the API agent have no file tools, so the input files travel with the question.
+    if ((agent === 'gemini' || agent === 'api') && needs.goalsStale) {
       for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
         const path = join(goalsFolder, name);
         if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
       }
     }
     const ask: AskAgent = (prompt, models, schema) => {
-      const supplied = agent === 'gemini' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
+      const supplied = agent === 'gemini' || agent === 'api' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
       return askBackend(supplied.length ? `${prompt}\n\nThe following input files are supplied inline; no file tools are available:\n${supplied.map(([path, contents]) => `--- ${path} ---\n${contents}`).join('\n\n')}` : prompt, models, schema);
     };
     const writeInput = (name: string, value: unknown) => {
@@ -365,16 +373,28 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
     /**
-     * The owner's language for this run (resolveTextLanguage: the setting, else the system locale) is named in
-     * every grouping, review, focus and story question. Those run as separate agents that each see only their
-     * own input (a review batch in "amend" mode sees only its later asks), so left to the skill's rule they
-     * could each pick a different language.
+     * The owner's language for this run is named in every grouping, review, focus and story question. Those run as
+     * separate agents that each see only their own input (a review batch in "amend" mode sees only its later asks), so
+     * left to the skill's rule they could each pick a different language (#5660). It is decided once:
+     * CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE when set; otherwise the first grouping answer's "language" (the grouping
+     * question already reads the asks, so this costs no extra model call), recorded for runs with nothing to group;
+     * otherwise the language an earlier run recorded. With none, each step keeps the skill's own rule.
      * The goals step reads every owner prompt in one question, so it keeps the skill's own rule.
      */
-    const textLanguage = resolveTextLanguage(dataDir);
-    const languageRule = textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    const configuredLanguage = resolveTextLanguage(dataDir);
+    let textLanguage = configuredLanguage ?? readDecidedTextLanguage(ledgerDir);
+    let languageDecidedThisRun = false;
+    const languageRule = () => textLanguage ? `The owner's language for this run is ${textLanguage}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${textLanguage}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    /** The first valid grouping answer decides the run's language when the setting names none. */
+    const noteGroupingLanguage = (value: unknown) => {
+      const decided = decidedTextLanguage(value);
+      if (configuredLanguage || languageDecidedThisRun || !decided) return;
+      languageDecidedThisRun = true;
+      textLanguage = decided;
+      writeFileSync(join(ledgerDir, DECIDED_LANGUAGE_FILE), JSON.stringify({ language: decided, decidedAt: new Date(now()).toISOString() }, null, 2), { mode: 0o600 });
+    };
     const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
-      const rule = name === 'goals' ? '' : languageRule;
+      const rule = name === 'goals' ? '' : languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
@@ -476,8 +496,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           // The batch is inline, with its keys named: on a file path alone Codex's light model sometimes
           // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
           `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
-          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
-        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)), GROUPING_ANSWER_SCHEMA);
+          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else, plus "language": the human language most of the owner's asks are written in, as an English name such as "English", ignoring code, file paths, URLs and product names.`,
+        ].join('\n\n'), answer => {
+          const { language, ...decisions } = answer ?? {};
+          const saved = cli(['apply'], validateGroupingAnswer(decisions, input));
+          noteGroupingLanguage(language);
+          return saved;
+        }, GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }
       if (grouped) done.push(`${grouped} new conversations grouped`);
@@ -529,7 +554,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
-          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule), { groups: batch.length })]));
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, languageRule()), { groups: batch.length })]));
         }
       };
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));

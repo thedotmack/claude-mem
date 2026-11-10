@@ -21,8 +21,9 @@ the expiry does not abort it. Releasing a failed claim does not reset its age.
 Source timestamps stay separate from time spent in the buffer.
 
 The common hook handoff sends observations, file edits, and summaries directly
-to the existing worker endpoints, with a 250 ms transport deadline and no disk
-outbox or transport retry. Remote delivery uses the authenticated endpoint and
+to the existing worker endpoints, with a transport deadline
+(`CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS`, 250 ms by default, at most 14000 ms) and no
+disk outbox or transport retry. A missed deadline skips the event and logs it at WARN. Remote delivery uses the authenticated endpoint and
 stores only an at-most-once receipt before dispatch. That receipt is not an
 observation-completion checkpoint. Old observer entries in the disk spool are
 retired without inference. The non-inference metadata spool remains separate.

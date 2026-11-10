@@ -3,17 +3,38 @@ import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { remoteHookSpoolReceipt, type HookSpoolEntry } from '../shared/hook-spool.js';
 import { remoteHookSpoolToken, usesRemoteHookSpool, REMOTE_SPOOL_PROTOCOL_VERSION } from '../shared/hook-spool-remote.js';
 import { logger } from '../utils/logger.js';
-import { deliverLiveObserverHandoff } from '../shared/live-observer-handoff.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { deliverLiveObserverHandoff, LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../shared/live-observer-handoff.js';
 
 /** One live handoff, no disk outbox, background child, or delivery retry. */
-export { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS } from '../shared/live-observer-handoff.js';
+export { LIVE_OBSERVER_HANDOFF_TIMEOUT_MS };
 const handoffs = new Set<Promise<void>>();
+
+/**
+ * CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS as a whole number of milliseconds, else the 250 ms default. The hook waits for
+ * the handoff before it exits (hook-command.ts settleHookSpoolNudges), so the value is added to the hook's own time.
+ * The ceiling is HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX (14000), the same one CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS
+ * has: it keeps a process-exit margin under Claude Code's 15 s hook timeout, the shortest any claude-mem hook has.
+ * A larger value is cut to it, with a warning, instead of holding the hook past that timeout.
+ */
+export function parseHandoffTimeoutMs(raw: string | undefined): number {
+  const text = String(raw ?? '').trim();
+  if (!/^\d+$/.test(text) || Number(text) <= 0) return LIVE_OBSERVER_HANDOFF_TIMEOUT_MS;
+  const parsed = Number(text);
+  if (parsed > HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX) {
+    logger.warn('HOOK', 'CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS is above its maximum; using the maximum', {
+      value: parsed, maximum: HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX,
+    });
+    return HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX;
+  }
+  return parsed;
+}
 
 export function sendLiveObserverEvent(entry: HookSpoolEntry): string {
   const receipt = remoteHookSpoolReceipt(entry);
   const handoff = deliver(entry).catch(() => {
     // An ambiguous handoff is never resent: the worker may already have it.
-    logger.debug('HOOK', 'Live observer handoff unavailable; skipped event', { kind: entry.kind });
+    logger.warn('HOOK', 'Live observer handoff unavailable; skipped event', { kind: entry.kind });
   });
   handoffs.add(handoff);
   void handoff.finally(() => handoffs.delete(handoff));
@@ -26,6 +47,9 @@ export async function settleLiveObserverEvents(): Promise<void> {
 
 async function deliver(entry: HookSpoolEntry): Promise<void> {
   const settings = loadFromFileOnce();
+  const handoffTimeoutMs = parseHandoffTimeoutMs(
+    process.env.CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS ?? settings.CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS,
+  );
   let path: string;
   let body: unknown;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -51,5 +75,5 @@ async function deliver(entry: HookSpoolEntry): Promise<void> {
     throw new Error(`Not a live observer event: ${entry.kind}`);
   }
   await deliverLiveObserverHandoff(timeoutMs => workerHttpRequest(path, { method: 'POST', headers,
-    body: JSON.stringify(body), timeoutMs, idleTimeoutMs: timeoutMs }));
+    body: JSON.stringify(body), timeoutMs, idleTimeoutMs: timeoutMs }), handoffTimeoutMs);
 }
