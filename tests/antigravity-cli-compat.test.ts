@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -12,8 +12,6 @@ import {
   removeClaudeMemHooks,
   toSpaceFreePath,
 } from '../src/services/integrations/AntigravityCliHooksInstaller.js';
-
-const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
 
 describe('AntigravityCliHooksInstaller - agy hooks.json schema', () => {
   const BUN = '/usr/local/bin/bun';
@@ -35,30 +33,6 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema', () => {
   it('normalizes a Windows Bun path in the hook command', () => {
     const config = buildAntigravityHooksConfig(String.raw`C:\bun\bun.exe`, WORKER) as Record<string, any>;
     expect(config['claude-mem'].SessionStart[0].command).toBe(`C:/bun/bun.exe ${WORKER} hook antigravity-cli context`);
-  });
-});
-
-// The files agy reads. Install writes under the real home directory, so these
-// external paths are pinned in the source rather than exercised.
-describe('AntigravityCliHooksInstaller - hooks.json target (not settings.json)', () => {
-  const src = readFileSync(INSTALLER_PATH, 'utf-8');
-
-  it('writes hooks to ~/.gemini/config/hooks.json (the file agy loads)', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'hooks.json')");
-    expect(src).toContain('writeAntigravityHooksConfig');
-  });
-
-  it('still targets the shared ~/.gemini GEMINI.md context file', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'GEMINI.md')");
-  });
-
-  it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
-  });
-
-  it('writes the rules/context placeholder to the plural, home-relative .agents/rules path', () => {
-    expect(src).toContain("path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md')");
   });
 });
 

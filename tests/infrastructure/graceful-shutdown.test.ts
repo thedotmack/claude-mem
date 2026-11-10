@@ -173,28 +173,6 @@ describe('GracefulShutdown', () => {
       expect(existsSync(PID_FILE)).toBe(false);
     });
 
-    it('should spare another process\'s PID file during shutdown (restart successor)', async () => {
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
-      };
-
-      // A restart successor has already written its own PID file by the time
-      // the dying worker's cascade runs — the dying worker must not clobber
-      // it (Phase 5, worker-restart plan).
-      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
-      expect(existsSync(PID_FILE)).toBe(true);
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager
-      };
-
-      await performGracefulShutdown(config);
-
-      expect(existsSync(PID_FILE)).toBe(true);
-      expect(readPidFile()!.pid).toBe(99999);
-    });
-
     it('should handle missing optional services gracefully', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})

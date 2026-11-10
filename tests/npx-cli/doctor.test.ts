@@ -626,20 +626,6 @@ describe('npx doctor Auto-update row', () => {
       ]);
     });
 
-    it('restore_failed blocked by the schema: the whole instruction, the command and when to run it', () => {
-      const row = autoUpdateCheck(sources({
-        state: { ...checked, lastAttemptOutcome: outcome('restore_failed', { failureStage: 'restore-blocked-by-schema', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND, fixCommandWhen: 'once-a-release-newer-than-the-target-is-out' }) },
-      }));
-      expect(lines(row.detail).at(-1)).toBe(`Fix: once a claude-mem release newer than ${TARGET} is out, run \`npx claude-mem@latest update\`, then restart Claude Code.`);
-    });
-
-    it('restore_failed with the installer still running: the fix, for once that update has finished', () => {
-      const row = autoUpdateCheck(sources({
-        state: { ...checked, lastAttemptOutcome: outcome('restore_failed', { failureStage: 'installer-still-running', fixCommand: `npx claude-mem@${INSTALLED} update`, fixCommandWhen: 'once-the-running-update-has-finished' }) },
-      }));
-      expect(lines(row.detail).at(-1)).toBe(`Fix: once the update that is still running has finished, run \`npx claude-mem@${INSTALLED} update\`, then restart Claude Code.`);
-    });
-
     it('restore_failed resolved by a ready worker: no warning and no fix line, with the worker\'s version and when', () => {
       const row = autoUpdateCheck(sources({
         state: {

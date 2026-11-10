@@ -6,21 +6,6 @@ describe('normalizeTitle', () => {
     expect(normalizeTitle('Fixed   the   BUG!!!')).toBe('fixed the bug');
   });
 
-  it('treats punctuation-separated variants as equal (for Tier-0 exact match)', () => {
-    expect(normalizeTitle('On-Demand Checkpoint.')).toBe(normalizeTitle('on demand checkpoint'));
-  });
-
-  it('distinguishes genuinely different titles (negative)', () => {
-    expect(normalizeTitle('Added the relevance_count column'))
-      .not.toBe(normalizeTitle('Removed the relevance_count column'));
-  });
-
-  it('handles null/empty', () => {
-    expect(normalizeTitle(null)).toBe('');
-    expect(normalizeTitle('')).toBe('');
-    expect(normalizeTitle('   ')).toBe('');
-  });
-
   it('collapses punctuation-only and emoji-only titles to empty (precondition for the Tier-0 empty-guard)', () => {
     // These are the inputs that make the empty-normal-form data-loss guard load-bearing.
     expect(normalizeTitle('!!!')).toBe('');

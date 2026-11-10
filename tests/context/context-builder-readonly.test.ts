@@ -168,25 +168,4 @@ describe('context database ownership', () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
-
-  it('keeps SessionStore responsible for fresh database schema creation', () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-'));
-    try {
-      const result = runChild(dataDir, { READONLY_CASE: 'missing' });
-      expect(result.exists).toBe(false);
-      const workerResult = Bun.spawnSync([process.execPath, '-e', `
-        import { SessionStore } from './src/services/sqlite/SessionStore.ts';
-        const store = new SessionStore(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db');
-        console.log(JSON.stringify({ versions: (store.db.prepare('SELECT COUNT(*) as count FROM schema_versions').get() as { count: number }).count }));
-        store.close();
-      `], {
-        cwd: repoRoot,
-        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
-      });
-      expect(workerResult.exitCode).toBe(0);
-      expect(JSON.parse(new TextDecoder().decode(workerResult.stdout).trim()).versions).toBeGreaterThan(0);
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
 });

@@ -155,7 +155,7 @@ describe('Server', () => {
       expect(body.status).toBe('ok');
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
-      expect(body.platform).toBeDefined();
+      expect(typeof body.platform).toBe('string');
       expect(body.pid).toBeDefined();
       expect(typeof body.pid).toBe('number');
     });
@@ -222,6 +222,7 @@ describe('Server', () => {
 
       const body = await response.json();
       expect(body.status).toBe('ready');
+      expect(body.mcpReady).toBe(true);
     });
 
     it('should return 503 when not initialized', async () => {
@@ -243,7 +244,7 @@ describe('Server', () => {
 
       const body = await response.json();
       expect(body.status).toBe('initializing');
-      expect(body.message).toBeDefined();
+      expect(body.message).toContain('initializing');
     });
   });
 

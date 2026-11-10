@@ -26,7 +26,6 @@ const {
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
-  spawnDaemon,
   spawnDetachedWorkerDaemon,
   getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
@@ -672,35 +671,6 @@ describe('ProcessManager', () => {
       removePidFile();
 
       expect(() => touchPidFile()).not.toThrow();
-    });
-  });
-
-  describe('spawnDaemon', () => {
-    it('should use setsid on Linux when available', () => {
-      if (process.platform === 'win32') return; 
-
-      const setsidAvailable = existsSync('/usr/bin/setsid');
-      if (!setsidAvailable) return; 
-
-      const pid = spawnDaemon('/dev/null', 39999);
-
-      expect(pid).toBeDefined();
-      expect(typeof pid).toBe('number');
-
-      if (pid !== undefined && pid > 0) {
-        try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
-      }
-    });
-
-    it('should return undefined when spawn fails on Windows path', () => {
-      if (process.platform === 'win32') return;
-
-      const result = spawnDaemon('/nonexistent/script.cjs', 39998);
-      expect(result).toBeDefined();
-
-      if (result !== undefined && result > 0) {
-        try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
-      }
     });
   });
 

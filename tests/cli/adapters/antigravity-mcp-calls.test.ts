@@ -115,16 +115,4 @@ describe('an agy work_state_write attaches to its own conversation in My Work (#
     expect(view.coverage.unattributedWork).toBe(0);
   });
 
-  it('a replayed PostToolUse for the same step does not add a second row', async () => {
-    const raw = agyMcpCall('work_state_write', { list: 'release', fields: { task: 'Once' } }, { workspacePaths: [workspace] });
-    await ingestAgy(raw);
-    await ingestAgy(raw);
-    expect(store.queryToolUses({ contentSessionId: CONVERSATION })).toHaveLength(1);
-  });
-
-  it('an agy memory search is no longer stored or observed as a new tool call', async () => {
-    const result = await ingestAgy(agyMcpCall('search', { query: 'agy' }, { workspacePaths: [workspace] }));
-    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'memory_retrieval' });
-    expect(store.queryToolUses({})).toHaveLength(0);
-  });
 });

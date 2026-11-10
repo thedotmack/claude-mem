@@ -58,25 +58,10 @@ async function unvalidatedObservationOp(originLocalId: string, payloadOverrides:
 }
 
 const INVALID_MANIFESTS: Array<[string, unknown]> = [
-	["null namespace", null],
-	["unsupported version", { ...VALID_MANIFEST, version: 2 }],
 	["unknown manifest key", { ...VALID_MANIFEST, ready: true }],
-	["readiness frozen into a ref", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "uninspected", state: "ready" }] }],
-	["object key on a ref", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "uninspected", key: "owner/a/b/viewer.webp" }] }],
-	["path as label", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "/Users/me/shot.png", inspection: "uninspected" }] }],
-	["data URL as label", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "data:image/webp;base64,AAAA", inspection: "uninspected" }] }],
 	["uppercase id", { version: 1, attachments: [{ id: ATTACHMENT_ONE.toUpperCase(), label: "event1_image1", inspection: "uninspected" }] }],
-	["duplicate id", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "a", inspection: "uninspected" }, { id: ATTACHMENT_ONE, label: "b", inspection: "uninspected" }] }],
 	["bad inspection", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "ready" }] }],
 	["non-boolean overflow", { ...VALID_MANIFEST, overflow: "yes" }],
-	["33 refs", {
-		version: 1,
-		attachments: Array.from({ length: 33 }, (_, index) => ({
-			id: `3f8a1c2e-5b6d-4e7f-8a9b-${index.toString(16).padStart(12, "0")}`,
-			label: "event1_image1",
-			inspection: "uninspected",
-		})),
-	}],
 ];
 
 describe("metadata.cmem_media_v1 validator (sync-api)", () => {

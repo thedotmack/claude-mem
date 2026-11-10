@@ -4,10 +4,7 @@
  * The production reclaim (reclaimGhostListeningPort) only runs on Windows and
  * shells out to netstat / Get-CimInstance / taskkill, so its decision logic is
  * exercised on every CI platform through injected fakes; the pure parsers run
- * directly. The real end-to-end path — worker killed out-of-band, chroma
- * sidecar chain holding the inherited socket, launcher reclaims and starts —
- * is the Windows integration gate (tests/integration/worker-ghost-port-recovery
- * .test.ts, CLAUDE_MEM_TEST_CHROMA=1 in the windows workflow).
+ * directly.
  */
 
 import { describe, it, expect } from 'bun:test';

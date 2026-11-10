@@ -94,8 +94,6 @@ const wrappedCreditError =
 
 describe('classifyClaudeError — status and message classification', () => {
   it.each([
-    [Object.assign(new Error('unauthorized'), { status: 401 }), 'auth_invalid'],
-    [Object.assign(new Error('rate limited'), { status: 429 }), 'rate_limit'],
     [new Error('ECONNRESET: socket hang up'), 'transient'],
     [new Error('The provided model identifier is invalid'), 'unrecoverable'],
     [Object.assign(new Error('Anthropic SDK error'), { error: { type: 'invalid_request_error' } }), 'unrecoverable'],

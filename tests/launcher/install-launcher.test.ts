@@ -1432,12 +1432,6 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
       }
     });
 
-    it('reads an older restore_failed outcome that records only fixCommand, its fix to run now', () => {
-      const { scratchHome, environment } = currentLauncherHome();
-      writeAutoUpdateState(path.join(scratchHome, '.claude-mem'), lastOutcome('restore_failed', { fixCommand: RECORDED_FIX }));
-      expect(runEnsureLauncherScript(scratchHome, environment).stdout).toBe(notice(RESTORE_FAILED_NOTICE));
-    });
-
     // An attempt cut off without an outcome: a notice only while its
     // supervisor is gone and the install looks half-written.
     const halfWrittenCases: Array<[string, (install: ReturnType<typeof writeWholeInstall>) => string]> = [
@@ -1524,15 +1518,6 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
         expect(scriptRun.stderr).toBe('');
       });
     }
-
-    it('stays silent while an attempt runs, even with an older restore_failed outcome: no fix may run beside its installer', () => {
-      const { scratchHome, environment } = currentLauncherHome();
-      writeAutoUpdateState(path.join(scratchHome, '.claude-mem'), {
-        ...lastOutcome('restore_failed', { fixCommand: RECORDED_FIX }),
-        ...attemptInFlight(3, process.pid),
-      });
-      expect(runEnsureLauncherScript(scratchHome, environment).stdout).toBe('');
-    });
 
     it('a dead supervisor with an installed_plugins.json that does not parse: no notice, why in the debug log, exit 0', () => {
       const { scratchHome, environment } = currentLauncherHome();

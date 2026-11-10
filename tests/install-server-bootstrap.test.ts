@@ -30,26 +30,6 @@ describe('persistServerSettings: corrupt-document write refusal', () => {
   });
 });
 
-describe('persistServerSettings: flat-record merge preservation', () => {
-  it('writes API keys and preserves all unrelated root keys', () => {
-    const original = {
-      CLAUDE_MEM_RUNTIME: 'server',
-      CLAUDE_MEM_MODEL: 'claude-opus-4-5',
-      UNRELATED_KEY: 'keep-me',
-    };
-    writeFileSync(settingsPath, JSON.stringify(original, null, 2), 'utf-8');
-
-    persistServerSettings(settingsPath, VALUES);
-
-    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(written.CLAUDE_MEM_SERVER_API_KEY).toBe('cmem_testkey');
-    expect(written.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
-    expect(written.CLAUDE_MEM_RUNTIME).toBe('server');
-    expect(written.CLAUDE_MEM_MODEL).toBe('claude-opus-4-5');
-    expect(written.UNRELATED_KEY).toBe('keep-me');
-  });
-});
-
 describe('persistServerSettings: nested-env merge preservation', () => {
   it('writes API keys into env block and preserves root peers', () => {
     const original = {

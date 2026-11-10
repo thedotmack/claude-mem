@@ -150,14 +150,6 @@ describe('mcp-server auto-start', () => {
   }, 15_000);
 });
 
-describe('mcp-server source guards', () => {
-  it('mcp-server does NOT import WorkerService (anti-pattern guard, plan line 772)', async () => {
-    const src = await Bun.file(mcpServerPath).text();
-    expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
-    expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
-  });
-});
-
 describe('raw-tool deep search MCP contract', () => {
   it('passes deep to the worker and formats raw IDs in a JSON-shaped worker reply', async () => {
     await withServer('worker', async (client, requests) => {

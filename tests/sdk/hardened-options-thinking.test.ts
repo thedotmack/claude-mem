@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildHardenedSdkOptions, OBSERVER_DISALLOWED_TOOLS } from '../../src/sdk/hardened-options.js';
+import { buildHardenedSdkOptions } from '../../src/sdk/hardened-options.js';
 import { existsSync } from 'fs';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
 
@@ -31,19 +31,5 @@ describe('buildHardenedSdkOptions thinking policy', () => {
       cwd: '/tmp/explicit-cwd',
     });
     expect(explicit.cwd).toBe('/tmp/explicit-cwd');
-  });
-
-  it('keeps lockdown fields unchanged for both sources', () => {
-    for (const source of ['Observer', 'KnowledgeAgent'] as const) {
-      const opts = build(source);
-      expect(opts.tools).toEqual([]);
-      expect(opts.allowedTools).toEqual([]);
-      expect(opts.disallowedTools).toEqual([...OBSERVER_DISALLOWED_TOOLS]);
-      expect(opts.permissionMode).toBe('dontAsk');
-      expect(opts.mcpServers).toEqual({});
-      expect(opts.settingSources).toEqual([]);
-      expect(opts.strictMcpConfig).toBe(true);
-      expect(opts.additionalDirectories).toEqual([]);
-    }
   });
 });

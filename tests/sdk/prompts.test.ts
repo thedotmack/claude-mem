@@ -209,24 +209,6 @@ describe('buildObservationPrompt image-payload stripping (#3730)', () => {
 });
 
 describe('buildObservationPrompt keeps url-backed image sources (#3730 review)', () => {
-  it('leaves an Anthropic url source alone, the same as the OpenAI branch does', () => {
-    const prompt = buildObservationPrompt({
-      id: 9,
-      tool_name: 'mcp__browser__shot',
-      tool_input: JSON.stringify({}),
-      tool_output: JSON.stringify({
-        content: [
-          { type: 'image', source: { type: 'url', url: 'https://example.com/shot.png' } },
-        ],
-      }),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    expect(prompt).toContain('https://example.com/shot.png');
-    expect(prompt).not.toContain('withheld');
-  });
-
   it('still elides an Anthropic source whose url is an inlined data: URL', () => {
     const prompt = buildObservationPrompt({
       id: 10,

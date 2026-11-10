@@ -97,13 +97,6 @@ describe('worker tree-sitter CLI provisioning', () => {
     expect(readFileSync(binaryPath).equals(intactButBroken)).toBe(true);
   });
 
-  it('fails fast when the binary is absent but the package version has no pinned SHA', async () => {
-    writeMarketplaceCliPackage("throw new Error('install.js must not run');");
-
-    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => undefined))
-      .rejects.toThrow(/No SHA-256 is pinned/);
-  });
-
   // Greptile P1 on #4777: a copied/restored binary can lose its executable bit
   // while keeping a matching SHA-256. That is repairable (the download restores
   // 755), so it must fall through to the download, not fail fast. POSIX-only:

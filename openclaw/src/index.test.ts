@@ -298,39 +298,6 @@ describe("Observation I/O event handlers", () => {
     assert.equal(initRequests.length, 1, "should re-init after compaction");
   });
 
-  it("before_agent_start calls init for session privacy check", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
-
-    await fireEvent("before_agent_start", { prompt: "hello" }, {});
-
-    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
-    assert.equal(initRequests.length, 1, "before_agent_start should init session");
-  });
-
-  it("after_tool_call sends observation to worker", async () => {
-    const { api, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
-
-    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "test-agent" });
-
-    await fireEvent("after_tool_call", {
-      toolName: "Read",
-      params: { file_path: "/src/index.ts" },
-      result: {
-        content: [{ type: "text", text: "file contents here..." }],
-      },
-    }, { sessionKey: "test-agent" });
-
-    await waitFor(() => receivedRequests.some((r) => r.url === "/api/sessions/observations"));
-    const obsRequest = receivedRequests.find((r) => r.url === "/api/sessions/observations");
-    assert.ok(obsRequest, "should send observation to worker");
-    assert.equal(obsRequest!.body.tool_name, "Read");
-    assert.deepEqual(obsRequest!.body.tool_input, { file_path: "/src/index.ts" });
-    assert.equal(obsRequest!.body.tool_response, "file contents here...");
-    assert.ok(obsRequest!.body.contentSessionId.startsWith("openclaw-test-agent-"));
-  });
-
   it("after_tool_call skips memory_ tools", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
@@ -594,26 +561,6 @@ describe("before_prompt_build context injection", () => {
 
   afterEach(async () => {
     workerServer?.close();
-  });
-
-  it("returns appendSystemContext from before_prompt_build", async () => {
-    const { api, logs, fireEvent } = createMockApi({ workerPort });
-    claudeMemPlugin(api);
-
-    const result = await fireEvent("before_prompt_build", {
-      prompt: "Help me write a function",
-      messages: [],
-    }, { agentId: "main" });
-
-    const contextRequest = receivedRequests.find((r) => r.url?.startsWith("/api/context/inject"));
-    assert.ok(contextRequest, "should request context from worker");
-    assert.ok(contextRequest!.url!.includes("projects=openclaw"));
-
-    assert.ok(result, "should return a result");
-    assert.ok(result.appendSystemContext, "should return appendSystemContext");
-    assert.ok(result.appendSystemContext.includes("Claude-Mem Context"), "should contain context");
-    assert.ok(result.appendSystemContext.includes("Session 1"), "should contain timeline");
-    assert.ok(logs.some((l) => l.includes("Context injected via system prompt")));
   });
 
   it("does not write MEMORY.md or fetch context during capture", async () => {

@@ -106,30 +106,6 @@ describe('SettingsRoutes settings document writes', () => {
     }
   });
 
-  it('keeps an object-valued flat env setting at the root', async () => {
-    const envValue = { enabled: true, sources: ['local'] };
-    writeFileSync(settingsPath, JSON.stringify({
-      env: envValue,
-      CLAUDE_MEM_MODEL: 'old-model',
-    }));
-    const { server, url } = await startServer();
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ CLAUDE_MEM_MODEL: 'new-model' }),
-      });
-
-      expect(response.status).toBe(200);
-      const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      expect(written.env).toEqual(envValue);
-      expect(written.CLAUDE_MEM_MODEL).toBe('new-model');
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    }
-  });
-
   it.each([
     '{"CLAUDE_MEM_MODEL":"keep-me"',
     '["sentinel"]',

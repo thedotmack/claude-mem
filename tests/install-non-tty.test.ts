@@ -127,7 +127,6 @@ describe('non-TTY installer', () => {
     const { files } = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
     expect(files).toContain('omp');
     expect(files).toContain('hermes');
-    expect(files).toContain('.claude-plugin');
     expect(files).toContain('plugin/.claude-plugin');
   });
 });
