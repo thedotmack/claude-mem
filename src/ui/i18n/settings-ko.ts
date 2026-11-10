@@ -184,4 +184,9 @@ export const settingsKo: Record<string, string> = {
   'LM Studio (local)': 'LM Studio (로컬)',
   'vLLM (self-hosted)': 'vLLM (자체 호스팅)',
   'Custom OpenAI-compatible endpoint': '사용자 지정 OpenAI 호환 엔드포인트',
+  "Configured in settings.json or the worker environment. Empty uses openrouter.ai.": "settings.json 또는 워커 환경 변수에서 구성합니다. 비워 두면 openrouter.ai를 사용합니다.",
+  "Set": "설정",
+  "or the worker environment. The viewer cannot change where your API key is sent.": "또는 워커 환경 변수에서 설정하세요. 뷰어에서는 API 키 전송 대상을 변경할 수 없습니다.",
+  "Set the endpoint and preset in": "엔드포인트와 프리셋을 다음 위치에 설정하세요:",
+  "or the worker environment. They determine where your API key is sent.": "또는 워커 환경 변수에서 설정하세요. 이 값들이 API 키의 전송 대상을 결정합니다.",
 };

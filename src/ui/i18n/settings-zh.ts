@@ -184,4 +184,9 @@ export const settingsZh: Record<string, string> = {
   'LM Studio (local)': 'LM Studio（本地）',
   'vLLM (self-hosted)': 'vLLM（自托管）',
   'Custom OpenAI-compatible endpoint': '自定义兼容 OpenAI 的端点',
+  "Configured in settings.json or the worker environment. Empty uses openrouter.ai.": "在 settings.json 或工作进程环境变量中配置。留空则使用 openrouter.ai。",
+  "Set": "设置",
+  "or the worker environment. The viewer cannot change where your API key is sent.": "或工作进程环境变量中。查看器无法更改 API 密钥的发送目标。",
+  "Set the endpoint and preset in": "请在以下位置设置端点和预设：",
+  "or the worker environment. They determine where your API key is sent.": "或工作进程环境变量中。它们决定 API 密钥发送到何处。",
 };
