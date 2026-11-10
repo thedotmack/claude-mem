@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { expandTilde, paths } from '../../shared/paths.js';
 import type { EventAction, TranscriptSchema, TranscriptWatchConfig } from './types.js';
@@ -22,7 +22,8 @@ export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: stri
   if (!nameOrSchemaIsCodex || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
-  const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');
+  const codexHome = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
+  const codexSessionsRoot = join(codexHome, 'sessions').replace(/\\/g, '/');
   return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
 }
 
