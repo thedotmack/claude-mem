@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
 import type {
@@ -345,7 +346,10 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
+  // This reader resolves Claude Code's project JSONL layout. Other platforms'
+  // host IDs are a different namespace, even in a mixed-source memory timeline.
   const priorSessionObs = observations.find(obs =>
+    normalizePlatformSource(obs.platform_source) === 'claude' &&
     obs.memory_session_id !== currentSessionId && obs.content_session_id !== currentSessionId);
   if (!priorSessionObs) {
     return { assistantMessage: '' };
