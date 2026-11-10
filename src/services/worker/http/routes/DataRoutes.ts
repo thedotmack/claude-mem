@@ -349,7 +349,7 @@ export class DataRoutes extends BaseRouteHandler {
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
     const rows = store.queryToolUseIndex({
-      project: asString(req.query.project),
+      project: BaseRouteHandler.firstString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
       toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
@@ -624,7 +624,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const project = BaseRouteHandler.firstString(req.query.project)?.trim() || undefined;
+    const project = BaseRouteHandler.firstString(req.query.project);
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
     const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
     // { sessions, hasMore }: the viewer pages through older sessions with offset.
