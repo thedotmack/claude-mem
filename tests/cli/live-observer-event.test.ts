@@ -7,6 +7,7 @@ import * as settings from '../../src/shared/hook-settings.js';
 import { logger } from '../../src/utils/logger.js';
 import { HookSpool } from '../../src/shared/hook-spool.js';
 import { spoolHookEvent, settleHookSpoolNudges } from '../../src/cli/spool-hook-event.js';
+import { parseHandoffTimeoutMs } from '../../src/cli/live-observer-event.js';
 
 let dir: string;
 let previous: string | undefined;
@@ -98,5 +99,14 @@ describe('live observation handoff', () => {
     await settleHookSpoolNudges();
     expect(post).toHaveBeenCalledTimes(1);
     expect(post.mock.calls[0][1]?.timeoutMs).toBe(250);
+  });
+
+  it('cuts a handoff timeout above 14000 ms to 14000, and reads only whole milliseconds', () => {
+    spyOn(logger, 'warn').mockImplementation(() => {});
+    // The hook waits for the handoff before exiting: no value may hold it past Claude Code's 15 s hook timeout.
+    expect(parseHandoffTimeoutMs('120000')).toBe(14000);
+    expect(parseHandoffTimeoutMs('14000')).toBe(14000);
+    expect(parseHandoffTimeoutMs('600')).toBe(600);
+    for (const value of ['250ms', '1.5', '-5', '0', '', undefined]) expect(parseHandoffTimeoutMs(value)).toBe(250);
   });
 });
