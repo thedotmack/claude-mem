@@ -21,15 +21,15 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     store.close();
   });
 
-  function seedObservationWithReadPath(readPath: string, sessionSuffix: string): number {
-    const sdkId = store.createSDKSession(`content-${sessionSuffix}`, 'proj', 'prompt');
+  function seedObservationWithReadPath(readPath: string, sessionSuffix: string, project = 'proj', platform = 'claude'): number {
+    const sdkId = store.createSDKSession(`content-${sessionSuffix}`, project, 'prompt', undefined, platform);
     store.updateMemorySessionId(sdkId, `session-${sessionSuffix}`);
     const result = store.storeObservations(
       `session-${sessionSuffix}`,
-      'proj',
+      project,
       [{
         type: 'discovery',
-        title: `touched ${readPath}`,
+        title: `touched ${sessionSuffix}: ${readPath}`,
         subtitle: null,
         facts: ['fact'],
         narrative: null,
@@ -53,6 +53,28 @@ describe('getObservationsByFilePath — multi-candidate path matching (#2691)', 
     // PreToolUse:Read sends both the absolute and the relative candidate forms.
     const matches = getObservationsByFilePath(store.db, [absolutePath, relativePath]);
     expect(matches.map(o => o.id)).toContain(id);
+  });
+
+  it.each([
+    ['./src/note.ts', 'src/note.ts'],
+    ['.\\src\\note.ts', 'src/note.ts'],
+    ['src/note.ts', './src/note.ts'],
+    ['src/note.ts', '.\\src\\note.ts'],
+  ])('matches current-directory evidence %s from query %s', (storedPath, queryPath) => {
+    const id = seedObservationWithReadPath(storedPath, 'matching');
+    seedObservationWithReadPath(storedPath, 'other-project', 'unrelated');
+    seedObservationWithReadPath(storedPath, 'other-source', 'proj', 'codex');
+    seedObservationWithReadPath('./src/note.ts.bak', 'other-file');
+    expect(getObservationsByFilePath(store.db, ['/checkout/src/note.ts', queryPath], {
+      projects: ['proj'], platformSource: 'claude',
+    }).map(row => row.id)).toEqual([id]);
+  });
+
+  it('does not reinterpret an absolute or home path as a current-directory path', () => {
+    seedObservationWithReadPath('./C:/repo/note.ts', 'drive-lookalike');
+    seedObservationWithReadPath('.//repo/note.ts', 'absolute-lookalike');
+    seedObservationWithReadPath('./~/note.ts', 'home-lookalike');
+    expect(getObservationsByFilePath(store.db, ['C:/repo/note.ts', '/repo/note.ts', '~/note.ts'])).toEqual([]);
   });
 
   it('matches an observation stored under a RELATIVE path when querying multiple candidate forms', () => {

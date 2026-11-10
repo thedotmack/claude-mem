@@ -1,6 +1,6 @@
 
 export function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').replace(/^\.\//, '');
 }
 
 export function isDirectChild(filePath: string, folderPath: string): boolean {
