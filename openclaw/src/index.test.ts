@@ -330,6 +330,22 @@ describe("Observation I/O event handlers", () => {
     });
   }
 
+  for (const [label, result, expected] of [
+    ["a private span crossing the cap", `${"a".repeat(990)}<private>${"SECRET".repeat(20)}</private>tail`, `${"a".repeat(990)}tail`],
+    ["an unclosed private span", `${"a".repeat(990)}<private>${"SECRET".repeat(20)}`, "a".repeat(990)],
+    ["nested private spans", "before<private>SECRET<private>INNER</private>SECRET</private>after", "beforeafter"],
+    ["private content in text blocks", { content: [{ type: "text", text: "before<private>SECRET</private>after" }] }, "beforeafter"],
+  ] as const) {
+    it(`after_tool_call removes ${label} before truncating`, async () => {
+      const { api, fireEvent } = createMockApi({ workerPort });
+      claudeMemPlugin(api);
+      await fireEvent("after_tool_call", { toolName: "read", result }, { sessionKey: "private-result" });
+      await waitFor(() => receivedRequests.some((r) => r.url === "/api/sessions/observations"));
+      const request = receivedRequests.find((r) => r.url === "/api/sessions/observations")!;
+      assert.equal(request.body.tool_response, expected);
+    });
+  }
+
   it("after_tool_call keeps a failed call's error text", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);

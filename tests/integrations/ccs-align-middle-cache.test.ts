@@ -318,15 +318,36 @@ describe('CCS Align middle cache', () => {
     expect(marks.marks[0].markedAt).toBe(now.toISOString());
   });
 
-  it('a corrupt exclude-marks.json is treated as empty (fail-closed)', () => {
+  it.each([
+    'NOT VALID JSON{{{',
+    'null',
+    '{"marks": {}}',
+    '{"marks": [null]}',
+    '{"marks": [{"observationId": "100", "toolUseIds": []}]}',
+  ])('a corrupt exclude-marks.json fails closed without overwriting it: %s', (corrupt) => {
     const root = tempRoot();
     const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    const dir = path.dirname(marksPath);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(marksPath, 'NOT VALID JSON{{{', 'utf8');
+    const input = {
+      viewerId: VIEWER,
+      observations: [makeObs({ id: 100 }), makeObs({ id: 200, title: 'keeper' })],
+      dataRoot: root,
+      now,
+    };
+    addExcludeMark(marksPath, 100);
+    landObservationsInMiddleCache(input);
+    const cachePath = ccsAlignMiddleCachePath(root, VIEWER);
+    const before = readFileSync(cachePath, 'utf8');
+    writeFileSync(marksPath, corrupt, 'utf8');
 
-    const marks = readExcludeMarks(marksPath);
-    expect(marks).toEqual({ v: 1, marks: [] });
+    for (const land of [landObservationsInMiddleCache, rebuildMiddleCache]) {
+      expect(land(input).appended).toEqual([]);
+      expect(readFileSync(cachePath, 'utf8')).toBe(before);
+      expect(readMiddleCache(cachePath).map(record => record.id)).toEqual([200]);
+    }
+    expect(() => readExcludeMarks(marksPath)).toThrow();
+    expect(() => addExcludeMark(marksPath, 300)).toThrow();
+    expect(() => removeExcludeMark(marksPath, 100)).toThrow();
+    expect(readFileSync(marksPath, 'utf8')).toBe(corrupt);
   });
 
   it('new records with a marked id are never appended (skip on ingest)', () => {

@@ -14,6 +14,7 @@ const TESTHOME = mkdtempSync(join(tmpdir(), 'owned-cmem-testhome-'));
 const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
+let batchStatus = 202;
 let holdIngest = null; // predicate: matching ingest requests stay open until released from `held`
 const held = [];
 
@@ -28,7 +29,7 @@ const server = http.createServer((req, res) => {
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
       if (holdIngest?.(rec.body)) { held.push(res); return; }
-      res.writeHead(202, { 'content-type': 'application/json' });
+      res.writeHead(rec.body?.batch ? batchStatus : 202, { 'content-type': 'application/json' });
       return res.end('{"accepted":1}');
     }
     if (req.url.startsWith('/api/hooks/context')) {
@@ -180,7 +181,7 @@ await run('observation', {
 });
 const outHyphen = String(received.find(r => r.body?.payload?.tool_use_id === 'tu_2vh')?.body.payload.tool_response || '');
 check('hyphen-ending minimum-length vendor keys become one marker each', outHyphen === 'nim [cmem-redacted] end; rc [cmem-redacted] end', outHyphen);
-// Token-scheme Authorization: redacted in the request body AND in the spool on failed delivery
+// Token-scheme Authorization: redacted in the request body; failed inference is discarded
 received = [];
 await run('observation', {
   session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2f',
@@ -193,7 +194,7 @@ await run('observation', {
   session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2g',
   tool_input: { command: 'curl -H "Authorization: Token tok-cred-9f8e7d6c5b4a"' }, tool_response: 'ok'
 }, { CMEM_API_BASE: 'http://127.0.0.1:1' });
-check('Token-scheme Authorization redacted in spool', existsSync(SPOOL) && !readFileSync(SPOOL, 'utf8').includes('tok-cred-9f8e7d6c5b4a'), readFileSync(SPOOL, 'utf8').slice(0, 200));
+check('failed private input is never spooled', !existsSync(SPOOL));
 rmSync(SPOOL, { force: true });
 // short and whitespace-bearing key=value secrets (no minimum length, spaces allowed)
 received = [];
@@ -337,51 +338,59 @@ await new Promise((resolve) => {
 const fb = received.find(r => r.url.startsWith('/api/hooks/ingest'));
 check('~/.claude-mem/settings.json fallback used', fb?.auth === 'Bearer cm_test_fallback');
 
-// ---- 8. server down → spool, then flush ----
-console.log('\n[8] spool + flush');
+// ---- 8. server down → skip inference, then fresh capture ----
+console.log('\n[8] failed inference is not replayed');
 rmSync(SPOOL, { force: true });
 await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_10', tool_input: { command: 'ls' } }, { CMEM_API_BASE: 'http://127.0.0.1:1' });
-check('failed POST spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('tu_10'));
-check('spool is user-only (0600)', existsSync(SPOOL) && (statSync(SPOOL).mode & 0o777) === 0o600, (statSync(SPOOL).mode & 0o777).toString(8));
-check('spool lives under $HOME/.claude-mem (per-user, not shared /tmp)', SPOOL === TESTHOME + '/.claude-mem/cowork-spool.jsonl' && existsSync(TESTHOME + '/.claude-mem'));
+check('failed POST is not spooled', !existsSync(SPOOL));
 received = [];
 await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_11', tool_input: { command: 'pwd' } });
-const gotBatch = received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_10'));
-check('spool flushed as batch on next event', gotBatch);
-check('spool cleared', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+check('recovery only sends the fresh event', received.length === 1 && received[0].body?.payload?.tool_use_id === 'tu_11', JSON.stringify(received));
 
-// ---- 8b. spool replay order ----
-console.log('\n[8b] spool replay order');
-rmSync(SPOOL, { force: true });
+// ---- 8b. legacy inference is retired; metadata keeps its order ----
+console.log('\n[8b] legacy inference retirement');
 mkdirSync(TESTHOME + '/.claude-mem', { recursive: true });
-// file order NEW-then-OLD (what a failed-flush merge race can produce)
-appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 2000, payload: { tool_use_id: 'tu_newer' } }) + '\n');
-appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 1000, payload: { tool_use_id: 'tu_older' } }) + '\n');
-received = [];
-await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_13', tool_input: { command: 'true' } });
-const orderedBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id);
-check('flush replays oldest-first (ts sort)', JSON.stringify(orderedBatch) === JSON.stringify(['tu_older', 'tu_newer']), JSON.stringify(orderedBatch));
-
-// ---- 8c. overflow spool never drops events ----
-console.log('\n[8c] spool overflow (SPOOL_MAX=200)');
-rmSync(SPOOL, { force: true });
-for (let i = 1; i <= 201; i++) {
-  appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 1000 + i, payload: { tool_use_id: 'e' + i } }) + '\n');
+for (const event of ['observation', 'file_edit', 'summarize', 'session-init']) {
+  appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event, session_id: 's2', ts: 500, payload: { tool_use_id: 'legacy-' + event, prompt: 'old prompt' } }) + '\n');
+}
+for (const [id, ts] of [['tu_newer', 2000], ['tu_older', 1000]]) {
+  appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'subagent-stop', project: 'cmem_work_root', session_id: 's2', ts, payload: { tool_use_id: id } }) + '\n');
 }
 received = [];
-await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_14', tool_input: { command: 'true' } });
+await run('session-end', { session_id: 's2', cwd: '/home/claude' });
+const orderedBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id);
+check('only metadata replays, oldest first', JSON.stringify(orderedBatch) === JSON.stringify(['tu_older', 'tu_newer']), JSON.stringify(orderedBatch));
+check('legacy inputs are retired from disk', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+appendFileSync(SPOOL, JSON.stringify({ event: 'observation', payload: { tool_use_id: 'legacy-failed-flush' } }) + '\n');
+appendFileSync(SPOOL, JSON.stringify({ event: 'session-end', payload: { session_id: 'metadata-retry' } }) + '\n');
+batchStatus = 503;
+received = [];
+await run('session-end', { session_id: 's2', cwd: '/home/claude' });
+check('failed metadata delivery retains no legacy inference', !readFileSync(SPOOL, 'utf8').includes('legacy-failed-flush'));
+batchStatus = 202;
+received = [];
+await run('session-end', { session_id: 's2', cwd: '/home/claude' });
+check('recovery sends metadata without legacy inference', !JSON.stringify(received).includes('legacy-failed-flush') && JSON.stringify(received).includes('metadata-retry'));
+
+// ---- 8c. metadata overflow is preserved ----
+console.log('\n[8c] metadata spool overflow (SPOOL_MAX=200)');
+for (let i = 1; i <= 201; i++) {
+  appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'subagent-stop', project: 'cmem_work_root', session_id: 's2', ts: 1000 + i, payload: { tool_use_id: 'e' + i } }) + '\n');
+}
+received = [];
+await run('session-end', { session_id: 's2', cwd: '/home/claude' });
 const bigBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id) || [];
-check('first flush sends oldest 200', bigBatch.length === 200 && bigBatch[0] === 'e1' && bigBatch[199] === 'e200', `len=${bigBatch.length} first=${bigBatch[0]} last=${bigBatch[199]}`);
+check('first flush sends oldest 200 metadata events', bigBatch.length === 200 && bigBatch[0] === 'e1' && bigBatch[199] === 'e200', `len=${bigBatch.length} first=${bigBatch[0]} last=${bigBatch[199]}`);
+check('overflow metadata is user-only (0600)', existsSync(SPOOL) && (statSync(SPOOL).mode & 0o777) === 0o600);
 check('overflow remainder re-spooled, not dropped', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('"e201"'));
 received = [];
-await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_15', tool_input: { command: 'true' } });
+await run('session-end', { session_id: 's2', cwd: '/home/claude' });
 const tailBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id) || [];
-check('next flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
-check('spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+check('next metadata flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
+check('metadata spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
 
-// ---- 8d. session-init runs async, so a slow one overlaps later events ----
+// ---- 8d. session-init failure is not a delayed prompt ----
 console.log('\n[8d] slow session-init overlapping later events');
-rmSync(SPOOL, { force: true });
 received = [];
 holdIngest = env => env?.event === 'session-init';
 const slowInit = run('session-init', { session_id: 's5', cwd: '/home/claude', prompt: 'held prompt' });
@@ -391,10 +400,11 @@ check('a later event is delivered meanwhile', received.some(r => r.body?.payload
 holdIngest = null;
 held.shift()?.writeHead(503).end('{}');
 await slowInit;
-check('the failed session-init is spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('held prompt'));
+check('the failed session-init is not spooled', !existsSync(SPOOL));
 received = [];
 await run('summarize', { session_id: 's5', cwd: '/home/claude' });
-check('and delivered by the next flush', received.some(r => r.body?.batch?.some(e => e.event === 'session-init' && e.payload.prompt === 'held prompt')), JSON.stringify(received.map(r => r.body?.event ?? 'batch')));
+await run('session-end', { session_id: 's5', cwd: '/home/claude' });
+check('later hooks never replay the prompt', !JSON.stringify(received).includes('held prompt'), JSON.stringify(received));
 check('spool empty afterwards', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
 
 // ---- 9. remaining lifecycle events ----
@@ -589,8 +599,7 @@ await run('context', { session_id: 'd15', cwd: '/home/user', source: 'startup' }
 await run('observation', { session_id: 'd15', cwd: '/home/user', tool_name: 'Bash', tool_use_id: 'tu_d15', tool_input: {}, tool_response: '' }, { ...DUET, CMEM_API_BASE: 'http://127.0.0.1:1' });
 received = [];
 await run('session-end', { session_id: 'd15', cwd: '/home/user', reason: 'exit' }, DUET);
-check('queued notes are sent with that last request', received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_d15')) && (!existsSync(SPOOL) || !readFileSync(SPOOL, 'utf8').trim()));
-received = received.filter(r => !r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_d15'));
+check('SessionEnd never replays outage-era notes', !JSON.stringify(received).includes('tu_d15') && (!existsSync(SPOOL) || !readFileSync(SPOOL, 'utf8').trim()));
 check('a session that never learns a channel registers at its end', ingested().map(e => e.event).join() === 'session-start,session-end', JSON.stringify(ingested().map(e => e.event)));
 check('…in one request, so the short SessionEnd budget holds', received.filter(r => r.url.startsWith('/api/hooks/ingest')).length === 1, String(received.filter(r => r.url.startsWith('/api/hooks/ingest')).length));
 

@@ -18,7 +18,6 @@ import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
-import { retryWhileRefused } from "./worker-retry.js";
 import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
 
 export interface OpenCodeClient {
@@ -102,8 +101,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** One POST attempt. Resolves true when the worker refused the connection (not running yet). */
-async function postToWorker(fetchImpl: typeof fetch, path: string, payload: string): Promise<boolean> {
+/** One POST attempt, with no replay after a refused connection. */
+async function postToWorker(fetchImpl: typeof fetch, path: string, payload: string): Promise<void> {
   try {
     const response = await fetchImpl(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
@@ -114,11 +113,10 @@ async function postToWorker(fetchImpl: typeof fetch, path: string, payload: stri
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
-    return false;
   } catch (error: unknown) {
-    if (isConnectionRefusedError(error)) return true;
-    console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
-    return false;
+    if (!isConnectionRefusedError(error)) {
+      console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
+    }
   }
 }
 
@@ -127,7 +125,6 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
     ...body,
     platformSource: normalizePlatformSource(PLATFORM_SOURCE),
   });
-  // Retries reuse the fetch of the first attempt.
   const fetchImpl = fetch;
   if (path === '/api/sessions/observations' || path === '/api/sessions/summarize') {
     try {
@@ -143,11 +140,7 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
     }
     return;
   }
-  if (await postToWorker(fetchImpl, path, payload)) {
-    // The worker may still be starting (see worker-retry.ts): retry in the
-    // background so no hook waits on it.
-    void retryWhileRefused(() => postToWorker(fetchImpl, path, payload));
-  }
+  await postToWorker(fetchImpl, path, payload);
 }
 
 async function workerGetText(path: string): Promise<string | null> {
