@@ -3,7 +3,7 @@
   "schemas": {
     "codex": {
       "name": "codex",
-      "version": "0.4",
+      "version": "0.5",
       "description": "Schema for Codex session JSONL files under ~/.codex/sessions. Reads the conversation from response items (payload.type == message, discriminated by payload.role), which is how Codex 0.155 emits it; the older user_message/agent_message events belong to the approval sub-agent and are no longer used for prompts.",
       "events": [
         {
@@ -29,14 +29,14 @@
             "all": [
               { "path": "payload.type", "equals": "message" },
               { "path": "payload.role", "equals": "user" },
-              { "path": "payload.content[0].text", "exists": true },
+              { "path": "payload.content[0]", "exists": true },
               { "path": "payload.content[0].text", "not_starts_with": "<recommended_plugins>" },
               { "path": "payload.content[0].text", "not_starts_with": "<skills_instructions>" }
             ]
           },
           "action": "session_init",
           "fields": {
-            "prompt": "payload.content[0].text"
+            "prompt": "payload.content"
           }
         },
         {
@@ -49,7 +49,7 @@
           },
           "action": "assistant_message",
           "fields": {
-            "message": "payload.content[0].text"
+            "message": "payload.content"
           }
         },
         {

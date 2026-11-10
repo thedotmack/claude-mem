@@ -215,7 +215,8 @@ describe('postgres API key storage (#2541 salted scrypt)', () => {
       const later = await verifyPostgresApiKey(pool, rawKey, ['memories:read']);
       expect(later?.apiKeyId).toBe('key-cache-1');
       expect(queries.filter(query => isPrefixLookup(query.text)).length).toBe(1);
-      expect(queries.filter(query => isIdLookup(query.text)).length).toBe(1);
+      // Each joined request refreshes authorization, as does the later cache hit.
+      expect(queries.filter(query => isIdLookup(query.text)).length).toBe(20);
     });
 
     it('a cached key is refused on the next request after it is revoked, expires or loses a scope', async () => {

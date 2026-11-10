@@ -311,6 +311,35 @@ describe('server REST API v1 routes', () => {
     expect((await queried.json()).context).toContain('Written second.');
   });
 
+  for (const { label, fields, expected } of [
+    { label: 'text after an empty narrative', fields: { narrative: '', text: 'Needle text evidence' }, expected: 'Needle text evidence' },
+    { label: 'text after a whitespace narrative', fields: { narrative: ' \n\t', text: 'Needle text evidence' }, expected: 'Needle text evidence' },
+    { label: 'title after empty prose', fields: { narrative: null, text: '', title: 'Needle title evidence' }, expected: 'Needle title evidence' },
+    { label: 'a subtitle-only memory', fields: { subtitle: 'Needle subtitle evidence' }, expected: 'Needle subtitle evidence' },
+    { label: 'a facts-only memory', fields: { facts: ['', 'Needle fact one', ' \t', 'Needle fact two'] }, expected: 'Needle fact one\nNeedle fact two' },
+    { label: 'a concepts-only memory', fields: { facts: [' '], concepts: ['', 'needle-concept', 'second-concept', ' \n'] }, expected: 'needle-concept, second-concept' },
+    { label: 'the authored narrative before other populated fields', fields: { narrative: '  Needle narrative\n', text: 'Needle text', title: 'Needle title', subtitle: 'Needle subtitle', facts: ['Needle fact'], concepts: ['needle-concept'] }, expected: '  Needle narrative\n' },
+  ]) {
+    it(`renders ${label} in queried and recent context`, async () => {
+      const { project } = await (await post('/v1/projects', { name: 'Context content' })).json();
+      const { project: foreign } = await (await post('/v1/projects', { name: 'Other context' })).json();
+      expect((await post('/v1/memories', {
+        projectId: foreign.id, kind: 'manual', type: 'note', narrative: 'Needle foreign evidence',
+      })).status).toBe(201);
+      const created = await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', ...fields });
+      expect(created.status).toBe(201);
+      const { memory } = await created.json();
+
+      for (const query of [undefined, 'needle']) {
+        const response = await post('/v1/context', { projectId: project.id, query });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.memories.map((item: { id: string }) => item.id)).toEqual([memory.id]);
+        expect(body.context).toBe(expected);
+      }
+    });
+  }
+
   it('persists a full-field memory create with narrative populated and indexed (#2684)', async () => {
     const projectResponse = await post('/v1/projects', { name: 'Write Path Project' });
     expect(projectResponse.status).toBe(201);

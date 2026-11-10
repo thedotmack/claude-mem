@@ -6,13 +6,13 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime, compactTime } from '../../shared/timeline-formatting.js';
-import { closeSync, openSync, readSync, statSync } from 'fs';
+import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { projectsQueryValues } from '../../shared/project-list.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import { getProjectContextWithRoot } from '../../utils/project-name.js';
 import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { checkTreeSitterCliLoadable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
@@ -460,6 +460,7 @@ async function lookupFileObservationHistory(
   let fileMtimeMs = 0;
   let fileStatVerified = false;
   let fileSizeBytes = 0;
+  let resolvedFilePath: string | undefined;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
@@ -468,6 +469,7 @@ async function lookupFileObservationHistory(
     if (!stat.isFile() || stat.size < FILE_CONTEXT_MIN_BYTES) {
       return null;
     }
+    resolvedFilePath = realpathSync(statPath);
     fileMtimeMs = stat.mtimeMs;
     fileStatVerified = true;
     fileSizeBytes = stat.size;
@@ -478,7 +480,7 @@ async function lookupFileObservationHistory(
     logger.debug('HOOK', 'File stat failed: timeline as context only, the gate will not deny this Read', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  const context = getProjectContext(input.cwd);
+  const { context, repoRoot } = getProjectContextWithRoot(input.cwd);
   const cwd = input.cwd || process.cwd();
   // path.resolve normalizes dot-segments (`a/../b` -> `b`) for BOTH absolute and
   // relative inputs, so `/p/src/../src/f.ts` and `/p/src/f.ts` collapse to one
@@ -491,10 +493,18 @@ async function lookupFileObservationHistory(
   // #2691 — PostToolUse stores whatever path form the observer recorded
   // (absolute tool-input path, or project-root-relative per the prompt). The
   // PreToolUse:Read query previously sent ONLY the cwd-relative form, so it
-  // never matched absolute-path storage. Send both candidate forms (forward-
-  // slashed, de-duped) as repeated `path` params so the key matches across
-  // both events regardless of how the path was stored.
-  const candidateQueryPaths = fileHistoryQueryPaths(absolutePath, relativePath);
+  // never matched absolute-path storage. A subdirectory cwd also needs the
+  // project-root-relative form; cwd-relative alone misses the observer's paths.
+  // Git returns a physical root even when cwd goes through a symlink. Keep
+  // in-checkout logical spellings too, since a file itself can be a symlink.
+  const projectRelativePaths = repoRoot
+    ? [absolutePath, resolvedFilePath ?? absolutePath]
+      .map(candidate => path.relative(repoRoot, candidate).split(path.sep).join('/'))
+      .filter(candidate => candidate && candidate !== '..' && !candidate.startsWith('../') && !path.isAbsolute(candidate))
+    : [];
+  const candidateQueryPaths = Array.from(new Set([
+    ...fileHistoryQueryPaths(absolutePath, relativePath), ...projectRelativePaths,
+  ]));
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);

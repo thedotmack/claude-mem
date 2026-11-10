@@ -47,6 +47,7 @@ import { logger } from '../../utils/logger.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isSharedWorkList, sharedWorkListSql } from '../work-view/shared-records.mjs';
 import {
   assertCanonicalDecimal,
   buildContentOperation,
@@ -486,7 +487,7 @@ const KINDS: KindSpec[] = [
         project, list_name, fields, created_at, created_at_epoch
       FROM work_state_entries
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-        AND (? = 1 OR COALESCE(list_name, '') NOT GLOB '__my_work_v[0-9]*:*')
+        AND (? = 1 OR NOT ${sharedWorkListSql('list_name')})
       ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
@@ -1090,7 +1091,7 @@ export class CloudSync {
 
   /** Consumer-first rollout: keep previously queued internal records durable but unsent while disabled. */
   private sharedWorkAllowedSql(listExpression: string): string {
-    return this.sharedWorkWritesEnabled ? '1' : `COALESCE(${listExpression}, '') NOT GLOB '__my_work_v[0-9]*:*'`;
+    return this.sharedWorkWritesEnabled ? '1' : `NOT ${sharedWorkListSql(listExpression)}`;
   }
 
   /**
@@ -1545,7 +1546,7 @@ export class CloudSync {
           return;
         }
         if (kind.kind === 'work_state' && !this.sharedWorkWritesEnabled
-          && /^__my_work_v[0-9].*:/.test(String(row.list_name ?? ''))) return;
+          && isSharedWorkList(row.list_name)) return;
         if ('revision' in selection) {
           const expected = selection as RecoveryItem;
           try {
