@@ -10,6 +10,7 @@ import {
   sweepStaleAppServerWorkdirs,
   CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
+  CODEX_SETUP_REQUIRED_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
@@ -236,6 +237,55 @@ it('rejects API-key login before launching a model process', async () => {
     rmSync(fake.root, { recursive: true, force: true });
   }
 });
+
+for (const mode of [undefined, null, 'chatgpt', 'chatgptAuthTokens']) {
+  itPosix(`accepts native ChatGPT login with auth_mode=${String(mode)} without rewriting it`, async () => {
+    const fake = createFakeCodex();
+    const authFile = join(fake.authHome, 'auth.json');
+    // Native AuthDotJson and pro_account_with_no_api_key_uses_chatgpt_auth:
+    // mode is optional; the selected CLI owns validation and token refresh.
+    writeFileSync(authFile, JSON.stringify({ auth_mode: mode, OPENAI_API_KEY: null,
+      tokens: { id_token: 'owned-test-id-token', access_token: 'owned-test-access-token', refresh_token: 'owned-test-refresh-token' },
+      last_refresh: '2026-11-10T00:00:00Z' }), { mode: 0o600 });
+    const original = readFileSync(authFile);
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize the supplied text.', timeoutMs: 5000 });
+      expect(result.content).toContain('<title>Turn 1</title>');
+      const trace = readTrace(fake.trace);
+      expect(trace.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+      const started = trace.find(entry => entry.method === 'process/start')!;
+      expect(realpathSync(join(started.codexHome, 'auth.json'))).toBe(realpathSync(authFile));
+      await client.close();
+      expect(existsSync(started.codexHome)).toBe(false);
+      expect(readFileSync(authFile)).toEqual(original);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const otherAuth of [
+  { OPENAI_API_KEY: 'owned-api-key' }, { OPENAI_API_KEY: '' },
+  { personal_access_token: 'owned-pat' }, { bedrock_api_key: { api_key: 'owned-bedrock-key' } },
+  { bedrock_access_keys: { access_key_id: 'owned-id', secret_access_key: 'owned-secret' } },
+  { auth_mode: 'apikey' }, { auth_mode: 'agentIdentity' }, { auth_mode: '' }, { tokens: null },
+]) {
+  it(`rejects non-ChatGPT or missing legacy credentials before spawn: ${Object.keys(otherAuth).join(',')}/${String(otherAuth.auth_mode ?? '')}`, async () => {
+    const fake = createFakeCodex();
+    writeFileSync(join(fake.authHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'owned-chatgpt-token' }, ...otherAuth }), { mode: 0o600 });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, error => error);
+      expect(error).toHaveProperty('code', CODEX_SETUP_REQUIRED_CODE);
+      expect(readTrace(fake.trace)).toHaveLength(0);
+    } finally {
+      await client.close(); rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+}
 
 itPosix('keeps usage-limit details from app-server error notifications', async () => {
   const fake = createFakeCodex({ mode: 'usage-limit' });

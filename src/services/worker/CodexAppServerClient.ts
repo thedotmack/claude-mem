@@ -233,6 +233,16 @@ function codexSetupError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
 }
 
+/** Codex infers ChatGPT for legacy token files whose optional auth_mode is absent or null. */
+function hasChatGptAuth(auth: unknown): boolean {
+  if (!isObject(auth)) return false;
+  if (auth.auth_mode != null) return auth.auth_mode === 'chatgpt' || auth.auth_mode === 'chatgptAuthTokens';
+  // AuthDotJson.resolved_mode gives these credential fields precedence over
+  // legacy ChatGPT tokens. Even an empty API-key string selects API-key auth.
+  return isObject(auth.tokens) && [auth.OPENAI_API_KEY, auth.personal_access_token,
+    auth.bedrock_api_key, auth.bedrock_access_keys].every(value => value == null);
+}
+
 /**
  * `code` on a turn that completed without any agent message. The turn ran and
  * was billed, so it is an output failure, never resent ("never pay twice"); it
@@ -375,7 +385,7 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
     } catch (error) {
       throw codexSetupError(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (!isObject(auth) || (auth.auth_mode !== 'chatgpt' && auth.auth_mode !== 'chatgptAuthTokens')) {
+    if (!hasChatGptAuth(auth)) {
       throw codexSetupError('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
     }
 
