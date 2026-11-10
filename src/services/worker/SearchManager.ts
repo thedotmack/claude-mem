@@ -315,7 +315,8 @@ export class SearchManager {
     const normalized: any = { ...args };
 
     if (normalized.filePath && !normalized.files) {
-      normalized.files = normalized.filePath;
+      // A single file path may itself contain commas.
+      normalized.files = typeof normalized.filePath === 'string' ? [normalized.filePath] : normalized.filePath;
       delete normalized.filePath;
     }
 
