@@ -2163,10 +2163,13 @@ export class ChromaSync {
     });
     // Count rows, not fragments: one observation's facts can fill the raw
     // limit while later memories already present in this window are lost.
-    // A full window with too few distinct matches cannot prove exhaustion;
-    // the next fallback must still get a chance to find the remaining rows.
+    // A full window with enough matching fragments already contains the
+    // plain fallback's first `limit` fragments. Keep its distinct rows and
+    // report that the caller may widen; another query cannot improve that
+    // same fragment prefix. Fall through only when filtering removed too
+    // many fragments to establish that prefix.
     const windowExhausted = rawIds.length < nResults;
-    if (filtered.ids.length < limit && !windowExhausted) return null;
+    if (keptIds.length < limit && !windowExhausted) return null;
     logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
       rows: rowIds.length, fragments: rawIds.length, kept: filtered.ids.length
     });
