@@ -47,6 +47,7 @@ interface BeforePromptBuildResult {
 interface AfterToolCallEvent {
   toolName: string;
   params?: Record<string, unknown>;
+  toolCallId?: string;
   result?: unknown;
   error?: string;
 }
@@ -876,6 +877,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       // A failed file operation is evidence of an attempt, not a completed
       // read/edit. Keep the shared worker's structured failure marker.
       tool_response: failed ? { is_error: true, error: toolResponseText } : toolResponseText,
+      // The worker needs the native ID to retain and link the raw tool receipt.
+      ...(typeof event.toolCallId === "string" && event.toolCallId ? { tool_use_id: event.toolCallId } : {}),
       cwd: workspaceDir,
       platformSource: PLATFORM_SOURCE,
     }, api.logger);

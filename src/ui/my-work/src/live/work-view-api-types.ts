@@ -249,6 +249,8 @@ export interface WorkViewRule {
   latestAt: string | null
   /** `at` is ISO or null. */
   quotes: { at: string | null; quote: string; kind: string }[]
+  /** Absent on older workers. Local evidence can still include omitted saved quotes. */
+  quotesOmitted?: SavedRule['quotesOmitted']
   replacedBy: string | null
   replacedAt: string | null
   savedAt: string | null

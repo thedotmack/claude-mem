@@ -14,6 +14,7 @@ import {
   type ProcessGeneratedResponseInput,
 } from '../../../src/server/generation/processGeneratedResponse.js';
 import type { PostgresObservationGenerationJob } from '../../../src/storage/postgres/generation-jobs.js';
+import { observationEmbeddingParts } from '../../../src/storage/postgres/observation-embeddings.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
 
@@ -262,6 +263,58 @@ describe('processGeneratedResponse', () => {
       expect(outcome.observations[0]!.metadata.title).toBe('This deploy unblocked the worker restart path after the queue drained.');
       expect(outcome.observations[0]!.content).not.toContain('This deploy unblocked the worker restart path after the queue drained.\n\nThis deploy unblocked the worker restart path after the queue drained.');
     }
+  });
+
+  it('strips memory tags from generated observation metadata before storage and embedding', async () => {
+    const outcome = await processGeneratedResponse({
+      pool,
+      job: await claim(),
+      providerLabel: 'fake',
+      rawText: `<observation>
+        <type>discovery</type>
+        <title>Public title <private>hidden-title</private></title>
+        <narrative>Public narrative <private>hidden-narrative</private></narrative>
+        <facts><fact>Public fact <claude-mem-context>hidden-fact</claude-mem-context></fact></facts>
+        <files_read><file>src/public.ts</file><file><private>hidden-file</private></file></files_read>
+      </observation>`,
+    });
+    expect(outcome.kind).toBe('completed');
+    const [stored] = await storage.observations.listByProject({ projectId, teamId });
+    expect(stored).toBeDefined();
+    expect(stored!.content).not.toContain('hidden-');
+    expect(JSON.stringify(stored!.metadata)).not.toContain('hidden-');
+    expect(stored!.metadata.title).toBe('Public title');
+    expect(stored!.metadata.narrative).toBe('Public narrative');
+    expect(stored!.metadata.facts).toEqual(['Public fact']);
+    expect(stored!.metadata.files_read).toContain('src/public.ts');
+    expect(observationEmbeddingParts(stored!.kind, stored!.metadata, stored!.content)).toEqual([
+      { part: 'narrative', text: 'Public narrative' },
+      { part: 'fact_0', text: 'Public fact' },
+    ]);
+  });
+
+  it('strips memory tags from generated summary metadata before storage and embedding', async () => {
+    const outcome = await processSessionSummaryResponse({
+      pool,
+      job: await claim(await summaryJob()),
+      providerLabel: 'fake',
+      rawText: `<summary>
+        <request>Public request <private>hidden-request</private></request>
+        <learned>Public learning <private>hidden-learning</private></learned>
+        <notes>Public note <claude-mem-context>hidden-context</claude-mem-context></notes>
+      </summary>`,
+    });
+    expect(outcome.kind).toBe('completed');
+    const [stored] = await storage.observations.listByProject({ projectId, teamId });
+    expect(stored).toBeDefined();
+    expect(stored!.kind).toBe('summary');
+    expect(stored!.content).not.toContain('hidden-');
+    expect(JSON.stringify(stored!.metadata)).not.toContain('hidden-');
+    expect(observationEmbeddingParts(stored!.kind, stored!.metadata, stored!.content)).toEqual([
+      { part: 'request', text: 'Public request' },
+      { part: 'learned', text: 'Public learning' },
+      { part: 'notes', text: 'Public note' },
+    ]);
   });
 
   it('records token + observation usage when metering is enabled', async () => {

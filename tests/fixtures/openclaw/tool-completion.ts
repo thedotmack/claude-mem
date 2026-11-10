@@ -41,7 +41,7 @@ try {
   const url=new URL(req.url);const body:any=await req.json();
   if(url.pathname==='/api/sessions/observations'){
    captured=body;const result=await ingestObservation({contentSessionId:body.contentSessionId,cwd:body.cwd,platformSource:body.platformSource,
-    toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response});markIngested();return Response.json(result);
+    toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response,toolUseId:body.tool_use_id});markIngested();return Response.json(result);
   }
   return Response.json({candidates:[{content:{parts:[{text:'<observation><type>discovery</type><title>Owned OpenClaw tool</title></observation>'}]}}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:20,totalTokenCount:120}});
  }});port=server.port;cleanup.push(()=>server.stop(true));
@@ -63,6 +63,11 @@ try {
   assert.equal(captured.tool_name,operation[0].toUpperCase()+operation.slice(1));
   for(const [key,value] of Object.entries(params)) assert.deepEqual(captured.tool_input[key],value);
   if(operation === 'read') assert.equal(captured.tool_input.file_path,filePath);
+  const toolUses=store.queryToolUses({contentSessionId:captured.contentSessionId});
+ assert.equal(toolUses.length,1,'the completed native tool call must reach the durable raw-tool index');
+ assert.equal(toolUses[0].tool_use_id,event.toolCallId);
+ assert.equal(toolUses[0].platform_source,'openclaw');
+ assert.deepEqual(JSON.parse(toolUses[0].tool_input!),captured.tool_input);
  const sid=(store.db.query('SELECT id FROM sdk_sessions').get() as any).id;
  const session=manager.initializeSession(sid);cleanup.push(()=>{session.abortController.abort();manager.removeSessionImmediate(sid)});
  const fetchSpy=spyOn(globalThis,'fetch').mockImplementation((url,init)=>realFetch(String(url).startsWith('http://127.0.0.1:')?url:`http://127.0.0.1:${port}/generate`,init));cleanup.push(()=>fetchSpy.mockRestore());
@@ -74,6 +79,8 @@ try {
  console.log(JSON.stringify({kind,tool,capturedInput:captured.tool_input,rows,lookupIds:lookup.map(row=>row.id),readExpected,writeExpected}));
  assert.equal(rows.length,1);assert.deepEqual(JSON.parse(rows[0].files_read),readExpected);assert.deepEqual(JSON.parse(rows[0].files_modified),writeExpected);
  assert.deepEqual(lookup.map(row=>row.id),failed?[]:[rows[0].id]);
+ assert.equal(store.queryToolUses({contentSessionId:captured.contentSessionId})[0].observation_id,rows[0].id,
+  'the generated observation must link back to its native tool call');
  const live=broadcasts.find(event=>event.type==='new_observation').observation;assert.deepEqual(JSON.parse(live.files_read),readExpected);assert.deepEqual(JSON.parse(live.files_modified),writeExpected);
  assert.equal(JSON.stringify(params),originalParams);
  if(failed){assert.equal(captured.tool_response.is_error,true);assert.match(captured.tool_response.error,/Permission denied/);assert.ok(!captured.tool_response.error.includes('secret'));}

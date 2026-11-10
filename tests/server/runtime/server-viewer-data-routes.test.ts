@@ -231,6 +231,33 @@ describe('ServerViewerRoutes data endpoints', () => {
     expect((await get('/api/observations?limit=100', teamKey)).status).toBe(200);
   });
 
+  for (const platformSource of ['constructor', '__proto__']) {
+    it(`includes the ${platformSource} source in the project catalog`, async () => {
+      const project = await storage.projects.create({ teamId, name: 'custom-source-project' });
+      await storage.sessions.create({
+        projectId: project.id,
+        teamId,
+        contentSessionId: 'custom-source-session',
+        platformSource,
+        metadata: { project: 'custom-source-checkout' },
+      });
+      await startServer();
+
+      const response = await get('/api/projects', teamKey);
+      expect(response.status).toBe(200);
+      const catalog = await response.json() as {
+        sources: string[];
+        projects: string[];
+        projectsBySource: Record<string, string[]>;
+      };
+      expect(catalog.sources).toContain(platformSource);
+      expect(Object.hasOwn(catalog.projectsBySource, platformSource)).toBe(true);
+      expect(catalog.projectsBySource[platformSource]).toEqual(['custom-source-checkout']);
+      expect(catalog.projectsBySource.codex).toEqual(['repo-a']);
+      expect(catalog.projects).not.toContain('foreign-project');
+    });
+  }
+
   it('serves summaries, sessions, the project catalog and processing status', async () => {
     await startServer();
     const summaries = await (await get('/api/summaries', teamKey)).json() as { items: Array<Record<string, unknown>> };

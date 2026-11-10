@@ -668,14 +668,18 @@ export class SyncApply {
             if (!op.deleted && typeof list === 'string') changedLists.add(list);
             else unknownWorkStateList = true;
           }
-          // A tombstone deletes a row; a mutation can re-key or retitle rows.
-          if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
+          // A later row revision can replace content too. Only first-revision
+          // inserts are known to be additive; cached old text must stop being
+          // served as soon as a replacement commits.
+          if (op.kind === 'mutation' || op.deleted === true || op.rev !== '1') removedOrRemapped = true;
         } else {
           result.skippedStale++;
         }
       }
 
-      this.retrySetAside(chromaJobs, recovered);
+      // A recovered row may replace a revision that was served while its
+      // update was blocked. Stale recoveries have not changed stored content.
+      if (this.retrySetAside(chromaJobs, recovered)) removedOrRemapped = true;
 
       // Cursor advance IN THE SAME TRANSACTION as the rows (crash-safe
       // exactly-once): a crash before COMMIT leaves both unmoved.
@@ -688,8 +692,9 @@ export class SyncApply {
 
     // Pulled rows change what SessionStart shows. 'all': a mutation (remap,
     // set-title) can move rows between projects, so no single project names it.
-    // 'removal' when a tombstone or mutation applied: the cached block may show
-    // what is now gone, so it must not be served until re-rendered.
+    // 'removal' when a tombstone, mutation, later row revision or recovered
+    // row applied: the cached block may show removed or replaced content,
+    // so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
       emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive', recovered.length ? undefined : {
         kinds: [...changedKinds], ...(!unknownWorkStateList ? { workStateLists: [...changedLists] } : {}),
@@ -766,7 +771,8 @@ export class SyncApply {
    * ledger makes a late retry safe (stale once a newer revision applied). A
    * retry that still fails stays set aside and never fails the batch.
    */
-  private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): void {
+  private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): boolean {
+    let applied = false;
     const rows = this.db.prepare(`
       SELECT id, epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
              entity_rev, operation_sha256, raw_body, reason
@@ -810,8 +816,10 @@ export class SyncApply {
       }
       if ('unapplicable' in attempt) continue;
       this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      if (attempt.outcome === 'applied') applied = true;
       recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
     }
+    return applied;
   }
 
   /**
@@ -1032,6 +1040,7 @@ export class SyncApply {
       fieldString(op, body, 'memory_session_id'),
       fieldString(op, body, 'content_session_id'),
       fieldString(op, body, 'platform_source'),
+      fieldNumber(op, body, 'created_at_epoch'),
     )) return 'stale';
     switch (op.kind) {
       case 'observation':
@@ -1051,14 +1060,21 @@ export class SyncApply {
     memorySessionId: string | null,
     contentSessionId: string | null,
     platformSource: string | null,
+    createdAtEpoch: number | null = null,
   ): boolean {
     if (memorySessionId && this.db.prepare(`
       SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?
     `).get(memorySessionId)) return true;
-    if (contentSessionId && this.db.prepare(`
-      SELECT 1 FROM deleted_content_sessions
-      WHERE platform_source = ? AND content_session_id = ?
-    `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId)) return true;
+    if (contentSessionId) {
+      const deleted = this.db.prepare(`
+        SELECT deleted_at_epoch_ms FROM deleted_content_sessions
+        WHERE platform_source = ? AND content_session_id = ?
+      `).get(normalizePlatformSource(platformSource ?? undefined), contentSessionId) as { deleted_at_epoch_ms: number } | null;
+      // v74 permits new work in the same conversation, while an old memory
+      // identity above remains permanently deleted. Hub arrival time is not
+      // evidence that the source row was created after the deletion.
+      if (deleted && (createdAtEpoch === null || createdAtEpoch <= deleted.deleted_at_epoch_ms)) return true;
+    }
     return false;
   }
 
@@ -1673,7 +1689,10 @@ export class SyncApply {
     if (!target || typeof target !== 'object' || Array.isArray(target) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
       throw invalidOp(op, 'set_title requires target and fields objects');
     }
-    const customTitle = fieldString(op, fields, 'custom_title');
+    // Titles can arrive from peers with capture redaction disabled. Apply the
+    // receiving policy before either writing the session or parking its title;
+    // the canonical mutation and its hash remain unchanged.
+    const customTitle = fieldString(op, redactInboundFields(fields, ['custom_title']), 'custom_title');
     if (customTitle === null) {
       throw invalidOp(op, 'set_title requires fields.custom_title');
     }
