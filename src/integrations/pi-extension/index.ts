@@ -97,6 +97,8 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   const worker = createHarnessWorkerClient();
   let current: Session | undefined;
   let notificationShown = false;
+  const ownsCapture = (session: Session, ctx: PiContext): boolean =>
+    current === session && ctx.sessionManager.getSessionId() === session.id && ctx.cwd === session.cwd;
   const warn = (ctx: PiContext, error: unknown): void => {
     if (!notificationShown && ctx.hasUI && ctx.ui) {
       ctx.ui.notify('Claude-Mem is unavailable. Run npx claude-mem doctor. ' + String(error), 'warning');
@@ -104,6 +106,9 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     }
   };
   const enqueue = (session: Session, ctx: PiContext, task: () => Promise<void>): Promise<void> => {
+    // Ownership is checked when work is admitted, not when it runs: admitted
+    // work posts under its own session id and cwd, so an old session's last
+    // observations and summary still land after a switch.
     session.queue = session.queue.then(task).catch(error => warn(ctx, error));
     return session.queue;
   };
@@ -130,7 +135,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
 
   const resetTurn = (_event: PiEvent, ctx: PiContext): Promise<void> | undefined => {
     const session = current;
-    if (!session) return;
+    if (!session || !ownsCapture(session, ctx)) return;
     return enqueue(session, ctx, async () => {
       session.entryId = undefined;
       session.initialized = false;
@@ -166,8 +171,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     // request's prompt is therefore the user message carrying the persisted
     // entry's timestamp, not whichever user message comes last.
     const selectEntry = (): { entry: PiSessionEntry; prompt: string } | undefined => {
-      if (current !== session || ctx.sessionManager.getSessionId() !== session.id || ctx.cwd !== session.cwd
-        || typeof ctx.sessionManager.getBranch !== 'function') return;
+      if (!ownsCapture(session, ctx) || typeof ctx.sessionManager.getBranch !== 'function') return;
       const branch = ctx.sessionManager.getBranch();
       if (!Array.isArray(branch)) return;
       const entry = [...branch].reverse().find(item => item.type === 'message' && item.message?.role === 'user');
@@ -248,7 +252,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   pi.on('tool_result', (event, ctx) => {
     const telemetryToolEpochMs = Date.now();
     const session = current;
-    if (!session || !event.toolName || event.toolName.startsWith('mem_')) return;
+    if (!session || !ownsCapture(session, ctx) || !event.toolName || event.toolName.startsWith('mem_')) return;
     // Strip complete private/context regions before the size cap can remove
     // their closing tag and make the worker see an ordinary unclosed tag.
     const text = stripMemoryTags(extractTextContent(event.content));
@@ -267,14 +271,14 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       });
     });
   });
-  pi.on('message_end', (event) => {
-    if (current && event.message?.role === 'assistant') {
+  pi.on('message_end', (event, ctx) => {
+    if (current && ownsCapture(current, ctx) && event.message?.role === 'assistant') {
       current.lastAssistant = extractTextContent(event.message.content);
     }
   });
   const summarize = (_event: PiEvent, ctx: PiContext): Promise<void> | undefined => {
     const session = current;
-    if (!session) return;
+    if (!session || !ownsCapture(session, ctx)) return;
     return enqueue(session, ctx, async () => {
       if (!session.anchored || session.excluded || !session.needsSummary) return;
       await worker.post('/api/sessions/summarize', {
