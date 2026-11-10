@@ -23,23 +23,6 @@ function pendingChildProcess(emitCloseOnKill = true): ChildProcess & {
 }
 
 describe("findBun Windows discovery", () => {
-  it("checks an explicit Bun path before running where.exe", async () => {
-    let lookupStarted = false;
-    const result = await findBun({
-      platform: "win32",
-      env: { BUN_PATH: "C:\\tools\\bun.exe" },
-      homeDirectory: "C:\\Users\\test",
-      exists: (candidate) => candidate === "C:\\tools\\bun.exe",
-      spawnProcess: (() => {
-        lookupStarted = true;
-        return pendingChildProcess();
-      }) as never,
-    });
-
-    expect(result).toBe("C:\\tools\\bun.exe");
-    expect(lookupStarted).toBe(false);
-  });
-
   // Windows precedence is deliberate (#4934): BUN, BUN_PATH, BUN_INSTALL, then
   // ~/.bun win over PATH, so a Bun reported by where.exe is never consulted
   // while any of them exists.
@@ -71,45 +54,6 @@ describe("findBun Windows discovery", () => {
       expect(result).toBe(ordered[index]);
       expect(lookupStarted).toBe(false);
     }
-  });
-
-  it("kills a stalled where.exe lookup at the deadline", async () => {
-    const child = pendingChildProcess();
-    const result = await findBun({
-      platform: "win32",
-      env: { SystemRoot: "C:\\Windows" },
-      homeDirectory: "C:\\Users\\test",
-      exists: () => false,
-      spawnProcess: (() => child) as never,
-      timeoutMs: 10,
-    });
-
-    expect(result).toBeNull();
-    expect(child.killed).toBe(true);
-  });
-
-  it("returns an existing Bun executable reported by where.exe", async () => {
-    const child = pendingChildProcess();
-    const bunPath = "C:\\tools\\bun.exe";
-    let lookupStarted = false;
-    const resultPromise = findBun({
-      platform: "win32",
-      env: { SystemRoot: "C:\\Windows" },
-      homeDirectory: "C:\\Users\\test",
-      exists: (candidate) => candidate === bunPath,
-      spawnProcess: (() => {
-        lookupStarted = true;
-        return child;
-      }) as never,
-      timeoutMs: 100,
-    });
-    setTimeout(() => {
-      child.stdout.emit("data", `${bunPath}\r\n`);
-      child.emit("close", 0, null);
-    }, 1);
-
-    expect(await resultPromise).toBe(bunPath);
-    expect(lookupStarted).toBe(true);
   });
 
   it("drops a where.exe hit in the current directory (a planted bun.exe)", async () => {

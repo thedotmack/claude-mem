@@ -12,10 +12,11 @@
  *      instead of returning an empty string and causing the summary to be
  *      skipped.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { join, win32 } from 'path';
-import { tmpdir, homedir } from 'os';
+import { tmpdir } from 'os';
+import * as os from 'os';
 import { extractLastMessage, extractLastMessageFromJsonl } from '../../src/shared/transcript-parser.js';
 import { cursorAdapter, deriveCursorTranscriptPath } from '../../src/cli/adapters/cursor.js';
 
@@ -102,7 +103,17 @@ describe('cursor-extraction: extractLastMessage Cursor JSONL compatibility', () 
 
 describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
   const sessionId = `c0ffee${Date.now()}`;
-  const projectsDir = join(homedir(), '.cursor', 'projects');
+  let homeDir: string;
+  let projectsDir: string;
+  let homedirSpy: ReturnType<typeof spyOn>;
+  const originalHome = process.env.HOME;
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(tmpdir(), 'cursor-home-'));
+    process.env.HOME = homeDir;
+    homedirSpy = spyOn(os, 'homedir').mockReturnValue(homeDir);
+    projectsDir = join(homeDir, '.cursor', 'projects');
+  });
   // Workspace paths as Cursor sends them in workspace_roots, each with the
   // folder Cursor names after it under ~/.cursor/projects.
   const workspaces: Array<[string, string]> = [
@@ -113,8 +124,6 @@ describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
     ['/c:/Users/alice/code/proj', 'c-Users-alice-code-proj'],
     [win32.join('C:/', 'Users', 'Some One', 'my-repo'), 'C-Users-Some-One-my-repo'],
   ];
-  // Every workspace gets this suffix, so each case writes a projects folder
-  // of its own and removes only that folder.
   const suffix = `-${sessionId}`;
 
   function writeTranscript(folder: string): string {
@@ -129,9 +138,10 @@ describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
   }
 
   afterEach(() => {
-    for (const [, folder] of workspaces) {
-      rmSync(join(projectsDir, folder + suffix), { recursive: true, force: true });
-    }
+    homedirSpy.mockRestore();
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   for (const [workspace, folder] of workspaces) {
@@ -194,48 +204,19 @@ describe('cursor-extraction: malformed JSONL tolerance', () => {
   // whose `message.content` is an unexpected type (null, number, plain
   // object) used to throw. It must now be skipped — same tolerance class as
   // truncated lines.
-  it('skips a line whose message.content is null and falls back to a valid earlier line', () => {
+  it.each([
+    [null, 'kept'],
+    [42, 'kept too'],
+    [{ unexpected: 'shape' }, 'survivor'],
+  ])('skips message.content %j without throwing', (invalidContent, expected) => {
     const valid = JSON.stringify({
       role: 'assistant',
-      message: { content: [{ type: 'text', text: 'kept' }] },
+      message: { content: [{ type: 'text', text: expected }] },
     });
-    const nullContent = JSON.stringify({
-      role: 'assistant',
-      message: { content: null },
-    });
-    const content = [valid, nullContent].join('\n');
+    const invalid = JSON.stringify({ role: 'assistant', message: { content: invalidContent } });
+    const content = [valid, invalid].join('\n');
 
     expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
-    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('kept');
-  });
-
-  it('skips a line whose message.content is a number without throwing', () => {
-    const valid = JSON.stringify({
-      role: 'assistant',
-      message: { content: [{ type: 'text', text: 'kept too' }] },
-    });
-    const numericContent = JSON.stringify({
-      role: 'assistant',
-      message: { content: 42 },
-    });
-    const content = [valid, numericContent].join('\n');
-
-    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
-    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('kept too');
-  });
-
-  it('skips a line whose message.content is a plain object without throwing', () => {
-    const valid = JSON.stringify({
-      role: 'assistant',
-      message: { content: [{ type: 'text', text: 'survivor' }] },
-    });
-    const objectContent = JSON.stringify({
-      role: 'assistant',
-      message: { content: { unexpected: 'shape' } },
-    });
-    const content = [valid, objectContent].join('\n');
-
-    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
-    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('survivor');
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe(expected);
   });
 });

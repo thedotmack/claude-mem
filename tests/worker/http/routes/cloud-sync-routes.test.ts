@@ -61,7 +61,7 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     mock.restore();
   });
 
-  it('performs the authenticated Hub probe even when pending counts are zero', async () => {
+  it('probes through viewer sync without caching even when pending counts are zero', async () => {
     const status: CloudSyncStatus = {
       configured: true,
       deviceId: 'device-fixture',
@@ -80,9 +80,9 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     };
     const probe = mock(async () => status);
     const mockDbManager = {
-      getCloudSync: () => ({ statusWithHubProbe: probe }),
+      getCloudSync: () => ({}),
     };
-    const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
+    const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any, { statusWithProbe: probe } as any));
 
     const { req, res, jsonSpy, statusSpy } = createMockReqRes();
     await invoke(handler, req, res, jsonSpy);
@@ -90,6 +90,7 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     expect(probe).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledWith(status);
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
     expect(statusSpy).not.toHaveBeenCalled(); // implicit 200
   });
 
@@ -107,36 +108,4 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     expect(statusSpy).not.toHaveBeenCalled(); // no error status set
   });
 
-  it('surfaces Hub probe failure and never leaks the sync token', async () => {
-    const mockDbManager = {
-      getCloudSync: () => ({
-        statusWithHubProbe: async () => ({
-          configured: true,
-          deviceId: 'device-fixture',
-          pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 },
-          quarantine: { count: 0, latestReason: null },
-          lastFlushAt: null,
-          lastError: null,
-          hub: {
-            checkedAt: 1751990400100,
-            reachable: false,
-            epoch: null,
-            headSeq: null,
-            projectedSeq: null,
-            error: 'sync hub status 401: denied',
-          },
-        }),
-      }),
-    };
-    const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
-
-    const { req, res, jsonSpy } = createMockReqRes();
-    await invoke(handler, req, res, jsonSpy);
-
-    const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
-    expect(payload.hub).toMatchObject({ reachable: false, error: 'sync hub status 401: denied' });
-    const keys = Object.keys(payload).map(k => k.toLowerCase());
-    expect(keys.some(k => k.includes('token'))).toBe(false);
-    expect(JSON.stringify(payload).toLowerCase()).not.toContain('token');
-  });
 });

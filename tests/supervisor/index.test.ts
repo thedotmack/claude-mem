@@ -92,11 +92,16 @@ describe('validateWorkerPidFile', () => {
 });
 
 describe('Supervisor assertCanSpawn behavior', () => {
-  it('assertCanSpawn throws when stopPromise is active (shutdown in progress)', () => {
+  it('assertCanSpawn throws when stopPromise is active (shutdown in progress)', async () => {
     const { getSupervisor } = require('../../src/supervisor/index.js');
     const supervisor = getSupervisor();
 
-    expect(() => supervisor.assertCanSpawn('test')).not.toThrow();
+    const stopping = supervisor.stop();
+    try {
+      expect(() => supervisor.assertCanSpawn('test')).toThrow(/shutting down/);
+    } finally {
+      await stopping;
+    }
   });
 
   it('registerProcess and unregisterProcess delegate to the registry', () => {
@@ -118,14 +123,5 @@ describe('Supervisor assertCanSpawn behavior', () => {
     supervisor.unregisterProcess(testId);
     const afterUnregister = registry.getAll().find((r: { id: string }) => r.id === testId);
     expect(afterUnregister).toBeUndefined();
-  });
-});
-
-describe('Supervisor start idempotency', () => {
-  it('getSupervisor returns the same instance', () => {
-    const { getSupervisor } = require('../../src/supervisor/index.js');
-    const s1 = getSupervisor();
-    const s2 = getSupervisor();
-    expect(s1).toBe(s2);
   });
 });

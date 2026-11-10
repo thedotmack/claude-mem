@@ -56,6 +56,7 @@ import {
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { imageTurnContent, prepareTurnImages, type ChatContentPart, type PreparedTurnMedia, type TurnImage, type TurnImageRequest } from '../media/inference.js';
 import { resolveObserverImageCapability } from './media-capability.js';
+import { MediaError } from '../../shared/media-contract.js';
 
 /**
  * One chat message in the request body. Every message is string content
@@ -937,7 +938,12 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       return null;
     }
     const store = this.dbManager.getMediaStore();
-    return prepareTurnImages(messages, attachmentId => store.readVariant(attachmentId, 'llm'), capability.bounds);
+    return prepareTurnImages(messages, async attachmentId => {
+      const metadata = store.getMetadata(attachmentId).llm;
+      if (!metadata) throw new MediaError('media_not_ready');
+      // readVariant verifies the bytes against this immutable stored variant.
+      return { bytes: await store.readVariant(attachmentId, 'llm'), width: metadata.width, height: metadata.height };
+    }, capability.bounds);
   }
 
   protected resolveContextWindow(config: OpenRouterConfig): Promise<number> {
@@ -1338,6 +1344,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
             });
           }
         } catch (error) {
+          signal?.throwIfAborted();
           logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
             model,
             requestId: finalRequestId,

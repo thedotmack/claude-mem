@@ -124,17 +124,17 @@ describe('worker heartbeat file', () => {
       const hold = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       const ageMs = () => Date.now() - readWorkerHeartbeat(${JSON.stringify(path)}).beatAtMs;
-      startWorkerHeartbeat({ heartbeatPath: ${JSON.stringify(path)}, intervalMs: 100, readLastResponseAtMs: () => null });
-      await sleep(150);
-      // Slow but progressing: 300 ms sync holds with the loop turning between them.
+      startWorkerHeartbeat({ heartbeatPath: ${JSON.stringify(path)}, intervalMs: 35, readLastResponseAtMs: () => null });
+      await sleep(50);
+      // Slow but progressing: 100 ms sync holds with the loop turning between them.
       let slowMaxAge = 0;
       for (let i = 0; i < 8; i++) {
-        hold(300);
-        await sleep(120);
+        hold(100);
+        await sleep(40);
         slowMaxAge = Math.max(slowMaxAge, ageMs());
       }
-      // Dead: one 2 s hold; the timer cannot fire, so the beat ages.
-      hold(2000);
+      // Dead: one 700 ms hold; the timer cannot fire, so the beat ages.
+      hold(700);
       const heldAge = ageMs();
       console.log('AGES:' + JSON.stringify({ slowMaxAge, heldAge }));
       process.exit(0);
@@ -144,7 +144,7 @@ describe('worker heartbeat file', () => {
     const line = child.stdout.split('\n').find(l => l.startsWith('AGES:'));
     expect(line).toBeDefined();
     const { slowMaxAge, heldAge } = JSON.parse(line!.slice('AGES:'.length));
-    expect(slowMaxAge).toBeLessThan(1_000);
-    expect(heldAge).toBeGreaterThanOrEqual(1_900);
+    expect(slowMaxAge).toBeLessThan(350);
+    expect(heldAge).toBeGreaterThanOrEqual(650);
   }, 20_000);
 });

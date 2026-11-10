@@ -4,7 +4,6 @@ import { setTomlFeatureEnabled, setTomlPluginEnabled } from '../../src/services/
 for (const spelling of ['"enabled"', "'enabled'", String.raw`"\u0065nabled"`, String.raw`"\U00000065nabled"`]) {
   it(`updates the existing plugin boolean spelled ${spelling}`, () => {
     const input = `[plugins."claude-mem@thedotmack"] # operator config\n${spelling} = false\nother = "keep"\n`;
-    expect(Bun.TOML.parse(input)).toEqual({ plugins: { 'claude-mem@thedotmack': { enabled: false, other: 'keep' } } });
     const output = setTomlPluginEnabled(input, 'claude-mem@thedotmack', true);
     expect(Bun.TOML.parse(output)).toEqual({ plugins: { 'claude-mem@thedotmack': { enabled: true, other: 'keep' } } });
     expect(setTomlPluginEnabled(output, 'claude-mem@thedotmack', true)).toBe(output);

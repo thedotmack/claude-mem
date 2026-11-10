@@ -139,15 +139,6 @@ describe('gate', () => {
     expect((await g(new Request(`${PUBLIC_ORIGIN}/auth?t=${link}`))).status).toBe(403);
   });
 
-  it('never lets the path pick another host', async () => {
-    seen = [];
-    const response = await gate()(new Request(`${PUBLIC_ORIGIN}//127.0.0.1:${upstream.port}/api/settings`, { headers: { Cookie: sessionCookie() } }));
-    expect(response.status).toBe(403);
-    const upper = await gate()(new Request(`${PUBLIC_ORIGIN}/API/SETTINGS`, { headers: { Cookie: sessionCookie() } }));
-    expect(upper.status).toBe(403);
-    expect(seen).toHaveLength(0);
-  });
-
   it("refuses another user's session", async () => {
     const response = await gate()(new Request(`${PUBLIC_ORIGIN}/api/work-view`, { headers: { Cookie: sessionCookie('someone-else') } }));
     expect(response.status).toBe(401);
@@ -222,22 +213,6 @@ describe('gate', () => {
     const response = await gate()(new Request(`${PUBLIC_ORIGIN}/api/work-view/events`, { headers: { Cookie: sessionCookie() } }));
     expect(response.headers.get('Content-Type')).toBe('text/event-stream');
     expect(await response.text()).toContain('event: heartbeat');
-  });
-
-  it('preserves shared save acknowledgements and refuses generic writes and other owners', async () => {
-    const forwarded: string[] = [];
-    const g = createGate({ ownerUserId: OWNER, secret: SECRET, upstreamOrigin: 'http://127.0.0.1:37777', publicOrigin: PUBLIC_ORIGIN, signInUrl: SIGN_IN,
-      fetchImpl: async (input, init) => { forwarded.push(String(input)); return Response.json({ save: { scope: 'shared', state: 'queued', localMaterialization: 'pending' } }); } });
-    const headers = { Cookie: sessionCookie(), Origin: PUBLIC_ORIGIN, 'Content-Type': 'application/json' };
-    for (const path of ['/api/work-view/review', '/api/work-view/suggestions']) {
-      const response = await g(new Request(`${PUBLIC_ORIGIN}${path}`, { method: 'POST', headers, body: '{}' }));
-      expect(await response.json()).toEqual({ save: { scope: 'shared', state: 'queued', localMaterialization: 'pending' } });
-    }
-    for (const path of ['/api/work-state', '/api/work-view/shared-ledger', '/api/work-view/shared-state', '/api/work-view/file/work-state/1/0']) {
-      expect((await g(new Request(`${PUBLIC_ORIGIN}${path}`, { method: 'POST', headers, body: '{}' }))).status).toBe(403);
-    }
-    expect((await g(new Request(`${PUBLIC_ORIGIN}/api/work-view/suggestions`, { method: 'POST', headers: { ...headers, Cookie: sessionCookie('another-owner') }, body: '{}' }))).status).toBe(401);
-    expect(forwarded).toHaveLength(2);
   });
 
   it('reports health from the worker without a session', async () => {

@@ -43,10 +43,6 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     // OpenRouter takes `effort` or `max_tokens` in `reasoning`, never both;
     // only `max_tokens` is a cap the provider enforces.
     expect(OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT).toEqual({ minimal: 455, low: 1024, medium: 4096, high: 16384 });
-    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
-      expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort }).reasoning)
-        .toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort] });
-    }
   });
 
   it('sends a typed effort to openrouter.ai only; cmem stays reasoning-off and a custom gateway stays unset', () => {

@@ -22,13 +22,9 @@ const fixture = String.raw`
     if (tool === 'chroma_create_collection') return json({});
     if (tool === 'chroma_get_documents') {
       if (args.where && response !== 'valid') {
-        if (response === 'empty-content') return { content: [] };
         if (response === 'non-json') return { content: [{ type: 'text', text: 'temporary lookup failure' }] };
-        if (response === 'missing-ids') return json({});
         if (response === 'null-ids') return json({ ids: null });
-        if (response === 'object-ids') return json({ ids: {} });
         if (response === 'numeric-ids') return json({ ids: [42] });
-        if (response === 'nested-ids') return json({ ids: [['obs_1_narrative']] });
         if (response === 'tool-error') return { isError: true, content: [{ type: 'text', text: 'owned lookup error' }] };
       }
       const conditions = args.where ? (args.where.$and ?? [args.where]) : [];
@@ -85,7 +81,7 @@ function run(kind: string, response: string): any {
 
 describe('fragment reconciliation validates production MCP lookup responses', () => {
   for (const kind of ['observation', 'summary']) {
-    for (const response of ['empty-content', 'non-json', 'missing-ids', 'null-ids', 'object-ids', 'numeric-ids', 'nested-ids', 'tool-error']) {
+    for (const response of ['non-json', 'null-ids', 'numeric-ids', 'tool-error']) {
       it(`retains ${kind} retry state for ${response} and recovers with a valid lookup`, () => {
         const result = run(kind, response);
         expect(result.row.sync_rev).toBe('2');

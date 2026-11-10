@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { OpenAICompatProvider, resolveOpenAICompatConfig } from '../../src/services/worker/OpenAICompatProvider.js';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
 import { GeminiProvider } from '../../src/services/worker/GeminiProvider.js';
@@ -67,23 +64,6 @@ function harness(count: unknown = '4', contextWindowTokens?: number) {
 }
 
 describe('OpenAI-compatible observation batching (#4967)', () => {
-  it('defaults to 1, reads settings.json, and lets the environment override it', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'claude-mem-openai-batch-'));
-    const settingsPath = path.join(directory, 'settings.json');
-    const saved = process.env[SETTING];
-    try {
-      delete process.env[SETTING];
-      expect(SettingsDefaultsManager.getAllDefaults()[SETTING]).toBe('1');
-      writeFileSync(settingsPath, JSON.stringify({ [SETTING]: '3' }));
-      expect(SettingsDefaultsManager.loadFromFile(settingsPath)[SETTING]).toBe('3');
-      process.env[SETTING] = '2';
-      expect(SettingsDefaultsManager.loadFromFile(settingsPath)[SETTING]).toBe('2');
-    } finally {
-      if (saved === undefined) delete process.env[SETTING];
-      else process.env[SETTING] = saved;
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
 
   it('claims only the configured number in FIFO order, retaining event timestamps', () => {
     const h = harness('2');

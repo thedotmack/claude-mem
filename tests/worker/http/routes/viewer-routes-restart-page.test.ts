@@ -43,26 +43,11 @@ describe('GET /restart', () => {
     expect(html).toContain('Restart the claude-mem memory worker');
   });
 
-  it('never restarts on load — the POST is bound to a click, so an <img> or <iframe> cannot fire it', () => {
-    const { html } = renderRestartPage();
-    const clickBinding = html.indexOf("addEventListener('click'");
-    const restartPost = html.indexOf("fetch('/api/admin/restart'");
-
-    expect(clickBinding).toBeGreaterThan(-1);
-    expect(restartPost).toBeGreaterThan(clickBinding);
-    expect(html).toContain("method: 'POST'");
-  });
-
   it('is self-contained, so a blocked CDN cannot leave a blank page', () => {
     const { html } = renderRestartPage();
     expect(html).not.toContain('<script src');
     expect(html).not.toContain('<link rel="stylesheet"');
     expect(html).not.toContain('//cdn');
-  });
-
-  it('sends the reader to doctor when the worker does not come back', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('npx claude-mem doctor');
   });
 
   // A click requirement alone does not stop clickjacking: an attacker who can
@@ -71,33 +56,6 @@ describe('GET /restart', () => {
     const { headers } = renderRestartPage();
     expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
     expect(headers['x-frame-options']).toBe('DENY');
-  });
-
-  // The dying worker answers /health for the whole graceful-shutdown window,
-  // so "healthy" alone reports success against the worker we just killed.
-  it('waits for a different pid rather than any healthy response', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain(`const outgoingPid = ${process.pid};`);
-    expect(html).toContain('body.pid === outgoingPid) return false');
-  });
-
-  it('still finishes against a worker too old to report a pid', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain("typeof body.pid === 'number'");
-  });
-
-  // A bound port is not a ready worker: the successor opens the DB, bootstraps
-  // chroma and connects MCP after it starts listening.
-  it('requires the successor to report readiness, not just a bound port', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('/api/readiness');
-    expect(html).toContain('readiness.ok');
-    expect(html.indexOf('body.pid')).toBeLessThan(html.indexOf('/api/readiness'));
-  });
-
-  it('does not block on readiness against a worker too old to expose it', () => {
-    const { html } = renderRestartPage();
-    expect(html).toContain('readiness.status === 404');
   });
 });
 

@@ -19,19 +19,11 @@ import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { SEMANTIC_CONTEXT_MAX_LIMIT } from '../../src/shared/semantic-context.js';
 import { embedObservationRows, getSharedEmbedder } from '../../src/server/services/ObservationEmbeddingService.js';
 import { PostgresObservationEmbeddingsRepository } from '../../src/storage/postgres/observation-embeddings.js';
+import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { logger } from '../../src/utils/logger.js';
 import { newApiKey, createIsolatedSchema, dropSchema } from '../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-// The first test to probe the model may download all-MiniLM-L6-v2 (about
-// 90 MB) into a cold cache. On a GitHub runner that took about 12 s (server
-// search CI job 129461778315, 2026-11-09), past bun's 5 s default. With the
-// model already cached and the batched seed (#5658), the clamp test measured
-// 3.1 s (server search job) and 4.4 s (sync-api job), so the download is the
-// case to budget for. Five times 12 s lets a slow runner finish while a hung
-// download still fails the test.
-const COLD_MODEL_LOAD_TEST_TIMEOUT_MS = 60_000;
 
 describe('POST /v1/context/semantic limits', () => {
   if (!testDatabaseUrl) {
@@ -51,6 +43,11 @@ describe('POST /v1/context/semantic limits', () => {
   beforeEach(async () => {
     spies = (['info', 'warn', 'error', 'debug'] as const).map((level) =>
       spyOn(logger, level).mockImplementation(() => {}),
+    );
+    spies.push(
+      spyOn(LocalEmbedder.prototype, 'embed').mockImplementation(async (texts: string[]) =>
+        texts.map(() => new Float32Array(384).fill(0.05))),
+      spyOn(LocalEmbedder.prototype, 'isReady').mockReturnValue(true),
     );
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_semantic_ctx');
     // public too, where pgvector's type lives once any test has created it.
@@ -111,24 +108,17 @@ describe('POST /v1/context/semantic limits', () => {
     return { status: 200, count: json.count, context: json.context };
   }
 
-  // An answer with content needs pgvector and the embedding model; without
-  // either the route answers empty and these tests say so and return.
+  // Fixed vectors exercise the route without loading the embedding model.
   async function canAnswer(): Promise<boolean> {
     // Whether this database got the embeddings table, which the bootstrap
     // creates only where pgvector 0.8+ is usable, not merely installable.
     const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
     const vectors = table.rows[0]?.present === true;
-    // Probe the model only where vectors exist, in the order the route checks
-    // them: without pgvector the route never embeds, and loading the model here
-    // (a network download on a cold runner) only spends the test's timeout.
-    const model = vectors && await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
-    // The search CI job (CLAUDE_MEM_TEST_PGVECTOR=1) has both; there a
-    // missing one fails these tests instead of passing them untested.
     if (process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
-      expect({ vectors, model }).toEqual({ vectors: true, model: true });
+      expect(vectors).toBe(true);
     }
-    if (!vectors || !model) console.warn('vector search or the embedding model is unavailable; semantic answers not tested');
-    return vectors && model;
+    if (!vectors) console.warn('vector search is unavailable; semantic answers not tested');
+    return vectors;
   }
 
   async function seed(rows: Array<{ content: string; kind?: string; metadata?: Record<string, string> }>): Promise<void> {
@@ -139,10 +129,6 @@ describe('POST /v1/context/semantic limits', () => {
     for (const row of rows) {
       observations.push(await storage.observations.create({ projectId, teamId: team, ...row }));
     }
-    // With vectors, so the search finds them by meaning on any Postgres with
-    // pgvector, not only where bm25 matches any keyword. One embed call for the
-    // whole seed: one call per row made the 30-row clamp test pass the default
-    // 5 s timeout on loaded CI runners.
     const embedded = (await embedObservationRows(pool, observations)) ?? [];
     for (const [index, parts] of embedded.entries()) {
       await embeddings.upsert({ observationId: observations[index]!.id, model: getSharedEmbedder().modelId, ...parts });
@@ -161,7 +147,7 @@ describe('POST /v1/context/semantic limits', () => {
     const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
     expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
-  }, COLD_MODEL_LOAD_TEST_TIMEOUT_MS);
+  });
 
   it('renders the content of a memory or summary that has no narrative', async () => {
     if (!(await canAnswer())) return;
@@ -173,7 +159,7 @@ describe('POST /v1/context/semantic limits', () => {
     expect(result.context).toContain('The queue retry limit is now five, set in the gateway config.');
     expect(result.context).toContain('### Session summary (');
     expect(result.context).toContain('raised the queue retry limit and redeployed.');
-  }, COLD_MODEL_LOAD_TEST_TIMEOUT_MS);
+  });
 
   it('answers a short prompt with no context', async () => {
     expect(await semantic({ query: 'yes go on' })).toEqual({ status: 200, count: 0, context: '' });

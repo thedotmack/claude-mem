@@ -2,7 +2,7 @@
 // Every command and output below is a recorded tool use from a real
 // ~/.claude-mem/claude-mem.db (tool_uses id in each comment), with long commit
 // bodies and unrelated output trimmed. Made-up samples say so.
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { githubRepo, mergeProducts, productsFromToolUse } from '../../../src/services/work-view/work-product.mjs';
 

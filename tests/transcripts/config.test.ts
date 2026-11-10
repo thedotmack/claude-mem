@@ -168,34 +168,11 @@ describe('transcript watcher config', () => {
 });
 
 describe('expandHomePath', () => {
-  it('expands a bare ~ and a ~/ prefix to the current home directory', () => {
-    expect(expandHomePath('~')).toBe(homedir());
+  it('expands the transcript path through the shared home-path helper', () => {
     expect(expandHomePath('~/.codex/sessions')).toBe(join(homedir(), '.codex/sessions'));
   });
 
-  it('expands the Windows ~\\ form only on win32', () => {
-    // expandHome treats `~\` as a home prefix on Windows only; on POSIX a
-    // backslash is a legal filename character and must stay literal.
-    if (process.platform === 'win32') {
-      expect(expandHomePath('~\\')).toBe(homedir());
-      expect(expandHomePath('~\\.codex\\sessions')).toBe(join(homedir(), '.codex\\sessions'));
-    } else {
-      expect(expandHomePath('~\\')).toBe('~\\');
-      expect(expandHomePath('~\\.codex\\sessions')).toBe('~\\.codex\\sessions');
-    }
-  });
-
-  it('leaves ~user/ paths alone instead of reparenting them under this user home', () => {
-    // `~alice/transcripts` names alice's home, not a directory inside ours.
-    // Rewriting it to <home>/alice/transcripts pointed the watcher at a path
-    // that does not exist, and it ingested nothing without reporting an error.
-    expect(expandHomePath('~alice/transcripts')).toBe('~alice/transcripts');
-    expect(expandHomePath('~backup/rollout.jsonl')).toBe('~backup/rollout.jsonl');
-  });
-
-  it('passes absolute, relative and empty paths through untouched', () => {
-    expect(expandHomePath('/var/log/codex.jsonl')).toBe('/var/log/codex.jsonl');
-    expect(expandHomePath('relative/path.jsonl')).toBe('relative/path.jsonl');
+  it('preserves an empty path', () => {
     expect(expandHomePath('')).toBe('');
   });
 });

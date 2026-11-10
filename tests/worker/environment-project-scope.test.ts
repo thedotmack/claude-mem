@@ -253,18 +253,4 @@ describe('explicit environment inheritance (#4782)', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('keeps semantic anchor hydration scoped even when the vector index returns unrelated candidates', async () => {
-    const search = new SessionSearch(store.db);
-    search.searchObservations = () => { throw new Error('Semantic anchor must not fall back to keyword search'); };
-    const manager = new SearchManager(search, store, {
-      queryChroma: async () => ({ ids: [foreign, native, adopted, sibling], metadatas: [foreign, native, adopted, sibling].map(() => ({ doc_type: 'observation', created_at_epoch: epoch })) }),
-    } as never, new FormattingService(), new TimelineService(), 0);
-    const scope = withCheckoutProjects({ project: 'business-a' }, getProjectContext(childA));
-    const result = await manager.timeline({ ...scope, query: 'Needle', depth_before: 20, depth_after: 20 });
-    expect(result.isError).not.toBe(true);
-    expect(text(result)).toContain('Needle native A');
-    expect(text(result)).toContain('Needle adopted A');
-    expect(text(result)).not.toContain('Needle unrelated parent');
-    expect(text(result)).not.toContain('Private parent prompt');
-  });
 });

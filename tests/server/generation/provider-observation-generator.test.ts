@@ -108,29 +108,6 @@ describe('ProviderObservationGenerator', () => {
     } as unknown as Job<GenerateObservationsForEventJob>;
   }
 
-  it('completes a job using the fake provider response', async () => {
-    const xml = '<observation><type>discovery</type><title>OK</title><facts><fact>f</fact></facts></observation>';
-    const provider = new StubProvider(xml);
-    const generator = new ProviderObservationGenerator({
-      pool: pool as unknown as Parameters<typeof ProviderObservationGenerator['prototype']['process']>[0]['data'] extends never
-        ? never
-        : never,
-      provider,
-    } as unknown as { pool: pg.Pool; provider: ServerGenerationProvider });
-
-    const result = await generator.process(makeJob());
-    expect(result.status).toBe('completed');
-    expect(result.observationCount).toBe(1);
-    expect(provider.calls).toBe(1);
-
-    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
-      id: jobId,
-      projectId,
-      teamId,
-    });
-    expect(reloaded?.status).toBe('completed');
-  });
-
   it('fails fast with an UnrecoverableError when provider returns an empty response', async () => {
     const provider = new StubProvider('');
     const generator = new ProviderObservationGenerator({

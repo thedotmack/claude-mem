@@ -278,16 +278,36 @@ export async function backfillMissingEmbeddings(
   // the one holding it.
   let lockClient: PostgresQueryable = client;
   let closeLockClient: (() => Promise<void>) | null = null;
+  const ownershipLost = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, ownershipLost.signal]) : ownershipLost.signal;
+  let connectLockClient: (() => Promise<unknown>) | null = null;
   if (isPool(client)) {
     const dedicated = new pg.Client(client.options);
-    dedicated.on('error', (error: Error) => {
+    let closing = false;
+    const lost = (error: Error) => {
+      if (closing || ownershipLost.signal.aborted) return;
+      // The pool can keep serving queries after this separate session dies,
+      // but its advisory lock no longer excludes another backfill owner.
+      ownershipLost.abort(error);
       logger.warn('SYSTEM', 'embedding backfill lock connection failed', { error: error.message });
-    });
-    await dedicated.connect();
+    };
+    const ended = () => lost(new Error('embedding backfill lock connection ended'));
+    dedicated.on('error', lost);
+    dedicated.on('end', ended);
+    connectLockClient = () => dedicated.connect();
     lockClient = dedicated;
-    closeLockClient = () => dedicated.end();
+    closeLockClient = async () => {
+      closing = true;
+      try { await dedicated.end(); }
+      finally {
+        dedicated.removeListener('error', lost);
+        dedicated.removeListener('end', ended);
+      }
+    };
   }
   try {
+    await connectLockClient?.();
+    if (signal.aborted) return { observations: 0, parts: 0 };
     const lock = await lockClient.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock(${BACKFILL_LOCK_KEY}) AS locked`);
     if (lock.rows[0]?.locked !== true) {
       logger.info('SYSTEM', 'another process is backfilling embeddings; this one leaves it to that one');
@@ -295,9 +315,10 @@ export async function backfillMissingEmbeddings(
     }
     try {
       // Reads and writes go through the pool (or the caller's own client).
-      return await embedMissingObservations(client, { ...options, embedder });
+      return await embedMissingObservations(client, { ...options, embedder, signal });
     } finally {
-      await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
+      // An ended connection released its locks on the server already.
+      if (!ownershipLost.signal.aborted) await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
     }
   } finally {
     await closeLockClient?.();
@@ -328,21 +349,26 @@ async function embedMissingObservations(
   // its connection is released before the pool closes; the next start resumes.
   while (!options.signal?.aborted) {
     const rows = await repo.listMissing({ model: embedder.modelId, limit: batchSize, after });
-    if (rows.length === 0) break;
+    if (options.signal?.aborted || rows.length === 0) break;
     const last = rows[rows.length - 1]!;
     after = { createdAt: last.createdAt, id: last.id };
 
     let embedded: Array<EmbeddedParts | null> | null = await embedObservationRows(client, rows, embedder, { waitForModelMs: Infinity });
+    if (options.signal?.aborted) break;
     if (!embedded) {
       // Retry a failed batch a row at a time, so a row the model cannot embed
       // is skipped instead of stopping every row after it at each start. If
       // every row fails, the fault is not the rows'; stop until the next start.
       embedded = [];
-      for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder, { waitForModelMs: Infinity }))?.[0] ?? null);
+      for (const row of rows) {
+        if (options.signal?.aborted) break;
+        embedded.push((await embedObservationRows(client, [row], embedder, { waitForModelMs: Infinity }))?.[0] ?? null);
+      }
       if (embedded.every(parts => parts === null)) break;
     }
     if (options.signal?.aborted) break;
     for (let i = 0; i < rows.length; i++) {
+      if (options.signal?.aborted) break;
       const parts = embedded[i];
       if (!parts) continue;
       await repo.upsert({ observationId: rows[i]!.id, ...parts });

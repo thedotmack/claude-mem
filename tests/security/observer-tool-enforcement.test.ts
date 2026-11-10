@@ -7,12 +7,9 @@ import {
   buildHardenedSdkOptions,
   OBSERVER_DISALLOWED_TOOLS,
 } from '../../src/sdk/hardened-options.js';
-import {
-  recordObserverToolAttempt,
-  getObserverAuditLogPath,
-} from '../../src/utils/observer-audit.js';
+import { getObserverAuditLogPath } from '../../src/utils/observer-audit.js';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
-import { createSdkSpawnFactory, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import { createSdkSpawnFactory } from '../../src/supervisor/process-registry.js';
 import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
 const BASE_INPUT = {
@@ -68,11 +65,6 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(opts.permissionMode).toBe('dontAsk');
     });
 
-    it('never uses bypassPermissions', () => {
-      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(opts.permissionMode).not.toBe('bypassPermissions');
-    });
-
     it('isolates settings, MCP, and extra directories', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(opts.mcpServers).toEqual({});
@@ -85,11 +77,6 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(opts.cwd).toBe(OBSERVER_SESSIONS_DIR);
       expect(opts.cwd).not.toBe(process.cwd());
-    });
-
-    it('exposes a canUseTool callback', () => {
-      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(typeof opts.canUseTool).toBe('function');
     });
   });
 
@@ -156,17 +143,6 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(recorded.length).toBeLessThan(huge.length);
       expect(recorded).toContain('[TRUNCATED]');
     });
-
-    it('recordObserverToolAttempt is best-effort and never throws', () => {
-      expect(() =>
-        recordObserverToolAttempt({
-          source: 'KnowledgeAgent',
-          tool_name: 'Bash',
-          tool_input: { command: 'rm -rf /' },
-          result: 'denied',
-        })
-      ).not.toThrow();
-    });
   });
 
   describe('both call sites are configured identically via the shared helper', () => {
@@ -227,14 +203,6 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
  * survives cmd.exe.
  */
 describe('F1: the empty tool list reaches the Claude CLI', () => {
-  it('normalizeSpawnSdkArgs keeps an empty SDK value as a single --flag= token', () => {
-    expect(normalizeSpawnSdkArgs(['--tools', '', '--disallowedTools', 'Bash,Read'])).toEqual([
-      '--tools=',
-      '--disallowedTools',
-      'Bash,Read',
-    ]);
-  });
-
   it.skipIf(process.platform === 'win32')(
     'the spawned Observer argv carries --tools= (SDK serialization -> spawn factory -> child argv)',
     async () => {

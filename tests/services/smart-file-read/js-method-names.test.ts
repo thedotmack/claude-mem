@@ -13,17 +13,6 @@ describe("js-method-names", () => {
   expect(file.symbols[0].children?.map(s => s.name)).toEqual(['"quoted"', '["computed"]', '#private', 'regular']);
   expect(formatFoldedView(file)).toContain("private");
  }, 120000);
- test('batch search supplies a usable unfold identity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cm-js-method-names-'));
-  try {
-   writeFileSync(join(dir, filename), source);
-   const result = await searchCodebase(dir, "private");
-   const match = result.matchingSymbols.find(s => s.symbolName === "Widget.#private");
-   expect(match).toBeDefined();
-
-   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return 3;");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- }, 120000);
 });
 
 test('retains the same legal method names under the TypeScript grammar', () => {

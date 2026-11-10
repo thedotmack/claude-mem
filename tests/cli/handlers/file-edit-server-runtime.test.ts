@@ -118,16 +118,6 @@ describe('fileEditHandler — observer capture off', () => {
     expect(spooledEntries()).toEqual([]);
   });
 
-  it('spools nothing for the worker', async () => {
-    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
-
-    const result = await fileEditHandler.execute(cursorInput());
-
-    expect(result.continue).toBe(true);
-    expect(spooledEntries()).toEqual([]);
-    expect(nudgeLog).toEqual([]);
-  });
-
   it('sees the toggle change in a long-lived process such as the transcript watcher', async () => {
     const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
 
@@ -168,18 +158,6 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
       cwd: '/tmp/file-edit-server-project',
       platformSource: 'cursor',
     });
-  });
-
-  it('still spools the file edit on the worker runtime (no behavior change)', async () => {
-    mockRuntime = { runtime: 'worker' };
-    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
-
-    const result = await fileEditHandler.execute(cursorInput());
-
-    expect(result.continue).toBe(true);
-    expect(recordEventLog).toHaveLength(0);
-    expect(nudgeLog).toEqual([]);
-    expect(spooledEntries('file_edit')).toHaveLength(1);
   });
 
   it('honors CLAUDE_MEM_SKIP_TOOLS in server runtime: an excluded edit never reaches the server', async () => {

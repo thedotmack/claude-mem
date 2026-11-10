@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshot in afterAll so the partial ModeManager stub (no
@@ -52,7 +52,7 @@ import {
   renderAgentEmptyState,
 } from '../../../src/services/context/formatters/AgentFormatter.js';
 
-import type { Observation, TokenEconomics, ContextConfig, PriorMessages } from '../../../src/services/context/types.js';
+import type { Observation, ContextConfig } from '../../../src/services/context/types.js';
 import { formatContextReferenceId } from '../../../src/services/context/formatters/id-display.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -70,17 +70,6 @@ function createTestObservation(overrides: Partial<Observation> = {}): Observatio
     discovery_tokens: 100,
     created_at: '2025-01-01T12:00:00.000Z',
     created_at_epoch: 1735732800000,
-    ...overrides,
-  };
-}
-
-function createTestEconomics(overrides: Partial<TokenEconomics> = {}): TokenEconomics {
-  return {
-    totalObservations: 10,
-    totalReadTokens: 500,
-    totalDiscoveryTokens: 5000,
-    savings: 4500,
-    savingsPercent: 90,
     ...overrides,
   };
 }
@@ -103,215 +92,77 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
 }
 
 describe('AgentFormatter', () => {
-  describe('renderAgentDayHeader', () => {
-    it('should render day as h3 heading', () => {
-      const result = renderAgentDayHeader('2025-01-01');
-
-      expect(result).toHaveLength(1);
-      expect(result[0]).toBe('### 2025-01-01');
-    });
+  it('renders the day as a heading', () => {
+    expect(renderAgentDayHeader('2025-01-01')).toEqual(['### 2025-01-01']);
   });
 
   describe('renderAgentTableRow', () => {
-    it('should include observation ID', () => {
-      const obs = createTestObservation({ id: 42 });
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '10:30 AM', config);
-
-      expect(result).toContain('42');
-    });
-
-    it('should include compact time display', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '2:30 PM', config);
-
-      expect(result).toContain('2:30p');
-    });
-
-    it('should include title', () => {
-      const obs = createTestObservation({ title: 'Important Discovery' });
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '10:00 AM', config);
-
-      expect(result).toContain('Important Discovery');
-    });
-
-    it('should use "Untitled" when title is null', () => {
-      const obs = createTestObservation({ title: null });
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '10:00 AM', config);
-
-      expect(result).toContain('Untitled');
-    });
-
-    it('should produce flat format: ID TIME TYPE TITLE', () => {
-      const obs = createTestObservation({ id: 5 });
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '10:00 AM', config);
-
-      expect(result).toBe('5 10:00a I Test Observation');
-    });
-
-    it('should use quote mark for repeated time', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig();
-
-      const result = renderAgentTableRow(obs, '', config);
-
-      expect(result).toContain('"');
+    it.each([
+      [{ id: 42 }, '10:30 AM', '42 10:30a I Test Observation'],
+      [{}, '2:30 PM', '1 2:30p I Test Observation'],
+      [{ title: 'Important Discovery' }, '10:00 AM', '1 10:00a I Important Discovery'],
+      [{ title: null }, '10:00 AM', '1 10:00a I Untitled'],
+      [{ id: 5 }, '10:00 AM', '5 10:00a I Test Observation'],
+      [{}, '', '1 " I Test Observation'],
+    ] as [Partial<Observation>, string, string][])('renders %j at %s', (observation, time, expected) => {
+      expect(renderAgentTableRow(createTestObservation(observation), time, createTestConfig())).toBe(expected);
     });
   });
 
   describe('renderAgentFullObservation', () => {
-    it('should include observation ID and title', () => {
-      const obs = createTestObservation({ id: 7, title: 'Full Observation' });
-      const config = createTestConfig();
-
-      const result = renderAgentFullObservation(obs, '10:00 AM', 'Detail content', config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('**7**');
-      expect(joined).toContain('**Full Observation**');
-    });
-
-    it('should include detail field when provided', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig();
-
-      const result = renderAgentFullObservation(obs, '10:00 AM', 'The detailed narrative here', config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('The detailed narrative here');
-    });
-
-    it('should not include detail field when null', () => {
-      const obs = createTestObservation();
-      const config = createTestConfig();
-
-      const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
-
-      expect(result.length).toBeLessThan(5);
-    });
-
-    it('should include token info when enabled', () => {
-      const obs = createTestObservation({ discovery_tokens: 250 });
-      const config = createTestConfig({ showReadTokens: true, showWorkTokens: true });
-
-      const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('~');
-      expect(joined).toContain('t');
-      expect(joined).toContain('W 250');
+    it.each([
+      [{ id: 7, title: 'Full Observation' }, 'Detail content', {}, ['**7** 10:00a I **Full Observation**', 'Detail content', '~12t W 100', '']],
+      [{}, 'The detailed narrative here', {}, ['**1** 10:00a I **Test Observation**', 'The detailed narrative here', '~12t W 100', '']],
+      [{}, null, {}, ['**1** 10:00a I **Test Observation**', '~12t W 100', '']],
+      [{ discovery_tokens: 250 }, null, { showReadTokens: true, showWorkTokens: true }, ['**1** 10:00a I **Test Observation**', '~12t W 250', '']],
+    ] as [Partial<Observation>, string | null, Partial<ContextConfig>, string[]][])('renders %j with detail %j', (observation, detail, config, expected) => {
+      expect(renderAgentFullObservation(createTestObservation(observation), '10:00 AM', detail, createTestConfig(config)))
+        .toEqual(expected);
     });
   });
 
   describe('renderAgentSummaryItem', () => {
-    it('should include session ID with S prefix', () => {
-      const summary = { id: 5, request: 'Implement feature' };
-
-      const result = renderAgentSummaryItem(summary, '2025-01-01 10:00');
-      const joined = result.join('\n');
-
-      expect(joined).toContain('S5');
+    it.each([
+      [{ id: 5, request: 'Implement feature' }, '2025-01-01 10:00', 'S5 Implement feature (2025-01-01 10:00)'],
+      [{ id: 1, request: 'Build authentication' }, '10:00', 'S1 Build authentication (10:00)'],
+      [{ id: 1, request: null }, '10:00', 'S1 Session started (10:00)'],
+    ])('renders %j at %s', (summary, time, expected) => {
+      expect(renderAgentSummaryItem(summary, time)).toEqual([expected]);
     });
 
-    it('should include request text', () => {
-      const summary = { id: 1, request: 'Build authentication' };
-
-      const result = renderAgentSummaryItem(summary, '10:00');
-      const joined = result.join('\n');
-
-      expect(joined).toContain('Build authentication');
-    });
-
-    it('should use "Session started" when request is null', () => {
-      const summary = { id: 1, request: null };
-
-      const result = renderAgentSummaryItem(summary, '10:00');
-      const joined = result.join('\n');
-
-      expect(joined).toContain('Session started');
-    });
-
-    it('should abbreviate a server summary UUID when fetch-by-id is unsupported', () => {
+    it('abbreviates a server summary UUID when fetch-by-id is unsupported', () => {
       const summary = { id: '3c4b2513-5048-45fa-95e0-e3222ae99671', request: 'Ship it' };
-
-      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0])
-        .toBe('S3c4b2513 Ship it (10:00)');
-      expect(renderAgentSummaryItem(summary, '10:00')[0])
-        .toBe('S3c4b2513-5048-45fa-95e0-e3222ae99671 Ship it (10:00)');
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false }))
+        .toEqual(['S3c4b2513 Ship it (10:00)']);
+      expect(renderAgentSummaryItem(summary, '10:00'))
+        .toEqual(['S3c4b2513-5048-45fa-95e0-e3222ae99671 Ship it (10:00)']);
     });
   });
 
   describe('renderAgentSummaryField', () => {
-    it('should render label and value in bold', () => {
-      const result = renderAgentSummaryField('Learned', 'How to test');
-
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe('**Learned**: How to test');
-      expect(result[1]).toBe('');
-    });
-
-    it('should return empty array when value is null', () => {
-      const result = renderAgentSummaryField('Learned', null);
-
-      expect(result).toHaveLength(0);
-    });
-
-    it('should return empty array when value is empty string', () => {
-      const result = renderAgentSummaryField('Learned', '');
-
-      expect(result).toHaveLength(0);
+    it.each([
+      ['How to test', ['**Learned**: How to test', '']],
+      [null, []],
+      ['', []],
+    ] as [string | null, string[]][])('renders field %j', (value, expected) => {
+      expect(renderAgentSummaryField('Learned', value)).toEqual(expected);
     });
   });
 
   describe('renderAgentPreviouslySection', () => {
-    it('should render section when assistantMessage exists', () => {
-      const priorMessages: PriorMessages = {
-        assistantMessage: 'I completed the task successfully.',
-      };
-
-      const result = renderAgentPreviouslySection(priorMessages);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('**Previously**');
-      expect(joined).toContain('A: I completed the task successfully.');
-    });
-
-    it('should return empty when assistantMessage is empty', () => {
-      const priorMessages: PriorMessages = {
-        assistantMessage: '',
-      };
-
-      const result = renderAgentPreviouslySection(priorMessages);
-
-      expect(result).toHaveLength(0);
-    });
-
-    it('opens with its heading, since it sits above the timeline rather than after it', () => {
-      const priorMessages: PriorMessages = {
-        assistantMessage: 'Some message',
-      };
-
-      const result = renderAgentPreviouslySection(priorMessages);
-
-      expect(result[0]).toBe('**Previously**');
-      expect(result).not.toContain('---');
+    it.each([
+      ['I completed the task successfully.', ['**Previously**', '', 'A: I completed the task successfully.', '']],
+      ['', []],
+      ['Some message', ['**Previously**', '', 'A: Some message', '']],
+    ] as [string, string[]][])('renders prior reply %j', (assistantMessage, expected) => {
+      expect(renderAgentPreviouslySection({ assistantMessage })).toEqual(expected);
     });
   });
 
   describe('renderAgentEmptyState', () => {
     it('puts lead sections under the header and keeps the empty timeline last', () => {
-      const result = renderAgentEmptyState(['HEADER', ''], ['WARNING', '', 'OPEN WORK']);
-
-      expect(result).toBe('HEADER\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
+      expect(renderAgentEmptyState(['HEADER', ''], ['WARNING', '', 'OPEN WORK']))
+        .toBe('HEADER\n\nWARNING\n\nOPEN WORK\n\nNo previous sessions found.');
     });
   });
 });
@@ -319,19 +170,12 @@ describe('AgentFormatter', () => {
 describe('formatContextReferenceId', () => {
   const UUID = '3c4b2513-5048-45fa-95e0-e3222ae99671';
 
-  it('abbreviates UUID ids to their 8-char prefix when fetch-by-id is unsupported', () => {
-    expect(formatContextReferenceId(UUID, { fetchByIdSupported: false })).toBe('3c4b2513');
-  });
-
-  it('keeps the full UUID when fetch-by-id is supported', () => {
-    expect(formatContextReferenceId(UUID, { fetchByIdSupported: true })).toBe(UUID);
-  });
-
-  it('defaults to the full id when fetchByIdSupported is omitted (backward compatible)', () => {
-    expect(formatContextReferenceId(UUID, {})).toBe(UUID);
-  });
-
-  it('leaves non-UUID (numeric) ids unchanged even when fetch-by-id is unsupported', () => {
-    expect(formatContextReferenceId(42, { fetchByIdSupported: false })).toBe('42');
+  it.each([
+    [UUID, { fetchByIdSupported: false }, '3c4b2513'],
+    [UUID, { fetchByIdSupported: true }, UUID],
+    [UUID, {}, UUID],
+    [42, { fetchByIdSupported: false }, '42'],
+  ])('formats %j with %j', (id, config, expected) => {
+    expect(formatContextReferenceId(id, config)).toBe(expected);
   });
 });

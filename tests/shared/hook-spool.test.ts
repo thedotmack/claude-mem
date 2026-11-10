@@ -5,7 +5,6 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import {
   HookSpool,
-  type HookSpoolConsumedMarkers,
   HOOK_SPOOL_RETRY_WINDOW_MS,
   migrateLegacySessionEndReplay,
   resolveHookSpoolDirectory,
@@ -16,18 +15,6 @@ import { logger } from '../../src/utils/logger.js';
 let dataDir: string;
 let savedDataDir: string | undefined;
 let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
-
-function observation(toolUseId: string | undefined, toolName = 'Bash') {
-  return {
-    contentSessionId: 'session-1',
-    platformSource: 'claude',
-    toolName,
-    toolInput: { command: 'ls' },
-    toolResponse: { stdout: 'a' },
-    cwd: '/repo',
-    toolUseId,
-  };
-}
 
 function spoolFiles(spool: HookSpool): string[] {
   return readdirSync(spool.directory).filter(name => name.endsWith('.json'));
@@ -57,103 +44,63 @@ describe('HookSpool', () => {
     const spool = new HookSpool();
     expect(spool.directory).toBe(join(dataDir, 'state', 'hook-spool'));
     expect(resolveHookSpoolDirectory()).toBe(spool.directory);
-    spool.enqueue('observation', observation('toolu_1'));
+    spool.enqueue('session_end', { contentSessionId: 'session-1', platformSource: 'claude' });
     expect(spoolFiles(spool)).toHaveLength(1);
-    expect(spoolFiles(spool)[0]).toMatch(/^observation-[a-f0-9]{64}-toolu_1\.json$/);
-  });
-
-  it('retains identical host tool ids from different sessions and platforms', async () => {
-    const spool = new HookSpool();
-    const first = observation('call_1');
-    spool.enqueue('observation', first);
-    spool.enqueue('observation', { ...first, contentSessionId: 'session-2' });
-    spool.enqueue('observation', { ...first, platformSource: 'codex' });
-    // A repeat within the original scope replaces that event only.
-    spool.enqueue('observation', { ...first, platformSource: 'Claude Code', toolResponse: 'updated' });
-    expect(spoolFiles(spool)).toHaveLength(3);
-    const received: string[] = [];
-    await spool.drain(entry => {
-      received.push(`${entry.payload.contentSessionId}:${entry.payload.platformSource}`);
-      return true;
-    });
-    expect(received.sort()).toEqual(['session-1:claude', 'session-1:codex', 'session-2:claude']);
-  });
-
-  it('keeps an existing legacy handoff marker authoritative during upgrade', async () => {
-    const spool = new HookSpool();
-    mkdirSync(spool.directory, { recursive: true });
-    const legacyPath = join(spool.directory, 'observation-call_1.json');
-    writeFileSync(legacyPath, JSON.stringify({ kind: 'observation', payload: observation('call_1'), enqueuedAtEpochMs: Date.now() }));
-    const consumed = new Set(['observation-call_1']);
-    const markers: HookSpoolConsumedMarkers = {
-      isConsumed: key => consumed.has(key),
-      markConsumed: key => { consumed.add(key); },
-      clearConsumed: key => { consumed.delete(key); },
-      pruneConsumedBefore: () => {},
-    };
-    expect(spool.enqueue('observation', observation('call_1'))).toBe(legacyPath);
-    spool.enqueue('observation', { ...observation('call_1'), contentSessionId: 'other-session' });
-    const received: string[] = [];
-    await spool.drain(entry => { received.push(entry.payload.contentSessionId); return true; }, markers);
-    expect(received).toEqual(['other-session']);
-    expect(spoolFiles(spool)).toEqual([]);
-    expect(consumed.size).toBe(0);
   });
 
   it('drains in enqueue order, across kinds', async () => {
     const spool = new HookSpool();
-    spool.enqueue('observation', observation('toolu_b'), 3000);
-    spool.enqueue('observation', observation('toolu_a'), 1000);
-    spool.enqueue('summarize', { contentSessionId: 'session-1', platformSource: 'claude', lastAssistantMessage: 'done' }, 5000);
-    spool.enqueue('session_end', { contentSessionId: 'session-1', platformSource: 'claude' }, 6000);
+    spool.enqueue('session_end', { contentSessionId: 'session-b', platformSource: 'claude' }, 3000);
+    spool.enqueue('session_end', { contentSessionId: 'session-a', platformSource: 'claude' }, 1000);
+    spool.enqueue('subagent_stop', { contentSessionId: 'session-c', platformSource: 'claude', agentId: 'agent-1' }, 5000);
+    spool.enqueue('session_end', { contentSessionId: 'session-d', platformSource: 'claude' }, 6000);
 
     const seen: string[] = [];
     const result = await spool.drain(entry => {
-      seen.push(entry.kind === 'observation' ? `observation:${entry.payload.toolUseId}` : entry.kind);
+      seen.push(`${entry.kind}:${entry.payload.contentSessionId}`);
       return true;
     });
 
-    expect(seen).toEqual(['observation:toolu_a', 'observation:toolu_b', 'summarize', 'session_end']);
+    expect(seen).toEqual(['session_end:session-a', 'session_end:session-b', 'subagent_stop:session-c', 'session_end:session-d']);
     expect(result).toEqual({ drained: 4, retained: 0, quarantined: 0, expired: 0 });
     expect(spoolFiles(spool)).toEqual([]);
   });
 
   it('keeps same-millisecond enqueues from one process in call order', () => {
     const spool = new HookSpool();
-    spool.enqueue('observation', observation('toolu_z'));
-    spool.enqueue('observation', observation('toolu_y'));
-    spool.enqueue('observation', observation('toolu_x'));
-    expect(spool.entries().map(entry => (entry.payload as { toolUseId?: string }).toolUseId))
-      .toEqual(['toolu_z', 'toolu_y', 'toolu_x']);
+    for (const contentSessionId of ['session-z', 'session-y', 'session-x']) {
+      spool.enqueue('session_end', { contentSessionId, platformSource: 'claude' });
+    }
+    expect(spool.entries().map(entry => entry.payload.contentSessionId))
+      .toEqual(['session-z', 'session-y', 'session-x']);
   });
 
   it('dedupes a re-enqueued event by overwriting its file and keeping its original position', () => {
     const spool = new HookSpool();
-    spool.enqueue('observation', observation('toolu_dup'), 10_000);
-    spool.enqueue('observation', observation('toolu_later'), 20_000);
-    spool.enqueue('observation', observation('toolu_dup'), 30_000);
+    const first = { contentSessionId: 'session-first', platformSource: 'claude' };
+    const path = spool.enqueue('session_end', first, 10_000);
+    spool.enqueue('session_end', { ...first, contentSessionId: 'session-later' }, 20_000);
+    expect(spool.enqueue('session_end', first, 30_000)).toBe(path);
 
     expect(spoolFiles(spool)).toHaveLength(2);
-    expect(spoolFiles(spool).filter(name => name.endsWith('-toolu_dup.json'))).toHaveLength(1);
-    expect(spoolFiles(spool).filter(name => name.endsWith('-toolu_later.json'))).toHaveLength(1);
-    expect(spool.entries().map(entry => (entry.payload as { toolUseId?: string }).toolUseId))
-      .toEqual(['toolu_dup', 'toolu_later']);
+    expect(spool.entries().map(entry => [entry.payload.contentSessionId, entry.enqueuedAtEpochMs]))
+      .toEqual([['session-first', 10_000], ['session-later', 20_000]]);
   });
 
-  it('dedupes events without a tool_use_id by a hash of kind + session + canonical payload', () => {
+  it('dedupes events by a hash of kind + session + canonical payload', () => {
     const spool = new HookSpool();
-    const summarize = { contentSessionId: 's', platformSource: 'Claude Code', lastAssistantMessage: 'hi', observedModel: 'm' };
-    spool.enqueue('summarize', summarize);
+    const stopped = { contentSessionId: 's', platformSource: 'Claude Code', agentId: 'agent-1' };
+    spool.enqueue('subagent_stop', stopped);
     // Same content, different key order and platform spelling → same file.
-    spool.enqueue('summarize', { observedModel: 'm', lastAssistantMessage: 'hi', platformSource: 'claude', contentSessionId: 's' });
+    spool.enqueue('subagent_stop', { agentId: 'agent-1', platformSource: 'claude', contentSessionId: 's' });
     expect(spoolFiles(spool)).toHaveLength(1);
-    expect(spoolFiles(spool)[0]).toMatch(/^summarize-[a-f0-9]{64}\.json$/);
+    expect(spoolFiles(spool)[0]).toMatch(/^subagent_stop-[a-f0-9]{64}\.json$/);
 
-    spool.enqueue('summarize', { ...summarize, lastAssistantMessage: 'different turn' });
+    spool.enqueue('subagent_stop', { ...stopped, agentId: 'agent-2' });
     expect(spoolFiles(spool)).toHaveLength(2);
 
-    // Different session, same text → distinct entries.
-    spool.enqueue('summarize', { ...summarize, contentSessionId: 'other' });
+    // Different session, same agent → distinct entries.
+    spool.enqueue('subagent_stop', { ...stopped, contentSessionId: 'other' });
     expect(spoolFiles(spool)).toHaveLength(3);
   });
 
@@ -177,7 +124,7 @@ describe('HookSpool', () => {
     const spool = new HookSpool();
     const pastWindowEpochMs = Date.now() - HOOK_SPOOL_RETRY_WINDOW_MS - 60_000;
     const declinedPath = spool.enqueue('session_end', { contentSessionId: 'never-known', platformSource: 'claude' }, pastWindowEpochMs);
-    const failingPath = spool.enqueue('summarize', { contentSessionId: 'always-throws', platformSource: 'claude', lastAssistantMessage: 'x' }, pastWindowEpochMs + 1);
+    const failingPath = spool.enqueue('subagent_stop', { contentSessionId: 'always-throws', platformSource: 'claude', agentId: 'agent-1' }, pastWindowEpochMs + 1);
     // Inside the window: still retried.
     spool.enqueue('session_end', { contentSessionId: 'recent-unknown', platformSource: 'claude' }, Date.now() - 60_000);
 
@@ -194,12 +141,12 @@ describe('HookSpool', () => {
     expect(expiryLogs).toHaveLength(2);
     expect(expiryLogs[0][2]).toMatchObject({ kind: 'session_end', contentSessionId: 'never-known' });
     expect(expiryLogs[0][2].ageHours).toBeGreaterThanOrEqual(7 * 24);
-    expect(expiryLogs[1][2]).toMatchObject({ kind: 'summarize', contentSessionId: 'always-throws' });
+    expect(expiryLogs[1][2]).toMatchObject({ kind: 'subagent_stop', contentSessionId: 'always-throws' });
   });
 
   it('quarantines a corrupt file into corrupt/ with an error log instead of deleting it', async () => {
     const spool = new HookSpool();
-    spool.enqueue('observation', observation('toolu_ok'));
+    spool.enqueue('session_end', { contentSessionId: 'session-ok', platformSource: 'claude' });
     writeFileSync(join(spool.directory, 'observation-garbage.json'), '{not json');
     writeFileSync(join(spool.directory, 'mystery-kind.json'), JSON.stringify({ kind: 'mystery', payload: { contentSessionId: 's' }, enqueuedAtEpochMs: 1 }));
     // An interrupted atomic write's temp file is not an entry and is left alone.
@@ -211,7 +158,7 @@ describe('HookSpool', () => {
       return true;
     });
 
-    expect(accepted).toEqual(['observation']);
+    expect(accepted).toEqual(['session_end']);
     expect(result).toEqual({ drained: 1, retained: 0, quarantined: 2, expired: 0 });
     expect(readdirSync(spool.corruptDirectory).sort()).toEqual(['mystery-kind.json', 'observation-garbage.json']);
     expect(existsSync(join(spool.directory, '.observation-x.json.123.abc.tmp'))).toBe(true);

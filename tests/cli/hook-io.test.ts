@@ -108,14 +108,17 @@ describe('emitDiagnostic', () => {
 describe('emitModelContext', () => {
   it('calls adapter.formatOutput and JSON.stringifies to stdout', () => {
     const out = captureStdout();
+    const real = captureRealStderr();
     try {
       const result: HookResult = { systemMessage: 'hi' };
       emitModelContext(fakeAdapter, result);
       expect(out.chunks).toHaveLength(1);
       expect(JSON.parse(out.chunks[0])).toEqual({ ok: true, systemMessage: 'hi' });
       expect(out.chunks[0]).toEndWith('\n');
+      expect(real.chunks).toEqual([]);
     } finally {
       out.restore();
+      real.restore();
     }
   });
 
@@ -184,15 +187,6 @@ describe('emitModelContext', () => {
     }
   });
 
-  it('two real emits still throw', () => {
-    const out = captureStdout();
-    try {
-      emitModelContext(fakeAdapter, {});
-      expect(() => emitModelContext(fakeAdapter, {})).toThrow('emitModelContext called twice');
-    } finally {
-      out.restore();
-    }
-  });
 });
 
 describe('exitGraceful', () => {

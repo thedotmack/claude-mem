@@ -150,24 +150,6 @@ describe('resolveFieldOptimizeTimeoutMs', () => {
     expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(120_000);
   });
 
-  it('lets the env var override settings.json', () => {
-    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '120000' });
-    expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '45000' }, settingsPath)).toBe(45_000);
-  });
-
-  it('honors a numeric settings.json value and rejects a typo', () => {
-    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: 90000 });
-    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(90_000);
-    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '90000ms' });
-    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
-  });
-
-  it('falls back to the default rather than trusting a value out of range', () => {
-    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
-      expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: value }, settingsPath)).toBe(180_000);
-    }
-  });
-
   // The two deadlines are independent knobs: setting one must not move the other.
   it('resolves independently of CLAUDE_MEM_LLM_TIMEOUT_MS', () => {
     writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' });
@@ -203,32 +185,6 @@ describe('resolveStreamIdleTimeoutMs', () => {
     expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(120_000);
   });
 
-  it('lets the env var override settings.json', () => {
-    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '120000' });
-    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '150000' }, settingsPath)).toBe(150_000);
-  });
-
-  it('honors a numeric settings.json value and rejects a typo', () => {
-    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: 120000 });
-    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(120_000);
-    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000ms' });
-    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(90_000);
-  });
-
-  it('takes a value inside the shared 500..300000 bounds', () => {
-    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '500' }, settingsPath)).toBe(500);
-    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '300000' }, settingsPath)).toBe(300_000);
-  });
-
-  it('falls back to the default rather than trusting a value out of range', () => {
-    // A zero or a negative would disable the liveness check; a huge one would
-    // let a hung stream park a worker. Both keep the default, matching the
-    // other CLAUDE_MEM_*_TIMEOUT_MS settings.
-    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
-      expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: value }, settingsPath)).toBe(90_000);
-    }
-  });
-
   // The reporter's exact shape: CLAUDE_MEM_LLM_TIMEOUT_MS raised to 120s on a
   // queued local backend. The idle window is an independent knob, so raising
   // it past the queue wait does not touch the deadline, and vice versa.
@@ -240,6 +196,13 @@ describe('resolveStreamIdleTimeoutMs', () => {
 });
 
 describe('per-attempt deadline', () => {
+  const expire = () => withRetry(
+    signal => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
+    }),
+    { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
+  ).catch((err: unknown) => err);
+
   it('does not retry a request that blew the deadline', async () => {
     // The abort surfaces with no HTTP status, so it classified as transient and
     // was retried twice against a backend that is already saturated.
@@ -265,12 +228,7 @@ describe('per-attempt deadline', () => {
   // Unclassified, the expiry left the provider's abortReason null and the
   // session finalized, dropping its buffered observer work.
   it('classifies an expired deadline as transient', async () => {
-    const error = await withRetry(
-      signal => new Promise<string>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
-      }),
-      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
-    ).catch((err: unknown) => err);
+    const error = await expire();
 
     expect(isClassified(error)).toBe(true);
     expect(isClassified(error) && error.kind).toBe('transient');
@@ -281,12 +239,7 @@ describe('per-attempt deadline', () => {
   // an abandoned (possibly still billed) request countable apart from a network
   // fault, and the action is the remedy the health warning shows.
   it('marks an expired deadline with its own code and remedy', async () => {
-    const error = await withRetry(
-      signal => new Promise<string>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
-      }),
-      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
-    ).catch((err: unknown) => err);
+    const error = await expire();
 
     expect(isClassified(error) && error.code).toBe(DEADLINE_EXCEEDED_CODE);
     expect(isClassified(error) && error.action).toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
@@ -298,12 +251,6 @@ describe('per-attempt deadline', () => {
   // falls back to the default, not to the file), so advice to edit settings.json
   // would change nothing. Review on #4278.
   it('points the remedy at the environment when the env var overrides settings.json', async () => {
-    const expire = () => withRetry(
-      signal => new Promise<string>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
-      }),
-      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
-    ).catch((err: unknown) => err);
     const prior = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     try {
       delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;

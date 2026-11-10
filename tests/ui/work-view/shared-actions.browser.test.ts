@@ -54,8 +54,6 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
         findButton('Join').click();
         await until(() => document.body.textContent.includes('Joined the request. Saved here; waiting to sync to your other viewers.'));
         const pendingLocalCopyExplained = document.body.textContent.includes("This viewer's local work copy is still updating.");
-        const joinQueuedShown = true;
-        const queuedShown = document.body.textContent.includes('waiting to sync to your other viewers');
         const falseSyncClaim = document.body.textContent.includes('Checked locally.') || document.body.textContent.includes('Checks do not sync');
         findButton('Undo').click();
         await until(() => document.body.textContent.includes('The current work changed; review it again.'));
@@ -64,7 +62,7 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
         await until(() => document.body.textContent.includes('Your review decision was saved here, but your viewers still have conflicting decisions. Read this version and choose again. The saved decision is waiting to sync.'));
         const reviewConflictReceiptExplained = !document.body.textContent.includes('Checked for this shared version.');
         stop();
-        await report({ originHasNoLink, publicLink, originalComputerShown, conflictsActionable, conflictGuidanceShown, reviewArgs, suggestionCalls, suggestionConflictReceiptExplained, reviewConflictReceiptExplained, pendingLocalCopyExplained, joinQueuedShown, queuedShown, falseSyncClaim, lateReceiptExplained });
+        await report({ originHasNoLink, publicLink, originalComputerShown, conflictsActionable, conflictGuidanceShown, reviewArgs, suggestionCalls, suggestionConflictReceiptExplained, reviewConflictReceiptExplained, pendingLocalCopyExplained, falseSyncClaim, lateReceiptExplained });
       } catch (error) { await report({ error: String(error) }); }
     })();
   `);
@@ -87,8 +85,8 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the shared action regr
         [{ conversationKey: 'conversation-read', requestId: 'group-read', requestTitle: 'Related request', evidence: 'Same feature', expectedSuggestionHash: 'suggestion-read', sharedConflict: true }, 'not-this'],
         [{ conversationKey: 'conversation-read', requestId: 'group-read', requestTitle: 'Related request', evidence: 'Same feature', expectedSuggestionHash: 'suggestion-read', sharedConflict: true }, 'join'],
       ],
-      suggestionConflictReceiptExplained: true, reviewConflictReceiptExplained: true, pendingLocalCopyExplained: true, joinQueuedShown: true,
-      queuedShown: true, falseSyncClaim: false, lateReceiptExplained: true,
+      suggestionConflictReceiptExplained: true, reviewConflictReceiptExplained: true, pendingLocalCopyExplained: true,
+      falseSyncClaim: false, lateReceiptExplained: true,
     });
   } finally { await chrome?.close(); server.stop(true); }
 }, 60000);

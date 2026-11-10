@@ -61,7 +61,7 @@ test('refuses a symlinked integration destination', { skip: !source || process.p
   const root = fixture(t);
   fs.symlinkSync(path.join(root, 'ods/data'), path.join(root, 'ods/extensions/services/claude-mem'));
   assert.throws(() => install(root), /symlink/);
-  assert.equal(fs.existsSync(path.join(root, 'ods/data/keep.db')), false);
+  assert.equal(fs.existsSync(path.join(root, 'ods/data/Dockerfile')), false);
 });
 
 test('interrupted removal resumes after a source restore without losing local-edit protection', { skip: !source }, t => {

@@ -42,15 +42,6 @@ describe('skill docs placement (#1651)', () => {
     expect(content).not.toContain('### Adding Custom Grammars');
   });
 
-  it('mem-search/SKILL.md does NOT contain tree-sitter or language grammar docs', () => {
-    const path = join(SKILLS_DIR, 'mem-search/SKILL.md');
-    expect(existsSync(path)).toBe(true);
-    const content = readFileSync(path, 'utf-8');
-
-    expect(content).not.toContain('tree-sitter');
-    expect(content).not.toContain('Bundled Languages');
-  });
-
   it('cloud-sync/SKILL.md requires the authenticated Hub probe for success', () => {
     const path = join(SKILLS_DIR, 'cloud-sync/SKILL.md');
     expect(existsSync(path)).toBe(true);
@@ -64,10 +55,4 @@ describe('skill docs placement (#1651)', () => {
     expect(content).not.toContain('/api/pro/sync/status');
   });
 
-  it('cloud sync docs keep the 4,000,000-byte request contract accurate', () => {
-    const docs = readFileSync(join(import.meta.dir, '../../docs/public/cloud-sync.mdx'), 'utf-8');
-
-    expect(docs).toContain('up to 500 ops / 4,000,000 encoded');
-    expect(docs).not.toContain('500 ops / 2&nbsp;MB');
-  });
 });

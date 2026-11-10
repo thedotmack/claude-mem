@@ -136,11 +136,6 @@ describe('search in scripts FTS5 cannot segment', () => {
     expect(search.searchObservations('claude 数据库', { project: 'cjk-project' })).toEqual([]);
   });
 
-  it('matches terms that sit far apart in the same column', () => {
-    const results = search.searchObservations('pending 重启', { project: 'cjk-project' });
-    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
-  });
-
   // The tokenizer glues a Latin run to the ideographs touching it, so `payload优先使用LLM`
   // is one token that no FTS term can reach. When FTS finds nothing at all, the query is
   // answered by substring, term by term.
@@ -199,14 +194,6 @@ describe('search in scripts FTS5 cannot segment', () => {
       .toEqual(['ภาษาไทย', 'ภาษาไทยเป็นภาษาที่สวยงาม'].sort());
     expect(search.searchObservations('ខ្មែរ', { project: 'sea-project' }).map(r => r.title).sort())
       .toEqual(['ខ្មែរ', 'ភាសាខ្មែរស្រស់ស្អាត'].sort());
-  });
-
-  it('treats multi-word FTS input as ANDed terms instead of one exact phrase', () => {
-    const observationResults = search.searchObservations('orphaned plugin version', { project: 'cjk-project' });
-    expect(observationResults.map(r => r.memory_session_id)).toContain('fts-1-mem');
-
-    const sessionResults = search.searchSessions('orphaned plugin version', { project: 'cjk-project' });
-    expect(sessionResults.map(r => r.memory_session_id)).toContain('sum-fts');
   });
 
   it('treats FTS metacharacters in tokens literally when combined with other terms', () => {

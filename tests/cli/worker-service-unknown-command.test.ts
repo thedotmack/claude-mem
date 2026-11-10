@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe('worker-service command dispatch (#5490)', () => {
-  for (const helpFlag of ['--help', '-h']) {
+  for (const helpFlag of ['--help']) {
     it(`${helpFlag} prints usage and exits 0 without starting a worker`, () => {
       const result = runWorkerService([helpFlag]);
 

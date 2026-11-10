@@ -16,18 +16,18 @@ const spawnPython = (args: string[], options: { env?: NodeJS.ProcessEnv } = {}) 
 // so on a newer interpreter the tokenizer is used to find the same construct.
 const CHECK = String.raw`
 import sys, tokenize
-path = sys.argv[1]
-if sys.version_info < (3, 12):
-    compile(open(path, encoding="utf-8").read(), path, "exec")
-    sys.exit(0)
-depth = 0
-with open(path, "rb") as handle:
-    for token in tokenize.tokenize(handle.readline):
-        if token.type == tokenize.FSTRING_START: depth += 1
-        elif token.type == tokenize.FSTRING_END: depth -= 1
-        elif depth and token.type != tokenize.FSTRING_MIDDLE and "\\" in token.string:
-            print(f"{path}:{token.start[0]}: backslash in an f-string expression")
-            sys.exit(1)
+for path in sys.argv[1:]:
+    if sys.version_info < (3, 12):
+        compile(open(path, encoding="utf-8").read(), path, "exec")
+        continue
+    depth = 0
+    with open(path, "rb") as handle:
+        for token in tokenize.tokenize(handle.readline):
+            if token.type == tokenize.FSTRING_START: depth += 1
+            elif token.type == tokenize.FSTRING_END: depth -= 1
+            elif depth and token.type != tokenize.FSTRING_MIDDLE and "\\" in token.string:
+                print(f"{path}:{token.start[0]}: backslash in an f-string expression")
+                sys.exit(1)
 `;
 
 function pythonScripts(): string[] {
@@ -41,13 +41,11 @@ describe('skill Python scripts', () => {
     expect(pythonScripts().some((file) => file.endsWith('save_goals.py'))).toBe(true);
   });
 
-  for (const script of pythonScripts()) {
-    it(`parses on Python 3.9-3.11: ${script.slice(SKILLS.length + 1)}`, () => {
-      const result = spawnPython(['-c', CHECK, script]);
-      expect(result.stdout.toString() + result.stderr.toString()).toBe('');
-      expect(result.exitCode).toBe(0);
-    });
-  }
+  it('all scripts parse on Python 3.9-3.11', () => {
+    const result = spawnPython(['-c', CHECK, ...pythonScripts()]);
+    expect(result.stdout.toString() + result.stderr.toString()).toBe('');
+    expect(result.exitCode).toBe(0);
+  });
 });
 
 describe('save_goals.py', () => {
@@ -241,24 +239,6 @@ describe('save_goals.py: focus areas, asks and rules', () => {
       expect(result.exitCode).toBe(3);
       expect(result.stderr).toContain('503');
       expect(worker.focusAreas()).toHaveLength(1);
-    } finally { worker.stop(); }
-  }));
-
-  it('a match is the model\'s judgment: a saved id adds no area, and an id that is not saved is refused', () => withDir(async (dir) => {
-    const worker = fakeOwnerGoalsWorker(join(dir, 'data'));
-    try {
-      writeFileSync(join(dir, 'goals.json'), JSON.stringify(answer));
-      const args = ['--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--ledger-dir', join(dir, 'ledger')];
-      expect((await worker.run(args)).exitCode).toBe(0);
-      const [saved] = worker.focusAreas();
-      worker.ownerDecides(saved, { name: 'My viewer', status: 'kept' });
-      writeFileSync(join(dir, 'goals.json'), JSON.stringify({ ...answer, focus_areas: [{ ...answer.focus_areas[0], title: 'Live viewer', matches: saved.focusAreaId, rank: 3 }], asks: [{ ...answer.asks[0], focus_area: 'Live viewer' }] }));
-      expect((await worker.run(args)).exitCode).toBe(0);
-      expect(worker.focusAreas()).toEqual([expect.objectContaining({ focusAreaId: saved.focusAreaId, name: 'My viewer', status: 'kept', priorityRank: 1 })]);
-      writeFileSync(join(dir, 'goals.json'), JSON.stringify({ ...answer, focus_areas: [{ ...answer.focus_areas[0], matches: 'fa_000000000000' }] }));
-      const refused = await worker.run(args);
-      expect(refused.exitCode).not.toBe(0);
-      expect(refused.stderr).toContain('fa_000000000000, which is not a saved focus area');
     } finally { worker.stop(); }
   }));
 });

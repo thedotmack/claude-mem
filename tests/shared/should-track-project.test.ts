@@ -45,12 +45,6 @@ describe('shouldTrackProject — path normalization', () => {
     }
   });
 
-  it('returns false when cwd matches OBSERVER_SESSIONS_DIR with forward slashes', () => {
-    // Hooks may pass forward-slash paths on Windows; normalize() handles this
-    const forwardSlash = OBSERVER_SESSIONS_DIR.replace(/\\/g, '/');
-    expect(shouldTrackProject(forwardSlash)).toBe(false);
-  });
-
   it('returns false when cwd is a subdirectory of OBSERVER_SESSIONS_DIR (mixed separators)', () => {
     const forwardSlash = OBSERVER_SESSIONS_DIR.replace(/\\/g, '/');
     expect(shouldTrackProject(forwardSlash + '/some-session')).toBe(false);

@@ -109,5 +109,5 @@ describe('worktree adoption Chroma hydration', () => {
     expect(mergedProject).toBe('parent-repo');
     expect(chromaCalls.find(call => call.name === 'chroma_update_documents')?.args.ids)
       .toEqual(['summary_1_request']);
-  });
+  }, 30_000);
 });

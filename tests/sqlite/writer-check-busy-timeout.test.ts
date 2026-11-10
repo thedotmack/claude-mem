@@ -12,7 +12,7 @@ import { LATEST_SCHEMA_VERSION, openGuardedSqliteDatabase } from '../../src/serv
 
 // Long enough that the guarded open below starts while the lock is still held
 // even on a loaded runner, and well inside the 5 s busy timeout.
-const HOLD_MS = 1500;
+const HOLD_MS = 300;
 const dirs: string[] = [];
 
 afterEach(() => {

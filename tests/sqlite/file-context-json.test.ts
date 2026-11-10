@@ -1,50 +1,6 @@
 import { expect, it } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { getObservationsByFilePath } from '../../src/services/sqlite/observations/get.js';
-it('keeps valid file context readable beside malformed legacy imported JSON', () => {
-  const s = new SessionStore(':memory:');
-  try {
-    const id = s.createSDKSession('content', 'app', 'prompt');
-    s.updateMemorySessionId(id, 'memory');
-    const row = {
-      memory_session_id: 'memory',
-      project: 'app',
-      text: null,
-      type: 'discovery',
-      title: 'malformed',
-      subtitle: null,
-      facts: null,
-      narrative: null,
-      concepts: null,
-      files_read: '[invalid',
-      files_modified: null,
-      prompt_number: 1,
-      discovery_tokens: 0,
-      created_at: new Date(1000).toISOString(),
-      created_at_epoch: 1000,
-    };
-    s.importObservation(row);
-    const good = s.importObservation({
-      ...row,
-      title: 'good',
-      files_read: ' ["file.ts"] ',
-      created_at_epoch: 2000,
-    });
-    const object = s.importObservation({
-      ...row,
-      title: 'object',
-      files_read: '{"unexpected":"file.ts"}',
-      created_at_epoch: 3000,
-    });
-    expect(
-      getObservationsByFilePath(s.db, 'file.ts', { projects: ['app'] }).map((r) => r.id)
-    ).toEqual([good.id]);
-    expect(getObservationsByFilePath(s.db, 'file.ts', { projects: ['other'] })).toEqual([]);
-    expect(getObservationsByFilePath(s.db, 'absent.ts')).toEqual([]);
-  } finally {
-    s.close();
-  }
-});
 
 it('isolates malformed modified-only metadata and searches whitespace/escaped arrays', () => {
   const store = new SessionStore(':memory:');
@@ -71,13 +27,15 @@ it('isolates malformed modified-only metadata and searches whitespace/escaped ar
     expect(stored.map(r => r.files_modified)).toEqual(malformed);
     const good = store.importObservation({ ...row, title: 'modified',
       files_modified: ' \t\r\n["file.ts"] \n', created_at_epoch: 2000 });
+    const read = store.importObservation({ ...row, title: 'read',
+      files_read: ' ["file.ts"] ', created_at_epoch: 2500 });
     const escapedPath = 'quoted"%_\\file.ts';
     const escaped = store.importObservation({ ...row, title: 'escaped',
       files_modified: JSON.stringify([escapedPath]), created_at_epoch: 3000 });
     const unicode = store.importObservation({ ...row, title: 'unicode',
       files_modified: '["f\\u0069le.ts"]', created_at_epoch: 4000 });
     expect(getObservationsByFilePath(store.db, 'file.ts', { projects: ['app'] }).map(r => r.id))
-      .toEqual([unicode.id, good.id]);
+      .toEqual([unicode.id, read.id, good.id]);
     expect(getObservationsByFilePath(store.db, escapedPath).map(r => r.id)).toEqual([escaped.id]);
     const padded = [' ', '\t', '\r', '\n'].map((prefix, index) =>
       store.importObservation({ ...row, title: 'padded', files_modified: prefix + '["padded.ts"]',

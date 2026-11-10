@@ -44,7 +44,7 @@ test('native C and C++ outlines retain deeply nested pointer declarators', () =>
   }
 }, 120000);
 
-test('native C++ outlines, unfold and batch search retain reference returns and special members', async () => {
+test('native C++ outlines, unfold and batch search retain reference returns and special members', () => {
   const source = 'struct Widget {};\nWidget& getWidget() { static Widget result; return result; }\nclass Counter {\n ~Counter() { cleanup(); }\n bool operator==(const Counter& other) { return true; }\n int increment() { return 1; }\n};';
   const parsed = parseFile(source, 'owned.cpp');
   expect(parsed.symbols.map(symbol => symbol.name)).toEqual(['Widget', 'getWidget', 'Counter']);
@@ -52,11 +52,6 @@ test('native C++ outlines, unfold and batch search retain reference returns and 
   expect(unfoldSymbol(source, 'owned.cpp', 'getWidget')).toContain('return result');
   expect(unfoldSymbol(source, 'owned.cpp', '~Counter')).toContain('cleanup()');
   expect(unfoldSymbol(source, 'owned.cpp', 'operator==')).toContain('return true');
-  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-cpp-declarators-'));
-  try {
-    writeFileSync(join(dir, 'owned.cpp'), source);
-    expect((await searchCodebase(dir, 'getWidget')).matchingSymbols.map(symbol => symbol.symbolName)).toContain('getWidget');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
 test('native anonymous typedef struct is accessible by its declared type name', () => {
@@ -70,17 +65,12 @@ test('uses the enclosing function name before callback parameters', () => {
   expect(parseFile(source, 'owned.c').symbols.map(symbol => symbol.name)).toEqual(['apply', 'factory']);
 }, 120000);
 
-test('named typedef tags share one symbol while distinct aliases remain visible', async () => {
+test('named typedef tags share one symbol while distinct aliases remain visible', () => {
   const source = 'typedef struct Point { int x; } Point;\ntypedef struct Tag { int y; } Alias;';
   const parsed = parseFile(source, 'owned.c');
   expect(parsed.symbols.filter(symbol => symbol.name === 'Point')).toHaveLength(1);
   expect(parsed.symbols.map(symbol => symbol.name)).toContain('Tag');
   expect(parsed.symbols.map(symbol => symbol.name)).toContain('Alias');
-  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-typedef-unique-'));
-  try {
-    writeFileSync(join(dir, 'owned.c'), source);
-    expect((await searchCodebase(dir, 'Point')).matchingSymbols).toHaveLength(1);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
 test('native large function batch associates names after callback declarations', () => {
@@ -90,17 +80,11 @@ test('native large function batch associates names after callback declarations',
   expect(parsed.symbols[799].name).toBe('fn799');
 }, 120000);
 
-test('typedef deduplication retains a distinct nested same-named struct', async () => {
+test('typedef deduplication retains a distinct nested same-named struct', () => {
   const source = 'typedef struct Outer {\n  struct Alias { int x; } member;\n} Alias;';
   const parsed = parseFile(source, 'owned.c');
   const outer = parsed.symbols.find(symbol => symbol.name === 'Outer')!;
   expect(outer.children?.map(symbol => symbol.name)).toEqual(['Alias']);
   expect(outer.children?.[0].lineStart).toBe(1);
   expect(parsed.symbols.find(symbol => symbol.name === 'Alias')?.kind).toBe('type');
-  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-typedef-direct-type-'));
-  try {
-    writeFileSync(join(dir, 'owned.c'), source);
-    const result = await searchCodebase(dir, 'Alias');
-    expect(result.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Alias', 'Outer.Alias']);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);

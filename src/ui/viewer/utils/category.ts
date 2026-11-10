@@ -9,6 +9,7 @@ export const KNOWN_OBSERVATION_TYPES = new Set([
   'decision',
   'security_alert',
   'security_note',
+  'sensitive',
 ]);
 
 export const CATEGORY_ORDER = [
@@ -22,6 +23,7 @@ export const CATEGORY_ORDER = [
   'change',
   'security_alert',
   'security_note',
+  'sensitive',
   'other',
 ] as const;
 

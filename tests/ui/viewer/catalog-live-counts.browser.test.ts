@@ -42,7 +42,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           const wait=async(predicate)=>{const deadline=Date.now()+12000;while(!await predicate()){
             if(Date.now()>deadline)throw Error('Fixture timed out');await new Promise(resolve=>setTimeout(resolve,10));}};
           await fetch('/ready');
-          await wait(()=>document.getElementById('loading')?.textContent==='false' && ${scenario === 'placeholder' ? 'true' : "document.getElementById('rows').textContent.includes('owned-session')"});
+          await wait(async()=> (await (await fetch('/response-count')).json()) > 0 && document.getElementById('loading')?.textContent==='false' && ${scenario === 'placeholder' ? 'true' : "document.getElementById('rows').textContent.includes('owned-session')"});
           document.getElementById('refresh').click();
           await wait(()=>document.getElementById('loading').textContent==='true');
           if(${outside}){
@@ -93,6 +93,8 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         run().catch(error=>fetch('/result',{method:'POST',body:JSON.stringify({error:String(error)})}));
       `);
     let requests=0;
+    let responses=0;
+    const respondSessions=(body:unknown)=>{responses++;return Response.json(body);};
     let serverCount=5;
     let snapshotReady!:()=>void;
     const snapshotStarted=new Promise<void>(resolve=>{snapshotReady=resolve});
@@ -111,6 +113,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
       const path=new URL(request.url).pathname;
       if(path==='/fixture.js')return scriptResponse(bundle);
       if(path==='/ready'){markBrowserReady();return new Response('ready');}
+      if(path==='/response-count')return Response.json(responses);
       if(path==='/api/sessions'){
         const page=++requests;
         requestScopes.push(new URL(request.url).search);
@@ -119,7 +122,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           const snapshot=outsideCatalog.slice(0,100).map(row=>({...row}));
           const hasMore=outsideCatalog.length>100;
           if(page>1)await ready;
-          return Response.json({sessions:snapshot,hasMore});
+          return respondSessions({sessions:snapshot,hasMore});
         }
         if(independent){
           if(page===2){serverCount++;snapshotReady();}
@@ -127,12 +130,12 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           const recreationSnapshot={...entry,content_session_id:'outside-session',custom_title:staleRecreated&&page===3?'Old deleted title':'Recreated server title',item_count:page===1?2:staleRecreated&&page===3?4:1};
           if(page===2)await ready;
           if(page===3){confirming=true;await confirmationReady;}
-          return Response.json({sessions:[{...entry,item_count:snapshot}, ...(recreated && recreatedExists ? [recreationSnapshot] : [])],hasMore:false});
+          return respondSessions({sessions:[{...entry,item_count:snapshot}, ...(recreated && recreatedExists ? [recreationSnapshot] : [])],hasMore:false});
         }
         if(page===3)latestStarted();
         if(page===2 && scenario==='overlap')await firstReady;
         else if(page>1)await ready;
-        return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page===2&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
+        return respondSessions({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page===2&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
       }
       if(path==='/recreated'){recreatedExists=true;return new Response('ok');}
       if(path==='/recreated-removed'){recreatedExists=false;return new Response('ok');}

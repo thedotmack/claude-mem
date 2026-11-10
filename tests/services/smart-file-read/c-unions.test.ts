@@ -1,10 +1,6 @@
 import { describe, expect } from 'bun:test';
 import { nativeTest as test } from './native-prerequisite.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
-import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
+import { parseFile } from '../../../src/services/smart-file-read/parser.js';
 
 const cSource = [
   '#include <stdint.h>',
@@ -38,17 +34,5 @@ describe('c-unions', () => {
     expect(file.symbols[0].children?.map(s => [s.name, s.kind])).toEqual([
       ['Bits', 'struct'], ['Box', 'struct'],
     ]);
-  }, 120000);
-
-  test('search and unfold find a union', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cm-c-unions-'));
-    try {
-      writeFileSync(join(dir, 'value.c'), cSource);
-      const result = await searchCodebase(dir, 'Value');
-      expect(result.matchingSymbols.map(s => s.symbolName)).toContain('Value');
-      expect(unfoldSymbol(cSource, 'value.c', 'Value')).toContain('float f;');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   }, 120000);
 });

@@ -128,12 +128,13 @@ class Episodes(Base):
         for i in range(8): a.assistant(BASE - (7 - i) * 3600_000, "working", tools=[(f"t{i}", "Bash", dict(command="ls"))])
         a.user(BASE, "why did you break it again")
         b = Tx("b"); b.user(BASE - 3600_000, "x"); b.assistant(BASE - 1800_000, "y")
-        self.write(a, b); block, spend, _ = self.run_all(items=[self.item("a"), self.item("b")])
+        items = [self.item("a"), self.item("b")]
+        self.write(a, b); block, spend, _ = self.run_all(items=items)
         ep = block["episodes"][0]
         self.assertEqual(ep["cost_status"], "measured_tokens")
         s = self.scan(); wasted, redo, _ = behavior.episode_windows(dict(session="a", first_ts=BASE, last_ts=BASE, messages=[{}]), s["a"], {"a": [dict(ts_ms=BASE - 8 * 3600_000, author="human")]})
         self.assertEqual(len(wasted), 6)                                    # 6 turns inside the 6-hour cap, 2 outside
-        self.assertTrue(all(T["key"] in s["a"]["turns"] for T in wasted))   # never crosses into session b
+        self.assertEqual(items[1]["wasted_cost"], 0.0)                      # never crosses into session b
         self.assertGreaterEqual(block["union_high_usd"], block["union_low_usd"])
 
     def test_unmeasured_episode_has_null_dollars(self):
@@ -230,12 +231,12 @@ class Detectors(Base):
 
 class Classifier(unittest.TestCase):
     def test_stops_at_cap(self):
-        rate = dict(input_usd_per_mtok=1000.0, output_usd_per_mtok=5000.0)   # absurd price so 3 calls cross the cap
+        rate = dict(input_usd_per_mtok=1000.0, output_usd_per_mtok=5000.0)   # absurd price so 2 calls cross the cap
         calls = []
         def fake(model, prompt, key): calls.append(prompt); return dict(label="yes", pattern="P1", reason="r"), 1000, 100
-        cands = [dict(id=str(i), kind="P1_invented_gates", text="x") for i in range(50)]
+        cands = [dict(id=str(i), kind="P1_invented_gates" if i % 2 else "frustration", text="x") for i in range(50)]
         labels, summary = classify.run(cands, rate, cap_usd=2.0, key="k", call=fake)
-        self.assertLessEqual(summary["spend_usd"], 2.0 + 1.6); self.assertLess(len(labels), 50); self.assertTrue(summary["sampled_n"] > 0)
+        self.assertLessEqual(summary["spend_usd"], 2.0); self.assertLess(len(labels), 50); self.assertTrue(summary["sampled_n"] > 0)
         with self.assertRaises(classify.ClassifierError): classify.run(cands, rate, key="", call=fake)
 
     def test_cap_is_a_hard_limit_not_rounded_to_cents(self):

@@ -7,7 +7,8 @@ failOnCiWithoutChrome('CI requires Chrome for shared recovery ownership.');
 (chromeExecutablePath ? it : it.skip)('recovers cancelled initial siblings and bounds repeated in-flight invalidation', async () => {
   const bundle=compileBrowserFixture(`
     import React from 'react';import{createRoot}from'react-dom/client';import{App}from'./src/ui/viewer/App';
-    localStorage.setItem('claude-mem-welcome-dismissed','true');createRoot(document.getElementById('root')).render(<App/>);
+    import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+    setStoredWelcomeDismissed(true);createRoot(document.getElementById('root')).render(<App/>);
     const has=text=>document.body.textContent.includes(text);
     async function until(check,label){const end=Date.now()+12000;while(!check()){if(Date.now()>end)throw Error(label);await new Promise(r=>setTimeout(r,10));}}
     (async()=>{try{

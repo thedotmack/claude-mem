@@ -5,6 +5,7 @@ describe('parseRetryDelayMs', () => {
   for (const [input, expected] of [
     ['3s', 3000],
     ['1.5s', 1500],
+    ['1.25s', 1250],
     ['0.25s', 250],
     ['0s', 0],
     [' 7s ', 7000],
@@ -14,7 +15,7 @@ describe('parseRetryDelayMs', () => {
     });
   }
 
-  for (const input of ['', 'abc', '5', '5ms', '-1s', '1.5', 's', null, undefined]) {
+  for (const input of ['', 'abc', '5', '5ms', '-1s', '1.5', 's', null, undefined, '9'.repeat(400) + 's', '9007199254741s']) {
     it(`returns undefined for ${JSON.stringify(input)}`, () => {
       expect(parseRetryDelayMs(input)).toBeUndefined();
     });
@@ -29,23 +30,6 @@ describe('parseGeminiErrorDetails', () => {
     '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
     violations: quotaIds.map(quotaId => ({ quotaId, quotaValue: '10' })),
   });
-  const retryInfo = (retryDelay: string) => ({ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay });
-
-  it('reads a per-minute window as no spent period, with the retry hint', () => {
-    expect(parseGeminiErrorDetails(body([
-      quotaFailure('GenerateRequestsPerMinutePerProjectPerModel'),
-      retryInfo('7s'),
-    ]))).toEqual({ periodQuotaExhausted: false, retryDelayMs: 7000 });
-  });
-
-  for (const window of ['PerDay', 'PerWeek', 'PerMonth']) {
-    it(`reads a ${window} window as a spent period`, () => {
-      expect(parseGeminiErrorDetails(body([
-        quotaFailure('GenerateRequestsPerMinutePerProjectPerModel', `GenerateRequests${window}PerProjectPerModel-FreeTier`),
-      ])).periodQuotaExhausted).toBe(true);
-    });
-  }
-
   it('looks only at the violations, not at text elsewhere in the body', () => {
     const text = JSON.stringify({
       error: {

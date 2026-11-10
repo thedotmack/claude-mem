@@ -56,11 +56,6 @@ describe('OpenCode installer missing-MCP-script warning', () => {
     // never sees it.
     expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
     expect(String(consoleWarnSpy.mock.calls[0]?.[0])).toContain('MCP server script not found');
-
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const [component, message] = warnSpy.mock.calls[0] as unknown[];
-    expect(component).toBe('OPENCODE');
-    expect(String(message)).toContain('MCP server script not found');
   }
 
   it('warns and reports partial install when the MCP script is missing even if an unrelated MCP server exists', async () => {

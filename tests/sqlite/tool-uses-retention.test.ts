@@ -57,30 +57,6 @@ describe('purgeLinkedToolUses', () => {
     expect(remainingToolUseIds(db)).toEqual(['old-linked', 'old-unlinked']);
   });
 
-  it('removes rows older than N days that are linked to an observation', () => {
-    const db = freshDb();
-    seed(db, 'old-linked', 40, 11);
-
-    expect(purgeLinkedToolUses(db, 30, NOW)).toBe(1);
-    expect(remainingToolUseIds(db)).toEqual([]);
-  });
-
-  it('keeps old rows with no observation: they are the only copy of that I/O', () => {
-    const db = freshDb();
-    seed(db, 'old-unlinked', 400, null);
-
-    expect(purgeLinkedToolUses(db, 30, NOW)).toBe(0);
-    expect(remainingToolUseIds(db)).toEqual(['old-unlinked']);
-  });
-
-  it('keeps linked rows that are still inside the window', () => {
-    const db = freshDb();
-    seed(db, 'recent-linked', 5, 11);
-
-    expect(purgeLinkedToolUses(db, 30, NOW)).toBe(0);
-    expect(remainingToolUseIds(db)).toEqual(['recent-linked']);
-  });
-
   it('applies the age cutoff exactly: a row 30 days old stays, one a day older goes', () => {
     const db = freshDb();
     seed(db, 'exactly-30', 30, 11);

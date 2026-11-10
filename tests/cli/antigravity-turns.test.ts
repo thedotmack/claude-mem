@@ -7,7 +7,6 @@ import {
   inspectAntigravityTurn,
   resolveAntigravityPreInvocation,
 } from '../../src/cli/adapters/antigravity-cli.js';
-import { expandHomeDirectory, extractFilePaths } from '../../src/cli/adapters/codex-file-context.js';
 import {
   fileContextHandler,
   runAntigravityPreInvocation,
@@ -15,7 +14,6 @@ import {
 } from '../../src/cli/handlers/index.js';
 import { fileHistoryQueryPaths } from '../../src/cli/handlers/file-context.js';
 import { extractObservationFileEvidence } from '../../src/services/worker/agents/ResponseProcessor.js';
-import { findLastJsonlEntryBackward } from '../../src/shared/transcript-parser.js';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
 
 // agy fires PreInvocation before every model call of a turn (#5078). Only the
@@ -108,20 +106,6 @@ describe('inspectAntigravityTurn', () => {
     const noTurn = writeTranscript('no-turn.jsonl', [toolStep]);
     expect(inspectAntigravityTurn(noTurn, workspace, fakeHome).isNewUserTurn).toBe(false);
   });
-
-  it('stops the backward scan at the newest turn node instead of reading the whole file', () => {
-    const nodes: object[] = [userInput('old turn')];
-    for (let i = 0; i < 2_000; i++) nodes.push({ ...toolStep, step_index: i + 1, content: 'x'.repeat(200) });
-    nodes.push(userInput('current turn'));
-    const transcriptPath = writeTranscript('long.jsonl', nodes);
-    const visited: string[] = [];
-    const hit = findLastJsonlEntryBackward(transcriptPath, (node) => {
-      visited.push(node.type);
-      return node.type === 'USER_INPUT' ? node.content : undefined;
-    }, { initialBytes: 4 * 1024 });
-    expect(hit).toBe('<USER_REQUEST>current turn</USER_REQUEST>');
-    expect(visited).toEqual(['USER_INPUT']);
-  });
 });
 
 describe('resolveAntigravityPreInvocation', () => {
@@ -187,14 +171,58 @@ describe('runAntigravityPreInvocation dispatch', () => {
   });
 });
 
-describe('home-directory paths (#5078)', () => {
-  it('expands ~/ in a read command before checking the file exists', () => {
-    expect(expandHomeDirectory('~/p/y.ts', fakeHome)).toBe(homeFile);
-    expect(expandHomeDirectory('src/a.ts', fakeHome)).toBe('src/a.ts');
-    // Shared with Codex: `cat ~/p/y.ts` used to resolve to <cwd>/~/p/y.ts.
-    expect(extractFilePaths('Bash', { command: 'cat ~/p/y.ts' }, workspace, fakeHome)).toEqual([homeFile]);
+describe('PostInvocation observations (#5665)', () => {
+  // agy fires PostInvocation after every model call, tool-only steps included.
+  const postInvocation = (transcriptPath: string) => antigravityCliAdapter.normalizeInput({
+    workspacePaths: [workspace],
+    conversationId: 'conv-1',
+    transcriptPath,
+    invocationNum: 2,
+    initialNumSteps: 0,
+  });
+  const toolOnlyStep = () => {
+    const { content: _content, ...step } = plannerReadingFiles();
+    return step;
+  };
+
+  // The observation handler records nothing for an input without a toolName.
+  it('records nothing for a tool-only step, not the previous turn\'s reply', () => {
+    const transcriptPath = writeTranscript('post-tool-only.jsonl', [
+      userInput('old turn'),
+      { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'Old answer.' },
+      userInput('fix the bug'),
+      toolOnlyStep(),
+      toolStep,
+    ]);
+    const normalized = postInvocation(transcriptPath);
+    expect(normalized.toolName).toBeUndefined();
+    expect(normalized.toolResponse).toBeUndefined();
   });
 
+  it('records nothing when the turn has no PLANNER_RESPONSE yet', () => {
+    const transcriptPath = writeTranscript('post-no-reply.jsonl', [
+      userInput('old turn'),
+      { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'Old answer.' },
+      userInput('fix the bug'),
+    ]);
+    expect(postInvocation(transcriptPath).toolName).toBeUndefined();
+  });
+
+  it('records the reply of the call when its PLANNER_RESPONSE has text', () => {
+    const transcriptPath = writeTranscript('post-reply.jsonl', [
+      userInput('fix the bug'),
+      toolOnlyStep(),
+      toolStep,
+      { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'I fixed it.' },
+    ]);
+    const normalized = postInvocation(transcriptPath);
+    expect(normalized.toolName).toBe('AntigravityProvider');
+    expect(normalized.toolInput).toEqual({ prompt: 'fix the bug' });
+    expect(normalized.toolResponse).toEqual({ response: 'I fixed it.' });
+  });
+});
+
+describe('home-directory paths (#5078)', () => {
   it('queries file history by the ~/ form too for a file under the home directory', () => {
     expect(fileHistoryQueryPaths('/home/u/p/y.ts', '../../home/u/p/y.ts', '/home/u')).toEqual([
       '/home/u/p/y.ts',

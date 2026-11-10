@@ -12,7 +12,6 @@ const projectRoot = path.resolve(__dirname, '../..');
 // A build overwrites the working tree (#4728) and renames hashed My Work assets,
 // so the syntax check runs on the committed blobs, extracted from HEAD.
 const committedPluginRoot = mkdtempSync(path.join(tmpdir(), 'committed-plugin-'));
-execFileSync('sh', ['-c', `git archive HEAD plugin | tar -x -C "${committedPluginRoot}"`], { cwd: projectRoot });
 afterAll(() => rmSync(committedPluginRoot, { recursive: true, force: true }));
 
 const committedPluginScripts = execFileSync(
@@ -22,6 +21,10 @@ const committedPluginScripts = execFileSync(
 )
   .split('\n')
   .filter((trackedPath) => /\.c?js$/.test(trackedPath));
+
+const archivePath = path.join(committedPluginRoot, 'scripts.tar');
+execFileSync('git', ['archive', `--output=${archivePath}`, 'HEAD', ...committedPluginScripts], { cwd: projectRoot });
+execFileSync('tar', ['-xf', archivePath, '-C', committedPluginRoot]);
 
 describe('Committed plugin bundles', () => {
   it('contain no merge-conflict markers', () => {
@@ -39,14 +42,20 @@ describe('Committed plugin bundles', () => {
     expect(committedPluginScripts).toContain('plugin/scripts/worker-service.cjs');
   });
 
-  for (const scriptPath of committedPluginScripts) {
-    it(`parses ${scriptPath}`, () => {
-      const syntaxCheck = spawnSync('node', ['--check', scriptPath], {
+  it('parses every committed runtime script', async () => {
+    const results = await Promise.all(committedPluginScripts.map(async scriptPath => {
+      const child = Bun.spawn(['node', '--check', scriptPath], {
         cwd: committedPluginRoot,
-        encoding: 'utf-8',
+        stdout: 'ignore',
+        stderr: 'pipe',
       });
-      expect(syntaxCheck.stderr).toBe('');
-      expect(syntaxCheck.status).toBe(0);
-    });
-  }
+      const [stderr, status] = await Promise.all([
+        new Response(child.stderr).text(), child.exited,
+      ]);
+      return { scriptPath, stderr, status };
+    }));
+    for (const result of results) {
+      expect(result).toEqual({ scriptPath: result.scriptPath, stderr: '', status: 0 });
+    }
+  });
 });

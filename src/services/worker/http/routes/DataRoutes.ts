@@ -31,6 +31,8 @@ import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
 import { withObservationMedia } from '../../../media/feed.js';
+import type { StoredSummary, StoredUserPrompt } from '../../../sync/ChromaSync.js';
+import { ChromaSyncState } from '../../../sync/ChromaSyncState.js';
 
 // The MCP get_observations schema advertises `number | string` ids, so array
 // elements may arrive as numeric strings; non-numeric strings stay invalid.
@@ -147,8 +149,8 @@ const jsonStringifyFields = (fields: readonly string[]) =>
   };
 
 const projectMergeSchema = z.object({
-  from: z.string().trim().min(1),
-  into: z.string().trim().min(1),
+  from: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
+  into: z.string().refine(value => value.trim().length > 0, 'Project must not be blank'),
   dryRun: z.boolean().optional(),
 });
 
@@ -349,7 +351,7 @@ export class DataRoutes extends BaseRouteHandler {
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
     const rows = store.queryToolUseIndex({
-      project: asString(req.query.project),
+      project: BaseRouteHandler.firstString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
       memorySessionId: asString(req.query.memorySessionId),
       toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
@@ -624,7 +626,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const project = BaseRouteHandler.firstString(req.query.project)?.trim() || undefined;
+    const project = BaseRouteHandler.firstString(req.query.project);
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
     const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
     // { sessions, hasMore }: the viewer pages through older sessions with offset.
@@ -835,6 +837,10 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const chromaSync = this.dbManager.getChromaSync();
+    const chromaJobs: Array<() => Promise<void>> = [];
+    const importedSummaryIds: number[] = [];
+    const importedPrompts: Array<{ id: number; platformSource: string }> = [];
     const importedMemorySessionIds = new Map<string, string>();
     const remapImportedMemorySession = <T extends { memory_session_id: string }>(row: T): T => {
       const memorySessionId = importedMemorySessionIds.get(row.memory_session_id);
@@ -902,6 +908,7 @@ export class DataRoutes extends BaseRouteHandler {
       const result = store.importSessionSummary(remapImportedMemorySession(summary));
       if (result.imported) {
         stats.summariesImported++;
+        importedSummaryIds.push(result.id);
       } else {
         stats.summariesSkipped++;
       }
@@ -924,9 +931,7 @@ export class DataRoutes extends BaseRouteHandler {
         store.rebuildObservationsFTSIndex();
       }
 
-      const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
-        const CHROMA_SYNC_CONCURRENCY = 8;
         const safeParseJson = (val: string | null): string[] => {
           if (!val) return [];
           try { return JSON.parse(val); } catch { return []; }
@@ -974,14 +979,7 @@ export class DataRoutes extends BaseRouteHandler {
           });
         };
 
-        (async () => {
-          for (let i = 0; i < importedObservations.length; i += CHROMA_SYNC_CONCURRENCY) {
-            const batch = importedObservations.slice(i, i + CHROMA_SYNC_CONCURRENCY);
-            await Promise.all(batch.map(syncOne));
-          }
-        })().catch(err => {
-          logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error);
-        });
+        for (const row of importedObservations) chromaJobs.push(() => syncOne(row));
       }
     }
 
@@ -1023,10 +1021,76 @@ export class DataRoutes extends BaseRouteHandler {
       const result = store.importUserPrompt(promptToImport as any);
       if (result.imported) {
         stats.promptsImported++;
+        importedPrompts.push({ id: result.id, platformSource: normalizePlatformSource(promptToImport.platform_source) });
       } else {
         stats.promptsSkipped++;
       }
     });
+
+    if (chromaSync) {
+      const pending = new Map<string, { summaries: number[]; prompts: number[] }>();
+      const notePending = (project: string, kind: 'summaries' | 'prompts', id: number): void => {
+        let ids = pending.get(project);
+        if (!ids) { ids = { summaries: [], prompts: [] }; pending.set(project, ids); }
+        ids[kind].push(id);
+      };
+      // Read committed SQLite values, including TEXT affinity and the local
+      // session chosen during restore. Exported row/session IDs are not local IDs.
+      const loadSummary = (id: number): StoredSummary | undefined => store.db.query(`
+        SELECT ss.*, COALESCE(ss.prompt_number, 0) AS prompt_number,
+          COALESCE(NULLIF(s.platform_source, ''), 'claude') AS platform_source
+        FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+        WHERE ss.id = ?
+      `).get(id) as StoredSummary | undefined;
+      const loadPrompt = (id: number, platformSource: string): StoredUserPrompt | undefined => store.db.query(`
+        SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+          COALESCE(s.project, 'unknown') AS project,
+          COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+        FROM user_prompts up LEFT JOIN sdk_sessions s ON s.id = up.session_db_id
+        WHERE up.id = ?
+      `).get(platformSource, id) as StoredUserPrompt | undefined;
+
+      for (const id of importedSummaryIds) {
+        const row = loadSummary(id);
+        if (!row) continue;
+        // A later live write can advance the watermark while an import waits
+        // or fails. Keep every accepted row retryable until its write succeeds.
+        notePending(row.project, 'summaries', id);
+        chromaJobs.push(async () => {
+          const current = loadSummary(id);
+          if (!current) return;
+          await chromaSync.syncSummary(id, current.memory_session_id, current.project, current,
+            current.prompt_number, current.created_at_epoch, normalizePlatformSource(current.platform_source), false,
+            () => { const row = loadSummary(id); return row && { row, replaceExisting: false }; }
+          ).catch(err => logChromaWriteFailure('CHROMA', 'Imported summary ChromaDB sync failed', { id }, err));
+        });
+      }
+      for (const { id, platformSource } of importedPrompts) {
+        const row = loadPrompt(id, platformSource);
+        if (!row) continue;
+        notePending(row.project, 'prompts', id);
+        chromaJobs.push(async () => {
+          const current = loadPrompt(id, platformSource);
+          if (!current) return;
+          await chromaSync.syncUserPrompt(id, current.memory_session_id, current.project, current.prompt_text,
+            current.prompt_number, current.created_at_epoch, current.platform_source,
+            () => loadPrompt(id, platformSource)
+          ).catch(err => logChromaWriteFailure('CHROMA', 'Imported prompt ChromaDB sync failed', { id }, err));
+        });
+      }
+      // Persist each project's batch once, not once per imported row.
+      for (const [project, ids] of pending) {
+        if (ids.summaries.length) ChromaSyncState.markPending(project, 'summaries', ids.summaries);
+        if (ids.prompts.length) ChromaSyncState.markPending(project, 'prompts', ids.prompts);
+      }
+      // Share the observation import's existing bound across all three kinds.
+      const CHROMA_SYNC_CONCURRENCY = 8;
+      void (async () => {
+        for (let i = 0; i < chromaJobs.length; i += CHROMA_SYNC_CONCURRENCY) {
+          await Promise.all(chromaJobs.slice(i, i + CHROMA_SYNC_CONCURRENCY).map(job => job()));
+        }
+      })().catch(err => logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error));
+    }
 
     const rejectedCounts = {
       sessionsRejected: rejected.sessions.length,

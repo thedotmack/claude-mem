@@ -1,13 +1,14 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
-	CONTENT_BODY_MAX_BYTES,
 	canonicalJson,
 	parseCanonicalOperation,
 	sha256Base64Url,
 	stableDocumentId,
 	type CanonicalWireOp,
 } from "../src/canonical-content";
-import { authHeaders, observationOp, trackedApp, uniqueUser } from "./helpers";
+import { authHeaders, observationOp, trackedApp, uniqueUser, stopTrackedApps } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 // Phase 5 (image-aware observations): bounded metadata.cmem_media_v1 in the
 // active sync service. Forwarding stays exact; only the namespace is checked.
@@ -57,38 +58,13 @@ async function unvalidatedObservationOp(originLocalId: string, payloadOverrides:
 }
 
 const INVALID_MANIFESTS: Array<[string, unknown]> = [
-	["null namespace", null],
-	["unsupported version", { ...VALID_MANIFEST, version: 2 }],
 	["unknown manifest key", { ...VALID_MANIFEST, ready: true }],
-	["readiness frozen into a ref", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "uninspected", state: "ready" }] }],
-	["object key on a ref", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "uninspected", key: "owner/a/b/viewer.webp" }] }],
-	["path as label", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "/Users/me/shot.png", inspection: "uninspected" }] }],
-	["data URL as label", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "data:image/webp;base64,AAAA", inspection: "uninspected" }] }],
 	["uppercase id", { version: 1, attachments: [{ id: ATTACHMENT_ONE.toUpperCase(), label: "event1_image1", inspection: "uninspected" }] }],
-	["duplicate id", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "a", inspection: "uninspected" }, { id: ATTACHMENT_ONE, label: "b", inspection: "uninspected" }] }],
 	["bad inspection", { version: 1, attachments: [{ id: ATTACHMENT_ONE, label: "event1_image1", inspection: "ready" }] }],
 	["non-boolean overflow", { ...VALID_MANIFEST, overflow: "yes" }],
-	["33 refs", {
-		version: 1,
-		attachments: Array.from({ length: 33 }, (_, index) => ({
-			id: `3f8a1c2e-5b6d-4e7f-8a9b-${index.toString(16).padStart(12, "0")}`,
-			label: "event1_image1",
-			inspection: "uninspected",
-		})),
-	}],
 ];
 
 describe("metadata.cmem_media_v1 validator (sync-api)", () => {
-	it("accepts a bounded manifest and forwards the exact body with other namespaces intact", async () => {
-		const op = await observationOp("1", "1", "dev-a", { metadata: mediaMetadata(VALID_MANIFEST) });
-		const parsed = await parseCanonicalOperation(op);
-		expect(parsed.serialized).toBe(op.body);
-		expect(parsed.operationSha256).toBe(op.operation_sha256);
-		expect((parsed.body.payload as Record<string, any>).metadata.other_namespace).toEqual({ keep: ["me", 1, true] });
-		expect(parsed.body.payload_schema_version).toBe(2);
-		expect(CONTENT_BODY_MAX_BYTES).toBe(256_000);
-	});
-
 	it("passes metadata without the namespace unchanged", async () => {
 		const op = await observationOp("1", "1", "dev-a", { metadata: { other_namespace: { anything: { nested: [1] } } } });
 		expect((await parseCanonicalOperation(op)).serialized).toBe(op.body);

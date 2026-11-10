@@ -357,8 +357,8 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
       }
     }
     const products = [...productsByIdentity.values()];
-    const launches = (records.agentLaunches ?? []).filter(row => row.content_session_id === session.content_session_id && typeof row.agent_id === 'string').map(row => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === 'string' ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
-    const activity = (records.agentToolActivity ?? []).filter(row => row.content_session_id === session.content_session_id).map(row => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
+    const launches = (records.agentLaunches ?? []).filter(row => conversationKey(row) === key && typeof row.agent_id === 'string').map(row => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === 'string' ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
+    const activity = (records.agentToolActivity ?? []).filter(row => conversationKey(row) === key).map(row => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
     const sessionValue = Object.fromEntries(sessionFields.map(field => [field, clean(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some(prompt => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
@@ -457,8 +457,8 @@ export function applySharedProjection(database, shared, { ledger = null, records
       }
       merged.sharedProducts.push({ conversationKey: key, products: (value.products ?? []).filter(product => sharedProduct(product)
         && (product.availability !== 'origin-only' || product.originDeviceId === record.writer)) });
-      for (const launch of value.launches ?? []) if (!merged.agentLaunches.some(row => row.content_session_id === session.content_session_id && row.agent_id === launch.agent_id)) merged.agentLaunches.push({ ...launch, content_session_id: session.content_session_id, shared: true });
-      for (const activity of value.activity ?? []) if (!merged.agentToolActivity.some(row => row.content_session_id === session.content_session_id && row.agent_id === activity.agent_id)) merged.agentToolActivity.push({ ...activity, content_session_id: session.content_session_id });
+      for (const launch of value.launches ?? []) if (!merged.agentLaunches.some(row => conversationKey(row) === key && row.agent_id === launch.agent_id)) merged.agentLaunches.push({ ...launch, platform_source: session.platform_source, content_session_id: session.content_session_id, shared: true });
+      for (const activity of value.activity ?? []) if (!merged.agentToolActivity.some(row => conversationKey(row) === key && row.agent_id === activity.agent_id)) merged.agentToolActivity.push({ ...activity, platform_source: session.platform_source, content_session_id: session.content_session_id });
     }
   }
   const referencedGroups = new Set(Object.values(next.groups.conversations));

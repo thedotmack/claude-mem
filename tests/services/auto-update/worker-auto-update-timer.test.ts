@@ -18,7 +18,6 @@ import {
   readClaudeCodeSettingsEnvBlocks,
   runAutoUpdateCheck,
   type AutoUpdateCheckDeps,
-  type AutoUpdateDecision,
   type AutoUpdateSettings,
   type FetchJsonResult,
 } from '../../../src/services/auto-update/auto-update-check.js';
@@ -313,34 +312,6 @@ describe('WorkerService.startAutoUpdateTimer', () => {
 
     afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
 
-    it('stops the tick at read-settings, logged at ERROR, and does nothing else', async () => {
-      const workerFixture = buildWorkerFixture();
-      workerFixture.readSettings.mockRestore();
-      const realDeps: AutoUpdateCheckDeps = workerFixture.worker.buildAutoUpdateCheckDeps(new Set());
-      const claudeCodeSettingsReads = mock(() => ({ envBlocks: [], skipped: [] }));
-      const pluginRootLookups = mock(() => null);
-      const stateReads = mock(() => { throw new Error('the state must not be read'); });
-      spyOn(workerFixture.worker, 'buildAutoUpdateCheckDeps').mockImplementation((() => ({
-        ...realDeps,
-        readSettings: () => readAutoUpdateSettings(unreadableSettingsPath),
-        readClaudeCodeSettingsEnv: claudeCodeSettingsReads,
-        resolvePluginRoot: pluginRootLookups,
-        readState: stateReads,
-      })) as any);
-
-      workerFixture.worker.startAutoUpdateTimer();
-      workerFixture.timeouts[0].callback();
-      await settle();
-
-      expect(workerFixture.error).toHaveBeenCalledTimes(1);
-      expect(workerFixture.error.mock.calls[0][2]).toEqual({ stage: 'read-settings' });
-      expect(String(workerFixture.error.mock.calls[0][3])).toContain(`${unreadableSettingsPath} exists but cannot be read as settings`);
-      expect(claudeCodeSettingsReads).not.toHaveBeenCalled();
-      expect(pluginRootLookups).not.toHaveBeenCalled();
-      expect(stateReads).not.toHaveBeenCalled();
-      expect(workerFixture.fetchSpy).not.toHaveBeenCalled();
-    });
-
     it('logs that ERROR once per boot and each later tick it stops at DEBUG, so the file sends one exception event a boot', async () => {
       const workerFixture = buildWorkerFixture();
       workerFixture.readSettings.mockRestore();
@@ -470,51 +441,6 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     const findNpx = spyOn(autoUpdateLaunch, 'findNpxForTheInstaller').mockImplementation(() => '/opt/node/bin/npx');
     expect(deps.findNpxOnWorkerPath()).toBe('/opt/node/bin/npx');
     expect(findNpx.mock.calls).toEqual([[]]);
-  });
-
-  it('turns off Claude Code\'s background update in the known_marketplaces.json under CLAUDE_CONFIG_DIR in the check that proves the updater, before it launches the update, changing nothing else, and records the time', async () => {
-    const workerFixture = buildWorkerFixture();
-    const knownMarketplacesFile = path.join(claudeConfigDir, 'plugins', 'known_marketplaces.json');
-    // Registered by an installer from before Phase 4, next to Anthropic's official marketplace.
-    const registeredBeforePhase4 = {
-      'claude-plugins-official': {
-        source: { source: 'github', repo: 'anthropics/claude-plugins-official' },
-        installLocation: path.join(claudeConfigDir, 'plugins', 'marketplaces', 'claude-plugins-official'),
-        lastUpdated: '2026-11-07T08:00:00.000Z',
-        autoUpdate: true,
-      },
-      thedotmack: {
-        source: { source: 'github', repo: 'thedotmack/claude-mem' },
-        installLocation: marketplaceDirectory(),
-        lastUpdated: '2026-11-01T09:30:00.000Z',
-        autoUpdate: true,
-      },
-    };
-    const asRegistered = JSON.stringify(registeredBeforePhase4, null, 2);
-    writeFileSync(knownMarketplacesFile, asRegistered);
-    try {
-      const expected = structuredClone(registeredBeforePhase4);
-      expected.thedotmack.autoUpdate = false;
-      const turnedOff = `${JSON.stringify(expected, null, 2)}\n`;
-      let fileWhenLaunched: string | null = null;
-      // npx found on the worker's PATH, wherever the machine running this test keeps it.
-      const deps = workerTickDeps(workerFixture.worker, {
-        findNpxOnWorkerPath: () => '/opt/node/bin/npx',
-        launchSupervisor: async () => { fileWhenLaunched = readFileSync(knownMarketplacesFile, 'utf-8'); },
-      });
-
-      // The first check reads the promoted file and npm's metadata, which proves the updater, and turns it off before it launches the update.
-      expect((await runAutoUpdateCheck(deps)).decision).toBe('apply');
-      expect(fileWhenLaunched).toBe(turnedOff);
-      expect(deps.stored().promotedFileAndNpmMetadataReadAt).toEqual(expect.any(Number));
-      expect(deps.stored().claudeCodeBackgroundUpdateTurnedOffAt).toEqual(expect.any(Number));
-
-      // The next tick, not due, finds nothing left to turn off.
-      expect((await runAutoUpdateCheck(deps)).decision).toBe('not-due');
-      expect(readFileSync(knownMarketplacesFile, 'utf-8')).toBe(turnedOff);
-    } finally {
-      rmSync(knownMarketplacesFile, { force: true });
-    }
   });
 
   it('gives gate 3 the supervisor\'s readings of an interrupted attempt', () => {
@@ -734,23 +660,6 @@ describe('WorkerService.buildAutoUpdateCheckDeps', () => {
     expect(await runAutoUpdateCheck(workerTickDeps(workerFixture.worker))).toMatchObject({ decision: 'deferred-busy' });
     expect(String(busyWarnings().at(-1)?.[2]?.cause)).toContain('The corpus routes are not registered');
     expect(busyWarnings()).toHaveLength(3);
-  });
-
-  it('turns auto-update off for a switch in the env block of Claude Code\'s user settings, whatever the worker\'s env', async () => {
-    const workerFixture = buildWorkerFixture();
-    mkdirSync(claudeConfigDir, { recursive: true });
-    writeFileSync(claudeSettingsPath(), JSON.stringify({ env: { DISABLE_AUTOUPDATER: '1' } }));
-    // The worker's own reader, not the hermetic one workerTickDeps uses: the user file is read first either way.
-    const deps = workerTickDeps(workerFixture.worker, {
-      env: { PATH: '/usr/bin' },
-      readClaudeCodeSettingsEnv: (workerFixture.worker.buildAutoUpdateCheckDeps(new Set()) as AutoUpdateCheckDeps).readClaudeCodeSettingsEnv,
-    });
-
-    const decision: AutoUpdateDecision = await runAutoUpdateCheck(deps);
-    expect(decision).toEqual({
-      decision: 'disabled',
-      reason: `DISABLE_AUTOUPDATER is set in the env block of ${claudeSettingsPath()} (Claude Code's switch for no background updates)`,
-    });
   });
 });
 

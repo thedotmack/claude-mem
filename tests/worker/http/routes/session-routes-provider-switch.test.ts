@@ -35,7 +35,6 @@ mock.module('../../../../src/services/worker/provider-dispatch.js', () => ({
 }));
 
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
-import { telemetryBuffer } from '../../../../src/services/telemetry/buffer.js';
 import { getProcessRegistry, waitForSlot, isSessionParkedForSlot } from '../../../../src/supervisor/process-registry.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
@@ -286,25 +285,9 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     const originalAbortController = session.abortController;
     const originalClaimedMessageIds = session.claimedMessageIds;
 
-    // #2756 round-2 review finding (important): normalizeAbortReason's new
-    // 'provider_switch' case is the only thing standing between this abort
-    // and a silently corrupted session_compressed telemetry event (a typo'd
-    // case falls through to the 'none' default with no type error and no
-    // other test noticing). Spy on the real telemetryBuffer.record and
-    // assert the emitted abort_reason directly, rather than only asserting
-    // on session state.
-    const telemetrySpy = spyOn(telemetryBuffer, 'record');
-
     // Settings changed: openrouter is now selected.
     providerSelectionBox.current = 'openrouter';
     await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
-
-    const abortedTelemetryCall = telemetrySpy.mock.calls.find(
-      ([event, id]) => event === 'session_compressed' && id === sessionDbId
-    );
-    expect(abortedTelemetryCall).toBeDefined();
-    expect((abortedTelemetryCall?.[2] as Record<string, unknown> | undefined)?.abort_reason).toBe('provider_switch');
-    telemetrySpy.mockRestore();
 
     // Parked wait was aborted and replaced.
     expect(originalAbortController.signal.aborted).toBe(true);

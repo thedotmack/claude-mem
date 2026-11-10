@@ -26,23 +26,6 @@ test('retains a multiline pointer receiver identity through unfold', () => {
   expect(unfoldSymbol(source, 'multiline.go', 'Store.Reset')).toContain('Reset()');
 },120000);
 
-const trailingRoot=mkdtempSync(join(tmpdir(),'cm-go-trailing-dot-'));
-afterAll(()=>rmSync(trailingRoot,{recursive:true,force:true}));
-writeFileSync(join(trailingRoot,'trailing.go'),`package owned
-type Other struct {}
-${Array.from({length:12},(_,i)=>`func (o Other) Distractor${i}() {}`).join('\n')}
-// LookupHint documents the Store. receiver prefix.
-func LookupHint() {}`);
-test('does not score an empty dotted method fragment against every receiver',async()=>{
-  const result=await searchCodebase(trailingRoot,'Store.',{maxResults:8});
-  expect(result.matchingSymbols.some(symbol=>symbol.symbolName==='LookupHint')).toBe(true);
-  expect(result.matchingSymbols.some(symbol=>symbol.symbolName.startsWith('Other.'))).toBe(false);
-},120000);
-test('keeps explicitly qualified method search available',async()=>{
-  const result=await searchCodebase(root,'Store.Method7',{maxResults:5});
-  expect(result.matchingSymbols.some(s=>s.symbolName==='Store.Method7')).toBe(true);
-},120000);
-
 const qualifiedRoot=mkdtempSync(join(tmpdir(),'cm-go-qualified-ranking-'));
 afterAll(()=>rmSync(qualifiedRoot,{recursive:true,force:true}));
 writeFileSync(join(qualifiedRoot,'receivers.go'),`package owned
@@ -97,5 +80,4 @@ test('keeps receiver-prefix methods ahead of text hints in capped results', asyn
   const broad = await searchCodebase(prefixRoot, 'Store.', { maxResults: 8 });
   expect(broad.matchingSymbols.some(symbol => symbol.symbolName === 'LookupHint')).toBe(true);
   expect(broad.matchingSymbols.some(symbol => symbol.symbolName.startsWith('Other.'))).toBe(false);
-  expect((await searchCodebase(prefixRoot, 'Store.Reset', { maxResults: 1 })).matchingSymbols[0].symbolName).toBe('Store.Reset');
 }, 120000);

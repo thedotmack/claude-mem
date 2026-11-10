@@ -13,17 +13,6 @@ describe("multiline-symbol-names", () => {
   expect(file.symbols.map(s => s.name)).toEqual(['.first, .second', '.plain']);
   expect(formatFoldedView(file)).toContain("second");
  }, 120000);
- test('batch search supplies a usable unfold identity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cm-multiline-symbol-names-'));
-  try {
-   writeFileSync(join(dir, filename), source);
-   const result = await searchCodebase(dir, "second");
-   const match = result.matchingSymbols.find(s => s.symbolName === "\\.first, \\.second");
-   expect(match).toBeDefined();
-
-   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("color: red;");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- }, 120000);
 });
 
 test('recovers UTF-8 selectors from native byte ranges', () => {

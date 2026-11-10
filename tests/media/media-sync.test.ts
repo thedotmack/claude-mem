@@ -163,7 +163,7 @@ function storeLinkedObservation(device: Device, capture: { ref: MediaAttachmentR
   const memorySessionId = (device.db.prepare('SELECT memory_session_id FROM sdk_sessions WHERE id=?').get(capture.sessionDbId) as { memory_session_id: string }).memory_session_id;
   const metadata = { cmem_media_v1: { version: 1, attachments: [{ ...capture.ref, inspection: 'inspected' }] }, other_namespace: { keep: [1, 'two'] } };
   const row = device.db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, narrative, metadata, created_at, created_at_epoch)
-    VALUES (?, 'proj-media', 'discovery', ?, 'saw the image', ?, ?, 1800000000000) RETURNING id`).get(memorySessionId, title, JSON.stringify(metadata), ISO) as { id: number };
+    VALUES (?, 'proj-media', 'discovery', ?, 'saw the image', ?, ?, 1800000000000) RETURNING id`).all(memorySessionId, title, JSON.stringify(metadata), ISO)[0] as { id: number };
   device.media.linkObservation(row.id, capture.eventKey, [{ ...capture.ref, inspection: 'inspected' }]);
   return row.id;
 }

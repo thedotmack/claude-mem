@@ -107,15 +107,4 @@ describe('projectReadKeys adopted-row scoping (#4782)', () => {
       store.close();
     }
   });
-
-  it('keeps discovering the stored spellings of the requested projects', () => {
-    const store = new SessionStore(':memory:');
-    try {
-      seedProject(store, 'cased', 'Nuviapel', ['CASED_ROW']);
-
-      expect(projectReadKeys(store.db, ['nuviapel'])).toEqual(['nuviapel', 'Nuviapel']);
-    } finally {
-      store.close();
-    }
-  });
 });

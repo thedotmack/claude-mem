@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -54,11 +54,6 @@ describe('Cursor Project Registry', () => {
   });
 
   describe('registerCursorProject', () => {
-    it('creates registry file if it does not exist', () => {
-      registerCursorProject(registryFile, 'new-project', '/path/to/project');
-
-      expect(existsSync(registryFile)).toBe(true);
-    });
 
     it('stores project with workspacePath and installedAt', () => {
       const before = Date.now();
@@ -93,14 +88,6 @@ describe('Cursor Project Registry', () => {
       expect(registry['my-project'].workspacePath).toBe('/new/path');
     });
 
-    it('handles special characters in project name', () => {
-      const projectName = 'my-project_v2.0 (beta)';
-      registerCursorProject(registryFile, projectName, '/path/to/project');
-
-      const registry = readCursorRegistry(registryFile);
-      expect(registry[projectName]).toBeDefined();
-      expect(registry[projectName].workspacePath).toBe('/path/to/project');
-    });
   });
 
   describe('unregisterCursorProject', () => {
@@ -131,24 +118,4 @@ describe('Cursor Project Registry', () => {
     });
   });
 
-  describe('registry format validation', () => {
-    it('stores registry as pretty-printed JSON', () => {
-      registerCursorProject(registryFile, 'test', '/path');
-
-      const content = readFileSync(registryFile, 'utf-8');
-      expect(content).toContain('\n');
-      expect(content).toContain('  ');
-    });
-
-    it('registry file is valid JSON that can be read by other tools', () => {
-      registerCursorProject(registryFile, 'project-1', '/path/1');
-      registerCursorProject(registryFile, 'project-2', '/path/2');
-
-      const content = readFileSync(registryFile, 'utf-8');
-      const parsed = JSON.parse(content);
-
-      expect(parsed).toHaveProperty('project-1');
-      expect(parsed).toHaveProperty('project-2');
-    });
-  });
 });

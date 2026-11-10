@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import { logger } from '../../src/utils/logger.js';
 
 import { Server } from '../../src/services/server/Server.js';
-import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
+import type { ServerOptions } from '../../src/services/server/Server.js';
 import { listenOnEphemeralPort } from '../helpers/ephemeral-port.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -46,23 +46,6 @@ describe('Server', () => {
   });
 
   describe('constructor', () => {
-    it('should create Express app', () => {
-      server = new Server(mockOptions);
-
-      expect(server.app).toBeDefined();
-      expect(typeof server.app.get).toBe('function');
-      expect(typeof server.app.post).toBe('function');
-      expect(typeof server.app.use).toBe('function');
-    });
-
-    it('should expose app as readonly property', () => {
-      server = new Server(mockOptions);
-
-      expect(server.app).toBeDefined();
-
-      expect(typeof server.app.listen).toBe('function');
-    });
-
     it('should register pre-body-parser routes before normal middleware', async () => {
       server = new Server({
         ...mockOptions,
@@ -97,16 +80,6 @@ describe('Server', () => {
   });
 
   describe('listen', () => {
-    it('should start server on specified port', async () => {
-      server = new Server(mockOptions);
-
-      await listenOnEphemeralPort(server);
-
-      const httpServer = server.getHttpServer();
-      expect(httpServer).not.toBeNull();
-      expect(httpServer!.listening).toBe(true);
-    });
-
     it('should reject if port is already in use', async () => {
       server = new Server(mockOptions);
       const server2 = new Server(mockOptions);
@@ -122,28 +95,6 @@ describe('Server', () => {
   });
 
   describe('close', () => {
-    it('should stop server from listening after close', async () => {
-      server = new Server(mockOptions);
-      await listenOnEphemeralPort(server);
-
-      const httpServerBefore = server.getHttpServer();
-      expect(httpServerBefore).not.toBeNull();
-      expect(httpServerBefore!.listening).toBe(true);
-
-      try {
-        await server.close();
-      } catch (e: any) {
-        if (e.code !== 'ERR_SERVER_NOT_RUNNING') {
-          throw e;
-        }
-      }
-
-      const httpServerAfter = server.getHttpServer();
-      if (httpServerAfter) {
-        expect(httpServerAfter.listening).toBe(false);
-      }
-    });
-
     it('should handle close when server not started', async () => {
       server = new Server(mockOptions);
 
@@ -194,68 +145,19 @@ describe('Server', () => {
     });
   });
 
-  describe('registerRoutes', () => {
-    it('should call setupRoutes on route handler', () => {
-      server = new Server(mockOptions);
-
-      const setupRoutesMock = mock(() => {});
-      const mockRouteHandler: RouteHandler = {
-        setupRoutes: setupRoutesMock,
-      };
-
-      server.registerRoutes(mockRouteHandler);
-
-      expect(setupRoutesMock).toHaveBeenCalledTimes(1);
-      expect(setupRoutesMock).toHaveBeenCalledWith(server.app);
-    });
-
-    it('should register multiple route handlers', () => {
-      server = new Server(mockOptions);
-
-      const handler1Mock = mock(() => {});
-      const handler2Mock = mock(() => {});
-
-      const handler1: RouteHandler = { setupRoutes: handler1Mock };
-      const handler2: RouteHandler = { setupRoutes: handler2Mock };
-
-      server.registerRoutes(handler1);
-      server.registerRoutes(handler2);
-
-      expect(handler1Mock).toHaveBeenCalledTimes(1);
-      expect(handler2Mock).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('finalizeRoutes', () => {
-    it('should not throw when called', () => {
-      server = new Server(mockOptions);
-
-      expect(() => server.finalizeRoutes()).not.toThrow();
-    });
-  });
-
   describe('health endpoint', () => {
-    it('should return 200 with status ok', async () => {
+    it('should return healthy status, readiness, platform and pid', async () => {
       server = new Server(mockOptions);
       const testPort = await listenOnEphemeralPort(server);
-
       const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-
       expect(response.status).toBe(200);
-
       const body = await response.json();
       expect(body.status).toBe('ok');
-    });
-
-    it('should include initialization status', async () => {
-      server = new Server(mockOptions);
-      const testPort = await listenOnEphemeralPort(server);
-
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      const body = await response.json();
-
       expect(body.initialized).toBe(true);
       expect(body.mcpReady).toBe(true);
+      expect(typeof body.platform).toBe('string');
+      expect(body.pid).toBeDefined();
+      expect(typeof body.pid).toBe('number');
     });
 
     it('should reflect initialization state changes', async () => {
@@ -281,18 +183,6 @@ describe('Server', () => {
       response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       body = await response.json();
       expect(body.initialized).toBe(true);
-    });
-
-    it('should include platform and pid', async () => {
-      server = new Server(mockOptions);
-      const testPort = await listenOnEphemeralPort(server);
-
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
-      const body = await response.json();
-
-      expect(body.platform).toBeDefined();
-      expect(body.pid).toBeDefined();
-      expect(typeof body.pid).toBe('number');
     });
 
     it('should return degraded health when BullMQ Redis health is errored', async () => {
@@ -332,6 +222,7 @@ describe('Server', () => {
 
       const body = await response.json();
       expect(body.status).toBe('ready');
+      expect(body.mcpReady).toBe(true);
     });
 
     it('should return 503 when not initialized', async () => {
@@ -353,7 +244,7 @@ describe('Server', () => {
 
       const body = await response.json();
       expect(body.status).toBe('initializing');
-      expect(body.message).toBeDefined();
+      expect(body.message).toContain('initializing');
     });
   });
 

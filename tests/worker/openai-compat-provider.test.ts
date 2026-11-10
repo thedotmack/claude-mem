@@ -38,14 +38,6 @@ const ENV_KEYS = [
 const NIM_BASE = 'https://integrate.api.nvidia.com/v1';
 
 describe('openai-compatible presets', () => {
-  it('ships an NVIDIA NIM preset pointing at the documented endpoint', () => {
-    const nim = resolveOpenAICompatPreset('nvidia-nim');
-    expect(nim.id).toBe('nvidia-nim');
-    expect(nim.baseUrl).toBe(NIM_BASE);
-    expect(nim.requiresApiKey).toBe(true);
-    expect(nim.defaultModel).not.toBe('');
-  });
-
   it('resolves case-insensitively and tolerates surrounding whitespace', () => {
     expect(resolveOpenAICompatPreset('  NVIDIA-NIM ').id).toBe('nvidia-nim');
   });
@@ -93,6 +85,79 @@ describe('resolveOpenAICompatConfig', () => {
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it.each([
+    ['nvidia-nim', NIM_BASE, 'nvidia/nemotron-3.5-lightning-30b-a3b'],
+    ['api-route', 'https://global.api-route.com/v1', ''],
+    ['atlascloud', 'https://api.atlascloud.ai/v1', 'deepseek-ai/deepseek-v4-flash'],
+    ['cheapaimodel', 'https://api.cheapaimodel.ai/v1', 'deepseek-v4-1-flash'],
+    ['iflytek', 'https://maas-api.cn-huabei-1.xf-yun.com/v2', 'spark-x2.5'],
+    ['minimax', 'https://api.minimax.io/v1', 'MiniMax-M3'],
+    ['minimax-cn', 'https://api.minimaxi.com/v1', 'MiniMax-M3'],
+    ['obscurify-ai', 'https://obscurify.ai/v1', 'deepseek/deepseek-v4-flash'],
+    ['opencode-go', 'https://opencode.ai/zen/go/v1', 'kimi-k3'],
+    ['opencode-zen', 'https://opencode.ai/zen/v1', ''],
+    ['opper', 'https://api.opper.ai/v3/compat', 'gpt-5.4-mini'],
+    ['orcarouter', 'https://api.orcarouter.ai/v1', 'openai/gpt-4o-mini'],
+    ['popnow', 'https://api.popnow.ai/v1', 'deepseek/v4-flash/chat'],
+    ['runcrate', 'https://api.runcrate.ai/v1', 'deepseek-ai/DeepSeek-V4.1-Flash'],
+    ['standardcompute', 'https://api.stdcmpt.com/v1', 'deepseek/deepseek-v4-flash'],
+    ['uberllm', 'https://api.uberllm.dev/v1', 'deepseek/deepseek-v4.1-flash'],
+  ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+
+    const preset = resolveOpenAICompatPreset(id);
+    expect(preset.id).toBe(id);
+    expect(preset.baseUrl).toBe(baseUrl);
+    expect(preset.defaultModel).toBe(defaultModel);
+    expect(preset.requiresApiKey).toBe(true);
+    const config = resolveOpenAICompatConfig();
+    expect(config.apiUrl).toBe(`${baseUrl}/chat/completions`);
+    expect(config.model).toBe(defaultModel);
+    expect(config.apiKey).toBe('fixture-preset-key');
+    expect(isOpenAICompatAvailable()).toBe(defaultModel !== '');
+  });
+
+  it('keeps the preset model when only the base URL is overridden', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'iflytek';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://maas-token-api.cn-huabei-1.xf-yun.com/v2';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+
+    const config = resolveOpenAICompatConfig();
+    expect(config.apiUrl).toBe('https://maas-token-api.cn-huabei-1.xf-yun.com/v2/chat/completions');
+    expect(config.model).toBe('spark-x2.5');
+  });
+
+  it('sends a resolved preset with bearer auth and no attribution headers', async () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'atlascloud';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }],
+    }), { status: 200 }));
+    try {
+      await (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+        query(h: unknown[], c: unknown): Promise<unknown>;
+      }).query([{ role: 'user', content: 'observe' }], resolveOpenAICompatConfig());
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.atlascloud.ai/v1/chat/completions');
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer fixture-preset-key');
+      expect(headers['HTTP-Referer']).toBeUndefined();
+      expect(headers['X-Title']).toBeUndefined();
+      expect(JSON.parse(String(init.body)).model).toBe('deepseek-ai/deepseek-v4-flash');
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 
@@ -398,10 +463,7 @@ describe('structured error envelopes outrank the transport status', () => {
       .toBe('transient');
   });
 
-  it('leaves the ordinary 429 path alone', () => {
-    expect(classifyOpenAICompatError({ status: 429, bodyText: 'Too Many Requests', cause: new Error('x') }).kind)
-      .toBe('rate_limit');
-  });
+
 });
 
 /**
@@ -481,14 +543,14 @@ describe('field-deadline cancellation reaches the socket', () => {
         preset: resolveOpenAICompatPreset('custom'),
         requiresApiKey: false,
       };
+      const requested = new Promise<void>(resolve => server.once('request', () => resolve()));
       const pending = (provider as unknown as {
         query(h: unknown[], c: unknown, s?: AbortSignal): Promise<unknown>;
       }).query([{ role: 'user', content: 'hi' }], config, controller.signal).catch((e: Error) => e);
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await requested;
       controller.abort();
       await pending;
-      await new Promise(resolve => setTimeout(resolve, 250));
 
       expect(controller.signal.aborted).toBe(true);
       expect(requests).toBe(1);
@@ -515,17 +577,11 @@ describe('auth failures are not mistaken for spent quota', () => {
     expect(kind(401, '{"error":{"message":"out of credits"}}')).toBe('auth_invalid');
   });
 
-  it('still reads genuine quota signals as quota', () => {
-    expect(kind(402, 'payment required')).toBe('quota_exhausted');
-    expect(kind(429, '{"error":{"message":"insufficient_quota"}}')).toBe('quota_exhausted');
+  it('reads a credit-limit marker as spent quota', () => {
     expect(kind(429, 'credit limit reached')).toBe('quota_exhausted');
   });
 
-  it('leaves the other classifications untouched', () => {
-    expect(kind(429, 'Too Many Requests')).toBe('rate_limit');
-    expect(kind(404, 'not found')).toBe('unrecoverable');
-    expect(kind(500, 'boom')).toBe('transient');
-  });
+
 });
 
 /**

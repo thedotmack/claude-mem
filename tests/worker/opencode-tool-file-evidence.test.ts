@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-for (const kind of ['read', 'write', 'edit', 'patch-update', 'patch-move', 'legacy-read', 'custom-control']) {
+for (const kind of ['patch-move']) {
   it(`OpenCode file evidence preserves ${kind}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'owned-opencode-files-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

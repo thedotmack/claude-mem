@@ -55,6 +55,8 @@ frontier model.
 </Step>
 
 <Step title="Point claude-mem at it">
+Set the endpoint preset and key in `~/.claude-mem/settings.json`:
+
 ```json
 {
   "CLAUDE_MEM_PROVIDER": "openai-compatible",
@@ -104,6 +106,7 @@ endpoint or model you pinned yourself.
 | `cheapaimodel` | `https://api.cheapaimodel.ai/v1` | yes |
 | `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `standardcompute` | `https://api.stdcmpt.com/v1` | yes |
+| `uberllm` | `https://api.uberllm.dev/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -146,8 +149,8 @@ work.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude` | Set to `openai-compatible` to select this provider |
-| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
-| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
+| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above. Settings file or environment only |
+| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent. Settings file or environment only |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
 | `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued tool events per observer request (1–32); see [Observation batching](#observation-batching) |
 | `CLAUDE_MEM_OPENAI_COMPAT_REASONING` | `''` (= off) | `off` sends `reasoning: { enabled: false }` on every request. `on` leaves reasoning to the endpoint |
@@ -157,9 +160,12 @@ work.
 An unknown preset id degrades to `custom` rather than failing, because settings
 are read during status polling and a typo should not crash a poll.
 
-The viewer's **Settings → Advanced** panel edits the provider, preset, base URL
-and model. The API key is set in `~/.claude-mem/settings.json` or
-`~/.claude-mem/.env` only, never through the viewer.
+The viewer's **Settings → Advanced** panel edits the provider and model, and
+displays the endpoint preset and base URL read-only. Set the preset and base URL
+in `~/.claude-mem/settings.json` or environment variables with the same names.
+They determine where requests and stored API keys are sent, so the settings
+HTTP API cannot change them. An unrelated viewer save preserves those values.
+The API key is set in `~/.claude-mem/settings.json` or `~/.claude-mem/.env` only.
 
 ## Observation batching
 
@@ -443,6 +449,25 @@ endpoint, set `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` to
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "standardcompute",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Standard Compute key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
+}
+```
+
+## UberLLM
+
+[UberLLM](https://uberllm.dev) serves models from DeepSeek, Z.ai, Moonshot,
+Qwen, Google, Anthropic and others through one OpenAI-compatible key, billed
+from prepaid credit. Model ids are vendor-prefixed, such as
+`deepseek/deepseek-v4.1-flash` (the preset's default) or `z-ai/glm-5.2`, and are
+passed verbatim. The model list is public at
+`https://api.uberllm.dev/v1/models`, and keys come from the
+[UberLLM dashboard](https://uberllm.dev/dashboard/keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "uberllm",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your UberLLM key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4.1-flash"
 }
 ```
 

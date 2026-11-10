@@ -15,6 +15,7 @@ import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { MEDIA_LIMITS, MediaError } from '../../src/shared/media-contract.js';
 import { captureObservationMedia } from '../../src/services/media/capture.js';
 import { logger } from '../../src/utils/logger.js';
+import { boundObservationDispatch, LOCAL_EVENT_MAX_BYTES } from '../../src/shared/media-ingress.js';
 
 const SCRATCH = join(import.meta.dir, '../../.scratch');
 const FLAG = 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
@@ -81,6 +82,8 @@ const SHAPES: Record<string, () => unknown> = {
   // the MIME is `file.type`, with originalSize/dimensions beside the bytes.
   claude_read_base64: () => realReadImageResult(pngB64, 'image/png'),
   mcp_base64: () => JSON.stringify({ content: [{ type: 'text', text: 'Browser tab: 1' }, { type: 'image', data: pngB64, mimeType: 'image/png' }] }),
+  mcp_json_whitespace: () => ' \r\n\t' + JSON.stringify({ content: [{ type: 'image', data: pngB64, mimeType: 'image/png' }] }),
+  nested_json_whitespace: () => ({ stdout: ' \r\n\t' + JSON.stringify({ content: [{ type: 'image', data: pngB64, mimeType: 'image/png' }] }) }),
   openai_data_url: () => ({ content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,' + pngB64 } }] }),
 };
 
@@ -135,6 +138,30 @@ describe('capture at the common ingest boundary', () => {
     expect(observation.tool_input).toContain('screenshot');
   });
 
+  for (const unsupported of [false, true]) {
+    it(`captures the valid screenshot after a rejected first image (unsupported=${unsupported})`, async () => {
+      const rejectedBytes = 'A'.repeat(MEDIA_LIMITS.maxInlineEncodedBytes + (unsupported ? 0 : 4));
+      const body = boundObservationDispatch({ tool_name: 'mcp__browser__screenshot', tool_input: {}, tool_response: { content: [
+        { type: 'image', data: rejectedBytes, mimeType: unsupported ? 'image/gif' : 'image/png' },
+        { type: 'text', text: 'The second image is the useful screenshot.' },
+        { type: 'image', data: pngB64, mimeType: 'image/png' },
+      ] } });
+      const wire = JSON.stringify(body);
+      expect(Buffer.byteLength(wire)).toBeLessThan(LOCAL_EVENT_MAX_BYTES);
+      expect(wire).not.toContain(rejectedBytes);
+      expect(wire).toContain(pngB64);
+      const observation = await ingest(body.tool_response);
+      expect(observation.mediaRefs).toHaveLength(1);
+      const [ref] = observation.mediaRefs;
+      expect((await sharp(await media.readVariant(ref.id, 'viewer')).metadata()).format).toBe('webp');
+      expect(observation.tool_response).toContain('The second image is the useful screenshot.');
+      const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      noBytes(row.tool_response);
+      expect(row.tool_response).not.toContain(rejectedBytes);
+      expect(row.tool_response).toContain(ref.id);
+    });
+  }
+
   it('disabled capture (the default) stores nothing and leaves an honest disabled descriptor', async () => {
     process.env[FLAG] = 'false';
     const observation = await ingest(anthropic());
@@ -143,6 +170,16 @@ describe('capture at the common ingest boundary', () => {
     noBytes(observation.tool_response);
     expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
     expect(existsSync(media.root)).toBe(false);
+  });
+
+  it('disabled capture elides image bytes inside whitespace-prefixed JSON strings', async () => {
+    process.env[FLAG] = 'false';
+    const observation = await ingest(SHAPES.nested_json_whitespace());
+    noBytes(observation.tool_response);
+    expect(observation.mediaFailures).toEqual([{ version: 1, state: 'disabled', code: 'converter_disabled', inspection: 'uninspected', label: 'event1_image1' }]);
+    const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+    noBytes(row.tool_response);
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
   });
 
   it('an image inside a <private> region spanning content blocks is never captured', async () => {
@@ -202,6 +239,42 @@ describe('capture at the common ingest boundary', () => {
 
 describe('trusted Read file locators', () => {
   const readEvent = (filePath: string, toolName = 'Read') => ingest({ type: 'image', file: { path: filePath } }, { toolName, toolInput: { file_path: filePath } });
+
+  for (const spelling of ['absolute-input', 'absolute-result', 'normalized-relative']) {
+    it(`keeps an unchanged Read redelivery with equivalent path spellings (${spelling})`, async () => {
+      const source = join(dir, 'project', 'same.png');
+      writeFileSync(source, png);
+      const inputPath = spelling === 'absolute-input' ? source : 'same.png';
+      const resultPath = spelling === 'absolute-result' ? source
+        : spelling === 'normalized-relative' ? './same.png' : 'same.png';
+      const deliver = () => ingest({ type: 'image', file: { path: resultPath } },
+        { toolName: 'Read', toolInput: { file_path: inputPath } });
+      const first = await deliver();
+      expect(first.mediaRefs).toHaveLength(1);
+
+      const repeated = await deliver();
+      expect(repeated.mediaRefs).toEqual(first.mediaRefs);
+      expect(repeated.mediaFailures).toBeUndefined();
+      expect(JSON.parse(repeated.tool_response).media_status).toMatchObject({
+        state: 'retained', id: first.mediaRefs[0].id,
+      });
+      expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(1);
+      const stored = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      expect(stored.tool_response).toContain(first.mediaRefs[0].id);
+      expect(stored.tool_response).not.toContain('unsupported_source');
+    });
+  }
+
+  it('rejects a Read redelivery that names a different file with identical bytes', async () => {
+    writeFileSync(join(dir, 'project', 'first.png'), png);
+    writeFileSync(join(dir, 'project', 'other.png'), png);
+    const first = (await readEvent('first.png')).mediaRefs[0];
+    const repeated = await readEvent('other.png');
+    expect(repeated.mediaRefs).toBeUndefined();
+    expect(repeated.mediaFailures[0]).toMatchObject({ code: 'unsupported_source' });
+    expect(media.getMetadata(first.id).state).toBe('ready');
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(1);
+  });
 
   it('captures a regular project file, and the canonical survives source removal with a rebuildable derivative', async () => {
     const source = join(dir, 'project', 'shot.png');

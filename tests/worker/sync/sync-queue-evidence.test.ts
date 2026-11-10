@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { readSyncQueueInventory, SyncQueueEvidenceReader, type SyncQueueFlags } from '../../../src/services/sync/SyncQueueEvidence.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -154,24 +155,41 @@ it('retains its last observation as stale when a later inventory cannot be read'
     stale: true, refreshing: false });
 });
 
-it('loads the inventory role through the packaged CJS worker entrypoint', async () => {
+it('loads queue, recovery, and history roles through one packaged CJS worker entrypoint', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'sync-queue-bundle-'));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const databasePath = join(directory, 'queue.db');
-  fixture(databasePath);
+  const db = new Database(databasePath);
+  new SessionStore(db);
+  db.close();
   const banner = [
     'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
     'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
   ].join('\n');
-  for (const [entry, output] of [
-    ['src/services/sync/SyncQueueEvidence.ts', 'queue-client.cjs'],
-    ['src/services/work-view/work-view-read-worker.ts', 'work-view-read-worker.cjs'],
-  ]) {
-    await build({ entryPoints: [entry], outfile: join(directory, output), bundle: true, platform: 'node', target: 'node18', format: 'cjs',
-      external: ['bun:sqlite'], define: { 'import.meta.url': '__IMPORT_META_URL__' }, banner: { js: banner }, logLevel: 'silent' });
+  const options = { bundle: true, platform: 'node' as const, target: 'node18', format: 'cjs' as const,
+    external: ['bun:sqlite'], define: { 'import.meta.url': '__IMPORT_META_URL__' }, banner: { js: banner }, logLevel: 'silent' as const };
+  await build({ ...options, entryPoints: ['src/services/work-view/work-view-read-worker.ts'],
+    outfile: join(directory, 'work-view-read-worker.cjs') });
+  await build({ ...options, outfile: join(directory, 'readers.cjs'), stdin: { resolveDir: process.cwd(), contents: [
+    'export { SyncQueueEvidenceReader } from "./src/services/sync/SyncQueueEvidence.ts";',
+    'export { SyncRecoveryReader } from "./src/services/sync/SyncRecoveryReader.ts";',
+    'export { SyncHistoryScopeReader } from "./src/services/sync/SyncHistoryScopeReader.ts";',
+  ].join('\n') } });
+  const bundled = await import(pathToFileURL(join(directory, 'readers.cjs')).href);
+  const readers = [
+    { create: () => new bundled.SyncQueueEvidenceReader(databasePath), read: (reader: any) => reader.read(enabled),
+      expected: { mutations: { pending: 0 } } },
+    { create: () => new bundled.SyncRecoveryReader(databasePath, enabled.deviceId, () => enabled),
+      read: async (reader: any) => ({ inventory: await reader.inventory(), preview: await reader.preview({
+        project: 'fixture', from: '2026-01-01', to: '2027-01-01', kinds: ['observation'],
+      }) }), expected: { inventory: { excludedCurrent: { observation: 0 } }, preview: { count: 0, ownership: 'native' } } },
+    { create: () => new bundled.SyncHistoryScopeReader(databasePath), read: (reader: any) => reader.read(), expected: 0 },
+  ];
+  for (const { create, read, expected } of readers) {
+    const reader = create();
+    cleanup.push(() => reader.close());
+    const result = await read(reader);
+    if (typeof expected === 'number') expect(result).toBe(expected);
+    else expect(result).toMatchObject(expected);
   }
-  const bundled = await import(pathToFileURL(join(directory, 'queue-client.cjs')).href);
-  const reader = new bundled.SyncQueueEvidenceReader(databasePath) as SyncQueueEvidenceReader;
-  cleanup.push(() => reader.close());
-  expect((await reader.read(enabled))?.mutations.pending).toBe(0);
 });

@@ -57,8 +57,8 @@ const quickWatcher = (config: ConstructorParameters<typeof TranscriptWatcher>[0]
 };
 const afterGrace = () => new Promise(resolve => setTimeout(resolve, 150));
 
-for (const compressed of [false, true]) it(`retries a result-only ${compressed ? 'zstd' : 'JSONL'} record after watcher restart`, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cm-retry-restart-'));
+for (const compressed of [false, true]) it(`skips a refused result-only ${compressed ? 'zstd' : 'JSONL'} record across restart`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-skipped-restart-'));
   const file = join(root, compressed ? 'session.jsonl.zstd' : 'session.jsonl');
   const statePath = join(root, 'state.json');
   const use = line({ session: 's', type: 'use', id: 't', name: 'Read', input: { path: 'a' } });
@@ -73,18 +73,22 @@ for (const compressed of [false, true]) it(`retries a result-only ${compressed ?
     await (first as any).tailers.get(file).readTask;
     first.stop();
     const saved = JSON.parse(readFileSync(statePath, 'utf8'));
-    expect(saved.offsets[file]).toBe(compressed ? 0 : Buffer.byteLength(use));
-    if (compressed) expect(saved.frameLines[file]).toBe(1);
-    expect(saved.pendingTools[file]['retry:s'].t).toEqual({ toolName: 'Read', toolInput: { path: 'a' } });
+    expect(saved.offsets[file]).toBe(statSync(file).size);
+    expect(saved.frameLines?.[file]).toBeUndefined();
+    expect(saved.pendingTools[file]).toEqual({});
     accepting = true;
     second = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (second as any).addTailer(file, watch, schema);
     await (second as any).tailers.get(file).readTask;
+    expect(delivered).toHaveLength(0);
+    const fresh = Buffer.from(line({ session: 's', type: 'use', id: 'fresh', name: 'Read', input: { path: 'b' } })
+      + line({ session: 's', type: 'result', id: 'fresh', output: 'fresh contents' }));
+    appendFileSync(file, compressed ? zstdCompressSync(fresh) : fresh);
+    const tailer = (second as any).tailers.get(file);
+    tailer.poke();
+    await tailer.readTask;
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ toolName: 'Read', toolInput: { path: 'a' }, toolResponse: 'contents', toolUseId: 't' });
-    const done = JSON.parse(readFileSync(statePath, 'utf8'));
-    expect(done.offsets[file]).toBe(statSync(file).size);
-    expect(done.pendingTools[file]).toEqual({});
+    expect(delivered[0]).toMatchObject({ toolName: 'Read', toolUseId: 'fresh', toolInput: { path: 'b' }, toolResponse: 'fresh contents' });
   } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 

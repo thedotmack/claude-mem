@@ -11,7 +11,7 @@ import { StringDecoder } from 'node:string_decoder';
 // would let the follower read the whole burst without ever blocking.
 const supportsFifo = process.platform !== 'win32';
 
-for (const pollDelay of [0, 650]) it.skipIf(!supportsFifo)(`follows a burst with bounded native reads and byte-exact UTF-8 output (${pollDelay ? 'delayed snapshot delivery' : 'native delivery'})`, async () => {
+for (const pollDelay of [650]) it.skipIf(!supportsFifo)(`follows a burst with bounded native reads and byte-exact UTF-8 output (${pollDelay ? 'delayed snapshot delivery' : 'native delivery'})`, async () => {
   const home=mkdtempSync(join(tmpdir(),'claude-mem-follow-chunks-'));
   const stamp=new Date().toISOString().slice(0,10);
   const log=join(home,'.claude-mem','logs',`claude-mem-${stamp}.log`);

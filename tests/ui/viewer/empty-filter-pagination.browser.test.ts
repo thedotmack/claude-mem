@@ -52,8 +52,8 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
             const beforeDelete = [...document.querySelectorAll('.card-title')].map(x => x.textContent);
             document.querySelector('[title="Delete observation"]').click();
             const until = Date.now() + 1800;
-            while (document.body.textContent.includes('OWNED_LOADED_BUGFIX') || !document.body.textContent.includes('OWNED_OLDER_BUGFIX')) {
-              if (Date.now() > until) break;
+            while (document.body.textContent.includes('OWNED_LOADED_BUGFIX') || (${mode === 'more'} && !document.body.textContent.includes('OWNED_OLDER_BUGFIX'))) {
+              if (Date.now() > until) throw new Error('Deletion did not settle');
               await new Promise(resolve => setTimeout(resolve, 10));
             }
             await settle();

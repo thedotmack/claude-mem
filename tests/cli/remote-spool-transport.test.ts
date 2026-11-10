@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import express from 'express';
 import type { Server } from 'http';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
@@ -8,6 +8,9 @@ import { pathToFileURL } from 'url';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
 import { HookSpool, type HookSpoolConsumedMarkers } from '../../src/shared/hook-spool.js';
 import { REMOTE_SPOOL_TIMEOUT_MS, REMOTE_SPOOL_REQUEST_TIMEOUT_MS } from '../../src/shared/hook-spool-remote.js';
+import * as worker from '../../src/shared/worker-utils.js';
+import * as settings from '../../src/shared/hook-settings.js';
+import { uploadRemoteHookSpool } from '../../src/cli/spool-hook-event.js';
 
 const root = join(import.meta.dir, '..', '..');
 const moduleUrl = (path: string) => pathToFileURL(join(root, path)).href;
@@ -15,7 +18,7 @@ let directory: string;
 let spool: HookSpool;
 let server: Server;
 let port: number;
-let mode: 'normal' | 'legacy' | 'wrong-ack' | 'stalled-body' | 'slow-accept' | 'slow-reject';
+let mode: 'normal' | 'legacy' | 'wrong-ack' | 'slow-accept' | 'slow-reject';
 let requestPaths: string[];
 let livePayloads: unknown[];
 const markers: HookSpoolConsumedMarkers = {
@@ -31,11 +34,6 @@ async function listen(): Promise<void> {
     if (mode === 'legacy') { res.status(202).json({ status: 'draining' }); return; }
     if (mode === 'wrong-ack') {
       res.status(202).json({ protocolVersion: 1, status: 'accepted', receipt: 'another-event' }); return;
-    }
-    if (mode === 'stalled-body') {
-      res.setHeader('Content-Type', 'application/json');
-      res.write('{"protocolVersion":1');
-      return;
     }
     if (mode === 'slow-accept' || mode === 'slow-reject') {
       const reject = mode === 'slow-reject';
@@ -226,13 +224,31 @@ describe('remote hook spool forwarding', () => {
     expect(readFileSync(join(rejected, readdirSync(rejected)[0]), 'utf8')).toContain('rejected capture');
   });
 
-  it('bounds an upload whose response body never completes', async () => {
-    mode = 'stalled-body';
-    const result = await child('metadata');
-    expect(result.entries).toHaveLength(1);
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(REMOTE_SPOOL_REQUEST_TIMEOUT_MS - 100);
-    expect(result.elapsedMs).toBeLessThan(REMOTE_SPOOL_REQUEST_TIMEOUT_MS + 700);
-  }, REMOTE_SPOOL_REQUEST_TIMEOUT_MS + 3_000);
+  it('passes the upload and idle timeouts to the worker transport', async () => {
+    spool.enqueue('advisor_calls', { contentSessionId: 'timeout-session', platformSource: 'codex',
+      calls: [{ toolUseId: 'timeout-tool', advice: 'metadata', occurredAtEpoch: Date.now() }] });
+    const entry = spool.entries()[0];
+    const config = spyOn(settings, 'loadFromFileOnce').mockReturnValue({
+      CLAUDE_MEM_WORKER_INGEST_TOKEN: 'test-ingest-token', CLAUDE_MEM_WORKER_URL: '',
+    } as any);
+    const post = spyOn(worker, 'workerHttpRequest').mockRejectedValue(new Error('fixture timeout'));
+    const drain = spyOn(HookSpool.prototype, 'drain').mockImplementation(async accept => {
+      expect(await accept(entry, () => {})).toBe(false);
+      return { drained: 0, retained: 1, quarantined: 0, expired: 0 };
+    });
+    try {
+      await uploadRemoteHookSpool();
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(post.mock.calls[0]).toEqual(['/api/spool/ingest', expect.objectContaining({
+        timeoutMs: REMOTE_SPOOL_REQUEST_TIMEOUT_MS,
+        idleTimeoutMs: REMOTE_SPOOL_REQUEST_TIMEOUT_MS,
+      })]);
+    } finally {
+      drain.mockRestore();
+      post.mockRestore();
+      config.mockRestore();
+    }
+  });
 
   it('accepts an event whose acknowledgement arrives after the scheduling budget', async () => {
     mode = 'slow-accept';

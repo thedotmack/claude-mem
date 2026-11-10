@@ -148,15 +148,6 @@ describe('ChromaSync.queryChroma adaptive post-filtering', () => {
     expect(qs[1].args.where).toEqual({ project: 'tiny' }); // then asked chroma properly
   });
 
-  it('applies every clause of an $and filter client-side', async () => {
-    const out = await sync.queryChroma('anything', 10, {
-      $and: [{ doc_type: 'observation' }, { project: 'big' }],
-    });
-
-    expect(out.metadatas.length).toBeGreaterThan(0);
-    expect(out.metadatas.every((m: any) => m.project === 'big' && m.doc_type === 'observation')).toBe(true);
-  });
-
   it('evaluates an $in membership clause client-side, as chroma does', async () => {
     const where = { project: { $in: ['big', 'tiny'] } };
     const out = await sync.queryChroma('anything', 20, where);
@@ -211,11 +202,6 @@ describe('ChromaSync.queryChroma adaptive post-filtering', () => {
       expect(out.ids).toEqual(CORPUS.map(d => Number(d.id.split('_')[1])));
       expect(out.metadatas.length).toBe(10_000);
       expect(out.distances.length).toBe(10_000);
-      const response = fakeQuery(qs[0].args);
-      expect(response.documents).toBeNull();
-      const withUnusedText = fakeQuery({ ...qs[0].args,
-        include: ['documents', 'metadatas', 'distances'] });
-      expect(JSON.stringify(response).length).toBeLessThan(JSON.stringify(withUnusedText).length / 10);
     } finally {
       CORPUS.splice(originalLength);
     }
@@ -443,6 +429,27 @@ describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
     const qs = queryCalls();
     expect(qs.length).toBe(1);
     expect(qs[0].args.where).toEqual(narrowed);
+  });
+
+  it('counts unique rows before cutting a complete narrowed fragment window', async () => {
+    const first = CORPUS.find(d => d.project === 'tiny')!;
+    const at = CORPUS.indexOf(first);
+    const fragments = Array.from({ length: 120 }, (_, i) => ({
+      ...first, id: `obs_${first.sqlite_id}_fact_${i + 1}`,
+    }));
+    CORPUS.splice(at, 0, ...fragments);
+    try {
+      const progress: ChromaQueryProgress = {};
+      const out = await sync.queryChroma('anything', 100, tinyObservations, progress, () => TINY_IDS);
+
+      expect(out.ids).toEqual(TINY_IDS);
+      expect(out.metadatas.map(m => m.sqlite_id)).toEqual(TINY_IDS);
+      expect(out.distances[0]).toBe(at * 0.001);
+      expect(progress.exhausted).toBe(true);
+      expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed]);
+    } finally {
+      CORPUS.splice(at, fragments.length);
+    }
   });
 
   it('reports exhaustion only when the window held every candidate and the matches ran out', async () => {

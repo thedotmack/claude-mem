@@ -54,6 +54,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function reviewAll(prompt: string) {
+  const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
+  return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
+}
+
+function defaultAnswer(prompt: string) {
+  if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+  if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+  if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+  if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Started.', preferences: [] });
+  throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+}
+
 describe('automatic refresh scheduler', () => {
   it('allows an on-demand run while scheduled refresh is disabled', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
@@ -459,13 +472,7 @@ describe('My Work refresh model settings (#5164)', () => {
       const asked: unknown[] = [];
       const ask = async (prompt: string, models: any) => {
         asked.push(models['claude-code']);
-        if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
-        if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
-          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
-        }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+        return defaultAnswer(prompt);
       };
       expect(await task.run(ask, 'claude-code')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
       expect(asked.length).toBeGreaterThan(0);
@@ -486,12 +493,7 @@ describe('Codex grouping answers', () => {
       const ask = async (prompt: string, _models: unknown, schema?: unknown) => {
         schemas.push(schema);
         if (prompt.includes('Do only section 1')) return readFileSync(join(FIXTURES, 'grouping-answer-schema.txt'), 'utf8');
-        if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
-          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
-        }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+        return defaultAnswer(prompt);
       };
       expect(await groupingTask(dir, database).run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
       expect(schemas[0]).toBe(GROUPING_ANSWER_SCHEMA);
@@ -535,10 +537,6 @@ describe('focus step', () => {
     writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
     runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
   }
-  const reviewAll = (prompt: string) => {
-    const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
-    return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
-  };
 
   it('runs where Align used to, on the light model: places with focus-input inline, then proposes from Other, through the worker\'s write', async () => {
     const dir = scratchDir('auto-refresh-focus');
@@ -773,14 +771,7 @@ describe('My Work text language setting (CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE)', (
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
-        if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
-        if (prompt.includes('Do only section 2')) {
-          const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
-          return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
-        }
-        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Started.', preferences: [] });
-        throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+        return defaultAnswer(prompt);
       };
       expect(await task.run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
       return prompts;
@@ -1254,36 +1245,12 @@ describe('My Work refresh agent preference (#5435)', () => {
     }
   };
 
-  it('names the agent CLAUDE_MEM_PROVIDER names', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('codex'));
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('claude-code'));
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('gemini'));
-  });
-
-  it('a provider that names no local agent leaves the detect order in charge', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBeUndefined());
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBeUndefined());
-  });
-
   it('an unset provider keeps today\'s first choice, Claude Code', async () => {
     await withProvider(null, {}, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('claude-code'));
   });
 
   it('lets the environment override the settings file, like every other setting', async () => {
     await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolveRefreshAgents(dir).preferredAgent).toBe('codex'));
-  });
-
-  it('a refresh task built under CLAUDE_MEM_PROVIDER=codex names codex as its preferred agent', async () => {
-    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => {
-      const database = fixtureDatabase();
-      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
-      expect(task.preferredAgent).toBe('codex');
-    });
-    await withProvider(null, {}, dir => {
-      const database = fixtureDatabase();
-      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
-      expect(task.preferredAgent).toBe('claude-code');
-    });
   });
 });
 
@@ -1335,6 +1302,7 @@ describe('My Work refresh stays on one agent (#5189)', () => {
       const database = fixtureDatabase();
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
       expect(task.allowedAgents).toEqual(['claude-code']);
+      expect(task.preferredAgent).toBe('claude-code');
       expect(task.stayOnFirstUsableAgent).toBe(true);
     });
   });

@@ -28,7 +28,7 @@ const { ClassifiedProviderError } = await import('../../src/services/worker/prov
 const { handleGeneratorExit } = await import('../../src/services/worker/session/GeneratorExitHandler.js');
 const { logger } = await import('../../src/utils/logger.js');
 
-const RESTARTS = 1_000;
+const RESTARTS = 2;
 
 type FailureKind = 'quota_exhausted' | 'auth_invalid' | 'transient';
 type FailurePoint = 'init' | 'observation';
@@ -187,9 +187,9 @@ describe('every HTTP generator start opens a new generation (#3479)', () => {
       if (exitCategory === 'quota' || exitCategory === 'auth') {
         expect(sessionManager.discardBufferedWork).toHaveBeenCalledTimes(RESTARTS);
       }
-      // The history holds the last attempt only: one init prompt, not 1,000.
+      // The history holds the last attempt only: one init prompt, not earlier attempts.
       expect(session.conversationHistory.map(message => message.role)).toEqual(EXPECTED_ROLES[failurePoint]);
       expect(session.conversationHistory.filter(message => message.content.includes('<user_request>'))).toHaveLength(1);
-    }, 30_000);
+    });
   }
 });

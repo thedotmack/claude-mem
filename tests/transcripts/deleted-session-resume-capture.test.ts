@@ -1,5 +1,5 @@
 // A session the user deleted keeps out every transcript line from before the
-// deletion, including the ones a restarted worker re-reads from a held
+// deletion, including the ones a restarted worker re-reads from a legacy
 // checkpoint, while a resumed conversation's new lines are captured again
 // (follow-up to #5321). Transcript path: the real watcher and processor, the
 // real prompt anchor (recordSessionPrompt) and the real worker routes.
@@ -8,7 +8,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
-import type { TranscriptCheckpointGate, TranscriptSchema } from '../../src/services/transcripts/types.js';
+import type { TranscriptSchema } from '../../src/services/transcripts/types.js';
 import { deleteSessionLikeTheViewer, startCaptureWorker, type CaptureWorker } from '../helpers/deleted-session-capture-fixture.js';
 
 const root = mkdtempSync(join(tmpdir(), 'cm-deleted-transcript-'));
@@ -27,10 +27,6 @@ const turn = (prompt: string, toolUseId: string, at: number | null) => {
     + line({ ...timestamp, type: 'use', id: toolUseId, name: 'Read', input: { path: toolUseId } })
     + line({ ...timestamp, type: 'result', id: toolUseId, output: `contents of ${toolUseId}` });
 };
-// The checkpoint stays held: nothing the watcher buffered counts as stored,
-// so every restart re-reads the file from the start.
-const heldGate: TranscriptCheckpointGate = { sequence: () => 0, drainedThrough: () => false };
-
 let worker: CaptureWorker;
 let dir: string;
 beforeEach(async () => {
@@ -41,7 +37,7 @@ afterEach(async () => { await worker.close(); });
 
 async function startWatcher(path: string, statePath: string) {
   const watch = { name: 'resume', path, workspace: dir, schema };
-  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', heldGate);
+  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
   await (watcher as any).addTailer(path, watch, schema);
   await (watcher as any).tailers.get(path).readTask;
   return watcher;
@@ -64,7 +60,8 @@ it('a restart re-reading lines from before the deletion captures none of them, a
     deleteSessionLikeTheViewer(worker.store, platformSource, SESSION);
     first.stop();
 
-    // A fresh worker re-reads the held lines: none of them comes back.
+    // Older versions held checkpoints until completion. Preserve their privacy gate.
+    writeFileSync(statePath, JSON.stringify({ offsets: { [path]: 0 } }));
     second = await startWatcher(path, statePath);
     expect(worker.sessionRows(SESSION)).toHaveLength(0);
     expect(worker.promptTexts(SESSION)).toEqual([]);
@@ -84,7 +81,8 @@ it('a restart re-reading lines from before the deletion captures none of them, a
     expect(queuedFor('toolu_untimed')).toBe(0);
     second.stop();
 
-    // Another restart after the session exists again: old lines still stay out.
+    // Another legacy checkpoint after the session exists again: old lines stay out.
+    writeFileSync(statePath, JSON.stringify({ offsets: { [path]: 0 } }));
     third = await startWatcher(path, statePath);
     expect(worker.promptTexts(SESSION)).not.toContain('old prompt');
     expect(worker.toolUseIds(SESSION)).toEqual(['toolu_new']);

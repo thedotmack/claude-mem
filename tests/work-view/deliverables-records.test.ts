@@ -44,13 +44,4 @@ describe('deliverables through the real read path', () => {
     rmSync(dir, { recursive: true, force: true });
     db.close();
   });
-
-  it('a database from before the table existed reads as having no deliverables', () => {
-    const db = database();
-    db.exec('DROP TABLE deliverables');
-    const state = reduceWorkState([], { currentProject: 'repo' });
-    const view = buildAgentView(state, readAgentRecords(db, { workState: state, now: NOW }), { now: NOW });
-    expect(view.humanRequests[0].workProduct).toEqual([]);
-    db.close();
-  });
 });

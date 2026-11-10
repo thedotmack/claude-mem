@@ -19,12 +19,12 @@ import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/me
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
-import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
 import { committedMediaEventResult } from '../../media/linkage.js';
 import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
 import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
 import { isInsideDeliverablesDir, resolveDeliverablesDir } from '../../../shared/deliverables.js';
+import { isPrivatePrompt } from '../../../shared/deliverables-transcript.js';
 import { statSync } from 'fs';
 import { isExpiredObserverEvent } from '../../../shared/observer-work-policy.js';
 
@@ -50,6 +50,12 @@ const KIMI_BOOKKEEPING_TOOLS = new Set([
   'CronCreate',
   'CronList',
   'CronDelete',
+]);
+
+// Hermes keeps native names in its source evidence. Match their capabilities
+// against the common capture filters without rewriting that evidence.
+const HERMES_FILTER_TOOL_NAMES = new Map([
+  ['terminal', 'Bash'], ['read_file', 'Read'], ['write_file', 'Write'], ['patch', 'Edit'],
 ]);
 
 // Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
@@ -108,26 +114,6 @@ export function requireIngestContext(): IngestContext {
   }
   return ctx;
 }
-
-/**
- * The in-process transcript watcher's view of the observation buffer. The
- * buffer lives in RAM, so a watcher checkpoint may only move past lines whose
- * buffered work is stored; otherwise a restart resumes past work it lost.
- */
-export const transcriptCheckpointGate: TranscriptCheckpointGate = {
-  sequence: () => requireIngestContext().sessionManager.getLastBufferedMessageId(),
-  drainedThrough: (sessions, sequence) => {
-    const { sessionManager, dbManager } = requireIngestContext();
-    const store = dbManager.getSessionStore();
-    for (const [contentSessionId, platformSource] of sessions) {
-      const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, normalizePlatformSource(platformSource));
-      if (sessionDbId === null) continue;
-      const oldest = sessionManager.getOldestPendingMessageId(sessionDbId);
-      if (oldest !== null && oldest <= sequence) return false;
-    }
-    return true;
-  },
-};
 
 /**
  * Durable callers (the hook spool drain) pass `markHandedOff`: ingest calls it
@@ -244,7 +230,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
 
-  if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
+  const filterToolName = platformSource === 'hermes'
+    ? HERMES_FILTER_TOOL_NAMES.get(payload.toolName) ?? payload.toolName : payload.toolName;
+  if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)
+    || isToolSkipped(filterToolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
         skillNameFromToolInput(payload.toolName, payload.toolInput),
@@ -263,7 +252,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }
 
   const skipBashPatterns = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS.trim();
-  const command = skipBashPatterns ? shellCommandOf(payload.toolName, payload.toolInput) : '';
+  const command = skipBashPatterns ? shellCommandOf(filterToolName, payload.toolInput) : '';
   if (command) {
     // A bad user regex never throws here — getBashSkipPattern returns null, so the
     // command is captured as if no pattern was set.
@@ -283,9 +272,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
-  if (fileOperationTools.has(payload.toolName) && payload.toolInput && typeof payload.toolInput === 'object') {
-    const input = payload.toolInput as { file_path?: string; notebook_path?: string };
-    const filePath = input.file_path || input.notebook_path;
+  if (fileOperationTools.has(filterToolName) && payload.toolInput && typeof payload.toolInput === 'object') {
+    const input = payload.toolInput as { file_path?: string; notebook_path?: string; path?: unknown };
+    const filePath = input.file_path || input.notebook_path
+      || (platformSource === 'hermes' && typeof input.path === 'string' ? input.path : '');
     if (filePath && filePath.includes('session-memory')) {
       return { ok: true, status: 'skipped', reason: 'session_memory_meta' };
     }
@@ -783,9 +773,10 @@ export function ingestAdvisorCalls(
   let privateOnly = 0;
   for (const call of liveCalls) {
     // <private> content never reaches the database, the same rule as
-    // prompts and tool payloads. Advice that was entirely private is dropped.
+    // prompts and tool payloads. A private originating prompt suppresses the
+    // entire call, even when the resulting advice contains no tags.
     const advice = stripMemoryTags(call.advice).trim();
-    if (!advice) {
+    if (!advice || isPrivatePrompt(call.lastUserMessage ?? '')) {
       privateOnly++;
       continue;
     }

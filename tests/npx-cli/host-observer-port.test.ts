@@ -42,6 +42,10 @@ describe('host observer port resolution', () => {
     expect(resolveHostObserverPort(37777, {} as NodeJS.ProcessEnv, probe)).toBe('37778');
   });
 
+  it('uses the first live observer when both candidate ports respond', () => {
+    expect(resolveHostObserverPort('37742', {} as NodeJS.ProcessEnv, () => 'observer')).toBe('37777');
+  });
+
   it('fails install resolution when nothing OpenAI-compatible is listening', () => {
     expect(() => resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, () => 'free')).toThrow(
       /No OpenAI-compatible host observer is listening/,

@@ -234,65 +234,41 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     );
   });
 
-  it('clears the grace timer and handles a rejected delivery during immediate teardown at timestamp zero', async () => {
-    const manager = makeManager();
-    const session = manager.initializeSession(7);
-    await manager.requestSessionWrapup(7);
-    session.telegramWrapupRequestedAt = 0;
-    const error = new Error('immediate teardown delivery failed');
-    deliverSessionWrapup.mockImplementationOnce(async () => {
-      throw error;
-    });
+  it.each([
+    ['removeSessionImmediate', 7, 'immediate teardown delivery failed'],
+    ['deleteSession', 8, 'awaited teardown delivery failed'],
+  ] as const)(
+    'clears the grace timer and handles a rejected delivery during %s at timestamp zero',
+    async (teardown, sessionId, errorMessage) => {
+      const manager = makeManager();
+      const session = manager.initializeSession(sessionId);
+      await manager.requestSessionWrapup(sessionId);
+      session.telegramWrapupRequestedAt = 0;
+      const error = new Error(errorMessage);
+      deliverSessionWrapup.mockImplementationOnce(async () => {
+        throw error;
+      });
 
-    expect(() => manager.removeSessionImmediate(7)).not.toThrow();
-    await flushBackgroundWork();
+      await expect(Promise.resolve().then(() => manager[teardown](sessionId))).resolves.toBeUndefined();
+      await flushBackgroundWork();
 
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(timerHandle);
-    expect(session.telegramWrapupTimer).toBeNull();
-    expect(deliverSessionWrapup).toHaveBeenCalledTimes(1);
-    expect(deliverSessionWrapup).toHaveBeenCalledWith({
-      sessionStore: expect.any(Object),
-      sessionDbId: 7,
-      formatSummary,
-    });
-    expect(manager.getSession(7)).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledWith(
-      'TELEGRAM',
-      'Failed to deliver Telegram session wrap-up from SessionManager',
-      { sessionId: 7 },
-      error,
-    );
-  });
-
-  it('clears the grace timer and handles a rejected delivery during awaited teardown at timestamp zero', async () => {
-    const manager = makeManager();
-    const session = manager.initializeSession(8);
-    await manager.requestSessionWrapup(8);
-    session.telegramWrapupRequestedAt = 0;
-    const error = new Error('awaited teardown delivery failed');
-    deliverSessionWrapup.mockImplementationOnce(async () => {
-      throw error;
-    });
-
-    await expect(manager.deleteSession(8)).resolves.toBeUndefined();
-    await flushBackgroundWork();
-
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(timerHandle);
-    expect(session.telegramWrapupTimer).toBeNull();
-    expect(deliverSessionWrapup).toHaveBeenCalledTimes(1);
-    expect(deliverSessionWrapup).toHaveBeenCalledWith({
-      sessionStore: expect.any(Object),
-      sessionDbId: 8,
-      formatSummary,
-    });
-    expect(manager.getSession(8)).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledWith(
-      'TELEGRAM',
-      'Failed to deliver Telegram session wrap-up from SessionManager',
-      { sessionId: 8 },
-      error,
-    );
-  });
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timerHandle);
+      expect(session.telegramWrapupTimer).toBeNull();
+      expect(deliverSessionWrapup).toHaveBeenCalledTimes(1);
+      expect(deliverSessionWrapup).toHaveBeenCalledWith({
+        sessionStore: expect.any(Object),
+        sessionDbId: sessionId,
+        formatSummary,
+      });
+      expect(manager.getSession(sessionId)).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        'TELEGRAM',
+        'Failed to deliver Telegram session wrap-up from SessionManager',
+        { sessionId },
+        error,
+      );
+    },
+  );
 
   it('takes and clears a SessionEnd request that arrives while awaited teardown is in progress', async () => {
     const manager = makeManager();

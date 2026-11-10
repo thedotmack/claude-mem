@@ -30,12 +30,18 @@ const keys = [
   'PI_CODING_AGENT_DIR', 'DSH_HOME', 'PATH', 'CLAUDE_MEM_SERVER_DATABASE_URL',
   'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_OPENROUTER_API_KEYS',
   'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_GEMINI_API_KEY', 'CLAUDE_MEM_GEMINI_API_KEYS',
+  'DO_NOT_TRACK',
 ];
 const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 const priorTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
 const data = join(fixture, 'data');
 const bin = join(fixture, 'bin');
+const packageRoot = join(fixture, 'package');
+mkdirSync(join(packageRoot, 'plugin', '.claude-plugin'), { recursive: true });
+writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ version: '0.0.0-test' }));
+writeFileSync(join(packageRoot, 'plugin', '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.0.0-test' }));
+for (const name of ['LICENSE', 'NOTICE']) writeFileSync(join(packageRoot, name), name);
 mkdirSync(data, { recursive: true });
 mkdirSync(bin, { recursive: true });
 process.env.CLAUDE_MEM_DATA_DIR = data;
@@ -47,6 +53,7 @@ process.env.PATH = bin + (process.platform === 'win32' ? ';' : ':')
   + (process.platform === 'win32' ? previous.PATH : '/usr/bin:/bin');
 process.env.CLAUDE_MEM_SERVER_DATABASE_URL = 'postgresql://owned-test.invalid/never-contacted';
 for (const key of keys.slice(7)) delete process.env[key];
+process.env.DO_NOT_TRACK = '1';
 const settingsPath = join(data, 'settings.json');
 const personalSettings = {
   CLAUDE_MEM_PROVIDER: 'openrouter',
@@ -71,15 +78,32 @@ let taskBoundaryCalls = 0;
 let runtimeTaskCalls = 0;
 let integrationCalls = 0;
 let httpCalls = 0;
+let allowInstall = false;
 const lines: string[] = [];
 // Keep source-vs-bundle version lookup from masking the provider getter path.
 const installPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
-mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...installPaths, readPluginVersion: () => '0.0.0-test' }));
+mock.module('../../src/npx-cli/utils/paths.js', () => ({
+  ...installPaths,
+  readPluginVersion: () => '0.0.0-test',
+  npmPackageRootDirectory: () => packageRoot,
+  npmPackagePluginDirectory: () => join(packageRoot, 'plugin'),
+}));
 const prompts = { ...await import('@clack/prompts') };
 const banner = { ...await import('../../src/npx-cli/banner.js') };
 const usage = { ...await import('../../src/npx-cli/install/usage-summary.js') };
 const spawnGate = { ...await import('../../src/shared/worker-spawn-gate.js') };
 const runtime = { ...await import('../../src/npx-cli/install/setup-runtime.js') };
+const npmInstall = { ...await import('../../src/npx-cli/install/npm-install-helper.js') };
+const launcher = { ...await import('../../src/launcher/install-launcher.js') };
+mock.module('../../src/npx-cli/install/npm-install-helper.js', () => ({
+  ...npmInstall, runNpmStrict: async () => ({ code: 0, stdout: '', stderr: '' }),
+}));
+mock.module('../../src/launcher/install-launcher.js', () => ({
+  ...launcher, ensureLauncherOnPath: () => ({ status: 'bun-not-found' }),
+}));
+mock.module('../../src/npx-cli/utils/prune-cache.js', () => ({
+  prunePluginCacheSafely: async () => ({ removed: [], failed: [], retainedForLiveWorker: false }),
+}));
 mock.module('@clack/prompts', () => ({
   ...prompts,
   tasks: async () => { taskBoundaryCalls++; throw new Error('Unexpected interactive tasks'); },
@@ -88,13 +112,28 @@ mock.module('../../src/npx-cli/banner.js', () => ({ ...banner, playBanner: async
 mock.module('../../src/npx-cli/install/usage-summary.js', () => ({ ...usage, readUsageSummary: async () => null }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({
   ...spawnGate,
-  holdSpawnLock: async () => { taskBoundaryCalls++; throw new Error('Unexpected installer task boundary'); },
+  holdSpawnLock: async () => {
+    taskBoundaryCalls++;
+    if (allowInstall) return () => {};
+    throw new Error('Unexpected installer task boundary');
+  },
 }));
 mock.module('../../src/npx-cli/install/setup-runtime.js', () => ({
   ...runtime,
   getBunPath: () => null,
-  ensureBun: async () => { runtimeTaskCalls++; throw new Error('Unexpected runtime setup'); },
-  ensureUv: async () => { runtimeTaskCalls++; throw new Error('Unexpected runtime setup'); },
+  ensureBun: async () => {
+    runtimeTaskCalls++;
+    if (allowInstall) return { bunPath: process.execPath, version: '1.3.9' };
+    throw new Error('Unexpected runtime setup');
+  },
+  ensureUv: async () => {
+    runtimeTaskCalls++;
+    if (allowInstall) return { uvPath: join(bin, 'uv'), version: '0.9.0' };
+    throw new Error('Unexpected runtime setup');
+  },
+  isInstallCurrent: () => true,
+  provisionTreeSitterCli: async () => {},
+  writeInstallMarker: () => {},
 }));
 mock.module('../../src/services/hooks/server-bootstrap.js', () => ({
   bootstrapServerApiKey: async () => {
@@ -105,7 +144,11 @@ mock.module('../../src/services/hooks/server-bootstrap.js', () => ({
   persistServerSettings: () => { keyPersistenceCalls++; return true; },
 }));
 mock.module('../../src/services/integrations/PiInstaller.js', () => ({
-  installPiExtension: () => { integrationCalls++; throw new Error('Unexpected Pi install'); },
+  installPiExtension: () => {
+    integrationCalls++;
+    if (allowInstall) return 0;
+    throw new Error('Unexpected Pi install');
+  },
 }));
 mock.module('../../src/services/integrations/DeepSeekHarnessInstaller.js', () => ({
   installDeepSeekHarness: async () => { integrationCalls++; throw new Error('Unexpected DSH install'); },
@@ -141,6 +184,7 @@ beforeEach(() => {
   stderr.mockClear(); stdout.mockClear(); lines.length = 0;
   bootstrapCalls = 0; keyPersistenceCalls = 0; taskBoundaryCalls = 0;
   runtimeTaskCalls = 0; integrationCalls = 0; httpCalls = 0;
+  allowInstall = false;
 });
 afterAll(() => {
   loadSettings.mockRestore(); exit.mockRestore(); http.mockRestore();
@@ -186,6 +230,22 @@ describe('non-TTY public installer refusal before personal provider getters', ()
         });
       }
     }
+  }
+});
+
+it('keeps a persisted OpenRouter account without making an OAuth request', async () => {
+  allowInstall = true;
+  await runInstallCommand({ ide: 'pi', runtime: 'worker', noAutoStart: true });
+  expect(process.stdin.isTTY).toBe(false);
+  expect(runtimeTaskCalls).toBe(2);
+  expect(integrationCalls).toBe(1);
+  expect(lines.join('\n')).toContain('Kept existing account (no login this run)');
+  expect(lines.join('\n')).toContain('claude-mem installed successfully!');
+  expect(httpCalls).toBe(0);
+  expect(http).not.toHaveBeenCalled();
+  const stored = JSON.parse(readFileSync(settingsPath, 'utf8')).env;
+  for (const key of ['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_CLOUD_SYNC_TOKEN']) {
+    expect(stored[key]).toBe(personalSettings[key as keyof typeof personalSettings]);
   }
 });
 

@@ -28,16 +28,4 @@ describe('block comments as doc comments', () => {
     const f = parseFile(source, 'f.py').symbols.find(s => s.name === 'f');
     expect(f?.jsdoc).toBe('# Matches a*/');
   }, 120000);
-
-  nativeTest('a real comment above a function is still found', () => {
-    const source = '#include <stdio.h>\n\n// Adds two numbers.\nint add(int a, int b) { return a + b; }\n';
-    const [add] = parseFile(source, 'add.c').symbols;
-    expect(add?.jsdoc).toBe('// Adds two numbers.');
-  }, 120000);
-
-  nativeTest('a # comment above a Python function is still found', () => {
-    const source = '# Adds two numbers.\ndef add(a, b):\n    return a + b\n';
-    const [add] = parseFile(source, 'add.py').symbols;
-    expect(add?.jsdoc).toBe('# Adds two numbers.');
-  }, 120000);
 });

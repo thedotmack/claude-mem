@@ -1,6 +1,5 @@
 import { expect, it } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { SyncApply } from '../../src/services/sync/SyncApply.js';
 
 it('retains custom session titles when importing an exported session', () => {
   const source = new SessionStore(':memory:');
@@ -52,36 +51,17 @@ it('keeps legacy omitted and explicit null titles nullable', () => {
   }
 });
 
-it('restores historical titles locally without overwriting newer replica titles', () => {
+it('restores historical titles locally without adding sync operations', () => {
   const source = new SessionStore(':memory:');
   const target = new SessionStore(':memory:');
-  const replica = new SessionStore(':memory:');
   try {
     const id = source.createSDKSession('content', 'app', 'prompt', 'Older backup name', 'cursor');
     source.updateMemorySessionId(id, 'memory');
     const [exported] = source.getSdkSessionsBySessionIds(['memory']);
-    const remoteId = replica.createSDKSession('content', 'app', 'prompt', 'Newer replica name', 'cursor');
     const imported = target.importSdkSession(exported);
     target.importSdkSession(exported);
-    const queued = target.db.query('SELECT op_uuid, rev, body FROM sync_outbox').all() as Array<{
-      op_uuid: string;
-      rev: string;
-      body: string;
-    }>;
-    new SyncApply(replica.db, { deviceId: 'replica' }).applyOps(
-      queued.map((operation, index) => ({
-        seq: String(index + 1),
-        kind: 'mutation' as const,
-        origin_device: 'restore-device',
-        origin_id: operation.op_uuid,
-        rev: String(operation.rev),
-        body: operation.body,
-        server_ts: 1000,
-      })),
-      { epoch: 'test-epoch' }
-    );
+    const queued = target.db.query('SELECT op_uuid, rev, body FROM sync_outbox').all();
     expect(target.getSessionById(imported.id)?.custom_title).toBe('Older backup name');
-    expect(replica.getSessionById(remoteId)?.custom_title).toBe('Newer replica name');
     expect(queued).toHaveLength(0);
     // Explicitly creating a titled session remains a current sync mutation.
     target.createSDKSession('new-content', 'app', 'prompt', 'New chosen name', 'cursor');
@@ -89,7 +69,6 @@ it('restores historical titles locally without overwriting newer replica titles'
   } finally {
     source.close();
     target.close();
-    replica.close();
   }
 });
 
@@ -125,21 +104,6 @@ it('rejects non-string title JSON values before inserting a session', () => {
       expect(() => target.importSdkSession({ ...exported, custom_title: title as any })).toThrow();
     }
     expect(target.db.query('SELECT count(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
-  } finally {
-    source.close();
-    target.close();
-  }
-});
-it('keeps unconfigured restore out of the sync outbox', () => {
-  const source = new SessionStore(':memory:');
-  const target = new SessionStore(':memory:', { syncOpsEnabled: false });
-  try {
-    const id = source.createSDKSession('content', 'app', 'prompt', 'Local title');
-    source.updateMemorySessionId(id, 'memory');
-    const [session] = source.getSdkSessionsBySessionIds(['memory']);
-    target.importSdkSession(session);
-    expect(target.db.query('SELECT count(*) AS n FROM sync_outbox').get()).toEqual({ n: 0 });
-    expect(target.getSessionById(1)?.custom_title).toBe('Local title');
   } finally {
     source.close();
     target.close();

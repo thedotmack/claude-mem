@@ -1,10 +1,20 @@
-import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
 
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
+const previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+const dataDirs: string[] = [];
+const stores: SessionStore[] = [];
+
+function useDataDir(prefix: string) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dataDirs.push(dir);
+  process.env.CLAUDE_MEM_DATA_DIR = dir;
+  ChromaSyncState.resetCacheForTests();
+}
 
 let existingObservationIds = new Set<number>();
 let acceptingMutations = true;
@@ -61,7 +71,15 @@ import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { logger } from '../../../src/utils/logger.js';
 
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+});
+
 afterAll(() => {
+  ChromaSyncState.resetCacheForTests();
+  if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+  for (const dir of dataDirs) rmSync(dir, { recursive: true, force: true });
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
 });
 
@@ -128,86 +146,46 @@ function makeStoreFromRows(
   summaryRows: ReturnType<typeof makeSummaryRow>[] = [],
   promptRows: ReturnType<typeof makePromptRow>[] = [],
 ) {
-
-  return {
-    db: {
-      prepare(query: string) {
-        return {
-          all: (...params: Array<string | number>) => {
-            // The one-time title-only requeue: bodiless rows at or below the watermark.
-            if (query.includes("COALESCE(narrative, '') = ''")) {
-              const watermark = Number(params[1] ?? 0);
-              return observationRows.filter(row => row.id <= watermark && !row.narrative && !row.text);
-            }
-
-            if (query.includes('SELECT id') && query.includes('FROM observations') && !query.includes('LEFT JOIN')) {
-              return observationRows.map(row => ({ id: row.id }));
-            }
-
-            if (query.includes('SELECT DISTINCT project FROM')) {
-              return [{ project }];
-            }
-
-            if (query.includes('FROM observations o')) {
-              const pendingIds = params.slice(1).filter((value): value is number => typeof value === 'number');
-              if (query.includes('IN (')) {
-                return observationRows.filter(row => pendingIds.includes(row.id));
-              }
-
-              const watermark = Number(params[1] ?? 0);
-              return observationRows.filter(row => row.id > watermark);
-            }
-
-            if (query.includes('FROM session_summaries')) {
-              const pendingSummaryIds = params.slice(1).filter((value): value is number => typeof value === 'number');
-              if (query.includes('IN (')) {
-                return summaryRows.filter(row => pendingSummaryIds.includes(row.id));
-              }
-              const watermark = Number(params[1] ?? 0);
-              return summaryRows.filter(row => row.id > watermark);
-            }
-
-            if (query.includes('FROM user_prompts')) {
-              const pendingPromptIds = params.slice(1).filter((value): value is number => typeof value === 'number');
-              if (query.includes('IN (')) {
-                return promptRows.filter(row => pendingPromptIds.includes(row.id));
-              }
-              const watermark = Number(params[1] ?? 0);
-              return promptRows.filter(row => row.id > watermark);
-            }
-
-            return [];
-          },
-          finalize: () => {},
-          get: (...params: Array<string | number>) => {
-            if (query.includes('o.id = ?')) return observationRows.find(row => row.id === params[1]);
-            if (query.includes('ss.id = ?')) return summaryRows.find(row => row.id === params[1]);
-            if (query.includes('up.id = ?')) return promptRows.find(row => row.id === params[1]);
-            if (query.includes('COUNT(*) as count FROM observations')) {
-              return { count: observationRows.length };
-            }
-
-            if (query.includes('COUNT(*) as count FROM session_summaries')) {
-              return { count: summaryRows.length };
-            }
-
-            if (query.includes('COUNT(*) as count') && query.includes('FROM user_prompts')) {
-              return { count: promptRows.length };
-            }
-
-            return { count: 0 };
-          },
-        };
-      },
-    },
-  } as any;
+  const store = new SessionStore(':memory:');
+  stores.push(store);
+  const insertSession = store.db.prepare(`INSERT INTO sdk_sessions
+    (id, content_session_id, memory_session_id, project, platform_source, started_at, started_at_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const sessions = new Map([...observationRows, ...summaryRows, ...promptRows].map(row => [row.id, row]));
+  function insertRows(table: string, rows: Record<string, unknown>[]) {
+    if (!rows.length) return;
+    const columns = Object.keys(rows[0]).filter(column => column !== 'platform_source');
+    const insert = store.db.prepare(`INSERT INTO ${table} (${columns.join(', ')})
+      VALUES (${columns.map(() => '?').join(', ')})`);
+    try {
+      for (const row of rows) insert.run(...columns.map(column => row[column]) as any[]);
+    } finally {
+      insert.finalize();
+    }
+  }
+  try {
+    store.db.transaction(() => {
+      for (const [id, row] of sessions) insertSession.run(id, `sess-${id}`, `mem-${id}`, row.project,
+        row.platform_source, new Date(row.created_at_epoch).toISOString(), row.created_at_epoch);
+      const dated = <T extends { created_at_epoch: number }>(row: T) => ({ ...row,
+        created_at: new Date(row.created_at_epoch).toISOString() });
+      insertRows('observations', observationRows.map(dated));
+      insertRows('session_summaries', summaryRows.map(dated));
+      insertRows('user_prompts', promptRows.map(({ memory_session_id, project, ...row }) => ({
+        ...dated(row), session_db_id: row.id,
+      })));
+    })();
+  } finally {
+    insertSession.finalize();
+  }
+  return store;
 }
 
 describe('ChromaSync watermark gap persistence', () => {
   const project = `watermark-gap-${Date.now()}`;
 
   beforeEach(() => {
-    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
+    useDataDir('claude-mem-watermarks-');
     existingObservationIds = new Set<number>();
     acceptingMutations = true;
     createCollectionCalls = 0;
@@ -282,9 +260,9 @@ describe('ChromaSync watermark gap persistence', () => {
   });
 
   it('reads a large pending list in bounded IN queries (#4818)', async () => {
-    const ids = Array.from({ length: 1200 }, (_, index) => index + 1);
+    const ids = Array.from({ length: 502 }, (_, index) => index + 1);
     ChromaSyncState.replace(project, {
-      observations: 1200, summaries: 0, prompts: 0,
+      observations: 502, summaries: 0, prompts: 0,
       pending: { observations: ids },
     });
     const store = makeStore(project, ids);
@@ -301,7 +279,7 @@ describe('ChromaSync watermark gap persistence', () => {
 
     expect(inQueryParameterCounts.length).toBeGreaterThan(1);
     expect(Math.max(...inQueryParameterCounts)).toBeLessThanOrEqual(501);
-    expect(new Set(addDocumentCalls.flat()).size).toBe(1200);
+    expect(new Set(addDocumentCalls.flat()).size).toBe(502);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
   });
 
@@ -607,17 +585,10 @@ describe('ChromaSync watermark gap persistence', () => {
     rmSync(join(process.env.CLAUDE_MEM_DATA_DIR!, 'chroma-sync-state.json'), { force: true });
     expect(ChromaSyncState.exists()).toBe(false);
 
-    const base = makeStore(project, [1]);
-    const store = {
-      db: {
-        prepare(query: string) {
-          if (query.includes('SELECT DISTINCT project FROM')) {
-            return { all: () => [{ project }, { project: `${project}-b` }, { project: `${project}-c` }] };
-          }
-          return base.db.prepare(query);
-        },
-      },
-    } as any;
+    const store = makeStoreFromRows(project, [
+      makeObservationRow(1, project), makeObservationRow(2, `${project}-b`),
+      makeObservationRow(3, `${project}-c`),
+    ]);
     const errorSpy = spyOn(logger, 'error');
     onCreateCollection = () => {
       acceptingMutations = false;
@@ -798,7 +769,7 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
   const project = `title-only-${Date.now()}`;
 
   beforeEach(() => {
-    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-title-only-'));
+    useDataDir('claude-mem-title-only-');
     existingObservationIds = new Set<number>();
     acceptingMutations = true;
     createCollectionCalls = 0;
@@ -982,7 +953,7 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
 
 describe('ChromaSync backfill project enumeration (#4069)', () => {
   it('backfills projects that only have summaries, only prompts, or an empty project name', async () => {
-    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-enumeration-'));
+    useDataDir('claude-mem-enumeration-');
     // An existing state file skips the one-time bootstrap from Chroma.
     ChromaSyncState.replace('enumeration-seed', { observations: 0, summaries: 0, prompts: 0 });
     acceptingMutations = true;

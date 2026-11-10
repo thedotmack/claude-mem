@@ -7,13 +7,11 @@ import {
   appendMiddleCacheRecordsAtomic,
   assertSafeMiddleCachePath,
   buildCcsAlignRecord,
-  buildExcludeSet,
   ccsAlignCursorPath,
   ccsAlignExcludeMarksPath,
   ccsAlignLineBody,
   ccsAlignMiddleCachePath,
   formatCcsAlignLine,
-  isOriginalCacheWritable,
   landObservationsInMiddleCache,
   observationMatchesCcsAlignNeedle,
   readCursor,
@@ -22,9 +20,7 @@ import {
   rebuildMiddleCache,
   removeExcludeMark,
   writeCursor,
-  writeExcludeMarks,
   type CcsAlignObservationInput,
-  type ExcludeMarksFile,
 } from '../../src/services/integrations/CcsAlignMiddleCache.js';
 
 const VIEWER = 'ccs-align';
@@ -126,10 +122,10 @@ describe('CCS Align middle cache', () => {
     const first = landObservationsInMiddleCache({ viewerId: VIEWER, observations: [makeObs()], dataRoot: root, now });
     expect(first.appended).toHaveLength(1);
 
-    // Same observation on a later day: date differs but body dedupe still skips.
+    // Same fact under a new id on a later day: body dedupe still skips.
     const second = landObservationsInMiddleCache({
       viewerId: VIEWER,
-      observations: [makeObs()],
+      observations: [makeObs({ id: 12346 })],
       dataRoot: root,
       now: new Date('2026-09-10T00:00:00.000Z'),
     });
@@ -177,25 +173,6 @@ describe('CCS Align middle cache', () => {
       dataRoot: root,
       now,
     })).not.toThrow();
-  });
-
-  it('treats a missing original laminate path as append-only (D2): never invents one', () => {
-    const root = tempRoot();
-    const missing = path.join(root, 'nope', 'laminate.jsonl');
-    expect(isOriginalCacheWritable(missing)).toBe(false);
-    expect(isOriginalCacheWritable(null)).toBe(false);
-
-    const { appended, cachePath } = landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [makeObs()],
-      dataRoot: root,
-      now,
-      originalCachePath: missing,
-    });
-    // Still lands in the seat file; the laminate path is not created.
-    expect(appended).toHaveLength(1);
-    expect(existsSync(cachePath)).toBe(true);
-    expect(existsSync(missing)).toBe(false);
   });
 
   it('round-trips the cursor file at the seat path', () => {
@@ -252,59 +229,6 @@ describe('CCS Align middle cache', () => {
     records = readMiddleCache(ccsAlignMiddleCachePath(root, VIEWER));
     expect(records).toHaveLength(1);
     expect(records[0].id).toBe(200);
-  });
-
-  it('the diary still has the marked observation (SQLite is authoritative, not the compiled cache)', () => {
-    const root = tempRoot();
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [makeObs({ id: 100 }), makeObs({ id: 200, title: 'keeper' })],
-      dataRoot: root,
-      now,
-    });
-
-    const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    addExcludeMark(marksPath, 100, ['toolu_01abc'], 'manual');
-
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [],
-      dataRoot: root,
-      now,
-    });
-
-    const marks = readExcludeMarks(marksPath);
-    expect(marks.marks).toHaveLength(1);
-    expect(marks.marks[0].observationId).toBe(100);
-    expect(marks.marks[0].toolUseIds).toEqual(['toolu_01abc']);
-
-    const records = readMiddleCache(ccsAlignMiddleCachePath(root, VIEWER));
-    expect(records.every(r => r.id !== 100)).toBe(true);
-  });
-
-  it('tool-use ids on a mark never appear in middle.jsonl (layer 4 stays out of the laminate)', () => {
-    const root = tempRoot();
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [makeObs({ id: 300 })],
-      dataRoot: root,
-      now,
-    });
-
-    const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    addExcludeMark(marksPath, 300, ['toolu_01xyz', 999], 'stripper');
-
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [],
-      dataRoot: root,
-      now,
-    });
-
-    const raw = readFileSync(ccsAlignMiddleCachePath(root, VIEWER), 'utf8');
-    expect(raw).not.toContain('toolu_01xyz');
-    expect(raw).not.toContain('"300"');
-    expect(raw).not.toContain('"id":300');
   });
 
   it('viewer B cache does not contain viewer A unique eval token (viewer isolation)', () => {
@@ -394,67 +318,36 @@ describe('CCS Align middle cache', () => {
     expect(marks.marks[0].markedAt).toBe(now.toISOString());
   });
 
-  it('writeExcludeMarks round-trips the full schema', () => {
+  it.each([
+    'NOT VALID JSON{{{',
+    'null',
+    '{"marks": {}}',
+    '{"marks": [null]}',
+    '{"marks": [{"observationId": "100", "toolUseIds": []}]}',
+  ])('a corrupt exclude-marks.json fails closed without overwriting it: %s', (corrupt) => {
     const root = tempRoot();
     const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    const data: ExcludeMarksFile = {
-      v: 1,
-      marks: [
-        { observationId: 1, toolUseIds: ['toolu_x', 2], reason: 'sibling-wall', markedAt: now.toISOString(), markedBy: 'ccs-align' },
-        { observationId: 2, toolUseIds: [], reason: 'secure-isolation', markedAt: now.toISOString(), markedBy: 'test' },
-      ],
+    const input = {
+      viewerId: VIEWER,
+      observations: [makeObs({ id: 100 }), makeObs({ id: 200, title: 'keeper' })],
+      dataRoot: root,
+      now,
     };
-    writeExcludeMarks(marksPath, data);
+    addExcludeMark(marksPath, 100);
+    landObservationsInMiddleCache(input);
+    const cachePath = ccsAlignMiddleCachePath(root, VIEWER);
+    const before = readFileSync(cachePath, 'utf8');
+    writeFileSync(marksPath, corrupt, 'utf8');
 
-    const read = readExcludeMarks(marksPath);
-    expect(read).toEqual(data);
-  });
-
-  it('buildExcludeSet correctly aggregates observation and tool-use ids', () => {
-    const { excludedObsIds, excludedToolUseIds } = buildExcludeSet([
-      { observationId: 1, toolUseIds: ['a', 2], reason: 'manual', markedAt: '', markedBy: '' },
-      { observationId: 3, toolUseIds: ['b'], reason: 'stripper', markedAt: '', markedBy: '' },
-    ]);
-    expect(excludedObsIds.has(1)).toBe(true);
-    expect(excludedObsIds.has(3)).toBe(true);
-    expect(excludedObsIds.has(99)).toBe(false);
-    expect(excludedToolUseIds.has('a')).toBe(true);
-    expect(excludedToolUseIds.has(2)).toBe(true);
-    expect(excludedToolUseIds.has('b')).toBe(true);
-  });
-
-  it('marks with reason "secure-isolation" are honored the same as manual', () => {
-    const root = tempRoot();
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [makeObs({ id: 500 })],
-      dataRoot: root,
-      now,
-    });
-
-    const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    addExcludeMark(marksPath, 500, [], 'secure-isolation');
-
-    landObservationsInMiddleCache({
-      viewerId: VIEWER,
-      observations: [],
-      dataRoot: root,
-      now,
-    });
-
-    const records = readMiddleCache(ccsAlignMiddleCachePath(root, VIEWER));
-    expect(records.every(r => r.id !== 500)).toBe(true);
-  });
-
-  it('a corrupt exclude-marks.json is treated as empty (fail-closed)', () => {
-    const root = tempRoot();
-    const marksPath = ccsAlignExcludeMarksPath(root, VIEWER);
-    const dir = path.dirname(marksPath);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(marksPath, 'NOT VALID JSON{{{', 'utf8');
-
-    const marks = readExcludeMarks(marksPath);
-    expect(marks).toEqual({ v: 1, marks: [] });
+    for (const land of [landObservationsInMiddleCache, rebuildMiddleCache]) {
+      expect(land(input).appended).toEqual([]);
+      expect(readFileSync(cachePath, 'utf8')).toBe(before);
+      expect(readMiddleCache(cachePath).map(record => record.id)).toEqual([200]);
+    }
+    expect(() => readExcludeMarks(marksPath)).toThrow();
+    expect(() => addExcludeMark(marksPath, 300)).toThrow();
+    expect(() => removeExcludeMark(marksPath, 100)).toThrow();
+    expect(readFileSync(marksPath, 'utf8')).toBe(corrupt);
   });
 
   it('new records with a marked id are never appended (skip on ingest)', () => {

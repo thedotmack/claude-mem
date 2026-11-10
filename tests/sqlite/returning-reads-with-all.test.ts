@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -36,6 +37,19 @@ describe('bun:sqlite RETURNING statements', () => {
       .filter((path) => !POSTGRES_DIRS.some((dir) => path.startsWith(dir)))
       .flatMap((path) => returningGetSites(readFileSync(path, 'utf8')).map((site) => `${relative(SRC, path)}: ${site}`));
     expect(offenders).toEqual([]);
+  });
+
+  it.each(['prepare', 'query'] as const)('the preload refuses prepared-variable RETURNING .get() reads from %s', method => {
+    const db = new Database(':memory:');
+    try {
+      db.run('CREATE TABLE tripwire (id INTEGER)');
+      const statement = db[method]('INSERT INTO tripwire VALUES (1) RETURNING id');
+      expect(() => statement.get()).toThrow('Read SQLite RETURNING statements with .all(), not .get()');
+      expect(statement.all()).toEqual([{ id: 1 }]);
+      expect(db.query('SELECT id FROM tripwire').get()).toEqual({ id: 1 });
+    } finally {
+      db.close();
+    }
   });
 
   it('the scanner catches both inline and named-constant .get() reads', () => {

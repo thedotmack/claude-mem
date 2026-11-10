@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, jest } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import type { spawn } from 'child_process';
 import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
@@ -69,6 +69,20 @@ const neverQuery = (() => { throw new Error('query must not run'); }) as never;
 const env = async () => ({ PATH: '/bin', CLAUDE_MEM_INTERNAL: '1' });
 
 describe('agent runner', () => {
+  it('keeps a relative Gemini profile anchored when running in the task folder', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'owned-gemini-run-'));
+    const calls: SpawnCall[] = [];
+    try {
+      const result = await runTask(task(root), { detect: async () => agents('gemini'), query: neverQuery,
+        buildEnv: async () => ({ GEMINI_CLI_HOME: 'owned-gemini-profile' }),
+        spawn: fakeSpawn(calls, call => { call.child.stdout.emit('data', JSON.stringify({ response: 'owned answer' })); call.child.emit('close', 0); }),
+      });
+      expect(result.state).toBe('ok');
+      expect(calls[0].options.cwd).toBe(root);
+      expect((calls[0].options.env as NodeJS.ProcessEnv).GEMINI_CLI_HOME).toBe(resolve('owned-gemini-profile'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('Claude Code reads only inside the task\'s readable folders: never the data dir\'s .env, even through a link', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'agent-runner-read-'));
     try {
@@ -496,11 +510,19 @@ describe('agent runner', () => {
     const spawnImpl = fakeSpawn(calls, call => {
       setTimeout(() => { call.child.stdout.emit('data', JSON.stringify({ response: 'slow but done' })); call.child.emit('close', 0); }, 1500);
     });
-    const started = Date.now();
-    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
-    expect(result.state).toBe('ok');
-    expect(calls[0].child.killed).toBe(false);
+    jest.useFakeTimers();
+    try {
+      const started = Date.now();
+      const pending = runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      jest.advanceTimersByTime(1_500);
+      const result = await pending;
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
+      expect(result.state).toBe('ok');
+      expect(calls[0].child.killed).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

@@ -69,13 +69,13 @@ class Fixture(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, rows=None, scope=None, prices=None, behavior=False):   # Phase 2 tests exercise the draft waste split; Phase 2B has its own tests
+    def build(self, rows=None, scope=None, prices=None, behavior=False, device_exports=()):   # Phase 2 tests exercise the draft waste split; Phase 2B has its own tests
         import sqlite3
         db = sqlite3.connect(self.dbp); db.row_factory = sqlite3.Row
         try:
             usage = dict(window=W.block(), rows=copy.deepcopy(rows if rows is not None else self.rows))
             return rollup.build(usage, prices or PRICES, db, scope or evidence.Scope("period", S=W.start_epoch_ms, E=W.end_epoch_ms), W.block(),
-                                now=NOW, use_gh=False, remote=lambda cwd: None, behavior=behavior)
+                                now=NOW, use_gh=False, remote=lambda cwd: None, behavior=behavior, device_exports=list(device_exports))
         finally:
             db.close()
 
@@ -238,7 +238,7 @@ class Cli(Fixture):
         json.dump(dict(window=W.block(), collector={}, rows=self.rows), open(os.path.join(out, "usage.json"), "w"))
         pf = os.path.join(self.tmp, "prices.json"); json.dump(PRICES, open(pf, "w"))
         r = subprocess.run([sys.executable, _paths.ACR_PY, "rollup", "--start", "2026-09-18", "--end", "2026-09-21", "--out", out, "--prices", pf,
-                            "--db", self.dbp, "--no-gh"], capture_output=True, text=True)
+                            "--db", self.dbp, "--no-gh"], capture_output=True, text=True, env=dict(os.environ, HOME=self.tmp, USERPROFILE=self.tmp))
         self.assertEqual(r.returncode, 0, r.stderr)
         for f in ("report.json", "line-items.csv", "evidence.json", "labels.review.json", "snapshot.db"):
             self.assertTrue(os.path.exists(os.path.join(out, f)), f)

@@ -177,17 +177,17 @@ export function ccsAlignExcludeMarksPath(dataRoot: string, viewerId: string): st
   return path.join(ccsAlignViewerDir(dataRoot, viewerId), EXCLUDE_MARKS_FILENAME);
 }
 
-/** Read the exclude-marks file for a viewer. Returns empty marks if missing or corrupt. */
+/** Read the exclude-marks file for a viewer. Refuse corrupt exclusion state. */
 export function readExcludeMarks(marksPath: string): ExcludeMarksFile {
-  const empty: ExcludeMarksFile = { v: EXCLUDE_MARKS_VERSION, marks: [] };
-  if (!existsSync(marksPath)) return empty;
-  try {
-    const parsed = JSON.parse(readFileSync(marksPath, 'utf8')) as ExcludeMarksFile;
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.marks)) {
-      return { v: parsed.v ?? EXCLUDE_MARKS_VERSION, marks: parsed.marks };
-    }
-  } catch { /* corrupt file — treat as empty */ }
-  return empty;
+  if (!existsSync(marksPath)) return { v: EXCLUDE_MARKS_VERSION, marks: [] };
+  const parsed = JSON.parse(readFileSync(marksPath, 'utf8')) as ExcludeMarksFile;
+  if (!parsed || !Array.isArray(parsed.marks) || !parsed.marks.every(mark =>
+    mark && Number.isSafeInteger(mark.observationId) && Array.isArray(mark.toolUseIds)
+      && mark.toolUseIds.every(id => typeof id === 'string' || typeof id === 'number')
+  )) {
+    throw new Error(`Invalid CCS Align exclude marks: ${marksPath}`);
+  }
+  return { v: parsed.v ?? EXCLUDE_MARKS_VERSION, marks: parsed.marks };
 }
 
 /** Write the exclude-marks file atomically (temp + rename). */

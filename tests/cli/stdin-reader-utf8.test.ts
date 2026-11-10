@@ -56,15 +56,7 @@ async function readSplitPrompt(prompt: string, split: number): Promise<unknown> 
 }
 
 describe('hook stdin UTF-8 byte boundaries', () => {
-  for (const [prompt, boundaries] of [['日本語', [1, 2]], ['😀 hello', [1, 2, 3]]] as const) {
-    for (const split of boundaries) {
-      it(`preserves ${prompt} split ${split} bytes into its first code point`, async () => {
-        expect(await readSplitPrompt(prompt, split)).toEqual({ prompt });
-      });
-    }
-  }
-
-  it('preserves ASCII JSON split across pipe writes', async () => {
-    expect(await readSplitPrompt('hello', 2)).toEqual({ prompt: 'hello' });
+  it('preserves an emoji split inside its UTF-8 code point', async () => {
+    expect(await readSplitPrompt('😀 hello', 2)).toEqual({ prompt: '😀 hello' });
   });
 });

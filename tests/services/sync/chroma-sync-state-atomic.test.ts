@@ -28,6 +28,16 @@ describe('ChromaSyncState atomic persistence', () => {
     } else {
       process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
     }
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it.each(['null', '[]', '"not a checkpoint"', '7'])('recovers an invalid root %s', (payload) => {
+    writeFileSync(statePath(dataDir), payload);
+    expect(() => ChromaSyncState.get('owned')).not.toThrow();
+    expect(ChromaSyncState.get('owned').observations).toBe(0);
+    ChromaSyncState.bump('owned', 'observations', 8);
+    ChromaSyncState.resetCacheForTests();
+    expect(ChromaSyncState.get('owned').observations).toBe(8);
   });
 
   it('treats a truncated state file as empty instead of throwing', () => {

@@ -12,7 +12,10 @@ for (const scope of ['project', 'session']) {
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import { App } from './src/ui/viewer/App';
-      localStorage.setItem('claude-mem-welcome-dismissed', 'true');
+      import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+      setStoredWelcomeDismissed(true);
+      import { TIMING } from './src/ui/viewer/constants/timing';
+      TIMING.SSE_RECONNECT_DELAY_MS = 50;
       if (${JSON.stringify(scope)} === 'session') location.hash = '#/sessions/claude/owned-session';
       let aLoaded = 0;
       const originalFetch = window.fetch.bind(window);
@@ -117,10 +120,10 @@ for (const scope of ['project', 'session']) {
         rows.unshift({...rows[0],id:1001,title:'NEW_1001_END',created_at_epoch:200_000});
         title = 'UPDATED_SESSION_TITLE'; mutating = true;
         for (let i=0;i<20;i++) emit({type:'data_changed',kinds:['observation','mutation'],projects:['B']});
-        setTimeout(() => { countedMutation = true; }, 1000);
         return new Response('mutated');
       }
       if (url.pathname === '/disconnect') {
+        countedMutation = true;
         for (const stream of streams) { try { stream.close(); } catch {} } streams = new Set();
         return new Response('disconnected');
       }

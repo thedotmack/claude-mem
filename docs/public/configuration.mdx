@@ -48,7 +48,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
-| `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash` and `PowerShell`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
+| `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash` and `PowerShell`, OpenCode `bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
 | `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (a tool call that carries both an agent id and an agent type). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
 | `CLAUDE_MEM_CODEX_SUBAGENT_INGESTION` | `false`                 | When `true`, capture the subagent threads Codex CLI spawns, which its native hooks never report, from their rollout files under `~/.codex/sessions`. Off by default: a busy Codex session spawns dozens of subagents a day, and every tool call they make is one more request to your observer provider. `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true` keeps it off. Restart the worker after changing it. |
 | `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated subagent `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
@@ -134,7 +134,7 @@ The worker uses an isolated `codex app-server` session for observations and summ
 | `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
 | `CLAUDE_MEM_OPENROUTER_API_KEYS`             | —                           | Optional: more keys to rotate through when one is rate-limited, spent or refused ([Multi-Key Rotation](usage/multi-key-rotation)). Never used on the cmem.ai gateway |
 | `CLAUDE_MEM_OPENROUTER_MODEL`                | `cohere/north-mini-code:free` | Model identifier (supports 100+ models) |
-| `CLAUDE_MEM_OPENROUTER_BASE_URL`             | —                           | Optional: custom OpenAI-compatible base URL (DeepSeek, LM Studio, [IO Intelligence](https://io.net)) |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL`             | —                           | Optional: custom OpenAI-compatible base URL (DeepSeek, LM Studio, [IO Intelligence](https://io.net)). Settings file or environment only; the viewer displays it read-only |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
 | `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT`     | —                           | Optional: `none`, `minimal`, `low`, `medium` or `high`, openrouter.ai only ([details](usage/openrouter-provider#settings)) |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
@@ -148,8 +148,8 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
-| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
+| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself. Settings file or environment only |
+| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's. Settings file or environment only; the viewer displays it read-only |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
 | `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued observations to combine per request (1–32). Default 1 keeps one event per request. Only consecutive events with the same prompt number, agent and working directory are combined, within the model-window character budget. Set in `settings.json` or an environment variable. See [batching trade-offs](usage/openai-compatible-provider#observation-batching). |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |

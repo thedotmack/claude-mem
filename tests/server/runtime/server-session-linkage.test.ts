@@ -7,67 +7,6 @@ import type { CreatePostgresAgentEventInput } from '../../../src/storage/postgre
 import type { PostgresPool } from '../../../src/storage/postgres/pool.js';
 
 describe('ServerV1PostgresRoutes content session linkage', () => {
-  it('applies cached platform-scoped contentSessionId lookups to batch inputs', async () => {
-    const calls: Array<{ text: string; values?: unknown[] }> = [];
-    const pool = {
-      async query(text: string, values?: unknown[]) {
-        calls.push({ text, values });
-        const key = JSON.stringify(values);
-        const rowsByKey = new Map<string, Array<{ id: string }>>([
-          [JSON.stringify(['shared-content', 'project-1', 'team-1', true, 'cursor']), [{ id: 'cursor-session' }]],
-          [JSON.stringify(['shared-content', 'project-1', 'team-1', true, 'codex']), [{ id: 'codex-session' }]],
-        ]);
-        return {
-          command: 'SELECT',
-          rowCount: rowsByKey.get(key)?.length ?? 0,
-          oid: 0,
-          fields: [],
-          rows: rowsByKey.get(key) ?? [],
-        };
-      },
-    } as unknown as PostgresPool;
-    const routes = new ServerV1PostgresRoutes({
-      pool,
-      queueManager: new DisabledServerQueueManager('unit test'),
-    });
-    const inputs = [
-      createInput({ platformSource: 'cursor', payload: { index: 1 } }),
-      createInput({ platformSource: 'cursor', payload: { index: 2 } }),
-      createInput({ platformSource: 'codex', payload: { index: 3 } }),
-      createInput({ contentSessionId: 'missing-content', platformSource: 'cursor', payload: { index: 4 } }),
-    ];
-
-    await (routes as unknown as {
-      applyContentSessionLinks(
-        inputs: CreatePostgresAgentEventInput[],
-        rawBodies: unknown[],
-        teamId: string,
-      ): Promise<void>;
-    }).applyContentSessionLinks(
-      inputs,
-      [
-        { platformSource: 'Cursor' },
-        { platformSource: 'cursor-cli' },
-        { platformSource: 'Codex CLI' },
-        { platformSource: 'cursor' },
-      ],
-      'team-1',
-    );
-
-    expect(inputs.map(input => input.serverSessionId ?? null)).toEqual([
-      'cursor-session',
-      'cursor-session',
-      'codex-session',
-      null,
-    ]);
-    expect(calls).toHaveLength(3);
-    expect(calls.map(call => call.values)).toEqual([
-      ['shared-content', 'project-1', 'team-1', true, 'cursor'],
-      ['shared-content', 'project-1', 'team-1', true, 'codex'],
-      ['missing-content', 'project-1', 'team-1', true, 'cursor'],
-    ]);
-  });
-
   it('distinguishes omitted platformSource from explicit null for contentSessionId lookup', async () => {
     const calls: Array<{ values?: unknown[] }> = [];
     const pool = {

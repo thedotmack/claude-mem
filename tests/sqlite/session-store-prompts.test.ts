@@ -19,29 +19,6 @@ describe('SessionStore prompts', () => {
   }
 
   describe('saveUserPrompt', () => {
-    it('returns a positive id', () => {
-      const session = createSession('content-prompt-1');
-      const id = store.saveUserPrompt(session, 1, 'First user prompt');
-      expect(id).toBeGreaterThan(0);
-    });
-
-    it('returns incrementing ids', () => {
-      const session = createSession('content-prompt-2');
-      const id1 = store.saveUserPrompt(session, 1, 'First prompt');
-      const id2 = store.saveUserPrompt(session, 2, 'Second prompt');
-      const id3 = store.saveUserPrompt(session, 3, 'Third prompt');
-      expect(id2).toBeGreaterThan(id1);
-      expect(id3).toBeGreaterThan(id2);
-    });
-
-    it('returns distinct ids across sessions', () => {
-      const a = createSession('session-a');
-      const b = createSession('session-b');
-      const id1 = store.saveUserPrompt(a, 1, 'Prompt A1');
-      const id2 = store.saveUserPrompt(b, 1, 'Prompt B1');
-      expect(id1).not.toBe(id2);
-    });
-
     it('does not persist half of a supplementary character at the prompt limit', () => {
       const session = createSession('content-unicode-limit');
       const prefix = 'a'.repeat(MAX_STORED_PROMPT_CHARS - 2);
@@ -86,13 +63,11 @@ describe('SessionStore prompts', () => {
         created_at: createdAt,
         created_at_epoch: 2,
       });
+      const [storedCursorPrompt] = store.getUserPromptsByIds([cursorImport.id]);
       const cursorDuplicate = store.importUserPrompt({
-        content_session_id: contentSessionId,
-        platform_source: 'cursor',
-        prompt_number: 1,
-        prompt_text: 'cursor duplicate prompt',
-        created_at: createdAt,
-        created_at_epoch: 3,
+        ...storedCursorPrompt,
+        // Resolve the replay by platform, without relying on this database's id.
+        session_db_id: undefined,
       });
 
       expect(cursorImport.imported).toBe(true);

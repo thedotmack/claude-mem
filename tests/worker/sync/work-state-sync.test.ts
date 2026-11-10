@@ -510,7 +510,7 @@ function appliedVersions(db: Database): number[] {
 /**
  * Undo the two work-state sync steps on a database the current chain built:
  * the ledgers' kind CHECK goes back to the three launch kinds, the table loses
- * its sync columns, and the v66/v67 rows go. What is left is main's v65 schema.
+ * its sync columns, and later migration stamps go. The work-state upgrade starts at v65.
  */
 function rollBackWorkStateSyncSteps(db: Database): void {
   for (const table of SYNC_LEDGERS) {
@@ -545,7 +545,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
     'block_pre_deletion_tool_use_insert', 'block_pre_deletion_tool_use_update']) {
     db.run(`DROP TRIGGER IF EXISTS ${trigger}`);
   }
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71, 72, 73, 74)');
+  db.run('DELETE FROM schema_versions WHERE version > 65');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

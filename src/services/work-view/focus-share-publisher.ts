@@ -9,6 +9,7 @@ import { toSharedFocusPage, type SharedFocusPage } from '../../ui/my-work/src/li
 import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.ts';
 import type { WorkViewSnapshot } from './data-source.mjs';
 import { FocusShareError, type FocusShareEntry, type FocusShares } from './focus-share.js';
+import { logger } from '../../utils/logger.js';
 
 /** How often the worker republishes shared pages. */
 export const FOCUS_SHARE_PUBLISH_EVERY_MS = 30_000;
@@ -37,6 +38,8 @@ export class FocusSharePublisher {
   private readonly errors = new Map<string, string>();
   private readonly now: () => number;
   private readonly ownerRequestsDone = new Map<string, Promise<unknown>>();
+  /** Areas whose owner action must take precedence over this round's snapshot. */
+  private ownerActionsDuringRound: Set<string> | null = null;
 
   constructor(private readonly options: FocusSharePublisherOptions) {
     this.now = options.now ?? Date.now;
@@ -45,7 +48,9 @@ export class FocusSharePublisher {
   start(): void {
     const everyMs = this.options.everyMs ?? FOCUS_SHARE_PUBLISH_EVERY_MS;
     if (this.timer || everyMs <= 0) return;
-    this.timer = setInterval(() => { void this.publishAll(); }, everyMs);
+    this.timer = setInterval(() => {
+      void this.publishAll().catch(error => logger.error('WORKER', 'Shared focus pages could not be published', {}, error));
+    }, everyMs);
     this.timer.unref?.();
   }
 
@@ -85,6 +90,7 @@ export class FocusSharePublisher {
    * link never waits on another area's share.
    */
   private inOwnerOrder<T>(focusAreaId: string, request: () => Promise<T>): Promise<T> {
+    this.ownerActionsDuringRound?.add(focusAreaId);
     const result = (this.ownerRequestsDone.get(focusAreaId) ?? Promise.resolve()).then(request);
     const settled = result.catch(() => undefined).finally(() => {
       if (this.ownerRequestsDone.get(focusAreaId) === settled) this.ownerRequestsDone.delete(focusAreaId);
@@ -95,11 +101,17 @@ export class FocusSharePublisher {
 
   /** One round over every shared area. A round already running is joined, not doubled. */
   publishAll(): Promise<void> {
-    this.round ??= this.runRound().finally(() => { this.round = null; });
+    if (this.round) return this.round;
+    const ownerActions = new Set(this.ownerRequestsDone.keys());
+    this.ownerActionsDuringRound = ownerActions;
+    this.round = this.runRound(ownerActions).finally(() => {
+      this.round = null;
+      this.ownerActionsDuringRound = null;
+    });
     return this.round;
   }
 
-  private async runRound(): Promise<void> {
+  private async runRound(ownerActions: ReadonlySet<string>): Promise<void> {
     const { shares } = this.options;
     const ids = Object.keys(shares.list());
     if (!ids.length || !shares.connected()) return;
@@ -120,13 +132,16 @@ export class FocusSharePublisher {
     }
     const areas = Array.isArray(snapshot.focusAreas) ? snapshot.focusAreas as Array<{ focusAreaId?: unknown }> : [];
     for (const id of ids) {
+      // A slow read or another area's upload can let the owner publish a newer
+      // page first. This round's older snapshot must not replace that page.
+      if (ownerActions.has(id)) continue;
       const page = toSharedFocusPage(model, id, now);
       if (!page) {
         // Still listed but no longer an area the owner keeps: stop its link. Not listed at all may be a partial read.
         // Earlier areas' updates may have taken a while, so the owner could have undone a merge meanwhile: decide
         // again on a fresh read before ending the link for everyone.
         if (areas.some(area => area.focusAreaId === id)) {
-          if (!(await this.stillUnshareable(id))) continue;
+          if (!(await this.stillUnshareable(id)) || ownerActions.has(id)) continue;
           try { await shares.stop(id); this.errors.delete(id); } catch (error) { this.remember(id, error); }
         } else {
           this.errors.set(id, `${NOT_SHAREABLE} The page shows what it had before.`);

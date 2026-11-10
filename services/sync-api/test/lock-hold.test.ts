@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { DEFAULT_SYNC_API_TIMEOUTS } from "../src/index";
 import {
@@ -9,7 +9,10 @@ import {
 	trackedApp,
 	uniqueUser,
 	waitUntil,
+	stopTrackedApps,
 } from "./helpers";
+
+afterAll(stopTrackedApps);
 
 /** Another process (or a slow request) holding a user's per-user advisory lock. */
 async function holdUserLock(userId: string): Promise<postgres.Sql> {

@@ -7,9 +7,9 @@ import { SettingsRoutes } from '../../../src/services/worker/http/routes/Setting
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager';
 import { paths } from '../../../src/shared/paths';
 import {
-  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, connectToPage, failOnCiWithoutChrome, launchChrome,
-  readViewerTemplateStyles, withTimeout, type DevToolsPage, type OwnedChrome,
+  UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, failOnCiWithoutChrome, type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
+import { compileSettingsFixture, connectLoadedSettings, launchSettingsFixture, settingsFixtureHtml } from './settings-fixture';
 
 failOnCiWithoutChrome('CI requires Chrome or Chromium for the native settings-save regression tests.');
 
@@ -23,21 +23,8 @@ const COUNT_FIELDS = [
 
 (chromeExecutablePath ? it : it.skip)('saves the shipped default when a count field is cleared', async () => {
   const shipped = COUNT_FIELDS.map(({ key }) => SettingsDefaultsManager.getAllDefaults()[key]);
-  const bundle = compileBrowserFixture(`
-      import React from 'react';
-      import { createRoot } from 'react-dom/client';
-      import { ContextSettingsModal } from './src/ui/viewer/components/ContextSettingsModal';
-      import { useSettings } from './src/ui/viewer/hooks/useSettings';
-      function Fixture() {
-        const state = useSettings();
-        return <ContextSettingsModal isOpen={true} onClose={() => {}} onSave={state.saveSettings}
-          settings={state.settings} isLoaded={state.isLoaded} loadError={state.loadError}
-          onRetryLoad={state.reload} isSaving={state.isSaving} saveStatus={state.saveStatus} />;
-      }
-      createRoot(document.getElementById('root')).render(<Fixture />);
-      fetch('/ready');
-    `);
-  const styles = readViewerTemplateStyles();
+  const bundle = compileSettingsFixture();
+  const html = settingsFixtureHtml();
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-count-clear-'));
   const settingsPath = join(root, 'settings.json');
   writeFileSync(settingsPath, JSON.stringify(Object.fromEntries(COUNT_FIELDS.map(({ key, stored }) => [key, stored]))));
@@ -60,18 +47,15 @@ const COUNT_FIELDS = [
   app.get('/fixture.js', (_request, response) => response.type('application/javascript').send(bundle));
   app.get('/ready', (_request, response) => { markReady(); response.send('ready'); });
   app.get('/api/projects', (_request, response) => response.json({ projects: [], sources: [], projectsBySource: {} }));
-  app.use((_request, response) => response.type('html').send('<style>' + styles + '</style><div id="root"></div><script src="/fixture.js"></script>'));
+  app.use((_request, response) => response.type('html').send(html));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
   let chrome: OwnedChrome | undefined;
   let page: DevToolsPage | undefined;
   try {
-    chrome = launchChrome(url, { profilePrefix: 'claude-mem-count-clear-chrome-', extraFlags: UNTHROTTLED_TIMER_FLAGS, remoteDebugging: true });
-    // Separate Chrome's cold start from the settings steps. Chrome writes
-    // DevToolsActivePort before it loads the page, so it exists by now.
-    await withTimeout(ready, 30000, 'Owned browser did not become ready');
-    page = await connectToPage(chrome, url);
+    chrome = await launchSettingsFixture(url, ready, 'claude-mem-count-clear-chrome-', UNTHROTTLED_TIMER_FLAGS);
+    page = await connectLoadedSettings(chrome, url, 20000);
     const { send, evaluate, settle } = page;
     const input = (label: string) => `[...document.querySelectorAll('.form-field')]
       .find(field => field.querySelector('.form-field-label')?.firstChild?.textContent === ${JSON.stringify(label)})?.querySelector('input')`;

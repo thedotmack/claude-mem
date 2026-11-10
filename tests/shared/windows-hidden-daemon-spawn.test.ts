@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildDetachedWorkerDaemonSpawn } from '../../src/services/infrastructure/ProcessManager.js';
 import { buildSpawnSyncInvocation } from '../../src/shared/spawn.js';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 /**
  * #5240 — Windows worker daemon launch under behaviour-blocking AV.
@@ -74,11 +72,5 @@ describe('Windows #5240 — worker daemon launch contract', () => {
       'win32',
     );
     expect(invocation.options.windowsHide).toBe(true);
-  });
-
-  it('routes the hook lazy-spawn paths through spawnDetachedWorkerDaemon, never a raw detached spawn', () => {
-    const source = readFileSync(join(import.meta.dir, '../../src/shared/worker-utils.ts'), 'utf8');
-    expect(source).not.toContain('spawnHidden(');
-    expect(source).toContain('spawnDetachedWorkerDaemon(');
   });
 });

@@ -18,7 +18,6 @@ import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
-import { retryWhileRefused } from "./worker-retry.js";
 import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
 
 export interface OpenCodeClient {
@@ -86,10 +85,13 @@ function includeAllSources(): boolean {
 const PLATFORM_SOURCE = "opencode";
 
 // Built-in OpenCode names differ from the shared file-evidence vocabulary.
+// The worker's shell filter reads commands from `Bash`, so a lowercase `bash`
+// left CLAUDE_MEM_SKIP_BASH_PATTERNS with nothing to match (#5666).
 const CAPTURE_TOOL_NAMES = new Map([
   ["read", "Read"],
   ["write", "Write"],
   ["edit", "Edit"],
+  ["bash", "Bash"],
 ]);
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
@@ -102,8 +104,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** One POST attempt. Resolves true when the worker refused the connection (not running yet). */
-async function postToWorker(fetchImpl: typeof fetch, path: string, payload: string): Promise<boolean> {
+/** One POST attempt, with no replay after a refused connection. */
+async function postToWorker(fetchImpl: typeof fetch, path: string, payload: string): Promise<void> {
   try {
     const response = await fetchImpl(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
@@ -114,11 +116,11 @@ async function postToWorker(fetchImpl: typeof fetch, path: string, payload: stri
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
-    return false;
+    await response.body?.cancel();
   } catch (error: unknown) {
-    if (isConnectionRefusedError(error)) return true;
-    console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
-    return false;
+    if (!isConnectionRefusedError(error)) {
+      console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
+    }
   }
 }
 
@@ -127,7 +129,6 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
     ...body,
     platformSource: normalizePlatformSource(PLATFORM_SOURCE),
   });
-  // Retries reuse the fetch of the first attempt.
   const fetchImpl = fetch;
   if (path === '/api/sessions/observations' || path === '/api/sessions/summarize') {
     try {
@@ -143,11 +144,7 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
     }
     return;
   }
-  if (await postToWorker(fetchImpl, path, payload)) {
-    // The worker may still be starting (see worker-retry.ts): retry in the
-    // background so no hook waits on it.
-    void retryWhileRefused(() => postToWorker(fetchImpl, path, payload));
-  }
+  await postToWorker(fetchImpl, path, payload);
 }
 
 async function workerGetText(path: string): Promise<string | null> {
@@ -158,6 +155,7 @@ async function workerGetText(path: string): Promise<string | null> {
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
+      await response.body?.cancel();
       return null;
     }
     return await response.text();
@@ -169,13 +167,12 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
-const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
-// Memory context per OpenCode session: fetched on the session's first system
-// prompt build and reused for its later turns, as Claude Code injects once per
-// session. Compaction clears it, so the next build carries fresh context.
+// Memory context per checkout and OpenCode session: fetched on the session's
+// first system prompt build and reused for later turns. V1 also calls system
+// transform without a session ID; that shared empty ID must never lend one
+// checkout's memory to another. Compaction clears only its own checkout.
 interface CachedMemoryContext {
   request: Promise<string | null>;
   /** When the fetch came back with nothing; set only for a failed fetch. */
@@ -188,33 +185,17 @@ const contextByOpenCodeSessionId = new Map<string, CachedMemoryContext>();
 // would otherwise add the full request timeout to each one (plan-17 contract).
 const FAILED_CONTEXT_RETRY_MS = 60_000;
 
-function getOrCreateContentSessionId(openCodeSessionId: string): string {
-  if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
-      if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-      } else {
-        break;
-      }
-    }
-    contentSessionIdsByOpenCodeSessionId.set(
-      openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
-    );
-  }
-  return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
-}
-
 /**
- * Resolves the stable local ID for all OpenCode activity without contacting the
- * worker. Session init means "a user prompt happened", not "ensure a session
+ * OpenCode retains its native ID when a session resumes. Use it directly,
+ * scoped by platformSource at the worker, so a restart or cache eviction cannot
+ * split later prompts and tools into a fresh memory session. Session init
+ * means "a user prompt happened", not "ensure a session
  * row exists": observations and summarize create their own rows. Posting init
  * without a prompt manufactures a "[media prompt]" at prompt #1 and attributes
  * a preceding tool observation to it (#3803).
  */
 function resolveContentSessionId(openCodeSessionId: string): string {
-  return getOrCreateContentSessionId(openCodeSessionId);
+  return openCodeSessionId;
 }
 
 /**
@@ -330,12 +311,15 @@ export interface ClaudeMemCore {
 }
 
 export function createCore(ctx: CoreContext): ClaudeMemCore {
+  const contextKeyFor = (sessionID: string): string => JSON.stringify([ctx.directory, sessionID]);
+
   function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
-    const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
+    const key = contextKeyFor(openCodeSessionId);
+    const cached = contextByOpenCodeSessionId.get(key);
     if (cached && (cached.failedAt === undefined || Date.now() - cached.failedAt < FAILED_CONTEXT_RETRY_MS)) {
       return cached.request;
     }
-    contextByOpenCodeSessionId.delete(openCodeSessionId);
+    contextByOpenCodeSessionId.delete(key);
 
     while (contextByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
       const oldestKey = contextByOpenCodeSessionId.keys().next().value;
@@ -352,7 +336,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
         `/api/context/inject?cwd=${encodeURIComponent(cwd)}${platformSourceParam}`,
       ),
     };
-    contextByOpenCodeSessionId.set(openCodeSessionId, entry);
+    contextByOpenCodeSessionId.set(key, entry);
     void entry.request.then((context) => {
       if (!context) entry.failedAt = Date.now();
     });
@@ -421,12 +405,11 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     captureSummary,
 
     forgetMemoryContext(sessionID) {
-      contextByOpenCodeSessionId.delete(sessionID);
+      contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     forgetSession(sessionID) {
-      contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-      contextByOpenCodeSessionId.delete(sessionID);
+      contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     memoryContext(sessionID) {
@@ -447,7 +430,10 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
           method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
           signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
         });
-        if (!response.ok) return 'The worker could not fetch the selected observations.';
+        if (!response.ok) {
+          await response.body?.cancel();
+          return 'The worker could not fetch the selected observations.';
+        }
         return formatWorkerMcpResponse('observations', await response.json()).content[0].text;
       } catch { return 'claude-mem worker is not running. Start it with: npx claude-mem start'; }
     },

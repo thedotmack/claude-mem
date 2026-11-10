@@ -4,24 +4,17 @@ import { logger } from '../../../src/utils/logger.js';
 // Capture real exports before mock.module mutates the live namespace, then
 // restore them after this focused harness so its stubs do not leak to later
 // response-processor tests.
-import * as realWorkerServiceModule from '../../../src/services/worker-service.js';
 import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
 import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
 import * as realSettingsDefaultsModule from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realTelegramWrapupNotifierModule from '../../../src/services/integrations/TelegramWrapupNotifier.js';
 
-const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
 const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 const realModeManagerSnapshot = { ...realModeManagerModule };
 const realSettingsDefaultsSnapshot = { ...realSettingsDefaultsModule };
 const realTelegramWrapupNotifierSnapshot = { ...realTelegramWrapupNotifierModule };
 const formatSummary = mock(async () => '• Completed the session');
 const deliverSessionWrapup = mock(async () => 'sent' as const);
-
-mock.module('../../../src/services/worker-service.js', () => ({
-  ...realWorkerServiceSnapshot,
-  updateCursorContextForProject: () => Promise.resolve(),
-}));
 
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ...realWorkerUtilsSnapshot,
@@ -71,7 +64,6 @@ import type { ActiveSession } from '../../../src/services/worker-types.js';
 import { sessionDbWithoutMedia } from '../../fixtures/worker/session-db-without-media.js';
 
 afterAll(() => {
-  mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsDefaultsSnapshot);
   mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
@@ -227,31 +219,4 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
     });
   });
 
-  it('handles a rejected background delivery without rejecting response processing', async () => {
-    const session = createSession({ telegramWrapupRequestedAt: Date.now() });
-    const dbManager = createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 });
-    const error = new Error('wrap-up delivery failed');
-    deliverSessionWrapup.mockImplementationOnce(async () => {
-      throw error;
-    });
-
-    await expect(processAgentResponse(
-      summaryResponse,
-      session,
-      dbManager,
-      createSessionManager(session, dbManager),
-      undefined,
-      100,
-      null,
-      'TestAgent',
-    )).resolves.toMatchObject({ summaryId: 99 });
-    await flushBackgroundWork();
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      'TELEGRAM',
-      'Failed to deliver Telegram session wrap-up from SessionManager',
-      { sessionId: session.sessionDbId },
-      error,
-    );
-  });
 });

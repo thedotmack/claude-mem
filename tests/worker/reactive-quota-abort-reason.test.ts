@@ -130,59 +130,17 @@ afterEach(() => {
 });
 
 describe('reactive provider errors set a preserving abortReason (#3700)', () => {
-  it('marks a real 429 as a quota pause', async () => {
+  it.each([
+    ['quota_exhausted', 'Gemini quota exhausted (status 429)', 'quota:quota_exhausted', true],
+    ['rate_limit', 'rate limited', 'rate_limit:rate_limit', true],
+    ['auth_invalid', 'invalid api key', 'auth:auth_invalid', true],
+    ['transient', 'OpenRouter network error: socket hang up', 'transport:transient', true],
+    ['unrecoverable', 'bad request', null, false],
+  ] as const)('maps %s to its abort reason and controller state', async (kind, message, reason, aborted) => {
     const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
-        kind: 'quota_exhausted',
-        cause: null,
-      }),
-      session,
-    );
-
-    expect(session.abortReason).toBe('quota:quota_exhausted');
-  });
-
-  // A rate limit pauses the same way, under its own label: it is not a spent
-  // allowance, so telemetry must not count it as one.
-  it('marks a rate_limit as a rate-limit pause, not a quota one', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('rate limited', { kind: 'rate_limit', cause: null }),
-      session,
-    );
-
-    expect(session.abortReason).toBe('rate_limit:rate_limit');
-  });
-
-  it('marks an invalid credential as an auth pause', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('invalid api key', { kind: 'auth_invalid', cause: null }),
-      session,
-    );
-
-    expect(session.abortReason).toBe('auth:auth_invalid');
-  });
-
-  // A network fault that outlived the retry policy; finalizing on it dropped the
-  // session's buffered work.
-  it('marks a transient failure as a transport pause', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('OpenRouter network error: socket hang up', {
-        kind: 'transient',
-        cause: null,
-      }),
-      session,
-    );
-
-    expect(session.abortReason).toBe('transport:transient');
-    expect(session.abortController.signal.aborted).toBe(true);
+    await runAndCatch(new ClassifiedProviderError(message, { kind, cause: null }), session);
+    expect(session.abortReason ?? null).toBe(reason);
+    expect(session.abortController.signal.aborted).toBe(aborted);
   });
 
   // Our own per-attempt deadline is a transport pause too, but a distinct one:
@@ -196,54 +154,12 @@ describe('reactive provider errors set a preserving abortReason (#3700)', () => 
     expect(session.abortController.signal.aborted).toBe(true);
   });
 
-  // The categories that genuinely are fatal must keep finalizing, or a broken
-  // session would linger forever instead of being cleaned up.
-  it('leaves genuinely unrecoverable errors without a preserving reason', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('bad request', { kind: 'unrecoverable', cause: null }),
-      session,
-    );
-
-    expect(session.abortReason ?? null).toBeNull();
-  });
-
   it('leaves unclassified errors alone', async () => {
     const session = makeSession();
 
     await runAndCatch(new Error('something else entirely'), session);
 
     expect(session.abortReason ?? null).toBeNull();
-  });
-
-  // Review on #3760: labelling without aborting leaves the controller live
-  // while the error unwinds, so the session route books an observer failure
-  // and an error outcome before finalization books the aborted one — a pause
-  // recorded as a failure, twice.
-  it('aborts the controller so the pause is not also booked as a failure', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
-        kind: 'quota_exhausted',
-        cause: null,
-      }),
-      session,
-    );
-
-    expect(session.abortController.signal.aborted).toBe(true);
-  });
-
-  it('leaves the controller alone for a genuinely fatal error', async () => {
-    const session = makeSession();
-
-    await runAndCatch(
-      new ClassifiedProviderError('bad request', { kind: 'unrecoverable', cause: null }),
-      session,
-    );
-
-    expect(session.abortController.signal.aborted).toBe(false);
   });
 
   it('still rethrows so the caller sees the failure', async () => {
@@ -309,15 +225,6 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
 
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSessionImmediate).not.toHaveBeenCalled();
-  });
-
-  // The exact failure the reporter logged: `Generator exited — finalizing
-  // session {reason=null}`, ten times over fifteen minutes.
-  it('finalizes when the reason is null, which is what the bug produced', async () => {
-    const { deps, finalizeSession } = buildDeps();
-    await handleGeneratorExit(makeSession(), null, deps);
-
-    expect(finalizeSession).toHaveBeenCalledWith(382);
   });
 });
 

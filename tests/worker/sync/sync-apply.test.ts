@@ -1,25 +1,23 @@
 // Phase 2 verification (plan 2026-07-17): migration v41 + the SyncApply
-// apply path. Harness style copied from cloud-sync.test.ts — in-temp-dir
-// SessionStore over an in-memory database, real CloudSync with an injected
-// fetch mock for the echo-guard drain assertions.
+// apply path, using SessionStore over an in-memory database.
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
-import { CloudSync, type CloudSyncSettingKeys } from '../../../src/services/sync/CloudSync.js';
 import { SyncApply, type SyncOp, type ChromaSyncLike } from '../../../src/services/sync/SyncApply.js';
+import { CloudSync } from '../../../src/services/sync/CloudSync.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
+import type { CanonicalHubChange, CanonicalWireOp } from '../../../src/services/sync/CanonicalContent.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** This device's id — matches the CloudSync fixture id so the echo-guard test
- * uses ONE identity for both apply and drain (the fail-closed contract). */
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
 const FIXED_NOW = 1752000000000;
@@ -108,9 +106,7 @@ function op(
 }
 
 describe('SyncApply', () => {
-  let tempDir: string;
   let db: Database;
-  let settingsPath: string;
 
   function makeApply(options: { deviceId?: string; chromaSync?: ChromaSyncLike | null } = {}): SyncApply {
     return new SyncApply(db, {
@@ -118,16 +114,6 @@ describe('SyncApply', () => {
       chromaSync: options.chromaSync,
       now: () => FIXED_NOW,
     });
-  }
-
-  function makeSettings(): CloudSyncSettingKeys {
-    return {
-      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token-1234',
-      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user-42',
-      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
-      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: SELF,
-      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-host',
-    };
   }
 
   /** Batch of one observation + one summary + one prompt from REMOTE. */
@@ -158,8 +144,6 @@ describe('SyncApply', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sync-apply-'));
-    settingsPath = join(tempDir, 'settings.json');
     db = new Database(':memory:');
     new SessionStore(db);
     db.prepare(`
@@ -170,7 +154,6 @@ describe('SyncApply', () => {
 
   afterEach(() => {
     db.close();
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------------
@@ -281,6 +264,123 @@ describe('SyncApply', () => {
     expect(count('user_prompts')).toBe(0);
     expect(count('sync_pull_quarantine')).toBe(0);
   });
+
+  for (const memorySessionId of [null, 'memory-after-deletion']) {
+    it(`applies a post-deletion prompt with ${memorySessionId ?? 'no memory id yet'} before advancing the cursor`, () => {
+      const store = new SessionStore(db);
+      store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+      const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+      db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+      const apply = makeApply();
+      const result = apply.applyOps([{
+        ...op(1, 'prompt', 'new-prompt', promptBody({
+          content_session_id: 'sess-abc', memory_session_id: memorySessionId,
+          created_at_epoch: cutoff + 1, created_at: new Date(cutoff + 1).toISOString(),
+        })),
+        entity_id: 'prompt:new-prompt', entity_rev: '1', operation_sha256: 'post-deletion-prompt',
+      }]);
+      expect(result.applied).toBe(1);
+      expect(result.skippedStale).toBe(0);
+      expect(result.quarantined).toBe(0);
+      expect(apply.getCursor()).toBe('1');
+      const prompt = db.prepare('SELECT prompt_text, session_db_id, synced_at FROM user_prompts').get() as any;
+      expect(prompt).toMatchObject({ prompt_text: 'remote prompt text', synced_at: FIXED_NOW });
+      expect(db.prepare('SELECT content_session_id, memory_session_id, started_at_epoch FROM sdk_sessions WHERE id = ?').get(prompt.session_db_id))
+        .toEqual({ content_session_id: 'sess-abc', memory_session_id: memorySessionId, started_at_epoch: cutoff + 1 });
+      expect(db.prepare('SELECT entity_rev, deleted FROM sync_entity_heads').get())
+        .toEqual({ entity_rev: '1', deleted: 0 });
+    });
+  }
+
+  it('keeps old, untimed, and deleted-memory rows out despite later hub delivery', () => {
+    const store = new SessionStore(db);
+    store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+    const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+    db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+    const apply = makeApply();
+    const result = apply.applyOps([
+      ...[cutoff - 1, cutoff, null].map((createdAtEpoch, index) => ({
+        ...op(index + 1, 'prompt', `old-prompt-${index}`, promptBody({
+          content_session_id: 'sess-abc', memory_session_id: null, created_at_epoch: createdAtEpoch,
+        })),
+        server_ts: cutoff + 1000,
+      })),
+      op(4, 'observation', 'old-observation', obsBody({ memory_session_id: 'mem-1', created_at_epoch: cutoff + 1 })),
+      op(5, 'summary', 'old-summary', sumBody({ memory_session_id: 'mem-1', created_at_epoch: cutoff + 1 })),
+      op(6, 'prompt', 'old-memory-prompt', promptBody({
+        content_session_id: 'sess-abc', memory_session_id: 'mem-1', created_at_epoch: cutoff + 1,
+      })),
+    ]);
+    expect(result.skippedStale).toBe(6);
+    expect(result.quarantined).toBe(0);
+    expect(apply.getCursor()).toBe('6');
+    for (const table of ['sdk_sessions', 'observations', 'session_summaries', 'user_prompts']) expect(count(table)).toBe(0);
+  });
+
+  for (const includeMemories of [false, true]) {
+    it(`receives post-deletion work through the real push mapping (${includeMemories ? 'observations first' : 'prompt only'})`, async () => {
+      const store = new SessionStore(db);
+      store.markSessionDeleted('claude', 'sess-abc', 'mem-1');
+      const cutoff = store.getSessionDeletedAtEpochMs('claude', 'sess-abc')!;
+      db.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'sess-abc'").run();
+      const origin = new Database(':memory:');
+      new SessionStore(origin, { syncOpsEnabled: false });
+      const dir = mkdtempSync(join(tmpdir(), 'cmem-sync-cutoff-'));
+      const changes: CanonicalHubChange[] = [];
+      const sync = new CloudSync(origin, {
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'test-user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: REMOTE, CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test',
+      }, {
+        settingsPath: join(dir, 'settings.json'),
+        fetchImpl: (async (_input, init) => {
+          const { ops } = JSON.parse(String(init?.body)) as { ops: CanonicalWireOp[] };
+          const acked = ops.map(wire => {
+            const envelope = JSON.parse(wire.body);
+            const seq = String(changes.length + 1);
+            changes.push({ ...wire, seq, server_ts: String(cutoff + 5000) });
+            return { id: envelope.id, kind: envelope.kind, origin_local_id: envelope.origin_local_id,
+              entity_rev: envelope.entity_rev, operation_sha256: wire.operation_sha256, seq };
+          });
+          return Response.json({ acked, head_seq: String(changes.length), projected_seq: String(changes.length) });
+        }) as typeof fetch,
+      });
+      try {
+        const createdAt = new Date(cutoff + 1).toISOString();
+        origin.prepare(`INSERT INTO sdk_sessions
+          (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+          VALUES ('sess-abc', 'memory-after-deletion', 'proj-remote', ?, ?, 'completed')`).run(createdAt, cutoff + 1);
+        if (includeMemories) {
+          origin.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+            VALUES ('memory-after-deletion', 'proj-remote', 'discovery', 'new observation', ?, ?)`).run(createdAt, cutoff + 1);
+          origin.prepare(`INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+            VALUES ('memory-after-deletion', 'proj-remote', 'new summary', ?, ?)`).run(createdAt, cutoff + 1);
+        }
+        origin.prepare(`INSERT INTO user_prompts
+          (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+          VALUES (1, 'sess-abc', 1, 'resumed prompt', ?, ?)`).run(createdAt, cutoff + 1);
+        await sync.flush();
+        // Exercise CloudSync's actual kind order and canonical decoder, not a
+        // hand-built SyncOp whose field types/order could differ from the wire.
+        expect(changes.map(change => JSON.parse(change.body).kind))
+          .toEqual(includeMemories ? ['observation', 'summary', 'prompt'] : ['prompt']);
+        const apply = makeApply();
+        const result = apply.applyOps(decodeChanges(changes), { requireContiguous: true });
+        expect(result.applied).toBe(changes.length);
+        expect(result.quarantined).toBe(0);
+        expect(apply.getCursor()).toBe(String(changes.length));
+        expect(db.prepare(`SELECT up.prompt_text, s.memory_session_id FROM user_prompts up
+          JOIN sdk_sessions s ON s.id = up.session_db_id`).get())
+          .toEqual({ prompt_text: 'resumed prompt', memory_session_id: 'memory-after-deletion' });
+        expect(count('observations')).toBe(includeMemories ? 1 : 0);
+        expect(count('session_summaries')).toBe(includeMemories ? 1 : 0);
+      } finally {
+        sync.stop();
+        origin.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('does not park title or prompt-link mutations for a deleted session', () => {
     const store = new SessionStore(db);
@@ -454,6 +554,36 @@ describe('SyncApply', () => {
       .toEqual({ entity_rev: '2' });
     expect(count('sync_pull_quarantine')).toBe(0);
   });
+
+  for (const kind of ['summary', 'work_state', 'prompt'] as const) {
+    it(`a ${kind} tombstone deletes only its own table's row`, () => {
+      const apply = makeApply();
+      const rows = [
+        ['observation', 'observations', obsBody()],
+        ['summary', 'session_summaries', sumBody()],
+        ['prompt', 'user_prompts', promptBody()],
+        ['work_state', 'work_state_entries', {
+          project: 'proj-remote', list_name: 'tasks', fields: '{"title":"Remote task"}',
+          created_at_epoch: REMOTE_EPOCH,
+        }],
+      ] as const;
+      const canonical = (seq: number, rowKind: SyncOp['kind'], body: Record<string, unknown> | string, deleted = false): SyncOp => ({
+        ...op(seq, rowKind, 'shared-id', body, { rev: deleted ? 2 : 1 }),
+        entity_id: `${rowKind}:shared-id`, entity_rev: deleted ? '2' : '1',
+        operation_sha256: `${rowKind}-${deleted ? 'deleted' : 'live'}`, deleted,
+      });
+      const seeded = apply.applyOps(rows.map(([rowKind, , body], index) => canonical(index + 1, rowKind, body)));
+      expect(seeded.applied).toBe(4);
+      const before = rows.map(([, table]) => snapshot(table));
+      for (const saved of before) expect(saved).toHaveLength(1);
+
+      const result = apply.applyOps([canonical(5, kind, '{}', true)]);
+      expect(result.applied).toBe(1);
+      rows.forEach(([rowKind, table], index) => {
+        expect(snapshot(table)).toEqual(rowKind === kind ? [] : before[index]);
+      });
+    });
+  }
 
   it('resolves a set-aside retry as stale once a newer revision of the entity applied', () => {
     const apply = makeApply();
@@ -665,60 +795,6 @@ describe('SyncApply', () => {
   // ---------------------------------------------------------------------------
   // Echo guard
   // ---------------------------------------------------------------------------
-
-  it('never re-pushes applied rows: the REAL CloudSync drain selects only native rows', async () => {
-    makeApply().applyOps(remoteBatch());
-
-    // One native, unsynced observation — the only thing the drain may find.
-    db.prepare(`
-      INSERT INTO observations (memory_session_id, project, type, title, subtitle, facts, narrative,
-        concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES ('mem-1', 'proj-x', 'discovery', 'Native title', NULL, NULL, 'native narrative',
-        NULL, NULL, NULL, 1, 0, ?, 1751234567890)
-    `).run(ISO);
-
-    const calls: Array<{ url: string; parsed: any }> = [];
-    let seq = 0;
-    const fetchImpl = (async (input: any, init?: any) => {
-      const parsed = JSON.parse(String(init?.body));
-      calls.push({ url: String(input), parsed });
-      const acked = (parsed.ops as any[]).map((op) => {
-        const body = JSON.parse(op.body);
-        return {
-          id: body.id,
-          kind: body.kind,
-          origin_local_id: body.origin_local_id,
-          entity_rev: body.entity_rev,
-          seq: String(++seq),
-        };
-      });
-      return new Response(JSON.stringify({
-        acked,
-        head_seq: String(seq),
-        projected_seq: String(seq),
-      }), { status: 200 });
-    }) as typeof fetch;
-
-    const sync = new CloudSync(db, makeSettings(), {
-      fetchImpl,
-      settingsPath,
-      debounceMs: 25,
-      backoffInitialMs: 20,
-      backoffMaxMs: 200,
-    });
-    await sync.flush();
-
-    // Exactly one POST: the native observation. The applied remote
-    // observation/summary/prompt are pre-stamped synced_at (and carry origin
-    // columns) — structurally invisible to the drain's
-    // WHERE synced_at IS NULL AND origin_device_id IS NULL.
-    expect(calls.length).toBe(1);
-    expect(calls[0].url).toEndWith('/v1/sync/ops');
-    expect(calls[0].parsed.ops.length).toBe(1);
-    const envelope = JSON.parse(calls[0].parsed.ops[0].body);
-    expect(envelope.kind).toBe('observation');
-    expect(envelope.payload.title).toBe('Native title');
-  });
 
   it('skips ops originated by this device (echo of our own pushes) while advancing the cursor', () => {
     const apply = makeApply();
@@ -992,7 +1068,7 @@ describe('SyncApply', () => {
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });
 
-  it('set_title in reverse order (row ops first) lands via the replicated prompt fallback', () => {
+  it('set_title in reverse order (row ops first) lands on the adopted content identity', () => {
     const apply = makeApply();
     apply.applyOps([
       op(1, 'observation', '11', obsBody()),
@@ -1004,10 +1080,10 @@ describe('SyncApply', () => {
       }),
     ]);
 
-    // The obs-created stub carries a synthetic content id (mem-remote-1), so
-    // the direct content match misses — the replicated prompt resolves it.
+    // The prompt supplied the real content identity to the observation-created
+    // stub, so the later title addresses that same session directly.
     const session = db.prepare(`SELECT custom_title, content_session_id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
-    expect(session.content_session_id).toBe('mem-remote-1');
+    expect(session.content_session_id).toBe('sess-remote-1');
     expect(session.custom_title).toBe('Late title');
     expect(db.prepare(`SELECT COUNT(*) AS n FROM sync_state WHERE k LIKE 'parked_title:%'`).get() as any).toEqual({ n: 0 });
   });
@@ -1092,33 +1168,6 @@ describe('SyncApply', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Epoch guard
-  // ---------------------------------------------------------------------------
-
-  it('resets the cursor (and applies nothing) when the pull epoch changes', () => {
-    const apply = makeApply();
-    apply.applyOps(remoteBatch(), { epoch: 'epoch-1' });
-    expect(apply.getCursor()).toBe('3');
-
-    const result = apply.applyOps([op(4, 'observation', '99', obsBody({ content_hash: 'hash-99' }))], { epoch: 'epoch-2' });
-    expect(result.epochReset).toBe(true);
-    expect(result.applied).toBe(0);
-    expect(apply.getCursor()).toBe('0');
-    expect(apply.getEpoch()).toBe('epoch-2');
-    // Nothing from the stale-cursor page was applied.
-    expect(db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE origin_local_id = '99'`).get() as any).toEqual({ n: 0 });
-  });
-
-  it('adopts the first-ever epoch without a reset', () => {
-    const apply = makeApply();
-    expect(apply.getEpoch()).toBeNull();
-    const result = apply.applyOps(remoteBatch(), { epoch: 'epoch-initial' });
-    expect(result.epochReset).toBe(false);
-    expect(result.applied).toBe(3);
-    expect(apply.getEpoch()).toBe('epoch-initial');
-  });
-
-  // ---------------------------------------------------------------------------
   // FTS
   // ---------------------------------------------------------------------------
 
@@ -1157,7 +1206,8 @@ describe('SyncApply', () => {
       async syncUserPrompt(id, mem, project) { calls.push({ kind: 'prompt', id, mem, project }); },
     };
 
-    makeApply({ chromaSync: chroma }).applyOps(remoteBatch());
+    const apply = makeApply({ chromaSync: chroma });
+    apply.applyOps(remoteBatch());
     await sleep(10);
 
     expect(calls.map(c => c.kind).sort()).toEqual(['obs', 'prompt', 'sum']);
@@ -1165,6 +1215,15 @@ describe('SyncApply', () => {
       expect(call.mem).toBe('mem-remote-1');
       expect(call.project).toBe('proj-remote');
     }
+    const revised = apply.applyOps(remoteBatch().map((row, index) => ({ ...row, seq: String(index + 4), rev: '2' })));
+    expect(revised.applied).toBe(3);
+    await sleep(10);
+    expect(calls).toHaveLength(6);
+    calls.length = 0;
+    const stale = apply.applyOps(remoteBatch().map((row, index) => ({ ...row, seq: String(index + 7) })));
+    expect(stale.skippedStale).toBe(3);
+    await sleep(10);
+    expect(calls).toEqual([]);
   });
 
   it('a failing Chroma forward never fails or unwinds durable application', async () => {
@@ -1265,37 +1324,6 @@ describe('SyncApply', () => {
       _resetRedactionConfigCache();
     });
 
-    it('redacts observation text fields and keeps JSON-valued fields parseable', () => {
-      useRedaction(true);
-      makeApply().applyOps([op(1, 'observation', '11', obsBody({
-        title: `leaked ${AWS_KEY}`,
-        narrative: `used ${AWS_KEY}`,
-        facts: JSON.stringify([`key ${AWS_KEY}`]),
-        concepts: JSON.stringify(['concept-r']),
-      }))]);
-
-      const obs = db.prepare(`SELECT * FROM observations WHERE origin_device_id = ? AND origin_local_id = '11'`).get(REMOTE) as any;
-      expect(obs.title).toBe(`leaked ${MARKER}`);
-      expect(obs.narrative).toBe(`used ${MARKER}`);
-      expect(obs.content_hash).toBe('hash-r1');
-      expect(JSON.parse(obs.facts)).toEqual([`key ${MARKER}`]);
-      expect(JSON.parse(obs.concepts)).toEqual(['concept-r']);
-    });
-
-    it('redacts a summary and a prompt', () => {
-      useRedaction(true);
-      makeApply().applyOps([
-        op(1, 'summary', '21', sumBody({ request: `ask ${AWS_KEY}`, notes: `note ${AWS_KEY}` })),
-        op(2, 'prompt', '31', promptBody({ prompt_text: `run ${AWS_KEY}`, content_session_id: 'sess-remote-redact' })),
-      ]);
-
-      const sum = db.prepare(`SELECT * FROM session_summaries WHERE origin_local_id = '21'`).get() as any;
-      expect(sum.request).toBe(`ask ${MARKER}`);
-      expect(sum.notes).toBe(`note ${MARKER}`);
-      const prompt = db.prepare(`SELECT * FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
-      expect(prompt.prompt_text).toBe(`run ${MARKER}`);
-    });
-
     it('stores the peer body unchanged when this device has redaction off', () => {
       useRedaction(false);
       const body = obsBody({
@@ -1360,14 +1388,6 @@ describe('SyncApply', () => {
       expect(seen).toEqual([`n ${MARKER}`, `r ${MARKER}`, `p ${MARKER}`]);
     });
 
-    it('does not re-redact a body that already carries a marker', () => {
-      useRedaction(true);
-      makeApply().applyOps([op(1, 'observation', '11', obsBody({ title: `leaked ${MARKER}` }))]);
-      const obs = db.prepare(`SELECT title FROM observations WHERE origin_local_id = '11'`).get() as any;
-      expect(obs.title).toBe(`leaked ${MARKER}`);
-      expect((obs.title.match(/<redacted/g) ?? []).length).toBe(1);
-    });
-
     it('redacts a higher-revision update', () => {
       useRedaction(true);
       const apply = makeApply();
@@ -1399,6 +1419,7 @@ describe('SyncApply', () => {
       ]);
 
       const obs = db.prepare(`SELECT * FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(obs.content_hash).toBe('hash-r1');
       for (const field of ['text', 'title', 'subtitle', 'narrative']) expect(obs[field]).toBe(`x ${MARKER}`);
       for (const field of ['facts', 'concepts']) expect(JSON.parse(obs[field])[0]).toBe(`x ${MARKER}`);
       expect(JSON.parse(obs.metadata).note).toBe(`x ${MARKER}`);

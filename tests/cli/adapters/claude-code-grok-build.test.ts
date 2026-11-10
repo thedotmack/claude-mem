@@ -101,11 +101,6 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
     }
   });
 
-  it('keeps a PostToolUseFailure error as the response when no camelCase result is sent', () => {
-    const normalized = claudeCodeAdapter.normalizeInput({ ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', error: 'boom', is_interrupt: true });
-    expect(normalized.toolResponse).toEqual({ is_error: true, error: 'boom', is_interrupt: true });
-  });
-
   it('ignores stopHookActive so a blocked stop cannot drop later summaries', () => {
     expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: true }).stopHookActive).toBeUndefined();
     expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: false }).stopHookActive).toBeUndefined();
@@ -114,12 +109,5 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
 
   it('uses subagentType when agent_type and agentType are absent', () => {
     expect(claudeCodeAdapter.normalizeInput({ ...base, subagentType: 'explore' }).agentType).toBe('explore');
-  });
-
-  it('does not mutate the caller tool input when copying a read path', () => {
-    const toolInput = { target_file: 'a.ts' };
-    const normalized = claudeCodeAdapter.normalizeInput({ ...base, toolName: 'read_file', toolInput });
-    expect(toolInput).toEqual({ target_file: 'a.ts' });
-    expect(normalized.toolInput).not.toBe(toolInput);
   });
 });

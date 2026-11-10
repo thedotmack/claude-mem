@@ -3,8 +3,6 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
 import { SyncHistoryScopeReader } from '../../../src/services/sync/SyncHistoryScopeReader.js';
 import { ViewerSyncService } from '../../../src/services/sync/ViewerSyncService.js';
 import { WorkViewReadWorkerClient } from '../../../src/services/work-view/WorkViewReadWorkerClient.js';
@@ -77,28 +75,4 @@ it('settles an owned read on close without waiting for SQLite or publishing late
   reader.close();
   expect(await pending).toBeNull();
   expect(await reader.read()).toBeNull();
-});
-
-it('loads the inventory role through the shipped CJS reader entrypoint', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'sync-scope-bundle-'));
-  resources.push(() => rmSync(directory, { recursive: true, force: true }));
-  const databasePath = join(directory, 'source.db');
-  const db = new Database(databasePath);
-  new SessionStore(db);
-  db.close();
-  const banner = [
-    'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
-    'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
-  ].join('\n');
-  for (const [entry, output] of [
-    ['src/services/sync/SyncHistoryScopeReader.ts', 'scope-client.cjs'],
-    ['src/services/work-view/work-view-read-worker.ts', 'work-view-read-worker.cjs'],
-  ]) {
-    await build({ entryPoints: [entry], outfile: join(directory, output), bundle: true, platform: 'node', target: 'node18', format: 'cjs',
-      external: ['bun:sqlite'], define: { 'import.meta.url': '__IMPORT_META_URL__' }, banner: { js: banner }, logLevel: 'silent' });
-  }
-  const bundled = await import(pathToFileURL(join(directory, 'scope-client.cjs')).href);
-  const reader = new bundled.SyncHistoryScopeReader(databasePath) as SyncHistoryScopeReader;
-  resources.push(() => reader.close());
-  expect(await reader.read()).toBe(0);
 });

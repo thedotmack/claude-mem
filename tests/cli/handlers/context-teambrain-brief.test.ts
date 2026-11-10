@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -6,6 +6,7 @@ import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+import * as teamBrainClient from '../../../src/shared/teambrain.js';
 import { paths } from '../../../src/shared/paths.js';
 import { TEAMBRAIN_DISCOVERY_LINE, TEAMBRAIN_DISCOVERY_NOTICE_MARKER } from '../../../src/shared/teambrain.js';
 import {
@@ -110,20 +111,29 @@ describe('SessionStart TeamBrain brief', () => {
     expect(workerPaths.every(path => path.startsWith('/api/context/inject?'))).toBe(true);
   });
 
-  it('stops waiting after 2 s and prints exactly one line naming the timeout', async () => {
+  it('passes the brief timeout and prints exactly one line when it expires', async () => {
     settings = joined();
-    teamBrain.state.brief = { delayMs: 4_000 };
-    const startedAt = Date.now();
-    const result = await sessionStart();
-    const elapsed = Date.now() - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(1_900);
-    expect(elapsed).toBeLessThan(3_500);
-    const context = result.hookSpecificOutput?.additionalContext;
-    expect(teamBrainLines(context)).toEqual([
-      `[claude-mem] TeamBrain brief unavailable: 127.0.0.1:${teamBrain.port} did not answer within 2s`,
-    ]);
-    expect(context).toEndWith('\n\ncontext from worker');
-  }, 10_000);
+    const fetchSpy = spyOn(teamBrainClient, 'fetchTeamBrief').mockResolvedValue({
+      ok: false, kind: 'timeout', status: null,
+      reason: `127.0.0.1:${teamBrain.port} did not answer within 2s`,
+    });
+    try {
+      const result = await sessionStart();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]).toEqual([
+        { teambrainUrl: teamBrain.origin, syncToken: MOCK_SEAT_SETUP_TOKEN, syncUserId: MOCK_SEAT_USER_ID, teamId: MOCK_TEAM.id },
+        'repo-project',
+        2_000,
+      ]);
+      const context = result.hookSpecificOutput?.additionalContext;
+      expect(teamBrainLines(context)).toEqual([
+        `[claude-mem] TeamBrain brief unavailable: 127.0.0.1:${teamBrain.port} did not answer within 2s`,
+      ]);
+      expect(context).toEndWith('\n\ncontext from worker');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 
   it('prints exactly one line naming the reason when the TeamBrain host is offline', async () => {
     const offline = await startTeamBrainMock();

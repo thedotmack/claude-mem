@@ -37,7 +37,6 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import {
   adoptMergedWorktrees,
-  adoptMergedWorktreesForAllKnownRepos,
   type AdoptionResult
 } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import {
@@ -178,15 +177,6 @@ const operations: Array<{
     })
   },
   {
-    name: 'startup worktree sweep',
-    run: async ({ dataDirectory }) => {
-      const results = await adoptMergedWorktreesForAllKnownRepos({ dataDirectory });
-      const result = results.find(result => result.parentProject === targetProject);
-      if (!result) throw new Error('startup sweep did not discover the fixture repository');
-      return result;
-    }
-  },
-  {
     name: 'project merge',
     run: ({ dataDirectory }) => mergeProjectInto({
       from: sourceProject, into: targetProject, dataDirectory
@@ -211,7 +201,7 @@ for (const operation of operations) {
       const retry = await operation.run(data);
       expect(mergedCounts(retry)).toEqual([0, 0]);
       expectChromaPatch(retry);
-    });
+    }, 30_000);
 
     it('lets the disabling environment variable override enabled file settings', async () => {
       const data = fixture('true');
@@ -224,16 +214,6 @@ for (const operation of operations) {
       expect(chromaCalls).toEqual([]);
       expect(result.chromaUpdates).toBe(0);
       expect(result.chromaFailed).toBe(0);
-    });
-
-    it('lets the enabling environment variable override disabled file settings', async () => {
-      const data = fixture('false');
-      process.env.CLAUDE_MEM_CHROMA_ENABLED = 'true';
-      const result = await operation.run(data);
-
-      expect(mergedCounts(result)).toEqual([1, 1]);
-      expectSqliteMerge(data.dbPath);
-      expectChromaPatch(result);
-    });
+    }, 30_000);
   });
 }

@@ -171,12 +171,13 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
   it('observation_search path: POST /v1/search returns FTS-ranked observations from PostgresObservationRepository', async () => {
     // Seed two observations directly via REST so we exercise the same write path.
     const c = buildClient();
-    await c.addObservation({ projectId, content: 'Refactored authentication middleware to use JWT verification', kind: 'manual' });
+    const inserted = await c.addObservation({ projectId, content: 'Refactored authentication middleware to use JWT verification', kind: 'manual' });
     await c.addObservation({ projectId, content: 'Fixed flaky test in payment processing', kind: 'manual' });
 
     const matches = await c.searchObservations({ projectId, query: 'authentication', limit: 10 });
     expect(matches.observations.length).toBeGreaterThanOrEqual(1);
     expect(matches.observations[0]?.content).toContain('authentication');
+    expect(matches.observations.some(observation => observation.id === inserted.memory.id)).toBe(true);
 
     const noMatches = await c.searchObservations({ projectId, query: 'nonexistent_xyz_term', limit: 10 });
     expect(noMatches.observations).toHaveLength(0);
@@ -216,17 +217,6 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
     expect(raw.status).toBe(200);
     const rawJson = await raw.json();
     expect(rawJson.generationJob.id).toBe(jobId);
-  });
-
-  it('end-to-end: observation_add → observation_search returns the inserted observation (no provider needed)', async () => {
-    const c = buildClient();
-    const inserted = await c.addObservation({
-      projectId,
-      content: 'End-to-end harness verifies idempotent search round-trip',
-      kind: 'manual',
-    });
-    const found = await c.searchObservations({ projectId, query: 'harness verifies idempotent', limit: 5 });
-    expect(found.observations.some(observation => observation.id === inserted.memory.id)).toBe(true);
   });
 
   it('Smart REST stages keep anchors and selected IDs scoped and validate inputs', async () => {

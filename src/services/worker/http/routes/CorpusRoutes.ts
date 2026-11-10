@@ -11,9 +11,6 @@ import { logger } from '../../../../utils/logger.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
-const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
-const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
-
 const stringArrayLike = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') return undefined;
   if (Array.isArray(value)) return value;
@@ -46,10 +43,9 @@ const buildCorpusSchema = z.object({
   name: z.string().min(1).regex(CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR),
   description: z.string().optional(),
   project: z.string().optional(),
-  types: stringArrayLike.refine(
-    (arr) => arr === undefined || arr.every((t) => ALLOWED_CORPUS_TYPE_SET.has(t)),
-    { message: `types must contain only ${ALLOWED_CORPUS_TYPES.join(', ')}` }
-  ),
+  // Saved observations retain the type IDs of the mode that wrote them, even
+  // after the active mode changes. Match search's string filters, not a coding-only enum.
+  types: stringArrayLike,
   concepts: stringArrayLike,
   files: stringArrayLike,
   query: z.string().optional(),
@@ -309,7 +305,7 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
-    if (types && types.length > 0) filter.types = types as CorpusFilter['types'];
+    if (types && types.length > 0) filter.types = types;
     if (concepts && concepts.length > 0) filter.concepts = concepts;
     if (files && files.length > 0) filter.files = files;
     if (query) filter.query = query;

@@ -47,8 +47,25 @@ interface BeforePromptBuildResult {
 interface AfterToolCallEvent {
   toolName: string;
   params?: Record<string, unknown>;
+  toolCallId?: string;
   result?: unknown;
   error?: string;
+}
+
+function stripPrivateSpans(text: string): string {
+  const tags = /<private(?=[\s>]|$)[^>]*(?:>|$)|<\/private\s*>/gi;
+  let depth = 0;
+  let cursor = 0;
+  let result = "";
+  for (const match of text.matchAll(tags)) {
+    if (match[0].startsWith("</")) {
+      if (depth > 0 && --depth === 0) cursor = match.index! + match[0].length;
+    } else {
+      if (depth === 0) result += text.slice(cursor, match.index);
+      depth++;
+    }
+  }
+  return result + (depth === 0 ? text.slice(cursor) : "");
 }
 
 const CAPTURE_TOOL_NAMES = new Map([
@@ -254,6 +271,12 @@ function workerBaseUrl(port: number): string {
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
+// Covers both response headers and body reads; optional memory must not leave
+// an OpenClaw hook waiting indefinitely on an unresponsive worker. 5 s is the
+// bound the Hermes plugin, the other in-process host, already uses for the same
+// worker endpoints (WRITE_TIMEOUT_S in hermes/claude-mem/client.py; its context
+// reads use READ_TIMEOUT_S = 3 s), so context injection fits inside it too.
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
 
@@ -322,14 +345,17 @@ async function workerPost(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
       return null;
     }
+    const result = (await response.json()) as Record<string, unknown>;
     circuitOnSuccess(logger);
-    return (await response.json()) as Record<string, unknown>;
+    return result;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
@@ -351,7 +377,10 @@ function workerPostFireAndForget(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).then((response) => {
+    signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+  }).then(async (response) => {
+    // This caller needs only the status, so release the unused response body.
+    await response.body?.cancel();
     if (!response.ok) {
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
@@ -374,14 +403,18 @@ async function workerGetText(
 ): Promise<string | null> {
   if (!circuitAllow(logger)) return null;
   try {
-    const response = await fetch(`${workerBaseUrl(port)}${path}`);
+    const response = await fetch(`${workerBaseUrl(port)}${path}`, {
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
+      await response.body?.cancel();
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
+    const text = await response.text();
     circuitOnSuccess(logger);
-    return await response.text();
+    return text;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     circuitOnFailure(logger);
@@ -816,6 +849,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
+    const failed = (typeof event.error === "string" && event.error.length > 0)
+      || (event.result !== null && typeof event.result === "object"
+        && (event.result as { isError?: unknown }).isError === true);
     let toolResponseText = typeof event.result === "string" ? event.result : "";
     const content = event.result && typeof event.result === "object"
       ? (event.result as { content?: Array<{ type: string; text?: string }> }).content
@@ -832,6 +868,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
     }
 
+    toolResponseText = stripPrivateSpans(toolResponseText);
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
     if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
@@ -853,7 +890,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
       tool_input: toolInput,
-      tool_response: toolResponseText,
+      // A failed file operation is evidence of an attempt, not a completed
+      // read/edit. Keep the shared worker's structured failure marker.
+      tool_response: failed ? { is_error: true, error: toolResponseText } : toolResponseText,
+      // The worker needs the native ID to retain and link the raw tool receipt.
+      ...(typeof event.toolCallId === "string" && event.toolCallId ? { tool_use_id: event.toolCallId } : {}),
       cwd: workspaceDir,
       platformSource: PLATFORM_SOURCE,
     }, api.logger);

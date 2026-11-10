@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { buildAgentView } from '../../../src/services/work-view/agent-view.mjs';
 import { reduceWorkState } from '../../../src/services/work-view/data-source.mjs';
@@ -91,7 +91,7 @@ test('an observation after the stop means the subagent resumed', () => {
 });
 
 test('a captured tool call after the stop also means the subagent resumed', () => {
-  const toolActivity = [{ content_session_id: session.content_session_id, agent_id: SUB, last_epoch: NOW - 100 * MIN }];
+  const toolActivity = [{ platform_source: session.platform_source, content_session_id: session.content_session_id, agent_id: SUB, last_epoch: NOW - 100 * MIN }];
   const sub = subagentOf(viewFor({ entries: [stopEntry(1, NOW - 110 * MIN)], toolActivity }));
   assert.notEqual(sub.presence.status, 'finished');
 });

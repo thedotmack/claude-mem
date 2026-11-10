@@ -26,55 +26,9 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
 }
 
 /**
- * The worker did not record a transcript turn's user prompt. The watcher
- * checkpoints at the start of that turn's line (or zstd frame) and retries it
- * from there, so the turn is replayed rather than its observations being filed
- * under no prompt, and nothing before it is sent twice.
- */
-export class TranscriptAnchorError extends Error {
-  constructor(sessionId: string, cause: unknown) {
-    super(`session init failed for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    this.name = 'TranscriptAnchorError';
-    this.cause = cause;
-  }
-}
-
-/** An observation declined before the worker accepted it must retain its line. */
-export class TranscriptObservationError extends Error {
-  constructor(sessionId: string, cause: unknown) {
-    super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    this.name = 'TranscriptObservationError';
-    this.cause = cause;
-  }
-}
-
-/** A summary declined before the worker accepted it must retain its line. */
-export class TranscriptSummaryError extends Error {
-  constructor(sessionId: string, cause: unknown) {
-    super(`summary not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    this.name = 'TranscriptSummaryError';
-    this.cause = cause;
-  }
-}
-
-/**
- * An event could not be written to the durable hook spool the worker drains:
- * an observation or summary of the standalone watcher, or any watcher's file
- * edit. The line is retried from its own position, like a turn whose prompt
- * was not recorded.
- */
-export class TranscriptSpoolError extends Error {
-  constructor(sessionId: string, cause: unknown) {
-    super(`transcript event not persisted for session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    this.name = 'TranscriptSpoolError';
-    this.cause = cause;
-  }
-}
-
-/**
  * How observations and summaries reach the worker. The worker's own watcher
  * ingests in-process; the standalone `transcript watch` command has no ingest
- * context, so it writes them to the hook spool the worker drains.
+ * context, so it uses the common live hook handoff.
  */
 export type TranscriptObservationTransport = 'in-process' | 'spool';
 
@@ -426,33 +380,32 @@ export class TranscriptEventProcessor {
   }
 
   /**
-   * Normalize a message field to text. Transcripts that store messages as
-   * content-block arrays (e.g. DeepSeek Harness assistant messages with
-   * reasoning/text blocks) are joined by newline; strings pass through.
+   * Normalize visible message text. Reasoning and other non-text blocks are
+   * not the assistant's answer. A message with no visible text must not
+   * replace the preceding answer; strings retain their existing behavior.
    */
   private resolveMessageText(value: unknown): string | undefined {
     if (typeof value === 'string') return value;
     if (!Array.isArray(value)) return undefined;
     const parts: string[] = [];
     for (const block of value) {
-      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
-        parts.push((block as { text: string }).text);
-      }
+      if (!block || typeof block !== 'object') continue;
+      const { type, text } = block as { type?: unknown; text?: unknown };
+      if (type !== undefined && type !== 'text' && type !== 'input_text' && type !== 'output_text') continue;
+      if (typeof text === 'string' && text.length > 0) parts.push(text);
     }
     return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>, eventOccurredAtEpochMs: number | null): Promise<void> {
-    const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    const prompt = this.resolveMessageText(fields.prompt) ?? '';
     await this.anchorUserPrompt(session, prompt, eventOccurredAtEpochMs);
   }
 
   /**
    * Record the turn's user prompt through the init path the hooks use, so the
-   * worker has a user_prompts row for it. A prompt the worker did not record
-   * (unreachable, a 429/5xx reply, no budget) throws TranscriptAnchorError:
-   * the watcher then checkpoints at this turn's line and retries it, instead
-   * of its observations being filed under no prompt.
+   * worker has a user_prompts row for it. A failed handoff is skipped; the
+   * transcript remains source evidence, not a backlog for later inference.
    */
   private async anchorUserPrompt(session: SessionState, prompt: string, eventOccurredAtEpochMs: number | null): Promise<void> {
     if (prompt) {
@@ -473,7 +426,7 @@ export class TranscriptEventProcessor {
         eventOccurredAtEpochMs,
       });
     } catch (error: unknown) {
-      throw new TranscriptAnchorError(session.sessionId, error);
+      logger.warn('TRANSCRIPT', 'Skipping user prompt after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
     }
   }
 
@@ -495,16 +448,6 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
     const toolResponse = this.maybeParseJson(fields.toolResponse);
-
-    if (toolName === 'apply_patch' && typeof toolInput === 'string') {
-      const files = this.parseApplyPatchFiles(toolInput);
-      for (const filePath of files) {
-        await this.sendFileEdit(session, {
-          filePath,
-          edits: [{ type: 'apply_patch', patch: toolInput }]
-        }, eventOccurredAtEpochMs);
-      }
-    }
 
     if (toolName && toolResponse !== undefined) {
       await this.sendObservation(session, watch, {
@@ -580,11 +523,14 @@ export class TranscriptEventProcessor {
       return;
     }
 
+    const toolInput = this.maybeParseJson(fields.toolInput);
     const payload = {
       contentSessionId: session.sessionId,
       cwd: session.cwd,
       toolName,
-      toolInput: this.maybeParseJson(fields.toolInput),
+      // Freeform patch calls need the same recognized field as structured
+      // patch inputs after ingest JSON-encodes them for file evidence.
+      toolInput: toolName === 'apply_patch' && typeof toolInput === 'string' ? { patch: toolInput } : toolInput,
       toolResponse: this.maybeParseJson(fields.toolResponse),
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
@@ -595,7 +541,7 @@ export class TranscriptEventProcessor {
       try {
         spoolHookEvent('observation', payload);
       } catch (error) {
-        throw new TranscriptSpoolError(session.sessionId, error);
+        logger.warn('TRANSCRIPT', 'Skipping transcript event after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
       }
       return;
     }
@@ -613,7 +559,7 @@ export class TranscriptEventProcessor {
         }, error instanceof Error ? error : undefined);
         return;
       }
-      throw new TranscriptObservationError(session.sessionId, error);
+      logger.warn('TRANSCRIPT', 'Skipping observation after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
     }
   }
 
@@ -635,9 +581,7 @@ export class TranscriptEventProcessor {
         eventOccurredAtEpochMs,
       });
     } catch (error) {
-      // The inputs are checked above, so what throws is the spool write: the
-      // line is retried rather than its edit lost.
-      throw new TranscriptSpoolError(session.sessionId, error);
+      logger.warn('TRANSCRIPT', 'Skipping transcript event after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
     }
   }
 
@@ -656,27 +600,6 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private parseApplyPatchFiles(patch: string): string[] {
-    const files: string[] = [];
-    const lines = patch.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('*** Update File: ')) {
-        files.push(trimmed.replace('*** Update File: ', '').trim());
-      } else if (trimmed.startsWith('*** Add File: ')) {
-        files.push(trimmed.replace('*** Add File: ', '').trim());
-      } else if (trimmed.startsWith('*** Delete File: ')) {
-        files.push(trimmed.replace('*** Delete File: ', '').trim());
-      } else if (trimmed.startsWith('*** Move to: ')) {
-        files.push(trimmed.replace('*** Move to: ', '').trim());
-      } else if (trimmed.startsWith('+++ ')) {
-        const path = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
-        if (path && path !== '/dev/null') files.push(path);
-      }
-    }
-    return Array.from(new Set(files));
-  }
-
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
     // A suppressed top-level session reaches here only to be cleaned up; its
     // summary and context belong to the native hooks, not the transcript watch.
@@ -691,7 +614,6 @@ export class TranscriptEventProcessor {
 
   private async queueSummary(session: SessionState): Promise<void> {
     if (this.observationTransport === 'spool') {
-      // Spooled after the session's observations, which the drain hands over first.
       try {
         spoolHookEvent('summarize', {
           contentSessionId: session.sessionId,
@@ -700,7 +622,7 @@ export class TranscriptEventProcessor {
           ...(session.cwd ? { cwd: session.cwd } : {}),
         });
       } catch (error) {
-        throw new TranscriptSpoolError(session.sessionId, error);
+        logger.warn('TRANSCRIPT', 'Skipping transcript event after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
       }
       return;
     }
@@ -722,7 +644,7 @@ export class TranscriptEventProcessor {
         }, error instanceof Error ? error : undefined);
         return;
       }
-      throw new TranscriptSummaryError(session.sessionId, error);
+      logger.warn('TRANSCRIPT', 'Skipping summary after failed live handoff', { sessionId: session.sessionId }, error instanceof Error ? error : undefined);
     }
   }
 

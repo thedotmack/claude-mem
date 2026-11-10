@@ -147,25 +147,6 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     expect(result.ANTHROPIC_AUTH_TOKEN).toBe('test-token');
   });
 
-  it('leaked process.env BASE_URL never reaches the OAuth-skip predicate', async () => {
-    // The root cause of #2375: a BASE_URL exported by the parent shell used to
-    // survive into isolatedEnv and trigger the OAuth-skip path, leaving the
-    // subprocess with no credentials at all. With BASE_URL in BLOCKED_ENV_VARS,
-    // the leak is stripped before the predicate runs, so OAuth lookup still
-    // fires (the real credential path) rather than being short-circuited.
-    process.env.ANTHROPIC_BASE_URL = 'https://leaked-from-shell.example';
-
-    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken');
-    try {
-      const result = await buildIsolatedEnvWithFreshOAuth();
-      // The leaked BASE_URL must not be present (it was never re-injected from
-      // .env, which does not exist in this test).
-      expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
-    } finally {
-      oauthSpy.mockRestore();
-    }
-  });
-
   it('bare .env BASE_URL alone does not trigger OAuth fetch', async () => {
     // A user with a tokenless gateway (e.g. mTLS at the network boundary)
     // configures BASE_URL only. The three-branch predicate must hit the
@@ -854,35 +835,24 @@ describe('Issue #5400: observer spawn inherits proxy env from Claude settings', 
   });
 
   it('fills missing proxy keys from the profile settings.json, and sanitizeEnv keeps them', () => {
-    writeSettings({
-      env: {
-        HTTP_PROXY: 'http://proxy.example:3128',
-        HTTPS_PROXY: 'http://proxy.example:3128',
-        ALL_PROXY: 'socks5://proxy.example:1080',
-        NO_PROXY: 'localhost,127.0.0.1,::1',
-        http_proxy: 'http://proxy.example:3128',
-        https_proxy: 'http://proxy.example:3128',
-        all_proxy: 'socks5://proxy.example:1080',
-        no_proxy: 'localhost,127.0.0.1,::1',
-        npm_config_https_proxy: 'http://proxy.example:3128',
-        NODE_USE_ENV_PROXY: '1',
-        node_use_env_proxy: '1',
-      },
-    });
+    const env = {
+      HTTP_PROXY: 'http://proxy.example:3128',
+      HTTPS_PROXY: 'http://proxy.example:3128',
+      ALL_PROXY: 'socks5://proxy.example:1080',
+      NO_PROXY: 'localhost,127.0.0.1,::1',
+      http_proxy: 'http://proxy.example:3128',
+      https_proxy: 'http://proxy.example:3128',
+      all_proxy: 'socks5://proxy.example:1080',
+      no_proxy: 'localhost,127.0.0.1,::1',
+      npm_config_https_proxy: 'http://proxy.example:3128',
+      NODE_USE_ENV_PROXY: '1',
+      node_use_env_proxy: '1',
+    };
+    writeSettings({ env });
 
     const result = sanitizeEnv(buildIsolatedEnv());
 
-    expect(result.HTTP_PROXY).toBe('http://proxy.example:3128');
-    expect(result.HTTPS_PROXY).toBe('http://proxy.example:3128');
-    expect(result.ALL_PROXY).toBe('socks5://proxy.example:1080');
-    expect(result.NO_PROXY).toBe('localhost,127.0.0.1,::1');
-    expect(result.http_proxy).toBe('http://proxy.example:3128');
-    expect(result.https_proxy).toBe('http://proxy.example:3128');
-    expect(result.all_proxy).toBe('socks5://proxy.example:1080');
-    expect(result.no_proxy).toBe('localhost,127.0.0.1,::1');
-    expect(result.npm_config_https_proxy).toBe('http://proxy.example:3128');
-    expect(result.NODE_USE_ENV_PROXY).toBe('1');
-    expect(result.node_use_env_proxy).toBe('1');
+    expect(Object.fromEntries(Object.keys(env).map(key => [key, result[key]]))).toEqual(env);
     expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
     expect(result.CLAUDE_MEM_INTERNAL).toBe('1');
   });

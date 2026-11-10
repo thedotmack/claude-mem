@@ -130,21 +130,14 @@ describe('key pool wiring', () => {
   });
 
   describe('Gemini', () => {
-    it('is available from the legacy key alone', () => {
-      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'AIza-one';
-      expect(isGeminiAvailable()).toBe(true);
-    });
-
-    it('is available from a list-only configuration, so dispatch does not fall through', () => {
-      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
-      process.env.CLAUDE_MEM_GEMINI_API_KEYS = 'AIza-a,AIza-b';
-      expect(isGeminiAvailable()).toBe(true);
-    });
-
-    it('is unavailable with neither', () => {
-      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
-      process.env.CLAUDE_MEM_GEMINI_API_KEYS = '';
-      expect(isGeminiAvailable()).toBe(false);
+    it.each([
+      ['AIza-one', '', true],
+      ['', 'AIza-a,AIza-b', true],
+      ['', '', false],
+    ])('availability with key %p and list %p is %p', (key, list, expected) => {
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = key;
+      process.env.CLAUDE_MEM_GEMINI_API_KEYS = list;
+      expect(isGeminiAvailable()).toBe(expected);
     });
   });
 });

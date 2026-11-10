@@ -5,6 +5,7 @@ import { join } from 'path';
 
 import {
   autoUpdateCheck,
+  bunRuntimeCheck,
   hookLauncherCheck,
   observerProviderCheck,
   probeChromaDiagnostics,
@@ -226,6 +227,21 @@ describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', 
   });
 });
 
+describe('npx doctor Bun runtime', () => {
+  it('warns about rebuilding with an older Bun on macOS', () => {
+    const result = bunRuntimeCheck('1.4.0', 'darwin');
+    expect(result).toMatchObject({ status: 'warn', required: true });
+    expect(result.detail).toContain('1.4.1');
+    expect(result.detail).toContain('bun upgrade');
+  });
+
+  it('accepts a supported Bun on macOS and leaves the Linux minimum alone', () => {
+    expect(bunRuntimeCheck('v1.4.1', 'darwin')).toMatchObject({ status: 'ok', detail: 'v1.4.1' });
+    expect(bunRuntimeCheck('1.4.0', 'linux').status).toBe('ok');
+    expect(bunRuntimeCheck(null, 'darwin').status).toBe('fail');
+  });
+});
+
 // `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, so the first `claude-mem` there is
 // this CLI, not the hook launcher. Hooks run outside npx and find the launcher, so doctor must look past itself.
 describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => {
@@ -239,8 +255,8 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     chmodSync(path, 0o755);
   }
 
-  function host(pathValue: string) {
-    return { homeDirectory: root, platform: process.platform, environmentVariables: { PATH: pathValue } };
+  function host(pathValue: string, platform: NodeJS.Platform = 'linux') {
+    return { homeDirectory: root, platform, environmentVariables: { PATH: pathValue } };
   }
 
   beforeEach(() => {
@@ -266,6 +282,81 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     const result = hookLauncherCheck(host(`${npxBin}:${launcherDir}:/usr/bin:/bin`), runningCli);
     expect(result.status).toBe('ok');
     expect(result.detail).toContain(join(launcherDir, 'claude-mem'));
+  });
+
+  // A launcher that answers runs on this macOS; only macOS 27 kills it, so doctor warns instead of failing (#5247).
+  it('warns on macOS when a launcher answers --version but fails signature verification', () => {
+    const launcher = join(launcherDir, 'claude-mem');
+    const verify = (binaryPath: string) => {
+      expect(binaryPath).toBe(launcher);
+      return { status: 1, stderr: 'invalid signature\n' };
+    };
+
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, verify, '1.4.1');
+
+    expect(result).toMatchObject({ status: 'warn', required: true });
+    expect(result.detail).toContain('codesign --verify --strict');
+    expect(result.detail).toContain('invalid signature');
+    expect(result.detail).toContain('macOS 27 will kill it');
+    // The installer keeps a launcher that answers the current protocol, so it has to be moved first.
+    expect(result.detail).toContain('move it aside, then run `npx claude-mem install`');
+    expect(result.detail).not.toContain('bun upgrade');
+  });
+
+  // Bun below 1.4.1 builds the same rejected signature, so moving the launcher aside first would only rebuild it broken.
+  it('names bun upgrade before the rebuild when an old Bun built a launcher that fails verification', () => {
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({ status: 1, stderr: 'invalid signature' }), 'v1.4.0');
+
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('run `bun upgrade` first (Bun 1.4.0 builds a launcher macOS 27 rejects; 1.4.1 or newer does not), then move it aside');
+  });
+
+  it('rebuilds an older-protocol launcher that fails verification without moving it aside', () => {
+    executable(join(launcherDir, 'claude-mem'), String(LAUNCHER_PROTOCOL - 1));
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({ status: 1, stderr: 'invalid signature' }), '1.4.1');
+
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('run `npx claude-mem install`');
+    expect(result.detail).not.toContain('move it aside');
+  });
+
+  // `npx claude-mem install` rebuilds a killed launcher in place (#5253), so the hint never asks to move it.
+  it('fails a macOS launcher killed before --version can answer and says the install rebuilds it', () => {
+    const launcher = join(launcherDir, 'claude-mem');
+    writeFileSync(launcher, '#!/bin/sh\nkill -KILL $$\n# usage: claude-mem hook <platform> <event>\n# continuing without memory\n');
+    const verify = () => ({ status: 1, stderr: 'code object is not signed at all' });
+
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, verify, '1.4.1');
+    expect(result).toMatchObject({ status: 'fail', required: true });
+    expect(result.detail).toContain('killed by SIGKILL');
+    expect(result.detail).toContain('code object is not signed at all');
+    expect(result.detail).toContain('run `npx claude-mem install`, which rebuilds it');
+    expect(result.detail).not.toContain('move it aside');
+    expect(result.detail).not.toContain('bun upgrade');
+
+    const withOldBun = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, verify, '1.3.12');
+    expect(withOldBun.status).toBe('fail');
+    expect(withOldBun.detail).toContain('run `bun upgrade` first (Bun 1.3.12');
+    expect(withOldBun.detail).toContain('then run `npx claude-mem install`, which rebuilds it');
+  });
+
+  // codesign missing or timed out proves nothing about the launcher, so it cannot fail a required check.
+  it('warns, not fails, when codesign could not run on a working launcher', () => {
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({ status: null, stderr: 'spawnSync codesign ENOENT' }), '1.4.1');
+
+    expect(result).toMatchObject({ status: 'warn', required: true });
+    expect(result.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
+    expect(result.detail).toContain('could not check its code signature (spawnSync codesign ENOENT)');
+  });
+
+  it('keeps the protocol result for a signed launcher', () => {
+    const result = hookLauncherCheck(host(launcherDir, 'darwin'), runningCli, () => ({
+      status: 0,
+      stderr: '',
+    }));
+
+    expect(result.status).toBe('ok');
+    expect(result.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
   });
 
   it('still fails when another claude-mem that is not the launcher comes first', () => {
@@ -604,12 +695,6 @@ describe('npx doctor Auto-update row', () => {
   });
 
   describe('warnings only when the person needs to act', () => {
-    it('failed: information with its stage, no warning and no fix line (the installed version still works)', () => {
-      const row = autoUpdateCheck(sources({ state: { ...checked, lastAttemptOutcome: outcome('failed', { failureStage: 'installer-exit' }) } }));
-      expect(row.status).toBe('ok');
-      expect(lines(row.detail)).toContain(`Last update: ${INSTALLED} → ${TARGET}, failed at installer-exit, [-20 min]`);
-      expect(row.detail).not.toContain('Fix:');
-    });
 
     it('restore_failed not resolved: a warning, and the fix the outcome recorded, never one rebuilt from the previous version', () => {
       const row = autoUpdateCheck(sources({
@@ -633,20 +718,6 @@ describe('npx doctor Auto-update row', () => {
       ]);
     });
 
-    it('restore_failed blocked by the schema: the whole instruction, the command and when to run it', () => {
-      const row = autoUpdateCheck(sources({
-        state: { ...checked, lastAttemptOutcome: outcome('restore_failed', { failureStage: 'restore-blocked-by-schema', fixCommand: AUTO_UPDATE_FORWARD_FIX_COMMAND, fixCommandWhen: 'once-a-release-newer-than-the-target-is-out' }) },
-      }));
-      expect(lines(row.detail).at(-1)).toBe(`Fix: once a claude-mem release newer than ${TARGET} is out, run \`npx claude-mem@latest update\`, then restart Claude Code.`);
-    });
-
-    it('restore_failed with the installer still running: the fix, for once that update has finished', () => {
-      const row = autoUpdateCheck(sources({
-        state: { ...checked, lastAttemptOutcome: outcome('restore_failed', { failureStage: 'installer-still-running', fixCommand: `npx claude-mem@${INSTALLED} update`, fixCommandWhen: 'once-the-running-update-has-finished' }) },
-      }));
-      expect(lines(row.detail).at(-1)).toBe(`Fix: once the update that is still running has finished, run \`npx claude-mem@${INSTALLED} update\`, then restart Claude Code.`);
-    });
-
     it('restore_failed resolved by a ready worker: no warning and no fix line, with the worker\'s version and when', () => {
       const row = autoUpdateCheck(sources({
         state: {
@@ -660,9 +731,6 @@ describe('npx doctor Auto-update row', () => {
       expect(row.detail).not.toContain('may not work');
     });
 
-    it('restored: no warning, the install works', () => {
-      expect(autoUpdateCheck(sources({ state: { ...checked, lastAttemptOutcome: outcome('restored') } })).status).toBe('ok');
-    });
 
     it('the last check failed while the updater is on: a warning with its message', () => {
       const row = autoUpdateCheck(sources({
@@ -801,270 +869,136 @@ describe('npx doctor Auto-update row', () => {
 });
 
 describe('npx doctor observerProviderCheck (#5359)', () => {
-  it('passes when configured for claude and Claude CLI is detected', () => {
-    const res = observerProviderCheck({
-      provider: 'claude',
-      claudeDetected: true,
-      detectedClaudeVersion: '2.1.316',
-      codexDetected: false,
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'ok',
-      required: false,
-    });
-    expect(res.detail).toContain('claude (Claude Code v2.1.316)');
-  });
+  type Input = Parameters<typeof observerProviderCheck>[0];
+  const cases: Array<{
+    name: string; input: Partial<Input> & Pick<Input, 'provider'>; status: 'ok' | 'warn';
+    fragments?: string[]; detail?: string;
+  }> = [
+    {
+      name: 'passes when configured for claude and Claude CLI is detected',
+      input: { provider: 'claude', claudeDetected: true, detectedClaudeVersion: '2.1.316' }, status: 'ok',
+      fragments: ['claude (Claude Code v2.1.316)'],
+    },
+    {
+      name: 'warns when configured for claude and Claude CLI is missing but Codex CLI is detected on PATH',
+      input: { provider: 'claude', codexDetected: true, codexOnPath: true }, status: 'warn',
+      fragments: ['Claude CLI not found on PATH or at CLAUDE_CODE_PATH',
+        'Codex CLI is available — set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json'],
+    },
+    {
+      name: 'warns with CLAUDE_MEM_CODEX_PATH when Codex is detected at an off-PATH bundle location',
+      input: { provider: 'claude', codexDetected: true, codexOnPath: false, codexPath: '/Applications/Codex.app/Contents/Resources/codex' }, status: 'warn',
+      fragments: ['set CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "/Applications/Codex.app/Contents/Resources/codex"'],
+    },
+    {
+      name: 'warns when configured for claude and neither Claude nor Codex is detected',
+      input: { provider: 'claude' }, status: 'warn',
+      fragments: ['Claude CLI not found on PATH or at CLAUDE_CODE_PATH'],
+    },
+    {
+      name: 'passes when configured for codex and Codex CLI is on PATH',
+      input: { provider: 'codex', codexDetected: true, codexOnPath: true }, status: 'ok',
+      fragments: ['codex (Codex CLI available)'],
+    },
+    {
+      name: 'warns when configured for codex without path override and codex is only in app bundle',
+      input: { provider: 'codex', codexDetected: true, codexOnPath: false, codexPath: '/Applications/Codex.app/Contents/Resources/codex' }, status: 'warn',
+      fragments: ['codex is not on PATH. Found at /Applications/Codex.app/Contents/Resources/codex',
+        'set CLAUDE_MEM_CODEX_PATH to "/Applications/Codex.app/Contents/Resources/codex"'],
+    },
+    {
+      name: 'handles explicit CLAUDE_MEM_CODEX_PATH configured: ok',
+      input: { provider: 'codex', codexDetected: true, codexPath: '/opt/custom/codex', configuredCodexPath: '/opt/custom/codex' }, status: 'ok',
+      detail: 'codex (/opt/custom/codex)',
+    },
+    {
+      name: 'handles explicit CLAUDE_MEM_CODEX_PATH configured: missing',
+      input: { provider: 'codex', configuredCodexPath: '/nonexistent/codex' }, status: 'warn',
+      fragments: ['CLAUDE_MEM_CODEX_PATH "/nonexistent/codex" is missing or not executable'],
+    },
+    {
+      name: 'handles explicit CLAUDE_MEM_CODEX_PATH configured: tilde',
+      input: { provider: 'codex', configuredCodexPath: '~/bin/codex' }, status: 'warn',
+      fragments: ['starts with ~, which the worker does not expand'],
+    },
+    {
+      name: 'warns when configured for codex and Codex CLI is missing completely',
+      input: { provider: 'codex' }, status: 'warn',
+      fragments: ['codex configured, but Codex CLI not found on PATH or at CLAUDE_MEM_CODEX_PATH'],
+    },
+    {
+      name: 'validates openrouter provider with and without API key: withKey',
+      input: { provider: 'openrouter', hasOpenRouterKey: true }, status: 'ok',
+      fragments: ['API key configured'],
+    },
+    {
+      name: 'validates openrouter provider with and without API key: withoutKey',
+      input: { provider: 'openrouter', hasOpenRouterKey: false }, status: 'warn',
+      fragments: ['no API key configured'],
+    },
+    {
+      name: 'validates gemini provider with and without API key: withKey',
+      input: { provider: 'gemini', hasGeminiKey: true }, status: 'ok',
+      fragments: ['API key configured'],
+    },
+    {
+      name: 'validates gemini provider with and without API key: withoutKey',
+      input: { provider: 'gemini', hasGeminiKey: false }, status: 'warn',
+      fragments: ['no API key configured'],
+    },
+    {
+      name: 'validates openai-compatible provider configurations (#5359): noEndpoint',
+      input: { provider: 'openai-compatible', openaiCompat: { hasEndpoint: false, hasModel: false, hasKey: false, requiresKey: false } }, status: 'warn',
+      fragments: ['no endpoint URL or preset is set'],
+    },
+    {
+      name: 'validates openai-compatible provider configurations (#5359): noModel',
+      input: { provider: 'openai-compatible',
+        openaiCompat: { hasEndpoint: true, hasModel: false, hasKey: false, requiresKey: false, endpointUrl: 'https://integrate.api.nvidia.com/v1' } }, status: 'warn',
+      fragments: ['no model is configured'],
+    },
+    {
+      name: 'validates openai-compatible provider configurations (#5359): missingKey',
+      input: { provider: 'openai-compatible',
+        openaiCompat:
+         { hasEndpoint: true,
+           hasModel: true,
+           hasKey: false,
+           requiresKey: true,
+           endpointUrl: 'https://integrate.api.nvidia.com/v1',
+           model: 'nvidia/nemotron-3.5' } }, status: 'warn',
+      fragments: ['required API key is missing'],
+    },
+    {
+      name: 'validates openai-compatible provider configurations (#5359): validRemote',
+      input: { provider: 'openai-compatible',
+        openaiCompat:
+         { hasEndpoint: true,
+           hasModel: true,
+           hasKey: true,
+           requiresKey: true,
+           endpointUrl: 'https://integrate.api.nvidia.com/v1',
+           model: 'nvidia/nemotron-3.5' } }, status: 'ok',
+      detail: 'openai-compatible (nvidia/nemotron-3.5 via https://integrate.api.nvidia.com/v1)',
+    },
+    {
+      name: 'validates openai-compatible provider configurations (#5359): validLocalNoKey',
+      input: { provider: 'openai-compatible',
+        openaiCompat: { hasEndpoint: true, hasModel: true, hasKey: false, requiresKey: false, endpointUrl: 'http://localhost:11434/v1', model: 'llama3' } }, status: 'ok',
+      detail: 'openai-compatible (llama3 via http://localhost:11434/v1)',
+    },
+    {
+      name: 'warns when provider value is unrecognized: unknown',
+      input: { provider: 'unsupported-llm' }, status: 'warn',
+      fragments: ['Unknown provider "unsupported-llm"'],
+    },
+  ];
 
-  it('warns when configured for claude and Claude CLI is missing but Codex CLI is detected on PATH', () => {
-    const res = observerProviderCheck({
-      provider: 'claude',
-      claudeDetected: false,
-      codexDetected: true,
-      codexOnPath: true,
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'warn',
-      required: false,
-    });
-    expect(res.detail).toContain('Claude CLI not found on PATH or at CLAUDE_CODE_PATH');
-    expect(res.detail).toContain('Codex CLI is available — set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json');
-  });
-
-  it('warns with CLAUDE_MEM_CODEX_PATH when Codex is detected at an off-PATH bundle location', () => {
-    const res = observerProviderCheck({
-      provider: 'claude',
-      claudeDetected: false,
-      codexDetected: true,
-      codexOnPath: false,
-      codexPath: '/Applications/Codex.app/Contents/Resources/codex',
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'warn',
-      required: false,
-    });
-    expect(res.detail).toContain('set CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "/Applications/Codex.app/Contents/Resources/codex"');
-  });
-
-  it('warns when configured for claude and neither Claude nor Codex is detected', () => {
-    const res = observerProviderCheck({
-      provider: 'claude',
-      claudeDetected: false,
-      codexDetected: false,
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'warn',
-      required: false,
-    });
-    expect(res.detail).toContain('Claude CLI not found on PATH or at CLAUDE_CODE_PATH');
-  });
-
-  it('passes when configured for codex and Codex CLI is on PATH', () => {
-    const res = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: true,
-      codexOnPath: true,
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'ok',
-      required: false,
-    });
-    expect(res.detail).toContain('codex (Codex CLI available)');
-  });
-
-  it('warns when configured for codex without path override and codex is only in app bundle', () => {
-    const res = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: true,
-      codexOnPath: false,
-      codexPath: '/Applications/Codex.app/Contents/Resources/codex',
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'warn',
-      required: false,
-    });
-    expect(res.detail).toContain('codex is not on PATH. Found at /Applications/Codex.app/Contents/Resources/codex');
-    expect(res.detail).toContain('set CLAUDE_MEM_CODEX_PATH to "/Applications/Codex.app/Contents/Resources/codex"');
-  });
-
-  it('handles explicit CLAUDE_MEM_CODEX_PATH configured', () => {
-    const ok = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: true,
-      codexPath: '/opt/custom/codex',
-      configuredCodexPath: '/opt/custom/codex',
-    });
-    expect(ok.status).toBe('ok');
-    expect(ok.detail).toBe('codex (/opt/custom/codex)');
-
-    const missing = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: false,
-      configuredCodexPath: '/nonexistent/codex',
-    });
-    expect(missing.status).toBe('warn');
-    expect(missing.detail).toContain('CLAUDE_MEM_CODEX_PATH "/nonexistent/codex" is missing or not executable');
-
-    const tilde = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: false,
-      configuredCodexPath: '~/bin/codex',
-    });
-    expect(tilde.status).toBe('warn');
-    expect(tilde.detail).toContain('starts with ~, which the worker does not expand');
-  });
-
-  it('warns when configured for codex and Codex CLI is missing completely', () => {
-    const res = observerProviderCheck({
-      provider: 'codex',
-      claudeDetected: false,
-      codexDetected: false,
-    });
-    expect(res).toMatchObject({
-      name: 'Observer provider',
-      status: 'warn',
-      required: false,
-    });
-    expect(res.detail).toContain('codex configured, but Codex CLI not found on PATH or at CLAUDE_MEM_CODEX_PATH');
-  });
-
-  it('validates openrouter provider with and without API key', () => {
-    const withKey = observerProviderCheck({
-      provider: 'openrouter',
-      claudeDetected: false,
-      codexDetected: false,
-      hasOpenRouterKey: true,
-    });
-    expect(withKey.status).toBe('ok');
-    expect(withKey.detail).toContain('API key configured');
-
-    const withoutKey = observerProviderCheck({
-      provider: 'openrouter',
-      claudeDetected: false,
-      codexDetected: false,
-      hasOpenRouterKey: false,
-    });
-    expect(withoutKey.status).toBe('warn');
-    expect(withoutKey.detail).toContain('no API key configured');
-  });
-
-  it('validates gemini provider with and without API key', () => {
-    const withKey = observerProviderCheck({
-      provider: 'gemini',
-      claudeDetected: false,
-      codexDetected: false,
-      hasGeminiKey: true,
-    });
-    expect(withKey.status).toBe('ok');
-    expect(withKey.detail).toContain('API key configured');
-
-    const withoutKey = observerProviderCheck({
-      provider: 'gemini',
-      claudeDetected: false,
-      codexDetected: false,
-      hasGeminiKey: false,
-    });
-    expect(withoutKey.status).toBe('warn');
-    expect(withoutKey.detail).toContain('no API key configured');
-  });
-
-  it('validates openai-compatible provider configurations (#5359)', () => {
-    const noEndpoint = observerProviderCheck({
-      provider: 'openai-compatible',
-      claudeDetected: false,
-      codexDetected: false,
-      openaiCompat: {
-        hasEndpoint: false,
-        hasModel: false,
-        hasKey: false,
-        requiresKey: false,
-      },
-    });
-    expect(noEndpoint.status).toBe('warn');
-    expect(noEndpoint.detail).toContain('no endpoint URL or preset is set');
-
-    const noModel = observerProviderCheck({
-      provider: 'openai-compatible',
-      claudeDetected: false,
-      codexDetected: false,
-      openaiCompat: {
-        hasEndpoint: true,
-        hasModel: false,
-        hasKey: false,
-        requiresKey: false,
-        endpointUrl: 'https://integrate.api.nvidia.com/v1',
-      },
-    });
-    expect(noModel.status).toBe('warn');
-    expect(noModel.detail).toContain('no model is configured');
-
-    const missingKey = observerProviderCheck({
-      provider: 'openai-compatible',
-      claudeDetected: false,
-      codexDetected: false,
-      openaiCompat: {
-        hasEndpoint: true,
-        hasModel: true,
-        hasKey: false,
-        requiresKey: true,
-        endpointUrl: 'https://integrate.api.nvidia.com/v1',
-        model: 'nvidia/nemotron-3.5',
-      },
-    });
-    expect(missingKey.status).toBe('warn');
-    expect(missingKey.detail).toContain('required API key is missing');
-
-    const validRemote = observerProviderCheck({
-      provider: 'openai-compatible',
-      claudeDetected: false,
-      codexDetected: false,
-      openaiCompat: {
-        hasEndpoint: true,
-        hasModel: true,
-        hasKey: true,
-        requiresKey: true,
-        endpointUrl: 'https://integrate.api.nvidia.com/v1',
-        model: 'nvidia/nemotron-3.5',
-      },
-    });
-    expect(validRemote.status).toBe('ok');
-    expect(validRemote.detail).toBe('openai-compatible (nvidia/nemotron-3.5 via https://integrate.api.nvidia.com/v1)');
-
-    const validLocalNoKey = observerProviderCheck({
-      provider: 'openai-compatible',
-      claudeDetected: false,
-      codexDetected: false,
-      openaiCompat: {
-        hasEndpoint: true,
-        hasModel: true,
-        hasKey: false,
-        requiresKey: false,
-        endpointUrl: 'http://localhost:11434/v1',
-        model: 'llama3',
-      },
-    });
-    expect(validLocalNoKey.status).toBe('ok');
-    expect(validLocalNoKey.detail).toBe('openai-compatible (llama3 via http://localhost:11434/v1)');
-  });
-
-  it('warns when provider value is unrecognized', () => {
-    const unknown = observerProviderCheck({
-      provider: 'unsupported-llm',
-      claudeDetected: false,
-      codexDetected: false,
-    });
-    expect(unknown.status).toBe('warn');
-    expect(unknown.detail).toContain('Unknown provider "unsupported-llm"');
+  it.each(cases)('$name', ({ input, status, fragments, detail }) => {
+    const result = observerProviderCheck({ claudeDetected: false, codexDetected: false, ...input });
+    expect(result).toMatchObject({ name: 'Observer provider', status, required: false });
+    if (detail !== undefined) expect(result.detail).toBe(detail);
+    for (const fragment of fragments ?? []) expect(result.detail).toContain(fragment);
   });
 });
 

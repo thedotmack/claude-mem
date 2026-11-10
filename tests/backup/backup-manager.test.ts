@@ -6,7 +6,7 @@
 
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { BackupManager } from '../../src/services/backup/BackupManager.js';
@@ -121,12 +121,14 @@ describe('BackupManager.createSnapshot standalone output', () => {
     const backupsDir = join(tempRoot, 'backups', 'auto');
     mkdirSync(backupsDir, { recursive: true });
     writeFileSync(join(backupsDir, 'claude-mem-2026-10-01T00-00-00-000Z.db.partial'), 'half written');
+    writeFileSync(join(backupsDir, 'import.db.partial'), 'owned by another process');
     const manager = makeManager(tempRoot);
     expect(manager.status().snapshotCount).toBe(0);
 
     await manager.createSnapshot();
 
-    expect(readdirSync(backupsDir).filter(name => name.endsWith('.partial'))).toEqual([]);
+    expect(readdirSync(backupsDir).filter(name => name.endsWith('.partial'))).toEqual(['import.db.partial']);
+    expect(readFileSync(join(backupsDir, 'import.db.partial'), 'utf-8')).toBe('owned by another process');
     expect(manager.status().snapshotCount).toBe(1);
   });
 });
@@ -156,6 +158,33 @@ describe('BackupManager.status', () => {
     expect(afterRestart.snapshotCount).toBe(1);
     expect(afterRestart.lastSnapshotBytes).toBe(result.bytes);
     expect(afterRestart.lastSnapshotAt).toBeGreaterThan(0);
+  });
+});
+
+describe('BackupManager.runNow', () => {
+  it('returns the readable snapshot and reports a later retention failure', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    const source = createSourceDb(tempRoot);
+    const backups = join(tempRoot, 'backups', 'auto');
+    const old = join(backups, 'claude-mem-2020-01-01T00-00-00-000Z.db');
+    mkdirSync(old + '-wal', { recursive: true });
+    copyFileSync(source, old);
+    let now = Date.parse('2026-11-10T00:00:00Z');
+    const manager = makeManager(tempRoot, { CLAUDE_MEM_BACKUP_RETAIN_COUNT: '1' }, { now: () => now++ });
+
+    const result = await manager.runNow();
+    expect(result?.retentionError).toContain(old + '-wal');
+    expect(manager.status()).toMatchObject({ snapshotCount: 1, lastError: result?.retentionError });
+    const snapshot = new Database(result!.path, { readonly: true });
+    try {
+      expect(snapshot.query('SELECT COUNT(*) AS n FROM observations').get()).toEqual({ n: 25 });
+    } finally {
+      snapshot.close();
+    }
+
+    const next = await manager.runNow();
+    expect(next?.retentionError).toBeUndefined();
+    expect(manager.status().lastError).toBeNull();
   });
 });
 

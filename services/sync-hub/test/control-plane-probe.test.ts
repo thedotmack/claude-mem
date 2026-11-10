@@ -34,7 +34,6 @@ import {
 	PROBE_TOKEN,
 	PROBE_USER_ID,
 	runControlPlaneProbe,
-	type ProbeResult,
 } from "../src/control-plane-probe";
 import { KILL_SWITCH_KEY, __resetKillSwitchCacheForTests } from "../src/kill-switch";
 
@@ -506,18 +505,3 @@ describe("cron dispatch: two schedules, one scheduled handler", () => {
 		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).toBeNull(); // watchdog did NOT run
 	});
 });
-
-// Type-level guard: runControlPlaneProbe's result surface is what the
-// scheduled handler logs — keep the union in sync with the tests above.
-const _statusCheck: ProbeResult["status"][] = [
-	"skipped",
-	"silenced",
-	"healthy",
-	"blip",
-	"alerted",
-	"suppressed",
-	"realerted",
-	"recovered",
-	"silence_cleared",
-];
-void _statusCheck;

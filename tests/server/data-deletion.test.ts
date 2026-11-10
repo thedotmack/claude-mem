@@ -143,4 +143,11 @@ describe('data deletion (forget)', () => {
     const r2 = await fetch(url(`/v1/memories/${id}`), { method: 'DELETE', headers: auth() });
     expect(r2.status).toBe(404);
   });
+
+  it('a team-A key cannot delete another team\'s observation', async () => {
+    const row = (await pool.query('SELECT id, content FROM observations WHERE project_id = $1', [otherTeamProject])).rows[0];
+    const response = await fetch(url(`/v1/memories/${row.id}`), { method: 'DELETE', headers: auth() });
+    expect(response.status).toBe(404);
+    expect((await pool.query('SELECT id, content FROM observations WHERE id = $1', [row.id])).rows).toEqual([row]);
+  });
 });

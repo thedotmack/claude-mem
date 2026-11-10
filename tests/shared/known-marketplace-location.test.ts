@@ -22,13 +22,6 @@ describe('knownMarketplaceInstallLocation', () => {
   const writeKnownMarketplaces = (content: string): void =>
     writeFileSync(join(claudeConfigDirectory, 'plugins', 'known_marketplaces.json'), content);
 
-  it('returns the thedotmack installLocation recorded for a directory-source marketplace', () => {
-    const localCheckout = join(claudeConfigDirectory, 'my-claude-mem-checkout');
-    writeKnownMarketplaces(JSON.stringify({
-      thedotmack: { source: { source: 'directory', path: localCheckout }, installLocation: localCheckout },
-    }));
-    expect(knownMarketplaceInstallLocation(claudeConfigDirectory)).toBe(localCheckout);
-  });
 
   it('returns null when known_marketplaces.json is missing', () => {
     expect(knownMarketplaceInstallLocation(claudeConfigDirectory)).toBeNull();

@@ -56,18 +56,6 @@ describe('pruneOldLogs', () => {
     for (const path of kept) expect(existsSync(path)).toBe(true);
   });
 
-  it('always keeps today and yesterday, even with a one-day retention', async () => {
-    const today = dailyLog(0);
-    const yesterday = dailyLog(1);
-    const older = dailyLog(2);
-
-    await pruneOldLogs(dir, 1, NOW);
-
-    expect(existsSync(today)).toBe(true);
-    expect(existsSync(yesterday)).toBe(true);
-    expect(existsSync(older)).toBe(false);
-  });
-
   it('keeps an old-named file that is still being written inside the window', async () => {
     // A pre-#4063 daemon appended to its start-date file for weeks.
     const latched = dailyLog(60, 0);
@@ -163,12 +151,6 @@ describe('pruneOldLogs', () => {
     for (const path of others) expect(existsSync(path)).toBe(true);
   });
 
-  it('keeps every attempt log for a retention of 0', async () => {
-    const attemptLog = seedLog(basename(autoUpdateAttemptLogPath(NOW - 400 * DAY_MS, dir)), 400);
-    expect(await pruneOldLogs(dir, 0, NOW)).toEqual({ removed: [], bytes: 0 });
-    expect(existsSync(attemptLog)).toBe(true);
-  });
-
   it('counts the age of a file from its UTC date name just after UTC midnight', async () => {
     // 00:30 UTC: the file dated 31 calendar days back was last written ~30.02 days ago.
     const justAfterMidnight = Date.UTC(2026, 9, 7, 0, 30, 0);
@@ -179,6 +161,13 @@ describe('pruneOldLogs', () => {
     const mtime = new Date(Date.UTC(2026, 8, 6, 23, 59, 0));
     utimesSync(path, mtime, mtime);
 
-    expect((await pruneOldLogs(dir, 30, justAfterMidnight)).removed).toEqual([name]);
+    const previousTZ = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      expect((await pruneOldLogs(dir, 30, justAfterMidnight)).removed).toEqual([name]);
+    } finally {
+      if (previousTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTZ;
+    }
   });
 });

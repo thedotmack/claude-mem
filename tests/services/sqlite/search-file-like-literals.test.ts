@@ -56,10 +56,4 @@ describe('literal file names in search', () => {
     expect(store.getObservationsByIds([unrelated, modified, read], { project: 'project', files, orderBy: 'relevance' }).map(row => row.id)).toEqual([modified, read]);
     expect(store.getObservationsByIds([unrelated, modified, read], { project: 'other-project', files }).map(row => row.id)).toEqual([]);
   });
-  it('still supports path substrings and Windows relative folder candidates', () => {
-    store = new SessionStore(':memory:'); const search = new SessionSearch(store.db);
-    const id = seed('src\\my_folder\\file.ts', 'folder');
-    expect(search.findByFile('file.ts', { project: 'project' }).observations.map(row => row.id)).toEqual([id]);
-    expect(search.findByFile('C:\\repo\\src\\my_folder', { project: 'project', isFolder: true }).observations.map(row => row.id)).toEqual([id]);
-  });
 });

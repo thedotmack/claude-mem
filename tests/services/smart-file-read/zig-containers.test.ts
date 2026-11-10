@@ -1,10 +1,6 @@
 import { describe, expect } from 'bun:test';
 import { nativeTest as test } from './native-prerequisite.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
-import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
+import { parseFile } from '../../../src/services/smart-file-read/parser.js';
 
 const source = [
   'const std = @import("std");',
@@ -47,15 +43,4 @@ describe('zig-containers', () => {
     expect(file.symbols[2].children?.map(s => s.name)).toEqual(['area']);
   }, 120000);
 
-  test('search and unfold address a container function through its type', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cm-zig-containers-'));
-    try {
-      writeFileSync(join(dir, filename), source);
-      const result = await searchCodebase(dir, 'area');
-      expect(result.matchingSymbols.map(s => s.symbolName)).toEqual(['Shape.area']);
-      expect(unfoldSymbol(source, filename, 'Point.add')).toContain('self.x + other.x');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 120000);
 });

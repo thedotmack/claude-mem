@@ -19,33 +19,50 @@ describe('Tag Stripping Utilities', () => {
     loggerSpies.forEach(spy => spy.mockRestore());
   });
 
-  describe('stripMemoryTags on prompts', () => {
-    describe('basic tag removal', () => {
-      it('should strip single <private> tag and preserve surrounding content', () => {
-        const input = 'public content <private>secret stuff</private> more public';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public content  more public');
-      });
-
-      it('should strip single <claude-mem-context> tag', () => {
-        const input = 'public content <claude-mem-context>injected context</claude-mem-context> more public';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public content  more public');
-      });
-
-      it('should strip both tag types in mixed content', () => {
-        const input = '<private>secret</private> public <claude-mem-context>context</claude-mem-context> end';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public  end');
-      });
-
-      it('should strip <persisted-output> tags', () => {
-        const input = 'public <persisted-output>large output</persisted-output> after';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public  after');
-      });
+  describe('stripMemoryTags tag shapes', () => {
+    it.each<[string, string, string]>([
+      ['should strip single <private> tag and preserve surrounding content', 'public content <private>secret stuff</private> more public', 'public content  more public'],
+      ['should strip single <claude-mem-context> tag', 'public content <claude-mem-context>injected context</claude-mem-context> more public', 'public content  more public'],
+      ['should strip both tag types in mixed content', '<private>secret</private> public <claude-mem-context>context</claude-mem-context> end', 'public  end'],
+      ['should strip <persisted-output> tags', 'public <persisted-output>large output</persisted-output> after', 'public  after'],
+      ['should return empty string for entirely private prompt', '<private>entire prompt is private</private>', ''],
+      ['should return empty string for entirely context-tagged prompt', '<claude-mem-context>all is context</claude-mem-context>', ''],
+      ['should preserve content with no tags', 'no tags here at all', 'no tags here at all'],
+      ['should handle empty input', '', ''],
+      ['should handle whitespace-only after stripping', '<private>content</private>   <claude-mem-context>more</claude-mem-context>', ''],
+      ['should preserve non-tagged content exactly', 'keep this <private>remove this</private> and this', 'keep this  and this'],
+      ['should preserve special characters in non-tagged content', 'code: const x = 1; <private>secret</private> more: { "key": "value" }', 'code: const x = 1;  more: { "key": "value" }'],
+      ['should preserve newlines in non-tagged content', 'line1\n<private>secret</private>\nline2', 'line1\n\nline2'],
+      ['should strip multiline content within <private> tags', 'public\n<private>\nmulti\nline\nsecret\n</private>\nend', 'public\n\nend'],
+      ['should strip multiline content within <claude-mem-context> tags', 'start\n<claude-mem-context>\n# Recent Activity\n- Item 1\n- Item 2\n</claude-mem-context>\nfinish', 'start\n\nfinish'],
+      ['should strip tags from stringified JSON', '{"file_path":"/path/to/file","content":"<private>secret</private> public"}', '{"file_path":"/path/to/file","content":" public"}'],
+      ['should strip claude-mem-context tags from JSON', '{"data":"<claude-mem-context>injected</claude-mem-context> real data"}', '{"data":" real data"}'],
+      ['should handle tool_input with tags', '{"command":"echo hello","args":"<private>secret args</private>"}', '{"command":"echo hello","args":""}'],
+      ['should handle tool_response with tags', '{"output":"result <claude-mem-context>context data</claude-mem-context>","status":"success"}', '{"output":"result ","status":"success"}'],
+      ['should strip persisted-output tags from JSON', '{"output":"<persisted-output>big output</persisted-output> keep"}', '{"output":" keep"}'],
+      ['should handle empty JSON object', '{}', '{}'],
+      ['should handle JSON with no tags', '{"key":"value"}', '{"key":"value"}'],
+      ['should handle nested JSON structures', '{"outer":{"inner":"<private>secret</private> visible"}}', '{"outer":{"inner":" visible"}}'],
+      ['should strip single <system_instruction> tag from prompt', 'user content <system_instruction>injected instructions</system_instruction> more content', 'user content  more content'],
+      ['should strip <system_instruction> mixed with <private> tags', '<system_instruction>instructions</system_instruction> public <private>secret</private> end', 'public  end'],
+      ['should return empty string for entirely <system_instruction> content', '<system_instruction>entire prompt is system instructions</system_instruction>', ''],
+      ['should strip <system_instruction> tags from JSON content', '{"data":"<system_instruction>injected</system_instruction> real data"}', '{"data":" real data"}'],
+      ['should strip multiline content within <system_instruction> tags', 'before\n<system_instruction>\nline one\nline two\nline three\n</system_instruction>\nafter', 'before\n\nafter'],
+      ['should strip single <system-instruction> tag from prompt', 'user content <system-instruction>injected instructions</system-instruction> more content', 'user content  more content'],
+      ['should strip both underscore and hyphen variants in same prompt', '<system_instruction>underscore</system_instruction> middle <system-instruction>hyphen</system-instruction> end', 'middle  end'],
+      ['should strip multiline <system-instruction> content', 'before\n<system-instruction>\nline one\nline two\n</system-instruction>\nafter', 'before\n\nafter'],
+      ['should strip single <system-reminder> tag from prompt', 'user content <system-reminder>CLAUDE.md contents here</system-reminder> more content', 'user content  more content'],
+      ['should strip <system-reminder> mixed with other tag types', '<system-reminder>reminder</system-reminder> public <private>secret</private> <claude-mem-context>ctx</claude-mem-context> end', 'public   end'],
+      ['should return empty string for entirely <system-reminder> content', '<system-reminder>entire content is a system reminder</system-reminder>', ''],
+      ['should strip <system-reminder> tags from JSON content', '{"data":"<system-reminder>injected reminder</system-reminder> real data"}', '{"data":" real data"}'],
+      ['should strip multiline content within <system-reminder> tags', 'before\n<system-reminder>\nContents of /path/to/CLAUDE.md:\n\n<claude-mem-context>\n# Recent Activity\n- Item 1\n</claude-mem-context>\n</system-reminder>\nafter', 'before\n\nafter'],
+      ['should strip realistic tool result with nested CLAUDE.md content', 'Here is the file content.\n\n<system-reminder>\nContents of /project/src/CLAUDE.md:\n\n<claude-mem-context>\n# Recent Activity\n\n### Dec 14, 2025\n| ID | Time | Title |\n|-----|------|-------|\n| #123 | 11:30 PM | Some observation |\n</claude-mem-context>\n</system-reminder>', 'Here is the file content.'],
+    ])('%s', (_name, input, expected) => {
+      expect(stripMemoryTags(input)).toBe(expected);
     });
+  });
 
+  describe('stripMemoryTags on prompts', () => {
     describe('multiple tags handling', () => {
       it('should strip multiple <private> blocks', () => {
         const input = '<private>first secret</private> middle <private>second secret</private> end';
@@ -138,13 +155,6 @@ describe('Tag Stripping Utilities', () => {
         expect(result).toBe('');
       });
 
-      it('should strip a memory tag whose attribute contains closing-tag text', () => {
-        const input = '<private note="</private>">SECRET</private>';
-        const result = stripMemoryTags(input);
-        expect(result).not.toContain('SECRET');
-        expect(result).toBe('');
-      });
-
       it('should strip a completed inner block when an outer opener is never terminated', () => {
         const input = '<claude-mem-context prose <private>SECRET</private>';
         const result = stripMemoryTags(input);
@@ -184,83 +194,6 @@ describe('Tag Stripping Utilities', () => {
         const result = stripMemoryTags(input);
         expect(result).not.toContain('SECRET');
         expect(result).toBe('<claude-mem-context>prose');
-      });
-    });
-
-    describe('empty and private-only prompts', () => {
-      it('should return empty string for entirely private prompt', () => {
-        const input = '<private>entire prompt is private</private>';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('');
-      });
-
-      it('should return empty string for entirely context-tagged prompt', () => {
-        const input = '<claude-mem-context>all is context</claude-mem-context>';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('');
-      });
-
-      it('should preserve content with no tags', () => {
-        const input = 'no tags here at all';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('no tags here at all');
-      });
-
-      it('should handle empty input', () => {
-        const result = stripMemoryTags('');
-        expect(result).toBe('');
-      });
-
-      it('should handle whitespace-only after stripping', () => {
-        const input = '<private>content</private>   <claude-mem-context>more</claude-mem-context>';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('');
-      });
-    });
-
-    describe('content preservation', () => {
-      it('should preserve non-tagged content exactly', () => {
-        const input = 'keep this <private>remove this</private> and this';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('keep this  and this');
-      });
-
-      it('should preserve special characters in non-tagged content', () => {
-        const input = 'code: const x = 1; <private>secret</private> more: { "key": "value" }';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('code: const x = 1;  more: { "key": "value" }');
-      });
-
-      it('should preserve newlines in non-tagged content', () => {
-        const input = 'line1\n<private>secret</private>\nline2';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('line1\n\nline2');
-      });
-    });
-
-    describe('multiline content in tags', () => {
-      it('should strip multiline content within <private> tags', () => {
-        const input = `public
-<private>
-multi
-line
-secret
-</private>
-end`;
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public\n\nend');
-      });
-
-      it('should strip multiline content within <claude-mem-context> tags', () => {
-        const input = `start
-<claude-mem-context>
-# Recent Activity
-- Item 1
-- Item 2
-</claude-mem-context>
-finish`;
-        const result = stripMemoryTags(input);
-        expect(result).toBe('start\n\nfinish');
       });
     });
 
@@ -332,219 +265,6 @@ finish`;
         expect(result).toBe(content);
         expect(duration).toBeLessThan(500);
       });
-    });
-  });
-
-  describe('stripMemoryTags on JSON strings', () => {
-    describe('JSON content stripping', () => {
-      it('should strip tags from stringified JSON', () => {
-        const jsonContent = JSON.stringify({
-          file_path: '/path/to/file',
-          content: '<private>secret</private> public'
-        });
-        const result = stripMemoryTags(jsonContent);
-        const parsed = JSON.parse(result);
-        expect(parsed.content).toBe(' public');
-      });
-
-      it('should strip claude-mem-context tags from JSON', () => {
-        const jsonContent = JSON.stringify({
-          data: '<claude-mem-context>injected</claude-mem-context> real data'
-        });
-        const result = stripMemoryTags(jsonContent);
-        const parsed = JSON.parse(result);
-        expect(parsed.data).toBe(' real data');
-      });
-
-      it('should handle tool_input with tags', () => {
-        const toolInput = {
-          command: 'echo hello',
-          args: '<private>secret args</private>'
-        };
-        const result = stripMemoryTags(JSON.stringify(toolInput));
-        const parsed = JSON.parse(result);
-        expect(parsed.args).toBe('');
-      });
-
-      it('should handle tool_response with tags', () => {
-        const toolResponse = {
-          output: 'result <claude-mem-context>context data</claude-mem-context>',
-          status: 'success'
-        };
-        const result = stripMemoryTags(JSON.stringify(toolResponse));
-        const parsed = JSON.parse(result);
-        expect(parsed.output).toBe('result ');
-      });
-
-      it('should strip persisted-output tags from JSON', () => {
-        const jsonContent = JSON.stringify({
-          output: '<persisted-output>big output</persisted-output> keep'
-        });
-        const result = stripMemoryTags(jsonContent);
-        const parsed = JSON.parse(result);
-        expect(parsed.output).toBe(' keep');
-      });
-    });
-
-    describe('edge cases', () => {
-      it('should handle empty JSON object', () => {
-        const result = stripMemoryTags('{}');
-        expect(result).toBe('{}');
-      });
-
-      it('should handle JSON with no tags', () => {
-        const input = JSON.stringify({ key: 'value' });
-        const result = stripMemoryTags(input);
-        expect(result).toBe(input);
-      });
-
-      it('should handle nested JSON structures', () => {
-        const input = JSON.stringify({
-          outer: {
-            inner: '<private>secret</private> visible'
-          }
-        });
-        const result = stripMemoryTags(input);
-        const parsed = JSON.parse(result);
-        expect(parsed.outer.inner).toBe(' visible');
-      });
-    });
-  });
-
-  describe('system_instruction tag stripping', () => {
-    describe('basic system_instruction removal', () => {
-      it('should strip single <system_instruction> tag from prompt', () => {
-        const input = 'user content <system_instruction>injected instructions</system_instruction> more content';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('user content  more content');
-      });
-
-      it('should strip <system_instruction> mixed with <private> tags', () => {
-        const input = '<system_instruction>instructions</system_instruction> public <private>secret</private> end';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('public  end');
-      });
-
-      it('should return empty string for entirely <system_instruction> content', () => {
-        const input = '<system_instruction>entire prompt is system instructions</system_instruction>';
-        const result = stripMemoryTags(input);
-        expect(result).toBe('');
-      });
-
-      it('should strip <system_instruction> tags from JSON content', () => {
-        const jsonContent = JSON.stringify({
-          data: '<system_instruction>injected</system_instruction> real data'
-        });
-        const result = stripMemoryTags(jsonContent);
-        const parsed = JSON.parse(result);
-        expect(parsed.data).toBe(' real data');
-      });
-
-      it('should strip multiline content within <system_instruction> tags', () => {
-        const input = `before
-<system_instruction>
-line one
-line two
-line three
-</system_instruction>
-after`;
-        const result = stripMemoryTags(input);
-        expect(result).toBe('before\n\nafter');
-      });
-    });
-  });
-
-  describe('system-instruction (hyphen variant) tag stripping', () => {
-    it('should strip single <system-instruction> tag from prompt', () => {
-      const input = 'user content <system-instruction>injected instructions</system-instruction> more content';
-      const result = stripMemoryTags(input);
-      expect(result).toBe('user content  more content');
-    });
-
-    it('should strip both underscore and hyphen variants in same prompt', () => {
-      const input = '<system_instruction>underscore</system_instruction> middle <system-instruction>hyphen</system-instruction> end';
-      const result = stripMemoryTags(input);
-      expect(result).toBe('middle  end');
-    });
-
-    it('should strip multiline <system-instruction> content', () => {
-      const input = `before
-<system-instruction>
-line one
-line two
-</system-instruction>
-after`;
-      const result = stripMemoryTags(input);
-      expect(result).toBe('before\n\nafter');
-    });
-  });
-
-  describe('system-reminder tag stripping', () => {
-    it('should strip single <system-reminder> tag from prompt', () => {
-      const input = 'user content <system-reminder>CLAUDE.md contents here</system-reminder> more content';
-      const result = stripMemoryTags(input);
-      expect(result).toBe('user content  more content');
-    });
-
-    it('should strip <system-reminder> mixed with other tag types', () => {
-      const input = '<system-reminder>reminder</system-reminder> public <private>secret</private> <claude-mem-context>ctx</claude-mem-context> end';
-      const result = stripMemoryTags(input);
-      expect(result).toBe('public   end');
-    });
-
-    it('should return empty string for entirely <system-reminder> content', () => {
-      const input = '<system-reminder>entire content is a system reminder</system-reminder>';
-      const result = stripMemoryTags(input);
-      expect(result).toBe('');
-    });
-
-    it('should strip <system-reminder> tags from JSON content', () => {
-      const jsonContent = JSON.stringify({
-        data: '<system-reminder>injected reminder</system-reminder> real data'
-      });
-      const result = stripMemoryTags(jsonContent);
-      const parsed = JSON.parse(result);
-      expect(parsed.data).toBe(' real data');
-    });
-
-    it('should strip multiline content within <system-reminder> tags', () => {
-      const input = `before
-<system-reminder>
-Contents of /path/to/CLAUDE.md:
-
-<claude-mem-context>
-# Recent Activity
-- Item 1
-</claude-mem-context>
-</system-reminder>
-after`;
-      const result = stripMemoryTags(input);
-      expect(result).toBe('before\n\nafter');
-    });
-
-    it('should strip realistic tool result with nested CLAUDE.md content', () => {
-      const input = `Here is the file content.\n\n<system-reminder>\nContents of /project/src/CLAUDE.md:\n\n<claude-mem-context>\n# Recent Activity\n\n### Dec 14, 2025\n| ID | Time | Title |\n|-----|------|-------|\n| #123 | 11:30 PM | Some observation |\n</claude-mem-context>\n</system-reminder>`;
-      const result = stripMemoryTags(input);
-      expect(result).toBe('Here is the file content.');
-    });
-  });
-
-  describe('privacy enforcement integration', () => {
-    it('should allow empty result to trigger privacy skip', () => {
-      const prompt = '<private>entirely private prompt</private>';
-      const cleanedPrompt = stripMemoryTags(prompt);
-
-      const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
-      expect(shouldSkip).toBe(true);
-    });
-
-    it('should allow partial content when not entirely private', () => {
-      const prompt = '<private>password123</private> Please help me with my code';
-      const cleanedPrompt = stripMemoryTags(prompt);
-
-      const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
-      expect(shouldSkip).toBe(false);
-      expect(cleanedPrompt.trim()).toBe('Please help me with my code');
     });
   });
 

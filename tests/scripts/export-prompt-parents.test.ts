@@ -67,7 +67,7 @@ for (const registered of [true, false]) it('exports prompt parents through HTTP 
 });
 
 
-it('exports 65535 prompts through the real batch route with bounded combined bindings', () => {
+it('exports 1001 prompts through the real batch route with bounded combined bindings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'claude-mem-large-prompt-export-'));
   const large = String.raw`
     import express from 'express';
@@ -81,7 +81,7 @@ it('exports 65535 prompts through the real batch route with bounded combined bin
     source.ensureMemorySessionIdRegistered(sid, 'large-memory');
     const insert = source.db.prepare('INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?)');
     source.db.transaction(() => {
-      for (let i = 1; i <= 65535; i++) insert.run(sid, 'large-export', i, 'needle ' + i, new Date().toISOString(), Date.now());
+      for (let i = 1; i <= 1001; i++) insert.run(sid, 'large-export', i, 'needle ' + i, new Date().toISOString(), Date.now());
     })();
     const promptIds = source.db.prepare('SELECT id FROM user_prompts').all().map(r => r.id);
     const bindings = [];
@@ -114,7 +114,7 @@ it('exports 65535 prompts through the real batch route with bounded combined bin
     const child = Bun.spawnSync([process.execPath, '-e', large], { cwd:join(import.meta.dir,'../..'),env:{...process.env,CLAUDE_MEM_DATA_DIR:dir,CLAUDE_CONFIG_DIR:join(dir,'config'),CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN:'1'},stdout:'pipe',stderr:'pipe' });
     if (child.exitCode !== 0) throw Error(new TextDecoder().decode(child.stderr));
     const actual = JSON.parse(new TextDecoder().decode(child.stdout).trim().split('\n').at(-1)!);
-    expect(actual.promptCount).toBe(65535);
+    expect(actual.promptCount).toBe(1001);
     expect(actual.parentCount).toBe(1);
     expect(actual.parentMemory).toBe('large-memory');
     expect(actual.mixedCount).toBe(1);

@@ -35,6 +35,16 @@ function standalone(p, maxSchemaVersion) {
       if (stamp > maxSchemaVersion) {
         throw new Error('Snapshot has schema v' + stamp + '; this claude-mem knows up to schema v' + maxSchemaVersion + '. Upgrade claude-mem before restoring this snapshot.');
       }
+      // Stamped worker snapshots must contain the base tables. quick_check
+      // accepts structurally valid files even when a whole table is absent.
+      if (stamp > 0) {
+        const hasTable = db.query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?");
+        for (const table of ['sdk_sessions', 'observations', 'session_summaries']) {
+          if (!hasTable.get(table)) {
+            throw new Error('Snapshot schema v' + stamp + ' is missing the required worker table ' + table + '.');
+          }
+        }
+      }
     }
     db.run('PRAGMA journal_mode = DELETE');
     const r = db.query('PRAGMA quick_check').get();

@@ -113,7 +113,10 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
   const lines = content.split('\n');
   let lastUserLine = 0;
   let lastPrompt = '';
-  const failed = new Set<string>();
+  // Completion belongs to the invocation seen before a result, not just its
+  // ID: an interrupted call must not borrow an older result or file version.
+  const invocations = new Map<string, object>();
+  const completed = new WeakSet<object>();
   const writes: Array<TranscriptFileWrite & { userTurnLine: number }> = [];
   const workStateWrites: Array<TranscriptWorkStateWrite & { userTurnLine: number }> = [];
 
@@ -135,8 +138,11 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
     if (entryType === 'user') {
       if (Array.isArray(msgContent)) {
         for (const block of msgContent) {
-          if (block && typeof block === 'object' && block.type === 'tool_result' && block.is_error === true && typeof block.tool_use_id === 'string') {
-            failed.add(block.tool_use_id);
+          if (block && typeof block === 'object' && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+            const invocation = invocations.get(block.tool_use_id);
+            if (!invocation) continue;
+            if (block.is_error === true) completed.delete(invocation);
+            else completed.add(invocation);
           }
         }
       }
@@ -158,13 +164,19 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
       const input = block.input && typeof block.input === 'object' ? block.input as Record<string, unknown> : {};
       if (FILE_WRITING_TOOLS.has(block.name)) {
         const path = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : null;
-        if (path && path.trim()) writes.push({ path: path.trim(), toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine });
+        if (path && path.trim()) {
+          const write = { path, toolName: block.name, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine };
+          writes.push(write);
+          invocations.set(block.id, write);
+        }
         continue;
       }
       if (WORK_STATE_WRITE_TOOL.test(block.name)) {
         const fields = input.fields && typeof input.fields === 'object' && !Array.isArray(input.fields) ? input.fields as Record<string, unknown> : null;
         if (!fields) continue;
-        workStateWrites.push({ list: typeof input.list === 'string' ? input.list : null, fields, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine });
+        const write = { list: typeof input.list === 'string' ? input.list : null, fields, toolUseId: block.id, occurredAtEpoch, userTurnLine: lastUserLine };
+        workStateWrites.push(write);
+        invocations.set(block.id, write);
       }
     }
   }
@@ -172,7 +184,7 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
   // With only the file's tail read, the turn may have started before it; then no user line was seen
   // (lastUserLine 0) and everything in the tail belongs to the current turn, which the filter keeps.
   const inTurn = <T extends { userTurnLine: number; toolUseId: string }>(record: T) =>
-    (!currentTurnOnly || record.userTurnLine === lastUserLine) && !failed.has(record.toolUseId);
+    (!currentTurnOnly || record.userTurnLine === lastUserLine) && completed.has(record);
   const lastWriteByPath = new Map<string, TranscriptFileWrite>();
   for (const { userTurnLine: _turn, ...write } of writes.filter(inTurn)) lastWriteByPath.set(write.path, write);
   return {

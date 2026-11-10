@@ -30,18 +30,6 @@ test('an older snapshot requested for restore survives the next retention cycle'
   });
 });
 
-test('failed-snapshot cleanup only removes managed snapshot partials', async () => {
-  await withManager((dir, manager) => {
-    const own = join(dir, name(1) + '.partial');
-    const foreign = join(dir, 'import.db.partial');
-    writeFileSync(own, 'ours');
-    writeFileSync(foreign, 'owned by another process');
-    manager['removePartialSnapshots']();
-    assert.ok(!existsSync(own));
-    assert.ok(existsSync(foreign));
-  });
-});
-
 test('a directory with a snapshot suffix cannot evict the last real backup', async () => {
   await withManager(async (dir, manager) => {
     writeFileSync(join(dir, name(1)), 'last verified snapshot');

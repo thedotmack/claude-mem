@@ -42,32 +42,19 @@ describe("IPv6 host in the advertised URL", () => {
 			await app.stop();
 		}
 	});
-
-	it("leaves an IPv4 host untouched", async () => {
-		const app = startForwardProxy(loadEnv({ FORWARD_ORIGIN: "https://example.com/fn", PORT: "0", HOST: "127.0.0.1" }));
-		try {
-			expect(app.url).toBe(`http://127.0.0.1:${app.server.port}`);
-		} finally {
-			await app.stop();
-		}
-	});
 });
 
 // The pass-through rules are a pure property of the formatter, so pin them
 // directly: no listener, no IPv6 requirement, and the bracketed case still
 // runs on an IPv4-only host.
 describe("formatHostForUrl", () => {
-	it("brackets a bare IPv6 literal", () => {
-		expect(formatHostForUrl("::1")).toBe("[::1]");
-		expect(formatHostForUrl("2001:db8::1")).toBe("[2001:db8::1]");
-	});
-
-	it("leaves an already-bracketed host untouched", () => {
-		expect(formatHostForUrl("[::1]")).toBe("[::1]");
-	});
-
-	it("leaves an IPv4 host and a hostname untouched", () => {
-		expect(formatHostForUrl("127.0.0.1")).toBe("127.0.0.1");
-		expect(formatHostForUrl("localhost")).toBe("localhost");
+	it.each([
+		["::1", "[::1]"],
+		["2001:db8::1", "[2001:db8::1]"],
+		["[::1]", "[::1]"],
+		["127.0.0.1", "127.0.0.1"],
+		["localhost", "localhost"],
+	])("formats %s as %s", (host, expected) => {
+		expect(formatHostForUrl(host)).toBe(expected);
 	});
 });

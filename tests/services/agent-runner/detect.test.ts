@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, jest } from 'bun:test';
 import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   detectUsableAgents,
   GEMINI_NO_MCP_SERVERS,
@@ -47,6 +47,18 @@ function fakeSpawn(script: Record<string, ScriptedOutcome>, calls: string[] = []
     else queueMicrotask(answer);
     return child;
   }) as unknown as typeof spawn;
+}
+
+async function afterFakeDelay<T>(start: () => Promise<T>): Promise<T> {
+  jest.useFakeTimers();
+  try {
+    const pending = start();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    jest.advanceTimersByTime(3_500);
+    return await pending;
+  } finally {
+    jest.useRealTimers();
+  }
 }
 
 const HOME = '/home/tester';
@@ -165,16 +177,16 @@ describe('detectUsableAgents', () => {
     });
 
     it('a slow `claude auth status` is waited for and still reports logged in', async () => {
-      const agent = await detectOne('claude-code', {
+      const agent = await afterFakeDelay(() => detectOne('claude-code', {
         ...installed,
         readClaudeOAuthToken: async () => ({ kind: 'absent', reason: 'no keychain access' }),
         spawn: fakeSpawn({
           [`${CLAUDE_PATH} auth status --json`]: { exitCode: 0, stdout: '{"loggedIn": true, "authMethod": "claude.ai"}', delayMs: 3_500 },
         }),
-      });
+      }));
       expect(agent).toMatchObject({ authenticated: true });
       expect(agent.reason).toContain('claude.ai');
-    }, 10_000);
+    });
   });
 
   describe('Codex', () => {
@@ -200,14 +212,14 @@ describe('detectUsableAgents', () => {
     });
 
     it('a slow `codex login status` is waited for and still reports logged in', async () => {
-      const agent = await detectOne('codex', {
+      const agent = await afterFakeDelay(() => detectOne('codex', {
         spawn: fakeSpawn({
           ...WHICH_CODEX,
           [`${CODEX_PATH} login status`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n', delayMs: 3_500 },
         }),
-      });
+      }));
       expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
-    }, 10_000);
+    });
 
     it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
@@ -301,13 +313,36 @@ describe('detectUsableAgents', () => {
       expect(agent).toMatchObject({ authenticated: true, reason: 'GEMINI_API_KEY is set' });
     });
 
-    it('a slow `which gemini` is waited for and still reports logged in', async () => {
+    it('uses the selected Gemini home and keeps a relative profile stable when the probe changes cwd', async () => {
+      const selected = resolve('owned-gemini-profile');
+      const launches: any[] = [];
+      const scripted = fakeSpawn({ ...WHICH_GEMINI, [PROBE]: { exitCode: 42, stderr: NO_INPUT } });
       const agent = await detectOne('gemini', {
+        environment: { GEMINI_CLI_HOME: 'owned-gemini-profile' },
+        fileExists: path => [join(selected, '.gemini', 'settings.json'), join(selected, '.gemini', 'oauth_creds.json')].includes(path),
+        readTextFile: path => path.endsWith('settings.json') ? settings : JSON.stringify({ refresh_token: 'owned-token' }),
+        spawn: ((command, args, options) => { launches.push({ command, options }); return scripted(command, args, options); }) as typeof spawn,
+      });
+      expect(agent.authenticated).toBe(true);
+      expect(launches.find(call => call.command === GEMINI_PATH)?.options.env.GEMINI_CLI_HOME).toBe(selected);
+    });
+
+    it('does not borrow the default login when the selected Gemini profile has no credentials', async () => {
+      const selected = resolve('owned-missing-profile');
+      const agent = await detectOne('gemini', { ...signedIn({ exitCode: 42, stderr: NO_INPUT }),
+        environment: { GEMINI_CLI_HOME: selected },
+      });
+      expect(agent.authenticated).toBe(false);
+      expect(agent.reason).toContain(join(selected, '.gemini', 'settings.json'));
+    });
+
+    it('a slow `which gemini` is waited for and still reports logged in', async () => {
+      const agent = await afterFakeDelay(() => detectOne('gemini', {
         spawn: fakeSpawn({ 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n`, delayMs: 3_500 } }),
         environment: { GEMINI_API_KEY: 'key' },
-      });
+      }));
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
-    }, 10_000);
+    });
 
     it('unreadable settings.json is reported, not thrown', async () => {
       const agent = await detectOne('gemini', {
@@ -323,9 +358,9 @@ describe('detectUsableAgents', () => {
 
 describe('runCommand', () => {
   it('waits for a slow command to finish instead of giving up', async () => {
-    const result = await runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']);
+    const result = await afterFakeDelay(() => runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']));
     expect(result).toMatchObject({ exitCode: 0, stderr: 'Logged in' });
-  }, 10_000);
+  });
 
   it('reports a spawn error instead of rejecting', async () => {
     const result = await runCommand(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }), 'nope', []);

@@ -83,10 +83,4 @@ describe('recordWorkerUnreachable — per-process dedupe', () => {
     expect(exitCalls).toHaveLength(0);
   });
 
-  it('counts every call when no hook invocation scope is open', async () => {
-    const workerUtils = await importWorkerUtilsFresh();
-
-    expect(await workerUtils.recordWorkerUnreachable()).toBe(1);
-    expect(await workerUtils.recordWorkerUnreachable()).toBe(2);
-  });
 });

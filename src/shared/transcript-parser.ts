@@ -12,7 +12,8 @@ export const TRANSCRIPT_TAIL_INITIAL_BYTES = 256 * 1024;
 /**
  * Largest single chunk the backward scan reads. Chunks grow 4x per step up to
  * this size so a far-back answer costs few syscalls, while peak memory stays
- * at one chunk plus one carried line - never the whole file. The old
+ * at one chunk plus one carried line and the current multipart message -
+ * never the whole file. The old
  * `readFileSync(path, 'utf-8')` needed the entire transcript in one string,
  * which hits JavaScriptCore's 2^31-1 cap (Bun reports ENOMEM) and V8's
  * 0x1fffffe8 cap (ERR_STRING_TOO_LONG); a 2.16 GB session lost every
@@ -227,6 +228,7 @@ function extractLastTurnBackward(
   let fallbackText: string | null = null;
   let model: string | undefined;
   let bytesPastText = 0;
+  const kimiStep: KimiAssistantStep = { parts: [] };
   const modelBudget = Math.max(0, tailOptions?.modelSearchBudgetBytes ?? TRANSCRIPT_MODEL_SEARCH_BUDGET_BYTES);
 
   const result = scanTranscriptBackward(
@@ -241,7 +243,7 @@ function extractLastTurnBackward(
         model = extractLastAssistantModelFromJsonl(chunkText);
       }
       if (text === undefined) {
-        const hit = findLastMessageInJsonl(chunkText, role, stripSystemReminders);
+        const hit = findLastMessageInChunk(chunkText, role, stripSystemReminders, kimiStep, isFirstChunkOfFile);
         if (hit.kind === 'text') {
           text = hit.text;
         } else if (hit.kind !== 'none' && fallbackText === null) {
@@ -298,7 +300,7 @@ const ANTIGRAVITY_TYPE_TO_ROLE: Record<string, 'user' | 'assistant'> = {
  * Handles a top-level string, a Claude-style content array (`{type:'text',text}`),
  * and a generic `{text}` array (Antigravity, when content isn't a bare string).
  */
-function contentToText(msgContent: unknown): string | null {
+export function contentToText(msgContent: unknown): string | null {
   if (typeof msgContent === 'string') return msgContent;
   if (Array.isArray(msgContent)) {
     return msgContent
@@ -315,7 +317,7 @@ function contentToText(msgContent: unknown): string | null {
 
 /**
  * Kimi Code wire.jsonl is event-sourced; role is carried by envelope type:
- * - user:      {"type":"context.append_message","message":{"role":"user",...}}
+ * - user/assistant: {"type":"context.append_message","message":{"role":...,"content":...}}
  * - assistant: {"type":"context.append_loop_event","event":{"type":"content.part",
  *              ...,"part":{"type":"text","text":"..."}}}  (part.type "think" is reasoning — skipped)
  */
@@ -335,7 +337,7 @@ function kimiWireRole(line: any): 'user' | 'assistant' | undefined {
 }
 
 function kimiWireText(line: any, role: 'user' | 'assistant'): string {
-  if (role === 'user' && line?.type === 'context.append_message') {
+  if (line?.type === 'context.append_message') {
     return contentToText(line.message?.content) ?? '';
   }
   if (role === 'assistant' && line?.type === 'context.append_loop_event') {
@@ -343,6 +345,49 @@ function kimiWireText(line: any, role: 'user' | 'assistant'): string {
     return typeof text === 'string' ? text : '';
   }
   return '';
+}
+
+interface KimiAssistantStep {
+  uuid?: string;
+  parts: string[];
+}
+
+/** Kimi records each content block separately, but stepUuid identifies one
+ * assistant message. Keep collecting across disk chunks until its step.begin.
+ * Numeric turn/step counters can repeat after a session resumes.
+ */
+function* coalesceKimiAssistantSteps(
+  content: string,
+  state: KimiAssistantStep,
+  isFirstChunkOfFile: boolean,
+): Generator<any> {
+  const completeStep = () => {
+    const text = state.parts.reverse().join('');
+    state.uuid = undefined;
+    state.parts = [];
+    return { type: 'assistant', message: { content: text } };
+  };
+
+  for (const line of parseJsonlLinesBackward(content)) {
+    const event = line?.type === 'context.append_loop_event' ? line.event : undefined;
+    const isTextPart = event?.type === 'content.part' && event.part?.type === 'text'
+      && typeof event.part.text === 'string';
+    if (state.uuid !== undefined) {
+      if (isTextPart && event.stepUuid === state.uuid) {
+        state.parts.push(event.part.text);
+      } else if (event?.type === 'step.begin' && event.uuid === state.uuid) {
+        yield completeStep();
+      }
+      continue;
+    }
+    if (isTextPart && typeof event.stepUuid === 'string') {
+      state.uuid = event.stepUuid;
+      state.parts.push(event.part.text);
+      continue;
+    }
+    yield line;
+  }
+  if (isFirstChunkOfFile && state.uuid !== undefined) yield completeStep();
 }
 
 /**
@@ -410,11 +455,24 @@ export function findLastMessageInJsonl(
   role: 'user' | 'assistant',
   stripSystemReminders: boolean
 ): LastMessageHit {
+  return findLastMessageInChunk(content, role, stripSystemReminders, { parts: [] }, true);
+}
+
+function findLastMessageInChunk(
+  content: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean,
+  kimiStep: KimiAssistantStep,
+  isFirstChunkOfFile: boolean,
+): LastMessageHit {
   let foundMatchingRole = false;
   let lastEmptyText: string | null = null;
   let lastEmptyKind: 'synthesized' | 'blank' = 'blank';
 
-  for (const line of parseJsonlLinesBackward(content)) {
+  const messages = role === 'assistant'
+    ? coalesceKimiAssistantSteps(content, kimiStep, isFirstChunkOfFile)
+    : parseJsonlLinesBackward(content);
+  for (const line of messages) {
     const kimiRole = kimiWireRole(line);
     const antigravityRole = typeof line.type === 'string'
       ? ANTIGRAVITY_TYPE_TO_ROLE[line.type]

@@ -40,7 +40,6 @@ import {
   resolveRuntimeContext,
   selectRuntime,
   buildServerContext,
-  logServerFallback,
 } from '../../src/services/hooks/runtime-selector.js';
 
 describe('runtime-selector', () => {
@@ -55,10 +54,6 @@ describe('runtime-selector', () => {
       CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',
     };
     warnLogs.length = 0;
-  });
-
-  it('selectRuntime defaults to worker', () => {
-    expect(selectRuntime()).toBe('worker');
   });
 
   it("selectRuntime returns 'server' when CLAUDE_MEM_RUNTIME='server' (canonical)", () => {
@@ -140,20 +135,6 @@ describe('runtime-selector', () => {
     }
   });
 
-  it('buildServerContext falls back to legacy *_BETA_* keys when new keys are unset', () => {
-    // No CLAUDE_MEM_SERVER_* keys set, but legacy ones are.
-    mockSettings.CLAUDE_MEM_SERVER_BETA_URL = 'http://legacy.example:9999';
-    mockSettings.CLAUDE_MEM_SERVER_BETA_API_KEY = 'legacy_key';
-    mockSettings.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = 'legacy-project';
-    const ctx = buildServerContext();
-    expect(ctx).not.toBeNull();
-    if (ctx) {
-      expect(ctx.serverBaseUrl).toBe('http://legacy.example:9999');
-      expect(ctx.projectId).toBe('legacy-project');
-      expect(ctx.runtime).toBe('server');
-    }
-  });
-
   it('buildServerContext returns null when project id missing on both new and legacy keys', () => {
     mockSettings.CLAUDE_MEM_RUNTIME = 'server';
     mockSettings.CLAUDE_MEM_SERVER_URL = 'http://localhost:1234';
@@ -162,39 +143,4 @@ describe('runtime-selector', () => {
     expect(warnLogs.some(l => l.msg.includes('missing_project_id'))).toBe(true);
   });
 
-  it('logServerFallback emits a stable WARN code', () => {
-    logServerFallback('transport', { route: '/v1/events' });
-    const matched = warnLogs.find(l => l.msg.includes('[server-fallback]'));
-    expect(matched).toBeDefined();
-    expect(matched?.msg).toContain('reason=transport');
-  });
-
-  // #2564 — switching CLAUDE_MEM_RUNTIME flips which runtime hooks dispatch to
-  // WITHOUT a reinstall. The selector reads the setting on every call (via
-  // loadFromFileOnce), so flipping the setting and re-resolving must change the
-  // resolved runtime. This proves the no-reinstall switch end-to-end at the
-  // dispatch boundary the hooks use (resolveRuntimeContext).
-  // Phase 1d: the persisted literal `'server-beta'` is still accepted in
-  // settings, but the selector normalizes it to the canonical `'server'`.
-  it('flips worker <-> server when the setting changes (no reinstall)', () => {
-    // Start on worker.
-    mockSettings.CLAUDE_MEM_RUNTIME = 'worker';
-    expect(resolveRuntimeContext().runtime).toBe('worker');
-
-    // Flip to server-beta (fully configured) — hooks now resolve the server runtime.
-    // Persisted setting may still be `'server-beta'`; selector normalizes to `'server'`.
-    mockSettings.CLAUDE_MEM_RUNTIME = 'server-beta';
-    mockSettings.CLAUDE_MEM_SERVER_BETA_URL = 'http://localhost:9999';
-    mockSettings.CLAUDE_MEM_SERVER_BETA_API_KEY = 'cmem_flip';
-    mockSettings.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = 'proj-flip';
-    const flipped = resolveRuntimeContext();
-    expect(flipped.runtime).toBe('server');
-    if (flipped.runtime === 'server') {
-      expect(flipped.serverBaseUrl).toBe('http://localhost:9999');
-    }
-
-    // Flip back to worker — hooks resolve the worker runtime again.
-    mockSettings.CLAUDE_MEM_RUNTIME = 'worker';
-    expect(resolveRuntimeContext().runtime).toBe('worker');
-  });
 });

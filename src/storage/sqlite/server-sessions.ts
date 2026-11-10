@@ -6,6 +6,7 @@ import { CreateServerSessionSchema, ServerSessionSchema, type CreateServerSessio
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonObject, stringifyJson } from './serde.js';
 import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
 
 interface ServerSessionRow {
   id: string;
@@ -61,7 +62,7 @@ export class ServerSessionsRepository {
       session.platformSource ?? 'claude',
       session.title ?? null,
       'active',
-      stringifyJson(stripMemoryTagsFromJsonStrings(session.metadata)),
+      stringifyJson(redactJsonStrings(stripMemoryTagsFromJsonStrings(session.metadata))),
       now,
       null,
       now
@@ -74,7 +75,7 @@ export class ServerSessionsRepository {
     this.db.prepare(`
       UPDATE server_sessions
       SET status = 'completed', completed_at_epoch = ?, updated_at_epoch = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'active'
     `).run(completedAtEpoch, completedAtEpoch, id);
 
     return this.getById(id);

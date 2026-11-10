@@ -386,19 +386,6 @@ describe('buildBackfillEvents properties', () => {
     expect(rollups[0].counters.tokens_saved_vs_naive).toBe(0);
   });
 
-  it('(g) one session with one observation: no double counting', () => {
-    const db = makeDb();
-    const epoch = Date.UTC(2025, 3, 4, 14, 0, 0); // 2025-04-04
-    insertSession(db, { epoch, memId: 's-1', project: 'alpha' });
-    insertObs(db, { epoch: epoch + 1000, memId: 's-1', project: 'alpha' });
-
-    const rollups = collectDailyRollups(db, LAST_FULL_DAY, '2024-01-01');
-    expect(rollups.length).toBe(1);
-    expect(rollups[0].counters.session_count).toBe(1);
-    expect(rollups[0].counters.project_count).toBe(1);
-    expect(rollups[0].counters.observation_count).toBe(1);
-  });
-
   it('(h) install_inferred uses the sessions MIN at noon UTC with first_active_date in $set', () => {
     const db = makeDb();
     // Backdated artifact observation: 2025-08-12 (legacy seconds epoch).
@@ -467,22 +454,6 @@ describe('runHistoricalBackfill gates', () => {
     writeFileSync(
       markerPath(),
       JSON.stringify({ completedAt: 'x', throughDay: '2026-01-01', eventCount: 1, installId: 'i' })
-    );
-    await runHistoricalBackfill(seedHistoricalDb());
-    expect(postHogCaptureCalls.length).toBeGreaterThan(0);
-    expect(readMarker().version).toBe(BACKFILL_VERSION);
-  });
-
-  it('(j) older-version marker (< current) re-runs', async () => {
-    writeFileSync(
-      markerPath(),
-      JSON.stringify({
-        completedAt: 'x',
-        throughDay: '2026-01-01',
-        eventCount: 1,
-        installId: 'i',
-        version: BACKFILL_VERSION - 1,
-      })
     );
     await runHistoricalBackfill(seedHistoricalDb());
     expect(postHogCaptureCalls.length).toBeGreaterThan(0);

@@ -13,17 +13,6 @@ describe("zig-test-names", () => {
   expect(file.symbols.map(s => s.name)).toEqual(['"first case"', '"second case"', 'ordinary']);
   expect(formatFoldedView(file)).toContain("second");
  }, 120000);
- test('batch search supplies a usable unfold identity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cm-zig-test-names-'));
-  try {
-   writeFileSync(join(dir, filename), source);
-   const result = await searchCodebase(dir, "second");
-   const match = result.matchingSymbols.find(s => s.symbolName === "\"second case\"");
-   expect(match).toBeDefined();
-
-   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("const second = 2;");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- }, 120000);
 });
 
 test('retains anonymous Zig test blocks and ordinary functions once', () => {

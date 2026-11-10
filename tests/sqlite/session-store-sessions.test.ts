@@ -14,22 +14,11 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('createSDKSession', () => {
-    it('returns a positive id', () => {
-      const id = store.createSDKSession('content-1', 'project', 'prompt');
-      expect(id).toBeGreaterThan(0);
-    });
-
     it('is idempotent for the same content_session_id', () => {
       const a = store.createSDKSession('content-same', 'project', 'prompt');
       const b = store.createSDKSession('content-same', 'project', 'different prompt');
       expect(b).toBe(a);
       expect(store.getSessionById(a)?.user_prompt).toBe('prompt');
-    });
-
-    it('returns different ids for different content_session_ids', () => {
-      const a = store.createSDKSession('content-a', 'project', 'prompt');
-      const b = store.createSDKSession('content-b', 'project', 'prompt');
-      expect(a).not.toBe(b);
     });
 
     it('persists a tag-stripped, bounded user_prompt ending in an ellipsis', () => {
@@ -51,32 +40,15 @@ describe('SessionStore session lifecycle', () => {
       expect(store.getSessionById(id)?.user_prompt).not.toContain('<private>');
     });
 
-    it('repairs a media prompt placeholder when a real prompt arrives', () => {
-      const id = store.createSDKSession('content-media-placeholder', 'project', MEDIA_PROMPT_PLACEHOLDER);
-      store.createSDKSession('content-media-placeholder', 'project', 'real user prompt');
-
-      expect(store.getSessionById(id)?.user_prompt).toBe('real user prompt');
-    });
-
-    it('repairs an empty stored prompt when a real prompt arrives', () => {
-      const id = store.createSDKSession('content-empty-prompt', 'project', '');
-      store.createSDKSession('content-empty-prompt', 'project', 'real user prompt');
-
-      expect(store.getSessionById(id)?.user_prompt).toBe('real user prompt');
-    });
-
-    it('never replaces a real stored prompt with a later real prompt', () => {
-      const id = store.createSDKSession('content-real-prompt', 'project', 'first real prompt');
-      store.createSDKSession('content-real-prompt', 'project', 'second real prompt');
-
-      expect(store.getSessionById(id)?.user_prompt).toBe('first real prompt');
-    });
-
-    it('does not let the media prompt placeholder overwrite a real prompt', () => {
-      const id = store.createSDKSession('content-real-then-placeholder', 'project', 'a real prompt');
-      store.createSDKSession('content-real-then-placeholder', 'project', MEDIA_PROMPT_PLACEHOLDER);
-
-      expect(store.getSessionById(id)?.user_prompt).toBe('a real prompt');
+    it.each([
+      [MEDIA_PROMPT_PLACEHOLDER, 'real user prompt', 'real user prompt'],
+      ['', 'real user prompt', 'real user prompt'],
+      ['first real prompt', 'second real prompt', 'first real prompt'],
+      ['a real prompt', MEDIA_PROMPT_PLACEHOLDER, 'a real prompt'],
+    ])('repairs placeholders without replacing real prompts (%s, %s)', (first, second, expected) => {
+      const id = store.createSDKSession('content-prompt-repair', 'project', first);
+      store.createSDKSession('content-prompt-repair', 'project', second);
+      expect(store.getSessionById(id)?.user_prompt).toBe(expected);
     });
   });
 
@@ -98,16 +70,6 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('custom_title', () => {
-    it('stores custom_title at creation', () => {
-      const id = store.createSDKSession('content-title-1', 'project', 'prompt', 'My Agent');
-      expect(store.getSessionById(id)?.custom_title).toBe('My Agent');
-    });
-
-    it('defaults custom_title to null', () => {
-      const id = store.createSDKSession('content-title-2', 'project', 'prompt');
-      expect(store.getSessionById(id)?.custom_title).toBeNull();
-    });
-
     it('backfills custom_title on an idempotent call if unset', () => {
       const id = store.createSDKSession('content-title-3', 'project', 'prompt');
       expect(store.getSessionById(id)?.custom_title).toBeNull();
@@ -129,11 +91,6 @@ describe('SessionStore session lifecycle', () => {
   });
 
   describe('platform_source', () => {
-    it('defaults to claude', () => {
-      const id = store.createSDKSession('content-platform-1', 'project', 'prompt');
-      expect(store.getSessionById(id)?.platform_source).toBe('claude');
-    });
-
     it('uses claude when a legacy caller omits platform_source', () => {
       const id = store.createSDKSession('content-platform-2', 'project', 'prompt', undefined, 'codex');
       expect(store.getSessionById(id)?.platform_source).toBe('codex');

@@ -28,7 +28,7 @@ describe('semantic search identities across SQLite tables', () => {
     }, 1, 0, epoch);
     const prompt = store.db.prepare(`INSERT INTO user_prompts
       (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES (?, ?, 1, ?, ?, ?) RETURNING id`).get(sessionId, 'host-session', 'Related opening task', new Date(epoch).toISOString(), epoch) as { id: number };
+      VALUES (?, ?, 1, ?, ?, ?) RETURNING id`).all(sessionId, 'host-session', 'Related opening task', new Date(epoch).toISOString(), epoch)[0] as { id: number };
     expect(prompt.id).toBe(observation.id);
     // Use production Chroma normalization: its numeric IDs are deliberately table-local,
     // and its metadata remains aligned after deduplicating each document category.

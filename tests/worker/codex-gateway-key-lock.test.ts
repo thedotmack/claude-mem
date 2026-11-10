@@ -1,14 +1,11 @@
 // Contract: the cmem.ai memory key (cm_pro_…) goes only to the cmem gateway
 // (#4276, isKeyAllowedForEndpoint). Codex authenticates with the user's own
 // ChatGPT login through the Codex CLI, so no Codex path may carry that key:
-// not the app-server child's environment, not a request, and not the settings
-// written when Codex is selected, which must leave the gateway configuration
-// as it was for a switch back.
+// not a request or the settings written when Codex is selected, which must
+// leave the gateway configuration as it was for a switch back.
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { Request, Response } from 'express';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import { buildCodexAppServerEnv } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
 import { paths } from '../../src/shared/paths.js';
@@ -55,20 +52,6 @@ describe('Codex never carries the cmem gateway key', () => {
     else process.env.CLAUDE_MEM_PROVIDER = savedProvider;
   });
 
-  it('gives the app-server child no claude-mem or provider credential from the environment', () => {
-    const env = buildCodexAppServerEnv({
-      PATH: '/usr/bin',
-      HOME: '/home/user',
-      CLAUDE_MEM_OPENROUTER_API_KEY: CMEM_KEY,
-      CLAUDE_MEM_OPENROUTER_BASE_URL: GATEWAY_URL,
-      OPENROUTER_API_KEY: CMEM_KEY,
-      OPENAI_API_KEY: CMEM_KEY,
-      ANTHROPIC_API_KEY: CMEM_KEY,
-    }, join('/private', 'codex-home'));
-    expect(Object.values(env)).not.toContain(CMEM_KEY);
-    expect(Object.keys(env).sort()).toEqual(['CODEX_HOME', 'HOME', 'PATH']);
-  });
-
   it('sends no claude-mem credential with a Codex request, whatever the gateway settings hold', async () => {
     writeFileSync(settingsPath, JSON.stringify({
       CLAUDE_MEM_PROVIDER: 'codex',
@@ -97,16 +80,5 @@ describe('Codex never carries the cmem gateway key', () => {
     for (const [key, value] of Object.entries(flat)) {
       if (key.startsWith('CLAUDE_MEM_CODEX_')) expect(value).not.toBe(CMEM_KEY);
     }
-  });
-
-  it('the installer\'s --provider codex branch writes only the provider and the model', () => {
-    const installSource = readFileSync(join(__dirname, '..', '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
-    const start = installSource.indexOf("if (selectedProvider === 'codex') {");
-    expect(start).toBeGreaterThan(-1);
-    const branch = installSource.slice(start, installSource.indexOf("return 'codex';", start));
-    const written = branch.slice(branch.indexOf('mergeSettings({'), branch.indexOf('});', branch.indexOf('mergeSettings({')));
-    expect(written).toContain("CLAUDE_MEM_PROVIDER: 'codex'");
-    expect(written).toContain('CLAUDE_MEM_CODEX_MODEL');
-    expect(written).not.toMatch(/OPENROUTER|PRO_|API_KEY|BASE_URL/);
   });
 });

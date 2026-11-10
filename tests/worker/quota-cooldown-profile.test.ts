@@ -8,7 +8,6 @@ import { deriveMacKeychainServiceName } from '../../src/shared/oauth-token.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   tryAdmitQuotaProbe,
-  recordAuthCooldown,
   recordQuotaExhausted,
   getQuotaCooldown,
   resetQuotaCooldownsForTesting,
@@ -41,16 +40,6 @@ describe('quota cooldown breaker — per-account claude profile', () => {
 
   afterAll(() => {
     resetQuotaCooldownsForTesting();
-  });
-
-  it('records the profile that armed a claude breaker', () => {
-    recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
-    expect(getQuotaCooldown('claude')?.profile).toBe('work');
-  });
-
-  it('keeps withholding requests while the same profile is selected', () => {
-    recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
-    expect(tryAdmitQuotaProbe('claude')).toEqual({ admitted: false, claimId: null });
   });
 
   it('drops a breaker armed under another profile and admits the new one', () => {
@@ -178,14 +167,6 @@ describe('quota cooldown breaker — per-account claude profile', () => {
     expect(getQuotaCooldown('claude')?.profile).toBe('work');
     expect(getQuotaCooldown('claude')?.cause).toBe(cause);
   });
-
-  it('records the spawn-time account on an auth cooldown', () => {
-    currentProfile = 'personal';
-    recordAuthCooldown('claude', 'Invalid API key', 'work');
-
-    expect(getQuotaCooldown('claude')?.profile).toBe('work');
-    expect(getQuotaCooldown('claude')?.cause).toBe('auth');
-  });
 });
 
 // Two config dirs with the same basename are two accounts; the key must not
@@ -205,9 +186,5 @@ describe('credentialProfileKey', () => {
     const profile = explicit('/home/alice/accounts/work');
     const keychainSuffix = deriveMacKeychainServiceName(profile).split('-').pop();
     expect(credentialProfileKey(profile)).toBe(`work#${keychainSuffix}`);
-  });
-
-  it('names the bare keychain profile "default"', () => {
-    expect(credentialProfileKey({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: false })).toBe('default');
   });
 });

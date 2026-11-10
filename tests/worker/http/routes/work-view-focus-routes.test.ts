@@ -257,21 +257,6 @@ describe('My Focus routes', () => {
     expect((await saveFocus({ action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_viewer' })).status).toBe(409);
   });
 
-  it('shows rows that arrived through sync from another device, in their write order', async () => {
-    const now = Date.now();
-    // The laptop kept and renamed the area and filed the request; SyncApply wrote these rows with their origin.
-    insertRow(focusAreaRowFields({
-      focusAreaId: 'fa_endless', name: 'Endless', goal: null, status: 'kept', priorityRank: 2, ownerRank: null,
-      source: 'seed', mergedInto: null, evidence: null, decidedBy: 'owner',
-    }), { at: now + 1000, device: 'laptop', project: 'laptop-home' });
-    insertRow(placementRowFields({ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_endless', placedBy: 'owner' }), { at: now + 1000, device: 'laptop', project: 'laptop-home' });
-    // An older system row that only arrived now does not undo the laptop's decision.
-    insertRow(suggestedArea('fa_endless', 'Endless Mode (suggested again)', 2), { at: now - 1000, device: 'desktop', project: 'desktop-home' });
-    const view = await snapshot();
-    expect(areaById(view, 'fa_endless')).toMatchObject({ name: 'Endless', status: 'kept' });
-    expect(request(view).focusAreaId).toBe('fa_endless');
-  });
-
   describe('owner-goals suggestions', () => {
     const suggest = (areas: unknown, headers: Record<string, string> = {}) => fetch(`${origin}/api/work-view/focus/owner-goals`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ areas }),

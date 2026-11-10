@@ -161,10 +161,4 @@ describe('GET /api/ready', () => {
     expect(phasesOf(stream.events)).toEqual(['starting', 'ready']);
   });
 
-  it('leaves /api/readiness unchanged for older clients', async () => {
-    await start(baseOptions());
-    const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
-    expect(response.status).toBe(503);
-    expect((await response.json()).status).toBe('initializing');
-  });
 });

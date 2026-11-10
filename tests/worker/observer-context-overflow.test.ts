@@ -121,11 +121,13 @@ function makeQueue(session: ActiveSession, messages: unknown[]) {
 }
 
 let contextWindowSetting = '';
+let observeBarePrompts = 'false';
 let spies: ReturnType<typeof spyOn>[] = [];
 
 beforeEach(() => {
   __resetContextWindowCacheForTests();
   contextWindowSetting = '';
+  observeBarePrompts = 'false';
   spies = [
     spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
@@ -135,6 +137,7 @@ beforeEach(() => {
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
       CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: contextWindowSetting,
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: observeBarePrompts,
     })),
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'info').mockImplementation(() => {}),
@@ -176,21 +179,11 @@ describe('context-length refusals classify as context_overflow', () => {
     expect(error.kind).toBe('unrecoverable');
   });
 
-  it('a retired model stays unrecoverable with its own code', () => {
-    const error = classifyOpenRouterError({ status: 404, bodyText: 'No endpoints found for test/model.', cause });
-    expect(error.kind).toBe('unrecoverable');
-    expect(error.code).toBe('model_unavailable');
-  });
-
   it("Gemini's input-token-count 400", () => {
     const bodyText = JSON.stringify({ error: { code: 400, message: 'The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).' } });
     expect(classifyGeminiError({ status: 400, bodyText, cause }).kind).toBe('context_overflow');
   });
 
-  it('other Gemini 400s stay unrecoverable', () => {
-    const bodyText = JSON.stringify({ error: { message: 'Please ensure that multiturn requests alternate between user and model.' } });
-    expect(classifyGeminiError({ status: 400, bodyText, cause }).kind).toBe('unrecoverable');
-  });
 });
 
 // Wave 3 gate R4-2: the openai-compatible classifier (#3942) read every one of
@@ -233,6 +226,7 @@ class RefusingProvider extends OpenAICompatibleProvider<{ apiKey: string; model:
   protected readonly providerName = 'TestProvider';
   protected readonly syntheticIdPrefix = 'test';
   protected readonly forwardEmptyMessageResponse = false;
+  readonly requestHistoryLengths: number[] = [];
 
   constructor(sessionManager: unknown, private readonly refuseAt: 'init' | 'observation') {
     super({} as never, sessionManager as never);
@@ -247,6 +241,7 @@ class RefusingProvider extends OpenAICompatibleProvider<{ apiKey: string; model:
   }
 
   protected async query(history: ConversationMessage[]): Promise<ProviderQueryResult> {
+    this.requestHistoryLengths.push(history.length);
     if (history.length === 1 && this.refuseAt === 'observation') {
       return { content: 'ready' };
     }
@@ -265,6 +260,7 @@ class RefusingProvider extends OpenAICompatibleProvider<{ apiKey: string; model:
 describe('an HTTP context-length refusal recycles the generation', () => {
   for (const refuseAt of ['init', 'observation'] as const) {
     it(`at the ${refuseAt} request: the batch is preserved and a fresh generation resumes`, async () => {
+      observeBarePrompts = refuseAt === 'init' ? 'true' : 'false';
       const session = makeSession();
       const queue = makeQueue(session, [observation(0, 500)]);
       const provider = new RefusingProvider(queue, refuseAt);
@@ -272,6 +268,7 @@ describe('an HTTP context-length refusal recycles the generation', () => {
       // Resolves: the refusal is handled here, not rethrown as a failure.
       await provider.startSession(session);
 
+      expect(provider.requestHistoryLengths).toEqual([refuseAt === 'init' ? 1 : 2]);
       expect(session.abortReason).toBe('overflow:recycle');
       expect(session.forceInit).toBe(true);
       expect(session.conversationHistory).toEqual([]);

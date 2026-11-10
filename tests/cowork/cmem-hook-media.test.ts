@@ -6,7 +6,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 
@@ -144,7 +144,7 @@ describe('Cowork hook image capture', () => {
     expectNoBytes(staged, png);
   });
 
-  it('an upload failure stages the envelope exactly once, text-only; a failed ingest spools no bytes', async () => {
+  it('an upload failure sends text once and a failed ingest is never replayed', async () => {
     uploadStatus = 503;
     ingestStatus = 503;
     const { stderr } = await runHook(observation(SHAPES.anthropic_base64.response()));
@@ -154,16 +154,28 @@ describe('Cowork hook image capture', () => {
     expect(ingests()).toHaveLength(1);
     expect(String(ingests()[0].json.payload.tool_response)).toContain('upload_failed');
     const spool = join(home, '.claude-mem', 'cowork-spool.jsonl');
-    expect(existsSync(spool)).toBe(true);
-    expectNoBytes(readFileSync(spool, 'utf8'), png);
-    // A later hook fire flushes the spool as-is: no upload retry, no enrichment resend.
+    const spooled = existsSync(spool);
     ingestStatus = 202;
     received = [];
     await runHook(observation('plain text', 'toolu_02Other'));
     expect(uploads()).toHaveLength(0);
-    const flushed = ingests().find(record => Array.isArray(record.json.batch));
-    expect(flushed?.json.batch).toHaveLength(1);
-    expect(String(flushed?.json.batch[0].payload.tool_response)).toContain('upload_failed');
+    expect(ingests()).toHaveLength(1);
+    expect(ingests()[0].json.payload.tool_use_id).toBe('toolu_02Other');
+    expect(ingests()[0].json.batch).toBeUndefined();
+    expect(spooled).toBe(false);
+  });
+
+  it.each([401, 402, 429, 503])('a %i refusal cannot replay an observation after recovery', async status => {
+    ingestStatus = status;
+    await runHook(observation('outage input', 'toolu_outage'));
+    expect(ingests()).toHaveLength(1);
+    const spooled = existsSync(join(home, '.claude-mem', 'cowork-spool.jsonl'));
+    ingestStatus = 202;
+    received = [];
+    await runHook(observation('fresh input', 'toolu_fresh'));
+    expect(ingests().flatMap(record => record.json.batch || [record.json]).map(env => env.payload.tool_use_id)).toEqual(['toolu_fresh']);
+    expect(ingests()[0].json.payload.tool_response).toBe('fresh input');
+    expect(spooled).toBe(false);
   });
 
   it('unsupported bytes and a missing event id are stripped and never uploaded', async () => {
@@ -251,13 +263,6 @@ describe('Cowork hook image capture', () => {
     const staged = String(ingests()[0].json.payload.tool_response);
     expect(staged).not.toContain('secret');
     expect(staged).toContain('public text');
-  });
-
-  it('is off by default: no upload and the existing envelope behavior', async () => {
-    await runHook(observation(SHAPES.anthropic_base64.response()), { CMEM_MEDIA_CAPTURE_ENABLED: '' });
-    expect(uploads()).toHaveLength(0);
-    expect(ingests()).toHaveLength(1);
-    expect(String(ingests()[0].json.payload.tool_response)).not.toContain('cmem_media');
   });
 
   it('image-free payloads are unchanged with capture on', async () => {

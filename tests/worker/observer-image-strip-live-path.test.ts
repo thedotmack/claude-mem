@@ -76,16 +76,6 @@ async function observe(queued: any) {
 }
 
 describe('observer image stripping on the real ingest path (#3606)', () => {
-  test('the prompt stripper alone recognizes a real Read result and keeps its MIME', () => {
-    const prompt = buildObservationPrompt({
-      id: 0, tool_name: 'Read', tool_input: JSON.stringify({ file_path: '/frames/0001.png' }),
-      tool_output: JSON.stringify(realReadImageResult(BASE64)), created_at_epoch: Date.now(), cwd: '/fixture',
-    });
-    expect(prompt).not.toContain('iVBORw0KGgo');
-    expect(prompt).toContain('image data withheld from the observer');
-    expect(prompt).toContain('image/png');
-  });
-
   test('a Read of an image file sends no base64 to the compressor or the prompt', async () => {
     // Claude Code returns an image file in this shape: `file.base64`, not
     // `source.data`, so the Anthropic branch of the stripper never matched it.
@@ -99,6 +89,8 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
     // The text signal beside the bytes survives to the observer.
     expect(prompt).toContain('image/png');
     expect(prompt).toContain('originalWidth');
+    expect(prompt).not.toContain('reason="oversize"');
+    expect(prompt.length).toBeLessThan(4_000);
   });
 
   test('an Anthropic image block sends no base64 to the compressor or the prompt', async () => {
@@ -125,17 +117,6 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
     expect(prompt).toContain('image data withheld from the observer');
     expect(prompt).toContain(String(BASE64.length));
     expect(prompt).toContain('image/png');
-  });
-
-  test('the observation still fits without being truncated', async () => {
-    // Stripping has to be what shrinks this, not the head/tail guard: an
-    // elided marker here would mean the image was still being measured.
-    const queued = await ingest('Read', { file_path: '/frames/0001.png' },
-      realReadImageResult(BASE64));
-    const { prompt } = await observe(queued);
-
-    expect(prompt).not.toContain('reason="oversize"');
-    expect(prompt.length).toBeLessThan(4_000);
   });
 
   test('oversized text still goes to the compressor — the condense pass is untouched', async () => {

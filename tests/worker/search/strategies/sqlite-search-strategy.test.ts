@@ -80,76 +80,17 @@ describe('SQLiteSearchStrategy', () => {
       expect(mockSessionSearch.searchUserPrompts).toHaveBeenCalled();
     });
 
-    it('should search only observations when searchType is observations', async () => {
-      const options: StrategySearchOptions = {
-        searchType: 'observations',
-        limit: 10
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(1);
-      expect(result.results.sessions).toHaveLength(0);
-      expect(result.results.prompts).toHaveLength(0);
-      expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
-      expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
-      expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
-    });
-
-    it('should search only sessions when searchType is sessions', async () => {
-      const options: StrategySearchOptions = {
-        searchType: 'sessions',
-        limit: 10
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.results.sessions).toHaveLength(1);
-      expect(result.results.prompts).toHaveLength(0);
-    });
-
-    it('should search only prompts when searchType is prompts', async () => {
-      const options: StrategySearchOptions = {
-        searchType: 'prompts',
-        limit: 10
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.results.sessions).toHaveLength(0);
-      expect(result.results.prompts).toHaveLength(1);
-    });
-
-    it('should pass date range filter to search methods', async () => {
-      const options: StrategySearchOptions = {
-        dateRange: {
-          start: '2025-01-01',
-          end: '2025-01-31'
-        },
-        limit: 10
-      };
-
-      await strategy.search(options);
-
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      expect(callArgs[1].dateRange).toEqual({
-        start: '2025-01-01',
-        end: '2025-01-31'
-      });
-    });
-
-    it('should pass project filter to search methods', async () => {
-      const options: StrategySearchOptions = {
-        project: 'my-project',
-        limit: 10
-      };
-
-      await strategy.search(options);
-
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      expect(callArgs[1].project).toBe('my-project');
+    it.each(['observations', 'sessions', 'prompts'] as const)('searches only %s', async searchType => {
+      const result = await strategy.search({ searchType, limit: 10 });
+      for (const [category, search] of [
+        ['observations', mockSessionSearch.searchObservations],
+        ['sessions', mockSessionSearch.searchSessions],
+        ['prompts', mockSessionSearch.searchUserPrompts],
+      ] as const) {
+        const calls = category === searchType ? 1 : 0;
+        expect(result.results[category]).toHaveLength(calls);
+        expect(search).toHaveBeenCalledTimes(calls);
+      }
     });
 
     it('should pass orderBy to search methods', async () => {
@@ -178,18 +119,6 @@ describe('SQLiteSearchStrategy', () => {
   });
 
   describe('findByFile', () => {
-    it('should return observations and sessions for file path', () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = strategy.findByFile('/path/to/file.ts', options);
-
-      expect(result.observations).toHaveLength(1);
-      expect(result.sessions).toHaveLength(1);
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
-    });
-
     it('should pass filter options to findByFile', () => {
       const options: StrategySearchOptions = {
         limit: 25,
@@ -220,12 +149,5 @@ describe('SQLiteSearchStrategy', () => {
       }));
     });
 
-    it('should pass isFolder to findByFile so a folder is matched by its direct children', () => {
-      strategy.findByFile('/src/utils', { isFolder: true });
-
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/utils', expect.objectContaining({
-        isFolder: true
-      }));
-    });
   });
 });

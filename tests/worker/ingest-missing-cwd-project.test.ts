@@ -77,33 +77,22 @@ afterEach(() => {
 });
 
 describe('ingest without a cwd registers the project as unknown (#4772)', () => {
-  it('observation ingest falls back to unknown when the payload has no cwd', async () => {
+  it.each([
+    ['obs-no-cwd', undefined, 'toolu_obs_nocwd'],
+    ['obs-blank-cwd', '   ', 'toolu_obs_blank'],
+  ])('observation ingest falls back to unknown for %s', async (contentSessionId, cwd, toolUseId) => {
     const result = await ingestObservation({
-      contentSessionId: 'obs-no-cwd',
+      contentSessionId,
       platformSource: 'claude',
       toolName: 'Bash',
       toolInput: { command: 'ls' },
       toolResponse: { stdout: 'x' },
-      toolUseId: 'toolu_obs_nocwd',
+      ...(cwd === undefined ? {} : { cwd }),
+      toolUseId,
     });
 
     expect(result).toMatchObject({ ok: true });
-    expect(projectOf('obs-no-cwd')).toBe('unknown');
-  });
-
-  it('observation ingest falls back to unknown when cwd is blank', async () => {
-    const result = await ingestObservation({
-      contentSessionId: 'obs-blank-cwd',
-      platformSource: 'claude',
-      toolName: 'Bash',
-      toolInput: { command: 'ls' },
-      toolResponse: { stdout: 'x' },
-      cwd: '   ',
-      toolUseId: 'toolu_obs_blank',
-    });
-
-    expect(result).toMatchObject({ ok: true });
-    expect(projectOf('obs-blank-cwd')).toBe('unknown');
+    expect(projectOf(contentSessionId)).toBe('unknown');
   });
 
   it('advisor-call ingest falls back to unknown when the payload has no cwd', async () => {
@@ -178,16 +167,7 @@ describe('ingest without a cwd registers the project as unknown (#4772)', () => 
     expect(projectOf('real-unknown-obs')).toBe('unknown');
   });
 
-  it('an unknown-project row with a recorded cwd is a real project, not a repairable placeholder', () => {
-    // Same guard, stated from the placeholder side: once a cwd is on the row,
-    // the stored 'unknown' is never swapped for a later different project.
-    const sessionDbId = store.createSDKSession('unknown-with-cwd', 'unknown', 'first prompt');
-    store.setSessionCwd(sessionDbId, '/work/unknown', 'path');
 
-    store.createSDKSession('unknown-with-cwd', '/different/project', '');
-
-    expect(projectOf('unknown-with-cwd')).toBe('unknown');
-  });
 });
 
 describe('observer capture hard disable (#4965)', () => {

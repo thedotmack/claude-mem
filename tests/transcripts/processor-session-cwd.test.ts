@@ -222,9 +222,39 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       await watcher.start();
       appendFileSync(filePath, encode([userLine('s3', 'live turn')]));
       (watcher as any).tailers.get(filePath)?.poke();
-      await new Promise(resolve => setTimeout(resolve, 120));
+      await (watcher as any).tailers.get(filePath).readTask;
 
       expect(inits).toEqual([{ prompt: 'live turn', cwd: PROJECT_DIR }]);
+    });
+  }
+
+  for (const copiedAfterStartup of [false, true]) {
+    it(`reads a first header spanning zstd frames before admitting live events (copied=${copiedAfterStartup})`, async () => {
+      const filePath = join(tmpRoot, 'split-header.jsonl.zstd');
+      const cwd = PROJECT_DIR + '/项目';
+      const header = Buffer.from(JSON.stringify({ ...sessionLine('split-header'), cwd, createdAt: Date.now() - 60_000 }) + '\n');
+      const seam = header.indexOf(Buffer.from('项')) + 1;
+      const encode = (entries: unknown[]) => zstdCompressSync(Buffer.from(entries.map(entry => JSON.stringify(entry) + '\n').join('')));
+      const historical = Buffer.concat([
+        zstdCompressSync(header.subarray(0, seam)), zstdCompressSync(header.subarray(seam)),
+        encode([userLine('split-header', 'old prompt'), toolLine('split-header')]),
+      ]);
+      const watch: WatchTarget = { name: 'dsh', path: filePath, schema, startAtEnd: true };
+      const watcher = new TranscriptWatcher({ version: 1, watches: [] }, join(tmpRoot, 'split-state.json'));
+      watchers.push(watcher);
+      await watcher.start();
+      writeFileSync(filePath, historical);
+      await (watcher as any).addTailer(filePath, watch, schema, copiedAfterStartup);
+      await (watcher as any).tailers.get(filePath).readTask;
+      expect(inits).toEqual([]);
+      expect(observations).toEqual([]);
+
+      appendFileSync(filePath, encode([userLine('split-header', 'live prompt'), toolLine('split-header')]));
+      (watcher as any).tailers.get(filePath).poke();
+      await (watcher as any).tailers.get(filePath).readTask;
+      expect(inits).toEqual([{ prompt: 'live prompt', cwd }]);
+      expect(observations).toEqual([{ toolName: 'Bash', cwd }]);
+      expect(capturedSessionIds).toEqual(['split-header']);
     });
   }
 
@@ -237,7 +267,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     const first = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     watchers.push(first);
     await (first as any).addTailer(filePath, watch, schema);
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await (first as any).tailers.get(filePath).readTask;
     first.stop();
     expect(JSON.parse(readFileSync(statePath, 'utf8')).cwds[filePath]).toBe(PROJECT_DIR);
 
@@ -246,7 +276,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     watchers.push(restarted);
     await (restarted as any).addTailer(filePath, watch, schema);
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await (restarted as any).tailers.get(filePath).readTask;
 
     expect(inits).toEqual([
       { prompt: 'first', cwd: PROJECT_DIR },
@@ -284,7 +314,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       const first = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
       watchers.push(first);
       await (first as any).addTailer(filePath, watch, nativeSchema);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await (first as any).tailers.get(filePath).readTask;
       first.stop();
       expect(JSON.parse(readFileSync(statePath, 'utf8')).cwds[filePath]).toBe(PROJECT_DIR);
 
@@ -292,7 +322,7 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
       watchers.push(restarted);
       await (restarted as any).addTailer(filePath, watch, nativeSchema);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await (restarted as any).tailers.get(filePath).readTask;
 
       expect(capturedSessionIds).toEqual([sessionId, sessionId]);
       expect(inits.map(input => input.prompt)).toEqual(['Read the file\nand report it', 'Read the file\nand report it']);

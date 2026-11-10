@@ -17,6 +17,14 @@ import { observationChange, type TestHubChange } from './content-v2-helpers.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+async function waitFor(condition: () => boolean, timeoutMs = 4_500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for active polls');
+    await sleep(5);
+  }
+}
+
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
 type HubOp = TestHubChange;
@@ -423,7 +431,7 @@ describe('SyncClient', () => {
         isSessionActive: () => true,
       });
       client.start();
-      await sleep(150);
+      await waitFor(() => state.requests.length >= 3);
 
       // Catch-up pull + several 20ms-tier polls; the 60s idle tier alone
       // could have produced only the catch-up pull.

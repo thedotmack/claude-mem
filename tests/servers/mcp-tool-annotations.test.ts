@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { expectSafeMcpToolNames } from './mcp-tool-name-assertions.js';
 
 // Plan mode runs an MCP tool without a prompt only when the tool declares
 // readOnlyHint, and treats a missing annotation as false (#3483). The File Read
@@ -44,6 +45,10 @@ describe('mcp-search tool annotations (#3483)', () => {
   afterAll(async () => {
     await client?.close();
     rmSync(dataDirectory, { recursive: true, force: true });
+  });
+
+  it('advertises MCP-safe tool names within the qualified-name budget', () => {
+    expectSafeMcpToolNames(tools);
   });
 
   it('marks the tools the File Read Gate routes to as read-only', () => {

@@ -93,7 +93,6 @@ describe('FTS bloat reclaim', () => {
 
   it('never holds the process open, and a worker restarted before the timer fires schedules the reclaim again', () => {
     db = new Database(join(tempDir, 'fts.db'));
-    seedBloatedObservationsFts(db);
 
     const timer = scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir, startDelayMs: 60_000 });
 

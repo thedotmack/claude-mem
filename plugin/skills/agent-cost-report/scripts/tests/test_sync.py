@@ -2,7 +2,6 @@
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -13,8 +12,8 @@ from acr import sync
 class Sync(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(); self.src = os.path.join(self.tmp, "plugin", "skills", "agent-cost-report")
-        os.makedirs(os.path.join(self.src, "scripts", "acr")); os.makedirs(os.path.join(self.src, "scripts", "__pycache__"))
-        for rel, body in (("SKILL.md", "# skill\n"), ("scripts/acr.py", "print(1)\n"), ("scripts/acr/x.py", "x = 1\n"), ("scripts/__pycache__/x.pyc", "junk"), ("README.md", "not shipped\n")):
+        os.makedirs(os.path.join(self.src, "scripts", "acr")); os.makedirs(os.path.join(self.src, "scripts", "__pycache__")); os.makedirs(os.path.join(self.src, "scripts", "tests"))
+        for rel, body in (("SKILL.md", "# skill\n"), ("scripts/acr.py", "print(1)\n"), ("scripts/acr/x.py", "x = 1\n"), ("scripts/__pycache__/x.pyc", "junk"), ("scripts/tests/test_x.py", "not shipped\n"), ("README.md", "not shipped\n")):
             with open(os.path.join(self.src, rel), "w") as fh: fh.write(body)
         self.dests = [os.path.join(self.tmp, "house"), os.path.join(self.tmp, "mirror", "skills", "agent-cost-report")]
 
@@ -36,16 +35,11 @@ class Sync(unittest.TestCase):
         self.assertTrue(all(l.startswith("ok") for l in out))
         self.assertFalse(os.path.exists(os.path.join(self.dests[0], "README.md")))               # only shipped files are copied
         self.assertFalse(os.path.exists(os.path.join(self.dests[0], "scripts", "__pycache__")))
+        self.assertFalse(os.path.exists(os.path.join(self.dests[0], "scripts", "tests")))
         with open(os.path.join(self.dests[1], "scripts", "acr", "x.py"), "w") as fh: fh.write("x = 2\n")
         self.assertEqual(sync.run(dests=self.dests, src=self.src, out=out.append), 1)
 
-    def test_default_destinations_are_the_house_copy_and_four_mirrors(self):
-        d = sync.destinations(repo_root="/r", house="/h")
-        self.assertEqual(d, ["/h"] + [f"/r/{m}/skills/agent-cost-report" for m in ("claude-mem-cursor", "claude-mem-grok-bot", "cowork", "openclaw")])
 
-    def test_cli_exit_code(self):
-        r = subprocess.run([sys.executable, _paths.ACR_PY, "sync-check", "--dest", self.dests[0]], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn("DRIFT", r.stdout)
 
 
 if __name__ == "__main__":

@@ -13,10 +13,6 @@ import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
  * shadow state outside the user's control and competes with claude-mem's
  * hook-based memory for context-window tokens, but we should not disable it
  * without the user's opt-in.
- *
- * The consent gate (resolveClaudeAutoMemoryChoice) is a private module-level
- * helper that prompts on a TTY, so its rules are pinned by source inspection;
- * disableClaudeAutoMemory itself is exercised directly below.
  */
 
 const installSourcePath = join(
@@ -30,27 +26,28 @@ const installSourcePath = join(
 const installSource = readFileSync(installSourcePath, 'utf-8');
 
 describe('Install: disable Claude Code auto-memory', () => {
-  describe('runInstallCommand integration', () => {
-    it('skips the consent helper entirely when claude-code is not selected', () => {
-      expect(installSource).toMatch(
-        /if \(!selectedIDEs\.includes\(['"]claude-code['"]\)\) \{\s*return ['"]not-applicable['"]/
-      );
-    });
-
-    it('only calls disableClaudeAutoMemory after an explicit disable decision', () => {
-      expect(installSource).toMatch(
-        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,300}disableClaudeAutoMemory\(\)/
-      );
-    });
-
-    it('leaves auto-memory enabled in non-interactive installs unless the explicit flag is present', () => {
-      expect(installSource).toMatch(
-        /if \(!isInteractive\) \{\s*return ['"]leave-enabled['"]/
-      );
-      expect(installSource).toMatch(
-        /if \(options\.disableAutoMemory\) \{\s*return ['"]disable['"]/
-      );
-    });
+  it('resolves non-prompting consent choices in a non-interactive process', () => {
+    const script = `
+      import { mock } from 'bun:test';
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      mock.module('@clack/prompts', () => ({ select: () => { throw new Error('Unexpected consent prompt'); } }));
+      const { resolveClaudeAutoMemoryChoice } = await import(${JSON.stringify(installSourcePath)});
+      const cases = [[['cursor'], {}], [['claude-code'], { disableAutoMemory: true }], [['claude-code'], {}]];
+      const results = [];
+      for (const [ides, options] of cases) results.push(await resolveClaudeAutoMemoryChoice(ides, options));
+      console.log(JSON.stringify(results));
+    `;
+    const home = mkdtempSync(join(tmpdir(), 'auto-memory-consent-'));
+    try {
+      const child = Bun.spawnSync([process.execPath, '-e', script], {
+        stdout: 'pipe', stderr: 'pipe', timeout: 10_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: home, CLAUDE_MEM_DATA_DIR: home },
+      });
+      expect(child.exitCode).toBe(0);
+      expect(JSON.parse(child.stdout.toString().trim())).toEqual(['not-applicable', 'disable', 'leave-enabled']);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   describe('disableClaudeAutoMemory runtime behavior', () => {
@@ -116,13 +113,6 @@ describe('Install: disable Claude Code auto-memory', () => {
 
       const contentAfter = readFileSync(settingsPath, 'utf-8');
       expect(contentAfter).toBe(contentBefore);
-    });
-
-    it('writes the literal string "1", not boolean true', () => {
-      disableClaudeAutoMemory();
-      const raw = readFileSync(join(tempDir, 'settings.json'), 'utf-8');
-      expect(raw).toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*"1"/);
-      expect(raw).not.toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*true/);
     });
 
     it('replaces a non-object env value with a fresh env block', () => {

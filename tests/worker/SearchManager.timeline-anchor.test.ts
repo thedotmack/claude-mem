@@ -1,38 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshot in afterAll so the partial ModeManager stub (no
-// class prototype, no loadMode) does not leak into later test files (bun's
-// mock.module is process-global; mock.restore() does NOT undo it). A leaked
-// stub breaks tests/server/server-boot.test.ts, server-runtime-smoke and the
-// tests/sdk parser suites whenever the readdir-dependent file order runs them
-// after this file.
-import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
-
-const realModeManagerSnapshot = { ...realModeManagerModule };
-
-afterAll(() => {
-  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
-});
-
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: {},
-        observation_types: [
-          { id: 'discovery', icon: 'I' },
-        ],
-        observation_concepts: [],
-      }),
-      getObservationTypes: () => [{ id: 'discovery', icon: 'I' }],
-      getTypeIcon: (_type: string) => 'I',
-      getWorkEmoji: () => 'W',
-    }),
-  },
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
@@ -108,6 +75,7 @@ describe('SearchManager.timeline() anchor dispatch', () => {
   let seeded: SeededObservation[];
 
   beforeEach(() => {
+    ModeManager.getInstance().loadMode('code');
     db = new Database(':memory:');
     db.run('PRAGMA foreign_keys = ON');
     store = new SessionStore(db);
@@ -127,118 +95,20 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     db.close();
   });
 
-  it('(a) numeric anchor passed as JS number returns the 7-id window around the anchor', async () => {
-    const middle = seeded[24]; 
-    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: middle.id, // pass as JS number
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
-    expectAnchorRendered(text, middle.id);
-  });
-
-  it('(b) numeric anchor passed as STRING returns the 7-id window around the anchor (THE bug case)', async () => {
+  it.each([
+    ['number', (id: number) => id],
+    ['string', (id: number) => String(id)],
+    ['padded string', (id: number) => `  ${id}  `],
+    ['search-output id', (id: number) => `#${id}`],
+  ] as const)('returns the 7-id window for a numeric anchor passed as %s', async (_label, anchor) => {
     const middle = seeded[24];
     const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: String(middle.id), // pass as STRING — what HTTP layer always sends
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
-    expectAnchorRendered(text, middle.id);
-  });
-
-  it('(b2) numeric anchor with surrounding whitespace is coerced and returns the same window', async () => {
-    const middle = seeded[24];
-    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: `  ${middle.id}  `,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toEqual(expectedIds);
-    expectAnchorRendered(text, middle.id);
-  });
-
-  it('(b3) a "#<id>" anchor copied from search output is the observation, not a timestamp', async () => {
-    const middle = seeded[24];
-    const expectedIds = seeded.slice(21, 28).map((o) => o.id);
-
-    const response = await manager.timeline({
-      anchor: `#${middle.id}`,
-      depth_before: 3,
-      depth_after: 3,
-    });
+    const response = await manager.timeline({ anchor: anchor(middle.id), depth_before: 3, depth_after: 3 });
 
     expect(response.isError).not.toBe(true);
     const text: string = response.content[0].text;
     expect(extractObservationIds(text)).toEqual(expectedIds);
     expectAnchorRendered(text, middle.id);
-  });
-
-  it('(c) session-ID anchor "S<n>" routes to the timestamp branch and returns a non-error response', async () => {
-    const middle = seeded[24];
-    const summaryResult = store.storeSummary(
-      MEMORY_SESSION_ID,
-      PROJECT,
-      {
-        request: 'Synthetic session for timeline anchor test',
-        investigated: '',
-        learned: '',
-        completed: '',
-        next_steps: '',
-        notes: null,
-      },
-      undefined,
-      0,
-      middle.epoch
-    );
-    const sessionDbId = summaryResult.id;
-
-    const response = await manager.timeline({
-      anchor: `S${sessionDbId}`,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    expect(typeof text).toBe('string');
-    expect(text.length).toBeGreaterThan(0);
-  });
-
-  it('(d) ISO-timestamp anchor routes to the timestamp branch and returns a non-error response', async () => {
-    const middle = seeded[24];
-    const isoAnchor = new Date(middle.epoch).toISOString();
-
-    const response = await manager.timeline({
-      anchor: isoAnchor,
-      depth_before: 3,
-      depth_after: 3,
-    });
-
-    expect(response.isError).not.toBe(true);
-    const text: string = response.content[0].text;
-    const returnedIds = extractObservationIds(text);
-    expect(returnedIds).toContain(middle.id);
   });
 
   it('(e) garbage anchor "123abc" returns isError: true (does NOT swallow as numeric)', async () => {
@@ -416,6 +286,7 @@ describe('SearchManager.timeline() epoch anchors with tied rows', () => {
   }
 
   beforeEach(() => {
+    ModeManager.getInstance().loadMode('code');
     db = new Database(':memory:');
     store = new SessionStore(db);
     manager = new SearchManager(new SessionSearch(db), store, null, new FormattingService(), new TimelineService());

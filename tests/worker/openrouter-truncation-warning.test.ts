@@ -47,20 +47,6 @@ describe('OpenRouter output-token limit', () => {
     mock.restore();
   });
 
-  it('warns and names the cap when the reply is cut off', async () => {
-    fetchSpy = mockFetchResponse({
-      model: 'test/model',
-      choices: [{ message: { content: '<observation><type>bugfix</type><title>half a ti' }, finish_reason: 'length' }],
-      usage: CAPPED_USAGE,
-    });
-    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
-
-    const result = await makeProvider().runQuery(HISTORY);
-
-    expect(result.content).toContain('<observation>');
-    expect(warnSpy).toHaveBeenCalledWith('SDK', TRUNCATION_WARNING, expect.objectContaining({ maxTokens: 4096, outputTokens: 4096 }));
-  });
-
   it('names the whole cap it sent, answer plus reasoning, when a typed effort turns reasoning on', async () => {
     fetchSpy = mockFetchResponse({
       model: 'test/model',
@@ -74,7 +60,7 @@ describe('OpenRouter output-token limit', () => {
     const sentBody = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
     expect(sentBody.max_tokens).toBe(5120);
     expect(warnSpy).toHaveBeenCalledWith('SDK', TRUNCATION_WARNING, expect.objectContaining({
-      maxTokens: 5120, answerMaxTokens: 4096, reasoningMaxTokens: 1024,
+      maxTokens: 5120, answerMaxTokens: 4096, reasoningMaxTokens: 1024, outputTokens: 5120,
     }));
   });
 

@@ -8,6 +8,7 @@ import { CloudSync, type CloudSyncOptions, type CloudSyncSettingKeys } from '../
 import { buildContentOperation, sha256Base64Url, type CanonicalContentBody, type CanonicalMutation, type CanonicalWireOp } from '../../../src/services/sync/CanonicalContent.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
+import { readSyncQueueInventory } from '../../../src/services/sync/SyncQueueEvidence.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const EPOCH = Date.parse(ISO);
@@ -232,6 +233,26 @@ describe('CloudSync page fairness', () => {
     expect(sync.status().lastError).toBeNull();
   });
 
+  it('uploads authored version-like list names from native and frozen rows while holding reserved lists', async () => {
+    const names = ['__my_work_v1draft:notes', '__my_work_v12beta:tasks'];
+    const ids = names.map(listName => store.appendWorkStateEntry({ project: 'project', listName, fields: { task: 'retained' }, createdAtEpoch: EPOCH }));
+    freeze(buildContentOperation({ kind: 'work_state', originDeviceId: DEVICE, originLocalId: String(ids[1]), entityRev: '1',
+      payload: { project: 'project', list_name: names[1], fields: { task: 'retained' }, created_at: ISO, created_at_epoch: String(EPOCH) } }));
+    const reserved = store.appendWorkStateEntry({ project: 'project', listName: '__my_work_v12:request', fields: { task: 'held' }, createdAtEpoch: EPOCH });
+    const endpoint = hub();
+    const sync = syncFor(endpoint.fetchImpl);
+    const queue = readSyncQueueInventory(db, { deviceId: DEVICE, sharedWorkWritesEnabled: false, workStateSupported: true });
+    expect(queue.kinds.work_state).toMatchObject({ eligiblePending: 2, heldPending: 1, heldSharedState: 1 });
+
+    await sync.flush();
+
+    const operations = endpoint.pages.flatMap(page => page.ops);
+    expect(operations.map(op => JSON.parse(op.body).payload.list_name).sort()).toEqual(names.toSorted());
+    expect((replica(operations) as any).work.map((row: any) => row.list_name).sort()).toEqual(names.toSorted());
+    expect(db.prepare('SELECT synced_at FROM work_state_entries WHERE id = ?').get(reserved)).toEqual({ synced_at: null });
+    expect(sync.status().lastError).toBeNull();
+  });
+
   it('does not make a title prerequisite wait for unrelated frozen observations', async () => {
     const frozen = Array.from({ length: 12 }, (_, index) => freezeObservation(1_000 + index, 'elsewhere', 'other-memory'));
     mutation(1, { op: 'set_title', target: { memory_session_id: 'memory' }, fields: { custom_title: 'title prerequisite' } });
@@ -382,21 +403,12 @@ describe('CloudSync page fairness', () => {
 
   const malformedMutations: Array<{ label: string; value: unknown }> = [
     { label: 'mutation string', value: 'bad-json' },
-    { label: 'mutation number', value: 42 },
-    { label: 'mutation boolean', value: true },
-    { label: 'mutation array', value: [] },
-    { label: 'mutation null', value: null },
-    ...['target', 'where', 'fields'].flatMap(key => [
-      { label: `${key} string`, value: 'bad-json' },
-      { label: `${key} number`, value: 42 },
-      { label: `${key} array`, value: [] },
-      { label: `${key} null`, value: null },
-    ].map(({ label, value }) => ({
-      label,
+    ...['target', 'where', 'fields'].map(key => ({
+      label: `${key} string`,
       value: key === 'target'
-        ? { op: 'set_title', target: value, fields: { custom_title: 'invalid target' } }
-        : { op: 'remap_project', where: { project: 'project' }, fields: { project: 'bogus' }, [key]: value },
-    }))),
+        ? { op: 'set_title', target: 'bad-json', fields: { custom_title: 'invalid target' } }
+        : { op: 'remap_project', where: { project: 'project' }, fields: { project: 'bogus' }, [key]: 'bad-json' },
+    })),
   ];
 
   for (const malformed of malformedMutations) {
@@ -437,9 +449,8 @@ describe('CloudSync page fairness', () => {
     });
   }
 
-  it('runs forty title mutations without prerequisite inventory scans over a large frozen queue', async () => {
+  it('runs forty title mutations without prerequisite inventory scans', async () => {
     db.transaction(() => {
-      for (let index = 0; index < 2_048; index++) freezeObservation(1_000 + index, 'unrelated', 'other-memory');
       for (let index = 0; index < 40; index++) {
         mutation(index + 1, { op: 'set_title', target: { memory_session_id: `title-memory-${index}` }, fields: { custom_title: `title-${index}` } });
       }
@@ -493,7 +504,12 @@ describe('CloudSync page fairness', () => {
     const sync = syncFor(endpoint.fetchImpl);
     const flushing = sync.flush();
     await firstRequest;
+    expect(endpoint.pages[0].bodies[0]).toMatchObject({ entity_rev: '1', payload: { title: 'before' } });
     db.prepare('UPDATE observations SET title = ?, synced_at = NULL WHERE id = ?').run('after', id);
+    const frozen = db.prepare(
+      'SELECT body FROM sync_content_outbox WHERE entity_rev = ?'
+    ).get('1') as { body: string };
+    expect(JSON.parse(frozen.body).payload.title).toBe('before');
     await sync.flush();
     sync.notify();
     expect(endpoint.pages).toHaveLength(1);

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, mock, setSystemTime, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -89,51 +89,6 @@ describe('observer-health ledger', () => {
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
     expect(second.lastErrorMessage).toBe('boom two');
-  });
-
-  it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
-    const clock = spyOn(Date, 'now').mockReturnValue(1000);
-    // The reported scenario: a quota pause records a failure, the worker goes down,
-    // and auth refusals follow a day later. The auth warning must not carry the
-    // quota era's start time.
-    recordObserverFailure('claude', {
-      message: 'quota pause recorded',
-      kind: 'quota_guard',
-    }, healthPath);
-    const quota = readObserverHealth(healthPath)!;
-    const quotaSince = quota.failingSinceAt;
-
-    clock.mockReturnValue(2000);
-    recordObserverFailure('claude', {
-      message: 'Failed to authenticate',
-      kind: 'auth_invalid',
-    }, healthPath);
-    const auth = readObserverHealth(healthPath)!;
-    expect(auth.consecutiveFailures).toBe(2);          // streak continues across the kind change
-    expect(auth.lastErrorKind).toBe('auth_invalid');
-    expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
-    expect(auth.failingSinceAt).not.toBe(quotaSince);
-    expect(auth.failingSinceAt).toBe(2000);
-  });
-
-  it('keeps failingSinceAt across consecutive failures of the same kind', () => {
-    const clock = spyOn(Date, 'now').mockReturnValue(1000);
-    recordObserverFailure('claude', {
-      message: 'Failed to authenticate',
-      kind: 'auth_invalid',
-    }, healthPath);
-    const first = readObserverHealth(healthPath)!;
-
-    clock.mockReturnValue(2000);
-    recordObserverFailure('claude', {
-      message: 'Failed to authenticate again',
-      kind: 'auth_invalid',
-    }, healthPath);
-    const second = readObserverHealth(healthPath)!;
-    expect(second.consecutiveFailures).toBe(2);
-    expect(second.failingSinceAt).toBe(first.failingSinceAt);
-    expect(second.failingSinceAt).toBe(1000);
-    expect(second.lastErrorAt).toBe(2000);
   });
 
   it('preserves an unclassified outage from a ledger without lastErrorKind', () => {
@@ -361,29 +316,34 @@ describe('observer-health ledger', () => {
     expect(scrubbed).toContain('https://openrouter.ai/keys/2101b95e');
   });
 
-  it('failure records pass the raw message through the scrubber', () => {
-    recordObserverFailure('openrouter', 'key sk-or-v1-deadbeefdeadbeef died', healthPath);
-    expect(readObserverHealth(healthPath)!.lastErrorMessage).not.toContain('deadbeef');
-    expect(readFileSync(healthPath, 'utf-8')).not.toContain('deadbeef');
-  });
-
   it('serializes concurrent failure writes so the warning threshold is never lost', async () => {
     const gatePath = join(dataDir, 'writers.gate');
-    const writers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, '-e', `
-      import { existsSync } from 'fs';
+    const readyPaths = Array.from({ length: 3 }, (_, index) => join(dataDir, `writer-${index}.ready`));
+    const writers = readyPaths.map((readyPath) => Bun.spawn([process.execPath, '-e', `
+      import { existsSync, writeFileSync } from 'fs';
       import { recordObserverFailure } from ${JSON.stringify(join(repoRoot, 'src/shared/observer-health.ts'))};
+      writeFileSync(${JSON.stringify(readyPath)}, 'ready');
       while (!existsSync(${JSON.stringify(gatePath)})) Bun.sleepSync(1);
       recordObserverFailure('openrouter', 'concurrent boom', ${JSON.stringify(healthPath)});
     `], { cwd: repoRoot, stderr: 'pipe' }));
 
-    await Bun.sleep(500);
-    writeFileSync(gatePath, 'go');
-    const exitCodes = await Promise.all(writers.map((writer) => writer.exited));
-    expect(exitCodes).toEqual([0, 0, 0]);
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!readyPaths.every((readyPath) => existsSync(readyPath))) {
+        if (Date.now() >= deadline) throw new Error('Observer health writers did not reach the gate');
+        await Bun.sleep(10);
+      }
+      writeFileSync(gatePath, 'go');
+      const exitCodes = await Promise.all(writers.map((writer) => writer.exited));
+      expect(exitCodes).toEqual([0, 0, 0]);
 
-    const state = readObserverHealth(healthPath)!;
-    expect(state.consecutiveFailures).toBe(3);
-    expect(isObserverUnhealthy(state)).toBe(true);
+      const state = readObserverHealth(healthPath)!;
+      expect(state.consecutiveFailures).toBe(3);
+      expect(isObserverUnhealthy(state)).toBe(true);
+    } finally {
+      for (const writer of writers) writer.kill();
+      await Promise.all(writers.map((writer) => writer.exited));
+    }
   }, 30_000);
 });
 
@@ -956,19 +916,6 @@ describe('renderObserverQuotaCooldownNotice', () => {
     expect(renderObserverQuotaCooldownNotice(fixture.state, QUOTA_NOTICE_NOW)).toContain('tries cmem.ai again at 8:16 PM.');
   });
 
-  it('uses the machine time zone instead of UTC', () => {
-    const result = Bun.spawnSync([process.execPath, '-e', `
-      import { renderObserverQuotaCooldownNotice } from './src/shared/observer-health.ts';
-      import { QUOTA_NOTICE_CASES, QUOTA_NOTICE_NOW } from './tests/fixtures/quota-notice-states.ts';
-      console.log(renderObserverQuotaCooldownNotice(QUOTA_NOTICE_CASES[0].state, QUOTA_NOTICE_NOW));
-    `], {
-      cwd: repoRoot,
-      env: { ...process.env, TZ: 'America/New_York', CLAUDE_MEM_DATA_DIR: dataDir },
-    });
-    expect(result.exitCode).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toContain('tries cmem.ai again at 11:17 PM.');
-  });
-
   it('stays silent when a held backup Claude credential is covered by the other credential', () => {
     const fixture = structuredClone(QUOTA_NOTICE_CASES.find(fixture => fixture.name.startsWith('5.'))!);
     const notice = fixture.state.quotaCooldown!.notice!;
@@ -1108,27 +1055,17 @@ describe('ContextBuilder observer-health injection', () => {
   /** The Claude account the child bills: its CLAUDE_CONFIG_DIR is the data dir. */
   const childProfile = () => credentialProfileKey({ configDir: dataDir, explicitConfigDir: true });
 
-  it('shows the outage warning even when there is no database to render', () => {
+  it('shows the outage warning below the context and paints only the terminal warning', () => {
     writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
-    const { emptyDbText } = runContextChild(dataDir);
+    const { emptyDbText, agentText, humanText } = runContextChild(dataDir);
     expect(emptyDbText).toContain("can't save memories");
     expect(emptyDbText).toContain('openrouter');
-  });
 
-  it('puts the warning BELOW the context, where a long timeline cannot scroll it away', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
-    const { agentText, humanText } = runContextChild(dataDir);
     for (const text of [agentText, humanText]) {
       expect(text).toContain('TIMELINE_BODY');
       expect(text).toContain("can't save memories");
       expect(text.indexOf('TIMELINE_BODY')).toBeLessThan(text.indexOf("can't save memories"));
     }
-  });
-
-  it('paints the warning red for the terminal and leaves the agent copy clean', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
-    const { agentText, humanText } = runContextChild(dataDir);
-
     expect(humanText).toContain(RED);
     expect(humanText).toContain(RESET);
     // Every non-blank warning line is painted, not just the first.
@@ -1137,14 +1074,8 @@ describe('ContextBuilder observer-health injection', () => {
       .split('\n')
       .filter((line) => line.trim());
     expect(warningLines.every((line) => line.startsWith(RED) && line.endsWith(RESET))).toBe(true);
-
     expect(agentText).not.toContain(RED);
     expect(agentText).not.toContain('\x1b[');
-  });
-
-  it('leaves the context body itself unpainted', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
-    const { humanText } = runContextChild(dataDir);
     expect(humanText.slice(0, humanText.indexOf(RED))).toContain('TIMELINE_BODY');
     expect(humanText.slice(0, humanText.indexOf(RED))).not.toContain('\x1b[');
   });

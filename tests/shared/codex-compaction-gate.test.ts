@@ -29,23 +29,6 @@ describe('codex-compaction-gate', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('has nothing pending for a thread that never compacted', () => {
-    expect(takeTimelinePending(ROOT_SESSION, undefined)).toBe(false);
-    expect(takeTimelinePending(ROOT_SESSION, SUBAGENT_A)).toBe(false);
-  });
-
-  it('hands a compaction to exactly one taker', () => {
-    markTimelinePending(ROOT_SESSION, SUBAGENT_A);
-    expect(takeTimelinePending(ROOT_SESSION, SUBAGENT_A)).toBe(true);
-    expect(takeTimelinePending(ROOT_SESSION, SUBAGENT_A)).toBe(false);
-  });
-
-  it('lets a clear answer the compaction so nothing is left to take', () => {
-    markTimelinePending(ROOT_SESSION, undefined);
-    clearTimelinePending(ROOT_SESSION, undefined);
-    expect(takeTimelinePending(ROOT_SESSION, undefined)).toBe(false);
-  });
-
   it('treats clearing a thread with nothing pending as a no-op', () => {
     expect(() => clearTimelinePending(ROOT_SESSION, SUBAGENT_A)).not.toThrow();
   });

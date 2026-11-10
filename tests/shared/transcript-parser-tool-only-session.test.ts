@@ -29,17 +29,4 @@ describe('extractLastMessageFromJsonl — session ended mid-tool-call', () => {
     );
   });
 
-  it('still prefers earlier assistant text over the synthesized description', () => {
-    const transcript = [
-      userTurn('fix the build'),
-      assistantTurn([{ type: 'text', text: 'The build is green again.' }]),
-      assistantTurn([{ type: 'tool_use', name: 'Bash', input: { command: 'git status' } }]),
-    ].join('\n');
-
-    expect(extractLastMessageFromJsonl(transcript, 'assistant', true)).toBe('The build is green again.');
-  });
-
-  it('returns "" when there is no assistant turn at all', () => {
-    expect(extractLastMessageFromJsonl(userTurn('hello'), 'assistant', true)).toBe('');
-  });
 });

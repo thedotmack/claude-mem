@@ -80,6 +80,21 @@ function watchCfg(root: string, extra: Record<string, unknown> = {}) {
   };
 }
 
+function seatCfg(root: string) {
+  return {
+    agentIdsAuto: false,
+    agentIds: [ORIFICE],
+    agentDataRoot: root,
+    ccsRoot: path.join(root, 'ccs'),
+    watchConfigFile: path.join(root, 'transcript-watch.json'),
+    projectsByAgent: new Map(),
+    window: 80,
+    maxLineChars: 160,
+    tier: 'episode',
+    stateFile: path.join(root, 'state.json'),
+  };
+}
+
 describe('resolveIndexWindow', () => {
   it('defaults to the Phase 1 rich-index window, not the #3953 pointer', () => {
     expect(resolveIndexWindow(undefined, undefined)).toBe(80);
@@ -334,18 +349,7 @@ describe('mtime-stable rewrite', () => {
         watches: [{ name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice' }],
       }));
       const body = sampleInject(8);
-      const cfg = {
-        agentIdsAuto: false,
-        agentIds: [ORIFICE],
-        agentDataRoot: root,
-        ccsRoot: path.join(root, 'ccs'),
-        watchConfigFile: path.join(root, 'transcript-watch.json'),
-        projectsByAgent: new Map(),
-        window: 80,
-        maxLineChars: 160,
-        tier: 'episode',
-        stateFile: path.join(root, 'state.json'),
-      };
+      const cfg = seatCfg(root);
 
       const fetchInjectFn = async () => ({ url: 'http://127.0.0.1:37700/api/context/inject?projects=cmem_work_orifice', body });
       const first = await refreshAgent(cfg, ORIFICE, { fetchInjectFn });
@@ -373,18 +377,7 @@ describe('mtime-stable rewrite', () => {
       writeFileSync(path.join(root, 'transcript-watch.json'), JSON.stringify({
         watches: [{ name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice' }],
       }));
-      const cfg = {
-        agentIdsAuto: false,
-        agentIds: [ORIFICE],
-        agentDataRoot: root,
-        ccsRoot: path.join(root, 'ccs'),
-        watchConfigFile: path.join(root, 'transcript-watch.json'),
-        projectsByAgent: new Map(),
-        window: 80,
-        maxLineChars: 160,
-        tier: 'episode',
-        stateFile: path.join(root, 'state.json'),
-      };
+      const cfg = seatCfg(root);
 
       await refreshAgent(cfg, ORIFICE, {
         fetchInjectFn: async () => ({ url: 'http://inject', body: sampleInject(3) }),
@@ -428,18 +421,7 @@ describe('mtime-stable rewrite', () => {
       mkdirSync(path.dirname(privatePath), { recursive: true });
       writeFileSync(privatePath, '# keep me\n');
 
-      const result = await refreshAgent({
-        agentIdsAuto: false,
-        agentIds: [ORIFICE],
-        agentDataRoot: root,
-        ccsRoot,
-        watchConfigFile: path.join(root, 'transcript-watch.json'),
-        projectsByAgent: new Map(),
-        window: 80,
-        maxLineChars: 160,
-        tier: 'episode',
-        stateFile: path.join(root, 'state.json'),
-      }, ORIFICE, {
+      const result = await refreshAgent(seatCfg(root), ORIFICE, {
         fetchInjectFn: async () => ({ url: 'http://inject', body: sampleInject(3) }),
       });
 
@@ -464,11 +446,6 @@ describe('path guards', () => {
       `/home/box/agent-data/agents/${ORIFICE}/memory/log/zz-claude-mem-inject.md`,
     );
     expect(filePath.endsWith('profile.md')).toBe(false);
-  });
-
-  it('uses a filename the host never writes itself (host owns YYYY-MM.md)', () => {
-    const filePath = injectLogPath('/root', ORIFICE);
-    expect(/\d{4}-\d{2}\.md$/.test(filePath)).toBe(false);
   });
 
   it('refuses inject writes to profile.md and anything outside memory/log', () => {

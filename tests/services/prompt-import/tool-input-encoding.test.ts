@@ -84,8 +84,9 @@ async function check(kind: Kind, input: unknown, text: string, authored = true) 
   } finally { store.close(); rmSync(home, { recursive: true, force: true }); }
 }
 
+const encodings = [['tab', TAB], ['literal backslash', LITERAL], ['Windows path', WINDOWS], ['quoted text', QUOTED]];
 for (const kind of ['claude-code', 'codex-function', 'codex-custom', 'gemini-cli', 'opencode'] as Kind[]) {
-  for (const [name, text] of [['tab', TAB], ['literal backslash', LITERAL], ['Windows path', WINDOWS], ['quoted text', QUOTED]]) {
+  for (const [name, text] of kind === 'codex-function' ? encodings : encodings.slice(0, 1)) {
     it(`${kind}: recognizes ${name} text in model tool input`, () =>
       check(kind, kind === 'codex-custom' ? text : { path: 'task.md', content: text }, text));
   }

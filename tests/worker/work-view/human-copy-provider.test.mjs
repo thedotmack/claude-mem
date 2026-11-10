@@ -1,9 +1,12 @@
-import test from 'node:test';
+import { afterEach, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configuredHumanCopyProvider } from '../../../src/services/worker/http/routes/WorkViewRoutes.js';
+
+const disposals = [];
+afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
 
 const ENV_KEYS = [
   'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
@@ -13,12 +16,12 @@ const ENV_KEYS = [
   'OPENAI_COMPAT_API_KEY', 'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
 ];
 
-function isolateSettings(t) {
+function isolateSettings() {
   const previous = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
   for (const key of ENV_KEYS) delete process.env[key];
   const directory = mkdtempSync(join(tmpdir(), 'human-copy-provider-'));
   const settingsPath = join(directory, 'settings.json');
-  t.after(() => {
+  disposals.push(() => {
     for (const key of ENV_KEYS) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
@@ -28,20 +31,20 @@ function isolateSettings(t) {
   return { settingsPath, save: settings => writeFileSync(settingsPath, JSON.stringify(settings)) };
 }
 
-function mockFetch(t) {
+function mockFetch() {
   const previous = globalThis.fetch;
   let sent;
   globalThis.fetch = async (url, init) => {
     sent = { url, init };
     return new Response(JSON.stringify({ model: 'response-model', choices: [{ message: { content: '{"title":"Readable"}' } }] }));
   };
-  t.after(() => { globalThis.fetch = previous; });
+  disposals.push(() => { globalThis.fetch = previous; });
   return () => sent;
 }
 
-test('an unused OpenRouter fallback key stays idle until selected; settings resolve after route construction', async t => {
-  const { settingsPath, save } = isolateSettings(t);
-  const sent = mockFetch(t);
+test('an unused OpenRouter fallback key stays idle until selected; settings resolve after route construction', async () => {
+  const { settingsPath, save } = isolateSettings();
+  const sent = mockFetch();
   save({
     CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '',
@@ -85,9 +88,9 @@ test('an unused OpenRouter fallback key stays idle until selected; settings reso
   assert.equal(JSON.parse(sent().init.body).model, 'updated-copy-model');
 });
 
-test('OpenRouter summary uses the configured model fallback list only for the official endpoint', async t => {
-  const { settingsPath, save } = isolateSettings(t);
-  const sent = mockFetch(t);
+test('OpenRouter summary uses the configured model fallback list only for the official endpoint', async () => {
+  const { settingsPath, save } = isolateSettings();
+  const sent = mockFetch();
   save({
     CLAUDE_MEM_PROVIDER: 'openrouter',
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openrouter',
@@ -113,9 +116,9 @@ test('OpenRouter summary uses the configured model fallback list only for the of
   assert.equal(Object.hasOwn(compatibleBody, 'models'), false);
 });
 
-test('an unset setting keeps today\'s behaviour: an OpenAI-compatible primary writes no wording until selected', async t => {
-  const { settingsPath, save } = isolateSettings(t);
-  const sent = mockFetch(t);
+test('an unset setting keeps today\'s behaviour: an OpenAI-compatible primary writes no wording until selected', async () => {
+  const { settingsPath, save } = isolateSettings();
+  const sent = mockFetch();
   const compat = {
     CLAUDE_MEM_PROVIDER: 'openai-compatible',
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://compat.example.test/v1',
@@ -143,9 +146,9 @@ test('an unset setting keeps today\'s behaviour: an OpenAI-compatible primary wr
   assert.equal(Object.hasOwn(JSON.parse(sent().init.body), 'reasoning'), false);
 });
 
-test('a copy-model override works for an endpoint with no observer model', async t => {
-  const { settingsPath, save } = isolateSettings(t);
-  const sent = mockFetch(t);
+test('a copy-model override works for an endpoint with no observer model', async () => {
+  const { settingsPath, save } = isolateSettings();
+  const sent = mockFetch();
   save({
     CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openai-compatible',
@@ -160,8 +163,8 @@ test('a copy-model override works for an endpoint with no observer model', async
   assert.equal(JSON.parse(sent().init.body).model, 'copy-only-model');
 });
 
-test('off disables copy even when the primary provider is configured', t => {
-  const { settingsPath, save } = isolateSettings(t);
+test('off disables copy even when the primary provider is configured', () => {
+  const { settingsPath, save } = isolateSettings();
   save({
     CLAUDE_MEM_PROVIDER: 'openrouter',
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'off',

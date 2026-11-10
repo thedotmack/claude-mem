@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -140,6 +140,7 @@ describe('join account and settings rules', () => {
 let server: TeamBrainMock;
 let dataDir: string;
 let homeDir: string;
+const tempDirs: string[] = [];
 
 beforeAll(async () => {
   server = await startTeamBrainMock();
@@ -151,6 +152,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   server.requests.length = 0;
+  server.state.oauthStart = null;
   server.state.workerPid = 100;
   server.state.syncConfigured = false;
   server.state.membership = {};
@@ -178,6 +180,7 @@ async function runCli(
 ): Promise<{ exitCode: number; output: string }> {
   dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-teambrain-cli-'));
   homeDir = mkdtempSync(join(tmpdir(), 'claude-mem-teambrain-home-'));
+  tempDirs.push(dataDir, homeDir);
   if (initialSettings !== undefined) {
     writeFileSync(settingsPath(), typeof initialSettings === 'string' ? initialSettings : JSON.stringify(initialSettings, null, 2));
   }
@@ -211,9 +214,10 @@ async function runCli(
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 
 function cleanup(): void {
-  rmSync(dataDir, { recursive: true, force: true });
-  rmSync(homeDir, { recursive: true, force: true });
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
+
+afterEach(cleanup);
 
 const OWN_OBSERVER = {
   CLAUDE_MEM_PROVIDER: 'gemini',
@@ -232,40 +236,36 @@ const JOINED = {
 
 describe('npx claude-mem teambrain join', () => {
   it('pairs with the invite, writes only sync and TeamBrain settings, shares the flagged projects and restarts the worker', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', `${server.origin}/teambrain/app#invite=${MOCK_INVITE_TOKEN}`, '--share', 'proj-a,proj-b'], OWN_OBSERVER);
-      expect(exitCode, output).toBe(0);
+    const { exitCode, output } = await runCli(['teambrain', 'join', `${server.origin}/teambrain/app#invite=${MOCK_INVITE_TOKEN}`, '--share', 'proj-a,proj-b'], OWN_OBSERVER);
+    expect(exitCode, output).toBe(0);
 
-      const [start] = server.requestsTo('/api/installer/oauth/start');
-      expect(start.body).toMatchObject({ source: 'teambrain_join', team_invite: MOCK_INVITE_TOKEN });
+    const [start] = server.requestsTo('/api/installer/oauth/start');
+    expect(start.body).toMatchObject({ source: 'teambrain_join', team_invite: MOCK_INVITE_TOKEN });
 
-      const settings = readSettingsFile();
-      expect(settings).toEqual({
-        ...OWN_OBSERVER,
-        CLAUDE_MEM_CLOUD_SYNC_TOKEN: MOCK_SEAT_SETUP_TOKEN,
-        CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
-        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: MOCK_HUB_URL,
-        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
-        CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
-        CLAUDE_MEM_PRO_PLAN: 'teambrain_seat',
-        CLAUDE_MEM_TEAMBRAIN_URL: server.origin,
-        CLAUDE_MEM_TEAMBRAIN_TEAM_ID: MOCK_TEAM.id,
-      });
-      expect(output).toContain('Sign in, then approve this device on the page to join the team:');
+    const settings = readSettingsFile();
+    expect(settings).toEqual({
+      ...OWN_OBSERVER,
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: MOCK_SEAT_SETUP_TOKEN,
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: MOCK_HUB_URL,
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
+      CLAUDE_MEM_PRO_PLAN: 'teambrain_seat',
+      CLAUDE_MEM_TEAMBRAIN_URL: server.origin,
+      CLAUDE_MEM_TEAMBRAIN_TEAM_ID: MOCK_TEAM.id,
+    });
+    expect(output).toContain('Sign in, then approve this device on the page to join the team:');
 
-      const [membership] = server.requestsTo('/api/teambrain/cli/membership');
-      expect(membership.body).toEqual({ team_id: MOCK_TEAM.id, broadcasting: true, projects: ['proj-a', 'proj-b'] });
-      expect(membership.authorization).toBe(`Bearer ${MOCK_SEAT_SETUP_TOKEN}`);
-      expect(membership.userId).toBe(MOCK_SEAT_USER_ID);
+    const [membership] = server.requestsTo('/api/teambrain/cli/membership');
+    expect(membership.body).toEqual({ team_id: MOCK_TEAM.id, broadcasting: true, projects: ['proj-a', 'proj-b'] });
+    expect(membership.authorization).toBe(`Bearer ${MOCK_SEAT_SETUP_TOKEN}`);
+    expect(membership.userId).toBe(MOCK_SEAT_USER_ID);
 
-      expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
-      expect(output).toContain('Joined Acme Eng');
-      expect(output).toContain('Sharing proj-a, proj-b with Acme Eng');
-      expect(output).toContain('Cloud sync is on');
-      expect(output).not.toContain(MOCK_SEAT_SETUP_TOKEN);
-    } finally {
-      cleanup();
-    }
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
+    expect(output).toContain('Joined Acme Eng');
+    expect(output).toContain('Sharing proj-a, proj-b with Acme Eng');
+    expect(output).toContain('Cloud sync is on');
+    expect(output).not.toContain(MOCK_SEAT_SETUP_TOKEN);
   }, 30_000);
 
   it('never changes the observer or provider for a Pro account either, and shares nothing without a flag', async () => {
@@ -276,19 +276,15 @@ describe('npx claude-mem teambrain join', () => {
       memory_base_url: `${server.origin}/api/inference/v1`,
       memory_model: 'cmem-observer',
     };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
-      expect(exitCode, output).toBe(0);
-      const settings = readSettingsFile();
-      expect(settings.CLAUDE_MEM_PROVIDER).toBe('gemini');
-      expect(settings.CLAUDE_MEM_PRO_PLAN).toBe('pro');
-      expect(settings.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('');
-      expect(JSON.stringify(settings)).not.toContain('cm_pro_MEMORY_KEY_MUST_NOT_BE_WRITTEN');
-      expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
-      expect(output).toContain('Not sharing any projects yet');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
+    expect(exitCode, output).toBe(0);
+    const settings = readSettingsFile();
+    expect(settings.CLAUDE_MEM_PROVIDER).toBe('gemini');
+    expect(settings.CLAUDE_MEM_PRO_PLAN).toBe('pro');
+    expect(settings.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('');
+    expect(JSON.stringify(settings)).not.toContain('cm_pro_MEMORY_KEY_MUST_NOT_BE_WRITTEN');
+    expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
+    expect(output).toContain('Not sharing any projects yet');
   }, 30_000);
 
   it('refuses an install that already syncs as another account and changes nothing', async () => {
@@ -298,120 +294,83 @@ describe('npx claude-mem teambrain join', () => {
       CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user_other',
       CLAUDE_MEM_CLOUD_SYNC_HUB_URL: MOCK_HUB_URL,
     };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN, '--share-all'], otherAccount);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('already syncs memory as another cmem.ai account (user user_other)');
-      expect(readSettingsFile()).toEqual(otherAccount);
-      expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
-      expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN, '--share-all'], otherAccount);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('already syncs memory as another cmem.ai account (user user_other)');
+    expect(readSettingsFile()).toEqual(otherAccount);
+    expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
   }, 30_000);
 
   it('refuses when settings.json names another account even if the environment names this one', async () => {
     const otherAccountOnDisk = { ...OWN_OBSERVER, CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user_other' };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], otherAccountOnDisk, {
-        CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
-      });
-      expect(exitCode).toBe(1);
-      expect(output).toContain('(user user_other)');
-      expect(readSettingsFile()).toEqual(otherAccountOnDisk);
-      expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], otherAccountOnDisk, {
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
+    });
+    expect(exitCode).toBe(1);
+    expect(output).toContain('(user user_other)');
+    expect(readSettingsFile()).toEqual(otherAccountOnDisk);
+    expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
   }, 30_000);
 
   it('refuses a settings file it cannot parse before anyone signs in, and leaves its bytes where they are', async () => {
     const corrupt = '{"CLAUDE_MEM_CLOUD_SYNC_USER_ID": "user_other",';
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], corrupt);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('could not be read');
-      expect(output).toContain('will not write over a settings file it cannot read');
-      expect(readFileSync(settingsPath(), 'utf-8')).toBe(corrupt);
-      expect(readdirSync(dataDir).filter(name => name.includes('.corrupt-'))).toEqual([]);
-      expect(server.requestsTo('/api/installer/oauth/start')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], corrupt);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('could not be read');
+    expect(output).toContain('will not write over a settings file it cannot read');
+    expect(readFileSync(settingsPath(), 'utf-8')).toBe(corrupt);
+    expect(readdirSync(dataDir).filter(name => name.includes('.corrupt-'))).toEqual([]);
+    expect(server.requestsTo('/api/installer/oauth/start')).toHaveLength(0);
   }, 30_000);
 
   it("prints the server's reason and fails when the join is refused at device approval", async () => {
     server.state.poll = { status: 410, body: { status: 'join_failed', reason: 'team_full', error: 'Acme Eng has no free seats. Ask its owner to add one.' } };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('Could not join the team: Acme Eng has no free seats. Ask its owner to add one. (team_full)');
-      expect(output).not.toContain('authorization expired');
-      expect(readSettingsFile()).toEqual(OWN_OBSERVER);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('Could not join the team: Acme Eng has no free seats. Ask its owner to add one. (team_full)');
+    expect(output).not.toContain('authorization expired');
+    expect(readSettingsFile()).toEqual(OWN_OBSERVER);
   }, 30_000);
 
   it('still reads a 410 without join_failed as an expired sign-in', async () => {
     server.state.poll = { status: 410, body: { status: 'delivered' } };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('This browser authorization expired. Run npx claude-mem teambrain join again.');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('This browser authorization expired. Run npx claude-mem teambrain join again.');
   }, 30_000);
 
   it('refuses a TeamBrain address over plain http and saves nothing', async () => {
     server.state.readyBody = { ...seatReadyBody(server.origin), teambrain_url: 'http://teambrain.example.com' };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('uses plain http:');
-      expect(output).toContain('will not send its sync token there');
-      expect(readSettingsFile()).toEqual(OWN_OBSERVER);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('uses plain http:');
+    expect(output).toContain('will not send its sync token there');
+    expect(readSettingsFile()).toEqual(OWN_OBSERVER);
   }, 30_000);
 
   it('says it cannot tell whether the worker restarted when its health check answers badly', async () => {
     server.state.health = { status: 500, body: { error: 'boom' } };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
-      expect(exitCode, output).toBe(0);
-      expect(output).toContain('Could not check the claude-mem worker (the worker answered its health check with HTTP 500)');
-      expect(output).not.toContain('worker is not running');
-      expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN], OWN_OBSERVER);
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('Could not check the claude-mem worker (the worker answered its health check with HTTP 500)');
+    expect(output).not.toContain('worker is not running');
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
   }, 30_000);
 
   it('rejects a bad invite before contacting anyone', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', 'https://elsewhere.example/teambrain/app#invite=tb_inviteTokenFixture_0123456789']);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('This invite is for https://elsewhere.example');
-      expect(server.requests).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', 'https://elsewhere.example/teambrain/app#invite=tb_inviteTokenFixture_0123456789']);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('This invite is for https://elsewhere.example');
+    expect(server.requests).toHaveLength(0);
   }, 30_000);
 
   it('explains a refused join request', async () => {
     server.state.oauthStart = { status: 410, body: { error: 'invite_expired' } };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN]);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('The invite may have expired');
-      expect(existsSync(settingsPath())).toBe(false);
-    } finally {
-      server.state.oauthStart = null;
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN]);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('The invite may have expired');
+    expect(existsSync(settingsPath())).toBe(false);
   }, 30_000);
 
   it('shows the OAuth server message when the installation credential is rejected', async () => {
@@ -419,15 +378,10 @@ describe('npx claude-mem teambrain join', () => {
       status: 401,
       body: { error: 'intent_credentials_invalid', message: 'This installation credential was not accepted.' },
     };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN]);
-      expect(exitCode).toBe(1);
-      expect(output).toContain('This installation credential was not accepted.');
-      expect(existsSync(settingsPath())).toBe(false);
-    } finally {
-      server.state.oauthStart = null;
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN]);
+    expect(exitCode).toBe(1);
+    expect(output).toContain('This installation credential was not accepted.');
+    expect(existsSync(settingsPath())).toBe(false);
   });
 });
 
@@ -440,96 +394,68 @@ describe('npx claude-mem teambrain status, share, leave, start', () => {
 
   it('status lists the teams with what this install shares', async () => {
     server.state.teams = [{ ...MOCK_TEAM, role: 'owner', broadcasting: true, projects: ['proj-a'], seats_used: 3, seat_limit: 10 }];
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'status'], joinedSettings());
-      expect(exitCode, output).toBe(0);
-      expect(output).toContain('Acme Eng');
-      expect(output).toContain('owner · sharing proj-a · 3 of 10 seats');
-      expect(output).toContain('(this install)');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'status'], joinedSettings());
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('Acme Eng');
+    expect(output).toContain('owner · sharing proj-a · 3 of 10 seats');
+    expect(output).toContain('(this install)');
   }, 30_000);
 
   it('status without a team says how to start or join, and asks nobody', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain'], OWN_OBSERVER);
-      expect(exitCode).toBe(0);
-      expect(output).toContain('not joined on this install');
-      expect(output).toContain('npx claude-mem teambrain start');
-      expect(server.requests).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain'], OWN_OBSERVER);
+    expect(exitCode).toBe(0);
+    expect(output).toContain('not joined on this install');
+    expect(output).toContain('npx claude-mem teambrain start');
+    expect(server.requests).toHaveLength(0);
   }, 30_000);
 
   it('share --share-all sends projects: null for the install team', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'share', '--share-all'], joinedSettings());
-      expect(exitCode, output).toBe(0);
-      expect(server.requestsTo('/api/teambrain/cli/membership')[0].body).toEqual({ team_id: MOCK_TEAM.id, broadcasting: true, projects: null });
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'share', '--share-all'], joinedSettings());
+    expect(exitCode, output).toBe(0);
+    expect(server.requestsTo('/api/teambrain/cli/membership')[0].body).toEqual({ team_id: MOCK_TEAM.id, broadcasting: true, projects: null });
   }, 30_000);
 
   it('share without a terminal needs a flag', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'share'], joinedSettings());
-      expect(exitCode).toBe(1);
-      expect(output).toContain('--share <a,b>');
-      expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'share'], joinedSettings());
+    expect(exitCode).toBe(1);
+    expect(output).toContain('--share <a,b>');
+    expect(server.requestsTo('/api/teambrain/cli/membership')).toHaveLength(0);
   }, 30_000);
 
   it('leave posts the team and switches TeamBrain off when no team is left', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], joinedSettings());
-      expect(exitCode, output).toBe(0);
-      expect(server.requestsTo('/api/teambrain/cli/leave')[0].body).toEqual({ team_id: MOCK_TEAM.id });
-      const settings = readSettingsFile();
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('');
-      expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
-      expect(output).toContain('Left Acme Eng');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], joinedSettings());
+    expect(exitCode, output).toBe(0);
+    expect(server.requestsTo('/api/teambrain/cli/leave')[0].body).toEqual({ team_id: MOCK_TEAM.id });
+    const settings = readSettingsFile();
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('');
+    expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
+    expect(output).toContain('Left Acme Eng');
   }, 30_000);
 
   it('leave turns sync off too for a seat-only account in no team now, and restarts the worker without it', async () => {
     server.state.syncConfiguredAfterRestart = false;
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
-      expect(exitCode, output).toBe(0);
-      const settings = readSettingsFile();
-      for (const key of ['CLAUDE_MEM_TEAMBRAIN_URL', 'CLAUDE_MEM_TEAMBRAIN_TEAM_ID', 'CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID', 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL', 'CLAUDE_MEM_PRO_PLAN']) {
-        expect(settings[key]).toBe('');
-      }
-      expect(settings.CLAUDE_MEM_PROVIDER).toBe('gemini');
-      expect(output).toContain('Cloud sync is off for this install too');
-      expect(output).toContain('Your memory stays on this machine');
-      expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
-      expect(output).toContain('The worker restarted without cloud sync.');
-    } finally {
-      cleanup();
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
+    expect(exitCode, output).toBe(0);
+    const settings = readSettingsFile();
+    for (const key of ['CLAUDE_MEM_TEAMBRAIN_URL', 'CLAUDE_MEM_TEAMBRAIN_TEAM_ID', 'CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID', 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL', 'CLAUDE_MEM_PRO_PLAN']) {
+      expect(settings[key]).toBe('');
     }
+    expect(settings.CLAUDE_MEM_PROVIDER).toBe('gemini');
+    expect(output).toContain('Cloud sync is off for this install too');
+    expect(output).toContain('Your memory stays on this machine');
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
+    expect(output).toContain('The worker restarted without cloud sync.');
   }, 30_000);
 
   it('leave keeps sync for a Pro account in no team now', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'pro' });
-      expect(exitCode, output).toBe(0);
-      const settings = readSettingsFile();
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
-      expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
-      expect(output).toContain('Cloud sync settings were not changed.');
-      expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'pro' });
+    expect(exitCode, output).toBe(0);
+    const settings = readSettingsFile();
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
+    expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
+    expect(output).toContain('Cloud sync settings were not changed.');
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
   }, 30_000);
 
   it('leave points the install at a team it is still in', async () => {
@@ -537,83 +463,59 @@ describe('npx claude-mem teambrain status, share, leave, start', () => {
       { ...MOCK_TEAM, role: 'member', broadcasting: true, projects: null, seats_used: 2, seat_limit: 5 },
       { id: 'team_2', name: 'Platform', role: 'member', broadcasting: false, projects: null, seats_used: 1, seat_limit: 3 },
     ];
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
-      expect(exitCode, output).toBe(0);
-      const settings = readSettingsFile();
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe(server.origin);
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('team_2');
-      expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
-      expect(output).toContain('This install now uses Platform.');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
+    expect(exitCode, output).toBe(0);
+    const settings = readSettingsFile();
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe(server.origin);
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('team_2');
+    expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
+    expect(output).toContain('This install now uses Platform.');
   }, 30_000);
 
   it('leave says what it cleared when the team list cannot be read, clearing both TeamBrain keys and no sync key', async () => {
     server.state.status = { status: 500, body: { error: 'database down' } };
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
-      expect(exitCode, output).toBe(0);
-      expect(server.requestsTo('/api/teambrain/cli/leave')[0].body).toEqual({ team_id: MOCK_TEAM.id });
-      expect(output).toContain('Could not read your teams before leaving:');
-      expect(output).toContain('Could not read which teams this account is still in:');
-      expect(output).toContain('Cleared CLAUDE_MEM_TEAMBRAIN_URL and CLAUDE_MEM_TEAMBRAIN_TEAM_ID on this install. Cloud sync settings were not changed.');
-      const settings = readSettingsFile();
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
-      expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('');
-      expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], { ...joinedSettings(), CLAUDE_MEM_PRO_PLAN: 'teambrain_seat' });
+    expect(exitCode, output).toBe(0);
+    expect(server.requestsTo('/api/teambrain/cli/leave')[0].body).toEqual({ team_id: MOCK_TEAM.id });
+    expect(output).toContain('Could not read your teams before leaving:');
+    expect(output).toContain('Could not read which teams this account is still in:');
+    expect(output).toContain('Cleared CLAUDE_MEM_TEAMBRAIN_URL and CLAUDE_MEM_TEAMBRAIN_TEAM_ID on this install. Cloud sync settings were not changed.');
+    const settings = readSettingsFile();
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
+    expect(settings.CLAUDE_MEM_TEAMBRAIN_TEAM_ID).toBe('');
+    expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe(MOCK_SEAT_SETUP_TOKEN);
   }, 30_000);
 
   it('leave tidies an install whose team is already gone on the server, without asking it to leave', async () => {
     server.state.teams = [];
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave'], joinedSettings());
-      expect(exitCode, output).toBe(0);
-      expect(server.requestsTo('/api/teambrain/cli/leave')).toHaveLength(0);
-      expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
-      expect(output).toContain(`no longer in team ${MOCK_TEAM.id}; removing it from this install`);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave'], joinedSettings());
+    expect(exitCode, output).toBe(0);
+    expect(server.requestsTo('/api/teambrain/cli/leave')).toHaveLength(0);
+    expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_URL).toBe('');
+    expect(output).toContain(`no longer in team ${MOCK_TEAM.id}; removing it from this install`);
   }, 30_000);
 
   it('leave refuses a named team this account is not in, and changes nothing', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'leave', 'team_typo'], joinedSettings());
-      expect(exitCode).toBe(1);
-      expect(output).toContain('This account is not in team team_typo');
-      expect(server.requestsTo('/api/teambrain/cli/leave')).toHaveLength(0);
-      expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_URL).toBe(server.origin);
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'leave', 'team_typo'], joinedSettings());
+    expect(exitCode).toBe(1);
+    expect(output).toContain('This account is not in team team_typo');
+    expect(server.requestsTo('/api/teambrain/cli/leave')).toHaveLength(0);
+    expect(readSettingsFile().CLAUDE_MEM_TEAMBRAIN_URL).toBe(server.origin);
   }, 30_000);
 
   it('start prints the team page when there is no browser to open', async () => {
-    try {
-      const { exitCode, output } = await runCli(['teambrain', 'start']);
-      expect(exitCode).toBe(0);
-      expect(output).toContain(`${server.origin}/teambrain/start`);
-      expect(output).toContain('Open that link in a browser');
-    } finally {
-      cleanup();
-    }
+    const { exitCode, output } = await runCli(['teambrain', 'start']);
+    expect(exitCode).toBe(0);
+    expect(output).toContain(`${server.origin}/teambrain/start`);
+    expect(output).toContain('Open that link in a browser');
   }, 30_000);
 
   it('rejects an unknown subcommand and an unknown flag with the usage', async () => {
-    try {
-      const unknown = await runCli(['teambrain', 'frobnicate']);
-      expect(unknown.exitCode).toBe(1);
-      expect(unknown.output).toContain('Usage: npx claude-mem teambrain <command>');
-      const badFlag = await runCli(['teambrain', 'share', '--bogus']);
-      expect(badFlag.exitCode).toBe(1);
-      expect(badFlag.output).toContain('Usage: npx claude-mem teambrain <command>');
-    } finally {
-      cleanup();
-    }
+    const unknown = await runCli(['teambrain', 'frobnicate']);
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.output).toContain('Usage: npx claude-mem teambrain <command>');
+    const badFlag = await runCli(['teambrain', 'share', '--bogus']);
+    expect(badFlag.exitCode).toBe(1);
+    expect(badFlag.output).toContain('Usage: npx claude-mem teambrain <command>');
   }, 30_000);
 });

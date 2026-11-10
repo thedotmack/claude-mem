@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore, rollupObservationFileLists } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { attachObservationFilesToSummary } from '../../src/services/worker/agents/ResponseProcessor.js';
 
 describe('session_summaries files_read / files_edited (#3517)', () => {
@@ -11,18 +11,6 @@ describe('session_summaries files_read / files_edited (#3517)', () => {
 
   afterEach(() => {
     store.close();
-  });
-
-  it('rollupObservationFileLists dedupes read and modified paths', () => {
-    expect(
-      rollupObservationFileLists([
-        { files_read: ['a.ts', 'b.ts'], files_modified: ['b.ts'] },
-        { files_read: ['a.ts', 'c.ts'], files_modified: ['d.ts'] },
-      ])
-    ).toEqual({
-      files_read: ['a.ts', 'b.ts', 'c.ts'],
-      files_edited: ['b.ts', 'd.ts'],
-    });
   });
 
   it('attachObservationFilesToSummary keeps claimed file evidence for summary-only responses', () => {

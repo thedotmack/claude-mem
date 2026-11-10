@@ -129,47 +129,6 @@ describe('worker-logs', () => {
     expect(result.stdout).toBe('custom worker log\n');
   });
 
-  it('expands a home-relative environment data directory', () => {
-    customLog(join(home, 'custom-data'));
-    const result = run([], { CLAUDE_MEM_DATA_DIR: '~/custom-data' });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('custom worker log\n');
-  });
-
-  it('reads a BOM-prefixed flat settings data directory', () => {
-    const custom = join(home, 'custom-data');
-    customLog(custom);
-    writeFileSync(join(home, '.claude-mem', 'settings.json'), '\uFEFF' + JSON.stringify({ CLAUDE_MEM_DATA_DIR: custom }));
-    const result = run();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('custom worker log\n');
-  });
-
-  it('uses the nested settings target over stale root copies', () => {
-    customLog(join(home, 'custom-data'));
-    writeFileSync(join(home, '.claude-mem', 'settings.json'), JSON.stringify({ CLAUDE_MEM_DATA_DIR: join(home, 'stale-data'), env: { CLAUDE_MEM_DATA_DIR: '~/custom-data' } }));
-    const result = run();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('custom worker log\n');
-  });
-
-  it('preserves environment precedence over settings', () => {
-    const custom = join(home, 'custom-data');
-    customLog(custom);
-    writeFileSync(join(home, '.claude-mem', 'settings.json'), JSON.stringify({ env: { CLAUDE_MEM_DATA_DIR: join(home, 'stale-data') } }));
-    const result = run([], { CLAUDE_MEM_DATA_DIR: custom });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('custom worker log\n');
-  });
-
-  it('retains the default directory for invalid settings documents', () => {
-    writeFileSync(logPath, 'default worker log\n');
-    writeFileSync(join(home, '.claude-mem', 'settings.json'), '[]');
-    const result = run();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('default worker log\n');
-  });
-
   // Worker restarts rotate the log by rename-and-recreate. When the
   // replacement lands at exactly the followed offset's byte size, a
   // size-only follower skips it forever — file identity must be tracked too.

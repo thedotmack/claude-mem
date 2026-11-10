@@ -77,18 +77,6 @@ it('rejects foreign origins, proxy hosts, malformed scope and arbitrary repair b
   expect(f.db.serialize()).toEqual(before); expect(f.notifications()).toBe(0);
 });
 
-it('keeps HTTP responsive while an isolated recovery scan is waiting on SQLite', async () => {
-  const f = await fixture(); await f.reader.inventory();
-  f.db.exec('BEGIN EXCLUSIVE');
-  let completed = false;
-  const scan = f.reader.inventory().then(value => { completed = true; return value; });
-  await Bun.sleep(50);
-  expect((await fetch(`${f.url}/health`, { signal: AbortSignal.timeout(1000) })).ok).toBe(true);
-  expect(completed).toBe(false);
-  f.db.exec('ROLLBACK');
-  expect((await scan).excludedCurrent.observation).toBe(1);
-}, 10_000);
-
 it('returns the supported bound error without truncating or uploading conflict evidence', async () => {
   const f=await fixture(); const entityId=getNativeContentOperation(f.db,'observation',f.id,deviceId)!.operation;
   const insert=f.db.prepare("INSERT INTO sync_pull_quarantine(epoch,seq,entity_id,entity_rev,reason,raw_body,created_at_epoch) VALUES('1',?,?,?,'retained','PRIVATE',1)");

@@ -5,6 +5,7 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { REQUIRED_PROMPT_KEYS, validateMode } from '../../src/services/domain/mode-validation.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import { buildInitPrompt, buildContinuationPrompt, buildSummaryPrompt } from '../../src/sdk/prompts.js';
 
 const projectRoot = path.resolve(import.meta.dir, '../..');
 const tempDirs: string[] = [];
@@ -42,7 +43,6 @@ function runModeProbe(dataDir: string, modeId: string, options: {
   modesDir?: string;
   packageRoot?: string;
   renderPrompts?: boolean;
-  missingPrompt?: string;
 } = {}) {
   const probe = `
     import { mock } from 'bun:test';
@@ -62,7 +62,6 @@ function runModeProbe(dataDir: string, modeId: string, options: {
     const manager = ModeManager.getInstance();
     try {
       const mode = manager.loadMode(${JSON.stringify(modeId)});
-      if (options.missingPrompt) delete mode.prompts[options.missingPrompt];
       const rendered = options.renderPrompts ? [
         buildInitPrompt('fixture', 'fixture-session', 'Inspect the fixture', mode),
         buildContinuationPrompt('Continue the fixture', 2, 'fixture-session', mode),
@@ -352,8 +351,14 @@ describe('ModeManager user modes', () => {
 
   for (const key of REQUIRED_PROMPT_KEYS) {
     it(`throws explicitly if a prompt builder receives missing ${key}`, () => {
-      const result = runModeProbe(makeTempDir(), 'code', { renderPrompts: true, missingPrompt: key });
-      expect(result.error).toBe(`Mode "code" is missing prompt "${key}"`);
+      const mode = structuredClone(ModeManager.getInstance().loadMode('code'));
+      delete mode.prompts[key];
+      expect(() => {
+        buildInitPrompt('fixture', 'fixture-session', 'Inspect the fixture', mode);
+        buildContinuationPrompt('Continue the fixture', 2, 'fixture-session', mode);
+        buildSummaryPrompt({ id: 1, memory_session_id: 'fixture-session', project: 'fixture',
+          user_prompt: 'Inspect the fixture', last_assistant_message: 'Fixture inspected' }, mode);
+      }).toThrow(`Mode "code" is missing prompt "${key}"`);
     });
   }
 });

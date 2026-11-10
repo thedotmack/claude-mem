@@ -163,87 +163,99 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     expect(backupsAfterSecond).toEqual(backupsAfterFirst);
   });
 
-  it('proceeds with cleanup when statfsSync returns non-credible values (Bun darwin-x64 #31133)', () => {
-    // Reproduce the Bun 1.3.14 darwin-x64 statfs misalignment: bsize comes back
-    // as 0 and the other fields are shifted by one slot.
-    // Before the defensive patch, this caused the cleanup to compute
-    // free = bavail * bsize = 0 and skip with a misleading "Insufficient disk"
-    // error. After the patch, the gate should be bypassed with a WARN and the
-    // cleanup should run to completion.
+  it.each([
+    { bsize: 0, bavail: 977028249 },
+    { bsize: 4096, bavail: -1 },
+  ])('proceeds with cleanup for non-credible statfs values %j', values => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
-
-    const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
-      type: 0,
-      bsize: 0, // ← the bug: should be 4096 on APFS
-      blocks: 4096,
-      bfree: 1048576,
-      bavail: 977028249,
-      files: 0,
-      ffree: 0,
-    }) as unknown as ReturnType<typeof fs.statfsSync>);
-
+    const statfsSpy = spyOn(fs, 'statfsSync').mockReturnValue({
+      type: 0, blocks: 4096, bfree: 1048576, files: 0, ffree: 0, ...values,
+    } as ReturnType<typeof fs.statfsSync>);
     try {
       runOneTimeV12_4_3Cleanup(tmpDataDir);
+      expect(statfsSpy).toHaveBeenCalled();
+      const payload = JSON.parse(readFileSync(path.join(tmpDataDir, '.cleanup-v12.4.3-applied'), 'utf8'));
+      expect(payload.counts.observerSessions).toBe(2);
+      expect(payload.counts.stuckPendingMessages).toBe(10);
+      expect(payload.backupPath).toBeTruthy();
+      expect(existsSync(payload.backupPath)).toBe(true);
     } finally {
       statfsSpy.mockRestore();
     }
-
-    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
-    expect(existsSync(markerPath)).toBe(true);
-    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
-    expect(payload.counts.observerSessions).toBe(2);
-    expect(payload.counts.stuckPendingMessages).toBe(10);
-    expect(payload.backupPath).toBeTruthy();
-    expect(existsSync(payload.backupPath)).toBe(true);
-
-    // Guard against the spy silently failing to intercept the named ESM import
-    // inside CleanupV12_4_3.ts. If the production code is still calling the
-    // real statfsSync (which returns ~1 TB free on this machine), the cleanup
-    // still completes and every assertion above passes vacuously. The WARN
-    // log line is only emitted on the defensive branch, so asserting on it
-    // disambiguates "spy worked, defensive branch fired" from "spy silently
-    // bypassed, normal branch fired".
-    expect(logger.warn).toHaveBeenCalledWith(
-      'SYSTEM',
-      expect.stringContaining('non-credible'),
-      expect.objectContaining({ bsize: 0 }),
-    );
   });
 
-  it('proceeds with cleanup when statfsSync returns a negative available block count', () => {
+  it.each([['absent', false], ['present', true]] as const)('dry-run scans without deleting when marker is %s', (_label, markerExists) => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
+    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
+    if (markerExists) writeFileSync(markerPath, 'already applied');
+    mkdirSync(path.join(tmpDataDir, 'chroma'));
+    writeFileSync(path.join(tmpDataDir, 'chroma', 'collection.bin'), 'opaque');
+    writeFileSync(path.join(tmpDataDir, 'chroma-sync-state.json'), '{}');
+    const before = readFileSync(dbPath);
+    const runSpy = spyOn(Database.prototype, 'run');
+    try {
+      expect(runOneTimeV12_4_3Cleanup(tmpDataDir, { dryRun: true })).toEqual({
+        observerSessions: 2,
+        observerCascadeRows: 4,
+        stuckPendingMessages: 10,
+      });
+      expect(runSpy.mock.calls.some(([sql]) => /^\s*DELETE\b/i.test(String(sql)))).toBe(false);
+      expect(readFileSync(dbPath)).toEqual(before);
+      expect(existsSync(path.join(tmpDataDir, 'backups'))).toBe(false);
+      expect(readFileSync(path.join(tmpDataDir, 'chroma', 'collection.bin'), 'utf8')).toBe('opaque');
+      expect(readFileSync(path.join(tmpDataDir, 'chroma-sync-state.json'), 'utf8')).toBe('{}');
+      expect(existsSync(markerPath)).toBe(markerExists);
+      if (markerExists) expect(readFileSync(markerPath, 'utf8')).toBe('already applied');
+    } finally {
+      runSpy.mockRestore();
+    }
+  });
 
-    const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
-      type: 0,
-      bsize: 4096,
-      blocks: 4096,
-      bfree: 1048576,
-      bavail: -1,
-      files: 0,
-      ffree: 0,
-    }) as unknown as ReturnType<typeof fs.statfsSync>);
+  it('dry-run leaves a missing database and marker absent', () => {
+    expect(runOneTimeV12_4_3Cleanup(tmpDataDir, { dryRun: true })).toEqual({
+      observerSessions: 0, observerCascadeRows: 0, stuckPendingMessages: 0,
+    });
+    expect(readdirSync(tmpDataDir)).toEqual([]);
+  });
 
+  it.each(['insufficient disk', 'both backups failed'])('returns before any DELETE when %s', failure => {
+    const dbPath = path.join(tmpDataDir, 'claude-mem.db');
+    seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
+    mkdirSync(path.join(tmpDataDir, 'chroma'));
+    writeFileSync(path.join(tmpDataDir, 'chroma', 'collection.bin'), 'opaque');
+    writeFileSync(path.join(tmpDataDir, 'chroma-sync-state.json'), '{}');
+    const before = readFileSync(dbPath);
+    const statfsSpy = spyOn(fs, 'statfsSync').mockReturnValue({
+      type: 0, bsize: 4096, blocks: 4096, bfree: 1048576,
+      bavail: failure === 'insufficient disk' ? 0 : 1048576, files: 0, ffree: 0,
+    } as ReturnType<typeof fs.statfsSync>);
+    const originalRun = Database.prototype.run;
+    const runSpy = spyOn(Database.prototype, 'run').mockImplementation(function(sql, ...bindings) {
+      if (failure === 'both backups failed' && /^VACUUM INTO/.test(sql)) throw new Error('backup unavailable');
+      return originalRun.call(this, sql, ...bindings);
+    });
+    const copySpy = spyOn(fs, 'copyFileSync').mockImplementation(() => { throw new Error('copy unavailable'); });
     try {
       runOneTimeV12_4_3Cleanup(tmpDataDir);
+      expect(statfsSpy).toHaveBeenCalled();
+      expect(runSpy.mock.calls.some(([sql]) => /^\s*DELETE\b/i.test(String(sql)))).toBe(false);
+      if (failure === 'both backups failed') {
+        expect(runSpy.mock.calls.some(([sql]) => /^VACUUM INTO/.test(String(sql)))).toBe(true);
+        expect(copySpy).toHaveBeenCalled();
+      } else {
+        expect(copySpy).not.toHaveBeenCalled();
+      }
+      expect(readFileSync(dbPath)).toEqual(before);
+      expect(existsSync(path.join(tmpDataDir, '.cleanup-v12.4.3-applied'))).toBe(false);
+      expect(readFileSync(path.join(tmpDataDir, 'chroma', 'collection.bin'), 'utf8')).toBe('opaque');
+      expect(readFileSync(path.join(tmpDataDir, 'chroma-sync-state.json'), 'utf8')).toBe('{}');
     } finally {
+      copySpy.mockRestore();
+      runSpy.mockRestore();
       statfsSpy.mockRestore();
     }
-
-    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
-    expect(existsSync(markerPath)).toBe(true);
-    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
-    expect(payload.counts.observerSessions).toBe(2);
-    expect(payload.counts.stuckPendingMessages).toBe(10);
-    expect(payload.backupPath).toBeTruthy();
-    expect(existsSync(payload.backupPath)).toBe(true);
-
-    expect(logger.warn).toHaveBeenCalledWith(
-      'SYSTEM',
-      expect.stringContaining('non-credible'),
-      expect.objectContaining({ bsize: 4096, bavail: -1 }),
-    );
   });
 
   it('honors CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1 by exiting without writing the marker', () => {

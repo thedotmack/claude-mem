@@ -7,8 +7,6 @@ import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 
 const sessionInitCalls: NormalizedHookInput[] = [];
-/** Optional per-dispatch delay so tests can hold a read in-flight. */
-let handlerDelayMs = 0;
 
 // Snapshot the real module BEFORE mock.module mutates the live namespace, then
 // re-register it in afterAll (same pattern as watcher-start-at-end.test.ts).
@@ -17,9 +15,6 @@ const realSessionInitSnapshot = { ...realSessionInit };
 
 const fakeSessionInit = async (input: NormalizedHookInput) => {
   sessionInitCalls.push(input);
-  if (handlerDelayMs > 0) {
-    await new Promise(resolve => setTimeout(resolve, handlerDelayMs));
-  }
   return { continue: true, suppressOutput: true };
 };
 mock.module('../../src/cli/handlers/session-init.js', () => ({
@@ -34,8 +29,6 @@ afterAll(() => {
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import * as zstdFrames from '../../src/services/transcripts/zstd-frames.js';
-
-const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
 
 /** Compress JSONL lines into one independently decodable zstd frame. */
 const zstdFrame = (lines: string[]): Buffer => zstdCompressSync(Buffer.from(`${lines.join('\n')}\n`, 'utf8'));
@@ -113,7 +106,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     expect(matches).toContain(filePath);
 
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     const prompts = sessionInitCalls.map(call => call.prompt);
@@ -137,13 +130,13 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     writeFileSync(filePath, zstdFrame([userMessageEvent(0, 'already seen')]));
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     expect(sessionInitCalls.map(call => call.prompt)).toContain('already seen');
 
     // Rewrite the file with a new frame appended; only the new frame should replay.
     appendFileSync(filePath, zstdFrame([userMessageEvent(1, 'brand new')]));
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     const prompts = sessionInitCalls.map(call => call.prompt);
@@ -171,7 +164,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     // Frame A (valid) + corrupt frame + frame C (valid).
     writeFileSync(filePath, Buffer.concat([goodFrameA, corruptZstdFrame(), goodFrameC]));
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     // Frame A dispatched; frame C withheld because the corrupt frame stops the
     // pass, and the durable offset never advances past it.
@@ -184,7 +177,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     // event is now replayed, and the offset advances to the end of the file.
     writeFileSync(filePath, Buffer.concat([goodFrameA, goodFrameC]));
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toContain('after corrupt');
@@ -213,7 +206,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     writeFileSync(filePath, Buffer.concat([goodFrameA, corruptZstdFrame(), tornFrameC]));
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     expect(sessionInitCalls.map(call => call.prompt)).toContain('before corrupt and torn');
     const offsets = JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
@@ -221,45 +214,12 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     writeFileSync(filePath, Buffer.concat([goodFrameA, replacementFrameB]));
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toContain('replacement frame');
     const finalOffsets = JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
     expect(finalOffsets[filePath]).toBe(goodFrameA.length + replacementFrameB.length);
-  });
-
-  it('coalesces a poke received mid-read instead of dispatching twice', async () => {
-    const sessionId = 'f7b21c33-4444-5555-6666-777788889999';
-    const sessionDir = join(tmpRoot, `session-${sessionId}`);
-    mkdirSync(sessionDir, { recursive: true });
-    const filePath = join(sessionDir, 'session.jsonl.zstd');
-    const statePath = join(tmpRoot, 'state.json');
-
-    const watch: WatchTarget = {
-      name: 'dsh',
-      path: join(tmpRoot, '**', '*.jsonl.zstd'),
-      schema: dshSchema,
-    };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-
-    writeFileSync(filePath, zstdFrame([userMessageEvent(0, 'only once')]));
-
-    // Hold the first dispatch in-flight so the poke lands mid-read.
-    handlerDelayMs = 150;
-    try {
-      await (watcher as any).addTailer(filePath, watch, dshSchema);
-      await waitForAsyncTail();
-      (watcher as any).tailers.get(filePath)?.poke();
-      await waitForAsyncTail();
-      // Let the second (coalesced) pass finish if one started.
-      await new Promise(resolve => setTimeout(resolve, 300));
-    } finally {
-      handlerDelayMs = 0;
-    }
-    watcher.stop();
-
-    expect(sessionInitCalls.filter(c => c.prompt === 'only once')).toHaveLength(1);
   });
 
   it('reassembles a JSONL record split across zstd frames after watcher replacement', async () => {
@@ -290,7 +250,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
 
     // The complete line dispatched; the durable offset advanced past all of
     // frame A together with the persisted unterminated prefix.
@@ -306,7 +266,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     appendFileSync(filePath, zstdCompressSync(Buffer.from(`${suffix}\n`, 'utf8')));
     const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (replacement as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (replacement as any).tailers.get(filePath).readTask;
     replacement.stop();
 
     const prompts = sessionInitCalls.map(call => call.prompt);
@@ -334,13 +294,13 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     expect(sessionInitCalls).toHaveLength(0);
 
     // The interrupted write completes; the frame is read from its start.
     writeFileSync(filePath, Buffer.concat([history, pending]));
     (watcher as any).tailers.get(filePath)?.poke();
-    await waitForAsyncTail();
+    await (watcher as any).tailers.get(filePath).readTask;
     watcher.stop();
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['written across the restart']);
@@ -357,7 +317,6 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
         writeFileSync(filePath, zstdFrame([userMessageEvent(0, `prompt ${name}`)]));
         await (watcher as any).addTailer(filePath, watch, dshSchema);
       }
-      await waitForAsyncTail();
       watcher.stop();
 
       expect(sessionInitCalls).toHaveLength(0);

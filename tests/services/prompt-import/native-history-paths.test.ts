@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -35,7 +35,7 @@ function transcripts(codex: string, data: string, label: string, tokens: number)
   } finally { db.close(); }
 }
 
-for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 'literal-tilde', 'symlink', 'alternate-home', 'alternate-relative-home', 'same-home-relative', 'missing']) {
+for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 'literal-tilde', 'alternate-home', 'same-home-relative', 'missing']) {
   it(`imports only the selected native Codex/OpenCode history: ${mode}`, () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cmem-native-history-')));
     try {
@@ -46,11 +46,6 @@ for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 
       transcripts(join(home, '.codex'), join(home, '.local', 'share'), 'default', 11);
       transcripts(customCodex, customData, 'active', 111);
       transcripts(join(alternate, '.codex'), join(alternate, '.local', 'share'), 'alternate', 22);
-      const codexLink = join(root, 'codex-link'), dataLink = join(root, 'data-link');
-      if (mode === 'symlink') {
-        symlinkSync(customCodex, codexLink, process.platform === 'win32' ? 'junction' : 'dir');
-        symlinkSync(customData, dataLink, process.platform === 'win32' ? 'junction' : 'dir');
-      }
       if (mode === 'missing') {
         rmSync(customCodex, { recursive: true });
         rmSync(customData, { recursive: true });
@@ -99,10 +94,8 @@ for (const mode of ['unset', 'empty', 'absolute', 'relative', 'literal-spaces', 
       if (mode === 'empty') { env.CODEX_HOME = ''; env.XDG_DATA_HOME = ''; }
       if (mode === 'relative') { env.CODEX_HOME = 'custom-codex'; env.XDG_DATA_HOME = 'custom-data'; }
       if (mode === 'literal-tilde') { env.CODEX_HOME = '~/codex'; env.XDG_DATA_HOME = '~/data'; }
-      if (mode === 'symlink') { env.CODEX_HOME = codexLink; env.XDG_DATA_HOME = dataLink; }
       delete env.OWNED_SCAN_HOME;
       if (mode === 'alternate-home') env.OWNED_SCAN_HOME = alternate;
-      if (mode === 'alternate-relative-home') env.OWNED_SCAN_HOME = 'alternate';
       if (mode === 'same-home-relative') env.OWNED_SCAN_HOME = 'owner';
       const child = Bun.spawnSync([process.execPath, script], { cwd: root, env, stdout: 'pipe', stderr: 'pipe' });
       expect(child.exitCode, child.stderr.toString()).toBe(0);

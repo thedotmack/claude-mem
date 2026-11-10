@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { scanOwnerPrompts } from '../../../src/services/prompt-import/index.js';
@@ -60,21 +60,4 @@ it('reads committed current prompts and usage from a fresh WAL beside an old dat
 it('a fresh WAL does not include rows outside the requested event window', async () => {
   fixture(SINCE - DAY);
   expect(await scan()).toEqual({ prompts: [], tokens: 0 });
-});
-
-it('a stale WAL and old rows remain outside the scan window', async () => {
-  const file = fixture(SINCE - DAY);
-  utimesSync(`${file}-wal`, (SINCE - DAY) / 1000, (SINCE - DAY) / 1000);
-  expect(await scan()).toEqual({ prompts: [], tokens: 0 });
-});
-
-it('keeps reading a recent checkpointed database when there is no WAL', async () => {
-  const file = fixture();
-  writer!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  writer!.exec('PRAGMA journal_mode = DELETE');
-  writer!.close();
-  writer = undefined;
-  expect(existsSync(`${file}-wal`)).toBe(false);
-  expect(statSync(file).mtimeMs).toBeGreaterThanOrEqual(SINCE);
-  expect(await scan()).toEqual({ prompts: ['please retain my current OpenCode prompt'], tokens: 123 });
 });

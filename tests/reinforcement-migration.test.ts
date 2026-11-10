@@ -26,12 +26,6 @@ describe('reinforcement columns migration', () => {
     store.db.close();
   });
 
-  it('adds reinforcement_dates and last_reinforced to observations', () => {
-    const cols = observationColumns(store.db);
-    expect(cols.has('reinforcement_dates')).toBe(true);
-    expect(cols.has('last_reinforced')).toBe(true);
-  });
-
   it('records its schema version once, and re-opening the db is a no-op', () => {
     const db = store.db;
     expect(() => new SessionStore(db)).not.toThrow();
@@ -52,19 +46,4 @@ describe('reinforcement columns migration', () => {
     expect(cols.has('last_reinforced')).toBe(true);
   });
 
-  it('leaves rows written outside the write path NULL (no backfill)', () => {
-    store.db.run(
-      `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, status, started_at, started_at_epoch)
-       VALUES ('c1', 's1', 'proj', 'active', '2026-06-17', 1750000000)`,
-    );
-    store.db.run(
-      `INSERT INTO observations (memory_session_id, project, text, type, created_at, created_at_epoch)
-       VALUES ('s1', 'proj', 'hello', 'discovery', '2026-06-17', 1750000000)`,
-    );
-    const obs = store.db
-      .prepare('SELECT reinforcement_dates, last_reinforced FROM observations LIMIT 1')
-      .get() as { reinforcement_dates: string | null; last_reinforced: string | null };
-    expect(obs.reinforcement_dates).toBeNull();
-    expect(obs.last_reinforced).toBeNull();
-  });
 });

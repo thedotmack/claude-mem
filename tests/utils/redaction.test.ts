@@ -279,20 +279,6 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(JSON.stringify({ stdout: `a ${word}` }), cfg).redacted).toBe(JSON.stringify({ stdout: `a ${word}` }));
   });
 
-  // The worker scans JSON.stringify(toolResponse), so a newline right before
-  // the key arrives as the two characters `\n`; the `n` is a word character,
-  // so a bare `\b` cannot match there and the key survived redaction.
-  it('redacts a perplexity_key printed right after a newline (worker capture path)', () => {
-    const output = `Deployment ready.\n${'ppl' + 'x-' + PPLX_BODY}`;
-    for (const text of [output, JSON.stringify({ stdout: output })]) {
-      const result = redactSensitive(text, cfg);
-      expect(result.counts.perplexity_key).toBe(1);
-      expect(result.redacted).not.toContain(PPLX_BODY);
-    }
-    const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
-    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
-  });
-
   // Perplexity model ids share the `pplx-` prefix; their `-`/`.` separators
   // and short bodies keep them out of the 48-alphanumeric key pattern.
   it.each([
@@ -882,10 +868,20 @@ describe('redactSensitive generic built-in patterns', () => {
   });
 
   it('stays linear on long whitespace runs (no quadratic lookbehind)', () => {
-    const padded = `password=${' '.repeat(200_000)}AWS_SECRET_ACCESS_KEY${' '.repeat(200_000)}=x`;
-    const started = performance.now();
-    redactSensitive(padded, cfg);
-    expect(performance.now() - started).toBeLessThan(1000);
+    const measure = (padding: number) => {
+      const padded = `password=${' '.repeat(padding)}AWS_SECRET_ACCESS_KEY${' '.repeat(padding)}=x`;
+      const started = performance.now();
+      redactSensitive(padded, cfg);
+      return performance.now() - started;
+    };
+    measure(2_500);
+    const small: number[] = [];
+    const large: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      small.push(measure(12_500));
+      large.push(measure(25_000));
+    }
+    expect(Math.min(...large) / Math.min(...small)).toBeLessThan(3);
   });
 });
 

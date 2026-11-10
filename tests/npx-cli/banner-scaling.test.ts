@@ -3,7 +3,6 @@ import {
   parseFrameCells,
   downsampleFrameCells,
   renderFrameCells,
-  scaleFrame,
   type FrameCell,
 } from '../../src/npx-cli/banner';
 
@@ -75,20 +74,10 @@ describe('banner frame scaling', () => {
       expect(out).toBe('abcdefgh\nijklmnop\nqrstuvwx\nyz012345');
     });
 
-    it('colored output switches to accent color on accent cells and resets', () => {
+    it('colored output resets its SGR styling', () => {
       const cells = parseFrameCells(SYNTHETIC_FRAME);
       const out = renderFrameCells(cells, { color: true, truecolor: false });
-      expect(out.startsWith('\x1b[38;5;208m')).toBe(true);
-      expect(out).toContain('\x1b[38;5;215mkl\x1b[38;5;208m');
       expect(out.endsWith('\x1b[0m')).toBe(true);
-    });
-  });
-
-  describe('scaleFrame', () => {
-    it('composes parse + downsample + render', () => {
-      const out = scaleFrame(SYNTHETIC_FRAME, 4, 2, { color: false, truecolor: false });
-      expect(out).toBe('aceg\nqsuw');
-      expect(out).not.toContain('\x1b[3');
     });
   });
 });

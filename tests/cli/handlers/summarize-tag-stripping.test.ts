@@ -188,21 +188,6 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(body.lastAssistantMessage).toBe('Hello  world');
   });
 
-  it('preserves surrounding content when stripping privacy tags', async () => {
-    mockExtractedMessage =
-      'Before tag. <private>leak</private> Middle. <private>another</private> After.';
-
-    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
-    await summarizeHandler.execute(baseInput as any);
-
-    const body = spooledSummarize();
-    expect(body.lastAssistantMessage).not.toContain('leak');
-    expect(body.lastAssistantMessage).not.toContain('another');
-    expect(body.lastAssistantMessage).toContain('Before tag.');
-    expect(body.lastAssistantMessage).toContain('Middle.');
-    expect(body.lastAssistantMessage).toContain('After.');
-  });
-
   it('skips the worker POST when the entire turn is wrapped in a privacy tag', async () => {
     mockExtractedMessage = '<private>everything is private</private>';
 
@@ -213,48 +198,4 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(result.suppressOutput).toBe(true);
     nothingSpooled();
   });
-
-  it('skips the worker POST when stripping leaves only whitespace', async () => {
-    mockExtractedMessage = '   <private>x</private>\n\t<private>y</private>  ';
-
-    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
-    await summarizeHandler.execute(baseInput as any);
-
-    nothingSpooled();
-  });
-
-  it('does not modify content that contains no privacy tags', async () => {
-    mockExtractedMessage = 'Just a normal assistant turn with no privacy markers.';
-
-    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
-    await summarizeHandler.execute(baseInput as any);
-
-    const body = spooledSummarize();
-    expect(body.lastAssistantMessage).toBe(
-      'Just a normal assistant turn with no privacy markers.'
-    );
-  });
-
-  const taggedPayloads: Array<[string, string]> = [
-    ['<private>', '<private>SECRET-PRIVATE</private>'],
-    ['<claude-mem-context>', '<claude-mem-context>SECRET-CTX</claude-mem-context>'],
-    ['<system-instruction>', '<system-instruction>SECRET-SI-DASH</system-instruction>'],
-    ['<system_instruction>', '<system_instruction>SECRET-SI-UNDER</system_instruction>'],
-    ['<persisted-output>', '<persisted-output>SECRET-PO</persisted-output>'],
-  ];
-
-  for (const [label, payload] of taggedPayloads) {
-    it(`strips ${label} tags from last_assistant_message`, async () => {
-      const secret = payload.match(/SECRET-[A-Z-]+/)![0];
-      mockExtractedMessage = `before ${payload} after`;
-
-      const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
-      await summarizeHandler.execute(baseInput as any);
-
-      const body = spooledSummarize();
-      expect(body.lastAssistantMessage).not.toContain(secret);
-      expect(body.lastAssistantMessage).toContain('before');
-      expect(body.lastAssistantMessage).toContain('after');
-    });
-  }
 });

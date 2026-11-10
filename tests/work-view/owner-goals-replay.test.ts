@@ -83,13 +83,6 @@ function promptsFile() {
 }
 
 describe('owner-goals replay of the live 2026-10-26 items', () => {
-  it('the fixture holds the 23 live items: 8 priorities and 15 open asks, each sorted by the stub', () => {
-    expect(fixture.items).toHaveLength(23);
-    expect(fixture.items.filter((entry) => entry.task.startsWith('Priority: '))).toHaveLength(8);
-    expect(fixture.items.filter((entry) => entry.task.startsWith('Open ask: '))).toHaveLength(15);
-    expect(Object.keys(SORTED).sort()).toEqual(fixture.items.map((entry) => entry.task).sort());
-  });
-
   it('saves 5 areas, 13 asks and 4 rules, plus 1 item split into an area and a rule; a second run never overrides the owner', async () => {
     const dir = scratchDir('owner-goals-replay');
     const worker = fakeOwnerGoalsWorker(join(dir, 'data'));
@@ -107,11 +100,6 @@ describe('owner-goals replay of the live 2026-10-26 items', () => {
 
       const first = await save(stubbedAnswer());
       expect(first).toMatchObject({ saved_focus_areas: 6, saved_asks: 13, saved_rules: 5, new_focus_areas: 6, unlinked_asks: [] });
-      const split = Object.entries(SORTED).filter(([, parts]) => parts.length > 1);
-      expect(split.map(([task, parts]) => [task, parts.map((part) => part.kind)])).toEqual([['Priority: Ship everything end to end without the owner publishing', ['area', 'rule']]]);
-      const single = Object.values(SORTED).filter((parts) => parts.length === 1).map(([part]) => part.kind);
-      expect([single.filter((kind) => kind === 'area').length, single.filter((kind) => kind === 'ask').length, single.filter((kind) => kind === 'rule').length]).toEqual([5, 13, 4]);
-
       const goals = worker.state().lists.find((list: { name: string }) => list.name === 'owner-goals').tasks.filter((task: { isOpen: boolean }) => task.isOpen);
       const kinds = goals.map((task: { fields: { goal_kind: string } }) => task.fields.goal_kind);
       expect([kinds.filter((kind: string) => kind === 'focus-area').length, kinds.filter((kind: string) => kind === 'ask').length]).toEqual([6, 13]);

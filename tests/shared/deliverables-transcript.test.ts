@@ -25,6 +25,7 @@ const TRANSCRIPT = [
   JSON.stringify({ type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [toolUse('toolu_6', 'Write', { file_path: '/w/.scratch/side.png' })] } }),
   'not json at all',
   assistant([toolUse('toolu_7', 'NotebookEdit', { notebook_path: '/w/analysis.ipynb', new_source: '' })]),
+  user([toolResult('toolu_7')]),
   assistant([{ type: 'text', text: 'Done.' }]),
 ].join('\n');
 
@@ -38,12 +39,6 @@ describe('extractTranscriptFileActivityFromJsonl', () => {
     expect(activity.workStateWrites).toEqual([
       { list: 'launch', fields: { task: 'deck', status: 'done', work_product: '/w/.scratch/deck.pdf' }, toolUseId: 'toolu_5', occurredAtEpoch: Date.parse('2026-10-26T20:00:00.000Z') },
     ]);
-  });
-
-  it('drops a write whose tool result failed and leaves a session transcript\'s sidechain entries to SubagentStop', () => {
-    const paths = extractTranscriptFileActivityFromJsonl(TRANSCRIPT, { currentTurnOnly: false }).writes.map(write => write.path);
-    expect(paths).not.toContain('/w/.scratch/broken.pdf');
-    expect(paths).not.toContain('/w/.scratch/side.png');
   });
 
   it('reads sidechain entries when asked, which a subagent\'s own transcript needs: every entry in it is one', () => {

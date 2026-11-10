@@ -8,6 +8,7 @@ import {
   _internals,
 } from '../../src/shared/find-claude-executable.js';
 import { logger } from '../../src/utils/logger.js';
+import { buildHardenedSdkOptions } from '../../src/sdk/hardened-options.js';
 
 /**
  * All probing goes through the _internals seam, so these tests swap its
@@ -250,14 +251,6 @@ describe('findClaudeExecutable cold-start race', () => {
 
     expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
   });
-
-  it('still rejects a genuinely old CLI that writes a flag-rejection error to stderr', () => {
-    installFakes();
-    whichOutput = '/opt/homebrew/bin/claude\n';
-    fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
-
-    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
-  });
 });
 
 describe('findClaudeExecutable broken candidates', () => {
@@ -302,38 +295,6 @@ describe('findClaudeExecutable broken candidates', () => {
     expect(warnings.some((m) => m.includes('desktop app') && m.includes('AnthropicClaude'))).toBe(true);
   });
 
-  it('falls through to not-found when the only candidate is broken and not present on disk', () => {
-    // A candidate that is broken AND missing from disk (e.g. a dangling PATH
-    // entry left by an uninstall) is the genuine not-found case — distinct
-    // from a present-but-unspawnable binary, which would surface as
-    // ClaudeExecutableUnspawnableError (covered in its own describe block).
-    installFakes();
-    whichOutput = '/broken/claude\n';
-    // Deliberately NOT added to fakeClis: existsSync returns false, so the
-    // broken probe is not collected as present-but-unspawnable.
-
-    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
-  });
-
-  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be launched', () => {
-    installFakes({ settingsPath: '/custom/claude' });
-    fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
-
-    // The file exists (existsSync passes) and the OS could not launch it (no
-    // exit status): the stale-worker signature, so it surfaces as the
-    // ClaudeExecutableUnspawnableError self-heal discriminator (type contract
-    // covered in its own describe block) while still carrying the
-    // launch-failure guidance (shebang / native-installer stub).
-    let caught: unknown;
-    try {
-      findClaudeExecutable('SDK');
-    } catch (error) {
-      caught = error;
-    }
-    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
-    expect((caught as Error).message).toMatch(/exists but could not be executed/);
-    expect((caught as Error).message).toMatch(/shebang|native-installer/);
-  });
 
   it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', () => {
     installFakes({ settingsPath: '/custom/claude' });
@@ -738,6 +699,8 @@ describe('findClaudeExecutable present-but-unspawnable detection', () => {
         { path: '/pinned/claude', detail: expect.any(String) },
       ]);
       expect(caught.message).toContain('/pinned/claude');
+      expect(caught.message).toMatch(/exists but could not be executed/);
+      expect(caught.message).toMatch(/shebang|native-installer/);
     }
   });
 
@@ -782,9 +745,13 @@ describe('findClaudeExecutable present-but-unspawnable detection', () => {
 });
 
 describe('capability probe contract', () => {
-  it('passes the exact flags hardened options force on every spawn', () => {
-    // buildHardenedSdkOptions sets permissionMode 'dontAsk' unconditionally;
-    // the probe must cover it or stale CLIs die at spawn instead of resolve.
-    expect([...CAPABILITY_PROBE_ARGS]).toEqual(['--permission-mode', 'dontAsk', '--version']);
+  it('probes the permission mode hardened options force on every spawn', () => {
+    const options = buildHardenedSdkOptions({
+      source: 'Observer', model: 'test', env: {}, cwd: process.cwd(),
+      pathToClaudeCodeExecutable: '/unused/claude',
+    });
+    const modeIndex = CAPABILITY_PROBE_ARGS.indexOf('--permission-mode');
+    expect(modeIndex).toBeGreaterThanOrEqual(0);
+    expect(CAPABILITY_PROBE_ARGS[modeIndex + 1]).toBe(options.permissionMode);
   });
 });

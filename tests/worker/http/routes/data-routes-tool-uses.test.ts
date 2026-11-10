@@ -1,25 +1,6 @@
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
-
-// Same module-snapshot dance as data-routes-coercion.test.ts: bun's
-// mock.module is process-global and mock.restore() does not undo it.
-import * as realPaths from '../../../../src/shared/paths.js';
-import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
-const realPathsSnapshot = { ...realPaths };
-const realWorkerUtilsSnapshot = { ...realWorkerUtils };
-
-mock.module('../../../../src/shared/paths.js', () => ({
-  getPackageRoot: () => '/tmp/test',
-}));
-mock.module('../../../../src/shared/worker-utils.js', () => ({
-  getWorkerPort: () => 37777,
-}));
-
-afterAll(() => {
-  mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
-  mock.module('../../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
-});
 
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 

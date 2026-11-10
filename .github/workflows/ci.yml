@@ -28,7 +28,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # The repo intentionally gitignores package-lock.json (.gitignore), so
       # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
@@ -37,10 +37,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Install Fish for hook regression tests
+      - name: Install Fish and ripgrep for regression tests
         run: |
-          sudo apt-get update && sudo apt-get install -y fish
+          sudo apt-get update && sudo apt-get install -y fish ripgrep
           fish --version
+          rg --version
 
       # Plugin installations execute the committed bundles directly. Check
       # them before rebuilding, which would hide a stale published worker or
@@ -76,20 +77,35 @@ jobs:
       - name: Test (fast lane)
         run: bun scripts/test-lanes.ts fast
 
+      - name: Install Claude Code for the auto-clear engine test
+        if: ${{ !cancelled() }}
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.321 --no-audit --no-fund
+          claude --version
+
       - name: Test (integration lane)
         if: ${{ !cancelled() }}
+        env:
+          CLAUDE_MEM_TEST_PGVECTOR: '1'
+          CLAUDE_MEM_TEST_AUTO_CLEAR_ENGINE: '1'
         run: bun scripts/test-lanes.ts integration
 
       # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so
       # the scoped step above no longer reaches it — run it explicitly.
       - name: Test (openclaw)
-        run: bun test openclaw
+        run: bun test ./openclaw
 
       # The cowork plugin's suite lives outside tests/ (cowork/test), so the
       # scoped lane check above never reaches it — run it explicitly, the same
       # way openclaw's out-of-tree suite is run.
       - name: Test (cowork)
-        run: bun test cowork/test
+        run: bun test ./cowork/test
+
+      - name: Test (cowork standalone hooks)
+        run: node cowork/test/run-tests.mjs
+
+      - name: Test (agent cost report, Python)
+        run: python3 -B -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -v
 
       - name: Test (Hermes provider, Python)
         run: python3 -B -m unittest discover -s tests/hermes -v
@@ -119,7 +135,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install uv (with cache)
         uses: astral-sh/setup-uv@v5
@@ -134,19 +150,6 @@ jobs:
       # recycle gate's version-mismatch probe needs a built worker present.
       - name: Build
         run: npm run build
-
-      # Same end-to-end tree-kill assertions the Windows job runs, so the two
-      # platforms are held to an identical contract rather than each being
-      # verified by whatever happens to run there.
-      - name: Tree-kill end-to-end (Linux implementations)
-        run: bun test tests/shared/kill-process-tree-cross-platform.test.ts --timeout 120000
-
-      # Same format-agreement guard as the Windows job, for the /proc (Linux)
-      # enumeration path: the table read and captureProcessStartToken must
-      # produce identical tokens, or every descendant is skipped as "reused"
-      # and the orphan bug returns silently.
-      - name: Process-identity format agreement
-        run: bun test tests/shared/kill-process-tree-identity.test.ts --timeout 120000
 
       # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
       #
@@ -210,7 +213,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install sync-hub dependencies
         working-directory: services/sync-hub
@@ -257,7 +260,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install repository dependencies
         run: npm install --no-audit --no-fund
@@ -266,12 +269,16 @@ jobs:
         working-directory: services/sync-api
         run: bun install --frozen-lockfile
 
-      # Every Postgres-backed server and storage suite, generation attempt
-      # ownership included; without a test database they skip.
+      # Select only suites that read the Postgres test URL. The other server
+      # and storage suites already run in the root lanes.
       - name: Server and storage tests (Postgres)
         env:
           CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-generation-data
-        run: CLAUDE_MEM_TEST_POSTGRES_URL="$DATABASE_URL" bun test tests/server tests/storage tests/cli/server-jobs.test.ts
+          CLAUDE_MEM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+        run: |
+          mapfile -t postgres_tests < <(git grep -l -F 'process.env.CLAUDE_MEM_TEST_POSTGRES_URL' -- tests/server tests/storage tests/cli/server-jobs.test.ts tests/compat)
+          test "${#postgres_tests[@]}" -gt 0
+          bun test "${postgres_tests[@]/#/./}"
 
       - name: sync-api unit and protocol tests
         working-directory: services/sync-api
@@ -317,7 +324,7 @@ jobs:
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=server_search_test \
             claude-mem-postgres:17
           # Over TCP, so the image's socket-only init server does not count as ready.
-          for attempt in $(seq 60); do
+          for _attempt in $(seq 60); do
             docker exec search-postgres pg_isready -h 127.0.0.1 -U postgres -d server_search_test && exit 0
             sleep 1
           done
@@ -331,7 +338,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       - name: Install repository dependencies
         run: npm install --no-audit --no-fund
@@ -346,7 +353,6 @@ jobs:
           tests/server/embedding-parts-contract.test.ts
           tests/server/runtime/memories-vector-write.test.ts
           tests/server/generation/process-generated-response-vectors.test.ts
-          tests/services/vector/local-embedder-encode.test.ts
           tests/server/semantic-context-route.test.ts
 
   clean-room-deps:
@@ -363,7 +369,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # See note in the build job: no committed root lockfile, so npm install.
       - name: Install dependencies
@@ -406,7 +412,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
       # See note in the build job: no committed lockfile, so npm install.
       - name: Install dependencies

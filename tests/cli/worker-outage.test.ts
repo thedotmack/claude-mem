@@ -85,6 +85,32 @@ describe('worker outage never blocks the hook', () => {
     const state = JSON.parse(readFileSync(join(result.dataDir, 'state', 'hook-failures.json'), 'utf-8'));
     expect(state).toMatchObject({ consecutiveFailures: 5, thresholdTripped: true });
   });
+
+  it.each([429, 503])('clears a prior unreachable streak when the API answers %i', (status) => {
+    const result = runOutageScript(`
+      for (let i = 0; i < 3; i++) await w.recordWorkerUnreachable();
+      out.priorNotice = await w.consumeWorkerOutageNotice('session-a');
+      globalThis.fetch = async (url) => String(url).endsWith('/api/ready')
+        ? new Response('event: phase\\ndata: {"phase":"ready"}\\n\\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+        : new Response('temporarily unavailable', { status: ${status} });
+      const response = await w.executeWithWorkerFallback('/api/test', 'POST', {}, {
+        workerStartupTimeoutMs: 1000, timeoutMs: 1000,
+      });
+      out.fallback = w.isWorkerFallback(response);
+      out.reason = response.reason;
+      out.notice = await w.consumeWorkerOutageNotice('session-b');
+      out.nextCount = await w.recordWorkerUnreachable();
+    `);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.priorNotice).toContain('3 consecutive hooks');
+    expect(result.output.fallback).toBe(true);
+    expect(result.output.reason).toBe(`worker_api_${status}`);
+    expect(result.output.notice).toBeNull();
+    expect(result.output.nextCount).toBe(1);
+  });
 });
 
 describe('consumeWorkerOutageNotice', () => {

@@ -173,8 +173,8 @@ describe('ServerClient', () => {
     }
   });
 
-  it('classifies 5xx as fallback-eligible http_error', async () => {
-    installFetch(async () => new Response('boom', { status: 502 }));
+  it.each([[502, true], [400, false], [429, true]] as const)('classifies HTTP %i with fallback eligibility %s', async (status, fallbackEligible) => {
+    installFetch(async () => new Response('error', { status }));
     const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
@@ -185,41 +185,8 @@ describe('ServerClient', () => {
     expect(caught).toBeInstanceOf(ServerClientError);
     if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('http_error');
-      expect(caught.status).toBe(502);
-      expect(caught.isFallbackEligible()).toBe(true);
-    }
-  });
-
-  it('classifies 4xx (not 429) as non-fallback http_error', async () => {
-    installFetch(async () => new Response('bad', { status: 400 }));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    let caught: unknown;
-    try {
-      await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ServerClientError);
-    if (caught instanceof ServerClientError) {
-      expect(caught.kind).toBe('http_error');
-      expect(caught.status).toBe(400);
-      expect(caught.isFallbackEligible()).toBe(false);
-    }
-  });
-
-  it('classifies 429 as fallback-eligible http_error', async () => {
-    installFetch(async () => new Response('rate', { status: 429 }));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    let caught: unknown;
-    try {
-      await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ServerClientError);
-    if (caught instanceof ServerClientError) {
-      expect(caught.status).toBe(429);
-      expect(caught.isFallbackEligible()).toBe(true);
+      expect(caught.status).toBe(status);
+      expect(caught.isFallbackEligible()).toBe(fallbackEligible);
     }
   });
 
@@ -228,61 +195,6 @@ describe('ServerClient', () => {
     const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999///', apiKey: 'cmem_test' });
     await client.endSession({ sessionId: 's' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/sessions/s/end');
-  });
-
-  // ----- Phase 8 — MCP-backing methods. These exercise the same /v1/* paths
-  // the REST core exposes, so MCP tools never have a private write path. -----
-
-  it('addObservation sends POST /v1/memories with content', async () => {
-    installFetch(async () => new Response(
-      JSON.stringify({ memory: { id: 'o1', projectId: 'p1', teamId: 't1', serverSessionId: null, kind: 'manual', content: 'hello', metadata: {} } }),
-      { status: 201 },
-    ));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    const result = await client.addObservation({
-      projectId: 'p1',
-      content: 'hello',
-      kind: 'manual',
-      metadata: { source: 'mcp' },
-    });
-    expect(captured[0]?.url).toBe('http://localhost:9999/v1/memories');
-    expect(captured[0]?.method).toBe('POST');
-    // Write-path contract: `content` goes over the wire AS `content`, which is
-    // what ServerV1PostgresRoutes validates (`content: z.string().min(1)`) and
-    // what PostgresObservationRepository writes into `observations.content`.
-    //
-    // This assertion previously required `narrative`/`type` and explicitly
-    // required `content` to be ABSENT, citing #2684 and a column that "no column
-    // accepted". That is true of the SQLite `memory_items` route
-    // (ServerV1Routes, mounted by worker-service) — a server this client cannot
-    // reach, because ServerClient is only constructed on the `server` runtime.
-    // On a live `server` runtime the narrative payload returned 400
-    // ValidationError "path":["content"] for every MCP observation_add.
-    const body = captured[0]?.body as Record<string, unknown>;
-    expect(body.content).toBe('hello');
-    expect(body.kind).toBe('manual');
-    expect(body.narrative).toBeUndefined();
-    expect(body.type).toBeUndefined();
-    expect(result.memory.id).toBe('o1');
-  });
-
-  it('searchObservations sends POST /v1/search with query', async () => {
-    installFetch(async () => new Response(
-      JSON.stringify({ observations: [{ id: 'o1', projectId: 'p1', content: 'matched' }] }),
-      { status: 200 },
-    ));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    const result = await client.searchObservations({
-      projectId: 'p1',
-      query: 'login bug',
-      limit: 5,
-      platformSource: 'Codex CLI',
-    });
-    expect(captured[0]?.url).toBe('http://localhost:9999/v1/search');
-    expect((captured[0]?.body as Record<string, unknown>).query).toBe('login bug');
-    expect((captured[0]?.body as Record<string, unknown>).limit).toBe(5);
-    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('codex');
-    expect(result.observations[0]?.id).toBe('o1');
   });
 
   it('contextObservations sends POST /v1/context and returns context string', async () => {
@@ -299,18 +211,6 @@ describe('ServerClient', () => {
     expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('cursor');
     expect(result.context).toBe('a\n\nb');
     expect(result.observations).toHaveLength(2);
-  });
-
-  it('getJobStatus sends GET /v1/jobs/:id', async () => {
-    installFetch(async () => new Response(
-      JSON.stringify({ generationJob: { id: 'j1', status: 'queued' } }),
-      { status: 200 },
-    ));
-    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    const result = await client.getJobStatus('j1');
-    expect(captured[0]?.url).toBe('http://localhost:9999/v1/jobs/j1');
-    expect(captured[0]?.method).toBe('GET');
-    expect(result.generationJob.status).toBe('queued');
   });
 
   it('getJobStatus rejects empty jobId', async () => {

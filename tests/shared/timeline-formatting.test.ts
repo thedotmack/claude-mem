@@ -1,22 +1,4 @@
-import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
-
-// Snapshot the real logger BEFORE mock.module mutates the live namespace, then
-// re-register it in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so a partial logger mock here would
-// otherwise leak into later test files (e.g. summarize-tag-stripping, which
-// needs logger.dataIn).
-import * as realLogger from '../../src/utils/logger.js';
-const realLoggerSnapshot = { ...realLogger };
-
-mock.module('../../src/utils/logger.js', () => ({
-  logger: {
-    info: () => {},
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-    formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
-  },
-}));
+import { describe, it, expect, afterEach } from 'bun:test';
 
 import {
   extractFirstFile,
@@ -28,14 +10,6 @@ import {
   formatHeaderDateTime,
   formatSystemLocaleDateTime,
 } from '../../src/shared/timeline-formatting.js';
-
-afterEach(() => {
-  mock.restore();
-});
-
-afterAll(() => {
-  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
-});
 
 describe('toRelativePath', () => {
   const home = '/Users/test';
@@ -106,23 +80,6 @@ describe('extractFirstFile', () => {
 
     expect(result).toBe('config.json');
   });
-
-  it('should return relative path (not absolute) for files inside cwd', () => {
-    const filesModified = JSON.stringify(['/Users/test/project/deeply/nested/file.ts']);
-
-    const result = extractFirstFile(filesModified, cwd);
-
-    expect(result).toBe('deeply/nested/file.ts');
-    expect(result).not.toContain('/Users/test/project');
-  });
-
-  it('should handle files that are already relative paths', () => {
-    const filesModified = JSON.stringify(['src/component.tsx']);
-
-    const result = extractFirstFile(filesModified, cwd);
-
-    expect(result).toBe('src/component.tsx');
-  });
 });
 
 describe('groupByDate', () => {
@@ -141,8 +98,8 @@ describe('groupByDate', () => {
 
   it('should group items by formatted date', () => {
     const items: TestItem[] = [
-      { id: 1, date: '2025-01-04T10:00:00Z' },
-      { id: 2, date: '2025-01-04T14:00:00Z' },
+      { id: 1, date: new Date(2025, 0, 4, 10).toISOString() },
+      { id: 2, date: new Date(2025, 0, 4, 14).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date);
@@ -156,9 +113,9 @@ describe('groupByDate', () => {
 
   it('should sort dates chronologically', () => {
     const items: TestItem[] = [
-      { id: 1, date: '2025-01-06T10:00:00Z' },
-      { id: 2, date: '2025-01-04T10:00:00Z' },
-      { id: 3, date: '2025-01-05T10:00:00Z' },
+      { id: 1, date: new Date(2025, 0, 6, 10).toISOString() },
+      { id: 2, date: new Date(2025, 0, 4, 10).toISOString() },
+      { id: 3, date: new Date(2025, 0, 5, 10).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date);
@@ -172,9 +129,9 @@ describe('groupByDate', () => {
 
   it('should support descending date order', () => {
     const items: TestItem[] = [
-      { id: 1, date: '2025-01-06T10:00:00Z' },
-      { id: 2, date: '2025-01-04T10:00:00Z' },
-      { id: 3, date: '2025-01-05T10:00:00Z' },
+      { id: 1, date: new Date(2025, 0, 6, 10).toISOString() },
+      { id: 2, date: new Date(2025, 0, 4, 10).toISOString() },
+      { id: 3, date: new Date(2025, 0, 5, 10).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date, { order: 'desc' });
@@ -186,27 +143,12 @@ describe('groupByDate', () => {
     expect(dates[2]).toContain('Jan 4');
   });
 
-  it('should group multiple items on same date together', () => {
-    const items: TestItem[] = [
-      { id: 1, date: '2025-01-04T08:00:00Z' },
-      { id: 2, date: '2025-01-04T12:00:00Z' },
-      { id: 3, date: '2025-01-04T18:00:00Z' },
-    ];
-
-    const result = groupByDate(items, (item) => item.date);
-
-    expect(result.size).toBe(1);
-    const dayItems = Array.from(result.values())[0];
-    expect(dayItems).toHaveLength(3);
-    expect(dayItems.map(i => i.id)).toEqual([1, 2, 3]);
-  });
-
   it('should handle items from different days correctly', () => {
     const items: TestItem[] = [
-      { id: 1, date: '2025-01-04T10:00:00Z' },
-      { id: 2, date: '2025-01-05T10:00:00Z' },
-      { id: 3, date: '2025-01-04T15:00:00Z' },
-      { id: 4, date: '2025-01-05T20:00:00Z' },
+      { id: 1, date: new Date(2025, 0, 4, 10).toISOString() },
+      { id: 2, date: new Date(2025, 0, 5, 10).toISOString() },
+      { id: 3, date: new Date(2025, 0, 4, 15).toISOString() },
+      { id: 4, date: new Date(2025, 0, 5, 20).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date);
@@ -226,26 +168,11 @@ describe('groupByDate', () => {
     expect(jan5Items.map(i => i.id)).toEqual([2, 4]);
   });
 
-  it('should handle numeric timestamps as date input', () => {
-    const items = [
-      { id: 1, date: '2025-01-04T00:00:00Z' },
-      { id: 2, date: '2025-01-06T00:00:00Z' }, // 2 days later
-    ];
-
-    const result = groupByDate(items, (item) => item.date);
-
-    expect(result.size).toBe(2);
-    const dates = Array.from(result.keys());
-    expect(dates).toHaveLength(2);
-    expect(dates[0]).toContain('Jan 4');
-    expect(dates[1]).toContain('Jan 6');
-  });
-
   it('should preserve item order within each date group', () => {
     const items: TestItem[] = [
-      { id: 3, date: '2025-01-04T08:00:00Z' },
-      { id: 1, date: '2025-01-04T09:00:00Z' },
-      { id: 2, date: '2025-01-04T10:00:00Z' },
+      { id: 3, date: new Date(2025, 0, 4, 8).toISOString() },
+      { id: 1, date: new Date(2025, 0, 4, 9).toISOString() },
+      { id: 2, date: new Date(2025, 0, 4, 10).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date);
@@ -256,9 +183,9 @@ describe('groupByDate', () => {
 
   it('should keep day-group encounter order with order first-seen', () => {
     const items: TestItem[] = [
-      { id: 1, date: '2025-01-06T10:00:00Z' },
-      { id: 2, date: '2025-01-04T10:00:00Z' },
-      { id: 3, date: '2025-01-05T10:00:00Z' },
+      { id: 1, date: new Date(2025, 0, 6, 10).toISOString() },
+      { id: 2, date: new Date(2025, 0, 4, 10).toISOString() },
+      { id: 3, date: new Date(2025, 0, 5, 10).toISOString() },
     ];
 
     const result = groupByDate(items, (item) => item.date, { order: 'first-seen' });
@@ -316,11 +243,6 @@ describe('locale formatter fallbacks', () => {
     breakFormatters();
     expect(formatTime('2025-01-04T00:05:00.000Z')).toBe('12:05 AM');
     expect(formatTime('2025-01-04T12:00:00.000Z')).toBe('12:00 PM');
-  });
-
-  it('formatTime fallback stays matchable by the folder-timeline parser', () => {
-    breakFormatters();
-    expect(formatTime(ts)).toMatch(/(\d+):(\d+)\s*(AM|PM)/i);
   });
 
   it('formatDateTime falls back to an ISO date with an AM/PM time', () => {

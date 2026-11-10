@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { readProductRecords } from '../../../src/services/work-view/work-product.mjs';

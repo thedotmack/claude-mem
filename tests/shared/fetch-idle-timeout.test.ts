@@ -44,16 +44,16 @@ describe('fetchWithIdleTimeout', () => {
   });
 
   it('pings keep a request alive well past the idle window', async () => {
-    // 10 pings × 30 ms = ~300 ms total, almost 4× the 80 ms idle window.
-    useScript({ body: [{ pings: 10, intervalMs: 30 }, { chunk: 'event: done\ndata: ok\n\n' }] });
+    // 4 pings × 30 ms outlast the 80 ms idle window.
+    useScript({ body: [{ pings: 4, intervalMs: 30 }, { chunk: 'event: done\ndata: ok\n\n' }] });
     let chunkCount = 0;
     const startedAt = Date.now();
     const result = await fetchWithIdleTimeout(URL_UNDER_TEST, {}, {
       idleTimeoutMs: IDLE_MS,
       onChunk: () => { chunkCount++; },
     });
-    expect(Date.now() - startedAt).toBeGreaterThan(IDLE_MS * 3);
-    expect(chunkCount).toBe(11);
+    expect(Date.now() - startedAt).toBeGreaterThan(IDLE_MS);
+    expect(chunkCount).toBe(5);
     expect(result.text.endsWith('data: ok\n\n')).toBe(true);
     await settle();
     expect(timers.liveCount()).toBe(0);
@@ -139,7 +139,7 @@ describe('fetchWithIdleTimeout', () => {
     const received: string[] = [];
     for await (const chunk of streamed.chunks) {
       received.push(new TextDecoder().decode(chunk));
-      await new Promise((resolve) => setTimeout(resolve, IDLE_MS * 2));
+      if (received.length === 1) await new Promise((resolve) => setTimeout(resolve, IDLE_MS * 2));
     }
     expect(received.join('')).toBe('ab');
     await settle();

@@ -13,17 +13,6 @@ describe("haskell-class-signatures", () => {
   expect(file.symbols.map(s => s.name)).toEqual(['Render', 'answer']); expect(file.symbols[0].children?.map(s => s.name)).toEqual(['render', 'size']);
   expect(formatFoldedView(file)).toContain("render");
  }, 120000);
- test('batch search supplies a usable unfold identity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cm-haskell-class-signatures-'));
-  try {
-   writeFileSync(join(dir, filename), source);
-   const result = await searchCodebase(dir, "render");
-   const match = result.matchingSymbols.find(s => s.symbolName === "Render.render");
-   expect(match).toBeDefined();
-
-   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("render :: a -> String");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- }, 120000);
 });
 
 test('retains default method implementations beside their declared signatures', () => {

@@ -1,29 +1,58 @@
-import { expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { strict as assert } from 'node:assert';
+import { it, spyOn } from 'bun:test';
+import { resetKeyPoolStateForTesting } from '../../src/shared/api-key-pool.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionManager } from '../../src/services/worker/SessionManager.js';
+import { GeminiProvider } from '../../src/services/worker/GeminiProvider.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
-for (const scenario of ['safety', 'limit', 'thought-only', 'text-with-thoughts', 'limit-with-thoughts', 'init']) {
-  it(`accounts for Gemini usage when ${scenario} has no answer`, async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'owned-gemini-usage-'));
-    let child: ReturnType<typeof Bun.spawn> | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      child = Bun.spawn([process.execPath, 'tests/fixtures/gemini/empty-usage.ts', scenario], {
-        env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
-      });
-      const exit = await Promise.race([
-        child.exited,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Owned Gemini fixture exceeded 8 seconds')), 8000);
-        }),
-      ]);
-      const output = await new Response(child.stdout).text() + await new Response(child.stderr).text();
-      expect(exit, output).toBe(0);
-    } finally {
-      if (timer) clearTimeout(timer);
-      if (child && child.exitCode === null) { child.kill(); await child.exited; }
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  }, 10000);
-}
+it.each(['safety', 'limit', 'thought-only', 'text-with-thoughts', 'limit-with-thoughts', 'init'])('accounts for Gemini usage when %s has no answer', async scenario => {
+  resetKeyPoolStateForTesting();
+  const store = new SessionStore(':memory:');
+  const db = { getSessionStore: () => store, getSessionById: (id: number) => store.getSessionById(id), getChromaSync: () => null, getCloudSync: () => null } as any;
+  const manager = new SessionManager(db);
+  const sessionId = store.createSDKSession('owned-gemini-session', 'owned-project', 'Inspect the owned file', undefined, 'claude');
+  const session = manager.initializeSession(sessionId);
+  const mode = ModeManager.getInstance() as any;
+  const oldMode = mode.activeMode, oldModeId = mode.activeModeId;
+  mode.loadMode('code');
+  const barePrompt = scenario === 'init';
+  const thinking = ['thought-only', 'text-with-thoughts', 'limit-with-thoughts'].includes(scenario);
+  if (!barePrompt) manager.queueObservation(sessionId, { tool_name: 'Read', tool_input: JSON.stringify({file_path:'owned.ts'}), tool_response: 'owned text', prompt_number: 1, cwd: process.env.CLAUDE_MEM_DATA_DIR! });
+  let requests = 0;
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    const body = await request.json() as any;
+    assert.ok(body.contents.length > 0);
+    requests++;
+    abortTimer = setTimeout(() => session.abortController.abort(), 30);
+    return Response.json({
+      candidates: [{ content: { parts: scenario === 'thought-only' ? [{thought:true,text:'owned reasoning'}] : scenario === 'text-with-thoughts' ? [{text:'owned non-XML answer'}] : [] }, finishReason: scenario.startsWith('limit') ? 'MAX_TOKENS' : 'SAFETY' }],
+      usageMetadata: {promptTokenCount:120,candidatesTokenCount:scenario==='thought-only'?0:thinking?5:15,...(thinking?{thoughtsTokenCount:scenario==='thought-only'?15:10}:{}),totalTokenCount:135},
+    });
+  }});
+  const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_GEMINI_API_KEY:'owned-key', CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED:'false', CLAUDE_MEM_OBSERVE_BARE_PROMPTS:barePrompt?'true':'false', CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED:'false'}));
+  const realFetch = globalThis.fetch;
+  const fetchSpy = spyOn(globalThis,'fetch').mockImplementation((input,init) => {
+    const url=String(input); assert.ok(url.startsWith('https://generativelanguage.googleapis.com/'),`Unexpected endpoint ${url}`);
+    return realFetch(`http://127.0.0.1:${server.port}/generate`,init);
+  });
+  try {
+    await new GeminiProvider(db,manager).startSession(session);
+    // An empty MAX_TOKENS reply is retried once with thinking disabled. This
+    // fixture's server ignores that flag and returns the same usage twice.
+    // Context size stays the last request's prompt; billed output adds both.
+    assert.equal(requests, scenario.startsWith('limit') ? 2 : 1);
+    assert.equal(session.cumulativeInputTokens,120);
+    const output = scenario.startsWith('limit') ? 30 : 15;
+    assert.equal(session.cumulativeOutputTokens, output);
+    if (!barePrompt) { assert.deepEqual(session.lastUsage,{input:120,output}); assert.equal(session.lastContextTokens,120); assert.equal(manager.getTotalQueueDepth(),1); }
+    assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
+  } finally {
+    resetKeyPoolStateForTesting();
+    if(abortTimer) clearTimeout(abortTimer);
+    fetchSpy.mockRestore();settings.mockRestore();server.stop(true);
+    manager.removeSessionImmediate(sessionId);store.close();mode.activeMode=oldMode;mode.activeModeId=oldModeId;
+  }
+});

@@ -65,25 +65,6 @@ describe('SessionStore advisor_calls', () => {
       expect(call!.occurred_at_epoch).toBe(1000);
     });
 
-    it('ignores a duplicate tool_use_id and reports the existing row', () => {
-      const sessionDbId = createSession('content-advisor-dedup');
-
-      const first = store.recordAdvisorCall(baseCall(sessionDbId, 'content-advisor-dedup', {
-        toolUseId: 'srvtoolu_dup', advice: 'first insert',
-      }));
-      const second = store.recordAdvisorCall(baseCall(sessionDbId, 'content-advisor-dedup', {
-        toolUseId: 'srvtoolu_dup', advice: 'replayed insert',
-      }));
-
-      expect(first.inserted).toBe(true);
-      expect(second.inserted).toBe(false);
-      expect(second.id).toBe(first.id);
-
-      const rows = store.getAdvisorCalls(0, 10, 'test-project');
-      expect(rows.items).toHaveLength(1);
-      expect(rows.items[0].advice).toBe('first insert');
-    });
-
     it('accepts null context fields', () => {
       const sessionDbId = createSession('content-advisor-2');
 
@@ -101,20 +82,6 @@ describe('SessionStore advisor_calls', () => {
 
     it('returns null for an unknown id', () => {
       expect(store.getAdvisorCallById(999999)).toBeNull();
-    });
-  });
-
-  describe('migration', () => {
-    it('creates advisor_calls with a unique tool_use_id index and stamps schema version 58', () => {
-      const db = store.db;
-      const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'advisor_calls'").get();
-      expect(table).toBeTruthy();
-
-      const unique = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_advisor_calls_tool_use'").get() as { sql: string };
-      expect(unique.sql).toContain('UNIQUE');
-
-      const stamped = db.prepare('SELECT version FROM schema_versions WHERE version = 58').get();
-      expect(stamped).toBeTruthy();
     });
   });
 

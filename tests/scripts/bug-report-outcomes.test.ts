@@ -40,7 +40,7 @@ function generate(messages: unknown[], throws = false) {
     `], {
       cwd: join(import.meta.dir, '../..'),
       env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_MEM_DATA_DIR: join(home, 'data') },
-      encoding: 'utf8', timeout: 10_000,
+      encoding: 'utf8', timeout: 4_000,
     });
     expect(child.status, child.stderr).toBe(0);
     return JSON.parse(child.stdout.split('RESULT=')[1]);
@@ -63,11 +63,11 @@ function expectFallback(messages: unknown[], throws = false) {
 }
 
 describe('bug report formatter SDK outcomes', () => {
-  for (const subtype of ['error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries']) {
-    it(`uses the template for ${subtype} instead of accepting a partial answer`, () => {
+  it.each(['error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries'])(
+    'uses the template for %s instead of accepting a partial answer', subtype => {
       expectFallback([assistant('# Partial model answer'), { type: 'result', subtype, is_error: true, errors: ['fixture failure'] }]);
-    });
-  }
+    },
+  );
 
   it('uses the template for an error subtype even when is_error is false', () => {
     expectFallback([assistant('# Partial model answer'), { type: 'result', subtype: 'error_max_turns', is_error: false }]);
@@ -81,9 +81,7 @@ describe('bug report formatter SDK outcomes', () => {
     expectFallback([assistant('# Partial model answer')]);
   });
 
-  it('uses the template for an empty stream', () => { expectFallback([]); });
-  it('uses the template for a successful result with no report text', () => { expectFallback([success('')]); });
-  it('uses the template for whitespace-only report text', () => { expectFallback([assistant(' \n '), success('')]); });
+  it.each([[], [success('')], [assistant(' \n '), success('')]])('uses the template for empty report text: %p', (...messages) => { expectFallback(messages); });
   it('keeps the existing template fallback when the SDK throws', () => { expectFallback([], true); });
 
   it('keeps a successful terminal report', () => {

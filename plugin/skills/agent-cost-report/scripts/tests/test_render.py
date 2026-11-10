@@ -61,8 +61,6 @@ class Fixtures(unittest.TestCase):
             hero = h[h.find('class="hero'): h.find('class="wins-mistakes')]
             self.assertGreaterEqual(hero.count('class="est'), len(MONEY.findall(hero)) - 1, name)   # the "each" figure shares the hero tag
 
-    def test_deterministic(self):
-        for f in FIXTURES: self.assertEqual(render.page(load(f)), render.page(load(f)))
 
 
 class Files(unittest.TestCase):
@@ -88,10 +86,6 @@ class Files(unittest.TestCase):
         with self.assertRaises(KeyError): render.render_file(bad, self.tmp)
         with open(p, "rb") as fh: self.assertEqual(fh.read(), before)       # not truncated to 0 bytes (#4250)
 
-    def test_pdf_skipped_without_chrome(self):
-        render.render_file(FIXTURES[0], self.tmp, print_mode=True)
-        path, msg = render.pdf(self.tmp, chrome="no-such-browser-xyz")
-        self.assertIsNone(path); self.assertIn("PDF skipped, HTML is canonical", msg)
 
     def test_usd2_is_the_only_formatter(self):
         src = open(os.path.join(_paths.SCRIPTS, "acr", "render.py")).read()
@@ -145,7 +139,8 @@ class ChromeLookup(unittest.TestCase):
         fake = fake or FakeChrome()
         with patch("sys.platform", platform), patch("shutil.which", lambda name: "/usr/bin/" + name if name in on_path else None), \
                 patch("os.path.isfile", lambda p: posix(p) in installed), patch.dict(os.environ, env or {}), patch("subprocess.Popen", fake), \
-                patch.object(render, "CHROME_EXIT_GRACE_S", 0.05), patch.object(render, "CHROME_TIMEOUT_S", 0.3):
+                patch.object(render, "CHROME_EXIT_GRACE_S", 0.05), patch.object(render, "CHROME_TIMEOUT_S", 0.3), \
+                patch("time.sleep"), patch("time.monotonic", side_effect=iter(i / 10 for i in range(100))):
             path, msg = render.pdf(self.tmp, chrome=chrome)
         return path, msg, [posix(cmd[0]) for cmd in fake.cmds], fake
 

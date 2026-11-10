@@ -230,21 +230,6 @@ export class SessionMessageBuffer {
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).length;
   }
 
-  /** The id the last enqueued message got; every later message gets a higher one. */
-  getLastAssignedId(): number {
-    return this.nextId - 1;
-  }
-
-  /** The lowest id of the session's messages still to be stored, or null when none are. */
-  getOldestPendingId(sessionDbId: number): number | null {
-    this.pruneExpired();
-    let oldest: number | null = null;
-    for (const m of this.buffers.get(sessionDbId) ?? []) {
-      if (!m.parked && (oldest === null || m.id < oldest)) oldest = m.id;
-    }
-    return oldest;
-  }
-
   getTotalDepth(): number {
     this.pruneExpired();
     let total = 0;

@@ -2,10 +2,10 @@ name: Native ODS integration
 
 on:
   pull_request:
-    paths: ['ods/**', '.github/workflows/ods-native.yml']
+    paths: ['ods/**', 'plugin/scripts/worker-service.cjs', '.github/workflows/ods-native.yml']
   push:
     branches: [main]
-    paths: ['ods/**', '.github/workflows/ods-native.yml']
+    paths: ['ods/**', 'plugin/scripts/worker-service.cjs', '.github/workflows/ods-native.yml']
 
 permissions:
   contents: read

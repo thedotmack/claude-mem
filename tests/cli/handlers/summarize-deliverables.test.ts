@@ -122,6 +122,50 @@ afterAll(() => {
 });
 
 describe('Stop hook deliverables capture', () => {
+  it.each(['file write', 'work-state declaration'])('does not copy an existing file from an unconfirmed %s', async (source) => {
+    makeTurn();
+    const path = source === 'file write' ? join(repo, '.scratch', 'report.html') : join(outside, 'notes.md');
+    const before = readFileSync(path);
+    const call = source === 'file write'
+      ? toolUse('unfinished', 'Write', { file_path: path, content: 'a replacement that never completed' })
+      : toolUse('unfinished', 'work_state_write', { list: 'launch', fields: { work_product: path } });
+    writeFileSync(transcriptPath, [user('Replace the old report'), assistant([call]), ''].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    const result = await summarizeHandler.execute(stopInput());
+
+    expect(result.continue).toBe(true);
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+    expect(readFileSync(path)).toEqual(before);
+    expect(spooledEntries('summarize')).toHaveLength(1);
+  });
+
+  it('attributes the copied file to its confirmed revision when a later edit never returns', async () => {
+    makeTurn();
+    const report = join(repo, '.scratch', 'report.html');
+    const abandoned = join(repo, '.scratch', 'abandoned.html');
+    writeFileSync(abandoned, '<p>Output from an earlier turn</p>');
+    writeFileSync(transcriptPath, [
+      user('Make the launch report'),
+      assistant([toolUse('completed', 'Write', { file_path: report, content: '<h1>Launch report</h1>' })]),
+      user([toolResult('completed')]),
+      assistant([toolUse('unfinished-edit', 'Edit', { file_path: report, old_string: 'Launch', new_string: 'Final' })]),
+      assistant([toolUse('unfinished-write', 'Write', { file_path: abandoned, content: 'not written' })]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const entries = spooledEntries('deliverables');
+    expect(entries).toHaveLength(1);
+    const payload = entries[0].payload as SpooledDeliverablesPayload;
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0]).toMatchObject({ sourcePath: report, toolUseId: 'completed', declared: false });
+    expect(readFileSync(payload.files[0].bucketPath)).toEqual(readFileSync(report));
+  });
+
   it('copies the turn\'s declared files and its human-openable files outside the source tree into the project bucket, then spools them', async () => {
     makeTurn();
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
@@ -175,6 +219,52 @@ describe('Stop hook deliverables capture', () => {
     tempSpool = useTempHookSpoolDataDir();
     await summarizeHandler.execute(stopInput());
     expect(spooledEntries('deliverables')).toHaveLength(0);
+  });
+
+  it.skipIf(process.platform === 'win32')('copies the declared literal filename instead of its trimmed neighbor', async () => {
+    makeTurn();
+    const source = join(repo, 'out', 'slides.pdf ');
+    const neighbor = source.trimEnd();
+    writeFileSync(source, '%PDF-1.4 intended deliverable');
+    writeFileSync(neighbor, '%PDF-1.4 unrelated neighbor');
+    writeFileSync(transcriptPath, [
+      user('Attach the exact file I requested'),
+      assistant([toolUse('toolu_literal', 'Write', { file_path: source, content: '' })]),
+      user([toolResult('toolu_literal')]),
+      assistant([toolUse('toolu_attach', 'work_state_write', { fields: { work_product: { path: source } } })]),
+      user([toolResult('toolu_attach')]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const [entry] = spooledEntries('deliverables');
+    const payload = entry.payload as SpooledDeliverablesPayload;
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0].sourcePath).toBe(source);
+    expect(payload.files[0].declared).toBe(true);
+    expect(readFileSync(payload.files[0].bucketPath, 'utf8')).toBe('%PDF-1.4 intended deliverable');
+  });
+
+  it.skipIf(process.platform === 'win32')('does not infer a different file by trimming a captured Write path', async () => {
+    makeTurn();
+    const source = join(repo, '.scratch', 'report.html ');
+    writeFileSync(source, 'the file the tool actually wrote');
+    writeFileSync(transcriptPath, [
+      user('Write the requested file'),
+      assistant([toolUse('toolu_literal', 'Write', { file_path: source, content: '' })]),
+      user([toolResult('toolu_literal')]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    // The literal extension is not a recognized work-product kind. Its .html
+    // neighbor was not written this turn and must not be copied in its place.
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
   });
 
   it('records a subagent\'s deliverables from its own transcript at SubagentStop, whose entries are all sidechain', async () => {

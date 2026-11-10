@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { setIngestContext, ingestObservation } from '../../src/services/worker/http/shared.js';
-import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
 
 describe('Kimi bookkeeping tools are skipped for Kimi sessions only', () => {
@@ -60,16 +59,11 @@ describe('Kimi bookkeeping tools are skipped for Kimi sessions only', () => {
   });
 
   it('still captures the same tool names from Claude Code', async () => {
-    const result = await ingestObservation(payload('claude-code', 'TaskOutput'));
-
-    expect(result.ok).toBe(true);
-    expect('status' in result).toBe(false);
-    expect(queued).toHaveLength(1);
-  });
-
-  it('leaves the global CLAUDE_MEM_SKIP_TOOLS default unchanged', () => {
-    const skipTools = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_SKIP_TOOLS.split(',');
-    expect(skipTools).not.toContain('TaskOutput');
-    expect(skipTools).not.toContain('CronList');
+    for (const toolName of ['TaskOutput', 'TodoList', 'CronList']) {
+      const result = await ingestObservation(payload('claude-code', toolName));
+      expect(result.ok).toBe(true);
+      expect('status' in result).toBe(false);
+    }
+    expect(queued).toHaveLength(3);
   });
 });

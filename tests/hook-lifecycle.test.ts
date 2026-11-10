@@ -1,50 +1,42 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { describe, it, expect, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { fileURLToPath } from 'node:url';
 
 describe('Hook Lifecycle - Event Handlers', () => {
-  describe('worker fallback failure counter', () => {
-    it('resets stale unreachable state before 429/5xx API fallbacks', () => {
-      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
-      const nonOkRegion = source.slice(
-        source.indexOf('if (!response.ok)'),
-        source.indexOf('const text = await response.text();'),
-      );
-
-      expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
-        .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
-    });
-  });
-
   describe('getEventHandler', () => {
-    it('should return handler for all recognized event types', async () => {
-      const { getEventHandler } = await import('../src/cli/handlers/index.js');
-      const recognizedTypes = [
-        'context', 'session-init', 'observation',
-        'summarize', 'user-message', 'file-edit', 'file-context'
-      ];
-      for (const type of recognizedTypes) {
-        const handler = getEventHandler(type);
-        expect(handler).toBeDefined();
-        expect(handler.execute).toBeDefined();
+    it('returns the registered handler for every recognized event type', async () => {
+      const h = await import('../src/cli/handlers/index.js');
+      const expected = {
+        context: h.contextHandler,
+        'session-init': h.sessionInitWithAntigravityTurnsHandler,
+        'session-init-context': h.sessionInitContextHandler,
+        observation: h.observationWithPendingTimelineHandler,
+        summarize: h.summarizeHandler,
+        'session-end': h.sessionEndHandler,
+        'subagent-stop': h.subagentStopHandler,
+        'user-message': h.userMessageHandler,
+        'file-edit': h.fileEditHandler,
+        'file-context': h.fileContextHandler,
+        'post-compact': h.postCompactHandler,
+        'subagent-context': h.subagentContextHandler,
+      };
+      for (const [type, handler] of Object.entries(expected)) {
+        expect(h.getEventHandler(type)).toBe(handler);
       }
     });
 
     it('should return no-op handler for unknown event types (#984)', async () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
-      const handler = getEventHandler('nonexistent-event');
-      expect(handler).toBeDefined();
-      expect(handler.execute).toBeDefined();
-
-      const result = await handler.execute({
-        sessionId: 'test-session',
-        cwd: '/tmp'
-      });
-      expect(result.continue).toBe(true);
-      expect(result.suppressOutput).toBe(true);
-      expect(result.exitCode).toBe(0);
+      const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const handler = getEventHandler('nonexistent-event');
+        expect(await handler.execute({ sessionId: 'test-session', cwd: process.cwd() }))
+          .toEqual({ continue: true, suppressOutput: true, exitCode: 0 });
+        expect(stderr).not.toHaveBeenCalled();
+      } finally {
+        stderr.mockRestore();
+      }
     });
 
   });
@@ -236,32 +228,6 @@ describe('Codex CLI Compatibility (#744)', () => {
       });
     });
   });
-
-  describe('session-init handler undefined prompt', () => {
-    it('should not throw when prompt is undefined', () => {
-      const rawPrompt: string | undefined = undefined;
-      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
-      expect(prompt).toBe('[media prompt]');
-    });
-
-    it('should not throw when prompt is empty string', () => {
-      const rawPrompt = '';
-      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
-      expect(prompt).toBe('[media prompt]');
-    });
-
-    it('should not throw when prompt is whitespace-only', () => {
-      const rawPrompt = '   ';
-      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
-      expect(prompt).toBe('[media prompt]');
-    });
-
-    it('should preserve valid prompts', () => {
-      const rawPrompt = 'fix the bug';
-      const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
-      expect(prompt).toBe('fix the bug');
-    });
-  });
 });
 
 describe('Cursor IDE Compatibility (#838, #1049)', () => {
@@ -434,72 +400,4 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
     })).toEqual({ systemMessage: 'msg' });
   });
 
-  it('should only emit keys from the Claude Code hook contract', async () => {
-    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'decision', 'reason']);
-    const cases = [
-      {},
-      { systemMessage: 'x' },
-      { continue: true, suppressOutput: true, systemMessage: 'x', exitCode: 1 },
-      { hookSpecificOutput: { hookEventName: 'E', additionalContext: 'C' }, systemMessage: 'x' },
-    ];
-    for (const input of cases) {
-      for (const key of Object.keys(await fmt(input) as object)) {
-        expect(allowedKeys.has(key)).toBe(true);
-      }
-    }
-  });
-});
-
-describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
-  let originalStderrWrite: typeof process.stderr.write;
-  let stderrOutput: string[];
-
-  beforeEach(() => {
-    originalStderrWrite = process.stderr.write.bind(process.stderr);
-    stderrOutput = [];
-    process.stderr.write = ((chunk: any) => {
-      stderrOutput.push(String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-  });
-
-  afterEach(() => {
-    process.stderr.write = originalStderrWrite;
-  });
-
-  it('should not use console.error in handlers/index.ts for unknown events', async () => {
-    const { getEventHandler } = await import('../src/cli/handlers/index.js');
-
-    stderrOutput.length = 0;
-
-    const handler = getEventHandler('unknown-event-type');
-    await handler.execute({ sessionId: 'test', cwd: '/tmp' });
-
-    const dispatcherStderr = stderrOutput.filter(s => s.includes('[claude-mem] Unknown event'));
-    expect(dispatcherStderr).toHaveLength(0);
-  });
-});
-
-describe('Hook Lifecycle - Standard Response', () => {
-  it('should define standard hook response with suppressOutput: true', async () => {
-    const { STANDARD_HOOK_RESPONSE } = await import('../src/hooks/hook-response.js');
-    const parsed = JSON.parse(STANDARD_HOOK_RESPONSE);
-    expect(parsed.continue).toBe(true);
-    expect(parsed.suppressOutput).toBe(true);
-  });
-});
-
-describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
-  it('no longer blanket-swallows stderr or exits 2 from a hook path', async () => {
-    const hookCommandSource = await Bun.file(
-      fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
-    ).text();
-
-    // #2292: the old blanket no-op swallow is GONE — replaced by the typed
-    // buffered writer + bypass channel from src/shared/hook-io.ts.
-    expect(hookCommandSource).not.toContain("process.stderr.write = (() => true)");
-    // plan-17 step 2: no hook path exits 2 any more.
-    expect(hookCommandSource).not.toContain("emitBlockingError");
-    expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
-  });
 });

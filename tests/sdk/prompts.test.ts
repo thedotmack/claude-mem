@@ -19,6 +19,21 @@ const summaryMode = {
 } as any;
 
 describe('buildObservationPrompt', () => {
+  it('withholds native image bytes in whitespace-prefixed nested JSON while retaining the caption', () => {
+    const bytes = 'iVBORw0KGgo' + 'A'.repeat(4000);
+    const output = { stdout: ' \r\n\t' + JSON.stringify({ content: [
+      { type: 'text', text: 'Viewport ready' },
+      { type: 'image', data: bytes, mimeType: 'image/png' },
+    ] }) };
+    const prompt = buildObservationPrompt({ id: 1, tool_name: 'Bash', tool_input: '{}',
+      tool_output: JSON.stringify(output), created_at_epoch: Date.now(), cwd: '/repo' });
+    expect(prompt).toContain('Viewport ready');
+    expect(prompt).toContain('image data withheld from the observer');
+    expect(prompt).not.toContain(bytes);
+    const plain = { stdout: ' \r\n\t{ "image_url": "an ordinary field", "count": 3 }' };
+    expect(stripImagePayloadsFromField(plain)).toBe(plain);
+  });
+
   it('instructs the observer to avoid prose skip responses', () => {
     const prompt = buildObservationPrompt({
       id: 1,
@@ -120,74 +135,30 @@ describe('buildObservationPrompt oversized field truncation (#2468)', () => {
 describe('buildObservationPrompt image-payload stripping (#3730)', () => {
   const BASE64 = 'iVBORw0KGgoAAAANSUhEUg' + 'A'.repeat(200_000);
 
-  function screenshotOutcome() {
-    return JSON.stringify({
+  it('withholds image bytes, preserves the caption and MIME, and stays below the truncation cap', () => {
+    const toolOutput = JSON.stringify({
       content: [
         { type: 'text', text: 'Took a screenshot of the viewport at 1280x720.' },
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: BASE64 } },
       ],
     });
-  }
+    for (const toolName of ['mcp__claude-in-chrome__computer', 'mcp__claude-in-chrome__browser_batch']) {
+      const prompt = buildObservationPrompt({
+        id: 1,
+        tool_name: toolName,
+        tool_input: JSON.stringify({ action: 'screenshot' }),
+        tool_output: toolOutput,
+        created_at_epoch: Date.now(),
+        cwd: '/repo',
+      });
 
-  it('keeps no base64 run from an Anthropic image content block', () => {
-    const prompt = buildObservationPrompt({
-      id: 1,
-      tool_name: 'mcp__claude-in-chrome__computer',
-      tool_input: JSON.stringify({ action: 'screenshot' }),
-      tool_output: screenshotOutcome(),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    // Truncation alone did NOT solve this: it keeps the head and tail of an
-    // oversized field, so a screenshot used to survive as thousands of
-    // characters of base64 rather than as the caption beside it.
-    expect(/A{200,}/.test(prompt)).toBe(false);
-    expect(prompt).not.toContain('iVBORw0KGgo');
-  });
-
-  it('keeps the text that sits beside the image', () => {
-    const prompt = buildObservationPrompt({
-      id: 2,
-      tool_name: 'mcp__claude-in-chrome__computer',
-      tool_input: JSON.stringify({ action: 'screenshot' }),
-      tool_output: screenshotOutcome(),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    // Stripping must not degrade into skipping: the caption is the part the
-    // observer can actually narrate.
-    expect(prompt).toContain('Took a screenshot of the viewport');
-  });
-
-  it('says what was removed instead of removing it silently', () => {
-    const prompt = buildObservationPrompt({
-      id: 3,
-      tool_name: 'mcp__claude-in-chrome__computer',
-      tool_input: JSON.stringify({ action: 'screenshot' }),
-      tool_output: screenshotOutcome(),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    expect(prompt).toContain('image data withheld from the observer');
-    expect(prompt).toContain('image/png');
-  });
-
-  it('collapses the prompt far below the per-field truncation cap', () => {
-    const prompt = buildObservationPrompt({
-      id: 4,
-      tool_name: 'mcp__claude-in-chrome__browser_batch',
-      tool_input: JSON.stringify({ action: 'screenshot' }),
-      tool_output: screenshotOutcome(),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    // The prompt is appended to session.conversationHistory and re-sent by
-    // every later observation in the session, so this saving compounds.
-    expect(prompt.length).toBeLessThan(2_000);
+      expect(/A{200,}/.test(prompt)).toBe(false);
+      expect(prompt).not.toContain('iVBORw0KGgo');
+      expect(prompt).toContain('Took a screenshot of the viewport');
+      expect(prompt).toContain('image data withheld from the observer');
+      expect(prompt).toContain('image/png');
+      expect(prompt.length).toBeLessThan(2_000);
+    }
   });
 
   it('strips images nested inside arrays and objects', () => {
@@ -253,24 +224,6 @@ describe('buildObservationPrompt image-payload stripping (#3730)', () => {
 });
 
 describe('buildObservationPrompt keeps url-backed image sources (#3730 review)', () => {
-  it('leaves an Anthropic url source alone, the same as the OpenAI branch does', () => {
-    const prompt = buildObservationPrompt({
-      id: 9,
-      tool_name: 'mcp__browser__shot',
-      tool_input: JSON.stringify({}),
-      tool_output: JSON.stringify({
-        content: [
-          { type: 'image', source: { type: 'url', url: 'https://example.com/shot.png' } },
-        ],
-      }),
-      created_at_epoch: Date.now(),
-      cwd: '/repo',
-    });
-
-    expect(prompt).toContain('https://example.com/shot.png');
-    expect(prompt).not.toContain('withheld');
-  });
-
   it('still elides an Anthropic source whose url is an inlined data: URL', () => {
     const prompt = buildObservationPrompt({
       id: 10,

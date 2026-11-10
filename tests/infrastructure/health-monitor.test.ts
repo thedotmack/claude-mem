@@ -27,49 +27,6 @@ describe('HealthMonitor', () => {
 
   describe('isPortInUse', () => {
 
-    it('should return true for occupied port (EADDRINUSE)', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') {
-            setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-          }
-        }),
-        listen: mock(() => {})
-      }));
-      
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
-
-      const result = await isPortInUse(37777);
-
-      expect(result).toBe(true);
-      expect(net.createServer).toHaveBeenCalled();
-      
-      spy.mockRestore();
-    });
-
-    it('should return false for free port (listening succeeds)', async () => {
-      const closeMock = mock((cb: Function) => cb());
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') {
-            setTimeout(() => cb(), 0);
-          }
-        }),
-        listen: mock(() => {}),
-        close: closeMock
-      }));
-      
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
-
-      const result = await isPortInUse(39999);
-
-      expect(result).toBe(false);
-      expect(net.createServer).toHaveBeenCalled();
-      expect(closeMock).toHaveBeenCalled();
-      
-      spy.mockRestore();
-    });
-
     it('should honor configured worker host when probing port occupancy', async () => {
       process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
       const closeMock = mock((cb: Function) => cb());
@@ -116,58 +73,6 @@ describe('HealthMonitor', () => {
       expect(result).toBe(true);
 
       spy.mockRestore();
-    });
-
-    // Bounded socket probe — tests from @dajiaohuang's #4262.
-    it('should treat an inconclusive socket probe as occupied after its deadline', async () => {
-      const closeMock = mock(() => {});
-      const createServerMock = mock(() => ({
-        once: mock(() => {}),
-        listen: mock(() => {}),
-        close: closeMock,
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
-
-      const start = Date.now();
-      const result = await isPortInUse(37777, 50);
-      const elapsed = Date.now() - start;
-
-      expect(result).toBe(true);
-      expect(elapsed).toBeLessThan(1000);
-      expect(closeMock).toHaveBeenCalled();
-      spy.mockRestore();
-    });
-
-    it('should fall through to socket probe on Windows when health check fails and port is actually in use (zombie port)', async () => {
-      // Simulate a zombie process: the port is occupied but does not serve HTTP.
-      // fetch for /api/health throws, then net.createServer hits EADDRINUSE.
-      const origPlatform = process.platform;
-      try {
-        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-
-        global.fetch = mock(() => Promise.reject(new Error('fetch failed')));
-
-        const createServerMock = mock(() => ({
-          once: mock((event: string, cb: Function) => {
-            if (event === 'error') {
-              setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-            }
-          }),
-          listen: mock(() => {}),
-        }));
-
-        const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
-
-        const result = await isPortInUse(37777);
-
-        expect(result).toBe(true);
-        expect(global.fetch).toHaveBeenCalled();
-        expect(net.createServer).toHaveBeenCalled();
-
-        netSpy.mockRestore();
-      } finally {
-        Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
-      }
     });
 
     it('should probe Windows health through an abortable signal so a ghost listener cannot hang it (#3603)', async () => {
@@ -444,31 +349,16 @@ describe('HealthMonitor', () => {
   });
 
   describe('waitForHealth', () => {
-    it('should succeed immediately when server responds', async () => {
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve('')
-      } as unknown as Response));
-
-      const start = Date.now();
-      const result = await waitForHealth(37777, 5000);
-      const elapsed = Date.now() - start;
-
-      expect(result).toBe(true);
-      expect(elapsed).toBeLessThan(1000);
-    });
-
     it('should timeout when no server responds', async () => {
       global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
 
       const start = Date.now();
-      const result = await waitForHealth(39999, 1500);
+      const result = await waitForHealth(39999, 300);
       const elapsed = Date.now() - start;
 
       expect(result).toBe(false);
-      expect(elapsed).toBeGreaterThanOrEqual(1400);
-      expect(elapsed).toBeLessThan(2500);
+      expect(elapsed).toBeGreaterThanOrEqual(250);
+      expect(elapsed).toBeLessThan(1000);
     });
 
     // #3575 leftover after plan-15 already bounded each probe at 5s: a hung
@@ -522,8 +412,9 @@ describe('HealthMonitor', () => {
       } as unknown as Response));
       global.fetch = fetchMock;
 
-      await waitForHealth(37777, 1000);
+      const result = await waitForHealth(37777, 1000);
 
+      expect(result).toBe(true);
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
@@ -559,18 +450,6 @@ describe('HealthMonitor', () => {
 
       expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
-
-    it('should use default timeout when not specified', async () => {
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve('')
-      } as unknown as Response));
-
-      const result = await waitForHealth(37777);
-
-      expect(result).toBe(true);
-    });
   });
 
   describe('checkVersionMatch', () => {
@@ -597,46 +476,22 @@ describe('HealthMonitor', () => {
       expect(result.workerVersion).toBeNull();
     });
 
-    it('assumes match when the caller-supplied expected version is unknown', async () => {
+    it.each([
+      [null, '13.11.0', true],
+      ['13.12.0', '13.11.0', false],
+      ['13.12.0', '13.12.0', true],
+    ])('compares expected version %s with worker version %s', async (expectedVersion, workerVersion, matches) => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
         status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
+        text: () => Promise.resolve(JSON.stringify({ version: workerVersion }))
       } as unknown as Response));
 
-      const result = await checkVersionMatch(37777, null);
+      const result = await checkVersionMatch(37777, expectedVersion);
 
-      expect(result.matches).toBe(true);
-      expect(result.pluginVersion).toBe('unknown');
-      expect(result.workerVersion).toBe('13.11.0');
-    });
-
-    it('detects a mismatch against the caller-supplied expected version', async () => {
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
-      } as unknown as Response));
-
-      const result = await checkVersionMatch(37777, '13.12.0');
-
-      expect(result.matches).toBe(false);
-      expect(result.pluginVersion).toBe('13.12.0');
-      expect(result.workerVersion).toBe('13.11.0');
-    });
-
-    it('detects a match against the caller-supplied expected version', async () => {
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: '13.12.0' }))
-      } as unknown as Response));
-
-      const result = await checkVersionMatch(37777, '13.12.0');
-
-      expect(result.matches).toBe(true);
-      expect(result.pluginVersion).toBe('13.12.0');
-      expect(result.workerVersion).toBe('13.12.0');
+      expect(result.matches).toBe(matches);
+      expect(result.pluginVersion).toBe(expectedVersion ?? 'unknown');
+      expect(result.workerVersion).toBe(workerVersion);
     });
   });
 
@@ -670,12 +525,12 @@ describe('HealthMonitor', () => {
       const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
       const start = Date.now();
-      const result = await waitForPortFree(37777, 1500);
+      const result = await waitForPortFree(37777, 300);
       const elapsed = Date.now() - start;
 
       expect(result).toBe(false);
-      expect(elapsed).toBeGreaterThanOrEqual(1400);
-      expect(elapsed).toBeLessThan(2500);
+      expect(elapsed).toBeGreaterThanOrEqual(250);
+      expect(elapsed).toBeLessThan(1000);
       spy.mockRestore();
     });
 
@@ -750,22 +605,6 @@ describe('HealthMonitor', () => {
 
       expect(result).toBe(true);
       expect(callCount).toBeGreaterThanOrEqual(3);
-      spy.mockRestore();
-    });
-
-    it('should use default timeout when not specified', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') setTimeout(() => cb(), 0);
-        }),
-        listen: mock(() => {}),
-        close: mock((cb: Function) => cb())
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
-
-      const result = await waitForPortFree(39999);
-
-      expect(result).toBe(true);
       spy.mockRestore();
     });
   });

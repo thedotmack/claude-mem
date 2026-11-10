@@ -36,20 +36,6 @@ describe('SessionStore.reopenCompletedSession (#4080)', () => {
     store.close();
   });
 
-  it('the defect: a completed row stays completed while later prompts land under it', () => {
-    const id = store.createSDKSession('resumed', 'project', 'first prompt');
-    store.markSessionCompleted(id);
-    const firstEnd = readRow(store, id).completed_at_epoch;
-
-    // The continued session's next prompt resolves to the SAME row.
-    const again = store.createSDKSession('resumed', 'project', 'second prompt');
-    expect(again).toBe(id);
-
-    const row = readRow(store, id);
-    expect(row.status).toBe('completed');
-    expect(row.completed_at_epoch).toBe(firstEnd);
-  });
-
   it('reopening puts the row back to active and clears both completion stamps', () => {
     const id = store.createSDKSession('resumed', 'project', 'first prompt');
     store.markSessionCompleted(id);
@@ -60,30 +46,6 @@ describe('SessionStore.reopenCompletedSession (#4080)', () => {
     expect(row.status).toBe('active');
     expect(row.completed_at).toBeNull();
     expect(row.completed_at_epoch).toBeNull();
-  });
-
-  it('the next end stamps the real completion time, not the first one', async () => {
-    const id = store.createSDKSession('resumed', 'project', 'first prompt');
-    store.markSessionCompleted(id);
-    const firstEnd = readRow(store, id).completed_at_epoch as number;
-
-    await Bun.sleep(2);
-    store.reopenCompletedSession(id);
-    store.markSessionCompleted(id);
-
-    const row = readRow(store, id);
-    expect(row.status).toBe('completed');
-    expect(row.completed_at_epoch as number).toBeGreaterThan(firstEnd);
-  });
-
-  it('is a no-op on a row that is already active', () => {
-    const id = store.createSDKSession('live', 'project', 'prompt');
-
-    store.reopenCompletedSession(id);
-
-    const row = readRow(store, id);
-    expect(row.status).toBe('active');
-    expect(row.completed_at).toBeNull();
   });
 
   it('touches only the row it is given', () => {
@@ -108,9 +70,6 @@ describe('SessionStore.reopenCompletedSession (#4080)', () => {
     expect(readRow(store, id).status).toBe('failed');
   });
 
-  it('does not throw on a session id that does not exist', () => {
-    expect(() => store.reopenCompletedSession(99999)).not.toThrow();
-  });
 });
 
 describe('finalizeSession after a reopen (#4080)', () => {

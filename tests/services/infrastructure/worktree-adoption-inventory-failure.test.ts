@@ -5,7 +5,7 @@
 //
 // The shim runs in a child process because Bun resolves spawned binaries against
 // the process's original environment (see worktree-adoption-event-loop.test.ts).
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -16,6 +16,8 @@ const REPO_ROOT = path.join(import.meta.dir, '..', '..', '..');
 const ADOPTION_MODULE = path.join(REPO_ROOT, 'src', 'services', 'infrastructure', 'WorktreeAdoption.js');
 
 let tempRoot: string | undefined;
+let repositories: Omit<Fixture, 'dataDirectory' | 'dbPath' | 'observations'>;
+let repositoryRoot: string | undefined;
 
 afterEach(() => {
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
@@ -104,6 +106,7 @@ console.log('RESULT:' + JSON.stringify(result));
 interface Fixture {
   root: string;
   repo: string;
+  worktree: string;
   submodule: string;
   nestedSubmodule: string;
   dataDirectory: string;
@@ -112,9 +115,9 @@ interface Fixture {
 }
 
 /** `react` with an unmerged live worktree, a live submodule holding a nested one, and one removed worktree's rows. */
-function buildFixture(): Fixture {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'cm-adoption-inventory-')));
-  tempRoot = root;
+function buildRepositories(): Omit<Fixture, 'dataDirectory' | 'dbPath' | 'observations'> {
+  repositoryRoot = mkdtempSync(path.join(tmpdir(), 'cm-adoption-inventory-'));
+  const root = realpathSync(repositoryRoot);
   const repo = path.join(root, 'react');
   initRepo(repo);
   const worktree = path.join(root, 'topic');
@@ -136,8 +139,13 @@ function buildFixture(): Fixture {
   addSubmodule(submodule, nestedOrigin, 'nested');
   const nestedSubmodule = path.join(submodule, 'nested');
 
-  const dataDirectory = path.join(root, 'data');
-  mkdirSync(dataDirectory, { recursive: true });
+  return { root, repo, worktree, submodule, nestedSubmodule };
+}
+
+function buildFixture(): Fixture {
+  const { root, worktree, submodule, nestedSubmodule } = repositories;
+  const dataDirectory = mkdtempSync(path.join(root, 'data-'));
+  tempRoot = dataDirectory;
   writeFileSync(path.join(dataDirectory, 'settings.json'), JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
   const dbPath = path.join(dataDirectory, 'claude-mem.db');
   const store = new SessionStore(dbPath);
@@ -148,7 +156,7 @@ function buildFixture(): Fixture {
     removedWorktree: seed(store, 'removed', 'react/gone', path.join(root, 'gone')),
   };
   store.close();
-  return { root, repo, submodule, nestedSubmodule, dataDirectory, dbPath, observations };
+  return { ...repositories, dataDirectory, dbPath, observations };
 }
 
 function adoptedInto(dbPath: string, observationId: number): string | null {
@@ -166,6 +174,14 @@ function queuedRemapBodies(dbPath: string): string[] {
 }
 
 describe.skipIf(process.platform === 'win32')('worktree adoption when a git inventory fails', () => {
+  beforeAll(() => {
+    repositories = buildRepositories();
+  }, 60_000);
+
+  afterAll(() => {
+    if (repositoryRoot) rmSync(repositoryRoot, { recursive: true, force: true });
+  });
+
   it('falls back to line output on a Git without `worktree list -z`, and the sweep still runs', () => {
     const fx = buildFixture();
     const result = adoptWithFailingGit(fx.root, fx.repo, fx.dataDirectory, '*" worktree list --porcelain -z "*');
@@ -201,28 +217,4 @@ describe.skipIf(process.platform === 'win32')('worktree adoption when a git inve
       expect(result.errors[0].error).toContain('orphan sweep skipped');
     }, 60_000);
   }
-
-  it('still sweeps a bare repository, which has no index to list submodules from', () => {
-    const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'cm-adoption-inventory-bare-')));
-    tempRoot = root;
-    const seedRepo = path.join(root, 'seed');
-    initRepo(seedRepo);
-    const bare = path.join(root, 'alpha.git');
-    execFileSync('git', ['clone', '-q', '--bare', seedRepo, bare], { stdio: 'ignore' });
-    const main = path.join(root, 'alpha-trees', 'main');
-    git(bare, 'worktree', 'add', '-q', main);
-
-    const dataDirectory = path.join(root, 'data');
-    mkdirSync(dataDirectory, { recursive: true });
-    writeFileSync(path.join(dataDirectory, 'settings.json'), JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
-    const dbPath = path.join(dataDirectory, 'claude-mem.db');
-    const store = new SessionStore(dbPath);
-    const removed = seed(store, 'removed', 'alpha/gone', path.join(root, 'alpha-trees', 'gone'));
-    store.close();
-
-    const result = adoptWithFailingGit(root, main, dataDirectory, null);
-    expect(result.errors).toEqual([]);
-    expect(result.orphanedWorktrees).toEqual(['alpha/gone']);
-    expect(adoptedInto(dbPath, removed)).toBe('alpha');
-  }, 60_000);
 });

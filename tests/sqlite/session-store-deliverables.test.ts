@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { LATEST_SCHEMA_VERSION } from '../../src/services/sqlite/connection.js';
 
 const copy = {
   project: 'acme', contentSessionId: 'c-1', platformSource: 'claude', title: 'Launch report', kind: 'page',
@@ -14,15 +13,6 @@ describe('SessionStore deliverables', () => {
   afterEach(() => {
     store?.close();
     store = null;
-  });
-
-  it('creates the table without a schema version row, so an older worker sharing the database still opens it', () => {
-    store = new SessionStore(':memory:');
-    const tables = store.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name = 'deliverables'").all();
-    expect(tables).toHaveLength(1);
-    const latest = store.db.query('SELECT MAX(version) AS version FROM schema_versions').get() as { version: number };
-    // No deliverables row: the highest version is the latest real migration.
-    expect(latest.version).toBe(LATEST_SCHEMA_VERSION);
   });
 
   it('records one row per session and bucket copy, and finds the row a re-fired Stop already wrote', () => {

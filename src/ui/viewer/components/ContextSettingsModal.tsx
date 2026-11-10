@@ -635,16 +635,19 @@ export function ContextSettingsModal({
                     label="OpenRouter Base URL"
                     tooltip={observerManagesBaseUrl
                       ? t('Managed by the claude-mem observer. Run npx claude-mem install to use your own endpoint.')
-                      : t('Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai.')}
+                      : t('Configured in settings.json or the worker environment. Empty uses openrouter.ai.')}
                   >
                     <input
                       type="text"
                       value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
                       placeholder="https://openrouter.ai/api/v1"
-                      readOnly={observerManagesBaseUrl}
+                      readOnly
                     />
                   </FormField>
+                  <span className="toggle-description">
+                    {t('Set')} <code>CLAUDE_MEM_OPENROUTER_BASE_URL</code>{' '}{t('in')}{' '}
+                    <code>~/.claude-mem/settings.json</code>{' '}{t('or the worker environment. The viewer cannot change where your API key is sent.')}
+                  </span>
                   {!observerManagesBaseUrl && (
                     <FormField
                       label="Reasoning effort"
@@ -692,11 +695,11 @@ export function ContextSettingsModal({
                 <>
                   <FormField
                     label="Endpoint preset"
-                    tooltip="Fills in the base URL and default model; the fields below override it"
+                    tooltip="Configured outside the viewer. Supplies the base URL and default model unless explicitly overridden."
                   >
                     <select
                       value={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).id}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_PRESET', e.target.value)}
+                      disabled
                     >
                       {OPENAI_COMPAT_PRESET_OPTIONS.map(preset => (
                         <option key={preset.id} value={preset.id}>{t(preset.label)}</option>
@@ -710,15 +713,19 @@ export function ContextSettingsModal({
                   )}
                   <FormField
                     label="Base URL"
-                    tooltip="Leave blank to use the preset's endpoint"
+                    tooltip="Configured in settings.json or the worker environment. Empty uses the preset's endpoint."
                   >
                     <input
                       type="text"
                       value={formState.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL || ''}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', e.target.value)}
                       placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).baseUrl || 'https://my-gateway.example.com/v1'}
+                      readOnly
                     />
                   </FormField>
+                  <span className="toggle-description">
+                    {t('Set the endpoint and preset in')} <code>~/.claude-mem/settings.json</code>{' '}
+                    {t('or the worker environment. They determine where your API key is sent.')}
+                  </span>
                   <FormField
                     label="Model"
                     tooltip="Model id, passed verbatim. Leave blank to use the preset's default"

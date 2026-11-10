@@ -1,4 +1,4 @@
-import { env, evictDurableObject, runDurableObjectAlarm, SELF } from "cloudflare:test";
+import { env, evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
 	AUTH_EXPIRED_CLOSE_CODE,
@@ -9,8 +9,8 @@ import {
 	type ChangesResult,
 	type PushOutcome,
 	type PushResult,
+	type SyncHub,
 } from "../src/do/SyncHub";
-import { KILL_SWITCH_KEY } from "../src/kill-switch";
 import { observationOp } from "./content-v2-helpers";
 
 const base = "https://sync-hub.test";
@@ -211,6 +211,7 @@ describe("socket auth deadline", () => {
 			},
 		}));
 		expect(response.status).toBe(101);
+		await runInDurableObject(stub, (_instance: SyncHub, state) => state.storage.deleteAlarm());
 		const ws = response.webSocket!;
 		const messages: string[] = [];
 		ws.accept();
@@ -232,14 +233,16 @@ describe("socket auth deadline", () => {
 	it("closes a quiet socket at its deadline through the alarm, without a push", async () => {
 		const user = "user-ws-auth-alarm";
 		const stub = env.SYNC_HUB.getByName(user);
+		const deadline = Date.now() + 200;
 		const response = await stub.fetch(new Request(`${base}/v1/sync/ws`, {
 			headers: {
 				...headers(user, "dev-b"),
 				Upgrade: "websocket",
-				[SOCKET_AUTH_DEADLINE_HEADER]: String(Date.now() + 60),
+				[SOCKET_AUTH_DEADLINE_HEADER]: String(deadline),
 			},
 		}));
 		expect(response.status).toBe(101);
+		expect(await runInDurableObject(stub, (_instance: SyncHub, state) => state.storage.getAlarm())).toBe(deadline);
 		const ws = response.webSocket!;
 		const messages: string[] = [];
 		ws.accept();
@@ -249,7 +252,7 @@ describe("socket auth deadline", () => {
 		});
 
 		// Nothing is pushed: the log stays quiet, so only the alarm can close it.
-		await new Promise((resolve) => setTimeout(resolve, 120));
+		await new Promise((resolve) => setTimeout(resolve, 250));
 		expect(await runDurableObjectAlarm(stub)).toBe(true);
 		expect(await closedCode).toBe(AUTH_EXPIRED_CLOSE_CODE);
 		expect(messages).toHaveLength(0);
@@ -258,12 +261,12 @@ describe("socket auth deadline", () => {
 	it("re-arms the alarm to the earliest remaining socket deadline", async () => {
 		const user = "user-ws-auth-alarm-rearm";
 		const stub = env.SYNC_HUB.getByName(user);
-		const open = async (deviceId: string, lifetimeMs: number): Promise<WebSocket> => {
+		const open = async (deviceId: string, deadline: number): Promise<WebSocket> => {
 			const response = await stub.fetch(new Request(`${base}/v1/sync/ws`, {
 				headers: {
 					...headers(user, deviceId),
 					Upgrade: "websocket",
-					[SOCKET_AUTH_DEADLINE_HEADER]: String(Date.now() + lifetimeMs),
+					[SOCKET_AUTH_DEADLINE_HEADER]: String(deadline),
 				},
 			}));
 			expect(response.status).toBe(101);
@@ -275,38 +278,25 @@ describe("socket auth deadline", () => {
 		const closed = (ws: WebSocket): Promise<number> =>
 			new Promise((resolve) => ws.addEventListener("close", (event) => resolve(event.code)));
 
-		const early = await open("dev-early", 60);
-		const late = await open("dev-late", 900);
+		const earlyDeadline = Date.now() + 200;
+		const lateDeadline = earlyDeadline + 900;
+		const early = await open("dev-early", earlyDeadline);
+		const late = await open("dev-late", lateDeadline);
+		expect(await runInDurableObject(stub, (_instance: SyncHub, state) => state.storage.getAlarm())).toBe(earlyDeadline);
 		const earlyClosed = closed(early);
 		const lateClosed = closed(late);
 		let lateClosedEarly = false;
 		void lateClosed.then(() => { lateClosedEarly = true; });
 
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await new Promise((resolve) => setTimeout(resolve, 250));
 		expect(await runDurableObjectAlarm(stub)).toBe(true);
 		expect(await earlyClosed).toBe(AUTH_EXPIRED_CLOSE_CODE);
+		expect(await runInDurableObject(stub, (_instance: SyncHub, state) => state.storage.getAlarm())).toBe(lateDeadline);
 		// The still-valid socket survives, and the alarm was re-armed for it: a
 		// second run only exists because the handler scheduled the later deadline.
 		expect(lateClosedEarly).toBe(false);
 		await new Promise((resolve) => setTimeout(resolve, 900));
 		expect(await runDurableObjectAlarm(stub)).toBe(true);
 		expect(await lateClosed).toBe(AUTH_EXPIRED_CLOSE_CODE);
-	});
-});
-
-describe("kill switch", () => {
-	it("refuses upgrades in poll mode and recovers immediately after clear", async () => {
-		await env.AUTH_CACHE.put(KILL_SWITCH_KEY, "1");
-		try {
-			const response = await SELF.fetch(`${base}/v1/sync/ws`, {
-				headers: { ...headers("user-ws-kill", "dev-a"), Upgrade: "websocket" },
-			});
-			expect(response.status).toBe(503);
-			expect(response.headers.get("X-Sync-Mode")).toBe("poll");
-		} finally {
-			await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
-		}
-		const { ws } = await connect("user-ws-kill", "dev-a");
-		ws.close();
 	});
 });

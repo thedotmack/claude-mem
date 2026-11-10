@@ -8,64 +8,20 @@ import { contextHandler } from '../../../src/cli/handlers/context.js';
 import { hasInjected, markInjected } from '../../../src/shared/kimi-context-gate.js';
 import type { NormalizedHookInput } from '../../../src/cli/types.js';
 
-const ORIGINAL_PORT = process.env.CLAUDE_MEM_WORKER_PORT;
-const CLOSED_PORT = '65432';
-
 describe('sessionInitContextHandler composite', () => {
   let dataDir: string;
   const origDataDir = process.env.CLAUDE_MEM_DATA_DIR;
 
   beforeAll(() => {
-    process.env.CLAUDE_MEM_WORKER_PORT = CLOSED_PORT;
     // hermetic gate markers: never touch the real ~/.claude-mem state dir
     dataDir = mkdtempSync(join(tmpdir(), 'kimi-gate-composite-'));
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
   });
 
   afterAll(() => {
-    if (ORIGINAL_PORT === undefined) {
-      delete process.env.CLAUDE_MEM_WORKER_PORT;
-    } else {
-      process.env.CLAUDE_MEM_WORKER_PORT = ORIGINAL_PORT;
-    }
     if (origDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
     else process.env.CLAUDE_MEM_DATA_DIR = origDataDir;
     rmSync(dataDir, { recursive: true, force: true });
-  });
-
-  // Both handlers are stubbed with what they return when the worker is down,
-  // so the test never touches a real port: worker-utils caches the port and
-  // worker liveness per process, so an earlier test file decides what a live
-  // call would reach (CI hit 127.0.0.1:37777, not CLOSED_PORT).
-  it('resolves against an unreachable worker and returns hookSpecificOutput', async () => {
-    const handler = getEventHandler('session-init-context');
-    const input: NormalizedHookInput = {
-      sessionId: 't',
-      cwd: process.cwd(),
-      platform: 'kimi',
-    };
-    // executeWithWorkerFallback's result when the worker is not alive.
-    const sessionInitSpy = spyOn(sessionInitHandler, 'execute').mockImplementation(async () => ({
-      continue: true,
-      suppressOutput: true,
-    }));
-    // The context handler's empty SessionStart payload for an unreachable worker.
-    const contextSpy = spyOn(contextHandler, 'execute').mockImplementation(async () => ({
-      continue: true,
-      suppressOutput: true,
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-    }));
-
-    try {
-      const result = await handler.execute(input);
-
-      expect(result.hookSpecificOutput).toEqual({ hookEventName: 'SessionStart', additionalContext: '' });
-      // An empty timeline must not use up the session's one injection.
-      expect(hasInjected('t')).toBe(false);
-    } finally {
-      sessionInitSpy.mockRestore();
-      contextSpy.mockRestore();
-    }
   });
 
   it('rethrows a worker-unavailable error from session-init so the hook fails open and counts it', async () => {
@@ -88,8 +44,6 @@ describe('sessionInitContextHandler composite', () => {
   it('prepends session-init semantic additionalContext to context output', async () => {
     const handler = getEventHandler('session-init-context');
     const input: NormalizedHookInput = {
-      // distinct from the unreachable-worker test's session id: that test may
-      // reach a real worker and write the once-per-session gate marker
       sessionId: 't-merge',
       cwd: process.cwd(),
       platform: 'kimi',

@@ -218,6 +218,7 @@ describe('POST /v1/context recency mode (no query)', () => {
     ]);
     // A category with no rows does not donate its allowance to the other kind.
     const noSummary = await context({ limit: 3, summaryLimit: 3, platformSource: 'cursor' });
+    expect(noSummary.status).toBe(200);
     expect(noSummary.contents).toEqual([]);
     expect((await context({ limit: 2, summaryLimit: 0 })).contents).toHaveLength(2);
     expect((await context({ limit: 2, summaryLimit: 2 })).contents).toHaveLength(2);
@@ -280,7 +281,9 @@ describe('POST /v1/context recency mode (no query)', () => {
     // keys on the worker path. The server must not merge what the worker keeps
     // apart.
     await observation({ content: 'written from the École checkout', minutesAgo: 3, folderProject: 'École' });
-    expect((await context({ folderProjects: ['école'] })).contents).toEqual([]);
+    const differentCase = await context({ folderProjects: ['école'] });
+    expect(differentCase.status).toBe(200);
+    expect(differentCase.contents).toEqual([]);
     expect((await context({ folderProjects: ['ÉCOLE'] })).contents).toEqual(['written from the École checkout']);
   });
 
@@ -338,10 +341,10 @@ describe('POST /v1/context recency mode (no query)', () => {
   });
 
   it('defaults to 50 rows without a query and 10 with one', async () => {
-    for (let index = 0; index < 12; index++) {
+    for (let index = 0; index < 46; index++) {
       await observation({ content: `bulk note number ${index}`, minutesAgo: 60 + index });
     }
-    expect((await context({})).contents).toHaveLength(17);
+    expect((await context({})).contents).toHaveLength(50);
     expect((await context({ query: 'bulk note' })).contents).toHaveLength(10);
   });
 

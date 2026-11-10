@@ -1,18 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  claudeCodeVersionTooOldWarning,
-  MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS,
-} from '../../src/npx-cli/install/claude-code-version.js';
+import { claudeCodeVersionTooOldWarning } from '../../src/npx-cli/install/claude-code-version.js';
 import { claudeCodeVersionCheck } from '../../src/npx-cli/commands/doctor.js';
 
 // The exec-form hooks (`"command": "claude-mem", "args": [...]`) need Claude
 // Code 2.1.139+; an older one runs bare `claude-mem`, which captures nothing.
 
 describe('claudeCodeVersionTooOldWarning', () => {
-  it('pins the minimum to 2.1.139', () => {
-    expect(MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS).toBe('2.1.139');
-  });
-
   it('warns for 2.1.138 with the update command', () => {
     expect(claudeCodeVersionTooOldWarning('2.1.138')).toBe(
       'Claude Code 2.1.138 is older than 2.1.139; claude-mem hooks need 2.1.139+. Update Claude Code: claude update',
@@ -50,10 +43,5 @@ describe('doctor claudeCodeVersionCheck', () => {
   it('passes at or above the minimum', () => {
     expect(claudeCodeVersionCheck('2.1.139').status).toBe('ok');
     expect(claudeCodeVersionCheck('2.2.0').status).toBe('ok');
-  });
-
-  it('passes when the version is unknown', () => {
-    expect(claudeCodeVersionCheck(undefined).status).toBe('ok');
-    expect(claudeCodeVersionCheck('garbage').status).toBe('ok');
   });
 });

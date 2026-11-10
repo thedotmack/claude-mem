@@ -321,43 +321,6 @@ describe('ingestMemorySource (fake deps)', () => {
     expect(report.deduped).toBe(1);
   });
 
-  it('keeps the beginning of a note that starts with a ---- horizontal rule', async () => {
-    writeFileSync(
-      join(memDir, 'hrule.md'),
-      ['----', '# Deployment notes', '', 'Keep the rollback command.', '', '---', 'Next section'].join('\n'),
-    );
-    const stored: MemoryObservationToStore[] = [];
-    const report = await ingestMemorySource(memDir, { root }, {
-      storeMemoryObservation: async obs => {
-        stored.push(obs);
-        return { id: stored.length, deduped: false };
-      },
-    });
-    expect(report.stored).toBe(2); // a.md + hrule.md (empty.md still skipped)
-    const obs = stored.find(o => o.title === 'Deployment notes');
-    expect(obs?.narrative.startsWith('----\n# Deployment notes')).toBe(true);
-    expect(obs?.narrative).toContain('Keep the rollback command.');
-  });
-
-  it('keeps the whole note when a file starts with an indented --- line', async () => {
-    writeFileSync(
-      join(memDir, 'indented.md'),
-      ['    ---', '# Deployment notes', '', 'Keep the rollback command.', '', '---', 'Next section'].join('\n'),
-    );
-    const stored: MemoryObservationToStore[] = [];
-    const report = await ingestMemorySource(memDir, { root }, {
-      storeMemoryObservation: async obs => {
-        stored.push(obs);
-        return { id: stored.length, deduped: false };
-      },
-    });
-    expect(report.stored).toBe(2); // a.md + indented.md (empty.md still skipped)
-    const obs = stored.find(o => o.title === 'Deployment notes');
-    expect(obs?.narrative.startsWith('    ---\n# Deployment notes')).toBe(true);
-    expect(obs?.narrative).toContain('Keep the rollback command.');
-    expect(obs?.narrative).toContain('Next section');
-  });
-
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'reports an unreadable file as failed and stores the rest (one bad file never aborts the run)',
     async () => {

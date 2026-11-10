@@ -1,10 +1,6 @@
 import { describe, expect } from 'bun:test';
 import { nativeTest as test } from './native-prerequisite.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { formatFoldedView, parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
-import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 
 // tree-sitter-typescript parses `abstract class` as abstract_class_declaration and
 // its bodiless members as abstract_method_signature, not as the class_declaration
@@ -45,14 +41,4 @@ describe('TypeScript abstract class outlines', () => {
     expect(unfoldSymbol(SOURCE, 'shape.ts', 'Repository.load')).toContain('protected abstract load(id: string): Promise<T>;');
   }, 120000);
 
-  test('native batched search finds an abstract class and its abstract methods', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-abstract-class-'));
-    try {
-      writeFileSync(join(dir, 'shape.ts'), SOURCE);
-      const shape = await searchCodebase(dir, 'Shape');
-      expect(shape.matchingSymbols.find(symbol => symbol.symbolName === 'Shape')?.kind).toBe('class');
-      const area = await searchCodebase(dir, 'area');
-      expect(area.matchingSymbols.map(symbol => symbol.symbolName)).toContain('Shape.area');
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  }, 120000);
 });

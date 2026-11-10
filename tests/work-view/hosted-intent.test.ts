@@ -39,17 +39,18 @@ function fixture(response: typeof fetch = (async () => Response.json(answer())) 
   const dir = mkdtempSync(join(scratch, 'hosted-intent-'));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const databasePath = join(dir, 'memory.db');
-  const store = new SessionStore(databasePath);
-  cleanup.push(() => store.close());
+  let store: SessionStore | undefined;
+  const getStore = () => store ??= new SessionStore(databasePath);
+  cleanup.push(() => store?.close());
   const configPath = join(dir, 'intent-install.json');
   const createRun = () => new HostedIntent({
     origin: () => 'https://cloud.example/', credentials: () => credentials, intentConfigPath: configPath, ledgerDir: join(dir, 'work-view'),
-    openDatabase: () => new Database(databasePath, { readonly: true }),
-    appendWorkStateEntry: entry => { store.appendWorkStateEntry(entry); }, homeProject: () => 'home',
+    openDatabase: () => { getStore(); return new Database(databasePath, { readonly: true }); },
+    appendWorkStateEntry: entry => { getStore().appendWorkStateEntry(entry); }, homeProject: () => 'home',
     fetch: ((url, init) => init?.method === 'GET' ? preflight(url, init) : response(url, init)) as typeof fetch,
     now: () => at, timezoneOffsetMinutes: () => 420,
   });
-  return { run: createRun(), createRun, configPath, dir, store, databasePath };
+  return { run: createRun(), createRun, configPath, dir, get store() { return getStore(); }, databasePath };
 }
 
 describe('hosted setup extraction', () => {

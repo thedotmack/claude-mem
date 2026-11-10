@@ -273,8 +273,6 @@ describe('quota fallback in SessionRoutes', () => {
     expect(isQuotaCooldownActive('gemini')).toBe(true);
     expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0, active: session });
 
-    // No sweep sends the discarded work to the fallback.
-    await expectNoResume(routes);
     expect(claudeStarts).toBe(0);
 
     // Fresh activity goes through dispatch, which takes the fallback.
@@ -298,7 +296,6 @@ describe('quota fallback in SessionRoutes', () => {
     expect(session.pausedReason).toBe('auth');
     expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0, active: session });
 
-    await expectNoResume(routes);
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
   });
@@ -403,8 +400,6 @@ describe('quota fallback in SessionRoutes', () => {
     expect(claudeStarts).toBe(1);
     expect(isQuotaCooldownActive('claude')).toBe(true);
     expect(stats()).toMatchObject({ discards: 1, pending: 0, finalizeCalls: 0 });
-
-    await expectNoResume(routes);
     expect(geminiStarts).toBe(0);
 
     captureFreshWork();

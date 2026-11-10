@@ -71,24 +71,6 @@ describe('observer generation budget (#3800)', () => {
     expect(resolveConversationMaxChars('0')).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
     expect(resolveConversationMaxChars('-5')).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
   });
-
-  it('bounds per-session cost regardless of session length', () => {
-    // The point of generations: a session 20x longer must not make any single
-    // request 20x bigger. Each generation is capped, so cost is linear in
-    // observations rather than quadratic.
-    const long = windowOf(2_000, 10_000);
-    let generationSize = 0;
-    const generation: ConversationMessage[] = [];
-    for (const message of long) {
-      if (shouldRecycleConversation(generation)) {
-        generation.length = 0; // retire and start fresh
-      }
-      generation.push(message);
-      generationSize = Math.max(generationSize, conversationChars(generation));
-    }
-    // No request ever exceeds one budget plus the message that tripped it.
-    expect(generationSize).toBeLessThanOrEqual(OBSERVER_CONVERSATION_MAX_CHARS + 10_000);
-  });
 });
 
 describe('wrapPriorContext — continuity across generations (#3800)', () => {

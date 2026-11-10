@@ -2,46 +2,17 @@ import { describe, it, expect } from 'bun:test';
 import { stripMemoryTagsFromJsonStrings, stripSystemReminderBlocks } from '../../src/utils/tag-stripping.js';
 
 describe('stripSystemReminderBlocks', () => {
-  it('keeps tag-free text byte-identical (small)', () => {
-    const text = 'lead </system-reminder> trail';
-    expect(stripSystemReminderBlocks(text)).toBe(text);
-  });
-
-  it('keeps tag-free text byte-identical (large, lookalike tags included)', () => {
-    const text = 'a<system-reminderX>b</system-reminderX>c</system-reminder>d' + 'x'.repeat(2000);
-    expect(stripSystemReminderBlocks(text)).toBe(text);
-  });
-
-  it('cuts well-formed blocks leftmost-first (small)', () => {
-    expect(stripSystemReminderBlocks('A<system-reminder>r</system-reminder>B')).toBe('AB');
-  });
-
-  it('cuts well-formed blocks leftmost-first (large, stray close preserved)', () => {
-    const text = 'a</system-reminder>b'
-      + 'x<system-reminder>r0</system-reminder>y'
-      + '<system-reminder>r1</system-reminder>y';
-    expect(stripSystemReminderBlocks(text)).toBe('a</system-reminder>bxyy');
-  });
-
-  it('pairs the leftmost open with the first close, nested open included (small)', () => {
-    const text = 'A<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>B';
-    expect(stripSystemReminderBlocks(text)).toBe('Ac</system-reminder>B');
-  });
-
-  it('pairs the leftmost open with the first close, nested open included (large)', () => {
-    const text = 'x<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>y'
-      + '<system-reminder>d</system-reminder>z';
-    expect(stripSystemReminderBlocks(text)).toBe('xc</system-reminder>yz');
-  });
-
-  it('keeps the tail verbatim when an open has no close (small)', () => {
-    expect(stripSystemReminderBlocks('A<system-reminder>never closed'))
-      .toBe('A<system-reminder>never closed');
-  });
-
-  it('keeps the tail verbatim when an open has no close (large)', () => {
-    const text = 'A<system-reminder>r</system-reminder>B<system-reminder>x<system-reminder>y';
-    expect(stripSystemReminderBlocks(text)).toBe('AB<system-reminder>x<system-reminder>y');
+  it.each<[string, string, string]>([
+    ['keeps tag-free text byte-identical (small)', 'lead </system-reminder> trail', 'lead </system-reminder> trail'],
+    ['keeps tag-free text byte-identical (large, lookalike tags included)', 'a<system-reminderX>b</system-reminderX>c</system-reminder>d' + 'x'.repeat(2000), 'a<system-reminderX>b</system-reminderX>c</system-reminder>d' + 'x'.repeat(2000)],
+    ['cuts well-formed blocks leftmost-first (small)', 'A<system-reminder>r</system-reminder>B', 'AB'],
+    ['cuts well-formed blocks leftmost-first (large, stray close preserved)', 'a</system-reminder>b' + 'x<system-reminder>r0</system-reminder>y' + '<system-reminder>r1</system-reminder>y', 'a</system-reminder>bxyy'],
+    ['pairs the leftmost open with the first close, nested open included (small)', 'A<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>B', 'Ac</system-reminder>B'],
+    ['pairs the leftmost open with the first close, nested open included (large)', 'x<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>y' + '<system-reminder>d</system-reminder>z', 'xc</system-reminder>yz'],
+    ['keeps the tail verbatim when an open has no close (small)', 'A<system-reminder>never closed', 'A<system-reminder>never closed'],
+    ['keeps the tail verbatim when an open has no close (large)', 'A<system-reminder>r</system-reminder>B<system-reminder>x<system-reminder>y', 'AB<system-reminder>x<system-reminder>y'],
+  ])('%s', (_name, input, expected) => {
+    expect(stripSystemReminderBlocks(input)).toBe(expected);
   });
 });
 
@@ -51,48 +22,17 @@ describe('stripMemoryTagsFromJsonStrings gate', () => {
   // returned the string untouched when negative. Expected values below are the
   // outputs that semantics produced.
   describe('byte-identity with the old regex-gate behavior', () => {
-    it('tag-free string (small)', () => {
-      expect(stripMemoryTagsFromJsonStrings({ s: 'plain text' })).toEqual({ s: 'plain text' });
-    });
-
-    it('tag-free string with angle brackets (large)', () => {
-      const s = '<div>a</div> ' + 'mid <angled> & plain '.repeat(50);
-      expect(stripMemoryTagsFromJsonStrings({ s })).toEqual({ s });
-    });
-
-    it('well-formed tag (small)', () => {
-      expect(stripMemoryTagsFromJsonStrings({ s: 'x<private>secret</private>y' }))
-        .toEqual({ s: 'xy' });
-    });
-
-    it('well-formed tags, trim through the positive gate (large)', () => {
-      expect(stripMemoryTagsFromJsonStrings({
-        s: '  a<private>p</private>b<system-reminder>r</system-reminder>'
-          + 'c<claude-mem-context>m</claude-mem-context>d  ',
-      })).toEqual({ s: 'abcd' });
-    });
-
-    it('nested tags (small)', () => {
-      expect(stripMemoryTagsFromJsonStrings({
-        s: '<private>a<system-reminder>b</system-reminder>c</private>',
-      })).toEqual({ s: '' });
-    });
-
-    it('nested tags across names (large)', () => {
-      expect(stripMemoryTagsFromJsonStrings({
-        s: 'keep <system-reminder>a<private>b</private>c</system-reminder>'
-          + 'd<claude-mem-context>e</claude-mem-context>end',
-      })).toEqual({ s: 'keep dend' });
-    });
-
-    it('unclosed tag (small)', () => {
-      expect(stripMemoryTagsFromJsonStrings({ s: '<private>never closed' }))
-        .toEqual({ s: '<private>never closed' });
-    });
-
-    it('unclosed tags (large)', () => {
-      const s = '<private>'.repeat(2000);
-      expect(stripMemoryTagsFromJsonStrings({ s })).toEqual({ s });
+    it.each<[string, { s: string }, { s: string }]>([
+      ['tag-free string (small)', { s: 'plain text' }, { s: 'plain text' }],
+      ['tag-free string with angle brackets (large)', { s: '<div>a</div> ' + 'mid <angled> & plain '.repeat(50) }, { s: '<div>a</div> ' + 'mid <angled> & plain '.repeat(50) }],
+      ['well-formed tag (small)', { s: 'x<private>secret</private>y' }, { s: 'xy' }],
+      ['well-formed tags, trim through the positive gate (large)', { s: '  a<private>p</private>b<system-reminder>r</system-reminder>' + 'c<claude-mem-context>m</claude-mem-context>d  ' }, { s: 'abcd' }],
+      ['nested tags (small)', { s: '<private>a<system-reminder>b</system-reminder>c</private>' }, { s: '' }],
+      ['nested tags across names (large)', { s: 'keep <system-reminder>a<private>b</private>c</system-reminder>' + 'd<claude-mem-context>e</claude-mem-context>end' }, { s: 'keep dend' }],
+      ['unclosed tag (small)', { s: '<private>never closed' }, { s: '<private>never closed' }],
+      ['unclosed tags (large)', { s: '<private>'.repeat(2000) }, { s: '<private>'.repeat(2000) }],
+    ])('%s', (_name, input, expected) => {
+      expect(stripMemoryTagsFromJsonStrings(input)).toEqual(expected);
     });
   });
 

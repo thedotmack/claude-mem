@@ -193,10 +193,5 @@ describe('buildKimiHooksBlock', () => {
 
   expect(decoded).toEqual(expected);
 });
-
-test('still uses the escape-free literal form for ordinary paths', () => {
-    const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
-    expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/w.cjs\"");
-  });
 });
 

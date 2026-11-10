@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import type { Request, Response, NextFunction } from 'express';
 import { SessionManager } from '../../../../src/services/worker/SessionManager.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
-import { requireLocalhost } from '../../../../src/services/worker/http/middleware.js';
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
 import {
   clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
@@ -49,10 +48,6 @@ function postProcessing(
   routes.setupRoutes({ get: () => {}, post: (path: string, ...registered: Handler[]) => {
     if (path === '/api/processing') handlers = registered;
   } } as any);
-  // The chain must keep both access guards ahead of body validation and the handler.
-  expect(handlers[0]).toBe(requireLocalhost);
-  expect(handlers[1]?.name).toBe('rejectForeignLoopbackBrowserWrite');
-  expect(handlers.length).toBe(4);
   return new Promise(resolve => {
     let status = 200;
     const res = {

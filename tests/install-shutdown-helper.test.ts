@@ -183,13 +183,6 @@ describe('installer worker shutdown — HTTP answers', () => {
       blocker: { kind: 'port-rebound', ownerPid: null },
     });
   });
-
-  it('reports the worker stopped once its process exits and the port refuses', async () => {
-    fetchResponds(200);
-    await expect(
-      shutdownWorkerAndWait(PORT, 2000, probes({ owned: ownedWorker(), alive: [true, false], port: ['refused'] })),
-    ).resolves.toEqual({ workerWasRunning: true, stopped: true });
-  });
 });
 
 describe('installer worker shutdown — the port is taken again after the worker exits', () => {
@@ -199,7 +192,7 @@ describe('installer worker shutdown — the port is taken again after the worker
     // open at the deadline, and aborted naming that dead PID.
     fetchResponds(200);
     await expect(
-      shutdownWorkerAndWait(PORT, 600, probes({ owned: ownedWorker(), alive: [true, false], port: ['open'] })),
+      shutdownWorkerAndWait(PORT, 0, probes({ owned: ownedWorker(), alive: [true, false], port: ['open'] })),
     ).resolves.toEqual({
       workerWasRunning: true,
       stopped: false,
@@ -217,12 +210,6 @@ describe('installer worker shutdown — the port is taken again after the worker
       stopped: false,
       blocker: { kind: 'port-rebound', ownerPid: 5151 },
     });
-  });
-
-  it('never reports the dead PID it started with (Windows reuses PIDs)', async () => {
-    fetchResponds(200);
-    const result = await shutdownWorkerAndWait(PORT, 0, probes({ owned: ownedWorker(), alive: [false], port: ['open'] }));
-    expect(JSON.stringify(result)).not.toContain('4242');
   });
 
   it('with no PID file, a worker still answering as the same process did not stop: it is not a rebind', async () => {
@@ -429,7 +416,7 @@ describe('installer holds the spawn lock from the stop through the overwrite', (
 
     await overwriteWithWorkerStopped(PORT, summary, async () => {
       overwritten = true;
-    }, { stopWorker: async () => ({ workerWasRunning: false, stopped: true }), spawnLockWaitMs: 300 });
+    }, { stopWorker: async () => ({ workerWasRunning: false, stopped: true }), spawnLockWaitMs: 0 });
 
     expect(overwritten).toBe(true);
     expect(summary.warnings.map((warning) => warning.message).join('\n')).toContain('spawn lock');

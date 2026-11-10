@@ -121,6 +121,18 @@ describe('pre-dispatch inline bounds', () => {
     expect(wire).not.toContain(PNG_HEAD);
   });
 
+  for (const stage of ['dispatch', 'capture'] as const) {
+    it(`a rejected middle image does not consume the remaining inline allowance (${stage})`, () => {
+      const accepted = b64(1_000_000);
+      const rejected = b64(MEDIA_LIMITS.maxInlineEncodedBytes - 1_000_000 + 4);
+      const response = { content: [accepted, rejected, accepted].map(data => ({ type: 'image', data, mimeType: 'image/png' })) };
+      const scanned = scanMediaFields({}, response, stage);
+      expect(scanned.candidates.map(candidate => candidate.label)).toEqual(['event1_image1', 'event1_image3']);
+      expect(scanned.failures).toEqual([{ version: 1, state: 'rejected', code: 'source_too_large', inspection: 'uninspected', label: 'event1_image2' }]);
+      expect(scanned.candidates.reduce((total, candidate) => total + candidate.encoded!.length, 0)).toBeLessThan(MEDIA_LIMITS.maxInlineEncodedBytes);
+    });
+  }
+
   // The worker stores stripMemoryTags(JSON.stringify(field)); a clip that cuts
   // away one side of a <private> pair must not leave the text between exposed.
   const workerStoredText = (value: unknown) => stripMemoryTags(JSON.stringify(value));

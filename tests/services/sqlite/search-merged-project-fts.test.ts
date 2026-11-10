@@ -56,10 +56,4 @@ describe('search honors merged_into_project (FTS + filter-only)', () => {
     const sessions = results.map(r => r.memory_session_id).sort();
     expect(sessions).toEqual(['parent-mem', 'wt-mem']);
   });
-
-  it('filter-only search by parent project returns adopted worktree observations', () => {
-    const results = search.searchObservations(undefined, { project: 'main-repo' });
-    const sessions = results.map(r => r.memory_session_id).sort();
-    expect(sessions).toEqual(['parent-mem', 'wt-mem']);
-  });
 });

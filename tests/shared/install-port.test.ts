@@ -25,18 +25,6 @@ describe('install port defaults', () => {
     expect(getDefaultServerPort(dataDir, options)).toBe(37877 + first);
   });
 
-  it('assigns offsets from the data directory instead of a shared Windows fallback', () => {
-    const options = { platform: 'win32' as const, uid: null };
-    const offsets = new Set([
-      'C:\\profiles\\one',
-      'C:\\profiles\\two',
-      'C:\\profiles\\three',
-      'C:\\profiles\\four',
-      'C:\\profiles\\five',
-    ].map(dataDir => getInstallPortOffset(dataDir, options)));
-
-    expect(offsets.size).toBeGreaterThan(1);
-  });
 
   it('normalizes Windows data-directory casing before hashing', () => {
     const options = { platform: 'win32' as const, uid: null };

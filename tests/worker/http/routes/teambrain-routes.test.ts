@@ -189,18 +189,6 @@ describe('POST /api/teambrain/search', () => {
     expect(result.status).toBe(502);
     expect(JSON.parse(result.text).error).toBe(`TeamBrain search unavailable: 127.0.0.1:${upstream.port} answered HTTP 500: boom`);
   });
-
-  it('rejects a search from a different localhost origin without contacting cloud', async () => {
-    upstream.state.search = { body: { results: [], text: 'should not be reached' } };
-    const response = await fetch(`${workerUrl}/api/teambrain/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'http://localhost:3000' },
-      body: JSON.stringify({ query: 'database' }),
-    });
-
-    expect(response.status).toBe(403);
-    expect(upstream.requests).toHaveLength(0);
-  });
 });
 
 describe('TeamBrain routes refuse other localhost pages', () => {

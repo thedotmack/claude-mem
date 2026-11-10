@@ -6,9 +6,16 @@ import {
 
 failOnCiWithoutChrome('CI requires Chrome for log request-order tests');
 
-// The page's 5 s abort timers must fire on time on a loaded runner.
+// The scaled abort timers must fire on time on a loaded runner.
 const launchUnthrottledChrome = (url: string, profilePrefix: string) =>
   launchChrome(url, { profilePrefix, extraFlags: UNTHROTTLED_TIMER_FLAGS });
+
+const FAST_TIMERS = `
+  for (const name of ['setTimeout', 'setInterval']) {
+    const native = window[name].bind(window);
+    window[name] = (callback, delay, ...args) => native(callback, delay >= 2000 ? delay / 10 : delay, ...args);
+  }
+`;
 
 // Chrome's cold start gets its own 30 s window. The page's own phases start
 // only once its script fetches /ready, so a slow start cannot eat into them.
@@ -31,6 +38,7 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { LogsDrawer } from './src/ui/viewer/components/LogsModal';
+        ${FAST_TIMERS}
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={() => {}} />);
         async function waitFor(test) {
           const deadline = Date.now() + 9000;
@@ -103,7 +111,10 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
   let server:ReturnType<typeof Bun.serve>|undefined;
   let markReady!:()=>void;
   const ready=new Promise<void>(resolve=>{markReady=resolve});
-  let requests=0;
+  let clearPending=false;
+  let clearAborted=false;
+  let readsDuringClear=0;
+  let readsAfterAbort=0;
   let report!:(value:unknown)=>void;
   const result=new Promise(resolve=>{report=resolve});
   try {
@@ -111,6 +122,15 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
         import React from 'react';
         import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
+        ${FAST_TIMERS}
+        const nativeFetch=window.fetch.bind(window);
+        window.fetch=async(url,options)=>{
+          try{return await nativeFetch(url,options);}
+          catch(error){
+            if(url==='/api/logs/clear' && options.signal.aborted) await nativeFetch('/clear-aborted',{method:'POST'});
+            throw error;
+          }
+        };
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
         window.confirm=()=>true;
         async function waitFor(test){const end=Date.now()+10000;while(!test()){if(Date.now()>end)throw Error('Browser state timeout');await new Promise(r=>setTimeout(r,10));}}
@@ -120,8 +140,8 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
           document.querySelector('.console-auto-refresh input').click();
           document.querySelector('[title="Clear logs"]').click();
           await waitFor(()=>!document.querySelector('[title="Clear logs"]').disabled);
-          await waitFor(()=>[...document.querySelectorAll('.log-message')].some(x=>x.textContent==='RECOVERED'));
-          await fetch('/result',{method:'POST',body:JSON.stringify({recovered:true})});
+          await waitFor(()=>[...document.querySelectorAll('.log-message')].some(x=>x.textContent==='POLLED_AFTER_CLEAR'));
+          await fetch('/result',{method:'POST',body:JSON.stringify({recovered:true,autoRefresh:document.querySelector('.console-auto-refresh input').checked})});
         }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})})}})();
       `);
     server=Bun.serve({hostname:'127.0.0.1',port:0,fetch(request){
@@ -129,14 +149,21 @@ async function reportAfterReady(ready: Promise<void>, result: Promise<unknown>, 
       if(path==='/')return htmlResponse(FIXTURE_PAGE_HTML);
       if(path==='/fixture.js')return scriptResponse(bundle);
       if(path==='/ready'){markReady();return new Response('ready');}
-      if(path==='/api/logs')return Response.json({logs:`[2026-10-05 12:00:00] [INFO ] [WORKER ] ${++requests===1?'INITIAL':'RECOVERED'}`});
-      if(path==='/api/logs/clear')return new Promise<Response>(()=>{});
+      if(path==='/api/logs'){
+        if(clearPending) readsDuringClear++;
+        const message=clearAborted ? (++readsAfterAbort===1?'RECONCILED':'POLLED_AFTER_CLEAR') : 'INITIAL';
+        return Response.json({logs:`[2026-10-05 12:00:00] [INFO ] [WORKER ] ${message}`});
+      }
+      if(path==='/api/logs/clear'){clearPending=true;return new Promise<Response>(()=>{});}
+      if(path==='/clear-aborted'){clearPending=false;clearAborted=true;return new Response('aborted');}
       if(path==='/result')return request.json().then(value=>{report(value);return new Response('received')});
       return new Response('missing',{status:404});
     }});
     chrome=launchUnthrottledChrome(server.url.href,'claude-mem-clear-timeout-');
     const received=await reportAfterReady(ready,result,25000);
-    expect(received).toEqual({recovered:true});expect(requests).toBeGreaterThan(1);
+    expect(readsDuringClear).toBe(0);
+    expect(received).toEqual({recovered:true,autoRefresh:true});
+    expect(readsAfterAbort).toBeGreaterThanOrEqual(2);
   }finally{
     await chrome?.close();server?.stop(true);
   }
@@ -158,6 +185,7 @@ for(const scenario of ['reconciled','read-hung'] as const) {
     const bundle=compileBrowserFixture(`
         import React from 'react';import {createRoot} from 'react-dom/client';
         import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
+        ${FAST_TIMERS}
         createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
         window.confirm=()=>true;
         async function waitFor(test){const end=Date.now()+13000;while(!test()){if(Date.now()>end)throw Error('Browser state timeout');await new Promise(r=>setTimeout(r,10));}}
@@ -181,7 +209,7 @@ for(const scenario of ['reconciled','read-hung'] as const) {
       return new Response('missing',{status:404});
     }});
     chrome=launchUnthrottledChrome(server.url.href,'claude-mem-clear-reconcile-');
-    // The read-hung path waits out two 5 s aborts: the clear, then its reconciliation read.
+    // The read-hung path waits for both scaled aborts: the clear and its reconciliation read.
     const received=await reportAfterReady(ready,result,30000);
     expect(received).toEqual({messages:scenario==='read-hung'?['OLD_BEFORE_CLEAR']:[],unknown:true,autoRefresh:false});expect(requests).toBe(2);
   }finally{

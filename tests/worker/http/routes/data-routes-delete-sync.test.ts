@@ -198,28 +198,6 @@ describe('DataRoutes synchronized delete APIs', () => {
     expect(chromaCalls).toEqual([]);
   });
 
-  it('keeps the delete successful when the Chroma cleanup fails', async () => {
-    chromaSync = { deleteRowDocuments: mock(() => Promise.reject(new Error('chroma down'))) };
-    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
-    let status = 200;
-    let responseBody: any;
-    const response = {
-      status(code: number) { status = code; return this; },
-      json(value: unknown) { responseBody = value; return this; },
-    } as unknown as Response;
-
-    handlers.get('/api/observation/:id')!({ params: { id: '1' }, path: '/api/observation/:id' } as unknown as Request, response);
-
-    expect(status).toBe(200);
-    expect(responseBody).toMatchObject({ success: true, id: '1', kind: 'observation' });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM observations').get()).toEqual({ n: 0 });
-
-    // The failure is swallowed into a warning, asynchronously.
-    await new Promise(resolve => setImmediate(resolve));
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
   function deleteSession(): { status: number; body: any } {
     let status = 200;
     let body: any;

@@ -1,55 +1,33 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
-
-class MemoryStorage {
-  private data: Map<string, string> = new Map();
-  getItem(key: string): string | null {
-    return this.data.has(key) ? this.data.get(key)! : null;
-  }
-  setItem(key: string, value: string): void {
-    this.data.set(key, value);
-  }
-  removeItem(key: string): void {
-    this.data.delete(key);
-  }
-  clear(): void {
-    this.data.clear();
-  }
-  get length(): number {
-    return this.data.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.data.keys())[index] ?? null;
-  }
-}
-
-const memStore = new MemoryStorage();
-(globalThis as unknown as { localStorage: MemoryStorage }).localStorage = memStore;
-
-const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
-const LEGACY_KEY = 'claude-mem-welcome-dismissed-v2';
-
+import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import {
   getStoredWelcomeDismissed,
   setStoredWelcomeDismissed,
 } from '../../src/ui/viewer/components/WelcomeCard';
 
+const data = new Map<string, string>();
+const memStore = {
+  getItem: (key: string) => data.get(key) ?? null,
+  setItem: (key: string, value: string) => { data.set(key, value); },
+  removeItem: (key: string) => { data.delete(key); },
+};
+const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: memStore });
+afterAll(() => {
+  if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
+  else Reflect.deleteProperty(globalThis, 'localStorage');
+});
+
+const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
+const LEGACY_KEY = 'claude-mem-welcome-dismissed-v2';
+
 describe('WelcomeCard storage helpers (v3 key)', () => {
-  beforeEach(() => {
-    memStore.clear();
-  });
+  beforeEach(() => { data.clear(); });
 
-  it('returns false when nothing has been stored', () => {
+  it('round-trips dismissal through the v3 key', () => {
     expect(getStoredWelcomeDismissed()).toBe(false);
-  });
-
-  it('persists dismissal under the v3 key', () => {
     setStoredWelcomeDismissed(true);
     expect(memStore.getItem(STORAGE_KEY)).toBe('true');
     expect(getStoredWelcomeDismissed()).toBe(true);
-  });
-
-  it('clears the v3 key when dismissed=false', () => {
-    setStoredWelcomeDismissed(true);
     setStoredWelcomeDismissed(false);
     expect(memStore.getItem(STORAGE_KEY)).toBeNull();
     expect(getStoredWelcomeDismissed()).toBe(false);

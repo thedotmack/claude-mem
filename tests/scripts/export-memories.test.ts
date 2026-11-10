@@ -36,19 +36,23 @@ describe('export-memories script', () => {
     mock.restore();
   });
 
-  it('loads settings from CLAUDE_MEM_DATA_DIR and sends canonical memorySessionIds', async () => {
+  function setup(settings?: Record<string, unknown>): string {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDir;
     process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
-      CLAUDE_MEM_WORKER_PORT: '45678',
-    }));
-
+    if (settings) writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
     consoleSpies.push(
       spyOn(console, 'log').mockImplementation(() => {}),
       spyOn(console, 'warn').mockImplementation(() => {}),
       spyOn(console, 'error').mockImplementation(() => {}),
     );
+    return tempDir;
+  }
+
+  it('loads settings from CLAUDE_MEM_DATA_DIR and sends canonical memorySessionIds', async () => {
+    const tempDir = setup({
+      CLAUDE_MEM_WORKER_PORT: '45678',
+    });
 
     let batchBody: unknown;
     let searchSignal: unknown;
@@ -100,18 +104,10 @@ describe('export-memories script', () => {
   });
 
   it('brackets an IPv6 worker host in the request URL', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+    const tempDir = setup({
       CLAUDE_MEM_WORKER_HOST: '::1',
       CLAUDE_MEM_WORKER_PORT: '45678',
-    }));
-
-    consoleSpies.push(
-      spyOn(console, 'log').mockImplementation(() => {}),
-      spyOn(console, 'error').mockImplementation(() => {}),
-    );
+    });
 
     const requested: string[] = [];
     const fetchMock = mock(async (input: RequestInfo | URL) => {
@@ -126,76 +122,23 @@ describe('export-memories script', () => {
     expect(requested[0]).toStartWith('http://[::1]:45678/api/search?');
   });
 
-  it('rejects an invalid worker port before fetching', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
-      CLAUDE_MEM_WORKER_PORT: '45678abc',
-    }));
-
+  it.each([
+    ['45678abc', 'Invalid CLAUDE_MEM_WORKER_PORT'],
+    ['', 'Invalid CLAUDE_MEM_WORKER_PORT in settings.json: missing'],
+    [45678, 'Invalid CLAUDE_MEM_WORKER_PORT in settings.json: missing'],
+  ])('rejects worker port %p before fetching', async (port, error) => {
+    const tempDir = setup({ CLAUDE_MEM_WORKER_PORT: port });
     const fetchMock = mock(async () => new Response('{}', { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
-
     const { exportMemories } = await import('../../scripts/export-memories.ts');
-
-    await expect(exportMemories('needle', join(tempDir, 'export.json'))).rejects.toThrow(
-      'Invalid CLAUDE_MEM_WORKER_PORT',
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects an empty worker port with a clear configuration error', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
-      CLAUDE_MEM_WORKER_PORT: '',
-    }));
-
-    const fetchMock = mock(async () => new Response('{}', { status: 200 }));
-    globalThis.fetch = fetchMock as typeof fetch;
-
-    const { exportMemories } = await import('../../scripts/export-memories.ts');
-
-    await expect(exportMemories('needle', join(tempDir, 'export.json'))).rejects.toThrow(
-      'Invalid CLAUDE_MEM_WORKER_PORT in settings.json: missing',
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects a non-string worker port with a clear configuration error', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
-      CLAUDE_MEM_WORKER_PORT: 45678,
-    }));
-
-    const fetchMock = mock(async () => new Response('{}', { status: 200 }));
-    globalThis.fetch = fetchMock as typeof fetch;
-
-    const { exportMemories } = await import('../../scripts/export-memories.ts');
-
-    await expect(exportMemories('needle', join(tempDir, 'export.json'))).rejects.toThrow(
-      'Invalid CLAUDE_MEM_WORKER_PORT in settings.json: missing',
-    );
+    await expect(exportMemories('needle', join(tempDir, 'export.json'))).rejects.toThrow(error);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('fails the export when SDK session metadata cannot be fetched', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+    const tempDir = setup({
       CLAUDE_MEM_WORKER_PORT: '45678',
-    }));
-
-    consoleSpies.push(
-      spyOn(console, 'log').mockImplementation(() => {}),
-      spyOn(console, 'warn').mockImplementation(() => {}),
-      spyOn(console, 'error').mockImplementation(() => {}),
-    );
+    });
 
     const fetchMock = mock(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -228,9 +171,7 @@ describe('export-memories script', () => {
   });
 
   it('keeps the request deadline active while reading the response body', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+    const tempDir = setup();
     const output = join(tempDir, 'export.json');
     const originalTimeout = globalThis.setTimeout;
     const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((fn, delay, ...args) =>
@@ -254,18 +195,9 @@ describe('export-memories script', () => {
   });
 
   it('fails deterministically when a worker request times out', async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
-    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+    const tempDir = setup({
       CLAUDE_MEM_WORKER_PORT: '45678',
-    }));
-
-    consoleSpies.push(
-      spyOn(console, 'log').mockImplementation(() => {}),
-      spyOn(console, 'warn').mockImplementation(() => {}),
-      spyOn(console, 'error').mockImplementation(() => {}),
-    );
+    });
 
     const fetchMock = mock(async () => {
       throw new DOMException('The operation was aborted.', 'AbortError');

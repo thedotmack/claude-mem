@@ -16,6 +16,8 @@ import { clearPortCache } from '../../../../src/shared/worker-utils.js';
 
 describe('settings save refreshes the context settings snapshot', () => {
   let priorSettings: string | null = null;
+  const envKeys = ['CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_WELCOME_HINT_ENABLED'];
+  let priorEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     priorSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
@@ -24,14 +26,21 @@ describe('settings save refreshes the context settings snapshot', () => {
       CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
       CLAUDE_MEM_WORKER_PORT: '38111',
     }));
-    delete process.env.CLAUDE_MEM_WORKER_PORT;
-    delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    priorEnv = {};
+    for (const key of envKeys) {
+      priorEnv[key] = process.env[key];
+      delete process.env[key];
+    }
     clearPortCache();
   });
 
   afterEach(() => {
     if (priorSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
     else writeFileSync(USER_SETTINGS_PATH, priorSettings);
+    for (const key of envKeys) {
+      if (priorEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = priorEnv[key];
+    }
     clearPortCache();
   });
 

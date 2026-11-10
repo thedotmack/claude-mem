@@ -37,15 +37,19 @@ function groups(...ids: string[]) {
 }
 const state = (f: ReturnType<typeof fixture>) => readSharedRecords(f.store.db, { deviceId: f.deviceId, validateValue: isSharedProjectionValue });
 const count = (f: ReturnType<typeof fixture>) => (f.store.db.query('SELECT COUNT(*) AS count FROM work_state_entries').get() as { count: number }).count;
+function replicate(from: ReturnType<typeof fixture>, to: ReturnType<typeof fixture>) {
+  const rows = from.store.db.query('SELECT * FROM work_state_entries WHERE origin_device_id IS NULL ORDER BY id').all() as any[];
+  const apply = new SyncApply(to.store.db, { deviceId: to.deviceId });
+  const cursor = Number(apply.getCursor());
+  const wires = rows.map((row, i) => ({ seq: String(cursor + i + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: from.deviceId,
+    originLocalId: String(row.id), entityRev: row.sync_rev, payload: { project: row.project, list_name: row.list_name,
+      fields: JSON.parse(row.fields), created_at: row.created_at, created_at_epoch: String(row.created_at_epoch) } }) }));
+  return apply.applyOps(decodeChanges(wires));
+}
 function applyRemote(target: ReturnType<typeof fixture>, updates: any[]) {
   const remote = fixture('device-z');
   publishSharedRecords(remote.store.db, { deviceId: remote.deviceId, project: 'shared', updates, validateValue: isSharedProjectionValue });
-  const rows = remote.store.db.query('SELECT * FROM work_state_entries ORDER BY id').all() as any[];
-  const cursor = Number(new SyncApply(target.store.db, { deviceId: target.deviceId }).getCursor());
-  const wires = rows.map((row, i) => ({ seq: String(cursor + i + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: remote.deviceId,
-    originLocalId: String(row.id), entityRev: row.sync_rev, payload: { project: row.project, list_name: row.list_name,
-      fields: JSON.parse(row.fields), created_at: row.created_at, created_at_epoch: String(row.created_at_epoch) } }) }));
-  return new SyncApply(target.store.db, { deviceId: target.deviceId }).applyOps(decodeChanges(wires));
+  return replicate(remote, target);
 }
 
 test('the registered real JSON writer commits canonical facts before its file and does not echo on restart', () => {
@@ -87,6 +91,28 @@ test('unchanged reconciliation creates no canonical rows or metadata writes', ()
   expect(count(f)).toBe(rows);
   expect(f.store.db.query('SELECT total_changes() AS count').get()).toEqual(before);
   expect(f.store.db.query('SELECT * FROM my_work_file_state ORDER BY name').all()).toEqual(metadata);
+});
+
+test('a concurrent native write after activity capture remains visible to the next pass', () => {
+  const f = fixture();
+  const writer = new SessionStore(f.databasePath);
+  disposals.push(() => writer.close());
+  const publish = f.adapter.publish.bind(f.adapter);
+  let inserted = false;
+  f.adapter.publish = updates => {
+    const changed = publish(updates);
+    if (!inserted) {
+      inserted = true;
+      const id = writer.createSDKSession('after-capture', 'repo', 'Keep concurrent work');
+      writer.saveUserPrompt('after-capture', 1, 'Keep concurrent work', id);
+    }
+    return changed;
+  };
+  f.adapter.reconcile();
+  expect([...state(f).records.values()].filter(record => record.kind === 'provenance')).toHaveLength(0);
+  f.adapter.reconcile();
+  const provenance = [...state(f).records.values()].find(record => record.kind === 'provenance');
+  expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
 });
 
 test('formatting and object-key order do not become a new imported generation', () => {
@@ -131,23 +157,14 @@ test('external Python-style JSON changes import once, and deleting a known local
 test('deleted identities revive from their durable tombstone base after restart and peer updates', () => {
   const a = fixture(), b = fixture('device-b');
   const id = groupIdFor(key('a')), identity = sharedRecordKey('group', id);
-  const transfer = (from: ReturnType<typeof fixture>, to: ReturnType<typeof fixture>) => {
-    const rows = from.store.db.query('SELECT * FROM work_state_entries WHERE origin_device_id IS NULL ORDER BY id').all() as any[];
-    const apply = new SyncApply(to.store.db, { deviceId: to.deviceId });
-    const cursor = Number(apply.getCursor());
-    apply.applyOps(decodeChanges(rows.map((row, index) => ({ seq: String(cursor + index + 1), ...buildContentOperation({
-      kind: 'work_state', originDeviceId: from.deviceId, originLocalId: String(row.id), entityRev: row.sync_rev,
-      payload: { project: row.project, list_name: row.list_name, fields: JSON.parse(row.fields), created_at: row.created_at, created_at_epoch: String(row.created_at_epoch) },
-    }) }))));
-  };
   a.adapter.saveFile('request-groups.json', groups('a'));
   a.adapter.saveFile('request-groups.json', groups());
   expect(state(a).records.get(identity)).toMatchObject({ deleted: true, revision: '2' });
-  transfer(a, b);
+  replicate(a, b);
   b.adapter.reconcile({ captureActivity: false });
   b.adapter.saveFile('request-groups.json', groups('a'));
   expect(state(b).records.get(identity)).toMatchObject({ deleted: false, revision: '3' });
-  transfer(b, a);
+  replicate(b, a);
   a.adapter.reconcile({ captureActivity: false });
   a.adapter.saveFile('request-groups.json', groups());
   expect(state(a).records.get(identity)).toMatchObject({ deleted: true, revision: '4' });
@@ -315,14 +332,9 @@ test('remote tombstones materialize into story and progress compatibility files'
   f.adapter.saveFile(`progress/${groupId}.json`, { groupId, state: 'in-progress', percent: 20, summary: 'Old progress' });
   const remote = fixture('device-z');
   // First copy current state to the remote, so deletion is authored after the existing revision.
-  const sourceRows = f.store.db.query('SELECT * FROM work_state_entries ORDER BY id').all() as any[];
-  const sourceWires = sourceRows.map((row, i) => ({ seq: String(i + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: f.deviceId, originLocalId: String(row.id), entityRev: row.sync_rev,
-    payload: { project: row.project, list_name: row.list_name, fields: JSON.parse(row.fields), created_at: row.created_at, created_at_epoch: String(row.created_at_epoch) } }) }));
-  new SyncApply(remote.store.db, { deviceId: remote.deviceId }).applyOps(decodeChanges(sourceWires));
+  replicate(f, remote);
   publishSharedRecords(remote.store.db, { deviceId: remote.deviceId, project: 'shared', updates: [{ kind: 'story', key: 'current', deleted: true }, { kind: 'progress', key: groupId, deleted: true }], validateValue: isSharedProjectionValue });
-  const rows = remote.store.db.query('SELECT * FROM work_state_entries WHERE origin_device_id IS NULL ORDER BY id').all() as any[];
-  new SyncApply(f.store.db, { deviceId: f.deviceId }).applyOps(decodeChanges(rows.map((row, i) => ({ seq: String(i + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: remote.deviceId, originLocalId: String(row.id), entityRev: row.sync_rev,
-    payload: { project: row.project, list_name: row.list_name, fields: JSON.parse(row.fields), created_at: row.created_at, created_at_epoch: String(row.created_at_epoch) } }) }))));
+  replicate(remote, f);
   f.adapter.reconcile({ captureActivity: false });
   expect(readLedger(f.directory).story).toBeNull();
   expect(readLedger(f.directory).progress[groupId]).toBeUndefined();

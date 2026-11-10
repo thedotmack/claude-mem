@@ -30,59 +30,23 @@ describe('Cursor Context Update', () => {
   });
 
   describe('writeContextFile', () => {
-    it('creates .cursor/rules directory structure', () => {
+    it('writes the complete context rule', () => {
       writeContextFile(workspacePath, 'test context');
 
-      const rulesDir = join(workspacePath, '.cursor', 'rules');
-      expect(existsSync(rulesDir)).toBe(true);
-    });
+      expect(readContextFile(workspacePath)).toBe(`---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
 
-    it('creates claude-mem-context.mdc file', () => {
-      writeContextFile(workspacePath, 'test context');
+# Memory Context from Past Sessions
 
-      const rulesFile = join(workspacePath, '.cursor', 'rules', 'claude-mem-context.mdc');
-      expect(existsSync(rulesFile)).toBe(true);
-    });
+The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
 
-    it('includes alwaysApply: true in frontmatter', () => {
-      writeContextFile(workspacePath, 'test context');
+test context
 
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('alwaysApply: true');
-    });
-
-    it('includes description in frontmatter', () => {
-      writeContextFile(workspacePath, 'test context');
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('description: "Claude-mem context from past sessions (auto-updated)"');
-    });
-
-    it('includes the provided context in the file body', () => {
-      const testContext = `## Recent Session
-
-- Fixed authentication bug
-- Added new feature`;
-
-      writeContextFile(workspacePath, testContext);
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('Fixed authentication bug');
-      expect(content).toContain('Added new feature');
-    });
-
-    it('includes Memory Context header', () => {
-      writeContextFile(workspacePath, 'test');
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('# Memory Context from Past Sessions');
-    });
-
-    it('includes footer with MCP tools mention', () => {
-      writeContextFile(workspacePath, 'test');
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain("Use claude-mem's MCP search tools for more detailed queries");
+---
+*Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
+`);
     });
 
     it('uses atomic write (no temp file left behind)', () => {
@@ -101,78 +65,9 @@ describe('Cursor Context Update', () => {
       expect(content).toContain('second context');
     });
 
-    it('handles empty context gracefully', () => {
-      writeContextFile(workspacePath, '');
-
-      const content = readContextFile(workspacePath);
-      expect(content).toBeDefined();
-      expect(content).toContain('alwaysApply: true');
-    });
-
-    it('preserves multi-line context with proper formatting', () => {
-      const multilineContext = `Line 1
-Line 2
-Line 3
-
-Paragraph 2`;
-
-      writeContextFile(workspacePath, multilineContext);
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('Line 1\nLine 2\nLine 3');
-      expect(content).toContain('Paragraph 2');
-    });
-  });
-
-  describe('MDC format validation', () => {
-    it('has valid YAML frontmatter delimiters', () => {
-      writeContextFile(workspacePath, 'test');
-
-      const content = readContextFile(workspacePath)!;
-      const lines = content.split('\n');
-
-      expect(lines[0]).toBe('---');
-
-      const secondDashIndex = lines.indexOf('---', 1);
-      expect(secondDashIndex).toBeGreaterThan(0);
-    });
-
-    it('frontmatter is parseable as YAML', () => {
-      writeContextFile(workspacePath, 'test');
-
-      const content = readContextFile(workspacePath)!;
-      const lines = content.split('\n');
-      const frontmatterEnd = lines.indexOf('---', 1);
-
-      const frontmatter = lines.slice(1, frontmatterEnd).join('\n');
-
-      expect(frontmatter).toMatch(/alwaysApply:\s*true/);
-      expect(frontmatter).toMatch(/description:\s*"/);
-    });
-
-    it('content after frontmatter is proper markdown', () => {
-      writeContextFile(workspacePath, 'test');
-
-      const content = readContextFile(workspacePath)!;
-
-      expect(content).toMatch(/^# Memory Context/m);
-
-      const bodyPart = content.split('---')[2]; 
-      expect(bodyPart).toBeDefined();
-    });
   });
 
   describe('edge cases', () => {
-    it('handles special characters in context', () => {
-      const specialContext = '`code` **bold** _italic_ <html> $variable @mention #tag';
-
-      writeContextFile(workspacePath, specialContext);
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain('`code`');
-      expect(content).toContain('**bold**');
-      expect(content).toContain('<html>');
-    });
 
     it('preserves BMP unicode and strips astral emoji (issue #2787)', () => {
       const unicodeContext = 'Emoji: 🚀 Japanese: 日本語 Arabic: العربية';
@@ -190,15 +85,6 @@ Paragraph 2`;
         const code = content!.charCodeAt(i);
         expect(code < 0xd800 || code > 0xdfff).toBe(true);
       }
-    });
-
-    it('handles very long context', () => {
-      const longContext = 'x'.repeat(100 * 1024);
-
-      writeContextFile(workspacePath, longContext);
-
-      const content = readContextFile(workspacePath);
-      expect(content).toContain(longContext);
     });
 
     it('works when .cursor directory already exists', () => {

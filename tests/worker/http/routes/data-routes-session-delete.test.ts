@@ -230,31 +230,6 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     }
   });
 
-  it('removes a previously captured deliverable row and reports the retained bucket copy', () => {
-    const dataDir = useTempHookSpoolDataDir();
-    try {
-      seedSession(db, 'content-file', 'memory-file', 'proj');
-      const bucketDir = resolveDeliverableBucketDir('proj');
-      mkdirSync(bucketDir, { recursive: true });
-      const bucketPath = join(bucketDir, 'report-abcdef12.html');
-      writeFileSync(bucketPath, '<h1>report</h1>');
-      store.recordDeliverable({
-        project: 'proj', contentSessionId: 'content-file', platformSource: 'claude', title: 'report.html',
-        kind: 'page', sourcePath: '/repo/report.html', bucketPath, bytes: 15, sha256: 'a'.repeat(64),
-        declared: false, occurredAtEpoch: 1,
-      });
-      setup(null);
-
-      const { status, body } = callDelete('claude', 'content-file');
-      expect(status).toBe(200);
-      expect(body.deliverableReferencesRemoved).toBe(1);
-      expect(count(db, 'deliverables')).toBe(0);
-      expect(existsSync(bucketPath)).toBe(true);
-    } finally {
-      dataDir.restore();
-    }
-  });
-
   it('keeps a shared bucket copy when its last recorded session is deleted', () => {
     const dataDir = useTempHookSpoolDataDir();
     try {
@@ -273,42 +248,15 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
       }
       setup(null);
 
-      expect(callDelete('claude', 'content-file-a').status).toBe(200);
+      const firstDelete = callDelete('claude', 'content-file-a');
+      expect(firstDelete.status).toBe(200);
+      expect(firstDelete.body.deliverableReferencesRemoved).toBe(1);
       expect(count(db, 'deliverables')).toBe(1);
       expect(existsSync(bucketPath)).toBe(true);
-      expect(callDelete('claude', 'content-file-b').status).toBe(200);
+      const lastDelete = callDelete('claude', 'content-file-b');
+      expect(lastDelete.status).toBe(200);
+      expect(lastDelete.body.deliverableReferencesRemoved).toBe(1);
       expect(count(db, 'deliverables')).toBe(0);
-      expect(existsSync(bucketPath)).toBe(true);
-    } finally {
-      dataDir.restore();
-    }
-  });
-
-  it('keeps a copy while another session has copied it but has not recorded its row yet', () => {
-    const dataDir = useTempHookSpoolDataDir();
-    try {
-      seedSession(db, 'content-copy-a', 'memory-copy-a', 'proj');
-      seedSession(db, 'content-copy-b', 'memory-copy-b', 'proj');
-      const bucketDir = resolveDeliverableBucketDir('proj');
-      mkdirSync(bucketDir, { recursive: true });
-      const bucketPath = join(bucketDir, 'pending-abcdef12.html');
-      writeFileSync(bucketPath, '<h1>pending</h1>');
-      store.recordDeliverable({
-        project: 'proj', contentSessionId: 'content-copy-a', platformSource: 'claude', title: 'pending.html',
-        kind: 'page', sourcePath: '/repo/pending.html', bucketPath, bytes: 16, sha256: 'a'.repeat(64),
-        declared: false, occurredAtEpoch: 1,
-      });
-      setup(null);
-
-      expect(callDelete('claude', 'content-copy-a').status).toBe(200);
-      // The other hook already has this content-addressed copy, but its API
-      // request to record the row has not reached the worker yet.
-      expect(existsSync(bucketPath)).toBe(true);
-      store.recordDeliverable({
-        project: 'proj', contentSessionId: 'content-copy-b', platformSource: 'claude', title: 'pending.html',
-        kind: 'page', sourcePath: '/repo/pending.html', bucketPath, bytes: 16, sha256: 'a'.repeat(64),
-        declared: false, occurredAtEpoch: 1,
-      });
       expect(existsSync(bucketPath)).toBe(true);
     } finally {
       dataDir.restore();

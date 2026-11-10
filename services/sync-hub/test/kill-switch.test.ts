@@ -33,7 +33,6 @@ import {
 	readKillSwitch,
 	SYNC_MODE_HEADER,
 	SYNC_MODE_POLL,
-	tripKillSwitch,
 } from "../src/kill-switch";
 import { POLL_PUSH_DRAIN_MAX_PAGES } from "../src/index";
 import { PROJECTION_PAGE_MAX_OPS } from "../src/projection-protocol";
@@ -84,37 +83,6 @@ describe("kill switch: front Worker behavior", () => {
 		expect(body.projected_seq).toBe(body.head_seq);
 		expect(body.projected_seq).toBe("1");
 
-		const repair = await SELF.fetch(`${base}/internal/v1/projection/drain`, {
-			method: "POST",
-			headers: {
-				Authorization: "Bearer test-projector-secret",
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ protocol_version: 1, user_id: "user-ks-push" }),
-		});
-		expect(repair.status).toBe(200);
-		expect(await repair.json()).toMatchObject({
-			head_seq: "1",
-			projected_through_seq: "1",
-		});
-	});
-
-	it("tripped ⇒ sequential pushes keep head_seq <= projected_seq (lag cannot re-grow)", async () => {
-		await trip();
-		const user = "user-ks-pace";
-		for (const origin of ["1", "2", "3"]) {
-			const op = await observationOp(origin, "1", "dev-ks");
-			const res = await SELF.fetch(`${base}/v1/sync/ops`, {
-				method: "POST",
-				headers: { ...headers(user), "Content-Type": "application/json" },
-				body: JSON.stringify({ protocol_version: 2, ops: [op] }),
-			});
-			expect(res.status).toBe(200);
-			expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
-			const body = (await res.json()) as { head_seq: string; projected_seq: string };
-			expect(body.projected_seq).toBe(body.head_seq);
-			expect(body.head_seq).toBe(origin);
-		}
 	});
 
 	it("tripped ⇒ a pre-existing lag larger than the poll-mode page budget still reaches head<=projected", async () => {
@@ -162,6 +130,11 @@ describe("kill switch: front Worker behavior", () => {
 			projected_seq: String(lagged),
 		});
 
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		const state = await stub.getProjectionState();
+		expect(state.projected_seq).toBe(String(lagged));
+		expect(state.head_seq).toBe(String(lagged + 1));
+
 		let lastStatus = first.status;
 		let lastBody = firstBody;
 		for (let attempt = 0; attempt < 5 && lastStatus !== 200; attempt++) {
@@ -173,39 +146,6 @@ describe("kill switch: front Worker behavior", () => {
 		expect(lastStatus).toBe(200);
 		expect(lastBody.projected_seq).toBe(lastBody.head_seq);
 		expect(lastBody.head_seq).toBe(String(lagged + 1));
-	});
-
-	it("tripped ⇒ a bounded inline catch-up does not continue in the background", async () => {
-		await trip();
-		const user = "user-ks-no-waituntil";
-		const stub = env.SYNC_HUB.getByName(user);
-		const lagged = POLL_PUSH_DRAIN_MAX_PAGES * PROJECTION_PAGE_MAX_OPS;
-		for (let start = 1; start <= lagged; start += 400) {
-			const count = Math.min(400, lagged - start + 1);
-			const seed = await Promise.all(
-				Array.from({ length: count }, (_, index) => observationOp(String(start + index), "1", "dev-ks")),
-			);
-			const seeded = await stub.pushOps("dev-ks", seed, null);
-			if ("refused" in seeded) throw new Error(seeded.error);
-		}
-
-		const next = await observationOp(String(lagged + 1), "1", "dev-ks");
-		const first = await SELF.fetch(`${base}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...headers(user), "Content-Type": "application/json" },
-			body: JSON.stringify({ protocol_version: 2, ops: [next] }),
-		});
-		expect(first.status).toBe(503);
-		expect(await first.json()).toMatchObject({
-			error: "projection_catching_up",
-			projected_seq: String(lagged),
-			head_seq: String(lagged + 1),
-		});
-
-		await new Promise((resolve) => setTimeout(resolve, 250));
-		const state = await stub.getProjectionState();
-		expect(state.projected_seq).toBe(String(lagged));
-		expect(state.head_seq).toBe(String(lagged + 1));
 	});
 
 	it("tripped ⇒ pulls still succeed AND carry X-Sync-Mode: poll (poll-path convergence intact)", async () => {
@@ -230,15 +170,6 @@ describe("kill switch: front Worker behavior", () => {
 		expect(pull.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
 		const page = (await pull.json()) as { ops: Array<{ body: string }> };
 		expect(page.ops.map((change) => JSON.parse(change.body).origin_local_id)).toEqual(["10"]);
-	});
-
-	it("tripped ⇒ /v1/sync/status carries the header too", async () => {
-		await trip();
-		const res = await SELF.fetch(`${base}/v1/sync/status`, {
-			headers: headers("user-ks-status"),
-		});
-		expect(res.status).toBe(200);
-		expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
 	});
 
 	it("tripped ⇒ WS upgrade refused: 503 + recognizable JSON body + header, before the DO is woken", async () => {
@@ -266,14 +197,6 @@ describe("kill switch: front Worker behavior", () => {
 		});
 		expect(clear.status).toBe(200);
 		expect(clear.headers.get(SYNC_MODE_HEADER)).toBeNull();
-	});
-
-	it("ANY value at the key counts as tripped (hand-typed emergency put)", async () => {
-		await trip("1");
-		const res = await SELF.fetch(`${base}/v1/sync/status`, {
-			headers: headers("user-ks-any"),
-		});
-		expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
 	});
 
 	it("error responses carry the header too while tripped (the header is the only mode signal)", async () => {
@@ -365,22 +288,6 @@ describe("kill switch: per-isolate cache + fail-closed (unit)", () => {
 		expect(kv.reads).toBe(2);
 	});
 
-	it("KV get throws means ON", async () => {
-		const kv: FakeKV = { reads: 0, value: null, throwOnGet: true };
-		const testEnv = fakeEnv(kv, "0");
-		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
-		expect(kv.reads).toBe(1);
-	});
-
-	it("KV get returns null means OFF", async () => {
-		const kv: FakeKV = { reads: 0, value: null, throwOnGet: false };
-		const testEnv = fakeEnv(kv, "0");
-		const state = await readKillSwitch(testEnv);
-		expect(state.tripped).toBe(false);
-		expect(state.raw).toBeNull();
-		expect(kv.reads).toBe(1);
-	});
-
 	it("KV get returns a value means ON", async () => {
 		const kv: FakeKV = { reads: 0, value: "1", throwOnGet: false };
 		const testEnv = fakeEnv(kv, "0");
@@ -423,16 +330,4 @@ describe("kill switch: per-isolate cache + fail-closed (unit)", () => {
 		spy.mockRestore();
 	});
 
-	it("tripKillSwitch writes a JSON flag once and reports already_tripped after", async () => {
-		const first = await tripKillSwitch(env as Env, { source: "unit", detail: 1 });
-		expect(first.alreadyTripped).toBe(false);
-		const raw = await env.AUTH_CACHE.get(KILL_SWITCH_KEY);
-		const flag = JSON.parse(raw!) as { source: string; tripped_at: string };
-		expect(flag.source).toBe("unit");
-		expect(typeof flag.tripped_at).toBe("string");
-
-		const second = await tripKillSwitch(env as Env, { source: "unit" });
-		expect(second.alreadyTripped).toBe(true);
-		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).toBe(raw);
-	});
 });

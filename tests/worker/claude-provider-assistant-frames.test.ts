@@ -1,71 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import codeMode from '../../plugin/modes/code.json';
+import { installScriptedClaudeSdk, createScriptedSession } from '../fixtures/worker/scripted-claude-sdk.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
-// bun's mock.module is process-global and sticky: it is never auto-unregistered
-// and leaks into every file that runs afterwards. Snapshot each real module
-// before mocking and re-register the snapshot in afterAll so the stubs below
-// cannot break later suites that drive the real implementations.
-const actualAgentSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
-const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
-const actualEnvManager = { ...(await import('../../src/shared/EnvManager.js')) };
-const actualProcessRegistry = { ...(await import('../../src/supervisor/process-registry.js')) };
-const actualModeManager = { ...(await import('../../src/services/domain/ModeManager.js')) };
-
-let scriptedMessages: unknown[] = [];
-
-mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  ...actualAgentSdk,
-  query: () => (async function* () {
-    for (const message of scriptedMessages) {
-      yield message;
-    }
-  })(),
-}));
-
-mock.module('../../src/shared/find-claude-executable.js', () => ({
-  ...actualFindClaude,
-  findClaudeExecutable: () => '/mock/claude',
-}));
-
-mock.module('../../src/shared/EnvManager.js', () => ({
-  ...actualEnvManager,
-  buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH ?? '' }),
-  getAuthMethodDescription: () => 'test-auth',
-}));
-
-mock.module('../../src/supervisor/process-registry.js', () => ({
-  ...actualProcessRegistry,
-  waitForSlot: async () => ({ release: () => {} }),
-  createSdkSpawnFactory: () => () => {
-    throw new Error('spawn factory must not run in this test');
-  },
-  getSdkProcessForSession: () => undefined,
-  ensureSdkProcessExit: async () => {},
-}));
-
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ...actualModeManager,
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: codeMode.prompts,
-        observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
-        observation_concepts: [],
-      }),
-    }),
-  },
-}));
-
-afterAll(() => {
-  mock.module('../../src/services/domain/ModeManager.js', () => actualModeManager);
-  mock.module('@anthropic-ai/claude-agent-sdk', () => actualAgentSdk);
-  mock.module('../../src/shared/find-claude-executable.js', () => actualFindClaude);
-  mock.module('../../src/shared/EnvManager.js', () => actualEnvManager);
-  mock.module('../../src/supervisor/process-registry.js', () => actualProcessRegistry);
-});
+const sdkFixture = installScriptedClaudeSdk();
+afterAll(() => sdkFixture.restore());
 
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 const { logger } = await import('../../src/utils/logger.js');
@@ -109,27 +48,7 @@ function resultFrame(overrides: Record<string, unknown> = {}) {
 }
 
 function createSession(): ActiveSession {
-  return {
-    sessionDbId: 3492,
-    contentSessionId: 'content-3492',
-    memorySessionId: null,
-    project: 'observer-project',
-    platformSource: 'claude',
-    userPrompt: 'run the project',
-    abortController: new AbortController(),
-    generatorPromise: null,
-    lastPromptNumber: 2,
-    startTime: Date.now(),
-    cumulativeInputTokens: 0,
-    cumulativeOutputTokens: 0,
-    earliestPendingTimestamp: QUEUED_TIMESTAMP,
-    claimedMessageIds: [1],
-    conversationHistory: [],
-    currentProvider: null,
-    consecutiveRestarts: 0,
-    consecutiveInvalidOutputs: 0,
-    lastGeneratorActivity: Date.now(),
-  } as ActiveSession;
+  return createScriptedSession(3492, { earliestPendingTimestamp: 1700000000000, claimedMessageIds: [1] });
 }
 
 function createHarness(session: ActiveSession) {
@@ -190,14 +109,14 @@ function createHarness(session: ActiveSession) {
 
 describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
   });
 
   it('leaves the claimed batch intact when a frame carries no text block', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame(),
@@ -225,7 +144,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'thinking', thinking: 'considering the batch', signature: 'sig' }]),
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame(),
@@ -244,73 +163,34 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
   // Every mode names the <skip_summary /> sentinel, so an empty or prose reply
   // to a queued batch did not answer it: the batch is asked for again once, in
   // a fresh generation, instead of being confirmed away.
-  it('asks again for the batch when the frame carries an empty text block', async () => {
+
+  it.each([
+    ['empty text', [{ type: 'text', text: '   ' }], 'output_retry:idle'],
+    ['idle prose', [{ type: 'text', text: 'No observations to record yet - waiting for tool executions and results.' }], 'output_retry:prose'],
+    ['textless turn', [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }], 'output_retry:idle'],
+  ])('hands the batch back once for %s', async (_label, content, abortReason) => {
     const session = createSession();
     const harness = createHarness(session);
-
-    scriptedMessages = [
-      assistantFrame([{ type: 'text', text: '   ' }]),
-      resultFrame(),
-    ];
+    sdkFixture.messages = [assistantFrame(content), resultFrame()];
 
     await harness.provider.startSession(session);
 
     expect(harness.storeObservations).not.toHaveBeenCalled();
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
-    expect(session.abortReason).toBe('output_retry:idle');
-  });
-
-  it('asks again for the batch on idle prose', async () => {
-    const session = createSession();
-    const harness = createHarness(session);
-
-    scriptedMessages = [
-      assistantFrame([
-        { type: 'text', text: 'No observations to record yet - waiting for tool executions and results.' },
-      ]),
-      resultFrame(),
-    ];
-
-    await harness.provider.startSession(session);
-
-    expect(harness.storeObservations).not.toHaveBeenCalled();
-    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
-    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
-    expect(session.abortReason).toBe('output_retry:prose');
+    expect(session.abortReason).toBe(abortReason);
   });
 
   it('dispatches string content as text', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [assistantFrame(OBSERVATION_XML), resultFrame()];
+    sdkFixture.messages = [assistantFrame(OBSERVATION_XML), resultFrame()];
 
     await harness.provider.startSession(session);
 
     expect(harness.storeObservations).toHaveBeenCalledTimes(1);
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
-  });
-
-  it('hands the batch back once at the end of a turn that produced no text frame', async () => {
-    const session = createSession();
-    const harness = createHarness(session);
-
-    scriptedMessages = [
-      assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
-      resultFrame(),
-    ];
-
-    await harness.provider.startSession(session);
-
-    // The turn said nothing at all, so the batch still gets the idle hand-off,
-    // just once and at turn granularity: it goes back to pending for one more
-    // try. Leaving it claimed would hand it to session teardown, which disposes
-    // the in-RAM buffer without a hand-off.
-    expect(harness.storeObservations).not.toHaveBeenCalled();
-    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
-    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
-    expect(session.abortReason).toBe('output_retry:idle');
   });
 
   // #3454: the idle hand-off names why the turn was empty — block kinds only,
@@ -323,7 +203,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     const warn = spyOn(logger, 'warn').mockImplementation(() => {});
 
     try {
-      scriptedMessages = [
+      sdkFixture.messages = [
         assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { secret: 'do-not-log' } }]),
         assistantFrame([{ type: 'thinking', thinking: 'private reasoning' }, { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: {} }]),
         resultFrame(),
@@ -340,26 +220,11 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     }
   });
 
-  it('does not re-confirm at the result when the turn already dispatched text', async () => {
-    const session = createSession();
-    const harness = createHarness(session);
-
-    scriptedMessages = [
-      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
-      resultFrame(),
-    ];
-
-    await harness.provider.startSession(session);
-
-    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
-    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
-  });
-
   it('tracks text dispatch per turn across consecutive turns', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame(),
       assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
@@ -378,7 +243,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'thinking', thinking: 'considering the batch', signature: 'sig' }]),
       resultFrame({ subtype: 'error_during_execution', is_error: true }),
     ];
@@ -398,7 +263,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
 
 describe('ClaudeProvider invalid API key detection (#4253)', () => {
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
   });
 
   it('stores an observation that quotes "Invalid API key" mid-content', async () => {
@@ -409,7 +274,7 @@ describe('ClaudeProvider invalid API key detection (#4253)', () => {
       'The login test asserted the CLI prints "Invalid API key" for a revoked key.',
     );
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: quotingXml }]),
       resultFrame(),
     ];
@@ -424,7 +289,7 @@ describe('ClaudeProvider invalid API key detection (#4253)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: 'Invalid API key · the login test covers the revoked-key path.' }]),
       resultFrame(),
     ];
@@ -436,7 +301,7 @@ describe('ClaudeProvider invalid API key detection (#4253)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       { ...assistantFrame([{ type: 'text', text: 'Invalid API key · Fix external API key' }]), error: 'authentication_failed' },
       resultFrame({ is_error: true }),
     ];
@@ -450,7 +315,7 @@ describe('ClaudeProvider model refusal detection (#5315)', () => {
   const REFUSAL = "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.";
 
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
   });
 
   it.each([
@@ -460,7 +325,7 @@ describe('ClaudeProvider model refusal detection (#5315)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       { ...assistantFrame([{ type: 'text', text: REFUSAL }]), ...extra },
       resultFrame({ is_error: true }),
     ];
@@ -476,7 +341,7 @@ describe('ClaudeProvider model refusal detection (#5315)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: OBSERVATION_XML.replace('The queued batch reached the parser.', REFUSAL) }]),
       resultFrame(),
     ];
@@ -490,7 +355,7 @@ describe('ClaudeProvider model refusal detection (#5315)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: "There's an issue with the selected model (auto) in the settings test, which now passes." }]),
       resultFrame(),
     ];
@@ -503,7 +368,7 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
   let infoSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
     infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
   });
 
@@ -521,7 +386,7 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: 'Not logged in · Please run /login' }]),
       resultFrame(),
     ];
@@ -539,7 +404,7 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     const session = createSession();
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame(),
     ];
@@ -557,7 +422,7 @@ describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
   let infoSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    scriptedMessages = [];
+    sdkFixture.messages = [];
     infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
   });
 
@@ -571,7 +436,7 @@ describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
     const promptText = 'private observation prompt content';
     session.userPrompt = promptText;
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame({
         usage: {
@@ -604,7 +469,7 @@ describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
     session.lastGeneratorSource = 'init';
     const harness = createHarness(session);
 
-    scriptedMessages = [
+    sdkFixture.messages = [
       assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
       resultFrame(),
     ];

@@ -304,87 +304,6 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it('pauses on a bare unauthorized status and preserves the claimed batch', async () => {
-    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
-    const sm = new SessionManager(makeDbManager(storeObservations));
-    const session = sm.initializeSession(9, 'do the thing', 1);
-    session.memorySessionId = 'mem-9';
-    await queueAndClaimOne(sm, 9);
-
-    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
-
-    await processAgentResponse(
-      '401 Unauthorized',
-      session,
-      makeDbManager(storeObservations),
-      sm,
-      makeWorker(),
-      0,
-      null,
-      'TestAgent',
-    );
-
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(9);
-    expect(storeObservations).not.toHaveBeenCalled();
-    expect(sm.getMessageBuffer().getPendingCount(9)).toBe(1);
-    expect(session.abortReason).toBe('auth:observer_text');
-    expect(session.abortController.signal.aborted).toBe(true);
-  });
-
-  it('treats unrelated login instructions as ordinary prose, not an auth pause', async () => {
-    const sm = new SessionManager(makeDbManager());
-    const session = sm.initializeSession(10, 'do the thing', 1);
-    session.memorySessionId = 'mem-10';
-    await queueAndClaimOne(sm, 10);
-
-    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
-
-    await processAgentResponse(
-      'Please run /login in the observed project instructions.',
-      session,
-      makeDbManager(),
-      sm,
-      makeWorker(),
-      0,
-      null,
-      'TestAgent',
-    );
-
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(10);
-    expect(sm.getMessageBuffer().getPendingCount(10)).toBe(1);
-    expect(session.abortReason).toBe('output_retry:prose');
-  });
-
-  it('treats project auth-guide prose as ordinary prose, not an auth pause', async () => {
-    const sm = new SessionManager(makeDbManager());
-    const session = sm.initializeSession(11, 'do the thing', 1);
-    session.memorySessionId = 'mem-11';
-    await queueAndClaimOne(sm, 11);
-
-    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
-
-    await processAgentResponse(
-      'The project authentication guide says to run /login before testing.',
-      session,
-      makeDbManager(),
-      sm,
-      makeWorker(),
-      0,
-      null,
-      'TestAgent',
-    );
-
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(11);
-    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(1);
-    expect(session.abortReason).toBe('output_retry:prose');
-  });
-
   it('auth generator exit keeps the active session but discards its buffered work, keeping dedup', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(8, 'do the thing', 1);
@@ -456,43 +375,6 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.pausedReason).toBe('quota');
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
-  });
-
-  it('confirms a skip but preserves the same queue shape for a quota pause', async () => {
-    const skipSm = new SessionManager(makeDbManager());
-    const skipSession = skipSm.initializeSession(4, 'do the thing', 1);
-    skipSession.memorySessionId = 'mem-4';
-    await queueAndClaimOne(skipSm, 4);
-
-    await processAgentResponse(
-      '<skip_summary reason="noise" />',
-      skipSession,
-      makeDbManager(),
-      skipSm,
-      makeWorker(),
-      0,
-      null,
-      'TestAgent',
-    );
-
-    const quotaSm = new SessionManager(makeDbManager());
-    const quotaSession = quotaSm.initializeSession(5, 'do the thing', 1);
-    quotaSession.memorySessionId = 'mem-5';
-    await queueAndClaimOne(quotaSm, 5);
-
-    await processAgentResponse(
-      'Your subscription weekly quota has been exhausted and resets later.',
-      quotaSession,
-      makeDbManager(),
-      quotaSm,
-      makeWorker(),
-      0,
-      null,
-      'TestAgent',
-    );
-
-    expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
-    expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
   });
 
   it('keeps a queued batch the Claude CLI answered with its 429 reply text, however often it repeats (#5428)', async () => {

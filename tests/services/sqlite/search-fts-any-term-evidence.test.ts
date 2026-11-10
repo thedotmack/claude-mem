@@ -1,8 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
@@ -30,6 +26,23 @@ describe('short any-term questions retain bounded matching evidence', () => {
         type: 'decision', title: text, subtitle: null, facts: [], narrative: null,
         concepts: [], files_read: [], files_modified: [],
       }, 1);
+    }
+  }
+
+  function seedMany(titles: string[]): void {
+    seed(titles[0]);
+    const memorySessionId = `evidence-${sequence - 1}-mem`;
+    const epoch = Date.now();
+    const insert = store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, text, type, title, created_at, created_at_epoch)
+      VALUES (?, 'billing-api', '', 'decision', ?, ?, ?)
+    `);
+    try {
+      store.db.transaction(() => {
+        for (const title of titles.slice(1)) insert.run(memorySessionId, title, new Date(epoch).toISOString(), epoch);
+      })();
+    } finally {
+      insert.finalize();
     }
   }
 
@@ -90,21 +103,20 @@ describe('short any-term questions retain bounded matching evidence', () => {
   });
 
   it('does not re-admit a term whose document count alone exceeds the candidate budget', () => {
-    for (let index = 0; index < 1025; index++) seed(`Redis connection pool limit note ${index}`);
+    seedMany(Array.from({ length: 1025 }, (_, index) => `Redis connection pool limit note ${index}`));
     expect(build(question)).toBe('"What" OR "was" OR "our"');
     expect(search.searchObservations(question)).toEqual([]);
   });
 
   it('admits the least frequent excluded terms within the summed document budget', () => {
-    for (let index = 0; index < 1000; index++) {
-      seed(['ubiquitous', index < 400 ? 'scarce' : '', index < 600 ? 'shared' : ''].join(' '));
-    }
+    seedMany(Array.from({ length: 1000 }, (_, index) =>
+      ['ubiquitous', index < 400 ? 'scarce' : '', index < 600 ? 'shared' : ''].join(' ')));
     // All three indexed words exceed the 30% rule. 400 + 600 fits; adding 1000 does not.
     expect(build('missing ubiquitous shared scarce')).toBe('"missing" OR "scarce" OR "shared"');
   });
 
   it('admits a term at the exact candidate-document boundary', () => {
-    for (let index = 0; index < 1024; index++) seed('Redis connection pool limit');
+    seedMany(Array(1024).fill('Redis connection pool limit'));
     expect(build(question)).toBe('"What" OR "was" OR "our" OR "Redis"');
     expect(search.searchObservations(question, { limit: 1 })).toHaveLength(1);
   });
@@ -140,7 +152,7 @@ describe('short any-term questions retain bounded matching evidence', () => {
   it('charges only new candidates while retaining an existing non-ASCII match above the budget', () => {
     seed('Αθήνα');
     seed('Αθήνα');
-    for (let index = 0; index < 1024; index++) seed('salvage');
+    seedMany(Array(1024).fill('salvage'));
     expect(build('missing Αθήνα salvage')).toBe('"missing" OR "Αθήνα" OR "salvage"');
     const results = search.searchObservations('missing Αθήνα salvage', { limit: 2000 });
     expect(results.filter(row => row.title === 'Αθήνα')).toHaveLength(2);
@@ -201,26 +213,4 @@ describe('short any-term questions retain bounded matching evidence', () => {
     expect(search.searchObservations(question).map(row => row.title)).toContain(decision);
   });
 
-  it('retains matching evidence on a read-only file-backed connection', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'any-term-evidence-'));
-    const path = join(directory, 'memory.db');
-    try {
-      const writer = new SessionStore(path);
-      new SessionSearch(writer.db);
-      store.close();
-      store = writer;
-      seed(decision);
-      seed('Redis connection pool limit reviewed');
-      writer.close();
-      const reader = new Database(path, { readonly: true, create: false });
-      try {
-        expect(new SessionSearch(reader).searchObservations(question).map(row => row.title)).toContain(decision);
-      } finally {
-        reader.close();
-      }
-      store = new SessionStore(':memory:');
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
 });

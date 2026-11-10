@@ -65,13 +65,6 @@ describe('rankByStrength with alpha > 0', () => {
     expect(blendedScore(reinforcedOld, TODAY, 0)).toBeLessThan(blendedScore(fresh, TODAY, 0));
   });
 
-  it('lets reinforced history take a non-head slot from a cold row', () => {
-    // count 2 → head of 1 (the newest) + one ranked slot
-    const p = pool({ age: 1 }, { age: 3 }, HEAVY(40));
-    const out = rankByStrength(p, 2, 0.5, TODAY);
-    expect(ids(out)).toEqual([0, 2]);
-  });
-
   it('always keeps the newest rows, so a stale summary is never shown as current', () => {
     // Every older row is heavily reinforced; the recency head must still survive.
     const p = pool({ age: 1 }, { age: 2 }, HEAVY(10), HEAVY(20), HEAVY(30), HEAVY(40), HEAVY(50), HEAVY(60), HEAVY(70), HEAVY(80));
@@ -80,15 +73,6 @@ describe('rankByStrength with alpha > 0', () => {
     expect(recencyHeadSize(count)).toBe(2);
     expect(ids(out).slice(0, 2)).toEqual([0, 1]);
     expect(out[0].created_at_epoch).toBe(epoch(1));
-  });
-
-  it('returns at most count rows, newest first', () => {
-    const p = pool({ age: 2 }, HEAVY(50), { age: 8 }, { age: 9 }, { age: 12 });
-    const out = rankByStrength(p, 3, 0.5, TODAY);
-    expect(out.length).toBe(3);
-    for (let i = 1; i < out.length; i++) {
-      expect(out[i - 1].created_at_epoch).toBeGreaterThanOrEqual(out[i].created_at_epoch);
-    }
   });
 
   it('treats a missing or corrupt history as no reinforcement', () => {

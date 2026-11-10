@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { expandTilde, paths } from '../../shared/paths.js';
 import type { EventAction, TranscriptSchema, TranscriptWatchConfig } from './types.js';
@@ -22,8 +22,9 @@ export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: stri
   if (!nameOrSchemaIsCodex || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
-  const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');
-  return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
+  const codexHomes = [join(homedir(), '.codex')];
+  if (process.env.CODEX_HOME) codexHomes.push(resolve(process.env.CODEX_HOME));
+  return codexHomes.some(home => normalizedPath === `${join(home, 'sessions').replace(/\\/g, '/')}/**/*.jsonl`);
 }
 
 export function shouldSuppressNativeCodexAgentsContext(watch: {

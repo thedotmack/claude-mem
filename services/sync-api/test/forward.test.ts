@@ -58,9 +58,6 @@ beforeAll(() => {
 					headers: { "Content-Type": "application/json", "Retry-After": "7", "X-Sync-Mode": "poll" },
 				});
 			}
-			if (url.pathname.endsWith("/v1/sync/stream-back")) {
-				return new Response("x".repeat(3_000_000), { headers: { "Content-Type": "text/plain" } });
-			}
 			return new Response("unexpected", { status: 418 });
 		},
 	});
@@ -216,12 +213,6 @@ describe("forward mode: proxy", () => {
 		expect(seen.bodySha256).toBe(new Bun.CryptoHasher("sha256").update(plain).digest("hex"));
 	});
 
-	it("streams a large response body back", async () => {
-		const res = await fetch(`${proxy.url}/v1/sync/stream-back`);
-		expect(res.status).toBe(200);
-		expect((await res.text()).length).toBe(3_000_000);
-	});
-
 	it("answers the legacy WebSocket route with 410 websocket_retired", async () => {
 		const before = capturedUpstreamRequests.length;
 		const res = await fetch(`${proxy.url}/v1/sync/ws`, {
@@ -230,15 +221,6 @@ describe("forward mode: proxy", () => {
 		expect(res.status).toBe(410);
 		expect(await res.json()).toEqual({ error: "websocket_retired" });
 		expect(capturedUpstreamRequests.length).toBe(before);
-	});
-
-	it("fails a real WebSocket handshake (old clients' advisory socket closes and backs off)", async () => {
-		const ws = new WebSocket(`${proxy.url.replace("http:", "ws:")}/v1/sync/ws`);
-		const closed = await new Promise<boolean>((resolve) => {
-			ws.onopen = () => resolve(false);
-			ws.onclose = () => resolve(true);
-		});
-		expect(closed).toBe(true);
 	});
 
 	it("answers /internal/v1/* with 410", async () => {

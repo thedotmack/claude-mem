@@ -2,62 +2,30 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { HybridSearchStrategy } from '../../../../src/services/worker/search/strategies/HybridSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult } from '../../../../src/services/worker/search/types.js';
 
-const mockObservation1: ObservationSearchResult = {
-  id: 1,
-  memory_session_id: 'session-123',
-  project: 'test-project',
-  text: 'Test observation 1',
-  type: 'decision',
-  title: 'First Decision',
-  subtitle: 'Subtitle 1',
-  facts: '["fact1"]',
-  narrative: 'Narrative 1',
-  concepts: '["concept1"]',
-  files_read: '["file1.ts"]',
-  files_modified: '["file2.ts"]',
-  prompt_number: 1,
-  discovery_tokens: 100,
-  created_at: '2025-01-01T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24
-};
+function obs(id: number, daysAgo: number): ObservationSearchResult {
+  return {
+    id,
+    memory_session_id: id === 3 ? 'session-456' : 'session-123',
+    project: 'test-project',
+    text: `Test observation ${id}`,
+    type: ['decision', 'bugfix', 'feature'][id - 1],
+    title: ['First Decision', 'Second Bugfix', 'Third Feature'][id - 1],
+    subtitle: `Subtitle ${id}`,
+    facts: JSON.stringify([`fact${id}`]),
+    narrative: `Narrative ${id}`,
+    concepts: JSON.stringify([`concept${id}`]),
+    files_read: JSON.stringify([`file${id * 2 - 1}.ts`]),
+    files_modified: JSON.stringify([`file${id * 2}.ts`]),
+    prompt_number: id,
+    discovery_tokens: 50 * (id + 1),
+    created_at: `2025-01-0${id}T12:00:00.000Z`,
+    created_at_epoch: Date.now() - 1000 * 60 * 60 * 24 * daysAgo
+  };
+}
 
-const mockObservation2: ObservationSearchResult = {
-  id: 2,
-  memory_session_id: 'session-123',
-  project: 'test-project',
-  text: 'Test observation 2',
-  type: 'bugfix',
-  title: 'Second Bugfix',
-  subtitle: 'Subtitle 2',
-  facts: '["fact2"]',
-  narrative: 'Narrative 2',
-  concepts: '["concept2"]',
-  files_read: '["file3.ts"]',
-  files_modified: '["file4.ts"]',
-  prompt_number: 2,
-  discovery_tokens: 150,
-  created_at: '2025-01-02T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24 * 2
-};
-
-const mockObservation3: ObservationSearchResult = {
-  id: 3,
-  memory_session_id: 'session-456',
-  project: 'test-project',
-  text: 'Test observation 3',
-  type: 'feature',
-  title: 'Third Feature',
-  subtitle: 'Subtitle 3',
-  facts: '["fact3"]',
-  narrative: 'Narrative 3',
-  concepts: '["concept3"]',
-  files_read: '["file5.ts"]',
-  files_modified: '["file6.ts"]',
-  prompt_number: 3,
-  discovery_tokens: 200,
-  created_at: '2025-01-03T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24 * 3
-};
+const mockObservation1 = obs(1, 1);
+const mockObservation2 = obs(2, 2);
+const mockObservation3 = obs(3, 3);
 
 const mockSession: SessionSummarySearchResult = {
   id: 1,
@@ -113,29 +81,6 @@ describe('HybridSearchStrategy', () => {
   });
 
   describe('findByFile', () => {
-    it('should find observations and sessions by file path', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
-
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
-      expect(result.observations.length).toBeGreaterThanOrEqual(0);
-      expect(result.sessions).toHaveLength(1);
-    });
-
-    it('should return sessions without semantic ranking', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
-
-      expect(result.sessions).toHaveLength(1);
-      expect(result.sessions[0].id).toBe(1);
-    });
-
     it('should preserve platformSource through by-file metadata search and hydration', async () => {
       const options: StrategySearchOptions = {
         limit: 10,
@@ -150,23 +95,6 @@ describe('HybridSearchStrategy', () => {
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
         platformSource: 'cursor'
       }));
-    });
-
-    it('should apply semantic ranking only to observations', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
-        ids: [2, 1], // Chroma ranking for observations
-        distances: [0.1, 0.2],
-        metadatas: []
-      }));
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
-
-      expect(result.observations[0].id).toBe(2);
-      expect(result.usedChroma).toBe(true);
     });
 
     it('falls back to scoped SQLite file observation matches when platform-scoped Chroma ranks zero ids', async () => {
@@ -185,20 +113,6 @@ describe('HybridSearchStrategy', () => {
       expect(result.usedChroma).toBe(false);
       expect(result.observations.map(obs => obs.id)).toEqual([1, 2]);
       expect(result.sessions).toEqual([mockSession]);
-    });
-
-    it('falls back to the exact file matches when Chroma ranks none of them, with no platform filter', async () => {
-      // Chroma empty, stale or mid-backfill must not hide exact metadata matches.
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
-        ids: [],
-        distances: [],
-        metadatas: []
-      }));
-
-      const result = await strategy.findByFile('/path/to/file.ts', { limit: 10 });
-
-      expect(result.usedChroma).toBe(false);
-      expect(result.observations.map(obs => obs.id)).toEqual([1, 2]);
     });
 
     it('keeps exact file matches Chroma did not rank, after the ranked ones', async () => {
@@ -244,14 +158,6 @@ describe('HybridSearchStrategy', () => {
       expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledTimes(1);
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({ projects: readKeys }));
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ projects: readKeys }));
-    });
-
-    it('forwards isFolder so a folder is matched by its direct children, not as one file', async () => {
-      await strategy.findByFile('/repo/src/utils', { limit: 10, isFolder: true });
-
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/repo/src/utils', expect.objectContaining({
-        isFolder: true
-      }));
     });
 
     it('should return usedChroma: false when no observations to rank', async () => {

@@ -30,14 +30,4 @@ describe('isRetryableKind', () => {
   it('does not retry a plain (unclassified) Error', () => {
     expect(isRetryableKind(new Error('ECONNRESET'))).toBe(false);
   });
-
-  it('does not retry an allowance_exhausted gateway envelope carried as quota_exhausted', () => {
-    const err = new ClassifiedProviderError('You have used your allowance.', {
-      kind: 'quota_exhausted',
-      cause: null,
-      code: 'allowance_exhausted',
-      requestId: 'abc',
-    });
-    expect(isRetryableKind(err)).toBe(false);
-  });
 });

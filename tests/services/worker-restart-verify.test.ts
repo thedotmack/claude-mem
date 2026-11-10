@@ -297,13 +297,14 @@ describe('verifyWorkerFinishedStarting — the new worker must finish starting',
     tracker.setInitPhase('db_ready');
     const { port, version } = await startWorker(tracker);
 
+    const ceilingMs = 250;
     const start = Date.now();
-    const result = await verifyWorkerFinishedStarting(port, OLD_PID, version, CEILING_MS);
+    const result = await verifyWorkerFinishedStarting(port, OLD_PID, version, ceilingMs);
 
     expect(result).toEqual({ ok: false, startupFailed: false, lastObserved: expect.stringContaining('"phase":"db_ready"') });
     // It waited out the whole ceiling, and no longer (generous slack for CI).
-    expect(Date.now() - start).toBeGreaterThanOrEqual(CEILING_MS);
-    expect(Date.now() - start).toBeLessThan(CEILING_MS + 2000);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(ceilingMs);
+    expect(Date.now() - start).toBeLessThan(ceilingMs + 2000);
     // The restart CLI's proof, which reads only /api/health, would have taken this worker.
     expect((await verifyRestartedWorker(port, OLD_PID, version, CEILING_MS, FAST)).ok).toBe(true);
   });
@@ -325,10 +326,10 @@ describe('verifyWorkerFinishedStarting — the new worker must finish starting',
     tracker.setInitPhase('ready');
     const { port, version } = await startWorker(tracker);
 
-    const sameWorker = await verifyWorkerFinishedStarting(port, process.pid, version, CEILING_MS);
+    const sameWorker = await verifyWorkerFinishedStarting(port, process.pid, version, 250);
     expect(sameWorker).toEqual({ ok: false, startupFailed: false, lastObserved: expect.stringContaining(`"pid":${process.pid}`) });
 
-    const otherVersion = await verifyWorkerFinishedStarting(port, OLD_PID, '0.0.1-stale', CEILING_MS);
+    const otherVersion = await verifyWorkerFinishedStarting(port, OLD_PID, '0.0.1-stale', 250);
     expect(otherVersion).toEqual({ ok: false, startupFailed: false, lastObserved: expect.stringContaining(`"version":"${version}"`) });
   });
 

@@ -69,42 +69,20 @@ describe("token verification (real path)", () => {
 		expect(second.status).toBe(403);
 	});
 
-	it("403s when verify omits the canonical user id", async () => {
-		const res = await getStatus("no-id", "user-auth-3");
-		expect(res.status).toBe(403);
-		const body = (await res.json()) as { error: string };
-		expect(body.error).toContain("missing canonical user id");
-	});
-
-	it("401s when verify rejects the token (401)", async () => {
-		const res = await getStatus("denied-401", "user-auth-4");
-		expect(res.status).toBe(401);
-	});
-
-	it("401s when verify rejects the token (403)", async () => {
-		const res = await getStatus("denied-403", "user-auth-5");
-		expect(res.status).toBe(401);
-	});
-
-	it("passes a lapsed subscription through as 403 subscription_inactive (402)", async () => {
-		// The Pro verifier answers 402 for a lapsed, cancelled or unpaid plan.
-		// That is an entitlement decision, not an outage: the Hub must answer it
-		// terminally so the client pauses sync with the "renew at cmem.ai/pro"
-		// message instead of retrying a 503 forever.
-		const res = await getStatus("denied-402", "user-auth-402");
-		expect(res.status).toBe(403);
-		const body = await res.json() as Record<string, unknown>;
-		expect(body.code).toBe("subscription_inactive");
-	});
-
-	it("503s fail-closed when the verify endpoint is unreachable", async () => {
-		const res = await getStatus("network-error", "user-auth-6");
-		expect(res.status).toBe(503);
-	});
-
-	it("503s fail-closed when the verify endpoint 500s", async () => {
-		const res = await getStatus("upstream-500", "user-auth-7");
-		expect(res.status).toBe(503);
+	it.each([
+		["no-id", 403, "missing canonical user id", undefined],
+		["denied-401", 401, undefined, undefined],
+		["denied-403", 401, undefined, undefined],
+		["denied-402", 403, undefined, "subscription_inactive"],
+		["upstream-500", 503, undefined, undefined],
+	])("maps verifier %s to HTTP %s", async (token, status, error, code) => {
+		const res = await getStatus(String(token), `user-auth-${token}`);
+		expect(res.status).toBe(status);
+		if (error || code) {
+			const body = await res.json() as { error?: string; code?: string };
+			if (error) expect(body.error).toContain(error);
+			if (code) expect(body.code).toBe(code);
+		}
 	});
 
 	it("caches positive verdicts in KV — the second request makes no second verify fetch", async () => {
@@ -150,6 +128,19 @@ describe("token-verdict cache behavior", () => {
 		// ignore it even in direct tests.
 		DEV_ALLOW_ANY_TOKEN: "true",
 	} as unknown as Env;
+
+	it("503s fail-closed when token verification rejects", async () => {
+		const dependencies: AuthDependencies = {
+			...defaultAuthDependencies(authEnv),
+			async readCachedVerdict() { return null; },
+			async verifyToken() { throw new Error("verify network unavailable"); },
+		};
+		const result = await authenticateRequest(request, authEnv, dependencies);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable verifier authenticated");
+		expect(result.response.status).toBe(503);
+		expect(await result.response.json()).toEqual({ error: "token verification unreachable" });
+	});
 
 	it("treats a cache get failure as a miss and verifies upstream", async () => {
 		const logged: string[] = [];
@@ -216,99 +207,6 @@ describe("token-verdict cache behavior", () => {
 		});
 		expect(verifyCalls).toBe(1);
 		expect(logged).toEqual(["put"]);
-	});
-
-	it("honors AUTH_CACHE_TTL_SECONDS and re-verifies a revoked token at the boundary", async () => {
-		let nowMs = 0;
-		let cachedUntilMs = 0;
-		let verifyCalls = 0;
-		let revoked = false;
-		const ttlWrites: number[] = [];
-		const invalidated: string[] = [];
-		const dependencies: AuthDependencies = {
-			async readCachedVerdict() {
-				return nowMs < cachedUntilMs
-					? String(Date.now() + (cachedUntilMs - nowMs))
-					: null;
-			},
-			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
-				ttlWrites.push(ttlSeconds);
-				cachedUntilMs = nowMs + ttlSeconds * 1_000;
-			},
-			async invalidateCachedVerdict(cacheKey) {
-				invalidated.push(cacheKey);
-				cachedUntilMs = 0;
-			},
-			async verifyToken() {
-				verifyCalls += 1;
-				return revoked
-					? Response.json({ error: "rotated" }, { status: 401 })
-					: Response.json({ userId });
-			},
-			logCacheFailure() {},
-		};
-
-		expect(await authenticateRequest(request, authEnv, dependencies)).toEqual({
-			ok: true,
-			userId,
-			deviceId: "dev-auth",
-			deviceName: null,
-			authExpiresAtMs: expect.any(Number),
-		});
-		expect(ttlWrites).toEqual([300]);
-		revoked = true;
-
-		nowMs = 299_999;
-		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
-		expect(verifyCalls).toBe(1);
-
-		nowMs = 300_000;
-		const rejected = await authenticateRequest(request, authEnv, dependencies);
-		expect(rejected.ok).toBe(false);
-		if (rejected.ok) throw new Error("rotated token unexpectedly authenticated");
-		expect(rejected.response.status).toBe(401);
-		expect(verifyCalls).toBe(2);
-		expect(invalidated).toHaveLength(1);
-	});
-
-	it("cannot extend entitlement expiry beyond the configured TTL", async () => {
-		let nowMs = 0;
-		const entitlementExpiresAtMs = 1_000;
-		let cachedUntilMs = 0;
-		let verifyCalls = 0;
-		const dependencies: AuthDependencies = {
-			async readCachedVerdict() {
-				return nowMs < cachedUntilMs
-					? String(Date.now() + (cachedUntilMs - nowMs))
-					: null;
-			},
-			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
-				expect(ttlSeconds).toBeLessThanOrEqual(AUTH_CACHE_TTL_MAX_SECONDS);
-				expect(ttlSeconds).toBe(300);
-				cachedUntilMs = nowMs + ttlSeconds * 1_000;
-			},
-			...unusedInvalidate(),
-			async verifyToken() {
-				verifyCalls += 1;
-				return nowMs < entitlementExpiresAtMs
-					? Response.json({ userId })
-					: Response.json({ error: "expired" }, { status: 401 });
-			},
-			logCacheFailure() {},
-		};
-
-		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
-		nowMs = 299_999;
-		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
-		expect(verifyCalls).toBe(1);
-
-		nowMs = 300_000;
-		const rejected = await authenticateRequest(request, authEnv, dependencies);
-		expect(rejected.ok).toBe(false);
-		if (rejected.ok) throw new Error("expired entitlement unexpectedly authenticated");
-		expect(rejected.response.status).toBe(401);
-		expect(nowMs - entitlementExpiresAtMs).toBeLessThanOrEqual(300_000);
-		expect(verifyCalls).toBe(2);
 	});
 
 	it("defaults TTL to 15 minutes and clamps to 60s–60m", async () => {

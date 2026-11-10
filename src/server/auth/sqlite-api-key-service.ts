@@ -10,9 +10,11 @@ import { Database } from 'bun:sqlite';
 import {
   apiKeyPrefix,
   hashApiKey,
+  hashApiKeyAsync,
   hashApiKeyLegacySha256,
   isSaltedHash,
   verifyRawKeyAgainstStoredHash,
+  verifyRawKeyAgainstStoredHashAsync,
 } from '../auth/api-key-hash.js';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
 import type { ApiKey } from '../../core/schemas/auth.js';
@@ -166,6 +168,42 @@ export function verifyServerApiKey(
 export function listServerApiKeys(db: Database): ApiKey[] {
   ensureServerStorageSchema(db);
   return new AuthRepository(db).listApiKeys();
+}
+
+/** Request-path verification uses the shared bounded KDF queue, not the event loop. */
+export async function verifyServerApiKeyAsync(
+  db: Database,
+  rawKey: string,
+  requiredScopes: string[] = [],
+): Promise<VerifiedServerApiKey | null> {
+  const repo = new AuthRepository(db);
+  for (const candidate of repo.listActiveApiKeysByPrefix(apiKeyPrefix(rawKey))) {
+    let record: ApiKey | null = candidate;
+    // A concurrent first use may upgrade the same legacy hash while we await
+    // derivation. Reverify the replacement once; never trust a changed hash.
+    for (let attempt = 0; attempt < 2 && record; attempt++) {
+      if (record.status !== 'active'
+        || (record.expiresAtEpoch !== null && record.expiresAtEpoch <= Date.now())
+        || !hasRequiredScopes(record.scopes, requiredScopes)) break;
+      if (!await verifyRawKeyAgainstStoredHashAsync(rawKey, record.keyHash)) break;
+      const upgradedHash = isSaltedHash(record.keyHash) ? null : await hashApiKeyAsync(rawKey);
+      const current = repo.getApiKeyById(record.id);
+      if (!current) break;
+      if (current.keyHash !== record.keyHash) {
+        record = current;
+        continue;
+      }
+      // Revocation, expiry and scope edits remain effective while crypto is
+      // running. No await separates this final read from granting the request.
+      if (current.status !== 'active'
+        || (current.expiresAtEpoch !== null && current.expiresAtEpoch <= Date.now())
+        || !hasRequiredScopes(current.scopes, requiredScopes)) break;
+      if (upgradedHash !== null) repo.updateApiKeyHash(current.id, upgradedHash);
+      const used = repo.markApiKeyUsed(current.id)!;
+      return { record: used, teamId: used.teamId, projectId: used.projectId, scopes: used.scopes };
+    }
+  }
+  return null;
 }
 
 export function revokeServerApiKey(db: Database, id: string): ApiKey | null {

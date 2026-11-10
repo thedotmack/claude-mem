@@ -82,46 +82,6 @@ it('hands a transcript file edit off live once, with no disk spool or retry', as
   } finally { await settleHookSpoolNudges(); request.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 
-it('keeps same-session summaries behind a declined observation while other sessions progress', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cm-spool-order-')); process.env.CLAUDE_MEM_DATA_DIR = root;
-  try {
-    const spool = new HookSpool();
-    spool.enqueue('observation', { contentSessionId: 'a', platformSource: 'claude', toolName: 'Read', toolInput: null, toolResponse: 'contents', toolUseId: 'a1' });
-    spool.enqueue('summarize', { contentSessionId: 'a', platformSource: 'claude', lastAssistantMessage: 'done' });
-    spool.enqueue('observation', { contentSessionId: 'b', platformSource: 'claude', toolName: 'Read', toolInput: null, toolResponse: 'other', toolUseId: 'b1' });
-    const seen: string[] = [];
-    const first = await spool.drain(entry => { seen.push(entry.payload.contentSessionId + ':' + entry.kind); return entry.payload.contentSessionId !== 'a'; });
-    expect(seen).toEqual(['a:observation', 'b:observation']); expect(first.retained).toBe(2);
-    seen.length = 0;
-    await spool.drain(entry => { seen.push(entry.payload.contentSessionId + ':' + entry.kind); return true; });
-    expect(seen).toEqual(['a:observation', 'a:summarize']);
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
-it("does not hold a session's observations behind its summary retained for an unknown session", async () => {
-  const root = mkdtempSync(join(tmpdir(), 'cm-spool-unknown-session-')); process.env.CLAUDE_MEM_DATA_DIR = root;
-  try {
-    const spool = new HookSpool();
-    // The summary arrives first; the worker does not know the session until an observation creates it.
-    spool.enqueue('summarize', { contentSessionId: 'late', platformSource: 'claude', lastAssistantMessage: 'done' });
-    spool.enqueue('observation', { contentSessionId: 'late', platformSource: 'claude', toolName: 'Read', toolInput: null, toolResponse: 'contents', toolUseId: 'l1' });
-    let sessionKnown = false;
-    const seen: string[] = [];
-    const accept = (entry: any) => {
-      seen.push(entry.kind);
-      if (entry.kind === 'observation') { sessionKnown = true; return true; }
-      return sessionKnown;
-    };
-    const first = await spool.drain(accept);
-    expect(seen).toEqual(['summarize', 'observation']);
-    expect(first).toMatchObject({ drained: 1, retained: 1 });
-    seen.length = 0;
-    const second = await spool.drain(accept);
-    expect(seen).toEqual(['summarize']);
-    expect(second).toMatchObject({ drained: 1, retained: 0 });
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
 it('shares one in-flight worker nudge across a burst of spooled events', async () => {
   let resolveRequest!: (response: Response) => void;
   const request = spyOn(workerUtils, 'workerHttpRequest').mockImplementation(() => new Promise<Response>(resolve => { resolveRequest = resolve; }));

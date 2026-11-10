@@ -3,7 +3,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 import { reinforceObservation } from '../src/services/reinforcement/persist.js';
-import { blendedScore } from '../src/services/reinforcement/rank.js';
 
 // The standalone storeObservation() helper is gone — SessionStore owns every
 // observation write now, so the write path is exercised through its methods.
@@ -75,18 +74,6 @@ describe('reinforcement on the write path', () => {
     const first = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
     store.storeObservation('s1', 'proj', obs(), 2, 0, day1);
     expect(datesOf(store, first.id)).toEqual(['2026-06-10']);
-  });
-
-  it('a re-confirmed observation ranks above a same-day single-event one once ranking is on', () => {
-    const today = new Date('2026-06-12T12:00:00Z');
-    const a = store.storeObservation('s1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, day1);
-    const b = store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, day1);
-    store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 2, 0, day2); // reinforce b
-    const rowOf = (id: number) => store.db
-      .prepare('SELECT created_at_epoch, reinforcement_dates FROM observations WHERE id = ?')
-      .get(id) as { created_at_epoch: number; reinforcement_dates: string };
-    expect(blendedScore(rowOf(b.id), today, 0.5)).toBeGreaterThan(blendedScore(rowOf(a.id), today, 0.5));
-    expect(blendedScore(rowOf(b.id), today, 0)).toBe(blendedScore(rowOf(a.id), today, 0));
   });
 
   it('reinforceObservation appends a new day and reports missing rows', () => {

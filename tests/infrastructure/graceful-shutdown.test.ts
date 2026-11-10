@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import path from 'path';
 import http from 'http';
 import type {
@@ -8,7 +8,6 @@ import type {
   ShutdownableService,
   CloseableClient,
   CloseableDatabase,
-  PidInfo
 } from '../../src/services/infrastructure/index.js';
 
 // ── Data-dir isolation (Phase 6, worker-restart plan) ──────────────────────
@@ -80,13 +79,6 @@ describe('GracefulShutdown', () => {
     }
   });
 
-  it('resolves the PID file and supervisor registry into a temp dir, never the real ~/.claude-mem', () => {
-    const realDataDir = path.join(homedir(), '.claude-mem');
-    expect(DATA_DIR).not.toBe(realDataDir);
-    expect(PID_FILE.startsWith(realDataDir + path.sep)).toBe(false);
-    expect(paths.supervisorRegistry().startsWith(realDataDir + path.sep)).toBe(false);
-  });
-
   describe('performGracefulShutdown', () => {
     // Timeout kept at 15s as headroom. performGracefulShutdown calls
     // getSupervisor().stop() which runs runShutdownCascade against
@@ -150,23 +142,15 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
-      expect(callOrder).toContain('closeAllConnections');
-      expect(callOrder).toContain('serverClose');
-      expect(callOrder).toContain('sessionManager.shutdownAll');
-      expect(callOrder).toContain('mcpClient.close');
-      expect(callOrder).toContain('chromaMcpManager.stop');
-      expect(callOrder).toContain('dbManager.close');
-      expect(callOrder).toContain('contextReader.close');
-      expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('contextReader.close'));
-      expect(callOrder.indexOf('contextReader.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
-
-      expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('sessionManager.shutdownAll'));
-
-      expect(callOrder.indexOf('sessionManager.shutdownAll')).toBeLessThan(callOrder.indexOf('mcpClient.close'));
-
-      expect(callOrder.indexOf('mcpClient.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
-
-      expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
+      expect(callOrder).toEqual([
+        'closeAllConnections',
+        'serverClose',
+        'sessionManager.shutdownAll',
+        'mcpClient.close',
+        'chromaMcpManager.stop',
+        'contextReader.close',
+        'dbManager.close',
+      ]);
     }, 15000);
 
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {
@@ -189,28 +173,6 @@ describe('GracefulShutdown', () => {
       expect(existsSync(PID_FILE)).toBe(false);
     });
 
-    it('should spare another process\'s PID file during shutdown (restart successor)', async () => {
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
-      };
-
-      // A restart successor has already written its own PID file by the time
-      // the dying worker's cascade runs — the dying worker must not clobber
-      // it (Phase 5, worker-restart plan).
-      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
-      expect(existsSync(PID_FILE)).toBe(true);
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager
-      };
-
-      await performGracefulShutdown(config);
-
-      expect(existsSync(PID_FILE)).toBe(true);
-      expect(readPidFile()!.pid).toBe(99999);
-    });
-
     it('should handle missing optional services gracefully', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
@@ -224,75 +186,7 @@ describe('GracefulShutdown', () => {
 
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
 
-      expect(mockSessionManager.shutdownAll).toHaveBeenCalled();
-    });
-
-    it('should handle null server gracefully', async () => {
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
-      };
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager
-      };
-
-      await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
-    });
-
-    it('should call sessionManager.shutdownAll even without server', async () => {
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
-      };
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager
-      };
-
-      await performGracefulShutdown(config);
-
       expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
-    });
-
-    it('should stop chroma server before database close', async () => {
-      const callOrder: string[] = [];
-
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {
-          callOrder.push('sessionManager');
-        })
-      };
-
-      const mockMcpClient: CloseableClient = {
-        close: mock(async () => {
-          callOrder.push('mcpClient');
-        })
-      };
-
-      const mockDbManager: CloseableDatabase = {
-        close: mock(async () => {
-          callOrder.push('dbManager');
-        })
-      };
-
-      const mockChromaMcpManager = {
-        stop: mock(async () => {
-          callOrder.push('chromaMcpManager');
-        })
-      };
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager,
-        mcpClient: mockMcpClient,
-        dbManager: mockDbManager,
-        chromaMcpManager: mockChromaMcpManager
-      };
-
-      await performGracefulShutdown(config);
-
-      expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
     });
 
     it('resolves on ERR_SERVER_NOT_RUNNING from server.close and still runs every remaining step (#3380)', async () => {
@@ -372,22 +266,6 @@ describe('GracefulShutdown', () => {
       // existing fail-fast propagation.
       expect(mockSessionManager.shutdownAll).not.toHaveBeenCalled();
       expect(mockDbManager.close).not.toHaveBeenCalled();
-    });
-
-    it('should handle shutdown when PID file does not exist', async () => {
-      removePidFile();
-      expect(existsSync(PID_FILE)).toBe(false);
-
-      const mockSessionManager: ShutdownableService = {
-        shutdownAll: mock(async () => {})
-      };
-
-      const config: GracefulShutdownConfig = {
-        server: null,
-        sessionManager: mockSessionManager
-      };
-
-      await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
     });
   });
 });

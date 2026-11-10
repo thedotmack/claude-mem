@@ -9,9 +9,6 @@ const SOURCE = readFileSync(
 
 describe('npm-install-helper Windows spawn', () => {
   it('hides the console window when spawning npm (incl. Windows shell)', () => {
-    expect(SOURCE).toContain('windowsHide: true');
-    expect(SOURCE).toMatch(
-      /spawn\(\s*'npm',\s*flags,\s*\{[\s\S]*?windowsHide:\s*true[\s\S]*?\}\)/,
-    );
+    expect(SOURCE).toMatch(/spawn\('npm', flags, \{[^}]*windowsHide: true/);
   });
 });

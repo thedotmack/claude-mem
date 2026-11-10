@@ -7,7 +7,8 @@ failOnCiWithoutChrome('CI requires Chrome for stale remote refresh ownership.');
 (chromeExecutablePath ? it : it.skip)('a held remote refresh cannot restore the previous project or its error', async () => {
   const bundle=compileBrowserFixture(`
     import React from 'react';import{createRoot}from'react-dom/client';import{App}from'./src/ui/viewer/App';
-    localStorage.setItem('claude-mem-welcome-dismissed','true');
+    import { setStoredWelcomeDismissed } from './src/ui/viewer/components/WelcomeCard';
+    setStoredWelcomeDismissed(true);
     let aLoaded=0;const original=window.fetch.bind(window);
     window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes('/api/observations?')&&String(args[0]).includes('project=A')){const json=response.json.bind(response);response.json=async()=>{const data=await json();aLoaded++;return data;};}return response;};
     createRoot(document.getElementById('root')).render(<App/>);

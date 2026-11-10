@@ -13,11 +13,12 @@
  * never used). No `/opt/homebrew/bin` or
  * `/usr/local/bin` symlink (SPIKE Decision 2).
  */
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync } from 'fs';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import { homedir } from 'os';
 import { posix as posixPath, win32 as windowsPath } from 'path';
 import { buildSpawnSyncInvocation } from '../shared/spawn.js';
+import { writeTextFileAtomic } from '../shared/atomic-json.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN, bunVersionHonoursBunBeBun, bunVersionHonoursMacosSignatureFix } from './bun-be-bun-support.js';
@@ -318,7 +319,9 @@ export function ensureLocalBinOnShellPath(options: {
     try {
       const trailingNewline = existingContent.length === 0 || existingContent.endsWith('\n') ? '' : '\n';
       const appendedBlock = `${trailingNewline}\n${shellPathSetupMarkerComment(purposeLabel)}\n${exportLine}\n`;
-      writeFileSync(configFile, existingContent + appendedBlock, 'utf-8');
+      // The user's own shell rc: a crash mid-write must leave the previous
+      // contents, never a truncated file, so write through the shared helper.
+      writeTextFileAtomic(configFile, existingContent + appendedBlock);
       logger.success(`Added ${purposeLabel} to PATH in ${configFile}`);
       outcome = 'rc-file-updated';
     } catch (error: unknown) {
@@ -580,6 +583,13 @@ const runCodesignCommand = (codesignArguments: readonly string[]): ReturnType<La
   };
 };
 
+export function verifyLauncherSignature(
+  binaryPath: string,
+  runCommand: (args: readonly string[]) => ReturnType<LauncherCodesignRunner> = runCodesignCommand,
+): ReturnType<LauncherCodesignRunner> {
+  return runCommand(['--verify', '--strict', binaryPath]);
+}
+
 /** The `codesign` argv lists that ad-hoc sign `binaryPath`, in the order they must run. */
 const adhocCodesignArguments = (binaryPath: string): [clearSignature: string[], sign: string[]] => [
   ['--remove-signature', binaryPath],
@@ -617,7 +627,7 @@ export function createAdhocCodesigner(
     runCommand(clearSignature);
     const signed = runCommand(sign);
     if (signed.status !== 0) return signed;
-    return runCommand(['--verify', '--strict', binaryPath]);
+    return verifyLauncherSignature(binaryPath, runCommand);
   };
 }
 

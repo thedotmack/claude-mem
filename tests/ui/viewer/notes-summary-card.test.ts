@@ -20,13 +20,6 @@ it('keeps existing notes in the real paginated summary row for the viewer', () =
     expect(row.notes).toBe('VIEWER_NOTES_KEEP_THIS');
     const html = renderToStaticMarkup(React.createElement(SummaryCard, { summary: row as unknown as Summary, onDeleted() {} }));
     expect(html).toContain('VIEWER_NOTES_KEEP_THIS');
+    expect(html).toContain('>Notes</h3>');
   } finally { store.close(); }
-});
-
-it('renders notes from the existing live summary payload', () => {
-  const summary = { id: 7, session_id: 'owned-content', project: 'owned-project', platform_source: 'claude',
-    notes: 'LIVE_NOTES_KEEP_THIS', created_at_epoch: 1000 } as Summary;
-  const html = renderToStaticMarkup(React.createElement(SummaryCard, { summary, onDeleted() {} }));
-  expect(html).toContain('LIVE_NOTES_KEEP_THIS');
-  expect(html).toContain('>Notes</h3>');
 });

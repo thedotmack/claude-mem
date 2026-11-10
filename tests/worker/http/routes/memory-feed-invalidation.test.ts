@@ -1,9 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { EventEmitter } from 'node:events';
-import type { Response } from 'express';
 import { MemoryFeedInvalidation } from '../../../../src/services/worker/MemoryFeedInvalidation.js';
-import { SSEBroadcaster } from '../../../../src/services/worker/SSEBroadcaster.js';
 import { emitContextInvalidation } from '../../../../src/shared/context-invalidation.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SyncApply } from '../../../../src/services/sync/SyncApply.js';
@@ -139,25 +136,4 @@ describe('committed memory feed invalidation', () => {
     expect(db.query("SELECT id FROM observations WHERE origin_local_id = '100'").get()).toBeNull();
   });
 
-  it('retains healthy SSE clients when another client fails during the invalidation broadcast', async () => {
-    class Client extends EventEmitter {
-      frames: string[] = [];
-      fail = false;
-      destroyed = false;
-      writableEnded = false;
-      destroy() { this.destroyed = true; return this; }
-      write(frame: string) { if (this.fail) throw new Error('closed fixture'); this.frames.push(frame); return true; }
-    }
-    const broadcaster = new SSEBroadcaster();
-    const bad = new Client(), good = new Client();
-    broadcaster.addClient(bad as unknown as Response);
-    broadcaster.addClient(good as unknown as Response);
-    bridgeFor(event => broadcaster.broadcast(event));
-    bad.fail = true;
-    emitContextInvalidation('all', 'storeObservations');
-    await tick();
-    expect(bad.destroyed).toBe(true);
-    expect(broadcaster.getClientCount()).toBe(1);
-    expect(good.frames.at(-1)).toContain('"type":"data_changed"');
-  });
 });

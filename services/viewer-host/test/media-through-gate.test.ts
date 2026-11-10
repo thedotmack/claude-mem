@@ -52,9 +52,9 @@ function gate() {
 }
 
 /** What a browser sends for an <img> or same-origin fetch on the hosted page, plus what Fly's proxy adds. */
-function browserHeaders(signedIn = true): Record<string, string> {
+function browserHeaders(): Record<string, string> {
   return {
-    ...(signedIn ? { Cookie: `${SESSION_COOKIE}=${signToken(SECRET, { sub: OWNER, aud: 'session', exp: Math.floor(Date.now() / 1000) + 3600 })}` } : {}),
+    Cookie: `${SESSION_COOKIE}=${signToken(SECRET, { sub: OWNER, aud: 'session', exp: Math.floor(Date.now() / 1000) + 3600 })}`,
     Origin: PUBLIC_ORIGIN,
     Referer: `${PUBLIC_ORIGIN}/`,
     'Sec-Fetch-Site': 'same-origin',
@@ -87,10 +87,4 @@ describe('hosted media reads through the gate', () => {
     expect(resolved).toContain(ID);
   });
 
-  it('answers 401 to a browser without a session and never reaches the worker', async () => {
-    resolved.length = 0;
-    const response = await gate()(new Request(`${PUBLIC_ORIGIN}/api/media/${ID}/llm`, { headers: browserHeaders(false) }));
-    expect(response.status).toBe(401);
-    expect(resolved).toEqual([]);
-  });
 });

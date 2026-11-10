@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { detectLanguage, LANG_MAP } from '../../../src/services/smart-file-read/language-map.js';
+import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 
 describe('language-map', () => {
   it('maps extensions to smart-file-read languages', () => {
@@ -21,5 +25,15 @@ describe('language-map', () => {
 
   it('matches extensions case-insensitively', () => {
     expect(detectLanguage('/repo/tools/build.PY')).toBe('python');
+  });
+
+  it('search scans every mapped extension without native symbol extraction', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-search-extensions-'));
+    try {
+      const extensions = Object.keys(LANG_MAP);
+      for (const extension of extensions) writeFileSync(join(dir, `probe${extension}`), 'probe');
+      const result = await searchCodebase(dir, 'probe', { skipSymbolExtraction: true });
+      expect(result.totalFilesScanned).toBe(extensions.length);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

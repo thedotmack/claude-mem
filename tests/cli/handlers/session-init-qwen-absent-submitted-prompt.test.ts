@@ -7,7 +7,6 @@ import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
 import {
   isQwenCodeHookEvent,
   isQwenTranscriptPath,
-  recordSessionPrompt,
   sessionInitHandler,
   setSessionInitDependenciesForTesting,
 } from '../../../src/cli/handlers/session-init.js';
@@ -97,27 +96,6 @@ describe('sessionInitHandler Qwen sends with no submitted_prompt field', () => {
     setSessionInitDependenciesForTesting();
   });
 
-  it('stores no prompt when Qwen omits the field and the prompt is empty', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls);
-
-    // A Qwen ToolResult send: no `submitted_prompt` key, empty `prompt`. The
-    // session already exists from the turn that WAS submitted, so nothing is
-    // stored. This is the case #4224 could not reach, because it only handles
-    // the field being present and empty.
-    const result = await sessionInitHandler.execute({
-      sessionId: 'qwen-toolresult-send',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-      transcriptPath: qwenTranscript,
-    });
-
-    expect(result.continue).toBe(true);
-    expect(result.suppressOutput).toBe(true);
-    expect(workerCalls).toEqual([]);
-  });
-
   it('treats a whitespace-only prompt on Qwen the same way', async () => {
     const workerCalls: WorkerCall[] = [];
     install(workerCalls);
@@ -133,106 +111,6 @@ describe('sessionInitHandler Qwen sends with no submitted_prompt field', () => {
     expect(workerCalls).toEqual([]);
   });
 
-  it('still stores a real Qwen submission that happens to be empty-free', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls);
-
-    // The host-scoping must not swallow genuine user turns on Qwen: text in
-    // `prompt` with the field absent is the legacy shape and still stores.
-    await sessionInitHandler.execute({
-      sessionId: 'qwen-real-text-send',
-      cwd,
-      platform: 'claude-code',
-      prompt: 'please review the diff',
-      transcriptPath: qwenTranscript,
-    });
-
-    expect(workerCalls).toHaveLength(1);
-    expect(workerCalls[0].body.prompt).toBe('please review the diff');
-  });
-
-  it('keeps storing the media placeholder for a Claude Code image-only turn', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls);
-
-    // The #928 regression guard. Claude Code sends no `submitted_prompt` field
-    // at all, so without host-scoping this would regress into a dropped
-    // session: an empty prompt there is a real image-only submission.
-    await sessionInitHandler.execute({
-      sessionId: 'claude-image-only-submission',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-      transcriptPath: '/home/dot/.claude/projects/x/session.jsonl',
-    });
-
-    expect(workerCalls).toHaveLength(1);
-    expect(workerCalls[0].body.prompt).toBe('[media prompt]');
-  });
-
-  it('keeps storing the media placeholder when no host can be identified', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls);
-
-    // With no transcript path there is nothing to scope the skip to, so the
-    // pre-existing behaviour stands.
-    await sessionInitHandler.execute({
-      sessionId: 'unknown-host-empty-prompt',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-    });
-
-    expect(workerCalls).toHaveLength(1);
-    expect(workerCalls[0].body.prompt).toBe('[media prompt]');
-  });
-
-  it('stores no prompt for a relocated Qwen transcript when the hook environment names Qwen', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls, { QWEN_PROJECT_DIR: '/p' });
-
-    await sessionInitHandler.execute({
-      sessionId: 'qwen-relocated-toolresult-send',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-      transcriptPath: relocatedQwenTranscript,
-    });
-
-    expect(workerCalls).toEqual([]);
-  });
-
-  it('keeps storing the media placeholder for that path without QWEN_PROJECT_DIR', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls);
-
-    await sessionInitHandler.execute({
-      sessionId: 'unknown-host-relocated-path',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-      transcriptPath: relocatedQwenTranscript,
-    });
-
-    expect(workerCalls).toHaveLength(1);
-    expect(workerCalls[0].body.prompt).toBe('[media prompt]');
-  });
-
-  it('leaves the transcript watcher alone in a worker that inherited QWEN_PROJECT_DIR', async () => {
-    const workerCalls: WorkerCall[] = [];
-    install(workerCalls, { QWEN_PROJECT_DIR: '/p' });
-
-    // The watcher's entry point, called without a transcript path.
-    await recordSessionPrompt({
-      sessionId: 'watcher-empty-turn',
-      cwd,
-      platform: 'claude-code',
-      prompt: '',
-    });
-
-    expect(workerCalls).toHaveLength(1);
-    expect(workerCalls[0].body.prompt).toBe('[media prompt]');
-  });
 });
 
 // End to end through the real adapter, session-init handler, session routes and

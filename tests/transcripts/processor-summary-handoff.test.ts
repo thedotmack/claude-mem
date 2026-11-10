@@ -60,16 +60,17 @@ afterEach(() => {
 });
 
 describe('in-process transcript summary handoff', () => {
-  it('surfaces a rejected queue operation and retains the assistant text for the existing retry', async () => {
+  it('discards the assistant text after a rejected queue operation', async () => {
     const processor = new TranscriptEventProcessor();
     await processor.processEntry({ session: 's', type: 'assistant', text: 'finished work' }, watch, schema);
     failure = 'queue';
     await expect(processor.processEntry({ session: 's', type: 'end' }, watch, schema))
-      .rejects.toThrow('summary not accepted');
+      .resolves.toBeUndefined();
+    expect((processor as any).sessions.size).toBe(0);
     expect(queued).toEqual([]);
     failure = null;
     await processor.processEntry({ session: 's', type: 'end' }, watch, schema);
-    expect(queued).toEqual(['finished work']);
+    expect(queued).toEqual(['']);
     expect(ready).not.toHaveBeenCalled();
   });
 
@@ -111,7 +112,7 @@ describe('in-process transcript summary handoff', () => {
     expect((processor as any).sessions.size).toBe(0);
   });
 
-  it('retains the rejected end event across restart without claiming to persist assistant text', async () => {
+  it('does not replay the rejected end event after restart', async () => {
     const path = join(root, 'restart.jsonl');
     const statePath = join(root, 'restart-state.json');
     const assistant = JSON.stringify({ session: 's', type: 'assistant', text: 'finished work' }) + '\n';
@@ -123,20 +124,19 @@ describe('in-process transcript summary handoff', () => {
     try {
       await (first as any).addTailer(path, fileWatch, schema);
       await (first as any).tailers.get(path).readTask;
-      expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant));
+      expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant + end));
     } finally { first.stop(); }
     failure = null;
     const resumed = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     try {
       await (resumed as any).addTailer(path, fileWatch, schema);
       await (resumed as any).tailers.get(path).readTask;
-      // Assistant text is not part of the existing durable watcher state.
-      expect(queued).toEqual(['']);
+      expect(queued).toEqual([]);
       expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant + end));
     } finally { resumed.stop(); }
   });
 
-  it('keeps the watcher checkpoint at the rejected session_end line', async () => {
+  it('advances the watcher checkpoint past a rejected session_end line', async () => {
     const path = join(root, 'session.jsonl');
     const statePath = join(root, 'state.json');
     const assistant = JSON.stringify({ session: 's', type: 'assistant', text: 'finished work' }) + '\n';
@@ -148,11 +148,11 @@ describe('in-process transcript summary handoff', () => {
     try {
       await (watcher as any).addTailer(path, fileWatch, schema);
       await (watcher as any).tailers.get(path).readTask;
-      expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant));
+      expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant + end));
       expect(queued).toEqual([]);
       failure = null;
       await (watcher as any).tailers.get(path).readNewData();
-      expect(queued).toEqual(['finished work']);
+      expect(queued).toEqual([]);
       expect(loadWatchState(statePath).offsets[path]).toBe(Buffer.byteLength(assistant + end));
     } finally { watcher.stop(); }
   });
