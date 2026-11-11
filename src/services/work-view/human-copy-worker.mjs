@@ -43,7 +43,7 @@ function safeFailureReason(error) {
   if (message === 'Invalid summary JSON.') return 'Invalid summary JSON';
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'Request timed out';
   if (error?.name === 'SyntaxError') return 'Invalid JSON response';
-  if (error instanceof TypeError && message) return message.endsWith('.') ? message.slice(0, -1) : message;
+  if (error?.isValidationError && error instanceof TypeError && message) return message.endsWith('.') ? message.slice(0, -1) : message;
   return 'Summary request failed';
 }
 
@@ -264,7 +264,13 @@ export class HumanCopyWorker {
         await appendFile(join(dirname(this.cachePath), 'human-copy-usage.jsonl'), `${JSON.stringify({ at: this.now(), requestId: job.id, fingerprint: job.fingerprint, model: result.model ?? null, usage: result.usage ?? null })}\n`, { mode: 0o600 });
       }
       if (result.error) throw new Error(result.error);
-      const copy = validateHumanCopy(fitGeneratedCopy(redactJsonStrings(result.output ?? result)), job.input);
+      let copy;
+      try {
+        copy = validateHumanCopy(fitGeneratedCopy(redactJsonStrings(result.output ?? result)), job.input);
+      } catch (validationError) {
+        validationError.isValidationError = true;
+        throw validationError;
+      }
       // A response for an old snapshot never overwrites the newer request.
       if (this.closed || this.refreshProviderConfigKey() !== configKeyAtStart || this.pending.get(job.id)?.fingerprint !== job.fingerprint) return;
       const entry = { fingerprint: job.fingerprint, copy, generatedAt: this.now(), model: result.model ?? null, usage: result.usage ?? null };
@@ -282,14 +288,16 @@ export class HumanCopyWorker {
       const reason = safeFailureReason(error);
       const status = httpStatus(error);
       const previous = this.failures.get(job.id);
-      const attempt = previous?.fingerprint === job.fingerprint ? previous.attempt + 1 : 1;
-      const isValidationError = error instanceof TypeError || error instanceof SyntaxError || reason === 'Invalid summary JSON';
+      const sameFingerprint = previous?.fingerprint === job.fingerprint;
+      const attempt = sameFingerprint ? previous.attempt + 1 : 1;
+      const isValidationError = Boolean(error?.isValidationError) || reason === 'Invalid summary JSON';
+      const validationAttempts = (sameFingerprint ? (previous.validationAttempts ?? 0) : 0) + (isValidationError ? 1 : 0);
       const waitForChange = (status !== null && isPermanentClientError(status))
-        || (isValidationError && attempt >= MAX_VALIDATION_ATTEMPTS);
+        || (isValidationError && validationAttempts >= MAX_VALIDATION_ATTEMPTS);
       const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status) || isValidationError
-        ? Math.min(this.retryMs * 2 ** Math.min(attempt - 1, 20), this.maxRetryMs)
+        ? Math.min(this.retryMs * 2 ** Math.min((isValidationError ? validationAttempts : attempt) - 1, 20), this.maxRetryMs)
         : this.retryMs;
-      const failure = { fingerprint: job.fingerprint, at, reason, attempt, waitForChange, retryAfterMs };
+      const failure = { fingerprint: job.fingerprint, at, reason, attempt, validationAttempts, waitForChange, retryAfterMs };
       this.failures.set(job.id, failure); this.revision++;
       this.warnFailure(reason, waitForChange, retryAfterMs);
       await this.recordFailure(job, failure);
