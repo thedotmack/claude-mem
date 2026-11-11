@@ -106,6 +106,7 @@ function resolveGrammarPath(language: string): string | null {
 const QUERIES: Record<string, string> = {
   jsts: `
 (function_declaration name: (identifier) @name) @func
+(ambient_declaration (function_signature name: (identifier) @name)) @ts_signature
 (generator_function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
@@ -596,6 +597,7 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
+  ts_signature: "function",
   rust_signature: "function",
   const_func: "function",
   cls: "class",
@@ -953,8 +955,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       }
       // Extract the declaration independently: prefix comments may contain
       // braces or span more rows than the declaration signature budget.
-      signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
-        200 - exportPrefix.length, kindCapture.startCol);
+      if (kindCapture.tag === "ts_signature") {
+        // A declared function has no body. Braces in its parameter or return
+        // types belong to the signature, which can span multiple lines.
+        const declaration = exportPrefix + captureText(lines, kindCapture);
+        signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
+      } else {
+        signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
+          200 - exportPrefix.length, kindCapture.startCol);
+      }
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow, language);
