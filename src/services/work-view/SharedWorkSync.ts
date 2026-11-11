@@ -190,8 +190,10 @@ export class SharedWorkSync {
         worker.on('exit', () => this.failed(worker));
       }
       worker.ref();
-      worker.postMessage('reconcile');
+      // Arm before posting: a reply delivered during postMessage settles the
+      // pass and must find the deadline already there to cancel it.
       this.armPassTimer(worker);
+      worker.postMessage('reconcile');
     } catch { this.settle(); }
     return this.pending ?? Promise.resolve();
   }
