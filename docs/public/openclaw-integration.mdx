@@ -195,14 +195,16 @@ Add the `observationFeed` block to your claude-mem plugin config in your OpenCla
 ```json
 {
   "plugins": {
-    "claude-mem": {
-      "enabled": true,
-      "config": {
-        "project": "my-project",
-        "observationFeed": {
-          "enabled": true,
-          "channel": "telegram",
-          "to": "123456789"
+    "entries": {
+      "claude-mem": {
+        "enabled": true,
+        "config": {
+          "project": "my-project",
+          "observationFeed": {
+            "enabled": true,
+            "channel": "telegram",
+            "to": "123456789"
+          }
         }
       }
     }

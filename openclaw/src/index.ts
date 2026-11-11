@@ -873,11 +873,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   api.on("before_prompt_build", async (event, ctx) => {
-    // `prompt` may contain reconstructed history, so it is a prompt source only
-    // when the host has no before_agent_start.
+    // A string currentUserMessage is the host's explicit request. Without text
+    // (image-only input or a continuation) there is no prompt to record, and
+    // OpenClaw says not to fall back to history. `prompt` may contain
+    // reconstructed history, so it is a prompt source only on a host that sends
+    // no currentUserMessage and has no before_agent_start.
     const hasExplicitRequest = typeof event.currentUserMessage === "string";
-    const recordPrompt = hasExplicitRequest || !recordPromptOnBeforeAgentStart;
-    const promptText = (hasExplicitRequest ? event.currentUserMessage : event.prompt) || "agent run";
+    const explicitRequestText = hasExplicitRequest ? event.currentUserMessage!.trim() : "";
+    const recordPrompt = hasExplicitRequest ? explicitRequestText.length > 0 : !recordPromptOnBeforeAgentStart;
+    const promptText = hasExplicitRequest ? event.currentUserMessage! : event.prompt || "agent run";
     const nativePromptId = hasExplicitRequest && typeof event.currentUserMessageId === "string"
       && WORKER_ACCEPTED_NATIVE_PROMPT_ID.test(event.currentUserMessageId)
       ? event.currentUserMessageId

@@ -306,16 +306,19 @@ Your complete plugin config should now look like this (using Telegram as an exam
 ```json
 {
   "plugins": {
-    "claude-mem": {
-      "enabled": true,
-      "config": {
-        "project": "my-project",
-        "syncMemoryFile": true,
-        "workerPort": 37777,
-        "observationFeed": {
-          "enabled": true,
-          "channel": "telegram",
-          "to": "123456789"
+    "entries": {
+      "claude-mem": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true },
+        "config": {
+          "project": "my-project",
+          "syncMemoryFile": true,
+          "workerPort": 37777,
+          "observationFeed": {
+            "enabled": true,
+            "channel": "telegram",
+            "to": "123456789"
+          }
         }
       }
     }
@@ -438,22 +441,27 @@ A background service connects to the worker's SSE stream and forwards `new_obser
 ```json
 {
   "plugins": {
-    "claude-mem": {
-      "enabled": true,
-      "config": {
-        "project": "openclaw",
-        "syncMemoryFile": true,
-        "workerPort": 37777,
-        "observationFeed": {
-          "enabled": false,
-          "channel": "telegram",
-          "to": "123456789"
+    "entries": {
+      "claude-mem": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true },
+        "config": {
+          "project": "openclaw",
+          "syncMemoryFile": true,
+          "workerPort": 37777,
+          "observationFeed": {
+            "enabled": false,
+            "channel": "telegram",
+            "to": "123456789"
+          }
         }
       }
     }
   }
 }
 ```
+
+Leave out `hooks` on OpenClaw versions without the conversation-hook gate, such as 2026.2.9, which reject it.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

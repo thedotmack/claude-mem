@@ -860,7 +860,6 @@ describe("before_prompt_build context injection", () => {
   for (const [label, event, expectedPrompt] of [
     ["no explicit request", { prompt: "Help me", messages: [] }, "Help me"],
     ["an ID the worker would refuse", { prompt: "Help me", currentUserMessage: "Help me", currentUserMessageId: "has space", messages: [] }, "Help me"],
-    ["an explicit empty request", { prompt: "[history] old text", currentUserMessage: "", messages: [] }, "agent run"],
   ] as const) {
     it(`records the prompt without a native ID for ${label}`, async () => {
       const { api, fireEvent } = createMockApi({ workerPort });
@@ -871,6 +870,22 @@ describe("before_prompt_build context injection", () => {
       assert.equal(initRequest.body.prompt, expectedPrompt);
       assert.equal(Object.hasOwn(initRequest.body, "nativePromptId"), false);
     });
+  }
+
+  // OpenClaw sends an explicit empty currentUserMessage for image-only input or
+  // a continuation without a retained request; it must not fall back to history.
+  for (const [label, currentUserMessage] of [["empty", ""], ["blank", "  \n"]] as const) {
+    for (const hostVersion of [CURRENT_OPENCLAW_HOST, BOTH_HOOKS_OPENCLAW_HOST] as const) {
+      it(`records no prompt when the explicit request is ${label} on OpenClaw ${hostVersion}, and still injects context`, async () => {
+        const { api, fireEvent } = createMockApi({ workerPort }, hostVersion);
+        claudeMemPlugin(api);
+        const injected = await fireEvent("before_prompt_build", {
+          prompt: "[history] earlier turn", currentUserMessage, currentUserMessageId: "msg-continuation", messages: [],
+        }, { sessionKey: `no-text-${label}-${hostVersion}`, agentId: "main" });
+        assert.equal(receivedRequests.filter((r) => r.url === "/api/sessions/init").length, 0);
+        assert.ok(injected?.appendSystemContext, "context injection is unchanged");
+      });
+    }
   }
 
   for (const [label, config, agentId] of [
