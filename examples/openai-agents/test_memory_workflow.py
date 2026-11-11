@@ -57,17 +57,19 @@ class MemoryWorkflowTest(unittest.IsolatedAsyncioTestCase):
         # Bound socket reserves a port without accepting connections.
         with socket.socket() as sock, tempfile.TemporaryDirectory(prefix="openai worker down ") as data:
             sock.bind(("127.0.0.1", 0))
-            env = dict(os.environ, CLAUDE_MEM_WORKER_PORT=str(sock.getsockname()[1]), CLAUDE_MEM_DATA_DIR=data)
+            env = dict(os.environ, CLAUDE_MEM_WORKER_HOST="127.0.0.1", CLAUDE_MEM_WORKER_PORT=str(sock.getsockname()[1]), CLAUDE_MEM_DATA_DIR=data)
             async with memory_server(self.script, env=env) as server:
                 with self.assertRaisesRegex(RuntimeError, "search failed"):
                     await call(server, "search", {"project": "openai-example"})
 
     async def test_slow_worker_has_a_request_deadline(self):
         stop = threading.Event()
+        received = threading.Event()
 
         class SlowHandler(socketserver.BaseRequestHandler):
             def handle(self):
                 self.request.recv(8192)
+                received.set()
                 stop.wait(5)
 
         class SlowServer(socketserver.ThreadingTCPServer):
@@ -77,13 +79,14 @@ class MemoryWorkflowTest(unittest.IsolatedAsyncioTestCase):
             thread = threading.Thread(target=slow.serve_forever, daemon=True)
             thread.start()
             try:
-                env = dict(os.environ, CLAUDE_MEM_WORKER_PORT=str(slow.server_address[1]), CLAUDE_MEM_DATA_DIR=data)
+                env = dict(os.environ, CLAUDE_MEM_WORKER_HOST="127.0.0.1", CLAUDE_MEM_WORKER_PORT=str(slow.server_address[1]), CLAUDE_MEM_DATA_DIR=data)
                 async with memory_server(self.script, timeout=1, env=env) as server:
                     await server.list_tools()
                     started = time.monotonic()
                     with self.assertRaises(MCPError) as raised:
                         await call(server, "search", {"project": "openai-example"})
                     self.assertEqual(raised.exception.code, REQUEST_TIMEOUT)
+                    self.assertTrue(received.is_set(), "The request must reach the local slow-worker fixture")
                     self.assertLess(time.monotonic() - started, 4)
             finally:
                 stop.set()
