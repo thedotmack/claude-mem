@@ -18,6 +18,9 @@ import {
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
 import { newApiKey } from '../sdk/pg-isolation.js';
+import { PostgresObservationGenerationJobRepository } from '../../src/storage/postgres/generation-jobs.js';
+import { processGeneratedResponse } from '../../src/server/generation/processGeneratedResponse.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 const q = (n: string) => `"${n.replaceAll('"', '""')}"`;
@@ -120,6 +123,70 @@ describe('data deletion (forget)', () => {
     expect(await countObs(projectA)).toBe(0);
     expect(await countObs(projectB)).toBe(2);         // sibling project untouched
     expect(await countObs(otherTeamProject)).toBe(1); // other team untouched
+  });
+
+  it('purges a generation result that commits while deletion waits for its job', async () => {
+    ModeManager.getInstance().loadMode('code');
+    const event = await storage.agentEvents.create({
+      projectId: projectA, teamId, sourceAdapter: 'api', eventType: 'tool_use',
+      payload: { tool: 'Read' }, occurredAt: new Date(),
+    });
+    const created = await storage.observationGenerationJobs.create({
+      projectId: projectA, teamId, sourceType: 'agent_event', sourceId: event.id,
+      agentEventId: event.id, jobType: 'observation_generate_for_event',
+    });
+    await storage.observationGenerationJobs.transitionStatus({
+      id: created.id, projectId: projectA, teamId, status: 'processing',
+    });
+    const job = (await storage.observationGenerationJobs.getByIdForScope({
+      id: created.id, projectId: projectA, teamId,
+    }))!;
+
+    let announceLock!: () => void;
+    const locked = new Promise<void>(resolve => { announceLock = resolve; });
+    let resumeGeneration!: () => void;
+    const release = new Promise<void>(resolve => { resumeGeneration = resolve; });
+    const originalLoad = PostgresObservationGenerationJobRepository.prototype.getByIdForScope;
+    const load = spyOn(PostgresObservationGenerationJobRepository.prototype, 'getByIdForScope')
+      .mockImplementation(async function (input) {
+        const result = await originalLoad.call(this, input);
+        if (input.id === job.id && input.forUpdate) {
+          // Hold the real generation transaction after it owns the job row.
+          announceLock();
+          await release;
+        }
+        return result;
+      });
+    const originalQuery = pg.Client.prototype.query;
+    const query = spyOn(pg.Client.prototype, 'query').mockImplementation(function (sql: unknown, ...args: unknown[]) {
+      // DELETE now has to wait for the generation transaction's row lock.
+      if (typeof sql === 'string' && /^DELETE FROM observation_generation_jobs/.test(sql.trim())) {
+        resumeGeneration();
+      }
+      return originalQuery.apply(this, [sql, ...args] as never);
+    } as typeof pg.Client.prototype.query);
+    const generating = processGeneratedResponse({
+      pool, job, providerLabel: 'fixed-test-provider',
+      rawText: '<observation><type>discovery</type><title>Concurrent result</title><facts><fact>Captured before the purge</fact></facts></observation>',
+    });
+    try {
+      await locked;
+      const response = await fetch(url(`/v1/projects/${projectA}/memory`), { method: 'DELETE', headers: auth() });
+      const outcome = await generating;
+      expect(outcome.kind).toBe('completed');
+      expect(response.status).toBe(200);
+      const body = await response.json() as { counts: { observations: number; jobs: number } };
+      expect(await countObs(projectA)).toBe(0);
+      expect(body.counts.observations).toBe(3);
+      expect(body.counts.jobs).toBe(1);
+      expect(await countObs(projectB)).toBe(2);
+      expect(await countObs(otherTeamProject)).toBe(1);
+    } finally {
+      resumeGeneration();
+      await generating;
+      load.mockRestore();
+      query.mockRestore();
+    }
   });
 
   it('a team-A key cannot purge another team\'s project (404, deletes nothing)', async () => {

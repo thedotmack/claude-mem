@@ -30,7 +30,7 @@ Different records can still index concurrently. This ordering is within one
 worker process; it does not provide a transaction across SQLite and Chroma.
 SQL mutations that happen after that read still need their own reindexing path.
 
-**Token Efficiency**: ~10x savings through 3-layer workflow pattern
+**Token Efficiency**: an index row is ~50-100 tokens and a full record ~500-1,000, about a tenth the size. Filtering decides how many records get fetched, not their size, and the workflow's total cost also includes the timeline and the selected details. That is a per-record size ratio, not a measured recall or end-to-end saving ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
 
 ## How It Works
 
@@ -116,7 +116,7 @@ Always visible to Claude. Explains the 3-layer workflow pattern.
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.
+NEVER fetch full details without filtering first: an index row is ~50-100 tokens, about a tenth of a ~500-1,000-token record, so filtering decides how many records you fetch, not how large each one is.
 ```
 
 **Purpose:** Ensures Claude follows token-efficient pattern
@@ -315,7 +315,7 @@ Step 3: get_observations (3 IDs)   ~1,500-3,000 tokens
 Total: ~2,800-5,600 tokens
 ```
 
-**10x Savings:** By filtering at index level before fetching full details
+**An index row is about a tenth the size of a full record:** ~50-100 vs ~500-1,000 tokens. Filtering decides how many records you fetch, not their size; the total cost also includes the timeline and the selected details.
 
 ## Architecture Evolution
 
@@ -359,7 +359,7 @@ Total: ~2,800-5,600 tokens
 - No overlapping operations
 - Simple schemas (`additionalProperties: true`)
 - Clear workflow pattern
-- ~10x token savings
+- Index rows are ~50-100 tokens, about a tenth of a ~500-1,000-token record (a size ratio, not a measured saving)
 
 **Code Size:** ~312 lines in mcp-server.ts (88% reduction)
 
@@ -442,7 +442,7 @@ function escapeFTS5Query(query: string): string {
 
 **3-Layer MCP:**
 - Fetches only what's needed
-- ~10x token savings
+- Index rows are ~50-100 tokens, about a tenth of a ~500-1,000-token record (a size ratio, not a measured saving)
 - 100% relevance (Claude chooses what to fetch)
 
 ### vs. Previous MCP Implementation (v5.x)

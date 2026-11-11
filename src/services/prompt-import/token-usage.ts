@@ -34,6 +34,7 @@ import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { OBSERVER_SESSIONS_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { streamRows } from '../sqlite/stream-rows.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
@@ -249,7 +250,9 @@ const openCodeUsage: UsageReader = {
             ${layout.forkBoundary ? 'LEFT JOIN session_v2 s ON s.id = m.session_id' : ''}
             WHERE m.type = 'assistant'
             ${layout.forkBoundary ? 'AND (s.fork_session_id IS NULL OR m.time_created >= s.time_created)' : ''}`);
-          const rows = database.prepare(queries.join('\nUNION ALL\n')).all() as Array<{ createdAt: number; tokens: string | null }>;
+          // The database contains the whole agent history. Consume one row at
+          // a time so counting usage does not retain every token payload.
+          const rows = streamRows(database.prepare(queries.join('\nUNION ALL\n'))) as Iterable<{ createdAt: number; tokens: string | null }>;
           for (const row of rows) {
             const tokens = row.tokens ? parseLine(row.tokens) : null;
             if (!tokens) continue;

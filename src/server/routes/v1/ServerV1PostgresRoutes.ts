@@ -201,6 +201,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
     });
+    const baseKeyIssuer = requirePostgresServerAuth(this.options.pool, {
+      authMode: this.options.authMode,
+      allowLocalDevBypass: this.options.allowLocalDevBypass,
+      requiredScopes: ['memories:read', 'memories:write'],
+    });
     // Paid-readiness guards, all opt-in via env so default behavior is unchanged
     // (empty array → readAuth/writeAuth are just the base auth). Express accepts
     // a middleware array wherever a single handler goes, so the per-route
@@ -208,6 +213,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // → meter, so the request is counted only once it's admitted.
     const writeAuth: RequestHandler[] = [baseWrite, ...serverUsageGuards(this.options.pool, { write: true })];
     const readAuth: RequestHandler[] = [baseRead, ...serverUsageGuards(this.options.pool)];
+    const keyIssuerAuth: RequestHandler[] = [baseKeyIssuer, ...serverUsageGuards(this.options.pool, { write: true })];
 
     // GET /v1/usage — per-kind usage totals for the caller's team this month.
     app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
@@ -220,10 +226,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
 
     // POST /v1/keys — mint a READ-ONLY, optionally-expiring API key for the
     // caller's team and return the ready-to-paste connect command. Gated by
-    // writeAuth: minting a lesser (read) key requires you can already write the
-    // team's memory, which avoids a read key escalating into more keys. The raw
-    // key is shown exactly once.
-    app.post('/v1/keys', writeAuth, this.handleCreate(
+    // both read and write scopes: an issuer must already hold the read access
+    // it delegates, and a read-only key must not mint further keys. The raw key
+    // is shown exactly once.
+    app.post('/v1/keys', keyIssuerAuth, this.handleCreate(
       z.object({
         label: z.string().max(120).optional(),
         expiresInDays: z.number().int().positive().max(365).optional(),
@@ -268,7 +274,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.status(200).json({
         mcpUrl,
         connectCommand: mcpConnectCommand(mcpUrl, '<YOUR_API_KEY>'),
-        hint: 'POST /v1/keys (write scope) to mint a read-only key for this link.',
+        hint: 'POST /v1/keys (read and write scopes) to mint a read-only key for this link.',
       });
     }));
 

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs';
 import { rm } from 'fs/promises';
 import path, { basename, isAbsolute, join, relative, resolve, sep } from 'path';
 import { installedPluginsPath, pluginCacheRootDirectory } from './paths.js';
@@ -10,7 +10,8 @@ import {
   workerHttpRequest,
   type WorkerScriptCandidate,
 } from '../../shared/worker-utils.js';
-import { readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
+import { isPidAlive, readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, isSameProcessStartToken, isUtcPinnedStartToken } from '../../shared/process-identity.js';
 import { readClaudeMemRegistrationEntries, readUserScopeClaudeMemInstallPaths, registeredInstallPathsOf } from '../../shared/claude-code-plugin-paths.js';
 
 /**
@@ -229,9 +230,121 @@ export function workingCacheVersions(
   return [...versions];
 }
 
+/** A process Claude Code recorded as loaded from a cache version folder. */
+export interface HostInUseRecord {
+  pid: number;
+  /** The process start time as Claude Code wrote it, when the record has one. */
+  procStart?: string;
+}
+
+/** How a recorded host process is checked. Injectable so every platform's
+ * branch can be tested on one machine. */
+export interface HostProcessProbe {
+  isAlive: (pid: number) => boolean;
+  /** The process's current start token, or null when it cannot be read. */
+  startToken: (pid: number) => string | null;
+}
+
+const defaultHostProcessProbe: HostProcessProbe = {
+  isAlive: isPidAlive,
+  // The Windows read shells to PowerShell and its token has another shape, so
+  // it could never be compared with a recorded start time anyway.
+  startToken: pid => (process.platform === 'win32' ? null : captureProcessStartToken(pid)),
+};
+
+/** Claude Code's per-version folder of `<pid>` records. */
+const HOST_IN_USE_DIRECTORY = '.in_use';
+
+/** `ps lstart`: `EEE MMM d HH:mm:ss yyyy`, the shape Claude Code records on macOS. */
+const LSTART_SHAPE = /^[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}$/;
+
+/**
+ * The processes Claude Code recorded under `<versionDirectory>/.in_use`. Each
+ * file is named after a PID and holds `{"pid":…,"procStart":"…"}`. A file that
+ * cannot be parsed still names its process, so the PID in the file name is
+ * used. An entry that names no PID is skipped.
+ */
+export function readHostInUseRecords(versionDirectory: string): HostInUseRecord[] {
+  const inUseDirectory = join(versionDirectory, HOST_IN_USE_DIRECTORY);
+  let entryNames: string[];
+  try {
+    entryNames = readdirSync(inUseDirectory);
+  } catch {
+    return [];
+  }
+  const records: HostInUseRecord[] = [];
+  for (const entryName of entryNames) {
+    let pid = /^\d+$/.test(entryName) ? Number(entryName) : null;
+    let procStart: string | undefined;
+    try {
+      const parsed = JSON.parse(readFileSync(join(inUseDirectory, entryName), 'utf-8')) as { pid?: unknown; procStart?: unknown } | null;
+      if (typeof parsed?.pid === 'number' && Number.isInteger(parsed.pid)) pid = parsed.pid;
+      if (typeof parsed?.procStart === 'string' && parsed.procStart.trim()) procStart = parsed.procStart.trim();
+    } catch {
+      // Unreadable or not JSON: fall back to the PID in the file name.
+    }
+    if (pid !== null && pid > 0) records.push(procStart ? { pid, procStart } : { pid });
+  }
+  return records;
+}
+
+/**
+ * True when the recorded process is still running. A dead PID is not. A live
+ * PID counts unless its start time proves the PID was reused, and that is
+ * provable only where both readings are `ps lstart` (macOS/BSD). Any other
+ * record keeps the folder: deleting it costs a session its hooks, keeping it
+ * costs disk until the next sweep.
+ */
+export function isHostProcessLive(record: HostInUseRecord, probe: HostProcessProbe = defaultHostProcessProbe): boolean {
+  if (!probe.isAlive(record.pid)) return false;
+  if (!record.procStart || !LSTART_SHAPE.test(record.procStart)) return true;
+  const currentToken = probe.startToken(record.pid);
+  if (currentToken === null || !isUtcPinnedStartToken(currentToken)) return true;
+  return isSameProcessStartToken(currentToken, record.procStart);
+}
+
+/** A probe that reads each PID once. One process is recorded under every
+ * version it loaded, and the macOS/BSD start-time read is a blocking `ps`. */
+function readOncePerPid(probe: HostProcessProbe): HostProcessProbe {
+  const alive = new Map<number, boolean>();
+  const startTokens = new Map<number, string | null>();
+  return {
+    isAlive: pid => {
+      if (!alive.has(pid)) alive.set(pid, probe.isAlive(pid));
+      return alive.get(pid)!;
+    },
+    startToken: pid => {
+      if (!startTokens.has(pid)) startTokens.set(pid, probe.startToken(pid));
+      return startTokens.get(pid)!;
+    },
+  };
+}
+
+/**
+ * Cache versions a running host session is still loaded from. Claude Code
+ * keeps a session on the version folder it started with after an update and
+ * refuses to run that session's hooks once the folder is gone ("Plugin
+ * directory does not exist"), so capture stops for the rest of the session
+ * with nothing shown to the user (#5970). A version is kept while any process
+ * recorded in its `.in_use` folder is alive, orphaned or not. Once they have
+ * all exited the next sweep removes it. Each recorded process is read once per
+ * call, however many versions record it.
+ */
+export function hostInUseCacheVersions(
+  root: string,
+  versionDirectoryNames: string[] = readCacheVersionDirectories(root),
+  probe: HostProcessProbe = defaultHostProcessProbe,
+): string[] {
+  const sweepProbe = readOncePerPid(probe);
+  return versionDirectoryNames.filter(name =>
+    isVersionDirectoryName(name)
+    && readHostInUseRecords(join(root, name)).some(record => isHostProcessLive(record, sweepProbe)));
+}
+
 /** Read the version names and their `.orphaned_at` state, then plan the prune.
  * Read-only — use for a dry-run preview that matches what `prunePluginCache`
- * would delete. The working versions (workingCacheVersions) are always kept. */
+ * would delete. The working versions (workingCacheVersions) and the versions a
+ * running host session is loaded from (hostInUseCacheVersions) are always kept. */
 export function planPluginCachePrune(
   root: string,
   keepCount: number,
@@ -240,7 +353,7 @@ export function planPluginCachePrune(
   const names = readCacheVersionDirectories(root);
   const orphanedVersions = names.filter(name => isVersionDirectoryName(name) && isOrphanedVersion(root, name));
   return planCachePrune(names, keepCount, {
-    protectedVersions: [...protectedVersions, ...workingCacheVersions(root)],
+    protectedVersions: [...protectedVersions, ...workingCacheVersions(root), ...hostInUseCacheVersions(root, names)],
     orphanedVersions,
   });
 }

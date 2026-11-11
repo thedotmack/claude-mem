@@ -241,7 +241,9 @@ export class KnowledgeAgent {
             .filter((b: any) => b.type === 'text')
             .map((b: any) => b.text)
             .join('');
-          answer = text;
+          // The SDK emits one assistant message per completed content block.
+          // Later text extends the answer; non-text blocks do not erase it.
+          answer += text;
         }
       }
     } catch (error) {
