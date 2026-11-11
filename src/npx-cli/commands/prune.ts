@@ -9,10 +9,12 @@
  *
  * Keeps the newest two usable versions, whatever version a live worker
  * reports, the version installed_plugins.json registers, the version the
- * worker resolver would launch, and the newest version whose dependencies are
- * complete, so it never removes the directory a running worker was launched
- * from, the one Claude Code loads, or the only copy that can still start a
- * worker. When a worker is present but its version cannot be read, every
+ * worker resolver would launch, the newest version whose dependencies are
+ * complete, and every version a running Claude Code session is still loaded
+ * from (#5970), so it never removes the directory a running worker was
+ * launched from, the one Claude Code loads, one an open session's hooks still
+ * need, or the only copy that can still start a worker. When a worker is
+ * present but its version cannot be read, every
  * version is retained. `--dry-run` reports the plan without deleting. `--keep <n>`
  * overrides how many newest usable versions to retain.
  */

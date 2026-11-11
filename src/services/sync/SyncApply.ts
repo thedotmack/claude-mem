@@ -687,7 +687,14 @@ export class SyncApply {
       }
       result.cursor = lastSeq;
     });
-    tx();
+    // IMMEDIATE: take the write lock before the first read. A deferred
+    // transaction reads the cursor first, and SQLite never runs the busy
+    // handler for a connection that holds a read snapshot and then asks for
+    // the write lock: the first write failed at once with "database is
+    // locked" whenever another connection (the shared-work-sync thread)
+    // was writing, ignoring busy_timeout. A large first pull met that on
+    // page after page and backed off for minutes each time (Phase 8 staging).
+    tx.immediate();
 
     // Pulled rows change what SessionStart shows. 'all': a mutation (remap,
     // set-title) can move rows between projects, so no single project names it.

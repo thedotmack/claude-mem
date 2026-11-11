@@ -718,7 +718,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         { doc_type: 'observation' },
         { $or: [{ project: keys }, { merged_into_project: keys }] },
       ],
-    }, undefined, expect.any(Function));
+    }, expect.any(Object), expect.any(Function));
     expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
       projects: ['api', 'acme/api', 'old-folder'],
     }));

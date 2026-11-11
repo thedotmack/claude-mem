@@ -72,6 +72,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
@@ -156,7 +157,7 @@ const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
   'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'kimi', 'devin', 'antigravity-cli', 'pi',
+  'gemini', 'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {
@@ -291,6 +292,10 @@ async function main(): Promise<void> {
       if (!['install', 'uninstall', 'status'].includes(action ?? '')) console.error('Usage: npx claude-mem pi install|status|uninstall');
       process.exitCode = code;
       break;
+    }
+    case 'gemini': {
+      const { handleGeminiCommand } = await import('../services/integrations/GeminiHooksInstaller.js');
+      process.exit(await handleGeminiCommand(args[1]?.toLowerCase()));
     }
     case 'kimi': {
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');

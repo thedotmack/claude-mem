@@ -63,8 +63,8 @@ async function deliver(entry: HookSpoolEntry): Promise<void> {
     path = '/api/sessions/observations';
     // The route reads only the snake_case tool fields. Sending the camelCase
     // copies too would double a large result past the worker's 5mb JSON cap.
-    const { toolName, toolInput, toolResponse, ...rest } = entry.payload;
-    body = { ...rest, tool_name: toolName, tool_input: toolInput, tool_response: toolResponse,
+    const { toolName, nativeToolName, toolInput, toolResponse, ...rest } = entry.payload;
+    body = { ...rest, tool_name: toolName, native_tool_name: nativeToolName, tool_input: toolInput, tool_response: toolResponse,
       enqueuedAtEpochMs: entry.enqueuedAtEpochMs };
   } else if (entry.kind === 'summarize') {
     path = '/api/sessions/summarize';

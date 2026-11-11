@@ -54,10 +54,10 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 
 ## Connecting an MCP client (key issuance + connect)
 
-- `POST /v1/keys` (**write** scope) mints a **read-only** API key for the caller's
+- `POST /v1/keys` (**read and write** scopes) mints a **read-only** API key for the caller's
   team and returns the paste-ready connect command. The raw key is shown **once**.
-  Body: `{ "expiresInDays"?: number }`. Minting requires write scope so a read key
-  can't escalate into more keys.
+  Body: `{ "expiresInDays"?: number }`. Issuers must already have read access to
+  delegate it, and write scope prevents read-only keys from minting more keys.
 
   ```json
   {

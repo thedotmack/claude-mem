@@ -279,10 +279,13 @@ export interface ClaudeMemCore {
    */
   captureTool(input: {
     tool: string;
+    /** Actual host name when an adapter changes more than its case. */
+    nativeToolName?: string;
     sessionID: string;
     toolUseId?: string;
     args?: Record<string, unknown>;
     output: string;
+    failed?: boolean;
   }): Promise<void>;
   /** Capture a real user prompt with session init. */
   captureUserPrompt(sessionID: string, promptText: string): Promise<void>;
@@ -359,7 +362,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
   }
 
   return {
-    async captureTool({ tool, sessionID, toolUseId, args, output }) {
+    async captureTool({ tool, nativeToolName, sessionID, toolUseId, args, output, failed }) {
       const telemetryToolEpochMs = Date.now();
       const contentSessionId = resolveContentSessionId(sessionID);
       // apply_patch carries its patch as `patchText`, and the worker's file
@@ -373,11 +376,14 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
       await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: CAPTURE_TOOL_NAMES.get(tool) ?? tool,
+        ...(nativeToolName ? { native_tool_name: nativeToolName } : {}),
         // Reading output.args instead shipped an empty tool_input for every
         // observation, and the compressor dismissed them all — the "loads but
         // captures nothing" symptom of #3678.
         tool_input: toolInput,
-        tool_response: truncate(output || ""),
+        tool_response: failed
+          ? { is_error: true, error: truncate(output || "") }
+          : truncate(output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
         telemetryToolEpochMs,

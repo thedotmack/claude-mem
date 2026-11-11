@@ -1243,6 +1243,24 @@ async function buildHooks() {
       console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    // claude-mem/eve: memory provider for eve agents. eve and zod come from the
+    // consuming agent (optional peer dependencies), so they stay external.
+    console.log(`\n🔧 Building eve memory provider...`);
+    const eveOutDir = 'dist/eve';
+    fs.mkdirSync(eveOutDir, { recursive: true });
+    await build({
+      entryPoints: ['integrations/eve/provider/src/index.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node24',
+      format: 'esm',
+      outfile: `${eveOutDir}/index.js`,
+      logLevel: 'error',
+      external: ['eve', 'eve/*', 'zod', 'node:*'],
+    });
+    fs.copyFileSync('integrations/eve/provider/types/index.d.ts', `${eveOutDir}/index.d.ts`);
+    console.log(`✓ eve memory provider built (${(fs.statSync(`${eveOutDir}/index.js`).size / 1024).toFixed(2)} KB)`);
+
     if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
       console.log(`\n🔧 Building OpenCode plugin...`);
       const opencodeOutDir = 'dist/opencode-plugin';

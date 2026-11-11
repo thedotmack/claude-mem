@@ -141,20 +141,39 @@ export interface MemoryFrontmatter {
   nodeType?: string;
 }
 
+const YAML_ESCAPES: Readonly<Record<string, string>> = {
+  '0': '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n',
+  v: '\v', f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"',
+  '/': '/', '\\': '\\', N: '\u0085', _: '\u00a0', L: '\u2028', P: '\u2029',
+};
+
+/** Decode the single-line scalar styles used by these known frontmatter keys. */
 function unquote(value: string): string {
   const v = value.trim();
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
-    return v.slice(1, -1);
-  }
-  return v;
+  if (v.length < 2) return v;
+  if (v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (!v.startsWith('"') || !v.endsWith('"')) return v;
+
+  // One pass: a decoded backslash must not start a second escape. Unknown or
+  // malformed escapes stay literal so a bad metadata value cannot drop a note.
+  return v.slice(1, -1).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (match, escape: string) => {
+    if (escape.length === 1) return YAML_ESCAPES[escape] ?? match;
+    const codePoint = Number.parseInt(escape.slice(1), 16);
+    return codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ? String.fromCodePoint(codePoint)
+      : match;
+  });
 }
 
 /**
  * Split leading `--- ... ---` frontmatter from the body. Returns parsed (known)
  * keys and the remaining markdown body. Files without frontmatter return `{}`
- * and the original text as body.
+ * and the original text as body, apart from a leading UTF-8 byte-order mark.
  */
 export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; body: string } {
+  // A UTF-8 signature is encoding metadata, not part of the first Markdown
+  // line. Remove it before recognizing frontmatter or deriving a heading.
+  raw = raw.replace(/^\uFEFF/, '');
   const lines = raw.split('\n');
   // The opener must be a complete `---` line at column 0 (a trailing \r is
   // tolerated for CRLF files): a `----` horizontal rule or an indented `---`
@@ -165,7 +184,7 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
   // First line is the opening '---'; find the closing one.
   let close = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '---') { close = i; break; }
+    if (/^---\r?$/.test(lines[i])) { close = i; break; }
   }
   if (close === -1) return { frontmatter: {}, body: raw };
 

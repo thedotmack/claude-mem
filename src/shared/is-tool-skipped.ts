@@ -9,10 +9,15 @@
 // and adapters rename some (OpenCode's `read` arrives as `Read`). A user's
 // `read` or `Read` entry keeps matching either way.
 
-export function isToolSkipped(toolName: string, skipToolsSetting: string | undefined): boolean {
+export function isToolSkipped(toolName: string, skipToolsSetting: string | undefined, nativeToolName?: string): boolean {
   if (!skipToolsSetting) return false;
   const skipTools = new Set(
     skipToolsSetting.split(',').map(tool => tool.trim().toLowerCase()).filter(Boolean)
   );
-  return skipTools.has(toolName.toLowerCase());
+  if (skipTools.has(toolName.toLowerCase())) return true;
+  // Match the host's actual name after an adapter renames it for evidence.
+  // Qualified MCP exclusions keep their server scope: a native name that
+  // happens to look qualified must not match a different server's tool.
+  const nativeName = typeof nativeToolName === 'string' ? nativeToolName.toLowerCase() : undefined;
+  return !!nativeName && !nativeName.startsWith('mcp__') && skipTools.has(nativeName);
 }

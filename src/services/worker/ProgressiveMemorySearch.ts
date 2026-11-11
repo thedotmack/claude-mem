@@ -35,7 +35,7 @@ export class ProgressiveMemorySearch {
         // before the index is cut to `limit` (#4865).
         const candidateLimit = Math.max(limit, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE);
         const result = await this.searchManager.search({ query, project, projects, limit: candidateLimit, format: 'json' });
-        const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])];
+        const terms = [...new Set(query.normalize('NFC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])];
         const categories: Array<[MemoryIndexRow['kind'], StoredRow[]]> = [
           ['observation', result.observations], ['summary', result.sessions], ['prompt', result.prompts],
         ];
@@ -46,7 +46,7 @@ export class ProgressiveMemorySearch {
         // fetch. Keep selectable memories ahead of them before truncation.
         return categories.flatMap(([kind, rows]) => rows.map((stored, position) => {
           const row = indexRow(stored, kind);
-          const titleWords = new Set(row.title.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+          const titleWords = new Set(row.title.normalize('NFC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
           const score = terms.filter(term => titleWords.has(term)).length;
           return { row, position, score, fetchableMatch: isMemoryDetailCandidate(row, query) };
         })).sort((a, b) => Number(b.fetchableMatch) - Number(a.fetchableMatch)
