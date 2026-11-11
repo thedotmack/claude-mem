@@ -210,14 +210,20 @@ export function createClaudeCodeReader(): AgentPromptReader {
           && !record.isSidechain && !record.isMeta;
         const at = isoToEpochMs(record.timestamp);
         if (!text || !isOwnerTyped || at === null || at < sinceEpochMs) continue;
-        const dedupeKey = record.uuid || `${record.timestamp}\u0000${text.slice(0, 200)}`;
+        const sessionId = typeof record.sessionId === 'string' && record.sessionId
+          ? record.sessionId : basename(transcript.path, '.jsonl');
+        const uuid = typeof record.uuid === 'string' && record.uuid ? record.uuid : null;
+        // Keep the existing persisted fallback ID. Only the in-scan key needs
+        // session scope: a shared opening is not the identity of a legacy turn.
+        const nativePromptId = uuid ?? fallbackId(record.timestamp, text);
+        const dedupeKey = uuid ? `native:${uuid}` : `legacy:${fallbackId(sessionId, nativePromptId)}`;
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
         const command = claudeCommandSpellings(text);
         sink.prompt({
           agent: 'claude-code',
-          sessionId: typeof record.sessionId === 'string' && record.sessionId ? record.sessionId : basename(transcript.path, '.jsonl'),
-          nativePromptId: typeof record.uuid === 'string' && record.uuid ? record.uuid : fallbackId(record.timestamp, text),
+          sessionId,
+          nativePromptId,
           at,
           cwd: typeof record.cwd === 'string' ? record.cwd : null,
           text: command?.typed ?? text,
