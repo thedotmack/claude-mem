@@ -37,6 +37,16 @@ export interface CorpusAgent {
   reprime(corpus: CorpusFile, callOptions?: KnowledgeAgentCallOptions): Promise<string>;
 }
 
+/**
+ * The values `CLAUDE_MEM_CORPUS_AGENT` accepts: '' is the Claude Agent SDK,
+ * 'api' the selected openrouter / openai-compatible provider. The settings
+ * route and the factory below both check against this one list.
+ */
+export const CORPUS_AGENT_CHOICES = ['', 'api'] as const;
+
+/** Bounds a hand-edited setting value echoed into an error message, so a long paste cannot fill the error. */
+const MAX_ECHOED_SETTING_CHARS = 40;
+
 /** A corpus agent that picks the implementation per call; `current` names the one a call would use now. */
 export interface ProviderCorpusAgent extends CorpusAgent {
   current(): Promise<CorpusAgent>;
@@ -67,9 +77,9 @@ export async function createCorpusAgent(
     // The settings route only saves '' or 'api', but the file can be edited by hand. A value this
     // code does not know must not fall through to the Claude Agent SDK: that is the account an
     // owner who wrote something here was trying to leave.
-    if (wanted !== '' && wanted !== 'api') {
+    if (!(CORPUS_AGENT_CHOICES as readonly string[]).includes(wanted)) {
       throw new AppError(
-        `CLAUDE_MEM_CORPUS_AGENT is ${JSON.stringify(wanted.slice(0, 40))}; it must be empty (Claude Agent SDK) or "api" (the selected openrouter / openai-compatible provider).`,
+        `CLAUDE_MEM_CORPUS_AGENT is ${JSON.stringify(wanted.slice(0, MAX_ECHOED_SETTING_CHARS))}; it must be empty (Claude Agent SDK) or ${CORPUS_AGENT_CHOICES.filter(Boolean).map(choice => JSON.stringify(choice)).join(', ')} (the selected openrouter / openai-compatible provider).`,
         400,
         'CORPUS_AGENT_UNAVAILABLE',
       );

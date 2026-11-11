@@ -21,6 +21,7 @@ import { parseProviderBySource } from '../../../../shared/provider-by-source.js'
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 import { WORK_VIEW_AGENT_CHOICES } from '../../../work-view/refresh-task.js';
+import { CORPUS_AGENT_CHOICES } from '../../knowledge/CorpusAgent.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -651,8 +652,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "api", "off", or "all"' };
     }
     if (settings.CLAUDE_MEM_CORPUS_AGENT !== undefined
-      && !['', 'api'].includes(settings.CLAUDE_MEM_CORPUS_AGENT)) {
-      return { valid: false, error: 'CLAUDE_MEM_CORPUS_AGENT must be empty (Claude Agent SDK) or "api" (the selected openrouter / openai-compatible provider)' };
+      && !(CORPUS_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_CORPUS_AGENT)) {
+      return { valid: false, error: `CLAUDE_MEM_CORPUS_AGENT must be empty (Claude Agent SDK) or ${CORPUS_AGENT_CHOICES.filter(Boolean).map(choice => JSON.stringify(choice)).join(', ')} (the selected openrouter / openai-compatible provider)` };
     }
     if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
       && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
