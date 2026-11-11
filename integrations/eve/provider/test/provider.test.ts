@@ -129,7 +129,7 @@ test("recall with no user text makes no request", async () => {
 
 test("an unreachable memory service tells the model and logs instead of failing the turn", async () => {
   reply = (_call, res) => {
-    res.writeHead(500);
+    res.writeHead(500, { "content-type": "text/plain" });
     res.end("boom");
   };
   const logged: unknown[] = [];
@@ -138,8 +138,26 @@ test("an unreachable memory service tells the model and logs instead of failing 
   try {
     const provider = claudeMem({ apiKey: "k", baseUrl });
     const result = await provider.recall["turn.started"](turnContext("hi"));
-    assert.match(result!.messages[0].content, /unavailable="true".*HTTP 500/);
+    assert.match(result!.messages[0].content, /unavailable="true".*HTTP 500\. boom/);
     assert.equal(logged.length, 1);
+  } finally {
+    console.error = original;
+  }
+});
+
+test("an HTML error page is described, not pasted into the model's context", async () => {
+  reply = (_call, res) => {
+    res.writeHead(502, { "content-type": "text/html" });
+    res.end("<html>bad gateway</html>");
+  };
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const provider = claudeMem({ apiKey: "k", baseUrl });
+    const result = await provider.recall["turn.started"](turnContext("hi"));
+    const content = result!.messages[0].content;
+    assert.match(content, /HTTP 502\. \(text\/html body, 24 characters\)/);
+    assert.doesNotMatch(content, /bad gateway/);
   } finally {
     console.error = original;
   }

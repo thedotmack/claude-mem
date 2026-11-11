@@ -140,7 +140,14 @@ async function callTool(
   if (!response.ok) {
     const hint =
       response.status === 401 ? " Check CLAUDE_MEM_API_KEY (https://cmem.ai/pro/key)." : "";
-    throw new Error(`claude-mem: ${name} failed with HTTP ${response.status}.${hint} ${body}`.trim());
+    // A JSON or plain-text error body is the server's own message, so pass it on. Anything
+    // else (an HTML error page from a proxy) is described by type and size, not pasted
+    // into the model's context.
+    const contentType = response.headers.get("content-type") ?? "";
+    const detail = /json|text\/plain/.test(contentType)
+      ? body
+      : `(${contentType || "unknown content type"} body, ${body.length} characters)`;
+    throw new Error(`claude-mem: ${name} failed with HTTP ${response.status}.${hint} ${detail}`.trim());
   }
   const reply = parseRpcBody(body, response.headers.get("content-type")) as {
     result?: McpToolResult;
