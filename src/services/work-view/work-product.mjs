@@ -198,17 +198,20 @@ function commitsFrom(command, response, out) {
 
 // The remote and destination branches named in each `git push` command.
 function pushTargets(command) {
-  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
+  // A trailing shell redirection (for example 2>&1) is not a repository argument.
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?!\d*[<>])(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
   return [...command.matchAll(pattern)].map(([, args]) => {
     const tokens = (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map(unquote);
     const positional = [];
-    let dryRun = false, deleting = false, tags = false;
+    let dryRun = false, deleting = false, tags = false, repoOption;
     for (let index = 0; index < tokens.length; index++) {
       const token = tokens[index];
       if (token === '--') { positional.push(...tokens.slice(index + 1)); break; }
+      if (token === '--repo') { repoOption = tokens[++index]; continue; }
+      if (token.startsWith('--repo=')) { repoOption = token.slice('--repo='.length); continue; }
       // These options consume the next word; that value is neither a remote,
       // a refspec nor a flag, even when it is literally "--dry-run".
-      if (/^--(?:push-option|receive-pack|exec|recurse-submodules|repo)$/.test(token)) { index++; continue; }
+      if (/^--(?:push-option|receive-pack|exec|recurse-submodules)$/.test(token)) { index++; continue; }
       if (token.startsWith('--')) {
         if (token === '--dry-run' || token === '--no-dry-run') dryRun = token === '--dry-run';
         if (token === '--delete' || token === '--no-delete') deleting = token === '--delete';
@@ -239,7 +242,8 @@ function pushTargets(command) {
     const branches = deleting ? [] : destinations.map(ref =>
       ref && ref !== 'HEAD' && (!ref.startsWith('refs/') || ref.startsWith('refs/heads/')) ? ref.replace(/^refs\/heads\//, '') : null);
     const deletesOrTags = deleting || tags || destinations.some(ref => ref.startsWith('refs/tags/'));
-    return { repo: githubRepo(remote), branches, dryRun, deletesOrTags };
+    // Git lets a positional repository override --repo, otherwise --repo wins.
+    return { repo: githubRepo(remote ?? repoOption), branches, dryRun, deletesOrTags };
   });
 }
 
@@ -283,8 +287,9 @@ function pushesFrom(command, response, out) {
       if (!target?.deletesOrTags || target.branches.includes(branch) || line.includes('[new branch]')) add(branch, ref[1]);
     }
   }
-  const branch = recorded ?? target?.branches[0];
-  if (!pushes.size && targets.length <= 1 && !target?.dryRun && !target?.deletesOrTags && branch
+  const branch = recorded ?? target?.branches.find(Boolean);
+  if (!pushes.size && targets.length <= 1 && !target?.dryRun && branch
+    && (!target?.deletesOrTags || target.branches.includes(branch))
     && !/Everything up-to-date|\[up to date\]|\[new tag\]|\[deleted\]|\[rejected\]|failed to push|^fatal:/m.test(out)) add(branch);
   return [...pushes.values()];
 }

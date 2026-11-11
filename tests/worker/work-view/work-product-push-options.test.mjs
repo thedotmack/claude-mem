@@ -25,6 +25,9 @@ const cases = [
   ['explicit tag shorthand', ['-q'], 'tag'],
   ['tag shorthand after a valued option', ['-q', '-o', 'ci.skip'], 'tag'],
   ['branch named tag', ['-q'], 'branch-tag'],
+  ['branch and tag shorthand', ['-q'], 'mixed-tag'],
+  ['tag shorthand before a branch', ['-q'], 'mixed-tag-first'],
+  ['all tags with an explicit branch', ['-q', '--tags'], 'mixed-all-tags'],
 ];
 
 for (const [name, options, operation = 'push'] of cases) {
@@ -51,10 +54,14 @@ for (const [name, options, operation = 'push'] of cases) {
       // Keep the public URL in the recorded command to verify the product link.
       git('config', `url.${remote}.insteadOf`, remoteUrl);
       if (operation === 'delete') git('push', '-q', remoteUrl, 'HEAD:review/topic');
-      if (operation === 'tag') git('tag', 'v1');
-      const branch = operation === 'branch-tag' ? 'tag' : 'review/topic';
-      const pushingBranch = operation === 'push' || operation === 'branch-tag';
-      const refspecs = operation === 'tag' ? ['tag', 'v1'] : [operation === 'delete' ? branch : 'HEAD:' + branch];
+      const mixed = operation.startsWith('mixed-');
+      if (operation === 'tag' || mixed) git('tag', 'v1');
+      const branch = mixed ? 'main' : operation === 'branch-tag' ? 'tag' : 'review/topic';
+      const pushingBranch = operation === 'push' || operation === 'branch-tag' || mixed;
+      const refspecs = operation === 'tag' ? ['tag', 'v1']
+        : operation === 'mixed-tag' ? ['main', 'tag', 'v1']
+          : operation === 'mixed-tag-first' ? ['tag', 'v1', 'main']
+            : [operation === 'delete' ? branch : 'HEAD:' + branch];
       const args = ['push', ...options, remoteUrl, ...refspecs];
       const result = git(...args);
       expect(result.stdout + result.stderr).toBe('');
@@ -63,6 +70,8 @@ for (const [name, options, operation = 'push'] of cases) {
       else expect(ref.status).not.toBe(0);
       if (operation === 'tag') expect(git('--git-dir=' + remote, 'show-ref').stdout.trim())
         .toBe(git('rev-parse', 'HEAD').stdout.trim() + ' refs/tags/v1');
+      if (mixed) expect(git('--git-dir=' + remote, 'rev-parse', '--verify', 'refs/tags/v1').stdout)
+        .toBe(git('rev-parse', 'HEAD').stdout);
 
       const command = 'git ' + args.map(arg => /\s/.test(arg) ? `'${arg}'` : arg).join(' ');
       const products = productsFromToolUse({ id: 1, tool_name: 'Bash',
@@ -71,6 +80,44 @@ for (const [name, options, operation = 'push'] of cases) {
       expect(products.map(({ branch, repo, url }) => ({ branch, repo, url }))).toEqual(pushingBranch
         ? [{ branch, repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/' + branch }]
         : []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const inline of [false, true]) {
+  test(`a ${inline ? 'inline' : 'separate'} --repo supplies the link for a confirmed default push`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'push-default-product-'));
+    const cwd = join(dir, 'source'), remote = join(dir, 'remote.git');
+    mkdirSync(cwd);
+    const env = { ...process.env, LC_ALL: 'C', LANG: 'C' };
+    const git = (...args) => {
+      const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(result.stderr || result.error?.message);
+      return result;
+    };
+    try {
+      git('init', '-q', '--initial-branch=main');
+      git('config', 'user.name', 'Push product regression');
+      git('config', 'user.email', 'push-product@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      git('config', 'push.default', 'current');
+      git('commit', '-q', '--allow-empty', '-m', 'Recorded work');
+      git('init', '-q', '--bare', remote);
+      git('config', `url.${remote}.insteadOf`, remoteUrl);
+      const command = `git push --repo${inline ? '=' : ' '}${remoteUrl} 2>&1 | tail -1`;
+      const result = spawnSync('bash', ['-o', 'pipefail', '-c', command], { cwd, env, encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/\[new branch\]\s+main -> main/);
+      expect(result.stdout).not.toContain('To ');
+      expect(git('--git-dir=' + remote, 'rev-parse', '--verify', 'refs/heads/main').stdout)
+        .toBe(git('rev-parse', 'HEAD').stdout);
+      const products = productsFromToolUse({ id: 1, tool_name: 'Bash',
+        tool_input: JSON.stringify({ command }),
+        tool_response: JSON.stringify({ stdout: result.stdout, stderr: result.stderr }) });
+      expect(products.map(({ branch, repo, url }) => ({ branch, repo, url })))
+        .toEqual([{ branch: 'main', repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/main' }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
