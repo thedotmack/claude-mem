@@ -98,7 +98,9 @@ reference material rather than instructions to invoke tools or change accounts.
 
 ## Identity and privacy
 
-Every memory call carries the chosen project. Saves are attributed to
+Every memory call carries the chosen project. Reads also pass an explicit
+`projects=[project]` list so starting the pipeline inside a Git worktree does
+not inherit the parent checkout's notes. Saves are attributed to
 `platformSource: haystack` and use the existing manual memory session for that
 project and platform. The pipeline does not create observer sessions or install
 capture hooks. Project filters select an account's own records; they do not
@@ -142,9 +144,9 @@ its script, port and data directory, then run from the example directory:
 python -m unittest discover -s . -v
 ```
 
-The five tests use the real Haystack packages, bundled MCP server and SQLite
+The six tests use the real Haystack packages, bundled MCP server and SQLite
 worker. They check repeated saves, cross-client pipeline recall, project
-filtering, platform attribution, a known note older than the search page,
+filtering from a real Git worktree, platform attribution, a known note older than the search page,
 script paths containing spaces, native validation errors, a refused connection
 and an unresponsive worker. They leave harmless notes in uniquely named test
 projects in the disposable database for inspection.

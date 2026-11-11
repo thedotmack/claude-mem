@@ -4,6 +4,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import subprocess
 import tempfile
 import time
 import unittest
@@ -53,6 +54,37 @@ class LivePipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_note("", "Missing project", "Do not save.")
 
+    def test_native_pipeline_keeps_the_selected_worktree_project_exact(self):
+        with tempfile.TemporaryDirectory(prefix="Haystack worktree ") as directory:
+            parent = Path(directory) / f"haystack-parent-{uuid.uuid4()}"
+            checkout = Path(directory) / "checkout"
+            def git(*args):
+                subprocess.run(["git", *map(str, args)], check=True, capture_output=True, timeout=10)
+            git("init", parent)
+            git("-C", parent, "-c", "user.name=Memory Test", "-c", "user.email=memory@example.invalid", "commit", "--allow-empty", "-m", "Fixture")
+            git("-C", parent, "worktree", "add", "--detach", checkout, "HEAD")
+            selected = f"{parent.name}/checkout"
+            previous = Path.cwd()
+            try:
+                os.chdir(checkout)
+                parent_saved = save_note(parent.name, "Worktree scope decision parent", "Parent-only amber decision.")
+                own_saved = save_note(selected, "Worktree scope decision selected", "Selected-only teal decision.")
+                parent_id = int(re.search(r"Saved memory #(\d+)", parent_saved)[1])
+                own_id = int(re.search(r"Saved memory #(\d+)", own_saved)[1])
+                result = recall_note(selected, "Worktree scope decision", own_id)
+                with self.subTest(read="search"):
+                    self.assertRegex(result["index"], rf"#{own_id}\b")
+                    self.assertNotRegex(result["index"], rf"#{parent_id}\b")
+                with self.subTest(read="timeline"):
+                    self.assertIn("Worktree scope decision selected", result["timeline"])
+                    self.assertNotIn("Worktree scope decision parent", result["timeline"])
+                with self.subTest(read="selected ID"):
+                    self.assertIn("Selected-only teal decision", result["details"])
+                    with self.assertRaises(PipelineRuntimeError):
+                        recall_note(selected, "Worktree scope decision", parent_id)
+            finally:
+                os.chdir(previous)
+
     def test_absolute_bundle_path_with_spaces(self):
         with tempfile.TemporaryDirectory(prefix="Haystack MCP path ") as directory:
             script = Path(directory) / "memory server.cjs"
@@ -64,7 +96,7 @@ class LivePipelineTests(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        with patch.dict(os.environ, {"CLAUDE_MEM_WORKER_PORT": str(port)}):
+        with patch.dict(os.environ, {"CLAUDE_MEM_WORKER_HOST": "127.0.0.1", "CLAUDE_MEM_WORKER_PORT": str(port)}):
             with self.assertRaises(ToolInvocationError) as error:
                 save_note(self.project, "Worker unavailable", "No completed acknowledgement.")
             self.assertIsInstance(error.exception.__cause__, MCPInvocationError)
@@ -74,11 +106,14 @@ class LivePipelineTests(unittest.TestCase):
             stalled.bind(("127.0.0.1", 0))
             stalled.listen(5)
             started = time.monotonic()
-            with patch.dict(os.environ, {"CLAUDE_MEM_WORKER_PORT": str(stalled.getsockname()[1])}):
+            with patch.dict(os.environ, {"CLAUDE_MEM_WORKER_HOST": "127.0.0.1", "CLAUDE_MEM_WORKER_PORT": str(stalled.getsockname()[1])}):
                 with self.assertRaises(ToolInvocationError) as error:
                     save_note(self.project, "Worker stalled", "No completed acknowledgement.")
                 self.assertIsInstance(error.exception.__cause__, TimeoutError)
             self.assertLess(time.monotonic() - started, 22)
+            stalled.settimeout(1)
+            client, _ = stalled.accept()
+            client.close()
 
 
 if __name__ == "__main__":

@@ -59,12 +59,14 @@ class ProjectMemory:
         if not project.strip() or not query.strip() or observation_id < 1:
             raise ValueError("Choose a project, query and positive observation ID.")
         with memory_tools() as tools:
-            index = text_result(tools["search"].invoke(project=project, query=query, type="observations", limit=20))
+            # Explicit projects prevents checkout inheritance from widening
+            # this component's application-selected scope in a Git worktree.
+            index = text_result(tools["search"].invoke(project=project, projects=[project], query=query, type="observations", limit=20))
             # The ID may come from an earlier search or acknowledged save and
             # need not appear on the current index page. Keep the project on
             # both follow-up reads instead of widening the query.
-            timeline = text_result(tools["timeline"].invoke(project=project, anchor=observation_id, depth_before=2, depth_after=2))
-            details = text_result(tools["get_observations"].invoke(project=project, ids=[observation_id]))
+            timeline = text_result(tools["timeline"].invoke(project=project, projects=[project], anchor=observation_id, depth_before=2, depth_after=2))
+            details = text_result(tools["get_observations"].invoke(project=project, projects=[project], ids=[observation_id]))
             return {"index": index, "timeline": timeline, "details": details}
 
 
