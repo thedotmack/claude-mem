@@ -60,6 +60,14 @@ function summariesFor(db, deviceId, validateValue) {
   return summaries;
 }
 
+/** A kept row summary disagrees with its row on a re-read: the cache is wrong, not the database. */
+class StaleRowSummaryError extends Error {
+  constructor(rowId) {
+    super('Shared My Work: a shared row changed while it was being read');
+    this.rowId = rowId;
+  }
+}
+
 /**
  * Read only. Incomplete/invalid batches never displace an earlier complete value.
  *
@@ -80,12 +88,23 @@ export function readSharedRecords(db, options) {
  * fillCacheFromOwnTransaction: the read runs in a transaction that cannot roll back rows it sees
  * (its own read transaction), so it may fill the row cache.
  */
-function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }, fillCacheFromOwnTransaction) {
+function readShared(db, options, fillCacheFromOwnTransaction) {
   // Preloaded rows are already in memory and must not cost another query.
-  if (suppliedRows) {
-    const context = { db, deviceId, validateValue, reread: row => row };
-    return foldSharedRows(suppliedRows.map(row => summarizeRow(context, row, row)), context, includeHistory, new Map());
+  if (options.rows) {
+    const context = { db, deviceId: options.deviceId, validateValue: options.validateValue, reread: row => row };
+    return foldSharedRows(options.rows.map(row => summarizeRow(context, row, row)), context, options.includeHistory ?? false, new Map());
   }
+  try { return scanShared(db, options, fillCacheFromOwnTransaction); }
+  catch (error) {
+    if (!(error instanceof StaleRowSummaryError)) throw error;
+    // Read again from the rows themselves once. A second mismatch then is a real change and throws.
+    committedRowSummaries.delete(db);
+    logger.error('WORKER', 'Shared My Work: a kept shared row summary no longer matches its row; cleared this connection\'s row cache and read again', { rowId: error.rowId });
+    return scanShared(db, options, fillCacheFromOwnTransaction);
+  }
+}
+
+function scanShared(db, { deviceId, validateValue, includeHistory = false }, fillCacheFromOwnTransaction) {
   // The value re-reads below must see the same rows as the scan, so both run in one read transaction.
   const read = () => {
     let scan, byId;
@@ -173,7 +192,7 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
       record = row ? parseRow(context, row) : INVALID_ROW;
       if (record === INVALID_ROW || record?.record !== 'entry' || record.hash !== entry.hash || record.revision !== entry.revision
         || record.batch !== entry.batch || record.writer !== entry.writer || record.kind !== entry.kind || record.key !== entry.key) {
-        throw new Error('Shared My Work: a shared row changed while it was being read');
+        throw new StaleRowSummaryError(entry.source);
       }
     }
     values.set(entry, record);

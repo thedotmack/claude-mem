@@ -209,6 +209,8 @@ function pulledFixture() {
     kind: 'group', key: 'g', revision, base: null, value })], { batchId, writer: REMOTE });
   return { db, pull, tombstone, batch };
 }
+const normalized = (state: ReturnType<typeof readSharedRecords>) => canonicalJson({ records: [...state.records].sort(), heads: [...state.heads].sort(),
+  revision: state.revision, diagnostics: state.diagnostics });
 const groupValue = (state: ReturnType<typeof readSharedRecords>) => state.records.get(sharedRecordKey('group', 'g'))?.value;
 
 test('a pulled higher revision that rewrites a row\'s content is read, not the summary kept for the old content', () => {
@@ -238,6 +240,37 @@ test('a pulled tombstone that deletes a row of the current batch is read', () =>
     expect(groupValue(state)).toBe('A');
     expect(state.diagnostics.pending).toBe(1);
   }
+});
+
+test('a kept summary that no longer matches its row clears the row cache and reads again once', () => {
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const insert = db.prepare('INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) VALUES (?,?,?,?,?)');
+  const write = (batchId: string, revision: string, value: unknown) => createSharedBatch([createSharedEntry({ batchId, writer: DEVICE,
+    kind: 'group', key: 'g', revision, base: null, value })], { batchId, writer: DEVICE });
+  const ids = (rows: ReturnType<typeof write>) => rows.map(row => Number(insert.run('repo', row.listName, canonicalJson(row.fields), new Date(NOW).toISOString(), NOW).lastInsertRowid));
+  const [olderEntry] = ids(write('b1', '1', 'A'));
+  const [, , newerCommit] = ids(write('b2', '2', 'B'));
+  expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('B');
+  // Content that changes without a new sync_rev never happens through sync; if it does, the kept summary of b1's
+  // entry is wrong. Once b2 is pending, b1's value is read again from its row and disagrees with that summary.
+  db.prepare('UPDATE work_state_entries SET fields = ? WHERE id = ?').run(canonicalJson(write('b1', '1', 'X')[0].fields), olderEntry);
+  db.prepare('DELETE FROM work_state_entries WHERE id = ?').run(newerCommit);
+  const rows = db.query("SELECT id, list_name, fields, origin_device_id, origin_local_id, sync_rev FROM work_state_entries ORDER BY id").all() as any[];
+  const fromRows = normalized(readSharedRecords(db, { deviceId: DEVICE, rows }));
+  const errors = spyOn(logger, 'error').mockImplementation(() => {});
+  try {
+    const state = readSharedRecords(db, { deviceId: DEVICE });
+    expect(normalized(state)).toBe(fromRows);
+    // b1's rewritten entry no longer matches its manifest, and b2 has no commit.
+    expect(state.diagnostics).toMatchObject({ invalid: 1, pending: 1 });
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(String(errors.mock.calls[0][1])).toContain('cleared this connection');
+    // The next read uses the rebuilt cache: no error and no further log.
+    expect(normalized(readSharedRecords(db, { deviceId: DEVICE }))).toBe(fromRows);
+    expect(errors).toHaveBeenCalledTimes(1);
+  } finally { errors.mockRestore(); }
 });
 
 test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {
