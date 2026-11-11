@@ -41,11 +41,12 @@ class MemoryWorkflow(Workflow):
     @step
     async def recall(self, event: StartEvent) -> Recalled:
         state = event.state
-        index = await self.call("search", query=state["query"], type="observations", limit=20)
+        scope = {"projects": json.dumps([state["project"]])}
+        index = await self.call("search", **scope, query=state["query"], type="observations", limit=20)
         if not re.search(rf"\|\s*#{state['observation_id']}\s*\|", index):
             raise RuntimeError("The selected observation is absent from this project's search page")
-        timeline = await self.call("timeline", anchor=state["observation_id"], depth_before=1, depth_after=1)
-        recalled = await self.call("get_observations", ids=[state["observation_id"]])
+        timeline = await self.call("timeline", **scope, anchor=state["observation_id"], depth_before=1, depth_after=1)
+        recalled = await self.call("get_observations", **scope, ids=[state["observation_id"]])
         if not re.search(rf"^#{state['observation_id']}\s+—", recalled, re.MULTILINE):
             raise RuntimeError("The selected observation is unavailable in this project")
         return Recalled(state=state, index=index, timeline=timeline, recalled=recalled)
