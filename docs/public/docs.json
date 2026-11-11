@@ -110,6 +110,7 @@
           "kimi-integration",
           "devin-integration",
           "langgraph-integration",
+          "llamaindex-integration",
           "qoder-integration",
           "screenpipe-integration",
           "eve-integration",

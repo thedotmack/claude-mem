@@ -1,0 +1,165 @@
+---
+title: LlamaIndex
+description: Use LlamaIndex's native Workflow and MCP tools to recall a project observation and save an explicit handoff.
+icon: code
+---
+
+A LlamaIndex workflow can pick up an existing Claude-Mem observation and leave a
+handoff for the next run. The [working example](https://github.com/thedotmack/claude-mem/tree/main/examples/llamaindex)
+uses `McpToolSpec` to turn the existing local memory tools into LlamaIndex
+`FunctionTool` objects, then calls them from a native two-step `Workflow`.
+
+## Capabilities and requirements
+
+| Capability | This example |
+| --- | --- |
+| Recall | Searches one project, checks a caller-selected ID, reads its timeline and selected details |
+| Explicit save | Writes the caller's handoff after recall succeeds |
+| Project identity | Binds the project once with `McpToolSpec.global_partial_params` |
+| Session identity | Uses the worker's existing manual session and `llamaindex` platform; stores the caller's run ID as metadata |
+| Automatic capture or context injection | Not provided |
+| Model calls or LlamaCloud | Not used or required |
+| CMEM Pro | Not required; this guide uses the local worker |
+
+Verified on Linux with Python **3.12.14**, `llama-index-tools-mcp` **0.6.0**,
+`llama-index-core` **0.14.25**, `llama-index-workflows` **2.26.1**, MCP Python SDK
+**2.3.0**, and Claude-Mem **15.16.1**. The requirements file pins these tested
+versions. macOS, Windows, hosted-runtime authentication, and remote MCP were not
+verified for this example.
+
+## Connect
+
+Use a running local Claude-Mem worker and Node.js. From a Claude-Mem checkout:
+
+```bash
+python -m venv .venv-llamaindex
+. .venv-llamaindex/bin/activate
+python -m pip install -r examples/llamaindex/requirements.txt
+export CLAUDE_MEM_MCP_SERVER="/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+npm run worker:status
+```
+
+Use the installed MCP script you trust, or the shipped script in this checkout.
+The script path is passed as an individual argument. If necessary, start the
+worker with `npm run worker:start`. Set `CLAUDE_MEM_DATA_DIR` and
+`CLAUDE_MEM_WORKER_PORT` to match an existing custom worker configuration.
+
+The example passes only local worker and runtime environment settings to its MCP
+child. It selects worker mode and disables autostart for that child. It does not
+change saved settings, write a second MCP configuration, or install hooks.
+Repeating setup does not duplicate an integration entry.
+
+## Recall and leave a note
+
+Pick an observation already saved under the exact project key shown in the
+worker's viewer. To create a harmless known note for the demonstration:
+
+```bash
+curl --fail-with-body "http://127.0.0.1:37777/api/memory/save" \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
+```
+
+Use the returned `id` in the command below, and change the worker port above if
+yours differs:
+
+```bash
+python examples/llamaindex/memory_workflow.py \
+  --project shop-api \
+  --query quokkaharbor \
+  --observation-id 123 \
+  --run-id scheduler-handoff-1 \
+  --note "Next run: keep the scheduler export in UTC."
+```
+
+The `recall` step returns a typed `Recalled` event only after that ID appears in
+the selected project's search page and its details can be read. The `remember`
+step writes the explicit handoff and returns a `StopEvent` with the confirmed
+saved ID. No model chooses the calls or invents the handoff text. Returned notes
+remain data; they do not change the project or authorize a different action.
+
+The search page is limited to 20 observations. Narrow the query if the chosen
+observation is outside that page. An unrelated project's ID fails the workflow
+before a handoff is written.
+
+## The native MCP connection
+
+LlamaIndex accepts an initialized MCP `ClientSession`. The example keeps that
+session open for the whole workflow and uses only four discovered tools:
+
+```python
+spec = McpToolSpec(
+    client=session,
+    allowed_tools=["search", "timeline", "get_observations", "save_memory"],
+    global_partial_params={"project": project},
+)
+tools = {tool.metadata.name: tool for tool in await spec.to_tool_list_async()}
+workflow = MemoryWorkflow(tools, timeout=60)
+result = await workflow.run(state=state)
+```
+
+Each tool returns a LlamaIndex `ToolOutput` containing the original MCP result.
+The example checks both `ToolOutput.is_error` and `raw_output.is_error` before
+using text. A server-reported failure must not be treated as a successful save
+just because the outer function call returned normally.
+
+The handoff's metadata includes `integration: "llamaindex"`,
+`platformSource: "llamaindex"`, `runId`, and a fingerprint of the project, run ID,
+and text. This uses the worker's existing replay protection. Deliberately repeating
+the same run returns the same saved observation; changing the note represents a
+new save. No writes are retried automatically. After an ambiguous timeout, inspect
+the viewer or rerun with the same run ID and text.
+
+## Verify with the real SDK
+
+With Bun and Node.js available, run:
+
+```bash
+python examples/llamaindex/test_workflow.py
+```
+
+The tests start the shipped worker in a fresh temporary SQLite data directory,
+with optional capture, sync, and telemetry disabled for the fixture. They run the
+installed LlamaIndex workflow, `McpToolSpec`, and MCP transport. Six checks cover:
+
+- Known observation recall, handoff persistence, and deliberate-repeat deduplication.
+- Project isolation and `llamaindex` platform/manual-session attribution in SQLite.
+- Rejection of an empty project and a foreign selected ID.
+- A real worker validation error returned by `save_memory`.
+- Honest failure when the worker is stopped.
+- A native MCP deadline against a controlled slow HTTP endpoint.
+
+The verified successful run used known observation `1`, saved handoff `3`, and
+returned `3` again on repeat. The data path contained spaces. Success, isolation,
+attribution, and validation use the actual worker; the timeout test supplies the
+slow endpoint. No model provider is involved.
+
+## Data, timeouts, and disconnect
+
+The project, query, selected ID, handoff, and provenance metadata go through the
+existing local memory contract. Recalled text comes back to the Python application.
+This script does not send it to a model or LlamaCloud. Existing worker cloud sync
+and export settings still apply to saved notes. If your application later forwards
+notes to a model or enables tracing, review that application's data destinations.
+
+Use your own trusted local worker. Project filters separate results within it;
+they are not multiuser authentication. Save only text intended for retention. The
+example does not collect excluded project transcripts, import conversations, or
+alter privacy settings.
+
+MCP requests have a 10-second timeout, the native workflow has a 60-second limit,
+and an 80-second outer deadline also covers connection setup and cleanup. Failures
+exit nonzero with a short message that does not echo tool arguments or raw transport
+errors. Check the worker, script path, project, and selected ID before retrying.
+
+Stop calling `run_workflow`, or remove the example from your application, to
+disconnect. The context managers close the MCP session and child process. Deleting
+the dedicated Python environment removes the example dependencies without changing
+worker configuration or erasing memory.
+
+## Official references
+
+- [LlamaIndex MCP tools](https://developers.llamaindex.ai/python/framework/module_guides/mcp/llamaindex_mcp/)
+- [Using a custom MCP client session](https://developers.llamaindex.ai/python/examples/tools/mcp/)
+- [LlamaIndex Workflows](https://developers.llamaindex.ai/python/llamaagents/workflows/)
+- [Claude-Mem search workflow](/usage/search-tools)
