@@ -1,0 +1,202 @@
+---
+title: AutoGen
+description: Save and recall explicit project notes through AutoGen's native MCP client.
+icon: code
+---
+
+Give an AutoGen workflow a durable note it can recall on its next run.
+The [runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/autogen)
+uses AutoGen's native `McpWorkbench` with the existing local Claude-Mem MCP bundle.
+
+<Warning>
+AutoGen is [archived upstream](https://github.com/microsoft/autogen/blob/main/README.md) and no longer maintained by Microsoft.
+This guide is for existing AutoGen projects. New projects should use
+[Microsoft Agent Framework](/microsoft-agent-framework), its successor, which has its own Claude-Mem guide.
+</Warning>
+
+## Capabilities
+
+| Capability | This example |
+| --- | --- |
+| Save | Explicitly supplied title/text, fixed project, and an existing replay fingerprint. |
+| Recall | Project search, selected timeline, and the confirmed observation's details. |
+| Identity | Existing manual session and `autogen` platform; no invented native agent turn ID. |
+| Automatic capture | No hooks, transcript ingestion, background capture or context injection. |
+| Model execution | No model credentials or model request is needed for verification. |
+
+This guide covers the local worker. It does not require CMEM Pro or verify
+hosted authentication, remote HTTP MCP, or deployment to a cloud runtime.
+
+## Setup
+
+Verified on Linux with Python 3.12.14, Node 24.22.1, Claude-Mem 15.16.1,
+`autogen-ext[mcp]` 0.7.5 and MCP Python 1.30.0. The example needs Python 3.11 or newer for
+its workflow deadlines. macOS and Windows have not been verified here.
+
+Use a running local worker and the absolute path to its installed
+`plugin/scripts/mcp-server.cjs`. For a source checkout, install repository
+dependencies and run `npm run build` first. The existing
+[installation guide](/installation) covers worker setup.
+
+From the Claude-Mem checkout:
+
+```bash
+python3 -m venv .venv-autogen-memory
+.venv-autogen-memory/bin/python -m pip install -r examples/autogen/requirements.txt
+export CLAUDE_MEM_MCP_SERVER="/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+.venv-autogen-memory/bin/python examples/autogen/memory_workflow.py \
+  --project "my-project" \
+  --title "Release decision" \
+  --text "Run the smoke suite before release."
+```
+
+Set the same `CLAUDE_MEM_DATA_DIR` and `CLAUDE_MEM_WORKER_PORT` as the worker
+when using custom values. Script paths and arguments are passed individually,
+so spaces do not become shell syntax. No existing settings or MCP registrations
+are changed; rerunning setup in the same virtual environment is safe.
+
+## Verify memory across runs
+
+The command returns JSON with an observation ID, project, recent search index
+and details containing `Run the smoke suite before release.` Run the exact
+command again. Its project/title/text fingerprint should return the same ID,
+not create another copy. A different project, title or text represents a new
+explicit note. Existing project/platform-scoped receipts provide the deduplication.
+
+An old note can disappear from the first five search results when newer notes
+arrive. Its confirmed save receipt still supplies the ID for project-scoped
+timeline and detail calls. Successful recall does not depend on scanning every
+page or broadening the project. No failed write is retried automatically;
+a timeout can be ambiguous, so inspect the worker and repeat the same inputs
+to recover the existing receipt.
+
+## Framework behavior
+
+`MemoryWorkbench` subclasses the native workbench to expose only `save_memory`,
+`search`, `timeline`, and `get_observations`. Every invocation replaces any
+supplied project with the application-owned project and drops a `projects`
+override. `call_text` checks AutoGen's native `ToolResult.is_error` before using
+the result. The context manager starts and stops the MCP actor and subprocess.
+
+Keep the workbench's `async with` scope open while using it as the `workbench`
+of your existing AutoGen `AssistantAgent`. This guide verifies the tool workflow,
+not a model choosing tools; your application still chooses its model and write
+approval policy. This example does not serialize its custom scoped workbench.
+
+The MCP pin is deliberate: AutoGen 0.7.5 uses the MCP 1.x client API. Installing
+MCP 2.x alongside this release breaks its imports. Use a separate environment
+instead of changing the MCP dependency of another application.
+
+Official references: [AutoGen MCP workbench](https://microsoft.github.io/autogen/stable/reference/python/autogen_ext.tools.mcp.html) and
+[workbench/tool guidance](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/components/tools.html).
+
+## Data boundaries
+
+Only explicit notes, queries, IDs and provenance use the local worker contract.
+Each read and write uses the chosen project. Project filters are not an account
+authorization boundary: use your own authorized worker, with separate worker
+data directories for separate trust domains. The subprocess receives selected
+local connection/runtime environment values rather than model credentials.
+
+Manual notes are stored as supplied; they are not automatically filtered like
+captured transcripts. Choose text intended for retention. The worker's configured
+sync, indexing and export policies still apply. This example sends no note to
+a model; an application that later includes recalled text in a model request
+sends that text to its selected provider. Treat recalled notes as evidence,
+not permission to execute commands, change scope or grant access.
+
+## Failures and disconnect
+
+Requests/discovery have ten-second deadlines and the complete CLI workflow has
+a sixty-second deadline. Missing files, invalid input, stopped workers, native
+tool errors and timeouts exit with status 1 and no successful result. Worker
+auto-start is disabled. Check the local worker and installed script path before
+retrying. Removal of the example or its virtual environment disconnects it and
+leaves stored memories intact; it installs no hook or user configuration.
+
+The optional live tests exercise the installed framework with a real worker:
+round-trip/replay, platform identity, scope override attempts, an old ID beyond
+the current index, actual tool errors, a stopped worker and a controlled slow
+endpoint. Run them only with a disposable worker and fresh data directory:
+
+```bash
+.venv-autogen-memory/bin/python -m unittest discover -s examples/autogen -v
+```
+
+For the tests, use a built source checkout and Bun (the worker runtime). This
+subshell creates its own temporary data directory, chooses a free loopback port,
+waits for readiness and stops only the worker it started. The directory/logs
+remain available for inspection afterward. Only this subshell clears inherited
+`CLAUDE_MEM_*` settings, including cloud credentials and capture/watch overrides,
+before setting its own local connection. Your normal worker is untouched.
+
+```bash
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun -e 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error=>{console.error(error);process.exit(1)});' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  .venv-autogen-memory/bin/python -m unittest discover -s examples/autogen -v
+)
+```
+
+Both fault fixtures explicitly pin their child connection to `127.0.0.1`,
+regardless of the host used by your normal worker. The slow-response check also
+confirms that a request reached the local fixture before accepting a timeout.
+
+Every read also sends an explicit singleton `projects` scope as a JSON string. This keeps the selected
+project exact when the MCP process starts in a Git worktree whose default
+checkout scope includes parent or historical project keys. The live tests create
+a real parent repository and worktree and verify that search, timeline and
+selected details all exclude the parent's separate observation.
+
+Literal commas and outer whitespace in project keys are preserved. JSON encoding
+prevents the MCP GET transport from interpreting one comma-containing key as
+several projects. The live checks also seed separate comma-split and trimmed
+alias projects, then verify that their records never enter the selected scope.
+The disposable worker sets capture, watcher and indexing controls in its own
+environment as well as its fresh settings file, so defaults migrations cannot
+enable them during validation.
+
+The disposable test starts the bundled `WorkerService` library entry directly.
+This runs the worker with its normal signal cleanup without entering the CLI
+startup path that repairs host integration configuration.

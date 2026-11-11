@@ -54,7 +54,7 @@ interface SessionCompressedRecord {
   // cost-per-observation = total_cost_usd / observations_created stays
   // derivable from the rollup alone, not just the legacy session_compressed
   // stream). NOTE: distinct from the rollup's own `count`, which is the number
-  // of turns (records.length).
+  // of turns.
   count?: number;
   obs_type_bugfix?: number;
   obs_type_discovery?: number;
@@ -81,7 +81,8 @@ interface ContextInjectedRecord {
 }
 
 interface SessionCompressedBucket {
-  records: SessionCompressedRecord[];
+  count: number;
+  totals: ReturnType<typeof createSessionTotals>;
   windowStartTs: number;
   /**
    * Monotonic partial-flush counter. A session that never trips a safety_flush
@@ -93,7 +94,13 @@ interface SessionCompressedBucket {
 }
 
 interface ContextInjectedBucket {
-  records: ContextInjectedRecord[];
+  count: number;
+  totalTokens: number;
+  tokenCount: number;
+  outcomesOk: number;
+  outcomesError: number;
+  totalObservationsInjected: number;
+  totalTokensSaved: number;
   windowStartTs: number;
 }
 
@@ -119,124 +126,115 @@ let safetyHandle: ReturnType<typeof setInterval> | null = null;
 
 // ---------------------------------------------------------------------------
 // safety_flush thresholds. A session bucket older than MAX_AGE_MS or holding
-// more than MAX_RECORDS gets a partial rollup so (a) a forgotten/never-torn-down
-// session still reports and (b) per-session memory stays bounded. Chosen to be
+// more than MAX_RECORDS gets a partial rollup so a forgotten/never-torn-down
+// session still reports. Records are accumulated on arrival; memory holds
+// counters, model/reason frequencies and last-seen source fields. Chosen to be
 // generous: most sessions flush at session_end well before either trips, so the
 // common case is still exactly ONE rollup per session.
 // ---------------------------------------------------------------------------
 const SAFETY_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
 const SAFETY_MAX_AGE_MS = 60 * 60 * 1000;       // 1 hour
-const SAFETY_MAX_RECORDS = 1000;                // hard memory cap per session
+const SAFETY_MAX_RECORDS = 1000;                // partial-rollup threshold per session
 
 // ---------------------------------------------------------------------------
 // Rollup computation helpers
 // ---------------------------------------------------------------------------
 
+/** Keep sufficient statistics, not one property bag per captured event. */
+function createSessionTotals() {
+  return {
+    totalTokensInput: 0, totalTokensOutput: 0, totalCostUsd: 0,
+    durationSum: 0, durationCount: 0, compressionSum: 0, compressionCount: 0,
+    outcomesOk: 0, outcomesError: 0, outcomesAborted: 0,
+    outcomesAbortedDeadlineExceeded: 0, outcomesInvalidOutput: 0,
+    observationsCreated: 0, obsTypeBugfix: 0, obsTypeDiscovery: 0,
+    obsTypeDecision: 0, obsTypeRefactor: 0, obsTypeOther: 0,
+    modelFrequency: new Map<string, number>(),
+    abortReasonFrequency: new Map<string, number>(),
+    lastIde: undefined as string | undefined,
+    lastProvider: undefined as string | undefined,
+    lastObservedModel: undefined as string | undefined,
+    lastObservedBilling: undefined as string | undefined,
+  };
+}
+
+function addSessionCompressedRecord(bucket: SessionCompressedBucket, r: SessionCompressedRecord): void {
+  bucket.count++;
+  const totals = bucket.totals;
+  if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
+    totals.totalTokensInput += r.tokens_input;
+  }
+  if (typeof r.tokens_output === 'number' && Number.isFinite(r.tokens_output)) {
+    totals.totalTokensOutput += r.tokens_output;
+  }
+  if (typeof r.cost_usd === 'number' && Number.isFinite(r.cost_usd)) {
+    totals.totalCostUsd += r.cost_usd;
+  }
+  if (typeof r.duration_ms === 'number' && Number.isFinite(r.duration_ms)) {
+    totals.durationSum += r.duration_ms;
+    totals.durationCount++;
+  }
+  if (typeof r.compression_ms === 'number' && Number.isFinite(r.compression_ms)) {
+    totals.compressionSum += r.compression_ms;
+    totals.compressionCount++;
+  }
+  if (r.outcome === 'ok') totals.outcomesOk++;
+  else if (r.outcome === 'error') totals.outcomesError++;
+  else if (r.outcome === 'aborted') {
+    totals.outcomesAborted++;
+    if (r.abort_reason === 'deadline_exceeded') totals.outcomesAbortedDeadlineExceeded++;
+  } else if (r.outcome === 'invalid_output') totals.outcomesInvalidOutput++;
+
+  // abort_reason is a closed enum SessionRoutes already normalized; only
+  // aborted turns carry it. Count it here for top_abort_reason below.
+  if (typeof r.abort_reason === 'string' && r.abort_reason) {
+    totals.abortReasonFrequency.set(r.abort_reason, (totals.abortReasonFrequency.get(r.abort_reason) ?? 0) + 1);
+  }
+
+  if (typeof r.model === 'string' && r.model) {
+    totals.modelFrequency.set(r.model, (totals.modelFrequency.get(r.model) ?? 0) + 1);
+  }
+  // Provider/model/billing can change during a session. Preserve the last
+  // nonempty value, including when later turns omit these fields.
+  if (typeof r.ide === 'string' && r.ide) totals.lastIde = r.ide;
+  if (typeof r.provider === 'string' && r.provider) totals.lastProvider = r.provider;
+  if (typeof r.observed_model === 'string' && r.observed_model) totals.lastObservedModel = r.observed_model;
+  if (typeof r.observed_billing === 'string' && r.observed_billing) totals.lastObservedBilling = r.observed_billing;
+  // Generation-side observation volume. r.count is observations created in
+  // this turn (NOT the rollup's turn count); sum it so the rollup carries
+  // observations_created alongside total_cost_usd.
+  if (typeof r.count === 'number' && Number.isFinite(r.count)) {
+    totals.observationsCreated += r.count;
+  }
+  if (typeof r.obs_type_bugfix === 'number' && Number.isFinite(r.obs_type_bugfix)) {
+    totals.obsTypeBugfix += r.obs_type_bugfix;
+  }
+  if (typeof r.obs_type_discovery === 'number' && Number.isFinite(r.obs_type_discovery)) {
+    totals.obsTypeDiscovery += r.obs_type_discovery;
+  }
+  if (typeof r.obs_type_decision === 'number' && Number.isFinite(r.obs_type_decision)) {
+    totals.obsTypeDecision += r.obs_type_decision;
+  }
+  if (typeof r.obs_type_refactor === 'number' && Number.isFinite(r.obs_type_refactor)) {
+    totals.obsTypeRefactor += r.obs_type_refactor;
+  }
+  if (typeof r.obs_type_other === 'number' && Number.isFinite(r.obs_type_other)) {
+    totals.obsTypeOther += r.obs_type_other;
+  }
+}
+
 function computeSessionCompressedRollup(
   bucket: SessionCompressedBucket,
   rollupReason: RollupReason
 ): Record<string, unknown> {
-  const { records, windowStartTs, windowSeq } = bucket;
-  const count = records.length;
-
-  let totalTokensInput = 0;
-  let totalTokensOutput = 0;
-  let totalCostUsd = 0;
-  let durationSum = 0;
-  let durationCount = 0;
-  let compressionSum = 0;
-  let compressionCount = 0;
-  let outcomesOk = 0;
-  let outcomesError = 0;
-  let outcomesAborted = 0;
-  let outcomesAbortedDeadlineExceeded = 0;
-  let outcomesInvalidOutput = 0;
-  let observationsCreated = 0;
-  let obsTypeBugfix = 0;
-  let obsTypeDiscovery = 0;
-  let obsTypeDecision = 0;
-  let obsTypeRefactor = 0;
-  let obsTypeOther = 0;
-  const modelFrequency: Map<string, number> = new Map();
-  // Abort-reason frequency across the session's aborted turns. outcomes_aborted
-  // already counts how many turns aborted, but not why — so an auth outage that
-  // silently stops all capture is indistinguishable from an idle timeout in the
-  // rollup. top_abort_reason names the dominant cause so the auth share of
-  // aborts is measurable (#4150).
-  const abortReasonFrequency: Map<string, number> = new Map();
-  // Last-seen non-empty string per session for the source/observed fields.
-  // `ide` is constant within a session. `provider` is NOT: it can change
-  // mid-session on provider fallback or a quota cooldown, so last-seen reports
-  // the provider that finished the session. The observed model/billing only
-  // change on a /model switch, in which case the latest value is the one we
-  // want. `hook` is deliberately NOT carried: it varies per turn
-  // (init / ingest / summarize) so a single value would misrepresent the
-  // session. Records omit observed_* when unknown; the rollup fills 'unknown'.
-  let lastIde: string | undefined;
-  let lastProvider: string | undefined;
-  let lastObservedModel: string | undefined;
-  let lastObservedBilling: string | undefined;
-
-  for (const r of records) {
-    if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
-      totalTokensInput += r.tokens_input;
-    }
-    if (typeof r.tokens_output === 'number' && Number.isFinite(r.tokens_output)) {
-      totalTokensOutput += r.tokens_output;
-    }
-    if (typeof r.cost_usd === 'number' && Number.isFinite(r.cost_usd)) {
-      totalCostUsd += r.cost_usd;
-    }
-    if (typeof r.duration_ms === 'number' && Number.isFinite(r.duration_ms)) {
-      durationSum += r.duration_ms;
-      durationCount++;
-    }
-    if (typeof r.compression_ms === 'number' && Number.isFinite(r.compression_ms)) {
-      compressionSum += r.compression_ms;
-      compressionCount++;
-    }
-    if (r.outcome === 'ok') outcomesOk++;
-    else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') {
-      outcomesAborted++;
-      if (r.abort_reason === 'deadline_exceeded') outcomesAbortedDeadlineExceeded++;
-    } else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
-
-    // abort_reason is a closed enum SessionRoutes already normalized; only
-    // aborted turns carry it. Count it here for top_abort_reason below.
-    if (typeof r.abort_reason === 'string' && r.abort_reason) {
-      abortReasonFrequency.set(r.abort_reason, (abortReasonFrequency.get(r.abort_reason) ?? 0) + 1);
-    }
-
-    if (typeof r.model === 'string' && r.model) {
-      modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
-    }
-    if (typeof r.ide === 'string' && r.ide) lastIde = r.ide;
-    if (typeof r.provider === 'string' && r.provider) lastProvider = r.provider;
-    if (typeof r.observed_model === 'string' && r.observed_model) lastObservedModel = r.observed_model;
-    if (typeof r.observed_billing === 'string' && r.observed_billing) lastObservedBilling = r.observed_billing;
-    // Generation-side observation volume. r.count is observations created in
-    // this turn (NOT the rollup's turn count); sum it so the rollup carries
-    // observations_created alongside total_cost_usd.
-    if (typeof r.count === 'number' && Number.isFinite(r.count)) {
-      observationsCreated += r.count;
-    }
-    if (typeof r.obs_type_bugfix === 'number' && Number.isFinite(r.obs_type_bugfix)) {
-      obsTypeBugfix += r.obs_type_bugfix;
-    }
-    if (typeof r.obs_type_discovery === 'number' && Number.isFinite(r.obs_type_discovery)) {
-      obsTypeDiscovery += r.obs_type_discovery;
-    }
-    if (typeof r.obs_type_decision === 'number' && Number.isFinite(r.obs_type_decision)) {
-      obsTypeDecision += r.obs_type_decision;
-    }
-    if (typeof r.obs_type_refactor === 'number' && Number.isFinite(r.obs_type_refactor)) {
-      obsTypeRefactor += r.obs_type_refactor;
-    }
-    if (typeof r.obs_type_other === 'number' && Number.isFinite(r.obs_type_other)) {
-      obsTypeOther += r.obs_type_other;
-    }
-  }
+  const { count, windowStartTs, windowSeq } = bucket;
+  const {
+    totalTokensInput, totalTokensOutput, totalCostUsd, durationSum, durationCount,
+    compressionSum, compressionCount, outcomesOk, outcomesError, outcomesAborted,
+    outcomesAbortedDeadlineExceeded, outcomesInvalidOutput, observationsCreated,
+    obsTypeBugfix, obsTypeDiscovery, obsTypeDecision, obsTypeRefactor, obsTypeOther,
+    modelFrequency, abortReasonFrequency, lastIde, lastProvider, lastObservedModel, lastObservedBilling,
+  } = bucket.totals;
 
   const rollup: Record<string, unknown> = {
     count,
@@ -309,43 +307,41 @@ function computeSessionCompressedRollup(
   return rollup;
 }
 
-function computeContextInjectedRollup(
-  bucket: ContextInjectedBucket
-): Record<string, unknown> {
-  const { records, windowStartTs } = bucket;
-  const count = records.length;
+function createContextInjectedBucket(windowStartTs: number): ContextInjectedBucket {
+  return {
+    count: 0, totalTokens: 0, tokenCount: 0, outcomesOk: 0, outcomesError: 0,
+    totalObservationsInjected: 0, totalTokensSaved: 0, windowStartTs,
+  };
+}
 
-  let totalTokens = 0;
-  let tokenCount = 0;
-  let outcomesOk = 0;
-  let outcomesError = 0;
-  let totalObservationsInjected = 0;
-  let totalTokensSaved = 0;
-
-  for (const r of records) {
-    // Callers spread ContextInjectStats which uses tokens_injected
-    const t = r.tokens_injected;
-    if (typeof t === 'number' && Number.isFinite(t)) {
-      totalTokens += t;
-      tokenCount++;
-    }
-    // Injection depth/economics. observation_count is how many observations
-    // this injection served from the cache; tokens_saved_vs_naive its read-vs-
-    // discovery savings. Summed so context-cache value (observations injected ×
-    // cost/obs) is derivable from the rollup, not just legacy context_injected.
-    if (typeof r.observation_count === 'number' && Number.isFinite(r.observation_count)) {
-      totalObservationsInjected += r.observation_count;
-    }
-    if (typeof r.tokens_saved_vs_naive === 'number' && Number.isFinite(r.tokens_saved_vs_naive)) {
-      totalTokensSaved += r.tokens_saved_vs_naive;
-    }
-    // Injection callers only ever emit 'ok' or 'error'. Tracking the split
-    // keeps a window of 100% failed injections (zero tokens, all errors)
-    // distinguishable from a window of zero-token successes.
-    if (r.outcome === 'ok') outcomesOk++;
-    else if (r.outcome === 'error') outcomesError++;
+function addContextInjectedRecord(bucket: ContextInjectedBucket, r: ContextInjectedRecord): void {
+  bucket.count++;
+  // Callers spread ContextInjectStats which uses tokens_injected
+  const t = r.tokens_injected;
+  if (typeof t === 'number' && Number.isFinite(t)) {
+    bucket.totalTokens += t;
+    bucket.tokenCount++;
   }
+  // Injection depth/economics. observation_count is how many observations
+  // this injection served from the cache; tokens_saved_vs_naive its read-vs-
+  // discovery savings. Summed so context-cache value (observations injected ×
+  // cost/obs) is derivable from the rollup, not just legacy context_injected.
+  if (typeof r.observation_count === 'number' && Number.isFinite(r.observation_count)) {
+    bucket.totalObservationsInjected += r.observation_count;
+  }
+  if (typeof r.tokens_saved_vs_naive === 'number' && Number.isFinite(r.tokens_saved_vs_naive)) {
+    bucket.totalTokensSaved += r.tokens_saved_vs_naive;
+  }
+  // Injection callers only ever emit 'ok' or 'error'. Tracking the split
+  // keeps a window of 100% failed injections (zero tokens, all errors)
+  // distinguishable from a window of zero-token successes.
+  if (r.outcome === 'ok') bucket.outcomesOk++;
+  else if (r.outcome === 'error') bucket.outcomesError++;
+}
 
+function computeContextInjectedRollup(bucket: ContextInjectedBucket): Record<string, unknown> {
+  const { count, windowStartTs, totalTokens, tokenCount, outcomesOk, outcomesError,
+    totalObservationsInjected, totalTokensSaved } = bucket;
   return {
     count,
     total_tokens: totalTokens,
@@ -402,15 +398,15 @@ export const telemetryBuffer = {
       }
       let bucket = sessionCompressedBuckets.get(sessionDbId);
       if (!bucket) {
-        bucket = { records: [], windowStartTs: now, windowSeq: 0 };
+        bucket = { count: 0, totals: createSessionTotals(), windowStartTs: now, windowSeq: 0 };
         sessionCompressedBuckets.set(sessionDbId, bucket);
       }
-      bucket.records.push(props as SessionCompressedRecord);
+      addSessionCompressedRecord(bucket, props as SessionCompressedRecord);
     } else {
       if (!contextInjectedBucket) {
-        contextInjectedBucket = { records: [], windowStartTs: now };
+        contextInjectedBucket = createContextInjectedBucket(now);
       }
-      contextInjectedBucket.records.push(props as ContextInjectedRecord);
+      addContextInjectedRecord(contextInjectedBucket, props as ContextInjectedRecord);
     }
   },
 
@@ -427,7 +423,7 @@ export const telemetryBuffer = {
    */
   flushSession(sessionDbId: number, reason: RollupReason): boolean {
     const bucket = sessionCompressedBuckets.get(sessionDbId);
-    if (!bucket || bucket.records.length === 0) {
+    if (!bucket || bucket.count === 0) {
       // Always drop an empty bucket so it can't linger.
       sessionCompressedBuckets.delete(sessionDbId);
       return false;
@@ -454,22 +450,23 @@ export const telemetryBuffer = {
   /**
    * Periodic safety sweep: emit a partial rollup for any session whose bucket
    * exceeds the max age OR max record count, then re-arm that bucket (reset its
-   * records + window, bump windowSeq) so a long-lived session keeps reporting
-   * and per-session memory stays bounded. Exported helper so the interval and
+   * totals + window, bump windowSeq) so a long-lived session keeps reporting.
+   * Exported helper so the interval and
    * tests can both invoke it deterministically.
    */
   safetyFlush(): void {
     const now = Date.now();
     for (const [sessionDbId, bucket] of Array.from(sessionCompressedBuckets.entries())) {
       const overAge = now - bucket.windowStartTs >= SAFETY_MAX_AGE_MS;
-      const overCount = bucket.records.length >= SAFETY_MAX_RECORDS;
+      const overCount = bucket.count >= SAFETY_MAX_RECORDS;
       if (!overAge && !overCount) continue;
-      if (bucket.records.length === 0) continue;
+      if (bucket.count === 0) continue;
       const rollup = computeSessionCompressedRollup(bucket, 'safety_flush');
       captureEvent('observer_turn_rollup', rollup);
       // Re-arm in place: same session keeps accumulating into the next window
       // with an incremented sequence number.
-      bucket.records = [];
+      bucket.count = 0;
+      bucket.totals = createSessionTotals();
       bucket.windowStartTs = now;
       bucket.windowSeq += 1;
     }
@@ -484,7 +481,7 @@ export const telemetryBuffer = {
   flush(): void {
     for (const bucket of workStateBuckets.values()) captureEvent('work_state_usage_rollup', bucket);
     workStateBuckets.clear();
-    if (contextInjectedBucket && contextInjectedBucket.records.length > 0) {
+    if (contextInjectedBucket && contextInjectedBucket.count > 0) {
       const rollup = computeContextInjectedRollup(contextInjectedBucket);
       contextInjectedBucket = null;
       captureEvent('context_injected_rollup', rollup);

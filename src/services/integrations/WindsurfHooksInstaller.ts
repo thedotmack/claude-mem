@@ -119,6 +119,18 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
   return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
+/** Only the complete command this installer writes is owned. A user's audit
+ * script, echo, or shell wrapper can also mention both worker-service and
+ * windsurf; removing that entry would delete the user's automation. */
+function isClaudeMemWindsurfHook(hook: unknown): boolean {
+  const command = (hook as { command?: unknown } | null)?.command;
+  if (typeof command !== 'string') return false;
+  const match = /^(?:&\s+)?"([^"]+)"\s+"([^"]+)"\s+hook windsurf (?:session-init|file-edit|observation)$/.exec(command.trim());
+  if (!match) return false;
+  const runtime = match[1].split(/[\\/]/).pop()!;
+  return /^bun(?:\.exe)?$/i.test(runtime) && /(?:^|[\\/])worker-service\.cjs$/.test(match[2]);
+}
+
 function mergeAndWriteHooksJson(
   bunPath: string,
   workerServicePath: string,
@@ -153,7 +165,7 @@ function mergeAndWriteHooksJson(
     };
 
     const existingHooks = (existingConfig.hooks[eventName] ?? []).filter(
-      (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf')
+      (hook) => !isClaudeMemWindsurfHook(hook)
     );
 
     existingConfig.hooks[eventName] = [...existingHooks, hookEntry];
@@ -318,7 +330,7 @@ function removeClaudeMemHookEntries(): void {
     const eventHooks = config.hooks[eventName] ?? [];
     if (eventHooks.length > 0) {
       config.hooks[eventName] = eventHooks.filter(
-        (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf'),
+        (hook) => !isClaudeMemWindsurfHook(hook),
       );
       if (config.hooks[eventName].length === 0) {
         delete config.hooks[eventName];

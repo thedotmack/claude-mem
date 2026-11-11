@@ -4,6 +4,8 @@ export interface NormalizedHookInput {
   platform?: string;   
   prompt?: string;
   toolName?: string;
+  /** Exact host tool name before normalization, retained for configured exclusions. */
+  nativeToolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
   /**

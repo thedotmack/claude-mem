@@ -140,6 +140,44 @@ describe('save_goals.py', () => {
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout.toString()).writes.slice(1).map((write: { task: string }) => write.task)).toEqual(['Ask: Login']);
       expect(save({ asks: [{ title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'never typed' }] }] }).exitCode).not.toBe(0);
+      // An update stays strict for its new quotes: one bad new quote beside a good one still refuses the save.
+      expect(save({ asks: [
+        { rank: 1, title: 'Login', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'fix the login' }] },
+        { rank: 2, title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'never typed' }] },
+      ] }).exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('drops unverifiable quotes from a fresh answer, and items left without one, but refuses when none verify', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
+    try {
+      writeFileSync(join(dir, 'owner-prompts.md'), '# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nship the cards today\n\n---\n\n## 2026-10-21 09:00 · claude · repo\nsession `a`\n\nfix the login\n');
+      const save = (goals: unknown) => {
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify(goals));
+        return spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run']);
+      };
+      const result = save({
+        focus_areas: [{ rank: 1, title: 'Cards', goal: 'Ship the cards.', matches: null, evidence: [{ at: '2026-10-20 10:00', quote: 'ship the cards' }, { at: '2026-10-20 10:00', quote: 'never typed' }] }],
+        asks: [
+          { rank: 1, title: 'Login', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'fix the login' }, { at: '2026-10-21 09:00', quote: 'never typed' }] },
+          { rank: 2, title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-20 10:00', quote: 'never typed' }] },
+        ],
+        rules: [{ when: '', then: 'Fix login first.', evidence: [{ at: '2026-10-21 09:00', quote: 'fix the login' }, { at: '2026-10-21 09:00', quote: 'never typed' }] }],
+      });
+      expect(result.stderr.toString()).toBe('');
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(result.stdout.toString());
+      expect(output.writes.slice(1).map((write: { task: string; evidence: string }) => [write.task, write.evidence])).toEqual([
+        ['Focus area: Cards', '2026-10-20 10:00 | ship the cards'],
+        ['Ask: Login', '2026-10-21 09:00 | fix the login'],
+      ]);
+      expect(output.rules[0].quotes).toEqual([{ quote: 'fix the login', at: expect.any(String) }]);
+      expect(output.dropped_unverified_quotes).toEqual([
+        'Cards: 2026-10-20 10:00', 'Login: 2026-10-21 09:00', 'Made up: 2026-10-20 10:00', 'Fix login first.: 2026-10-21 09:00',
+      ]);
+      const refused = save({ asks: [{ title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-20 10:00', quote: 'never typed' }] }] });
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr.toString()).toContain('every item was dropped with them');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

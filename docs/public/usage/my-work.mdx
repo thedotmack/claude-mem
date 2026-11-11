@@ -30,6 +30,12 @@ The separate **Share anonymous usage statistics to help improve your Claude-mem
 experience** box is checked by default. You can uncheck it before continuing;
 it does not start transcript analysis.
 
+The scan checks whether an earlier agent message or tool input already contains
+the opening of a long prompt. This check preserves letters and numbers across
+scripts, so copied instructions in languages such as Chinese, Japanese, Arabic
+and Russian can be recognized without discarding the words that distinguish
+your own request. The Python owner-goals export uses the same normalization.
+
 ## Working, ready and checked
 
 - **In progress** means the latest saved work state says work is underway. It is
@@ -88,6 +94,9 @@ and records each copy. The bucket keeps the file after the place it was made
 (a worktree, a scratch folder, a temporary directory) is deleted, so the link
 keeps working. Each copy is named by its content (`report-3f9a1c2b.md`), so the
 same file lands once and a revised file lands beside its earlier version.
+If the agent later attaches a copy that was already collected in the same
+session, its chosen title and attachment details update the existing record;
+the file keeps the same link.
 
 Two things count as a deliverable:
 

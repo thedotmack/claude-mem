@@ -546,6 +546,8 @@ function toViewerObservation(row: FeedRow) {
 
 function toViewerSummary(row: FeedRow) {
   const meta = metadataOf(row);
+  const hasStructuredContent = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes']
+    .some(field => stringOrNull(meta[field]) !== null);
   return {
     id: row.id,
     session_id: row.server_session_id ?? '',
@@ -557,7 +559,9 @@ function toViewerSummary(row: FeedRow) {
     learned: stringOrNull(meta.learned) ?? undefined,
     completed: stringOrNull(meta.completed) ?? undefined,
     next_steps: stringOrNull(meta.next_steps) ?? undefined,
-    notes: stringOrNull(meta.notes),
+    // Salvaged observation-shaped replies keep their body in content and have
+    // no summary fields. Expose that body instead of rendering an empty card.
+    notes: stringOrNull(meta.notes) ?? (hasStructuredContent ? null : stringOrNull(row.content)),
     created_at_epoch: new Date(row.created_at).getTime(),
   };
 }

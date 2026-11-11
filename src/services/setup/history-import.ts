@@ -104,13 +104,16 @@ export class HistoryImport {
     let database: Database | undefined;
     try {
       database = this.options.openDatabase();
-      const total = readHistoryCounts(database).observations;
+      // Fix the run's count and upper ID in one read. Live capture may append
+      // observations while an upload is awaiting its network receipt.
+      const { total, through } = database.prepare(`SELECT COUNT(*) AS total, COALESCE(MAX(id), 0) AS through ${OWN_OBSERVATIONS}`)
+        .get() as { total: number; through: number };
       this.update({ state: 'running', total, sent: 0, imported: 0, skipped: 0, percent: 0, error: null, startedAt: this.iso(), finishedAt: null });
       const page = database.prepare(`SELECT id, memory_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified,
-        prompt_number, created_at, created_at_epoch ${OWN_OBSERVATIONS} AND id > ? ORDER BY id LIMIT ?`);
+        prompt_number, created_at, created_at_epoch ${OWN_OBSERVATIONS} AND id > ? AND id <= ? ORDER BY id LIMIT ?`);
       let after = 0;
       for (;;) {
-        const rows = page.all(after, HISTORY_IMPORT_BATCH) as ObservationRow[];
+        const rows = page.all(after, through, HISTORY_IMPORT_BATCH) as ObservationRow[];
         if (!rows.length) break;
         const response = await request(url, {
           method: 'POST',
