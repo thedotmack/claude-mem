@@ -244,7 +244,8 @@ const homeRelative = (path: string) => path === homedir() || path.startsWith(`${
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
  * It names the rules file the worker actually writes, so a custom data folder is still the one loaded. */
 export function myRulesImportLine(rulesFilePath: string): string {
-  return `@${homeRelative(rulesFilePath)}`;
+  // Claude Code ends @path at an unescaped space; quoting the path is not an import.
+  return `@${homeRelative(rulesFilePath).replaceAll(' ', '\\ ')}`;
 }
 
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
