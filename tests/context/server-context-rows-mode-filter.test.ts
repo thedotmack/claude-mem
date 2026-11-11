@@ -100,6 +100,28 @@ describe('fetchServerContextRows mode filters (#5972)', () => {
     expect(rows!.observations.map(o => o.id)).toEqual(['any-type']);
   });
 
+  it('keeps a row that carries no concepts value at all under a concept filter', async () => {
+    // No `concepts` key on the row or in its metadata: there is nothing on
+    // the row the concept filter can exclude. A row that DOES carry concepts
+    // is still filtered on them in the same read.
+    const rows = await fetchServerContextRows(serverRuntime([
+      row('no-concepts-value', { metadata: { title: 'no-concepts-value', project: 'demo' } }),
+      row('other-concept', { metadata: { title: 'other-concept', concepts: ['gotcha'], project: 'demo' } }),
+      row('admitted'),
+    ]), request(config()));
+    expect(rows!.observations.map(o => o.id)).toEqual(['no-concepts-value', 'admitted']);
+  });
+
+  it('still drops a concept-less row whose type the config excludes', async () => {
+    const rows = await fetchServerContextRows(serverRuntime([
+      row('concept-less-excluded-type', {
+        kind: 'feature',
+        metadata: { title: 'concept-less-excluded-type', project: 'demo' },
+      }),
+    ]), request(config()));
+    expect(rows!.observations).toEqual([]);
+  });
+
   it('falls back to the discovery type for a row with no kind, like the shape conversion does', async () => {
     const kindless = row('kindless');
     delete kindless.kind;
