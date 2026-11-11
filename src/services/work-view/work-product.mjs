@@ -229,7 +229,13 @@ function pushTargets(command) {
       positional.push(token);
     }
     const [remote, ...refspecs] = positional;
-    const destinations = refspecs.map(spec => spec.startsWith(':') ? '' : spec.replace(/^\+/, '').split(':').at(-1));
+    const destinations = [];
+    for (let index = 0; index < refspecs.length; index++) {
+      const spec = refspecs[index];
+      // Git's `tag <name>` shorthand expands to refs/tags/<name> on both ends.
+      if (spec === 'tag') { tags = true; index++; continue; }
+      destinations.push(spec.startsWith(':') ? '' : spec.replace(/^\+/, '').split(':').at(-1));
+    }
     const branches = deleting ? [] : destinations.map(ref =>
       ref && ref !== 'HEAD' && (!ref.startsWith('refs/') || ref.startsWith('refs/heads/')) ? ref.replace(/^refs\/heads\//, '') : null);
     const deletesOrTags = deleting || tags || destinations.some(ref => ref.startsWith('refs/tags/'));

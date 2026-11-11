@@ -22,6 +22,9 @@ const cases = [
   ['actual dry run', ['-qn', '-o', 'ci.skip'], 'dry-run'],
   ['option terminator', ['-q', '--']],
   ['combined deletion flags', ['-qd'], 'delete'],
+  ['explicit tag shorthand', ['-q'], 'tag'],
+  ['tag shorthand after a valued option', ['-q', '-o', 'ci.skip'], 'tag'],
+  ['branch named tag', ['-q'], 'branch-tag'],
 ];
 
 for (const [name, options, operation = 'push'] of cases) {
@@ -48,19 +51,25 @@ for (const [name, options, operation = 'push'] of cases) {
       // Keep the public URL in the recorded command to verify the product link.
       git('config', `url.${remote}.insteadOf`, remoteUrl);
       if (operation === 'delete') git('push', '-q', remoteUrl, 'HEAD:review/topic');
-      const args = ['push', ...options, remoteUrl, operation === 'delete' ? 'review/topic' : 'HEAD:review/topic'];
+      if (operation === 'tag') git('tag', 'v1');
+      const branch = operation === 'branch-tag' ? 'tag' : 'review/topic';
+      const pushingBranch = operation === 'push' || operation === 'branch-tag';
+      const refspecs = operation === 'tag' ? ['tag', 'v1'] : [operation === 'delete' ? branch : 'HEAD:' + branch];
+      const args = ['push', ...options, remoteUrl, ...refspecs];
       const result = git(...args);
       expect(result.stdout + result.stderr).toBe('');
-      const ref = run('--git-dir=' + remote, 'rev-parse', '--verify', 'refs/heads/review/topic');
-      if (operation === 'push') expect(ref.stdout).toBe(git('rev-parse', 'HEAD').stdout);
+      const ref = run('--git-dir=' + remote, 'rev-parse', '--verify', 'refs/heads/' + branch);
+      if (pushingBranch) expect(ref.stdout).toBe(git('rev-parse', 'HEAD').stdout);
       else expect(ref.status).not.toBe(0);
+      if (operation === 'tag') expect(git('--git-dir=' + remote, 'show-ref').stdout.trim())
+        .toBe(git('rev-parse', 'HEAD').stdout.trim() + ' refs/tags/v1');
 
       const command = 'git ' + args.map(arg => /\s/.test(arg) ? `'${arg}'` : arg).join(' ');
       const products = productsFromToolUse({ id: 1, tool_name: 'Bash',
         tool_input: JSON.stringify({ command }),
         tool_response: JSON.stringify({ stdout: result.stdout, stderr: result.stderr }) });
-      expect(products.map(({ branch, repo, url }) => ({ branch, repo, url }))).toEqual(operation === 'push'
-        ? [{ branch: 'review/topic', repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/review/topic' }]
+      expect(products.map(({ branch, repo, url }) => ({ branch, repo, url }))).toEqual(pushingBranch
+        ? [{ branch, repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/' + branch }]
         : []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
