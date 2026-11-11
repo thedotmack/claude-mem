@@ -82,9 +82,9 @@ async def demonstrate(memory: MCPToolset, project: str) -> dict[str, Any]:
         if match is None:
             raise ValueError("Claude-Mem did not confirm a saved observation.")
         observation_id = int(match[1])
-        index = await call_memory(memory, project, "search", {"query": DEMO_TITLE, "type": "observations", "limit": 5})
-        if not re.search(rf"#{observation_id}\b", index):
-            raise ValueError("The saved observation was not found in this project's search index.")
+        await call_memory(memory, project, "search", {"query": DEMO_TITLE, "type": "observations", "limit": 5})
+        # A deduplicated save can return an old ID outside the search window or page.
+        # The confirmed ID lets us retrieve that note without scanning unrelated history.
         await call_memory(memory, project, "timeline", {"anchor": observation_id, "depth_before": 0, "depth_after": 0})
         details = await call_memory(memory, project, "get_observations", {"ids": [observation_id]})
         if DEMO_NOTE not in details:

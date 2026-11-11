@@ -60,6 +60,10 @@ uses the existing `sourceFingerprint` save contract to find the same observation
 Changing the note or project produces a different fingerprint. No write retries
 are scheduled after a timeout or error.
 
+Search results are a limited index, and an older deduplicated note may fall
+outside its page or date window. The demo uses the ID confirmed by `save_memory`
+for timeline and detail retrieval rather than assuming that ID is on the first page.
+
 ## Add the tools to your agent
 
 Place your agent beside `memory.py`, or import the example from your application:
@@ -124,10 +128,10 @@ successful save. The example does not start or restart the worker automatically.
 
 For repeated-save and project-isolation checks, point the example at a disposable
 worker and run `examples/pydantic-ai/verify_worker.py` with the same Python. It
-saves one note in each of `pydantic-sdk-verify-a` and `pydantic-sdk-verify-b`, repeats
-the first save, and confirms that the first project cannot retrieve the second
+saves a note in each of `pydantic-sdk-verify-a` and `pydantic-sdk-verify-b`, adds six
+newer notes with the same title, repeats the first save, and confirms that the first project cannot retrieve the second
 project's note. It also launches the MCP process from a directory containing
-spaces. These two harmless observations remain in the selected worker.
+spaces. These eight harmless observations remain in the selected worker.
 
 The tests exercise the real Pydantic AI toolset and agent runner with a deterministic
 `FunctionModel`, a test MCP server, project binding, replay fingerprints, paths
