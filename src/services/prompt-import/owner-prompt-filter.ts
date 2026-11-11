@@ -22,21 +22,28 @@ export const FINGERPRINT_LENGTH = 120;
 const ROLE_ASSIGNMENT_OPENING = /^(You are (the|a|an|one|on|in) |Task: |Branch: )/;
 
 export function normalize(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 function opensInLowercase(text: string): boolean {
-  const first = text.slice(0, 1);
-  return first !== '' && first === first.toLowerCase() && first !== first.toUpperCase();
+  return /^\p{Lowercase}/u.test(text);
 }
 
 /** The fingerprint to look for in agent text, or null when the prompt is not checked that way. */
 export function provenanceFingerprint(promptText: string): string | null {
-  const normalized = normalize(promptText);
   // Agents do not open a prompt in lowercase; the owner usually does, so those are kept.
-  if (normalized.length < MINIMUM_CHECKABLE_LENGTH || opensInLowercase(promptText)) return null;
+  if (opensInLowercase(promptText)) return null;
+  const normalized = normalize(promptText);
+  if (normalized.length < MINIMUM_CHECKABLE_LENGTH) return null;
+  // Match Python's character counts, including letters outside the BMP. Keep the UTF-16 offset only for slicing.
   // Only the opening counts: the owner often types a line and then pastes an agent's report below it.
-  return normalized.slice(0, FINGERPRINT_LENGTH);
+  let characters = 0, offset = 0, fingerprintEnd = 0;
+  for (const character of normalized) {
+    offset += character.length;
+    if (++characters === FINGERPRINT_LENGTH) fingerprintEnd = offset;
+    if (characters === MINIMUM_CHECKABLE_LENGTH) return normalized.slice(0, fingerprintEnd);
+  }
+  return null;
 }
 
 /** Launchers that hand a prompt over through a file leave no copy in any transcript; those prompts open by assigning the agent a role. */
@@ -60,10 +67,11 @@ export class AgentTextIndex {
 
   constructor(fingerprints: Iterable<string>) {
     for (const fingerprint of fingerprints) {
-      if (fingerprint.length !== FINGERPRINT_LENGTH || this.earliest.has(fingerprint)) continue;
+      if (fingerprint.length < FINGERPRINT_LENGTH || fingerprint.length > 2 * FINGERPRINT_LENGTH || this.earliest.has(fingerprint)) continue;
+      let hash = 0, characters = 0;
+      for (const character of fingerprint) { hash = charHashStep(hash, character.codePointAt(0)!); characters++; }
+      if (characters !== FINGERPRINT_LENGTH) continue;
       this.earliest.set(fingerprint, Number.POSITIVE_INFINITY);
-      let hash = 0;
-      for (let index = 0; index < fingerprint.length; index++) hash = charHashStep(hash, fingerprint.charCodeAt(index));
       const bucket = this.byHash.get(hash);
       if (bucket) bucket.push(fingerprint); else this.byHash.set(hash, [fingerprint]);
     }
@@ -74,12 +82,18 @@ export class AgentTextIndex {
 
   /** One piece of agent-authored text, written at `epochSeconds`. */
   add(epochSeconds: number, rawText: string): void {
-    if (this.empty || rawText.length < FINGERPRINT_LENGTH) return;
+    if (this.empty) return;
     const chunk = normalize(rawText);
     if (chunk.length < FINGERPRINT_LENGTH) return;
-    let hash = 0;
-    for (let index = 0; index < FINGERPRINT_LENGTH; index++) hash = charHashStep(hash, chunk.charCodeAt(index));
-    for (let start = 0; ; start++) {
+    let hash = 0, characters = 0, next = 0, start = 0;
+    while (characters < FINGERPRINT_LENGTH && next < chunk.length) {
+      const code = chunk.codePointAt(next)!;
+      hash = charHashStep(hash, code);
+      next += code > 0xffff ? 2 : 1;
+      characters++;
+    }
+    if (characters < FINGERPRINT_LENGTH) return;
+    for (;;) {
       const bucket = this.byHash.get(hash);
       if (bucket) {
         for (const fingerprint of bucket) {
@@ -88,10 +102,12 @@ export class AgentTextIndex {
           }
         }
       }
-      const next = start + FINGERPRINT_LENGTH;
       if (next >= chunk.length) break;
-      const outgoing = Math.imul(chunk.charCodeAt(start), this.highPower) >>> 0;
-      hash = charHashStep((hash - outgoing) >>> 0, chunk.charCodeAt(next));
+      const first = chunk.codePointAt(start)!, last = chunk.codePointAt(next)!;
+      const outgoing = Math.imul(first, this.highPower) >>> 0;
+      hash = charHashStep((hash - outgoing) >>> 0, last);
+      start += first > 0xffff ? 2 : 1;
+      next += last > 0xffff ? 2 : 1;
     }
   }
 

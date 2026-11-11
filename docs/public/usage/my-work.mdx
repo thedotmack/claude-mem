@@ -30,6 +30,12 @@ The separate **Share anonymous usage statistics to help improve your Claude-mem
 experience** box is checked by default. You can uncheck it before continuing;
 it does not start transcript analysis.
 
+The scan checks whether an earlier agent message or tool input already contains
+the opening of a long prompt. This check preserves letters and numbers across
+scripts, so copied instructions in languages such as Chinese, Japanese, Arabic
+and Russian can be recognized without discarding the words that distinguish
+your own request. The Python owner-goals export uses the same normalization.
+
 ## Working, ready and checked
 
 - **In progress** means the latest saved work state says work is underway. It is
