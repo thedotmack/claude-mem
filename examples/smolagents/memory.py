@@ -26,7 +26,11 @@ def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict
     if name not in MEMORY_TOOLS or not project.strip():
         raise ValueError("Choose a nonempty project and one of the four memory tools.")
     result = {**arguments, "project": project.strip()}
-    result.pop("projects", None)
+    if name != "save_memory":
+        # An explicit singleton prevents checkout/worktree parent inheritance.
+        result["projects"] = [project.strip()]
+    else:
+        result.pop("projects", None)
     if name == "save_memory":
         text, title = result.get("text"), result.get("title", "")
         if not isinstance(text, str) or not text.strip() or not isinstance(title, str):
@@ -81,7 +85,13 @@ def memory_tools(project: str, server: str, cwd: str, *, timeout: float = 30):
         command="node", args=[str(Path(server).resolve())], cwd=str(Path(cwd).resolve()),
         env={**os.environ, "CLAUDE_MEM_RUNTIME": "worker", "CLAUDE_MEM_WORKER_AUTOSTART": "false"},
     )
-    adapter = MCPAdapt(params, ProjectMemoryAdapter(project), connect_timeout=timeout,
+    # Initialization and the first tool listing each have a request deadline.
+    # Let their native stdio cleanup finish before MCPAdapt.start's watchdog
+    # expires; equal deadlines can cancel that cleanup a second time.
+    connection_budget = 2 * float(timeout) + 5
+    if not math.isfinite(connection_budget):
+        raise ValueError("The derived connection budget must be finite.")
+    adapter = MCPAdapt(params, ProjectMemoryAdapter(project), connect_timeout=connection_budget,
                        client_session_timeout_seconds=float(timeout))
     try:
         # Explicit finally also closes a process if connection/discovery raises.

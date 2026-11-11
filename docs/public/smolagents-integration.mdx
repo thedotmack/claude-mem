@@ -119,8 +119,13 @@ cloud-sync, export and notification settings still apply. Recalled text reaches
 your model provider when a real agent runs. Keep secrets and private source
 material out of explicit notes; this workflow is not a transcript privacy filter.
 
-Connection/discovery and MCP requests have 30-second deadlines. Deadline values
-must be finite and positive. The connection is closed in `finally`, including
+Each MCP request has a 30-second deadline. The connection watchdog allows two
+requests (initialization and tool discovery) plus five seconds for native stdio
+shutdown: 65 seconds by default, or `2 * timeout + 5` with a custom request timeout.
+This lets native timeout cleanup finish before the connection watchdog cancels it;
+equal watchdog/request deadlines can race during shutdown in the pinned SDKs.
+Deadline values and the derived connection budget must be finite and positive.
+The connection is closed in `finally`, including
 when startup or discovery fails. Worker errors raise an exception before a result
 is accepted; an error response containing plausible answer text is still an error.
 No automatic memory retries, queues or worker restarts are added.
@@ -138,6 +143,8 @@ reply was lost. An unavailable worker must produce a nonzero exit and no success
 The tests run native tools and `ToolCallingAgent` with a deterministic local model
 against a real MCP fixture. They cover tool filtering, project binding, fingerprints,
 the raw error bit, actual tool failure, a stalled request and failed startup.
+The real child PID must be gone after a failed connection and after an interrupted
+workflow, and the native client event loop must be closed.
 The deterministic model makes no provider requests.
 
 For real storage checks, point at a disposable worker and run
@@ -152,6 +159,13 @@ If verification fails, check `npx claude-mem doctor`, the MCP path and worker
 environment. For import errors, recreate the isolated environment from the pinned
 requirements instead of mixing this example with an MCP 2.x integration. Start a
 stopped worker yourself before retrying.
+
+The verification script requires Git and launches the real MCP process in a
+fresh Git worktree whose parent also contains a saved note. It checks that
+search, timeline and detail reads exclude that parent. Read arguments bind both
+`project` and an explicit one-element `projects` list; this prevents the worker's
+normal checkout inheritance from widening the selected scope. The verifier uses
+path-based project identity for its temporary fixture only.
 
 Each verification run uses two fresh project names with a random suffix. It
 checks repeat-save deduplication within that run, so running the script again
