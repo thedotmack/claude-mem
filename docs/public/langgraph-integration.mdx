@@ -68,12 +68,13 @@ Choose an observation already saved in the project. For a reproducible example,
 you can explicitly save this harmless setup note to the worker first:
 
 ```bash
-curl --fail-with-body "http://127.0.0.1:37777/api/memory/save" \
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+curl --fail-with-body "http://127.0.0.1:$WORKER_PORT/api/memory/save" \
   -H 'Content-Type: application/json' \
   -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
 ```
 
-Use the returned observation `id` below. Replace the port if yours differs.
+Use the returned observation `id` below.
 The project name is the same exact key used by the worker and viewer; use the
 key for your actual checkout when sharing memory with a coding agent.
 

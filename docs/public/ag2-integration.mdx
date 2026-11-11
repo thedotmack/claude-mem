@@ -4,7 +4,7 @@ description: Save and recall explicit project notes through AG2's native MCP cli
 icon: code
 ---
 
-Give a AG2 workflow a durable note it can recall on its next run.
+Give an AG2 workflow a durable note it can recall on its next run.
 The [runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/ag2)
 uses AG2's native `MCPToolkit` and `ToolCallEvent` with the existing local Claude-Mem MCP bundle.
 
@@ -152,7 +152,6 @@ settings = {key: "false" for key in (
     "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
 )}
 settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
-                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS

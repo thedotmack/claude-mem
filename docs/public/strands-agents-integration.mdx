@@ -198,7 +198,6 @@ settings = {key: "false" for key in (
     "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
 )}
 settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
-                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS
