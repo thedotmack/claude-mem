@@ -82,10 +82,11 @@ const fixture = String.raw`
     }
     await service.flushPendingRenders();
     const after = readContextCache(keys, Date.now()).body;
-    const direct = (await render(keys)).body;
+    const directRender = await render(keys);
+    const direct = directRender.body;
     const value = store.db.query('SELECT discovery_tokens FROM observations WHERE id = ?').get(row.observationIds[0]).discovery_tokens;
     const result = {
-      before, after, direct, value, renders, events, error,
+      before, after, direct, value, renders, events, error, readKeys: directRender.readKeys,
       otherUnchanged: readContextCache(unrelatedKeys, Date.now()).body === otherBefore,
       summaryTokens: store.db.query('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(row.summaryId).discovery_tokens,
       finalTokenLabel: (4096).toLocaleString(),
@@ -124,9 +125,14 @@ for (const scenario of ['agent', 'human', 'adopted']) {
     expect(result.otherUnchanged).toBe(true);
     expect(result.events).toEqual([{
       reason: 'updateDiscoveryTokens',
-      scope: { projects: [scenario === 'adopted' ? 'legacy-project' : 'usage-project'] },
+      scope: { projects: scenario === 'adopted' ? ['legacy-project', 'parent-project'] : ['usage-project'] },
       kind: 'additive', inTransaction: false, tokens: 4096,
     }]);
+    if (scenario === 'adopted') {
+      // Only the selected observation was adopted, not its source summary.
+      expect(result.readKeys).toContain('parent-project');
+      expect(result.readKeys).not.toContain('legacy-project');
+    }
   });
 }
 
