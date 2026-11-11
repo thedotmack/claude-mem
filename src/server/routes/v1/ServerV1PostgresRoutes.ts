@@ -973,7 +973,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           serverSessionId: linkedSessionId,
           kind: body.kind ?? 'manual',
           content: body.content,
-          metadata: body.metadata ?? {},
+          // A manual memory can arrive without any session to carry its
+          // platform. Keep the supplied source on the row for scoped recall.
+          metadata: {
+            ...body.metadata,
+            ...(body.platformSource == null ? {} : {
+              platformSource: normalizePlatformSource(body.platformSource),
+            }),
+          },
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);

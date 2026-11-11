@@ -80,11 +80,12 @@ export const STREAM_KEEPALIVE_MS = 15_000;
 const OBSERVATION_PROJECT_LABEL =
   "COALESCE(NULLIF(o.metadata->>'project', ''), NULLIF(s.metadata->>'project', ''), p.name)";
 const SESSION_PROJECT_LABEL = "COALESCE(NULLIF(s.metadata->>'project', ''), p.name)";
-// Rows without a session (manual memories, imports) have no adapter; the
-// viewer's default source is 'claude'.
 const PLATFORM_SOURCE = "COALESCE(NULLIF(s.platform_source, ''), 'claude')";
-// Canonical event ingest also accepts events without a session. Their generated
-// memories still carry the captured platform through observation_sources.
+// Rows without a session have no adapter of their own. Canonical event ingest
+// accepts events without a session, and their generated memories still carry
+// the captured platform through observation_sources. Direct memory writes keep
+// the platform they were given in metadata. A linked session stays
+// authoritative; unlabelled rows keep the viewer's default 'claude'.
 const OBSERVATION_PLATFORM_SOURCE = `COALESCE(NULLIF(s.platform_source, ''), (
   SELECT e.platform_source
     FROM observation_sources source
@@ -94,7 +95,7 @@ const OBSERVATION_PLATFORM_SOURCE = `COALESCE(NULLIF(s.platform_source, ''), (
      AND NULLIF(e.platform_source, '') IS NOT NULL
    ORDER BY source.created_at, source.id
    LIMIT 1
-), 'claude')`;
+), CASE WHEN o.server_session_id IS NULL THEN NULLIF(o.metadata->>'platformSource', '') END, 'claude')`;
 
 export interface ServerViewerRoutesOptions {
   /** Without a pool only the static viewer is mounted. */
