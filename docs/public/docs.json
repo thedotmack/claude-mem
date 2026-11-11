@@ -101,6 +101,7 @@
           "development",
           "troubleshooting",
           "platform-integration",
+          "autogen-integration",
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
