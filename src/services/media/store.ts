@@ -68,16 +68,21 @@ export function mediaEventKey(platform: MediaProvenance['platform'], identity: M
 
 /** Owns files and asset references, with no generator/retry responsibilities. */
 export class MediaStore {
-  readonly root: string;
+  private storageRoot: string;
+  get root(): string { return this.storageRoot; }
   constructor(readonly db: Database, dataDir: string, private readonly converter = convertMedia) {
-    this.root = resolve(dataDir, 'media-v1');
+    this.storageRoot = resolve(dataDir, 'media-v1');
+  }
+  private pinRoot(): void {
+    if (lstatSync(this.root).isSymbolicLink()) throw new MediaError('storage_unavailable');
+    // The configured data directory may itself live through a symlink (for
+    // example, on another drive). Pin that physical boundary while retaining
+    // the ban on media-v1 itself and every path beneath it being symlinks.
+    this.storageRoot = realpathSync(this.root);
   }
   private prepareRoot(): void {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    if (lstatSync(this.root).isSymbolicLink()) throw new MediaError('storage_unavailable');
-    // Pin the physical configured storage boundary, then reject all symlinks
-    // below it. No arbitrary route path is ever used for storage access.
-    if (realpathSync(this.root) !== this.root) throw new MediaError('storage_unavailable');
+    this.pinRoot();
     const temporary = join(this.root, '.tmp');
     mkdirSync(temporary, { recursive: true, mode: 0o700 });
     assertNoSymlinks(this.root, temporary);
@@ -112,6 +117,7 @@ export class MediaStore {
     const metadata = this.getMetadata(id)[variant];
     if (!metadata) throw new MediaError('media_not_ready');
     try {
+      this.pinRoot();
       const bytes = readContainedFile(this.root, join(this.root, id, variant + '.webp'), variant === 'viewer' ? MEDIA_LIMITS.maxCanonicalBytes : MEDIA_LIMITS.maxDerivativeBytes);
       if (bytes.length !== metadata.byteLength || createHash('sha256').update(bytes).digest('hex') !== metadata.sha256) throw new MediaError('checksum_mismatch');
       return bytes;
