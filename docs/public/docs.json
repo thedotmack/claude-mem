@@ -105,6 +105,7 @@
           "hermes-integration",
           "kimi-integration",
           "devin-integration",
+          "google-adk-integration",
           "qoder-integration",
           "screenpipe-integration",
           "eve-integration",
