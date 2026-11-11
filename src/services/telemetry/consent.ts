@@ -16,6 +16,8 @@ export type TelemetryConfig = {
    */
   anonymousId?: string;
   decidedAt: string;
+  /** First-session disclosure only; displaying it is not a consent decision. */
+  noticeShownAt?: string;
 };
 
 const TELEMETRY_CONFIG_FILENAME = 'telemetry.json';
@@ -124,6 +126,7 @@ export function loadTelemetryConfig(): TelemetryConfig | null {
     installId: raw.installId,
     ...(typeof raw.anonymousId === 'string' && raw.anonymousId ? { anonymousId: raw.anonymousId } : {}),
     decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
+    ...(typeof raw.noticeShownAt === 'string' && raw.noticeShownAt ? { noticeShownAt: raw.noticeShownAt } : {}),
   };
 }
 
@@ -131,6 +134,28 @@ export function saveTelemetryConfig(config: TelemetryConfig): void {
   const dataDir = resolveDataDir();
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, TELEMETRY_CONFIG_FILENAME), JSON.stringify(config, null, 2) + '\n');
+}
+
+/**
+ * Marketplace installs never run the installer's consent prompt. Disclose the
+ * default once in their first user-visible session, using the existing config
+ * to remember delivery. An explicit choice already answers the question.
+ * Call immediately before returning the hook output, after asynchronous reads.
+ */
+export function consumeTelemetryNotice(): string | null {
+  const existing = loadTelemetryConfig();
+  const consent = explainTelemetryConsent(process.env, existing);
+  if (!consent.enabled || consent.source !== 'default' || existing?.noticeShownAt) return null;
+
+  saveTelemetryConfig({
+    ...existing,
+    installId: existing?.installId ?? '',
+    decidedAt: existing?.decidedAt ?? '',
+    noticeShownAt: new Date().toISOString(),
+  });
+  return '[claude-mem] Telemetry is on by default: anonymous feature-usage, performance and token-count statistics, plus redacted error messages and stack traces. '
+    + 'Turn it off: npx claude-mem telemetry disable, DO_NOT_TRACK=1, or CLAUDE_MEM_TELEMETRY=0. '
+    + 'Details: https://docs.claude-mem.ai/telemetry';
 }
 
 /**
