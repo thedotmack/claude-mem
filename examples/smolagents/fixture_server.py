@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 server = FastMCP("SmolAgents memory test")
 
 
+# MCP 1 FastMCP decodes JSON-string arguments before validating their types.
 @server.tool()
 async def search(query: str, project: str, projects: list[str] | None = None) -> str:
     if query == "pid":

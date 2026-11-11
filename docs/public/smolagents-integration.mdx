@@ -151,7 +151,7 @@ For real storage checks, point at a disposable worker and run
 `examples/smolagents/verify_worker.py` with the same Python. It verifies the initial
 search result, adds six newer same-title notes, repeats the first save, stores in
 a second project and confirms that project A cannot retrieve B's note. Real stdio
-also launches from a directory containing spaces. Eight harmless observations
+also launches from a directory containing spaces. Eleven harmless observations
 remain in that worker. The actual built MCP server, worker and SQLite have been
 verified; model-generated answers have not.
 
@@ -163,23 +163,30 @@ stopped worker yourself before retrying.
 The verification script requires Git and launches the real MCP process in a
 fresh Git worktree whose parent also contains a saved note. It checks that
 search, timeline and detail reads exclude that parent. Read arguments bind both
-`project` and an explicit one-element `projects` list; this prevents the worker's
+`project` and a JSON-encoded one-element `projects` list; this prevents the worker's
 normal checkout inheritance from widening the selected scope. The verifier uses
-path-based project identity for its temporary fixture only.
+path-based project identity for its temporary fixture only. Its selected key
+contains a comma and outer whitespace. Three additional notes under the trimmed
+and split-name aliases must remain absent from every selected-project read.
+Project keys are preserved exactly; JSON encoding avoids comma-list parsing in
+GET query parameters.
 
-Each verification run uses two fresh project names with a random suffix. It
+Each verification run uses fresh project names with a random suffix. It
 checks repeat-save deduplication within that run, so running the script again
 against the same worker cannot be confused by notes from an earlier verification.
-It leaves eight new harmless observations per run; the ordinary demo still uses
+It leaves eleven new harmless observations per run; the ordinary demo still uses
 your selected project and deduplicates across repeated demo runs.
 
 ## Disposable verification worker
 
 Run this Bash block from a source checkout with built bundles, Python 3, Git and
-Bun on `PATH`, and the example dependencies already installed. The subshell clears inherited `CLAUDE_MEM_*` variables before choosing a fresh
+Bun on `PATH`, and the example dependencies already installed. The subshell clears inherited `CLAUDE_MEM_*` variables and explicitly disables
+capture, Chroma and auto-update before choosing a fresh
 data directory and free local port. It checks that cloud sync is unconfigured
 before sending any verification notes. Existing worker settings and the parent
 shell stay unchanged; the temporary worker exits when the block finishes.
+The exported worker entry starts the same HTTP/SQLite service without the CLI
+daemon wrapper that migrates existing Antigravity hooks.
 
 ```bash
 (
@@ -188,6 +195,9 @@ shell stay unchanged; the temporary worker exits when the block finishes.
   for memory_test_setting in "${!CLAUDE_MEM_@}"; do
     unset "$memory_test_setting"
   done
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
   export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
   export CLAUDE_MEM_WORKER_HOST=127.0.0.1
   export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -207,7 +217,7 @@ settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS=
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS
-  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  bun -e 'const { WorkerService } = require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error => { console.error(error); process.exit(1); });' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
   memory_test_pid=$!
   trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
   python3 - <<'PYREADY'
