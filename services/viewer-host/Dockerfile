@@ -21,6 +21,17 @@ RUN cd plugin && bun install --production --frozen-lockfile --ignore-scripts --o
 COPY plugin ./plugin
 COPY services/viewer-host/src ./viewer-host/src
 
+# The tree-sitter CLI, put in place once here with the same verified provisioning code the
+# worker runs at start (src/services/smart-file-read/tree-sitter-cli-provision.ts). The
+# install above skips scripts, so without this every machine start found no CLI and
+# downloaded it again: about 60 s of network and CPU on each wake (Phase 8 staging run).
+# The worker's start check then finds it usable and downloads nothing. After COPY plugin, so
+# nothing copied later can replace it. 300000 ms is the limit the worker itself gives the
+# download (TREE_SITTER_CLI_INSTALL_TIMEOUT_MS). The build fails if no working CLI results.
+RUN --mount=type=bind,source=src/services/smart-file-read,target=/opt/tree-sitter-provision \
+    bun -e 'import { ensureTreeSitterCliBinary } from "/opt/tree-sitter-provision/tree-sitter-cli-provision.ts"; console.log("tree-sitter CLI:", await ensureTreeSitterCliBinary("/app/plugin", 300000));' \
+ && /app/plugin/node_modules/tree-sitter-cli/tree-sitter --version
+
 ENV PORT=8080
 ENV CLAUDE_MEM_DATA_DIR=/data/claude-mem
 ENV CLAUDE_MEM_WORKER_SCRIPT=/app/plugin/scripts/worker-service.cjs
