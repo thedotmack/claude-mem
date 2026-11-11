@@ -63,17 +63,19 @@ class MemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_stopped_worker_reports_failure(self):
         with socket.socket() as sock, tempfile.TemporaryDirectory(prefix="ag2 worker down ") as data:
             sock.bind(("127.0.0.1", 0))
-            env = dict(os.environ, CLAUDE_MEM_WORKER_PORT=str(sock.getsockname()[1]), CLAUDE_MEM_DATA_DIR=data)
+            env = dict(os.environ, CLAUDE_MEM_WORKER_HOST="127.0.0.1", CLAUDE_MEM_WORKER_PORT=str(sock.getsockname()[1]), CLAUDE_MEM_DATA_DIR=data)
             async with client("ag2-down", env=env) as memory:
                 with self.assertRaisesRegex(RuntimeError, "search failed"):
                     await call(memory, "search", {"query": ""})
 
     async def test_native_request_has_a_deadline(self):
         stop = threading.Event()
+        received = threading.Event()
 
         class SlowHandler(socketserver.BaseRequestHandler):
             def handle(self):
                 self.request.recv(8192)
+                received.set()
                 stop.wait(5)
 
         class SlowServer(socketserver.ThreadingTCPServer):
@@ -83,11 +85,12 @@ class MemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
             thread = threading.Thread(target=slow.serve_forever, daemon=True)
             thread.start()
             try:
-                env = dict(os.environ, CLAUDE_MEM_WORKER_PORT=str(slow.server_address[1]), CLAUDE_MEM_DATA_DIR=data)
+                env = dict(os.environ, CLAUDE_MEM_WORKER_HOST="127.0.0.1", CLAUDE_MEM_WORKER_PORT=str(slow.server_address[1]), CLAUDE_MEM_DATA_DIR=data)
                 async with client("ag2-slow", timeout=1, env=env) as memory:
                     started = time.monotonic()
                     with self.assertRaises((TimeoutError, RuntimeError)):
                         await call(memory, "search", {"query": ""})
+                    self.assertTrue(received.is_set(), "The request must reach the local slow-worker fixture")
                     self.assertLess(time.monotonic() - started, 4)
             finally:
                 stop.set()
