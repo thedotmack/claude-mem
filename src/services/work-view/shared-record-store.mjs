@@ -42,13 +42,15 @@ const SHARED_ROW_SUMMARY_BYTES = 604;
  * The history size the cloud viewer's machine was sized for. services/viewer-host/fly.toml gives it
  * 1,536 MB: with one My Work tab open the heavy account's worker peaked at 833 MB at 24,424 shared
  * rows, and the gate and Fly's ssh agent take about 40 MB, which leaves 663 MB for the history to
- * grow into. Two threads keep these summaries (the My Work reader and shared-work sync), so the
- * margin is used up at 24,424 + 663 MB / (2 x SHARED_ROW_SUMMARY_BYTES) rows (599,925; at about 4,500
- * new rows a day that is about 128 days past the measurement). Past it that size no longer holds;
+ * grow into. Three copies of these summaries are kept: the My Work reader thread, the shared-work
+ * sync thread, and the main thread, whose connection (worker-service.ts) SharedWorkSync.persistCopy
+ * and prepareOwnerAction read through. So the margin is used up at
+ * 24,424 + 663 MB / (3 x SHARED_ROW_SUMMARY_BYTES) rows (408,091; at about 4,500 new rows a day that
+ * is about 85 days past the measurement). Past it that size no longer holds;
  * nothing is dropped, and the error says so, because a larger machine or compacting superseded
  * shared history (a sync design change) is the remedy.
  */
-const SHARED_ROW_CACHE_CEILING = 24_424 + Math.floor(663 * 2 ** 20 / (2 * SHARED_ROW_SUMMARY_BYTES));
+const SHARED_ROW_CACHE_CEILING = 24_424 + Math.floor(663 * 2 ** 20 / (3 * SHARED_ROW_SUMMARY_BYTES));
 
 function summariesFor(db, deviceId, validateValue) {
   let byValidator = committedRowSummaries.get(db);

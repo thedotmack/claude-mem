@@ -46,7 +46,9 @@ primary_region = "iad"
   #   868 MB anon (fly logs), after the gate and Fly's ssh agent (about 40 MB).
   # - Shared history grows by about 4,500 rows a day on that account, and the worker's memory
   #   grows with it (src/services/work-view/shared-record-store.mjs, SHARED_ROW_CACHE_CEILING).
-  # So 1 GB has no margin with a tab open. 1,536 MB leaves about 660 MB above that peak for the growth.
+  # So 1 GB has no margin with a tab open. 1,536 MB leaves 703 MB above that peak, 663 MB after the
+  # gate and ssh agent, for the growth: three copies of the row cache at about 604 bytes per row use it
+  # up at about 408,091 shared rows, about 85 days of growth past the measurement.
   # No tab open: the worker peaked at 374 MB.
   memory = "1536mb"
   cpu_kind = "shared"

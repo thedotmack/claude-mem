@@ -294,7 +294,7 @@ test('a publish reuses only a kept reader of its own database, device and valida
 });
 
 test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {
-  // The ceiling (599,925 rows, shared-record-store.mjs) is where the kept summaries in two threads would use the
+  // The ceiling (408,091 rows, shared-record-store.mjs) is where the kept summaries in three threads would use the
   // margin the cloud viewer's 1,536 MB leaves. Rows of an unsupported version are the cheapest shared rows to scan.
   const db = new Database(':memory:');
   new SessionStore(db).setLocalSyncDeviceId(DEVICE);
@@ -307,6 +307,6 @@ test('a row cache past the history size the machine was sized for logs an error 
     expect(readSharedRecords(db, { deviceId: DEVICE }).diagnostics.unsupported).toBe(rows);
     expect(readSharedRecords(db, { deviceId: DEVICE }).diagnostics.unsupported).toBe(rows);
     expect(errors).toHaveBeenCalledTimes(1);
-    expect(errors.mock.calls[0][2]).toMatchObject({ rows, ceiling: 599_925 });
+    expect(errors.mock.calls[0][2]).toMatchObject({ rows, ceiling: 408_091 });
   } finally { errors.mockRestore(); }
 });
