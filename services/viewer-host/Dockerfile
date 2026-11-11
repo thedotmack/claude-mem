@@ -9,6 +9,15 @@
 #   3. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N> --only <one cmem-vw- app>, check it
 #   4. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N>
 #      (N is required: the worker boot time measured in the Phase 8 staging run)
+# The built plugin without the checkout's own plugin/node_modules. `npm run build` installs
+# one on the operator's computer (801 MB of macOS packages on the Phase 8 staging checkout,
+# e.g. @img/sharp-darwin-arm64), and copying it would replace this image's Linux install.
+# Dropped in a stage, not by an ignore file: fly deploy reads only the repository-root
+# .dockerignore (or --ignorefile), which other builds share, and a stage works on any builder.
+FROM oven/bun:1.4-debian AS plugin-files
+COPY plugin /plugin
+RUN rm -rf /plugin/node_modules
+
 FROM oven/bun:1.4-debian
 
 WORKDIR /app
@@ -18,14 +27,14 @@ WORKDIR /app
 COPY plugin/package.json plugin/bun.lock ./plugin/
 RUN cd plugin && bun install --production --frozen-lockfile --ignore-scripts --omit optional
 
-COPY plugin ./plugin
+COPY --from=plugin-files /plugin ./plugin
 COPY services/viewer-host/src ./viewer-host/src
 
 # The tree-sitter CLI, put in place once here with the same verified provisioning code the
 # worker runs at start (src/services/smart-file-read/tree-sitter-cli-provision.ts). The
 # install above skips scripts, so without this every machine start found no CLI and
 # downloaded it again: about 60 s of network and CPU on each wake (Phase 8 staging run).
-# The worker's start check then finds it usable and downloads nothing. After COPY plugin, so
+# The worker's start check then finds it usable and downloads nothing. After the plugin copy, so
 # nothing copied later can replace it. 300000 ms is the limit the worker itself gives the
 # download (TREE_SITTER_CLI_INSTALL_TIMEOUT_MS). The build fails if no working CLI results.
 RUN --mount=type=bind,source=src/services/smart-file-read,target=/opt/tree-sitter-provision \
