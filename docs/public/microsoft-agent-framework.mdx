@@ -95,6 +95,9 @@ not as instructions to invoke tools or change accounts.
 ## Identity and data handling
 
 Every save, search, timeline and detail request carries the selected project.
+Read requests also carry the explicit singleton `projects` list, so starting
+the MCP server in a Git worktree cannot inherit its parent project's notes.
+The native SDK is configured to forward these additional scope parameters.
 Saves use `platformSource: microsoft-agent-framework` and the existing manual
 memory session for that project and platform. A workflow run is not an observer
 session and does not create an additional capture lifecycle.
@@ -125,13 +128,17 @@ produces a nonzero CLI exit and no successful result. Check the worker with
 and data directory. A save timeout does not prove that the write failed: retry
 the same project, title and text to reuse the note identity.
 
+Stderr includes the exception category and its available reason. Missing Node.js
+and missing or invalid MCP script paths have separate preflight messages. The CLI
+does not print a traceback or echo the supplied project, title, note or query.
+
 The example verifies native workflow execution and MCP calls without a model.
 It does not verify model generation, Foundry deployment or an automatic
 conversation-history integration.
 
 ## Verify and disconnect
 
-For the live checks, use a running disposable worker and set
+For the live checks, install Git, use a running disposable worker and set
 `CLAUDE_MEM_MCP_SERVER`, `CLAUDE_MEM_WORKER_PORT` and `CLAUDE_MEM_DATA_DIR` to
 that worker's script, port and data directory:
 
@@ -139,11 +146,12 @@ that worker's script, port and data directory:
 python -m unittest discover -s . -v
 ```
 
-The five tests use the real SDK and worker. They verify saved-note identity,
+The nine tests use the real SDK, worker and CLI. They verify saved-note identity,
 native workflow recall across client sessions, project filtering, SQLite
 platform attribution, a selected note older than the search page, an absolute
 script path containing spaces, invalid input, a refused connection and an
-unresponsive worker. They leave harmless notes in uniquely named test projects
+unresponsive worker, distinct Node/script/worker failure diagnostics, and a real
+Git worktree that cannot recall its parent project's notes. They leave harmless notes in uniquely named test projects
 inside the disposable database for inspection.
 
 To disconnect, stop invoking the example and remove its virtual environment

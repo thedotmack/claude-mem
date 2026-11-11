@@ -15,13 +15,22 @@ from agent_framework import MCPStdioTool, WorkflowBuilder, WorkflowContext, exec
 
 def memory_connection() -> MCPStdioTool:
     script = Path(os.environ.get("CLAUDE_MEM_MCP_SERVER", ""))
+    if not script.is_absolute():
+        raise ValueError("CLAUDE_MEM_MCP_SERVER must be an absolute path to the MCP server script.")
+    if not script.is_file():
+        raise FileNotFoundError("The MCP server script in CLAUDE_MEM_MCP_SERVER does not exist.")
     node = shutil.which("node")
-    if not script.is_absolute() or not script.is_file() or not node:
-        raise ValueError("Set the absolute CLAUDE_MEM_MCP_SERVER path and install Node.js.")
+    if not node:
+        raise FileNotFoundError("Node.js executable was not found on PATH; install Node.js or fix PATH.")
     return MCPStdioTool(
         name="claude-mem", command=node, args=[str(script)],
         env={**os.environ, "CLAUDE_MEM_RUNTIME": "worker", "CLAUDE_MEM_WORKER_AUTOSTART": "false"},
         allowed_tools=["save_memory", "search", "timeline", "get_observations"],
+        # The SDK otherwise drops parameters absent from the advertised schema.
+        additional_tool_argument_names={
+            "search": ["projects"], "timeline": ["projects"],
+            "get_observations": ["project", "projects"],
+        },
         load_prompts=False, request_timeout=10,
     )
 
@@ -58,7 +67,7 @@ async def recall_note(selected: SelectedNote) -> dict[str, str]:
         @executor(id="find_selected_memory")
         async def find_note(request: SelectedNote, ctx: WorkflowContext[SelectedNote]) -> None:
             index = text_content(await memory.call_tool(
-                "search", project=request.project, query=request.query, type="observations", limit=20,
+                "search", project=request.project, projects=[request.project], query=request.query, type="observations", limit=20,
             ))
             # A known ID can be older than the index page. Detail reads carry
             # the same project; the page is context, not a save receipt.
@@ -67,10 +76,10 @@ async def recall_note(selected: SelectedNote) -> dict[str, str]:
         @executor(id="read_selected_memory")
         async def read_note(request: SelectedNote, ctx: WorkflowContext[Never, dict[str, str]]) -> None:
             timeline = text_content(await memory.call_tool(
-                "timeline", project=request.project, anchor=request.observation_id, depth_before=2, depth_after=2,
+                "timeline", project=request.project, projects=[request.project], anchor=request.observation_id, depth_before=2, depth_after=2,
             ))
             details = text_content(await memory.call_tool(
-                "get_observations", project=request.project, ids=[request.observation_id],
+                "get_observations", project=request.project, projects=[request.project], ids=[request.observation_id],
             ))
             await ctx.yield_output({"index": request.index, "timeline": timeline, "details": details})
 
@@ -103,8 +112,15 @@ def main() -> int:
             print(result["timeline"])
             print(result["details"])
         return 0
-    except Exception:
-        print("Memory workflow failed. Check the worker, its data directory/port, and the selected project and observation ID.", file=sys.stderr)
+    except Exception as error:
+        reason = error.args[0] if error.args and isinstance(error.args[0], str) else "No additional failure message."
+        for name in ("project", "title", "text", "query"):
+            value = getattr(args, name, None)
+            if value:
+                reason = reason.replace(value, "[input omitted]")
+        reason = " ".join(reason.split())[:500]
+        print(f"Memory workflow failed ({type(error).__name__}): {reason}", file=sys.stderr)
+        print("Check the worker, its data directory/port, and the selected project and observation ID.", file=sys.stderr)
         print("A timed-out save may have committed; retry the same project, title and text to reuse its note identity.", file=sys.stderr)
         return 1
 
