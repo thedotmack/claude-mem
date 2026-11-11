@@ -290,7 +290,10 @@ export async function setupV2(
         // v2 names the argument bag `input`; `args` is tolerated because the
         // beta shape has moved before.
         let args = (event.input ?? event.args) as Record<string, unknown> | undefined;
+        const readResultType = (event.result as { output?: { type?: string } } | null)?.output?.type;
         if (tool === "read" && typeof args?.path === "string"
+          && (readResultType === "file" || readResultType === "text-page")
+          && !/^[a-z][a-z0-9+.-]*:\/\//i.test(args.path)
           && args.file_path === undefined && args.filePath === undefined) {
           const { path, ...rest } = args;
           args = { ...rest, file_path: path };

@@ -58,19 +58,52 @@ describe('OpenCode V2 native tool vocabulary through local ingestion', () => {
     settings.mockRestore();
   });
 
-  async function completed(tool: string, input: Record<string, unknown>) {
+  async function completed(tool: string, input: Record<string, unknown>, result: unknown = { content: 'Completed.' }) {
     await capture({ sessionID: 'opencode-native-tools', tool, input,
-      status: 'completed', result: { content: 'Completed.' },
+      status: 'completed', result,
     });
     return manager.getMessageBuffer().claimNextMatching(sessionId, () => true);
   }
 
   it('retains native read.path as completed read evidence without mutating host input', async () => {
     const input = Object.freeze({ path: 'src/config.ts', offset: 1, limit: 20 });
-    const message = (await completed('read', input))!;
+    const message = (await completed('read', input, { content: 'Read file src/config.ts, lines 1-1\n1: export const enabled = true;',
+      output: { type: 'text-page', content: 'export const enabled = true;', mime: 'text/plain', offset: 1, truncated: false },
+    }))!;
     expect(extractObservationFileEvidence([message]).files_read).toEqual(['src/config.ts']);
     expect(JSON.parse(message.tool_input!)).toEqual({ file_path: 'src/config.ts', offset: 1, limit: 20 });
     expect(input).toEqual({ path: 'src/config.ts', offset: 1, limit: 20 });
+  });
+
+  it.each(['utf8', 'base64'])('retains full native file reads with %s encoding', async encoding => {
+    const file = encoding === 'utf8' ? 'assets/example.txt' : 'assets/example.png';
+    const mime = encoding === 'utf8' ? 'text/plain' : 'image/png';
+    const content = encoding === 'utf8' ? 'owned file text' : 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aSScAAAAASUVORK5CYII=';
+    const message = (await completed('read', { path: file }, {
+      output: { type: 'file', uri: `file:///work/project/${file}`, content, encoding, mime },
+      content: [{ type: 'text', text: 'File read successfully' }],
+    }))!;
+    expect(extractObservationFileEvidence([message]).files_read).toEqual([file]);
+  });
+
+  it('does not turn a native directory listing into a completed file read', async () => {
+    const input = { path: 'src', limit: 20 };
+    const message = (await completed('read', input, {
+      output: { type: 'list-page', entries: [{ path: 'config.ts', type: 'file' }], truncated: false },
+      content: 'Read directory src, entries 1-1\nconfig.ts',
+    }))!;
+    expect(extractObservationFileEvidence([message]).files_read).toEqual([]);
+    expect(JSON.parse(message.tool_input!)).toEqual(input);
+  });
+
+  it('keeps a virtual skill URI out of local file evidence', async () => {
+    const input = { path: 'skill://review/SKILL.md' };
+    const message = (await completed('read', input, {
+      output: { type: 'text-page', content: 'Review guidance', mime: 'text/plain', offset: 1, truncated: false },
+      content: 'Read file skill://review/SKILL.md, lines 1-1\n1: Review guidance',
+    }))!;
+    expect(extractObservationFileEvidence([message]).files_read).toEqual([]);
+    expect(JSON.parse(message.tool_input!)).toEqual(input);
   });
 
   it('records files changed by the native patch tool', async () => {
