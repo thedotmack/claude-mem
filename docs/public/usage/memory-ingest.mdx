@@ -107,6 +107,12 @@ metadata:
 `metadata.originSessionId` are carried through; files without frontmatter are
 stored using their body as-is.
 
+These fields accept single-line quoted values. Single quotes use doubled
+apostrophes (`name: 'Don''t forget the cache'`); double quotes decode YAML escapes,
+including escaped quotes, backslashes and Unicode characters. Backslash sequences
+in plain or single-quoted values and in the Markdown body remain literal. This small
+frontmatter parser does not interpret multiline YAML scalars.
+
 ## Idempotency
 
 Ingest is safe to re-run. Observations are content-hash deduplicated on insert,
