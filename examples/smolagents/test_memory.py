@@ -47,7 +47,10 @@ class ProjectArguments(unittest.TestCase):
             args = {"project": "other", "projects": ["other"], "text": "Safe note"}
             result = scoped_arguments(name, args, "owned")
             self.assertEqual(result["project"], "owned")
-            self.assertNotIn("projects", result)
+            if name == "save_memory":
+                self.assertNotIn("projects", result)
+            else:
+                self.assertEqual(result["projects"], ["owned"])
             self.assertEqual(args["project"], "other")
         first = scoped_arguments("save_memory", {"text": "Safe note"}, "a")["metadata"]
         self.assertEqual(first, scoped_arguments("save_memory", {"text": "Safe note"}, "a")["metadata"])
@@ -67,7 +70,7 @@ class ProjectArguments(unittest.TestCase):
         for name, args, project in [("search", {}, " "), ("unknown", {}, "a"), ("save_memory", {"text": " "}, "a")]:
             with self.assertRaises(ValueError):
                 scoped_arguments(name, args, project)
-        for seconds in (float("nan"), float("inf"), 0, -1):
+        for seconds in (float("nan"), float("inf"), 1e308, 0, -1):
             with self.subTest(seconds=seconds), self.assertRaises(ValueError):
                 with memory_tools("a", __file__, str(Path(__file__).parent), timeout=seconds):
                     self.fail("invalid deadline was accepted")
@@ -88,6 +91,7 @@ class NativeSdk(unittest.TestCase):
         with fixture_tools() as tools:
             result = json.loads(call_memory(tools, "search", {"query": "release", "project": "other", "projects": ["other"]}))
             self.assertEqual(result["project"], "owned")
+            self.assertEqual(result["projects"], ["owned"])
             saved = json.loads(call_memory(tools, "save_memory", {"title": "Note", "text": "Safe note"}))
             self.assertEqual(saved["metadata"]["platformSource"], "smolagents")
 
@@ -101,6 +105,15 @@ class NativeSdk(unittest.TestCase):
             with self.assertRaises(Exception):
                 call_memory(tools, "search", {"query": "stall"})
             self.assertLess(time.monotonic() - start, 5)
+
+    def test_interrupted_workflow_closes_its_connected_child(self):
+        with self.assertRaises(KeyboardInterrupt):
+            with fixture_tools() as tools:
+                child = json.loads(call_memory(tools, "search", {"query": "pid"}))["pid"]
+                os.kill(child, 0)
+                raise KeyboardInterrupt("cancel this workflow")
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
 
     def test_failed_connection_is_bounded_and_cleaned_up(self):
         with tempfile.TemporaryDirectory(prefix="smol project ") as directory:
@@ -125,7 +138,9 @@ class NativeSdk(unittest.TestCase):
                         self.assertRaises(TimeoutError):
                     with memory_tools("a", str(stalled), directory, timeout=0.1):
                         self.fail("unresponsive server must not initialize")
-                self.assertLess(time.monotonic() - start, 3)
+                # Two 0.1s requests plus the native shutdown grace fit below 6s;
+                # waiting for the stalled child's natural 10s exit must fail.
+                self.assertLess(time.monotonic() - start, 6)
                 self.assertTrue(child_pid.is_file(), "the actual stdio child must have started")
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(child_pid.read_text()), 0)
