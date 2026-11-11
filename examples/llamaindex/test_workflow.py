@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from memory_workflow import (run_workflow, MemoryWorkflow, McpToolSpec, ClientSession,
                              StdioServerParameters, stdio_client)
@@ -131,8 +132,26 @@ class WorkflowTests(unittest.TestCase):
         print(json.dumps({"native_workflow": "passed", "known_id": self.known, "saved_id": first["saved_id"], "repeat_id": second["saved_id"]}))
 
     def test_foreign_selected_id_cannot_authorize_a_save(self):
-        with self.assertRaises(Exception):
-            self.run_memory({**self.state(), "observation_id": self.foreign})
+        run_id = "foreign-id-" + uuid4().hex
+        state = {**self.state(), "observation_id": self.foreign, "run_id": run_id,
+                 "note": "This foreign-observation handoff must not be saved: " + run_id}
+        with sqlite3.connect(self.data / "claude-mem.db") as db:
+            before = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+        with self.assertRaises(Exception) as raised:
+            self.run_memory(state)
+        # MCP's nested task groups wrap the workflow error during stdio cleanup.
+        rejection = raised.exception
+        while isinstance(rejection, ExceptionGroup):
+            self.assertEqual(len(rejection.exceptions), 1)
+            rejection = rejection.exceptions[0]
+        self.assertIsInstance(rejection, RuntimeError)
+        self.assertEqual(str(rejection), "The selected observation is absent from this project's search page")
+        with sqlite3.connect(self.data / "claude-mem.db") as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], before)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM observations WHERE narrative=? OR json_extract(metadata, '$.runId')=?",
+                (state["note"], run_id),
+            ).fetchone()[0], 0)
 
     def test_blank_project_is_rejected(self):
         with self.assertRaises(ValueError):
