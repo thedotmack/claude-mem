@@ -401,20 +401,132 @@ describe('My Rules saves', () => {
 })
 
 describe('My Focus saves', () => {
+  it('keeps a later focus edit when Undo refers to an older saved version', async () => {
+    const { store } = testStore()
+    const area = LOCAL_MODEL.focusAreas[0]
+    const saved = { ...LOCAL_MODEL, focusAreas: [{ ...area, name: 'Saved name' }] }
+    const sent: string[] = []
+    const { source, feed } = fakeSource({ saveFocusChange: async change => { sent.push(change.action); return saved } })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, focusAreas: [area] })
+      await store.getState().applyFocusChange({ action: 'rename', focusAreaId: area.id, name: 'Saved name' }, {
+        text: 'Renamed', undo: [{ action: 'rename', focusAreaId: area.id, name: area.name }],
+      })
+      feed.onModel({ ...saved, focusAreas: [{ ...area, name: 'Newer edit from another tab' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), false)
+      assert.deepEqual(sent, ['rename'])
+      assert.match(store.getState().focus.error ?? '', /changed since your edit/)
+      assert.equal(store.getState().focus.history.length, 1)
+    } finally { stop() }
+  })
+
+  it('refuses an old request placement Undo after the request moves again', async () => {
+    const { store } = testStore()
+    const request = LOCAL_MODEL.requests[0]
+    const saved = { ...LOCAL_MODEL, requests: [{ ...request, focusAreaId: 'area-b' }] }
+    const sent: string[] = []
+    const { source, feed } = fakeSource({ saveFocusChange: async change => { sent.push(change.action); return saved } })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, requests: [{ ...request, focusAreaId: 'area-a' }] })
+      await store.getState().applyFocusChange({ action: 'move-request', requestId: request.id, focusAreaId: 'area-b' }, {
+        text: 'Moved', undo: [{ action: 'move-request', requestId: request.id, focusAreaId: 'area-a' }],
+      })
+      feed.onModel({ ...saved, requests: [{ ...request, focusAreaId: 'area-c' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), false)
+      assert.deepEqual(sent, ['move-request'])
+    } finally { stop() }
+  })
+
+  it('refuses an old order Undo after another area is kept', async () => {
+    const { store } = testStore()
+    const area = { ...LOCAL_MODEL.focusAreas[0], status: 'kept' as const, mergedInto: null }
+    const saved = { ...LOCAL_MODEL, focusAreas: [area] }
+    const sent: string[] = []
+    const { source, feed } = fakeSource({ saveFocusChange: async change => { sent.push(change.action); return saved } })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel(saved)
+      await store.getState().applyFocusChange({ action: 'reorder', focusAreaIds: [area.id] }, {
+        text: 'Reordered', undo: [{ action: 'reorder', focusAreaIds: [area.id] }],
+      })
+      feed.onModel({ ...saved, focusAreas: [area, { ...area, id: 'new-area' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), false)
+      assert.deepEqual(sent, ['reorder'])
+    } finally { stop() }
+  })
+
   it('runs one change at a time, keeps it for Undo, and undoes it', async () => {
     const { store } = testStore()
+    const area = LOCAL_MODEL.focusAreas[0]
     const sent: string[] = []
     const gate = deferred<WorkModel>()
     const { source, feed } = fakeSource({ saveFocusChange: (change) => { sent.push(change.action); return sent.length === 1 ? gate.promise : Promise.resolve(LOCAL_MODEL) } })
     store.getState().startWorkSource(source)
     feed.onModel(LOCAL_MODEL)
-    const first = store.getState().applyFocusChange({ action: 'keep', focusAreaId: 'a' }, { text: 'Kept A', undo: [{ action: 'restore-suggestion', focusAreaId: 'a' }] })
-    assert.equal(await store.getState().applyFocusChange({ action: 'dismiss', focusAreaId: 'a' }, null), false)
+    const first = store.getState().applyFocusChange({ action: 'keep', focusAreaId: area.id }, { text: 'Kept A', undo: [{ action: 'restore-suggestion', focusAreaId: area.id }] })
+    assert.equal(await store.getState().applyFocusChange({ action: 'dismiss', focusAreaId: area.id }, null), false)
     gate.resolve(LOCAL_MODEL)
     assert.equal(await first, true)
     assert.equal(store.getState().focus.history.at(-1)?.text, 'Kept A')
     assert.equal(await store.getState().undoLastFocusChange(), true)
     assert.deepEqual(sent, ['keep', 'restore-suggestion'])
     assert.equal(store.getState().focus.history.length, 0)
+  })
+
+  it('allows Undo after unrelated activity and continues only unfinished merge steps', async () => {
+    const { store } = testStore()
+    const area = { ...LOCAL_MODEL.focusAreas[0], source: 'seed' as const, status: 'kept' as const }
+    const merged = { ...LOCAL_MODEL, focusAreas: [{ ...area, mergedInto: 'target' }] }
+    const restored = { ...LOCAL_MODEL, focusAreas: [{ ...area, mergedInto: null, status: 'suggested' as const }] }
+    const sent: string[] = []
+    const { source, feed } = fakeSource({ saveFocusChange: async change => {
+      sent.push(change.action)
+      if (sent.length === 1) return merged
+      if (sent.length === 2) return restored
+      if (sent.length === 3) throw new Error('Save failed')
+      return { ...restored, focusAreas: [area] }
+    } })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, focusAreas: [area] })
+      await store.getState().applyFocusChange({ action: 'merge', focusAreaId: area.id, intoFocusAreaId: 'target' }, {
+        text: 'Merged', undo: [{ action: 'restore-suggestion', focusAreaId: area.id }, { action: 'keep', focusAreaId: area.id }],
+      })
+      feed.onModel({ ...merged, focusAreas: [{ ...merged.focusAreas[0], latestAt: 'Now', timesAsked: 100 }, { ...area, id: 'unrelated', name: 'Another area' }] })
+      assert.equal(await store.getState().undoLastFocusChange(), false)
+      assert.deepEqual(sent, ['merge', 'restore-suggestion', 'keep'])
+      assert.equal(await store.getState().undoLastFocusChange(), true)
+      assert.deepEqual(sent, ['merge', 'restore-suggestion', 'keep', 'keep'])
+      assert.equal(store.getState().focus.history.length, 0)
+    } finally { stop() }
+  })
+
+  it('stops a merge Undo if a newer decision arrives between its writes', async () => {
+    const { store } = testStore()
+    const area = { ...LOCAL_MODEL.focusAreas[0], source: 'seed' as const, status: 'kept' as const }
+    const merged = { ...LOCAL_MODEL, focusAreas: [{ ...area, mergedInto: 'target' }] }
+    const restored = { ...LOCAL_MODEL, focusAreas: [{ ...area, mergedInto: null, status: 'suggested' as const }] }
+    const newer = { ...LOCAL_MODEL, focusAreas: [{ ...area, mergedInto: null, status: 'done' as const }] }
+    const gate = deferred<WorkModel>()
+    const sent: string[] = []
+    const { source, feed } = fakeSource({
+      loadWorkModel: async () => newer,
+      saveFocusChange: async change => { sent.push(change.action); return sent.length === 1 ? merged : gate.promise },
+    })
+    const stop = store.getState().startWorkSource(source)
+    try {
+      feed.onModel({ ...LOCAL_MODEL, focusAreas: [area] })
+      await store.getState().applyFocusChange({ action: 'merge', focusAreaId: area.id, intoFocusAreaId: 'target' }, {
+        text: 'Merged', undo: [{ action: 'restore-suggestion', focusAreaId: area.id }, { action: 'keep', focusAreaId: area.id }],
+      })
+      const undo = store.getState().undoLastFocusChange()
+      feed.onModel(newer)
+      gate.resolve(restored)
+      assert.equal(await undo, false)
+      assert.deepEqual(sent, ['merge', 'restore-suggestion'])
+      assert.match(store.getState().focus.error ?? '', /changed since your edit/)
+    } finally { stop() }
   })
 })
