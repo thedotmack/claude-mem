@@ -600,12 +600,14 @@ export class SessionSearch {
       }
       const reader = this.queryWordReader;
       if (!reader) return null;
-      try {
+      // A failed read or cleanup must also undo the insertion. Contentless FTS inserts at the same rowid
+      // do not remove its old indexed words, so leaving any behind would pollute another reader's query.
+      return this.db.transaction(() => {
         reader.insert.run(query);
-        return (reader.read.all() as { term: string }[]).map(row => row.term);
-      } finally {
+        const words = (reader.read.all() as { term: string }[]).map(row => row.term);
         reader.clear.run();
-      }
+        return words;
+      })();
     } catch (error) {
       this.queryWordReader = null;
       logger.debug('DB', 'FTS5 query tokenizer unavailable; any-term queries are capped without frequencies', {}, error instanceof Error ? error : undefined);

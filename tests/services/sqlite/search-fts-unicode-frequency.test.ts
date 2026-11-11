@@ -186,3 +186,60 @@ describe('native long-query tokenization stays bounded and connection-local', ()
     } finally { store.close(); }
   });
 });
+
+
+describe('native query tokenizer failure recovery', () => {
+  function seed(store: SessionStore, title: string): void {
+    const session = store.createSDKSession('tokenizer-fault', 'project', 'fixture');
+    store.ensureMemorySessionIdRegistered(session, 'tokenizer-fault-memory');
+    store.storeObservation('tokenizer-fault-memory', 'project', {
+      type: 'discovery', title, subtitle: null, facts: [], narrative: null,
+      concepts: [], files_read: [], files_modified: [],
+    }, 1);
+  }
+
+  function build(search: SessionSearch, query: string): string | null {
+    return (search as unknown as {
+      buildFTSAnyTermQuery(query: string, table: string): string | null;
+    }).buildFTSAnyTermQuery(query, 'observations_fts');
+  }
+
+  it('rolls back inserted words if cleanup fails before a second reader uses the same connection', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seed(store, 'άλφα');
+      seed(store, 'zebrafish');
+      const search = new SessionSearch(store.db);
+      const ask = (word: string) => 'missing ' + word + ' absent ' + 'unmatched '.repeat(80);
+      expect(search.searchObservations(ask('άλφα')).map(row => row.title)).toEqual(['άλφα']);
+
+      const reader = (search as unknown as {
+        queryWordReader: { clear: { run: () => unknown } };
+      }).queryWordReader;
+      const clear = reader.clear.run.bind(reader.clear);
+      reader.clear.run = () => { throw new Error('injected tokenizer cleanup failure'); };
+      try { expect(() => build(search, ask('άλφα'))).not.toThrow(); }
+      finally { reader.clear.run = clear; }
+
+      const remaining = store.db.query('SELECT term FROM temp._any_term_words_vocab').all();
+      const next = new SessionSearch(store.db);
+      const results = next.searchObservations(ask('zebrafish')).map(row => row.title);
+      expect({ remaining, results }).toEqual({ remaining: [], results: ['zebrafish'] });
+      expect(store.db.query('SELECT term FROM temp._any_term_words_vocab').all()).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it('falls back to the existing 40-token cap when query-only mode refuses the temporary tokenizer', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seed(store, 'zebrafish');
+      const search = new SessionSearch(store.db);
+      // Build only the vocabulary reader, then make the new tokenizer's writes unavailable.
+      expect(build(search, 'missing zebrafish absent')).toContain('zebrafish');
+      store.db.run('PRAGMA query_only = ON');
+      const words = Array.from({ length: 60 }, (_, index) => 'missingword' + index);
+      expect(build(search, words.join(' '))?.split(' OR '))
+        .toEqual(words.slice(0, 40).map(word => '"' + word + '"'));
+    } finally { store.close(); }
+  });
+});
