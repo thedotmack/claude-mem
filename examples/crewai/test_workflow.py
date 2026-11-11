@@ -1,5 +1,6 @@
 """Native CrewAI + real bundled-worker checks; no model or account needed."""
 import asyncio
+from contextlib import chdir, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -14,6 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from memory_workflow import call_memory, memory_client, run_workflow
 from crewai.telemetry.telemetry import Telemetry
@@ -63,7 +65,8 @@ class WorkflowTests(unittest.TestCase):
             "CLAUDE_MEM_MCP_SERVER": str(REPO / "plugin/scripts/mcp-server.cjs"),
         })
         cls.output = (cls.data / "worker.log").open("w")
-        cls.worker = subprocess.Popen([bun, str(REPO / "plugin/scripts/worker-service.cjs"), "--daemon"],
+        cls.worker = subprocess.Popen([bun, "-e", 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); '
+                                      'new WorkerService().start().catch(error => { console.error(error); process.exit(1); });'],
                                       cwd=REPO, env=cls.env, stdout=cls.output, stderr=cls.output)
         cls.addClassCleanup(cls.cleanup)
         deadline = time.monotonic() + 45
@@ -104,6 +107,27 @@ class WorkflowTests(unittest.TestCase):
                           data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
         with urlopen(request, timeout=5) as response:
             return json.load(response)
+
+    @contextmanager
+    def worktree_scope(self):
+        with tempfile.TemporaryDirectory(prefix="scope-parent-", dir=self.data) as directory:
+            parent = Path(directory)
+            checkout = parent / "topic"
+            def git(*args):
+                subprocess.run(["git", *args], cwd=parent, env=self.env, check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            git("init", "-q", "--initial-branch=main")
+            git("-c", "user.name=Memory scope test", "-c", "user.email=scope@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Fixture")
+            git("worktree", "add", "-q", "--detach", str(checkout), "HEAD")
+            project = parent.name + "/topic"
+            parent_id = self.post("/api/memory/save", {
+                "project": parent.name, "title": "scopeboundarytoken parent-only marker",
+                "text": "The parent-only marker must stay outside the chosen project.",
+            })["id"]
+            child_id = None
+            with chdir(checkout):
+                yield project, parent_id, child_id
 
     def state(self):
         return {"project": "crewai-demo", "note": "Keep the quokkaharbor scheduler export in UTC.",
@@ -154,6 +178,41 @@ class WorkflowTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True):
             with self.assertRaisesRegex(RuntimeError, "failed save_memory"):
                 asyncio.run(rejected_save())
+
+    def test_worktree_recall_stays_in_the_selected_project(self):
+        with self.worktree_scope() as (project, parent_id, _):
+            state = {**self.state(), "project": project, "run_id": "worktree-" + uuid4().hex}
+            result = self.run_memory(state)
+            self.assertNotIn("parent-only marker", result["index"])
+            self.assertNotIn("parent-only marker", result["timeline"])
+            self.assertIn(state["note"], result["recalled"])
+            async def read_parent():
+                async with memory_client() as client:
+                    return await call_memory(client, project, "get_observations", ids=[parent_id])
+            with patch.dict(os.environ, self.env, clear=True):
+                self.assertNotIn("parent-only marker", asyncio.run(read_parent()))
+
+    def test_verbatim_project_keys_are_isolated(self):
+        for form in ("comma", "outer-space", "json-like"):
+            with self.subTest(form=form):
+                key = "exact-key-" + uuid4().hex
+                project = key + ",other" if form == "comma" else " " + key + " " if form == "outer-space" else json.dumps([key])
+                shadows = [key, "other"] if form == "comma" else [key]
+                foreign_ids = [self.post("/api/memory/save", {
+                    "project": shadow, "title": "exactkeytoken shadow-only marker",
+                    "text": "The shadow-only marker belongs to a different project key.",
+                })["id"] for shadow in shadows]
+                state = {**self.state(), "project": project, "run_id": "exact-" + uuid4().hex}
+                result = self.run_memory(state)
+                self.assertEqual(result["project"], project)
+                self.assertNotIn("shadow-only marker", result["index"])
+                self.assertNotIn("shadow-only marker", result["timeline"])
+                self.assertNotIn("shadow-only marker", result["recalled"])
+                async def read_shadows():
+                    async with memory_client() as client:
+                        return await call_memory(client, project, "get_observations", ids=foreign_ids)
+                with patch.dict(os.environ, self.env, clear=True):
+                    self.assertNotIn("shadow-only marker", asyncio.run(read_shadows()))
 
     def test_blank_project_is_rejected(self):
         with self.assertRaises(ValueError):

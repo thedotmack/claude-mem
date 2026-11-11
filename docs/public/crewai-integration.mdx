@@ -103,6 +103,23 @@ save returns the original observation and retains its original provenance.
 The logical run ID and note content determine the receipt fingerprint. Neither
 identity resumes inference or replays a conversation.
 
+## Worktree project boundaries
+
+Reads send both the selected `project` and an explicit `projects=json.dumps([project])`
+list. This prevents the MCP server from automatically widening a worktree's
+read scope to its parent checkout. `save_memory` receives only the selected
+`project`.
+
+The native tests create a real Git repository and linked worktree, seed a
+parent-project observation, and run the SDK from that worktree. The chosen
+project's index and timeline exclude the parent record; an explicit detail read
+of its known ID also returns no parent content.
+
+The project list is encoded as a JSON string so the GET query path preserves
+literal commas and JSON-looking keys. Nonempty project names retain their exact
+outer whitespace. Native checks seed separate split/trimmed-key projects and
+confirm they stay out of search, timeline, and recalled details.
+
 ## Repeated runs and failures
 
 The source fingerprint includes the integration, project, run ID, and note text.
@@ -122,10 +139,20 @@ undo that save; the example reports overall failure without claiming completion.
 With Bun and Node.js available, run:
 
 ```bash
-python examples/crewai/test_workflow.py
+(
+  unset CLAUDE_MEM_CLOUD_SYNC_TOKEN CLAUDE_MEM_CLOUD_SYNC_USER_ID CLAUDE_MEM_CLOUD_SYNC_HUB_URL
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false
+  python examples/crewai/test_workflow.py
+)
 ```
 
-The seven checks use the actual CrewAI Flow and MCP client, the shipped worker,
+This verification uses fresh worker settings and a restricted child-process
+environment. It imports the shipped `WorkerService` and calls `start()` directly,
+so the CLI startup path does not run host hook-configuration repairs. The
+subshell also clears inherited cloud-sync credentials; it does not change your
+normal worker's settings or saved memory.
+
+The nine checks use the actual CrewAI Flow and MCP client, the shipped worker,
 and a fresh SQLite database. They cover save and recall, a repeated receipt after
 25 newer notes, project isolation, platform/manual-session/native-flow identity,
 an actual rejected MCP save, blank input, a stopped worker, telemetry settings,
