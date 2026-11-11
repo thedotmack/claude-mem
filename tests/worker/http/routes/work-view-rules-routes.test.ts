@@ -22,7 +22,7 @@ const PREFERENCE = 'Never open draft pull requests.';
 const SUGGESTED_ID = ruleIdForPreference(PREFERENCE);
 
 beforeEach(async () => {
-  directory = mkdtempSync(join(tmpdir(), 'work-view-rules-test-'));
+  directory = mkdtempSync(join(tmpdir(), 'work view rules test-'));
   const databasePath = join(directory, 'source.db');
   source = new Database(databasePath);
   source.exec('PRAGMA journal_mode=WAL');
@@ -212,8 +212,25 @@ describe('My Rules routes', () => {
     await load();
     const instructions = readFileSync(claudeInstructionsPath, 'utf8');
     // The import names the file this worker writes (here a custom folder), not a fixed ~/.claude-mem path.
-    expect(myRulesImportLine(rulesFilePath)).toBe(`@${rulesFilePath}`);
+    expect(myRulesImportLine(rulesFilePath)).toBe(`@${rulesFilePath.replaceAll(' ', '\\ ')}`);
     expect(instructions.split(myRulesImportLine(rulesFilePath)).length - 1).toBe(1);
+    expect(existsSync(rulesFilePath)).toBe(true);
+  });
+
+  it('repairs an unescaped rules import through a directory containing spaces', async () => {
+    mkdirSync(join(directory, 'claude'), { recursive: true });
+    const oldInstructions = `# My instructions\n@${rulesFilePath}\n`;
+    writeFileSync(claudeInstructionsPath, oldInstructions);
+    // Claude Code ends an unescaped import at its first space, so this is not loaded.
+    expect((await snapshot()).rulesFile.loadedInClaudeCode).toBe(false);
+    const load = () => fetch(`${origin}/api/work-view/rules/load-in-claude-code`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: '{}',
+    });
+    expect((await (await load()).json()).rulesFile.loadedInClaudeCode).toBe(true);
+    await load();
+    const instructions = readFileSync(claudeInstructionsPath, 'utf8');
+    const escaped = `@${rulesFilePath.replaceAll(' ', '\\ ')}`;
+    expect(instructions).toBe(`${oldInstructions}${escaped}\n`);
     expect(existsSync(rulesFilePath)).toBe(true);
   });
 
