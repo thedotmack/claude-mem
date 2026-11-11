@@ -216,6 +216,7 @@ const QUERIES: Record<string, string> = {
 (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name) @c_named_function
 (declaration declarator: (_) @c_declarator) @c_declaration
 (field_declaration declarator: (_) @c_declarator) @c_declaration
+(template_declaration (declaration) @decorated_inner) @decorated_outer
 (parameter_list) @c_nonfunction_scope
 (init_declarator) @c_nonfunction_scope
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
@@ -940,7 +941,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       || kindCapture.tag === "c_declaration") {
       // These declarations end at their semicolon; there is no function body
       // from which the generic signature extractor could infer a boundary.
-      const declaration = captureText(lines, kindCapture);
+      const declaration = captureText(lines, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
       signature = declaration.length > 200 ? declaration.slice(0, 197) + "..." : declaration;
     } else if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span

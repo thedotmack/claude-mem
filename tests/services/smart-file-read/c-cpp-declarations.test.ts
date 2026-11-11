@@ -89,8 +89,9 @@ describe('native C and C++ function declarations', () => {
   test('keeps a multiline template return type and C language linkage declaration', () => {
     const file = parseFile(cppSource, 'owned.hpp');
     const api = file.symbols.find(symbol => symbol.name === 'api')!;
-    expect(api.children?.find(symbol => symbol.name === 'identity')?.signature).toBe('auto identity( T value ) -> T;');
+    expect(api.children?.find(symbol => symbol.name === 'identity')?.signature).toBe('template<typename T> auto identity( T value ) -> T;');
     const unfolded = unfoldSymbol(cppSource, 'owned.hpp', 'api.identity');
+    expect(unfolded).toContain('template<typename T>');
     expect(unfolded).toContain(') -> T;');
     expect(unfolded).not.toContain('c_linkage');
     expect(file.symbols.find(symbol => symbol.name === 'c_linkage')?.kind).toBe('function');
