@@ -104,9 +104,11 @@ export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'(
  * Only terminated literals are masked. A bare `<!--` or `<![CDATA[` in prose
  * (an observation about HTML, say) stays visible text, so it cannot hide every
  * later closing tag and turn a valid reply into a parse failure that is resent.
+ * Comments cannot nest: a later opener starts a new candidate instead of
+ * pairing its terminator with a bare opener in an earlier observation.
  */
 export function maskXmlLiteralMarkup(text: string): string {
-  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g,
+  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--(?:(?!<!--)[\s\S])*?-->/g,
     literal => literal.replace(/[<>]/g, ' '));
 }
 

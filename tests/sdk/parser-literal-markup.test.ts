@@ -71,4 +71,62 @@ describe('observer XML literal markup', () => {
     expect(parsed.observations[0].facts).toEqual(['Also <![CDATA[ openers']);
     expect(hasUnfinishedObservationBlock(raw)).toBe(false);
   });
+  it('keeps separate observations when a bare opener precedes a later comment', () => {
+    const first = 'Parser skips <!-- markers in templates.';
+    const second = 'Keep <!-- example --> in documentation.';
+    const raw = '<observation><type>discovery</type><title>First</title>' +
+      `<narrative>${first}</narrative><facts><fact>First fact</fact></facts></observation>` +
+      '<observation><type>bugfix</type><title>Second</title>' +
+      `<narrative>${second}</narrative><facts><fact>Second fact</fact></facts></observation>`;
+    const parsed = parseAgentXml(raw);
+    expect(parsed.valid).toBe(true);
+    if (!parsed.valid) throw new Error('Expected observations');
+    expect(parsed.observations.map(row => ({
+      type: row.type, title: row.title, narrative: row.narrative, facts: row.facts,
+    }))).toEqual([
+      { type: 'discovery', title: 'First', narrative: first, facts: ['First fact'] },
+      { type: 'bugfix', title: 'Second', narrative: second, facts: ['Second fact'] },
+    ]);
+    expect(hasUnfinishedObservationBlock(raw)).toBe(false);
+    const store = new SessionStore(':memory:');
+    try {
+      const session = store.getOrCreateManualSession('comment-boundaries');
+      const stored = parsed.observations.map(row => {
+        const { id } = store.storeObservation(session, 'comment-boundaries', row, 1);
+        return store.getObservationById(id);
+      });
+      expect(stored.map(row => [row?.title, row?.narrative, row?.facts])).toEqual([
+        ['First', first, JSON.stringify(['First fact'])],
+        ['Second', second, JSON.stringify(['Second fact'])],
+      ]);
+    } finally { store.close(); }
+  });
+
+  it('preserves valid comment and CDATA boundaries across separate records', () => {
+    const first = '<![CDATA[Before <!-- opener and </observation> <observation> after]]>';
+    const second = '<!-- Example </observation> <observation> --> actual text';
+    const raw = '<!-- <observation><title>Example only</title></observation> -->' +
+      `<observation><title>First</title><narrative>${first}</narrative></observation>` +
+      `<observation><title>Second</title><narrative>${second}</narrative></observation>`;
+    const parsed = parseAgentXml(raw);
+    expect(parsed.valid).toBe(true);
+    if (!parsed.valid) throw new Error('Expected observations');
+    expect(parsed.observations.map(row => [row.title, row.narrative])).toEqual([
+      ['First', first], ['Second', second],
+    ]);
+    expect(hasUnfinishedObservationBlock(raw)).toBe(false);
+  });
+
+  it('does not let a later comment close an unfinished second record', () => {
+    const raw = '<observation><title>First</title><narrative>Skips <!-- markers</narrative></observation>' +
+      '<observation><title>Second</title><narrative><!-- example </observation> --></narrative>';
+    const parsed = parseAgentXml(raw);
+    expect(parsed.valid).toBe(true);
+    if (!parsed.valid) throw new Error('Expected completed first observation');
+    expect(parsed.observations.map(row => [row.title, row.narrative])).toEqual([
+      ['First', 'Skips <!-- markers'],
+    ]);
+    expect(hasUnfinishedObservationBlock(raw)).toBe(true);
+  });
+
 });
