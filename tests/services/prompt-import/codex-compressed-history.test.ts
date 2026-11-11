@@ -10,13 +10,14 @@ import { SetupScan } from '../../../src/services/prompt-import/setup-scan.js';
 import { scanTokenUsage } from '../../../src/services/prompt-import/token-usage.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { normalizeStoredPromptText } from '../../../src/services/sqlite/prompt-storage.js';
+import { scanZstdFramesInFile } from '../../../src/services/transcripts/zstd-frames.js';
 
 const NOW = Date.parse('2026-11-11T12:00:00Z');
 const DAY = 86400_000;
 const SINCE = NOW - 30 * DAY;
 const COLD_MTIME = NOW - 10 * DAY;
 const homes: string[] = [];
-const zstdCompressSync = (zlib as unknown as { zstdCompressSync(data: Buffer): Buffer }).zstdCompressSync;
+const zstdCompressSync = (zlib as unknown as { zstdCompressSync(data: Buffer, options?: { params: Record<number, number> }): Buffer }).zstdCompressSync;
 
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
@@ -163,6 +164,32 @@ for (const damaged of ['corrupt', 'truncated', 'empty'] as const) {
     expect((await scanTokenUsage(options)).agents[0].skippedSources).toBe(1);
   });
 }
+
+it('reports a decoder error after a complete frame passes the structural scan', async () => {
+  const { directory, options } = fixture();
+  const raw = Buffer.from([meta('checksum-session'),
+    prompt('request', 'please inspect the retained native history'),
+    usage(NOW - 11 * DAY, 10, 10),
+  ].map(record => JSON.stringify(record)).join('\n'));
+  const checksumFlag = (zlib.constants as unknown as { ZSTD_c_checksumFlag: number }).ZSTD_c_checksumFlag;
+  const bytes = zstdCompressSync(raw, { params: { [checksumFlag]: 1 } });
+  expect(bytes[4] & 4).toBe(4);
+  // A bad payload checksum preserves every frame/header/block boundary. Only
+  // the actual streaming decoder can reject this complete but damaged frame.
+  bytes[bytes.length - 1] ^= 1;
+  const path = join(directory, 'rollout-checksum.jsonl.zst');
+  writeFileSync(path, bytes);
+  expect(scanZstdFramesInFile(path, 0, bytes.length)).toEqual({
+    frames: [{ start: 0, end: bytes.length }], tornStart: null,
+  });
+  const collect = async () => {
+    for await (const _line of readLines(path)) { /* consume the real decoder */ }
+  };
+  await expect(collect()).rejects.toThrow();
+  const result = await scanOwnerPrompts(options);
+  expect(result.skippedSources.map(source => source.path)).toEqual([path]);
+  expect((await scanTokenUsage(options)).agents[0].skippedSources).toBe(1);
+});
 
 it('propagates a compressed input file read error to the caller', async () => {
   const { directory } = fixture();
