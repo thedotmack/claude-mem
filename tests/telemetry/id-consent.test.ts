@@ -44,3 +44,25 @@ test('existing identities and recorded consent remain stable', () => inDataDirec
     enabled: false, installId: 'install-id', anonymousId: 'anonymous-id', decidedAt: 'decision',
   });
 }));
+
+test('telemetry disable keeps the anonymous ID', async () => {
+  const previous = process.env.CLAUDE_MEM_DATA_DIR;
+  const directory = mkdtempSync(join(tmpdir(), 'telemetry-id-consent-'));
+  process.env.CLAUDE_MEM_DATA_DIR = directory;
+  const log = console.log;
+  console.log = () => {};
+  try {
+    saveTelemetryConfig({ installId: 'install-id', anonymousId: 'anonymous-id', decidedAt: '' });
+    const { runTelemetryCommand } = await import('../../src/npx-cli/commands/telemetry.js');
+    await runTelemetryCommand(['disable']);
+    const saved = loadTelemetryConfig();
+    assert.equal(saved?.enabled, false);
+    assert.equal(saved?.installId, 'install-id');
+    assert.equal(saved?.anonymousId, 'anonymous-id');
+  } finally {
+    console.log = log;
+    if (previous === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

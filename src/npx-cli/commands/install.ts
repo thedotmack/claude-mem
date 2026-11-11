@@ -1,8 +1,7 @@
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
-import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
-import { loadTelemetryConfig, resolveTelemetryConsent, saveTelemetryConfig } from '../../services/telemetry/consent.js';
+import { loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -2545,11 +2544,7 @@ async function promptTelemetryOptIn(): Promise<void> {
   });
   if (p.isCancel(consent)) return;
 
-  saveTelemetryConfig({
-    enabled: consent === true,
-    installId: existing?.installId || randomUUID(),
-    decidedAt: new Date().toISOString(),
-  });
+  recordTelemetryDecision(consent === true);
   log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
 }
 

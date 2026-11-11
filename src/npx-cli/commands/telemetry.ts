@@ -12,8 +12,7 @@ import { styleText } from 'node:util';
 import {
   explainTelemetryConsent,
   loadTelemetryConfig,
-  saveTelemetryConfig,
-  getOrCreateInstallId,
+  recordTelemetryDecision,
   getTelemetryConfigPath,
   type TelemetryConsentSource,
 } from '../../services/telemetry/consent.js';
@@ -96,17 +95,32 @@ const EVENT_NAMES = [
   'installer_oauth_timeout',
   'installer_oauth_start_failed',
   'installer_oauth_deferred',
+  'trial_activated',
   'uninstall_completed',
+  'auto_update_applied',
+  'auto_update_failed',
   'worker_started',
   'worker_start_failed',
   'worker_stopped',
   'supervisor_registry_degraded',
-  'session_compressed',
-  'context_injected',
+  'usage_limit_hit',
+  'observer_turn_rollup',
+  'context_injected_rollup',
+  'work_state_usage_rollup',
   'search_performed',
   'skill_invoked',
   'hook_failed',
-  'error_occurred',
+  'work_view_opened',
+  'work_view_switched',
+  'setup_step_viewed',
+  'setup_step_transitioned',
+  'setup_step_action',
+  'setup_step_error',
+  'setup_page_hidden',
+  'setup_completed',
+  'historical_activity',
+  'install_inferred',
+  '$exception (redacted error type, message, and stack)',
 ];
 
 const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
@@ -165,7 +179,7 @@ async function runTelemetryEnable(): Promise<void> {
       '',
       'NEVER collected — not now, not ever:',
       '  prompts or conversation content, file paths, source code,',
-      '  project names, git remotes, search queries, error messages,',
+      '  project names, git remotes, search queries,',
       '  IP addresses, hardware IDs, env values, emails.',
       '',
       `Full details: ${DOCS_URL}`,
@@ -189,25 +203,14 @@ async function runTelemetryEnable(): Promise<void> {
     return;
   }
 
-  // getOrCreateInstallId() persists a config if none exists; reuse its ID.
-  const installId = getOrCreateInstallId();
-  saveTelemetryConfig({
-    enabled: true,
-    installId,
-    decidedAt: new Date().toISOString(),
-  });
+  recordTelemetryDecision(true);
 
   p.log.success(`Telemetry enabled. Config: ${getTelemetryConfigPath()}`);
   p.outro(`Change your mind anytime: ${styleText('cyan', 'npx claude-mem telemetry disable')}`);
 }
 
 function runTelemetryDisable(): void {
-  const existing = loadTelemetryConfig();
-  saveTelemetryConfig({
-    enabled: false,
-    installId: existing?.installId ?? '',
-    decidedAt: new Date().toISOString(),
-  });
+  recordTelemetryDecision(false);
 
   console.log(styleText('green', 'Telemetry disabled.'));
   console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);

@@ -134,6 +134,20 @@ export function saveTelemetryConfig(config: TelemetryConfig): void {
 }
 
 /**
+ * Records an explicit opt-in or opt-out and keeps every ID already saved.
+ * Enabling creates an install ID when none exists; disabling never does.
+ */
+export function recordTelemetryDecision(enabled: boolean): void {
+  const existing = loadTelemetryConfig();
+  saveTelemetryConfig({
+    ...existing,
+    enabled,
+    installId: existing?.installId || (enabled ? randomUUID() : ''),
+    decidedAt: new Date().toISOString(),
+  });
+}
+
+/**
  * Returns the stable anonymous install ID, generating and persisting one on
  * first use. Records ONLY the ID — never a consent decision — so the opt-out
  * default (and any future default change) still applies to this install.
