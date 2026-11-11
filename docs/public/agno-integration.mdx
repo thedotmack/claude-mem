@@ -144,6 +144,12 @@ environment. A stopped worker must exit nonzero with no success JSON. Start it
 yourself before retrying. After an ambiguous write timeout, inspect the viewer;
 the same explicit-save fingerprint prevents duplication if the first save completed.
 
+Each verification run uses two fresh project names with a random suffix. It
+checks repeat-save deduplication within that run, so running the script again
+against the same worker cannot be confused by notes from an earlier verification.
+It leaves eight new harmless observations per run; the ordinary demo still uses
+your selected project and deduplicates across repeated demo runs.
+
 ## Disconnect
 
 Remove the memory functions from your agent and delete the example's virtual
