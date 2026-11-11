@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
@@ -170,4 +171,26 @@ it('propagates a compressed input file read error to the caller', async () => {
     return lines;
   };
   await expect(collect()).rejects.toThrow('ENOENT');
+});
+
+it.skipIf(!existsSync('/proc/self/fd'))('closes the compressed input when a line reader stops before EOF', async () => {
+  const { directory } = fixture();
+  const header = meta('early-stop');
+  const path = writeRollout(directory, 'rollout-long', [
+    header, { padding: randomBytes(4 * 1024 * 1024).toString('base64') },
+  ]);
+  expect(statSync(path).size).toBeGreaterThan(1 << 20);
+  const descriptors = () => readdirSync('/proc/self/fd').filter(fd => {
+    try { return readlinkSync('/proc/self/fd/' + fd) === path; } catch { return false; }
+  });
+  const lines = readLines(path);
+  try {
+    expect(await lines.next()).toEqual({ done: false, value: JSON.stringify(header) });
+    expect(descriptors().length).toBeGreaterThan(0);
+  } finally {
+    await lines.return(undefined);
+  }
+  // destroy closes asynchronously; give the actual file descriptor its close turn.
+  for (let attempt = 0; attempt < 100 && descriptors().length; attempt++) await Bun.sleep(10);
+  expect(descriptors()).toEqual([]);
 });

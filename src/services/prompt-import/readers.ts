@@ -258,7 +258,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
 }
 
 // ---------------------------------------------------------------------------
-// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (or .jsonl.zst for cold sessions)
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
