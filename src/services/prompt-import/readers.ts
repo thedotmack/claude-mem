@@ -506,13 +506,17 @@ export function createAntigravityCliReader(): AgentPromptReader {
 // text in `session_message`, with assistant content inline or in `session_part`.
 // Native migration retains V1 rows, preserving their IDs in the V2 tables.
 
-export function openCodeHistoryLayout(database: Database): { legacy: boolean; current: boolean; splitParts: boolean } {
+export function openCodeHistoryLayout(database: Database): { legacy: boolean; current: boolean; splitParts: boolean; forkBoundary: boolean } {
   const tables = new Set((database.prepare(`SELECT name FROM sqlite_master
     WHERE type = 'table' AND name IN ('message', 'session_message', 'session_part')`).all() as Array<{ name: string }>).map(row => row.name));
   const legacy = tables.has('message');
   const current = tables.has('session_message');
   if (!legacy && !current) throw new Error('No supported OpenCode message table');
-  return { legacy, current, splitParts: tables.has('session_part') };
+  const sessionColumns = current
+    ? new Set((database.prepare('PRAGMA table_info(session_v2)').all() as Array<{ name: string }>).map(row => row.name))
+    : new Set<string>();
+  return { legacy, current, splitParts: tables.has('session_part'),
+    forkBoundary: sessionColumns.has('fork_session_id') && sessionColumns.has('time_created') };
 }
 
 interface OpenCodePart { messageId: string; sessionId: string; role: string; createdAt: number; directory: string; parentId: string | null; data: string }
@@ -534,12 +538,16 @@ function readOpenCodeParts(path: string, role: 'user' | 'assistant'): OpenCodePa
           ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
       parameters.push(role, role);
     }
+    // Native forks copy settled history under new IDs but retain its timestamps.
+    // Only messages created from the fork onward are new owner activity. Keep
+    // inherited assistant text below: it still proves authorship of later input.
     if (layout.current && role === 'user') {
       queries.push(`SELECT m.id AS messageId, m.session_id AS sessionId, m.type AS role,
         m.time_created AS createdAt, s.directory, s.parent_id AS parentId,
         json_object('type', 'text', 'text', json_extract(m.data, '$.text')) AS data,
         'text' AS partType, NULL AS startedAt, 0 AS storageOrder, 0 AS ordinal
-        FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.type = 'user'`);
+        FROM session_message m JOIN session_v2 s ON s.id = m.session_id WHERE m.type = 'user'
+          ${layout.forkBoundary ? 'AND (s.fork_session_id IS NULL OR m.time_created >= s.time_created)' : ''}`);
     }
     if (layout.current && role === 'assistant') {
       if (layout.splitParts) {
