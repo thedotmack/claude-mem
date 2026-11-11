@@ -67,7 +67,7 @@ async def recall_note(selected: SelectedNote) -> dict[str, str]:
         @executor(id="find_selected_memory")
         async def find_note(request: SelectedNote, ctx: WorkflowContext[SelectedNote]) -> None:
             index = text_content(await memory.call_tool(
-                "search", project=request.project, projects=[request.project], query=request.query, type="observations", limit=20,
+                "search", project=request.project, projects=json.dumps([request.project]), query=request.query, type="observations", limit=20,
             ))
             # A known ID can be older than the index page. Detail reads carry
             # the same project; the page is context, not a save receipt.
@@ -76,10 +76,10 @@ async def recall_note(selected: SelectedNote) -> dict[str, str]:
         @executor(id="read_selected_memory")
         async def read_note(request: SelectedNote, ctx: WorkflowContext[Never, dict[str, str]]) -> None:
             timeline = text_content(await memory.call_tool(
-                "timeline", project=request.project, projects=[request.project], anchor=request.observation_id, depth_before=2, depth_after=2,
+                "timeline", project=request.project, projects=json.dumps([request.project]), anchor=request.observation_id, depth_before=2, depth_after=2,
             ))
             details = text_content(await memory.call_tool(
-                "get_observations", project=request.project, projects=[request.project], ids=[request.observation_id],
+                "get_observations", project=request.project, projects=json.dumps([request.project]), ids=[request.observation_id],
             ))
             await ctx.yield_output({"index": request.index, "timeline": timeline, "details": details})
 

@@ -16,7 +16,7 @@ API key, Microsoft account or CMEM Pro subscription.
 
 ## Requirements
 
-Verified on Linux with Python 3.12.9, Node.js 24.22.1, Claude-Mem 15.16.1,
+Verified on Linux with Python 3.12.14, Node.js 24.22.1, Claude-Mem 15.16.1,
 `agent-framework-core` 1.25.0, `mcp` 2.3.0 and `tenacity` 9.1.4. The example
 uses Python 3.11 or newer. macOS, Windows, .NET and hosted Foundry agents have
 not been tested by this example.
@@ -95,9 +95,11 @@ not as instructions to invoke tools or change accounts.
 ## Identity and data handling
 
 Every save, search, timeline and detail request carries the selected project.
-Read requests also carry the explicit singleton `projects` list, so starting
+Read requests also carry a JSON-encoded singleton `projects` list, so starting
 the MCP server in a Git worktree cannot inherit its parent project's notes.
 The native SDK is configured to forward these additional scope parameters.
+JSON preserves commas and outer whitespace as part of the exact project key;
+trimmed and split-name projects remain separate.
 Saves use `platformSource: microsoft-agent-framework` and the existing manual
 memory session for that project and platform. A workflow run is not an observer
 session and does not create an additional capture lifecycle.
@@ -139,10 +141,13 @@ conversation-history integration.
 ## Verify and disconnect
 
 Run this Bash block from a source checkout with built bundles, Python 3, Git and
-Bun on `PATH`, and the example dependencies already installed. Activate the example's virtual environment so `python` selects it. The subshell clears inherited `CLAUDE_MEM_*` variables before choosing a fresh
+Bun on `PATH`, and the example dependencies already installed. Activate the example's virtual environment so `python` selects it. The subshell clears inherited `CLAUDE_MEM_*` variables and explicitly disables
+capture, Chroma and auto-update before choosing a fresh
 data directory and free local port. It checks that cloud sync is unconfigured
 before sending any verification notes. Existing worker settings and the parent
 shell stay unchanged; the temporary worker exits when the block finishes.
+The exported worker entry starts the same HTTP/SQLite service without the CLI
+daemon wrapper that migrates existing Antigravity hooks.
 
 ```bash
 (
@@ -151,6 +156,9 @@ shell stay unchanged; the temporary worker exits when the block finishes.
   for memory_test_setting in "${!CLAUDE_MEM_@}"; do
     unset "$memory_test_setting"
   done
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
   export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
   export CLAUDE_MEM_WORKER_HOST=127.0.0.1
   export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -170,7 +178,7 @@ settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS=
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS
-  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  bun -e 'const { WorkerService } = require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error => { console.error(error); process.exit(1); });' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
   memory_test_pid=$!
   trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
   python3 - <<'PYREADY'
@@ -194,7 +202,7 @@ PYREADY
 )
 ```
 
-The nine tests use the real SDK, worker and CLI. They verify saved-note identity,
+The ten tests use the real SDK, worker and CLI. They verify saved-note identity,
 native workflow recall across client sessions, project filtering, SQLite
 platform attribution, a selected note older than the search page, an absolute
 script path containing spaces, invalid input, a refused connection and an
