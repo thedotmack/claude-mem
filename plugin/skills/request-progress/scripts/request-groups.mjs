@@ -1000,6 +1000,7 @@ var init_SettingsDefaultsManager = __esm({
     raisedDefaultFailuresReported = /* @__PURE__ */ new Set();
     SettingsDefaultsManager = class {
       static DEFAULTS = {
+        CLAUDE_MEM_SKILLS_DISABLED: "",
         CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED: "true",
         CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "true",
         // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
@@ -1167,6 +1168,8 @@ var init_SettingsDefaultsManager = __esm({
         // Context window use (1-95) that starts the auto-clear
         CLAUDE_MEM_FILE_READ_GATE_ENABLED: "true",
         // 'false' = never block a full-file Read; the file's observation timeline is still added as context
+        CLAUDE_MEM_LINE_ANCHORS_ENABLED: "false",
+        // #4943, opt-in: the worker records line anchors in observation metadata and the file-context timeline shows where that code is now (@L123) or "(code changed since)". Only 'true' turns it on
         CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: "false",
         CLAUDE_MEM_FOLDER_USE_LOCAL_MD: "false",
         // When true, writes to CLAUDE.local.md instead of CLAUDE.md
