@@ -4,6 +4,7 @@
 // never connects the wait goes on. Individual worker requests are bounded so an unresponsive connection cannot pin
 // a poll or keep the installer waiting after checkout has finished.
 import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
+import type { SetupInstallCatalog, SetupInstallSelection, SetupInstallStatus } from '../../shared/setup-install.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
 
@@ -23,7 +24,7 @@ export interface BrowserCheckout {
 /**
  * GUI mode: a person at a terminal, with nothing on the command line that already answers the setup questions.
  * Non-TTY (agent-run) installs, `--provider`, `--no-auto-start` and the server runtime keep the terminal flow, and
- * a machine that already finished the funnel never sees it again.
+ * a plain interactive reinstall also opens setup so all choices remain in the GUI.
  */
 export function shouldUseBrowserSetup(input: {
   interactive: boolean;
@@ -32,7 +33,7 @@ export function shouldUseBrowserSetup(input: {
   runtime: 'worker' | 'server';
   setupComplete: boolean;
 }): boolean {
-  return input.interactive && !input.provider && !input.noAutoStart && input.runtime === 'worker' && !input.setupComplete;
+  return input.interactive && !input.provider && !input.noAutoStart && input.runtime === 'worker';
 }
 
 /**
@@ -54,13 +55,17 @@ export function shouldPrintAgentBrowserSetupHint(input: {
 }
 
 export const AGENT_BROWSER_SETUP_HINT =
-  "AGENT: To finish setup with the user, run npx claude-mem install --runtime worker in an interactive terminal (PTY) on their computer. Open the printed setup URL in their browser if it hasn't opened automatically. Keep the installer running while the user goes through setup.";
+  "AGENT: If the user is available, run npx claude-mem install --setup browser on their computer. Open the printed setup URL if needed and keep the installer running. If the user is unavailable, use --setup defer and show them the saved setup URL at their first interaction.";
 
 export interface BrowserSetupDeps {
   /** e.g. http://127.0.0.1:37777 */
   workerBaseUrl: string;
   openBrowser: (url: string) => void;
   log: { info: (message: string) => void; warn: (message: string) => void };
+  /** Install choices are collected before the memory/storage part of setup. */
+  install?: { catalog: SetupInstallCatalog; apply: (selection: SetupInstallSelection) => Promise<void> };
+  /** The worker launched a local continuation after deferred setup was submitted. */
+  resume?: boolean;
   /** Applies the choice and returns the stage to report. Throwing reports `failed` and ends the hand-off. */
   applyChoice: (choice: SetupChoice, state: SetupStateView) => Promise<SetupInstallerStage>;
   /** Runs when the page asks for checkout after the choice left the installer at `go-awaiting-checkout`. */
@@ -146,23 +151,58 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
   };
 
   const url = setupPageUrl(deps.workerBaseUrl);
+  const reportInstall = async (status: SetupInstallStatus, error: string | null = null): Promise<void> => {
+    const response = await request(`${deps.workerBaseUrl}/api/setup/install/installer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, error, ...(status === 'waiting' ? { catalog: deps.install!.catalog } : {}) }),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw await workerResponseError(response, 'The worker did not accept the installation progress');
+    await response.body?.cancel().catch(() => {});
+  };
   // Clear the previous run before exposing the page: opening it (or following the
   // printed URL) can submit a new choice before a later reset would arrive.
-  await waitFor(() => true);
-  await report('waiting-for-choice');
+  const opening = await waitFor(() => true);
+  if (!deps.resume) {
+    await report('waiting-for-choice');
+    if (deps.install) await reportInstall('waiting');
+  } else if (!opening.installer && !opening.choice) {
+    await report('waiting-for-choice');
+  }
   deps.log.info(`Continue setup in your browser: ${url}`);
-  deps.openBrowser(url);
+  if (!deps.resume) deps.openBrowser(url);
   deps.log.info('Waiting for you in the browser. This terminal finishes when setup does.');
 
-  const chosen = await waitFor((state) => state.choice !== null);
-  const choice = chosen.choice as SetupChoice;
+  if (deps.install) {
+    for (;;) {
+      const state = await waitFor(current => current.install?.status === 'ready'
+        || current.install?.status === 'installing' && !!current.install.selection);
+      if (state.install?.status === 'ready') break;
+      try {
+        await deps.install.apply(state.install!.selection!);
+      } catch (error) {
+        await reportInstall('failed', error instanceof Error ? error.message : String(error));
+        continue; // Only a new, explicit browser submission authorizes another attempt.
+      }
+      await reportInstall('ready');
+      break;
+    }
+  }
+
+  let chosen = await waitFor((state) => state.choice !== null);
+  let choice = chosen.choice as SetupChoice;
   let stage: SetupInstallerStage;
-  try {
-    stage = await deps.applyChoice(choice, chosen);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    await report('failed', message);
-    throw error;
+  for (;;) {
+    try {
+      stage = await deps.applyChoice(choice, chosen);
+      break;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await report('failed', message);
+      // A new browser submission, even of the same branch, explicitly authorizes retry.
+      chosen = await waitFor(state => state.choice !== null && state.choice.chosenAt !== choice.chosenAt);
+      choice = chosen.choice as SetupChoice;
+    }
   }
   await report(stage);
 

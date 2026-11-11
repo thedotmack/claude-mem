@@ -73,6 +73,8 @@ const spawner = { ...await import('../../src/services/worker-spawner.js') };
 const cliPaths = { ...await import('../../src/npx-cli/utils/paths.js') };
 const memoryCredentials = { ...await import('../../src/npx-cli/cmem-memory-credentials.js') };
 const browserSetup = { ...await import('../../src/npx-cli/install/browser-setup.js') };
+const skillSelection = { ...await import('../../src/shared/skill-selection.js') };
+mock.module('../../src/shared/skill-selection.js', () => ({ ...skillSelection, applyConfiguredSkillSelection: () => ({ disabled: [], enabled: [], warnings: [] }) }));
 let backgroundPolls = 0;
 mock.module('../../src/npx-cli/install/browser-setup.js', () => ({
   ...browserSetup,
@@ -83,7 +85,7 @@ mock.module('../../src/npx-cli/install/browser-setup.js', () => ({
   }),
 }));
 const packageVersion = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')).version;
-mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPluginVersion: () => packageVersion }));
+mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPluginVersion: () => packageVersion, npmPackagePluginDirectory: () => join(import.meta.dir, '..', '..', 'plugin') }));
 
 const lines: string[] = [];
 const questions: string[] = [];
@@ -260,9 +262,22 @@ const readSettings = () => JSON.parse(readFileSync(settingsPath, 'utf8')) as Rec
 async function browserState(): Promise<any> {
   return (await realFetch(`${workerBase}/api/setup/state`)).json();
 }
+async function waitForInstall(status: string): Promise<any> {
+  for (;;) {
+    try { const state = await browserState(); if (state.install?.status === status) return state; } catch { /* worker not up yet */ }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
 async function waitForStage(stage: string): Promise<any> {
   for (;;) {
-    try { const state = await browserState(); if (state.installer?.stage === stage) return state; } catch { /* worker not up yet */ }
+    try {
+      const state = await browserState();
+      if (stage === 'waiting-for-choice' && state.install?.status === 'waiting') {
+        const response = await browserPost('/api/setup/install', { ...state.install.catalog.defaults, agents: ['claude-code'], installClaudeCode: false });
+        expect(response.status).toBe(200);
+      }
+      if (state.installer?.stage === stage && (stage !== 'waiting-for-choice' || state.install?.status === 'ready')) return state;
+    } catch { /* worker not up yet */ }
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
@@ -278,6 +293,55 @@ const browserPost = (path: string, body: unknown) => realFetch(`${workerBase}${p
 });
 
 describe('install in GUI mode (interactive TTY, no --provider)', () => {
+  it('lets the browser restore native auto-memory without removing other Claude settings', async () => {
+    const { claudeSettingsPath } = cliPaths;
+    mkdirSync(join(fixture, 'claude'), { recursive: true });
+    writeFileSync(claudeSettingsPath(), JSON.stringify({ env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', OTHER_SETTING: 'keep' } }));
+    const installing = runInstallCommand({});
+    const waiting = await waitForInstall('waiting');
+    expect(waiting.install.catalog.defaults.disableAutoMemory).toBe(true);
+    expect(offeredTasks).not.toContain('Claude Code: registering plugin');
+    expect((await browserPost('/api/setup/install', { ...waiting.install.catalog.defaults, agents: ['claude-code'], disableAutoMemory: false })).status).toBe(200);
+    await waitForInstall('ready');
+    expect(JSON.parse(readFileSync(claudeSettingsPath(), 'utf8')).env).toEqual({ OTHER_SETTING: 'keep' });
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await installing;
+    expect(questions).toEqual([]);
+  });
+
+  it('leaves all choices pending when deferred, then resumes without stopping or copying the worker', async () => {
+    await runInstallCommand({ setup: 'defer' });
+    const deferred = await browserState();
+    expect(deferred.status).toBe('pending');
+    expect(deferred.install.status).toBe('waiting');
+    expect(deferred.install.selection).toBeNull();
+    expect(questions).toEqual([]);
+    expect(offeredTasks).not.toContain('Claude Code: registering plugin');
+    expect(opened).toEqual([]);
+    expect(existsSync(sessionPath)).toBe(false);
+
+    const selected = { ...deferred.install.catalog.defaults, agents: ['codex-cli'], claudeModel: 'sonnet' };
+    writeFileSync(statePath, JSON.stringify({ ...deferred, install: { ...deferred.install, status: 'installing', selection: selected } }));
+    offeredTasks.length = 0;
+    const resume = runInstallCommand({ setup: 'resume' });
+    await waitForStage('waiting-for-choice');
+    expect(offeredTasks).not.toContain('Caching plugin version');
+    expect(offeredTasks).not.toContain('Starting worker daemon');
+    expect(workerStarts).toBe(1);
+    expect(opened).toEqual([]);
+    expect(questions).toEqual([]);
+    const ready = await browserState();
+    expect(ready.install.selection.agents).toEqual(['codex-cli']);
+    expect(offeredTasks.some(task => task.startsWith('Codex CLI'))).toBe(true);
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await resume;
+    expect(readSettings().CLAUDE_MEM_MODEL).toBe('sonnet');
+  });
+
   it('At Home: starts the worker, opens the setup page, asks for no login, and finishes when the page does', async () => {
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
@@ -297,8 +361,9 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
     expect(pairingStarts).toEqual([]);
-    // The optional email is asked once up front; skipping it skips the note too.
-    expect(questions.filter(q => q.startsWith('Your work email'))).toHaveLength(1);
+    // Every choice is made in the browser, including email and telemetry.
+    expect(questions).toEqual([]);
+    expect(questions.filter(q => q.startsWith('Your work email'))).toHaveLength(0);
     expect(questions.some(q => q.includes('how can we help'))).toBe(false);
     // No provider multiselect and no model question: the browser made the choice, the model keeps its default.
     expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code') && !q.startsWith('Your work email'))).toEqual([]);
@@ -454,22 +519,17 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
   });
 
-  it('a machine that already finished setup keeps the terminal flow', async () => {
-    const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' };
-    writeFileSync(statePath, JSON.stringify(completed));
-    // The terminal flow's login step (after picking CMEM Pro) reaches cmem.ai, which this fixture refuses
-    // outside the pairing start. Stopping at the login boundary is enough to show no browser hand-off ran.
-    fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
-    await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
-    expect(opened).toEqual([]);
-    expect(setupRequests).toEqual([]);
-    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
-    // Sign-in waited for the provider choice instead of gating the install.
-    expect(questions.some(q => q.startsWith('Select Provider'))).toBe(true);
-    expect(providerMenus).toHaveLength(1);
-    expect(providerMenus[0].options.map(option => option.value)).toEqual(['cmem', 'claude']);
-    expect(providerMenus[0].initialValues).toEqual(['cmem']);
-    expect(lines.join('\n')).toContain('CMEM Pro needs a claude-mem sign-in.');
+  it('a machine that already finished setup reopens the GUI without terminal questions', async () => {
+    writeFileSync(statePath, JSON.stringify({ status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' }));
+    const install = runInstallCommand({});
+    const state = await waitForStage('waiting-for-choice');
+    expect(state.install.status).toBe('ready');
+    expect(questions).toEqual([]);
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await install;
+    expect(opened).toEqual([`${workerBase}/?setup=1`]);
   });
 
   it('a --provider host install says no account is needed', async () => {
@@ -480,14 +540,13 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
 
   it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
     fixtureWorkerResult = 'dead';
-    fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
-    await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
+    await expect(runInstallCommand({})).rejects.toThrow('The setup page needs the worker');
     expect(workerStartStates[0]).toMatchObject({ status: 'pending' });
     expect(workerStartSessions[0]).toMatchObject({ pid: process.pid, already_pro: false });
     expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
     expect(existsSync(sessionPath)).toBe(false);
     expect(opened).toEqual([]);
-    expect(lines.join('\n')).toContain('Continuing setup here in the terminal.');
+    expect(questions).toEqual([]);
   });
 
   it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {

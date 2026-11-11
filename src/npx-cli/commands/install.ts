@@ -1,11 +1,13 @@
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { spawnSync } from 'child_process';
-import { loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
+import { explainTelemetryConsent, loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { applyConfiguredSkillSelection, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { applyConfiguredSkillSelection, readDisabledSkills, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
+import { RUNTIME_REQUIRED_SKILLS } from '../../shared/runtime-skills.js';
+import type { SetupInstallCatalog, SetupInstallSelection, SetupMode } from '../../shared/setup-install.js';
 import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
@@ -165,6 +167,7 @@ import {
 import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
@@ -296,6 +299,12 @@ export function disableClaudeAutoMemory(): boolean {
   settings.env = { ...env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
   writeJsonFileAtomic(claudeSettingsPath(), settings);
   return true;
+}
+
+/** The browser checkbox is a reversible setting, including on reinstallation. */
+export function enableClaudeAutoMemory(): void {
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
+  if (clearClaudeAutoMemoryOverride(settings)) writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
 type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
@@ -820,6 +829,52 @@ async function promptForIDESelection(): Promise<string[]> {
     }
   }
   return selected;
+}
+
+/** The same agent inventory and installed skill preferences are offered in the browser. */
+export function browserInstallCatalog(options: InstallOptions, reinstall: boolean): SetupInstallCatalog {
+  const agents = detectInstalledIDEs().map(agent => ({ ...agent, hint: agent.hint ?? '' }));
+  const skillsRoot = join(npmPackagePluginDirectory(), 'skills');
+  const disabled = readDisabledSkills();
+  const skills = readdirSync(skillsRoot, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && existsSync(join(skillsRoot, entry.name, 'SKILL.md')))
+    .map(entry => {
+      const source = readFileSync(join(skillsRoot, entry.name, 'SKILL.md'), 'utf8');
+      const description = source.match(/^description:\s*(.+)$/m)?.[1]?.replace(/^["']|["']$/g, '') ?? '';
+      return { id: entry.name, label: entry.name, description, required: RUNTIME_REQUIRED_SKILLS.has(entry.name) };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+  const consent = explainTelemetryConsent(process.env, loadTelemetryConfig());
+  const signup = readStoredSignup();
+  return {
+    agents, skills, reinstall,
+    defaults: {
+      agents: options.ide ? [canonicalIntegrationId(options.ide)] : initialIDESelection(agents),
+      skills: skills.filter(skill => skill.required || !disabled.has(skill.id)).map(skill => skill.id),
+      installClaudeCode: false,
+      disableAutoMemory: options.disableAutoMemory === true
+        || readJsonSafe<Record<string, any>>(claudeSettingsPath(), {}).env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1',
+      telemetryEnabled: consent.enabled,
+      claudeModel: options.model ?? String(getSetting('CLAUDE_MEM_MODEL') || 'haiku'),
+      ...(options.dshProfile ? { dshProfile: options.dshProfile } : {}),
+      ...(signup ? { email: signup.email, note: signup.note } : {}),
+    },
+    telemetryLocked: !!process.env.CI || consent.source === 'DO_NOT_TRACK' || consent.source === 'env',
+    skillsLocked: process.env.CLAUDE_MEM_SKILLS_DISABLED !== undefined,
+    emailEnabled: !process.env.CI && String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() !== 'false',
+  };
+}
+
+async function applyBrowserEmail(selection: SetupInstallSelection, version: string): Promise<void> {
+  const email = selection.email?.trim();
+  if (!email) return;
+  const note = selection.note?.trim() ?? '';
+  const prior = readStoredSignup();
+  if (prior?.email === email && prior.note === note && prior.sent) return;
+  const sent = await submitEmailSignup({ email, note, version });
+  if (!mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(), CLAUDE_MEM_ONLINE_SIGNUP_SENT: String(sent) })) {
+    throw new Error('Could not save your email preference.');
+  }
 }
 
 export function copyPluginToMarketplace(): void {
@@ -2584,6 +2639,10 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 }
 
 export interface InstallOptions {
+  /** Agent shells can open human setup now, or leave it pending for the first GUI visit. */
+  setup?: SetupMode;
+  /** Internal command purpose: unattended updates keep the installed configuration. */
+  update?: boolean;
   ide?: string;
   dshProfile?: string;
   /**
@@ -3095,7 +3154,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const installStartedAt = Date.now();
   const version = readPluginVersion();
-  validateNonInteractiveProvider(options, summary);
+  const resumeSetup = options.setup === 'resume';
+  const defaultDeferredSetup = !isInteractive && !options.update && !options.provider && !options.ide && !options.noAutoStart
+    && (!options.runtime || options.runtime === 'worker') && !isInstallRunByAutoUpdate();
+  const deferSetup = options.setup === 'defer' || (!options.setup && defaultDeferredSetup);
+  if (!deferSetup && options.setup !== 'browser' && !resumeSetup) validateNonInteractiveProvider(options, summary);
   // Captured by the runtime-setup task below; reported on install_completed
   // so funnel dropoff can be sliced by toolchain versions.
   let installedBunVersion: string | undefined;
@@ -3157,9 +3220,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
   if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
 
-  await promptEmailOptIn(version);
+  const setupComplete = readSetupState().status === 'complete';
+  const browserSetup = deferSetup || resumeSetup || options.setup === 'browser' || shouldUseBrowserSetup({
+    interactive: isInteractive, provider: options.provider, noAutoStart: options.noAutoStart,
+    runtime: normalizeRuntimeFlag(options.runtime ?? 'worker') ?? 'worker', setupComplete,
+  });
+  const resumedState = resumeSetup ? readSetupState() : null;
+  if (resumeSetup && !resumedState?.install) throw new Error('There is no deferred setup to resume.');
+  const installCatalog = resumedState?.install?.catalog ?? (browserSetup ? browserInstallCatalog(options, alreadyInstalled) : null);
+  if (!browserSetup) await promptEmailOptIn(version);
 
-  if (alreadyInstalled) {
+  if (alreadyInstalled && !browserSetup) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
         message: 'Overwrite existing installation?',
@@ -3184,22 +3255,25 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       log.info(`Available --ide values: ${allIDEs.map((i) => i.id).join(', ')}`);
       process.exit(1);
     }
+  } else if (browserSetup) {
+    selectedIDEs = [];
   } else if (process.stdin.isTTY) {
     selectedIDEs = await promptForIDESelection();
   } else {
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options, selectedIDEs);
+  const selectedRuntime = browserSetup ? 'worker' : await promptRuntime(options, selectedIDEs);
+  if (browserSetup && !mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' })) throw new Error('Could not configure the worker runtime.');
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection
   // (claude-code or otherwise) needs the marketplace + plugin registration steps.
   // The only time we'd skip is a hypothetical no-IDE install, which the prompt above
   // doesn't allow today.
-  const needsMarketplace = selectedIDEs.length > 0;
+  const needsMarketplace = browserSetup || selectedIDEs.length > 0;
 
-  {
+  if (!resumeSetup) {
     const tasks: TaskDescriptor[] = [
       {
         title: 'Caching plugin version',
@@ -3207,27 +3281,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           message(`Caching v${version}...`);
           await copyPluginToCache(version);
           return `Plugin cached (v${version}) ${styleText('green', 'OK')}`;
-        },
-      },
-      {
-        title: 'Registering marketplace',
-        task: async () => {
-          registerMarketplace();
-          return `Marketplace registered ${styleText('green', 'OK')}`;
-        },
-      },
-      {
-        title: 'Registering plugin',
-        task: async () => {
-          registerPlugin(version);
-          return `Plugin registered ${styleText('green', 'OK')}`;
-        },
-      },
-      {
-        title: 'Enabling plugin in Claude settings',
-        task: async () => {
-          enablePluginInClaudeSettings();
-          return `Plugin enabled ${styleText('green', 'OK')}`;
         },
       },
       {
@@ -3269,6 +3322,30 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       },
     ];
 
+    if (!browserSetup) tasks.splice(1, 0,
+      {
+        title: 'Registering marketplace',
+        task: async () => {
+          registerMarketplace();
+          return `Marketplace registered ${styleText('green', 'OK')}`;
+        },
+      },
+      {
+        title: 'Registering plugin',
+        task: async () => {
+          registerPlugin(version);
+          return `Plugin registered ${styleText('green', 'OK')}`;
+        },
+      },
+      {
+        title: 'Enabling plugin in Claude settings',
+        task: async () => {
+          enablePluginInClaudeSettings();
+          return `Plugin enabled ${styleText('green', 'OK')}`;
+        },
+      },
+    );
+
     if (needsMarketplace) {
       tasks.unshift({
         title: 'Copying plugin files to marketplace',
@@ -3309,7 +3386,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
-  const failedIDEs = await setupIDEs(selectedIDEs, summary, options.dshProfile);
+  if (deferSetup) {
+    writeSetupState({ ...INITIAL_SETUP_STATE, install: { status: 'waiting', catalog: installCatalog!, selection: null, error: null } });
+    if (!options.noAutoStart) {
+      await runTasks([{
+        title: 'Starting worker daemon',
+        task: async message => {
+          workerStartResult = await startInstallWorker(version, summary, message);
+          return describeWorkerStart(workerStartResult);
+        },
+      }]);
+    }
+    log.info(`Installed. Setup is waiting at http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}/?setup=1`);
+    log.info('AGENT: If the user is available, run npx claude-mem install --setup browser. Otherwise leave setup pending for their first visit.');
+    return;
+  }
+
+  if (resumedState?.install?.status === 'ready' && resumedState.install.selection) {
+    selectedIDEs = [...resumedState.install.selection.agents];
+    options.model = resumedState.install.selection.claudeModel ?? options.model;
+  }
+
+  const failedIDEs = browserSetup ? [] : await setupIDEs(selectedIDEs, summary, options.dshProfile);
 
   // Optionally disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
   // when the user explicitly opts in, either through the interactive prompt or
@@ -3318,7 +3416,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // Four-state so the summary can distinguish "wrote", "already set", "left enabled",
   // and "failed". A boolean would conflate the error path with a deliberate no-op.
   let autoMemoryStatus: 'disabled' | 'already-disabled' | 'left-enabled' | 'failed' | null = null;
-  const autoMemoryChoice = await resolveClaudeAutoMemoryChoice(selectedIDEs, options);
+  const autoMemoryChoice = browserSetup ? 'not-applicable' : await resolveClaudeAutoMemoryChoice(selectedIDEs, options);
   if (autoMemoryChoice === 'disable') {
     try {
       const wrote = disableClaudeAutoMemory();
@@ -3355,21 +3453,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
-  const setupComplete = readSetupState().status === 'complete';
-  if (shouldUseBrowserSetup({
-    interactive: isInteractive,
-    provider: options.provider,
-    noAutoStart: options.noAutoStart,
-    runtime: selectedRuntime,
-    setupComplete,
-  })) {
+  if (browserSetup) {
     startSetupSession(undefined, hasProConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
     try {
       // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
       // so existing prompts must not launch a local agent while the browser is still opening.
-      writeSetupState({ ...INITIAL_SETUP_STATE });
+      if (!resumeSetup) writeSetupState({ ...INITIAL_SETUP_STATE });
       settingsBeforeBrowserSetup = readSettingsSnapshot();
-      await runTasks([{
+      if (resumeSetup) workerStartResult = 'ready';
+      else await runTasks([{
         title: 'Starting worker daemon',
         task: async (message) => {
           workerStartResult = await startInstallWorker(version, summary, message);
@@ -3377,12 +3469,53 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         },
       }]);
       if ((workerStartResult as WorkerStartResult) === 'dead') {
-        log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
+        throw new Error('The setup page needs the worker, which did not start. Run npx claude-mem doctor, then retry npx claude-mem install.');
       } else {
         browserOutcome = await runBrowserSetup({
           workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`,
+          resume: resumeSetup,
           openBrowser,
           log,
+          install: {
+            catalog: installCatalog!,
+            apply: async (selection) => {
+              // The worker validates against this run's catalog; keep the CLI boundary safe too.
+              if (!selection.agents.length || selection.agents.some(id => !installCatalog!.agents.some(agent => agent.id === id))) {
+                throw new Error('Choose at least one supported agent.');
+              }
+              if (selection.installClaudeCode && selection.agents.includes('claude-code') && !await installClaudeCode()) {
+                throw new Error('Claude Code could not be installed. Try again, or turn off Install Claude Code and install it later.');
+              }
+              const disabledSkills = installCatalog!.skills
+                .filter(skill => !skill.required && !selection.skills.includes(skill.id)).map(skill => skill.id);
+              if (!installCatalog!.skillsLocked && !mergeSettings({ CLAUDE_MEM_SKILLS_DISABLED: disabledSkills.join(',') })) {
+                throw new Error('Could not save the selected skills.');
+              }
+              for (const root of [pluginCacheDirectory(version), join(marketplaceDirectory(), 'plugin')]) {
+                const applied = applyConfiguredSkillSelection(root);
+                for (const warning of applied.warnings) log.warn(warning);
+              }
+              registerMarketplace();
+              registerPlugin(version);
+              if (selection.agents.includes('claude-code')) enablePluginInClaudeSettings();
+              const attempt = createInstallSummary();
+              await setupIDEs(selection.agents, attempt, selection.dshProfile ?? options.dshProfile);
+              if (attempt.failedIDEs.length) {
+                throw new Error(`Could not finish setup for ${attempt.failedIDEs.join(', ')}. ${attempt.warnings.map(w => w.message).join(' ')}`);
+              }
+              summary.warnings.push(...attempt.warnings);
+              selectedIDEs = [...selection.agents];
+              options.model = selection.claudeModel ?? options.model;
+              if (selectedIDEs.includes('claude-code')) {
+                autoMemoryStatus = selection.disableAutoMemory
+                  ? disableClaudeAutoMemory() ? 'disabled' : 'already-disabled'
+                  : 'left-enabled';
+                if (!selection.disableAutoMemory) enableClaudeAutoMemory();
+              }
+              if (!installCatalog!.telemetryLocked) recordTelemetryDecision(selection.telemetryEnabled);
+              if (installCatalog!.emailEnabled) await applyBrowserEmail(selection, version);
+            },
+          },
           applyChoice: async (choice, state) => {
             if (choice.branch === 'home') {
               // At Home: the existing local branch (logged-in Claude SDK account, no claude-mem login).
@@ -3712,7 +3845,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     p.note(nextSteps.join('\n'), 'Next Steps');
     // Deliberately the last interaction of the flow: consent is asked after
     // the product is installed and working, never as a gate in front of it.
-    await promptTelemetryOptIn();
+    if (!browserSetup) await promptTelemetryOptIn();
     if (workerFailedToStart) {
       p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
       process.exitCode = 1;

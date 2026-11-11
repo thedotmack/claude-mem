@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import type { SetupInstallCatalog } from '../../../../src/shared/setup-install.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
 // Project-local scratch (gitignored), never the system temp folder.
@@ -18,10 +19,10 @@ let server: Server;
 let routes: WorkViewRoutes;
 let origin: string;
 
-async function start(autoRefresh: unknown = null) {
+async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}) {
   routes = new WorkViewRoutes({
     databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
-    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never,
+    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never, resumeSetup,
   });
   const app = express();
   app.use(express.json());
@@ -42,11 +43,108 @@ afterEach(async () => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const state = async () => (await fetch(`${origin}/api/setup/state`)).json();
+const catalog: SetupInstallCatalog = {
+  agents: [{ id: 'codex-cli', label: 'Codex CLI', hint: 'native hooks', detected: true }],
+  skills: [{ id: 'mem-search', label: 'Memory search', description: 'Recall earlier work', required: true }, { id: 'make-plan', label: 'Make plan', description: 'Plan work' }],
+  defaults: { agents: ['codex-cli'], skills: ['mem-search', 'make-plan'], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: false },
+  reinstall: false,
+};
 function post(path: string, body: unknown, headers: Record<string, string> = { 'Content-Type': 'application/json', Origin: origin }) {
   return fetch(`${origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
 }
 
 describe('setup state endpoints', () => {
+  it('does not start local paid refresh while deferred onboarding has no live installer', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    try {
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(false);
+      expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+      expect((routes as unknown as { setupIsActive: () => boolean }).setupIsActive()).toBe(true);
+      await post('/api/setup/install', catalog.defaults);
+      await post('/api/setup/install/installer', { status: 'ready' });
+      await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+      await post('/api/setup/installer', { stage: 'home-ready' });
+      await post('/api/setup/complete', {});
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(true);
+    } finally { refresh.close(); }
+  });
+
+  it('accepts only offered agents and skills, then reports installation before storage or completion', async () => {
+    await start();
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(409);
+    expect((await post('/api/setup/install/installer', { status: 'waiting', catalog })).status).toBe(200);
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(409);
+    expect((await post('/api/setup/complete', {})).status).toBe(409);
+    expect((await post('/api/setup/install', { ...catalog.defaults, agents: ['unknown'] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, agents: ['codex-cli', 'codex-cli'] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, skills: [] })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, skills: ['mem-search'], email: 'test@example.com', note: 'Optional signup' })).status).toBe(200);
+    expect((await state()).install).toMatchObject({ status: 'installing', selection: { skills: ['mem-search'] } });
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(409);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(200);
+    expect((await state()).install.selection.email).toBeUndefined();
+    expect((await state()).install.selection.note).toBeUndefined();
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' })).status).toBe(200);
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'failed', error: 'Provider unavailable' });
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(409);
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    expect((await post('/api/setup/complete', { tools: ['codex-cli'] })).status).toBe(200);
+  });
+
+  it('requires the selected provider and paid checkout to finish On The Go setup', async () => {
+    await start();
+    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    for (const stage of ['waiting-for-choice', 'failed', 'home-ready', 'go-awaiting-checkout']) {
+      await post('/api/setup/installer', { stage });
+      // waiting-for-choice resets the choice, so submit it again when needed.
+      if (!(await state()).choice) await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+      expect((await post('/api/setup/complete', {})).status).toBe(409);
+    }
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    expect((await post('/api/setup/complete', {})).status).toBe(200);
+  });
+
+  it('keeps failed installation reviewable and requires an explicit retry', async () => {
+    await start();
+    expect((await post('/api/setup/install/installer', { status: 'waiting' })).status).toBe(400);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(409);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    await post('/api/setup/install', catalog.defaults);
+    await post('/api/setup/install/installer', { status: 'failed', error: 'Could not write configuration' });
+    expect((await state()).install).toMatchObject({ status: 'failed', error: 'Could not write configuration' });
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(409);
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+    expect((await post('/api/setup/install/installer', { status: 'ready' })).status).toBe(200);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    expect((await state()).install.selection).toBeNull();
+  });
+
+  it('resumes deferred onboarding only on a local explicit request', async () => {
+    let resumes = 0;
+    await start(null, async () => { resumes++; });
+    expect((await post('/api/setup/resume', {})).status).toBe(409);
+    expect(resumes).toBe(0);
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    const foreign = { 'Content-Type': 'application/json', Origin: 'https://evil.example' };
+    expect((await post('/api/setup/resume', {}, foreign)).status).toBe(403);
+    expect((await post('/api/setup/install', catalog.defaults, foreign)).status).toBe(403);
+    expect((await post('/api/setup/install/installer', { status: 'ready' }, foreign)).status).toBe(403);
+    expect(resumes).toBe(0);
+    expect((await post('/api/setup/resume', {})).status).toBe(202);
+    expect(resumes).toBe(1);
+  });
+
+  it('honors externally controlled telemetry and disabled email signup', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog: { ...catalog, telemetryLocked: true, emailEnabled: false } });
+    expect((await post('/api/setup/install', { ...catalog.defaults, telemetryEnabled: true })).status).toBe(400);
+    expect((await post('/api/setup/install', { ...catalog.defaults, email: 'test@example.com' })).status).toBe(400);
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+  });
+
   it('starts a manual refresh through the origin-guarded endpoint', async () => {
     const reasons: string[] = [];
     await start({ start() {}, close() {}, status: () => null, async runNow({ reason }: { reason: string }) { reasons.push(reason); return 'running'; } });

@@ -281,6 +281,16 @@ describe('usage counts', () => {
 })
 
 describe('where the person is', () => {
+  it('opens a deferred installation in setup and returns to My Work when complete', () => {
+    const { store, urls } = testStore({ href: 'http://localhost/?view=rules' })
+    store.getState().startSetup()
+    assert.equal(store.getState().view.page, 'setup')
+    assert.equal(new URL(urls.at(-1)!.href).searchParams.get('setup'), '1')
+    store.getState().finishSetup()
+    assert.equal(store.getState().view.page, 'app')
+    assert.equal(store.getState().view.section, 'work')
+    assert.equal(new URL(urls.at(-1)!.href).searchParams.has('setup'), false)
+  })
   it('reads its place from the URL and writes each move to it', () => {
     const { store, urls, usage } = testStore({ href: 'http://localhost/?source=sample&view=rules' })
     assert.equal(store.getState().view.section, 'rules')

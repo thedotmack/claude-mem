@@ -35,6 +35,8 @@ import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { readSetupState, type SetupStateFile } from '../../shared/setup-state.js';
+import { hasPendingInstallSetup } from '../../shared/setup-install.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import {
@@ -54,6 +56,17 @@ import {
  * start, so the wait runs alongside the local context read.
  */
 export const TEAM_BRIEF_TIMEOUT_MS = 2_000;
+
+/** Only an explicitly deferred install asks a first session to return to onboarding. */
+export function pendingSetupNotice(state: Pick<SetupStateFile, 'status' | 'install'>, viewerBaseUrl: string): string | null {
+  if (!hasPendingInstallSetup(state)) return null;
+  const url = new URL(viewerBaseUrl);
+  url.searchParams.set('setup', '1');
+  return `[claude-mem] Setup is waiting for your choices: ${url.href}\n`
+    + 'If a person is available, open that page so they can finish onboarding. '
+    + 'Otherwise leave setup pending and show them this link when they return. '
+    + 'Do not choose agents, integrations, skills, or account options on their behalf.';
+}
 
 /** Below this much room a cut brief says too little to be worth sending. */
 const MIN_CUT_TEAM_BRIEF_CHARS = 300;
@@ -331,7 +344,20 @@ export const contextHandler: EventHandler = {
     // (shared/memory-instructions.ts), not in this block: it is the timeline.
     const settings = loadFromFileOnce();
 
+    // A deferred agent install is explicit. A missing setup file on an older
+    // installation does not interrupt normal sessions or force onboarding.
+    const runtime = resolveRuntimeContext();
+    let onboardingNotice: string | null = null;
+    if (runtime.runtime === 'worker') {
+      try {
+        onboardingNotice = pendingSetupNotice(readSetupState(), getViewerBaseUrl(port));
+      } catch (error) {
+        logger.debug('HOOK', 'Could not read pending onboarding', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     const notices: string[] = [];
+    if (onboardingNotice) notices.push(onboardingNotice);
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
     // Marker is written by EnvManager.buildIsolatedEnvWithFreshOAuth() when
@@ -406,7 +432,6 @@ export const contextHandler: EventHandler = {
     // Server runtime reads the shared server (plan-24 step 4). When the server
     // settings are incomplete, resolveRuntimeContext() falls back to the worker,
     // exactly as the write hooks do, so reads and writes stay on one corpus.
-    const runtime = resolveRuntimeContext();
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
     const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
@@ -490,7 +515,12 @@ export const contextHandler: EventHandler = {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
-      return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
+      const userNotice = [onboardingNotice, outageNotice].filter(Boolean).join('\n\n');
+      return userNotice ? {
+        ...emptyResult,
+        hookSpecificOutput: { hookEventName, additionalContext: onboardingNotice ?? '' },
+        systemMessage: userNotice,
+      } : emptyResult;
     }
 
     let additionalContext: string;
@@ -555,7 +585,7 @@ export const contextHandler: EventHandler = {
       showsBanner ? displayContent : null,
       sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
       viewerUrl,
-      workerOutageNotice,
+      [onboardingNotice, workerOutageNotice].filter(Boolean).join('\n\n') || null,
     );
 
     return {
