@@ -4,8 +4,7 @@ An [OMP](https://omp.sh) hook adapter that records OMP sessions into the same
 claude-mem store that Claude Code, Cursor, and OpenCode already write to —
 one shared memory across all your agents.
 
-OMP loads hook modules from `~/.omp/agent/hooks/pre/*.ts` (user-global;
-`$PI_CODING_AGENT_DIR/hooks/pre` when that is set) or
+OMP loads hook modules from its selected agent directory's `hooks/pre/*.ts` or
 `<cwd>/.omp/hooks/pre/*.ts` (per-project) on every session start. This hook
 translates OMP lifecycle events into claude-mem's REST V1 event shape, so no
 OMP-side plugin or modification is required.
@@ -73,6 +72,14 @@ npx claude-mem install --ide omp
 This copies `omp/hooks/claude-mem.ts` to `~/.omp/agent/hooks/pre/claude-mem.ts`,
 where OMP auto-discovers it for every session. No restart of OMP is needed —
 the hook loads at the next session start.
+
+Install and uninstall follow OMP's active profile: `OMP_PROFILE` takes precedence
+over the legacy `PI_PROFILE`, and a named profile uses
+`~/.omp/profiles/<name>/agent/hooks/pre/claude-mem.ts`. `PI_CONFIG_DIR` changes the
+`.omp` config directory name. In the default profile, `PI_CODING_AGENT_DIR` can
+override the agent directory. Run install and uninstall with the same profile
+environment used to start OMP; an explicitly empty or `default` `OMP_PROFILE`
+selects the default profile.
 
 Manual install (no claude-mem CLI):
 
