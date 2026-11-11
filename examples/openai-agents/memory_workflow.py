@@ -39,8 +39,9 @@ async def call(server: MCPServerStdio, name: str, arguments: dict) -> str:
         project = arguments.get("project")
         if not isinstance(project, str) or not project.strip():
             raise ValueError("Choose an explicit project for memory reads")
-        # Prevent the MCP checkout helper from adding parent/worktree read keys.
-        arguments = {**arguments, "projects": [project]}
+        # JSON preserves literal commas through the MCP query-string transport.
+        # The explicit list also prevents parent/worktree scope expansion.
+        arguments = {**arguments, "projects": json.dumps([project])}
     result = await server.call_tool(name, arguments)
     if result.is_error:
         raise RuntimeError(f"{name} failed; check the worker connection and arguments")
@@ -50,7 +51,7 @@ async def call(server: MCPServerStdio, name: str, arguments: dict) -> str:
 async def remember(server: MCPServerStdio, project: str, title: str, text: str) -> dict:
     if not project.strip() or not title.strip() or not text.strip():
         raise ValueError("project, title and text must be nonempty")
-    project, title, text = project.strip(), title.strip(), text.strip()
+    title, text = title.strip(), text.strip()
     available = {tool.name for tool in await server.list_tools()}
     if not set(MEMORY_TOOLS) <= available:
         raise RuntimeError("The selected MCP server does not expose the required memory tools")
