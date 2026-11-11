@@ -147,7 +147,9 @@ Bun available. It clears inherited `CLAUDE_MEM_*` settings only inside the
 subshell, including cloud-sync credentials and capture overrides, then creates
 a fresh local data directory and selects a free loopback port. It waits for
 readiness and stops only the worker it started. The temporary data and logs
-remain available for inspection.
+remain available for inspection. The test starts the existing bundled
+`WorkerService` library export directly, skipping CLI startup repairs to host
+hook configuration. No home-directory override is needed.
 
 ```bash
 (
@@ -179,7 +181,7 @@ settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS=
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS
-  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  bun -e 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error => { console.error(error); process.exit(1); });' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
   memory_test_pid=$!
   trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
   python3 - <<'PYREADY'
