@@ -13,6 +13,7 @@ import {
   workingCacheVersions,
   isDirectChildPath,
   DEFAULT_CACHE_RETENTION,
+  ORPHANED_CACHE_RETENTION_MS,
 } from '../../src/npx-cli/utils/prune-cache.js';
 
 /**
@@ -149,13 +150,14 @@ describe('prunePluginCache', () => {
     expect(result.kept).toEqual([]);
   });
 
-  it('prunes an orphaned newest directory and keeps usable rollback versions', () => {
+  it('prunes an orphaned directory once its retention has passed', () => {
     root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-'));
     for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
       mkdirSync(join(root, version));
     }
-    // Claude Code stamps the superseded newest directory as orphaned.
-    writeFileSync(join(root, '13.26.0', '.orphaned_at'), '');
+    // The auto-updater stamps the replaced directory with the epoch ms it was
+    // superseded at; this one is older than the retention window.
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), String(Date.now() - ORPHANED_CACHE_RETENTION_MS - 60_000));
 
     const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
 
@@ -163,6 +165,37 @@ describe('prunePluginCache', () => {
     expect(existsSync(join(root, '13.26.0'))).toBe(false);
     expect(existsSync(join(root, '13.25.0'))).toBe(true);
     expect(existsSync(join(root, '13.24.0'))).toBe(true);
+  });
+
+  it('keeps a directory orphaned by the update while a session may still load it (#5970)', () => {
+    // A session that started on 13.26.0 keeps running its hooks from that folder
+    // after the update. Pruning it five minutes later made every hook in that
+    // session fail silently.
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-fresh-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), String(Date.now()));
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual([]);
+    expect(existsSync(join(root, '13.26.0'))).toBe(true);
+  });
+
+  it('keeps an orphaned directory whose marker carries no time', () => {
+    // Claude Code writes its own marker, which may be empty; the marker's mtime
+    // is the only orphan time then, and it is recent, so the folder stays.
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-untimed-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), '');
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual([]);
+    expect(existsSync(join(root, '13.26.0'))).toBe(true);
   });
 });
 
@@ -225,7 +258,7 @@ describe('planPluginCachePrune', () => {
     for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
       mkdirSync(join(root, version));
     }
-    writeFileSync(join(root, '13.26.0', '.orphaned_at'), '');
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), String(Date.now() - ORPHANED_CACHE_RETENTION_MS - 60_000));
 
     const { keep, prune } = planPluginCachePrune(root, 2);
     expect(prune).toEqual(['13.26.0']);

@@ -42,7 +42,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server prints the docker compose command for pg+redis without running it, and provisions a hook API key only when CLAUDE_MEM_SERVER_DATABASE_URL is set; otherwise set CLAUDE_MEM_SERVER_DATABASE_URL before running npx claude-mem server keys rotate once Postgres is up)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
-  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
+  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2, live worker, registered install and recently orphaned folders)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version (refreshes the hook launcher)
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin, configs and the hook launcher
   ${styleText('cyan', 'npx claude-mem version')}              Print version

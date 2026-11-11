@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
 import { rm } from 'fs/promises';
 import path, { basename, isAbsolute, join, relative, resolve, sep } from 'path';
 import { installedPluginsPath, pluginCacheRootDirectory } from './paths.js';
@@ -43,6 +43,40 @@ function isVersionDirectoryName(name: string): boolean {
  * install and must not count toward the retention budget. */
 function isOrphanedVersion(root: string, name: string): boolean {
   return existsSync(join(root, name, '.orphaned_at'));
+}
+
+/**
+ * How long an orphaned version folder stays on disk after it was replaced.
+ *
+ * Claude Code stamps `.orphaned_at` (epoch-ms) when a marketplace update
+ * supersedes a folder, but a host session that is already running keeps loading
+ * claude-mem from that folder. Deleting it makes every hook in that session fail
+ * silently, and the session captures nothing at all (#5970). The marker's own
+ * time is the retention clock, matching the 14-day clean-up the auto-updater
+ * documents; a folder whose time cannot be read is kept rather than guessed at.
+ */
+export const ORPHANED_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * When a version folder was orphaned, in epoch ms. Prefers the epoch-ms value
+ * the auto-updater writes into `.orphaned_at`; accepts epoch seconds and falls
+ * back to the marker's mtime (Claude Code writes its own marker). Returns null
+ * when nothing readable is there, which callers treat as "keep it".
+ */
+export function readOrphanedAtMs(root: string, name: string): number | null {
+  const marker = join(root, name, '.orphaned_at');
+  try {
+    const value = Number(readFileSync(marker, 'utf-8').trim());
+    if (Number.isInteger(value) && value >= 1e12) return value;
+    if (Number.isInteger(value) && value >= 1e9) return value * 1000;
+  } catch {
+    // Unreadable marker: fall back to its mtime below.
+  }
+  try {
+    return statSync(marker).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 export interface CachePrunePlan {
@@ -229,18 +263,37 @@ export function workingCacheVersions(
   return [...versions];
 }
 
-/** Read the version names and their `.orphaned_at` state, then plan the prune.
+/** How to age orphaned folders in a prune plan. */
+export interface PlanPluginCachePruneOptions {
+  /** Epoch ms the orphaned markers are compared against. Defaults to now. */
+  now?: number;
+  /** Retention for an orphaned folder; defaults to ORPHANED_CACHE_RETENTION_MS. */
+  orphanedRetentionMs?: number;
+}
+
+/**
+ * Read the version names and their `.orphaned_at` state, then plan the prune.
  * Read-only — use for a dry-run preview that matches what `prunePluginCache`
- * would delete. The working versions (workingCacheVersions) are always kept. */
+ * would delete. The working versions (workingCacheVersions) are always kept, and
+ * an orphaned folder is kept until ORPHANED_CACHE_RETENTION_MS has passed: a
+ * session that started before the update still loads its hooks from it (#5970).
+ */
 export function planPluginCachePrune(
   root: string,
   keepCount: number,
   protectedVersions: Iterable<string> = [],
+  options: PlanPluginCachePruneOptions = {},
 ): CachePrunePlan {
   const names = readCacheVersionDirectories(root);
   const orphanedVersions = names.filter(name => isVersionDirectoryName(name) && isOrphanedVersion(root, name));
+  const now = options.now ?? Date.now();
+  const retention = options.orphanedRetentionMs ?? ORPHANED_CACHE_RETENTION_MS;
+  const stillLoadedBySessions = orphanedVersions.filter(version => {
+    const orphanedAt = readOrphanedAtMs(root, version);
+    return orphanedAt === null || now - orphanedAt < retention;
+  });
   return planCachePrune(names, keepCount, {
-    protectedVersions: [...protectedVersions, ...workingCacheVersions(root)],
+    protectedVersions: [...protectedVersions, ...workingCacheVersions(root), ...stillLoadedBySessions],
     orphanedVersions,
   });
 }
