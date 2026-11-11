@@ -4,7 +4,7 @@
  * workers and real Claude Code. What it proves and how to read the results:
  * tests/evals/read-gate/README.md.
  *
- *   npm run eval:read-gate [-- --runs 3 --model claude-sonnet-5-5 -j 3 --max-cost-usd 10 --case <glob> --preflight-only]
+ *   npm run eval:read-gate [-- --runs 3 --model claude-sonnet-5-5 -j 3 --max-cost-usd 10 --case <glob> --preflight-only --line-anchors]
  *
  * 1. Requires plugin/scripts/worker-service.cjs built with the gate, and
  *    provisions the plugin's tree-sitter CLI the way a real install does: the
@@ -30,6 +30,7 @@ import { isTreeSitterCliAvailable } from '../src/services/smart-file-read/tree-s
 import { treeSitterBinaryName } from '../src/services/smart-file-read/tree-sitter-bin-name.js';
 import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision.js';
 import { getDefaultWorkerPort } from '../src/shared/install-port.js';
+import { LINE_ANCHOR_CHANGED_FILE_NOTE, LINE_ANCHOR_CONTEXT_HINT, LINE_ANCHOR_DENY_HINT, readLineAnchors } from '../src/shared/line-anchors.js';
 
 const repoRoot = path.resolve(import.meta.dir, '..');
 const pluginDirectory = path.join(repoRoot, 'plugin');
@@ -118,18 +119,24 @@ export interface RunnerOptions {
   maxCostUsd: number;
   caseGlob: string | null;
   preflightOnly: boolean;
+  /** Both arms run with CLAUDE_MEM_LINE_ANCHORS_ENABLED on (#4943). */
+  lineAnchors: boolean;
 }
 
 const VALUE_FLAGS = new Set(['--runs', '--model', '-j', '--max-cost-usd', '--case']);
 
 export function parseRunnerArguments(argv: string[]): RunnerOptions {
   const options: RunnerOptions = {
-    runs: 3, model: 'claude-sonnet-5-5', concurrency: 3, maxCostUsd: 10, caseGlob: null, preflightOnly: false,
+    runs: 3, model: 'claude-sonnet-5-5', concurrency: 3, maxCostUsd: 10, caseGlob: null, preflightOnly: false, lineAnchors: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === '--preflight-only') {
       options.preflightOnly = true;
+      continue;
+    }
+    if (flag === '--line-anchors') {
+      options.lineAnchors = true;
       continue;
     }
     if (!VALUE_FLAGS.has(flag)) throw new Error(`Unknown option: ${flag}`);
@@ -537,7 +544,8 @@ function defaultWorkerPort(): number {
   return getDefaultWorkerPort();
 }
 
-function armSettings(arm: EvalArm): Record<string, unknown> {
+/** An arm's settings.json. `lineAnchors` (--line-anchors) adds CLAUDE_MEM_LINE_ANCHORS_ENABLED; without it the key is absent, as before. */
+export function armSettings(arm: Pick<EvalArm, 'port' | 'gateEnabled' | 'dataDirectory'>, lineAnchors = false): Record<string, unknown> {
   return {
     CLAUDE_MEM_WORKER_PORT: String(arm.port),
     // This script starts the arm's worker; hooks and the MCP server must never launch another.
@@ -548,23 +556,29 @@ function armSettings(arm: EvalArm): Record<string, unknown> {
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: arm.gateEnabled ? 'true' : 'false',
     CLAUDE_MEM_SKIP_TOOLS: SKIPPED_TOOL_NAMES.join(','),
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',
+    // The worker keeps the real HOME, so My Work's scheduled refresh would scan
+    // your own transcripts and start a Claude Code agent run on your account
+    // about ten seconds after boot. No eval needs it.
+    CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'false',
     // Search falls back to SQLite, and no chroma-mcp process starts per arm.
     CLAUDE_MEM_CHROMA_ENABLED: 'false',
     CLAUDE_MEM_LOG_LEVEL: 'DEBUG',
     // The default lives under the real HOME; a missing file keeps the arm's
     // worker from ingesting transcripts you watch day to day.
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: path.join(arm.dataDirectory, 'transcript-watch.json'),
+    // Both arms, so a comparison measures the gate with the same timeline rows.
+    ...(lineAnchors ? { CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'true' } : {}),
   };
 }
 
-async function createEvalArm(name: ArmName, runDirectory: string, portsTaken: number[]): Promise<EvalArm> {
+async function createEvalArm(name: ArmName, runDirectory: string, portsTaken: number[], lineAnchors: boolean): Promise<EvalArm> {
   const directory = path.join(runDirectory, name);
   const dataDirectory = path.join(directory, 'data');
   fs.mkdirSync(dataDirectory, { recursive: true });
   let port = await findFreePort();
   while (port === defaultWorkerPort() || portsTaken.includes(port)) port = await findFreePort();
   const arm: EvalArm = { name, gateEnabled: name === 'on', directory, dataDirectory, port };
-  fs.writeFileSync(path.join(dataDirectory, 'settings.json'), `${JSON.stringify(armSettings(arm), null, 2)}\n`);
+  fs.writeFileSync(path.join(dataDirectory, 'settings.json'), `${JSON.stringify(armSettings(arm, lineAnchors), null, 2)}\n`);
   // An eval is not an install; keep it out of claude-mem's usage analytics.
   fs.writeFileSync(path.join(dataDirectory, 'telemetry.json'), `${JSON.stringify({
     enabled: false,
@@ -855,7 +869,7 @@ export interface SeededObservation {
   createdAtEpoch: number;
 }
 
-interface SeedObservation {
+export interface SeedObservation {
   type: string;
   title: string;
   subtitle: string;
@@ -864,6 +878,17 @@ interface SeedObservation {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  /**
+   * Stored as the observation's metadata JSON. The large fixture's two seeds
+   * carry line anchors on their `export function` declaration lines (#4943),
+   * never on a line holding a graded number. Only an arm with line anchors on
+   * (--line-anchors) reads them.
+   */
+  metadata?: Record<string, unknown>;
+}
+
+function readSeedObservations(): SeedObservation[] {
+  return JSON.parse(fs.readFileSync(seedObservationsPath, 'utf8')) as SeedObservation[];
 }
 
 /**
@@ -905,7 +930,7 @@ async function seedObservationDatabase(seedDirectory: string | undefined): Promi
     throw new Error(`Refusing to seed: claude-mem resolved its database to ${DB_PATH}, not ${expectedDatabasePath}`);
   }
   const { SessionStore } = await import('../src/services/sqlite/SessionStore.js');
-  const observations = JSON.parse(fs.readFileSync(seedObservationsPath, 'utf8')) as SeedObservation[];
+  const observations = readSeedObservations();
   const newestCreatedAtEpoch = Date.now() - ONE_DAY_MS;
   const seeded: SeededObservation[] = [];
   const store = new SessionStore(DB_PATH);
@@ -922,7 +947,9 @@ async function seedObservationDatabase(seedDirectory: string | undefined): Promi
       store.updateMemorySessionId(sessionDbId, memorySessionId);
       // Oldest first, an hour apart; the newest is a day old, newer than the fixture's mtime.
       const createdAtEpoch = newestCreatedAtEpoch - (observations.length - sessionNumber) * ONE_HOUR_MS;
-      const stored = store.storeObservations(memorySessionId, EVAL_PROJECT_NAME, [observation], null, 0, 0, createdAtEpoch);
+      const { metadata, ...fields } = observation;
+      const row = metadata === undefined ? fields : { ...fields, metadata: JSON.stringify(metadata) };
+      const stored = store.storeObservations(memorySessionId, EVAL_PROJECT_NAME, [row], null, 0, 0, createdAtEpoch);
       seeded.push({ id: stored.observationIds[0], title: observation.title, createdAtEpoch });
     });
     store.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -1077,29 +1104,103 @@ function expectContext(output: HookSpecificOutput, seeded: SeededObservation[]):
   return { failures, shown };
 }
 
-function runPreflight(arms: EvalArm[], seeded: SeededObservation[]): PreflightCheck[] {
+/**
+ * The row ending (` @L523`) each seeded observation with line anchors gets
+ * from a hook with line anchors on, by observation id. The fixture is never
+ * edited before the pre-flight, so each anchor is found where it was stored.
+ */
+export function seededLineAnchorRows(seedObservations: SeedObservation[], seeded: SeededObservation[]): Map<number, string> {
+  const rows = new Map<number, string>();
+  seedObservations.forEach((observation, index) => {
+    const lines = readLineAnchors(observation.metadata === undefined ? null : JSON.stringify(observation.metadata))
+      .map(anchor => anchor.line)
+      .sort((a, b) => a - b);
+    if (lines.length > 0 && seeded[index]) rows.set(seeded[index].id, ` @${lines.map(line => `L${line}`).join(',')}`);
+  });
+  return rows;
+}
+
+/**
+ * A timeline row ending as line anchors end one: ` @L12,L40`, ` @L12 (some code changed since)` or
+ * ` (code changed since)`. tests/evals/read-gate-runner.test.ts checks it against every state's
+ * wording in LINE_ANCHOR_ROW_SUFFIX, so a change of wording fails that test, not this check.
+ */
+const LINE_ANCHORED_ROW = /^\d+ .*(?: @L\d+(?:,L\d+)*(?: \(some code changed since\))?| \(code changed since\))$/;
+/** The hook's line-anchor directions and its note on a file changed since, each a whole line. */
+const LINE_ANCHOR_HINT_LINES = [LINE_ANCHOR_CONTEXT_HINT, LINE_ANCHOR_DENY_HINT, LINE_ANCHOR_CHANGED_FILE_NOTE];
+
+/**
+ * Whether hook output shows line anchors: a timeline row ending with them, or
+ * one of their direction lines. Only those lines count, so a path holding
+ * "@L" (a checkout under ~/@Labs) does not.
+ */
+export function showsLineAnchorOutput(text: string): boolean {
+  return text.split('\n').some(line => LINE_ANCHORED_ROW.test(line) || LINE_ANCHOR_HINT_LINES.includes(line));
+}
+
+/**
+ * With `anchoredRowsExpected` (--line-anchors, on an output that lists the
+ * seeds with anchors), the rows of those seeds must end with their current
+ * lines. Otherwise the output may show no line anchors at all: with the flag
+ * off although the seeds hold anchors, and with it on for a file whose seeds
+ * hold none.
+ */
+export function lineAnchorFailures(
+  text: string,
+  anchoredRowsExpected: boolean,
+  expectedRows: Map<number, string>,
+): string[] {
+  if (!anchoredRowsExpected) {
+    return showsLineAnchorOutput(text) ? ['shows line anchors (an @L or "(code changed since)" row ending, or a line direction) where none may show'] : [];
+  }
+  // Without anchored seeds the check below would pass on any output.
+  if (expectedRows.size === 0) return ['no seeded observation carries line anchors, so none can be checked'];
+  const failures: string[] = [];
+  for (const [id, ending] of expectedRows) {
+    const row = text.split('\n').find(line => line.startsWith(`${id} `));
+    if (!row?.endsWith(ending)) failures.push(`the row of seeded observation ${id} does not end with "${ending}": ${row ?? '(no row)'}`);
+  }
+  return failures;
+}
+
+function runPreflight(arms: EvalArm[], seeded: SeededObservation[], lineAnchors: boolean): PreflightCheck[] {
   const checks: PreflightCheck[] = [];
+  const expectedLineAnchorRows = seededLineAnchorRows(readSeedObservations(), seeded);
   for (const arm of arms) {
     const workspace = prepareHookWorkspace(arm);
     const cases = arm.gateEnabled
       ? [
-        { name: 'whole-file Read of the large file is denied', toolInput: { file_path: workspace.largeFixturePath }, expect: expectDeny },
+        {
+          name: 'whole-file Read of the large file is denied',
+          toolInput: { file_path: workspace.largeFixturePath },
+          expect: expectDeny,
+          listsAnchoredSeeds: true,
+        },
         {
           name: 'targeted Read (offset 40, limit 20) gets context',
           toolInput: { file_path: workspace.largeFixturePath, offset: 40, limit: 20 },
           expect: expectContext,
+          listsAnchoredSeeds: true,
         },
         {
           name: 'whole-file Read under the deny size gets context',
           toolInput: { file_path: workspace.smallFixturePath },
           expect: expectContext,
+          listsAnchoredSeeds: false,
         },
       ]
-      : [{ name: 'whole-file Read gets context', toolInput: { file_path: workspace.largeFixturePath }, expect: expectContext }];
+      : [{ name: 'whole-file Read gets context', toolInput: { file_path: workspace.largeFixturePath }, expect: expectContext, listsAnchoredSeeds: true }];
     cases.forEach((check, index) => {
       // A session per check: the dedupe claim is per (session, file).
       const { output, wallTimeMs } = runFileContextHook(workspace, `read-gate-preflight-${arm.name}-${index + 1}`, check.toolInput);
       const { failures, shown } = check.expect(output, seeded);
+      // --line-anchors: every output that lists the large file's anchored seeds, in both arms, ends their rows
+      // with their lines, and the small file's shows none. Without the flag, no output shows line anchors.
+      failures.push(...lineAnchorFailures(
+        `${output.permissionDecisionReason ?? ''}\n${output.additionalContext ?? ''}`,
+        lineAnchors && check.listsAnchoredSeeds,
+        expectedLineAnchorRows,
+      ));
       checks.push({
         arm: arm.name,
         name: check.name,
@@ -1335,6 +1436,8 @@ interface Summary {
   model: string;
   runsPerCase: number;
   caseFilter: string | null;
+  /** Present when both arms ran with line anchors on (--line-anchors). */
+  lineAnchors?: true;
   evalExitCode: number;
   evalCostUsd: number | null;
   fixtures: FixtureInfo[];
@@ -1375,6 +1478,7 @@ function buildSummary(input: {
     model: input.options.model,
     runsPerCase: input.options.runs,
     caseFilter: input.options.caseGlob,
+    ...(input.options.lineAnchors ? { lineAnchors: true as const } : {}),
     evalExitCode: input.evalExitCode,
     evalCostUsd: input.aggregate.costUsd ?? null,
     fixtures: [input.fixtures.large, input.fixtures.small],
@@ -1397,6 +1501,7 @@ function renderSummaryMarkdown(summary: Summary, reportDirectory: string): strin
     '',
     `${summary.createdAt} · Claude Code ${summary.claudeVersion ?? 'unknown'} · model ${summary.model} · `
       + `${summary.runsPerCase} run(s) per case${summary.caseFilter ? ` · cases ${summary.caseFilter}` : ''} · `
+      + `${summary.lineAnchors ? 'line anchors on · ' : ''}`
       + `eval cost ${formatUsd(summary.evalCostUsd)} · ${summary.treeSitter.version} (${summary.treeSitter.binaryPath})`,
     '',
     '| Verdict | Result | Detail |',
@@ -1481,17 +1586,42 @@ function requireBuiltGate(): void {
   }
 }
 
+/**
+ * Whether a hooks.json `matcher` selects `toolName`, by Claude Code's rule:
+ * none, empty or `*` selects every tool; letters, digits, `_` and `|` alone
+ * name tools exactly (`Edit|Write`); anything else is a regular expression
+ * (`Read|^read_file$`). An invalid expression selects nothing.
+ */
+export function hookMatcherSelectsTool(matcher: string | undefined, toolName: string): boolean {
+  if (matcher === undefined || matcher === '' || matcher === '*') return true;
+  if (/^[A-Za-z0-9_|]+$/.test(matcher)) return matcher.split('|').includes(toolName);
+  try {
+    return new RegExp(matcher).test(toolName);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why a parsed plugin/hooks/hooks.json cannot deny a Read, or null when every
+ * PreToolUse entry whose matcher selects Read runs synchronously.
+ */
+export function synchronousReadHookProblem(hooksFile: unknown): string | null {
+  const preToolUse = (hooksFile as { hooks?: { PreToolUse?: unknown } } | null)?.hooks?.PreToolUse;
+  const entries = (Array.isArray(preToolUse) ? preToolUse : []) as Array<{ matcher?: string; hooks?: Array<{ async?: boolean }> }>;
+  const readEntries = entries.filter(entry => hookMatcherSelectsTool(entry?.matcher, 'Read'));
+  if (readEntries.length === 0) return 'plugin/hooks/hooks.json has no PreToolUse hook for Read';
+  if (readEntries.some(entry => (entry.hooks ?? []).some(hook => hook?.async === true))) {
+    return 'plugin/hooks/hooks.json runs the PreToolUse Read hook with "async": true, and an async hook cannot deny. Make it synchronous, then run npm run build';
+  }
+  return null;
+}
+
 /** Claude Code ignores an async hook's permissionDecision, so a paid run against one could never show a deny. */
 function requireSynchronousReadHook(): void {
   const hooksPath = path.join(repoRoot, 'plugin', 'hooks', 'hooks.json');
-  const hooksFile = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as {
-    hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ async?: boolean }> }> };
-  };
-  const readEntries = (hooksFile.hooks?.PreToolUse ?? []).filter(entry => entry.matcher === 'Read');
-  if (readEntries.length === 0) throw new Error('plugin/hooks/hooks.json has no PreToolUse hook for Read');
-  if (readEntries.some(entry => (entry.hooks ?? []).some(hook => hook.async === true))) {
-    throw new Error('plugin/hooks/hooks.json runs the PreToolUse Read hook with "async": true, and an async hook cannot deny. Make it synchronous, then run npm run build');
-  }
+  const problem = synchronousReadHookProblem(JSON.parse(fs.readFileSync(hooksPath, 'utf8')));
+  if (problem) throw new Error(problem);
 }
 
 function requireNoActiveRun(): void {
@@ -1520,7 +1650,7 @@ async function main(): Promise<number> {
   console.log(`tree-sitter CLI for the plugin: ${provisionedTreeSitter.binaryPath} (${provisionedTreeSitter.version})`);
 
   const arms: EvalArm[] = [];
-  for (const name of ARM_NAMES) arms.push(await createEvalArm(name, runDirectory, arms.map(arm => arm.port)));
+  for (const name of ARM_NAMES) arms.push(await createEvalArm(name, runDirectory, arms.map(arm => arm.port), options.lineAnchors));
   const seeded = seedObservationDatabases(runDirectory, arms);
   console.log(`Seeded observations ${seeded.map(observation => `#${observation.id}`).join(', ')} into both arms (${path.relative(repoRoot, runDirectory)})`);
 
@@ -1538,8 +1668,9 @@ async function main(): Promise<number> {
       ...provisionedTreeSitter,
       resolvedByPlugin: checkPluginTreeSitterCli(hookSearchPath(), path.join(repoRoot, provisionedTreeSitter.binaryPath)),
     };
-    const preflight = runPreflight(arms, seeded);
+    const preflight = runPreflight(arms, seeded, options.lineAnchors);
     fs.writeFileSync(path.join(reportDirectory, 'preflight.json'), `${JSON.stringify({
+      ...(options.lineAnchors ? { lineAnchors: true } : {}),
       fixtures: [fixtures.large, fixtures.small],
       treeSitter,
       seededObservations: seeded,

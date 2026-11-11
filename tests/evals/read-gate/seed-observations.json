@@ -69,7 +69,12 @@
     "narrative": "Traced src/shipping/carrier-tariffs.ts. quoteCarrierRate looks the carrier up in CARRIER_PRICING, computes transportation from the zone/weight tariff scaled by service level, adds the fuel surcharge and the carrier's accessorials, then the special-handling surcharges every carrier shares. Lines with a zero amount are dropped before the total.",
     "concepts": ["how-it-works"],
     "files_read": ["src/shipping/carrier-tariffs.ts"],
-    "files_modified": []
+    "files_modified": [],
+    "metadata": {
+      "cmem_line_anchors_v1": [
+        { "path": "src/shipping/carrier-tariffs.ts", "line": 908, "text": "export function quoteCarrierRate(context: ShipmentContext): CarrierQuote {" }
+      ]
+    }
   },
   {
     "type": "feature",
@@ -83,6 +88,11 @@
     "narrative": "Added calculateLithiumBatterySurcharge to the cross-carrier special-handling section of src/shipping/carrier-tariffs.ts and wired it into quoteCarrierRate, so every carrier's quote carries the same lithium battery charge.",
     "concepts": ["what-changed"],
     "files_read": ["src/shipping/carrier-tariffs.ts"],
-    "files_modified": ["src/shipping/carrier-tariffs.ts"]
+    "files_modified": ["src/shipping/carrier-tariffs.ts"],
+    "metadata": {
+      "cmem_line_anchors_v1": [
+        { "path": "src/shipping/carrier-tariffs.ts", "line": 523, "text": "export function calculateLithiumBatterySurcharge(context: ShipmentContext): number {" }
+      ]
+    }
   }
 ]
