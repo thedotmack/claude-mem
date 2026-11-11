@@ -71,7 +71,9 @@ async def run_workflow(state: MemoryState, *, timeout: float = 10) -> MemoryStat
                 return text_content(message.content)
 
             async def recall(s: MemoryState) -> dict:
-                scope = {"project": s["project"]}
+                # An explicit list prevents checkout aliases/parent projects
+                # from widening this application's caller-selected boundary.
+                scope = {"project": s["project"], "projects": json.dumps([s["project"]])}
                 index = await call("search", {**scope, "query": s["query"], "type": "observations", "limit": 20})
                 # The caller chooses one known ID; never let returned text choose
                 # a different project, tool, or action.

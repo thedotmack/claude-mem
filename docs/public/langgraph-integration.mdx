@@ -112,7 +112,14 @@ async with MCPAdapter(client) as adapter:
 The complete example calls each tool with a LangChain `ToolCall` envelope and
 checks the returned `ToolMessage.status`. An MCP execution error cannot be
 mistaken for a successful result. It filters discovery to the four memory tools
-it uses and supplies `project` for every call.
+it uses and supplies `project` for every call. Reads also receive the explicit
+single-item `projects=json.dumps([project])` list, so the MCP server cannot widen the
+selected worktree scope to its parent checkout. Saves receive only `project`.
+
+The project list is encoded as a JSON string so the GET query path preserves
+literal commas and JSON-looking keys. Nonempty project names retain their exact
+outer whitespace. Native checks seed separate split/trimmed-key projects and
+confirm they stay out of search, timeline, and recalled details.
 
 ## Identity and repeated runs
 
@@ -135,15 +142,29 @@ data directory, disable optional capture, sync, and telemetry for that fixture,
 and call the installed LangGraph and MCP adapter. They need Bun and Node.js:
 
 ```bash
-python examples/langgraph/test_workflow.py
+(
+  unset CLAUDE_MEM_CLOUD_SYNC_TOKEN CLAUDE_MEM_CLOUD_SYNC_USER_ID CLAUDE_MEM_CLOUD_SYNC_HUB_URL
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false
+  python examples/langgraph/test_workflow.py
+)
 ```
 
-The verified run passed five checks: recall and save with repeat deduplication,
+This verification uses fresh worker settings and a restricted child-process
+environment. It imports the shipped `WorkerService` and calls `start()` directly,
+so the CLI startup path does not run host hook-configuration repairs. The
+subshell also clears inherited cloud-sync credentials; it does not change your
+normal worker's settings or saved memory.
+
+The verified run passed eight checks: recall and save with repeat deduplication,
 foreign-project ID rejection, blank-project rejection, a stopped-worker failure,
 and a bounded slow-worker response. The successful run recalled observation `1`,
 saved handoff `3`, and returned `3` again on the deliberate repeat. The data
 folder contained spaces. The timeout case uses a controlled slow HTTP endpoint;
-success and project isolation use the real bundled worker and SQLite.
+success and project isolation use the real bundled worker and SQLite. Two checks
+create an actual Git repository and linked worktree, seed matching parent/child
+observations, and run the native graph from the worktree. The parent stays out
+of the child's index and timeline, and a parent ID is rejected without adding
+any SQLite observation.
 
 ## Data and failure handling
 
