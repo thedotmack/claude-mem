@@ -203,6 +203,8 @@ export const setupKo: Record<string, string> = {
   'Email me product updates': '이메일로 제품 업데이트 받기',
   'Optional. You can unsubscribe at any time.': '선택 사항입니다. 언제든 구독을 취소할 수 있습니다.',
   'Email address': '이메일 주소',
+  'You’re already signed up for product updates.': '이미 제품 업데이트 이메일을 신청하셨습니다.',
+  'Using the email you entered earlier.': '앞서 입력한 이메일을 사용합니다.',
   'Anything you’d like us to know?': '알려 주고 싶은 내용이 있나요?',
   'Update my existing installation with these choices.': '이 선택 사항으로 기존 설치를 업데이트합니다.',
   'Starting installation…': '설치를 시작하는 중…',

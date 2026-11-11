@@ -35,7 +35,9 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
   const { catalog } = install
   const [selection, setSelection] = useState<SetupInstallSelection>(install.selection ?? catalog.defaults)
   const [query, setQuery] = useState('')
-  const [emailOptIn, setEmailOptIn] = useState(Boolean(selection.email))
+  const [emailOptIn, setEmailOptIn] = useState(Boolean(selection.email || selection.emailProvided))
+  // A retry after a failed install: the worker kept the email it was given and never sends it back to this page.
+  const keepsStoredEmail = Boolean(selection.emailProvided) && !selection.email?.trim()
   const [reinstallConfirmed, setReinstallConfirmed] = useState(!catalog.reinstall)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -53,7 +55,9 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
     setError(null)
     try {
       await onInstall({ ...selection, installClaudeCode: claudeMissing && selection.installClaudeCode,
-        ...(emailOptIn && catalog.emailEnabled !== false ? { email: selection.email?.trim(), note: selection.note?.trim() } : { email: undefined, note: undefined }) })
+        ...(emailOptIn && catalog.emailEnabled !== false
+          ? keepsStoredEmail ? { email: undefined, note: undefined, emailProvided: true } : { email: selection.email?.trim(), note: selection.note?.trim(), emailProvided: undefined }
+          : { email: undefined, note: undefined, emailProvided: undefined }) })
     } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); setSending(false) }
   }
   return (
@@ -94,8 +98,10 @@ function InstallOptions({ install, onInstall }: { install: SetupInstallState; on
           </fieldset>
           {catalog.emailEnabled !== false && <fieldset disabled={sending}>
             <legend>{t('Product updates')}</legend>
+            {catalog.signupSaved && <p>{t('You’re already signed up for product updates.')}</p>}
             <label className="install-option"><input type="checkbox" checked={emailOptIn} onChange={event => setEmailOptIn(event.target.checked)} /><span><strong>{t('Email me product updates')}</strong><small>{t('Optional. You can unsubscribe at any time.')}</small></span></label>
-            {emailOptIn && <div className="install-email"><label>{t('Email address')}<input type="email" autoComplete="email" required value={selection.email ?? ''} onChange={event => change({ email: event.target.value })} /></label><label>{t('Anything you’d like us to know?')}<textarea rows={2} maxLength={2000} value={selection.note ?? ''} onChange={event => change({ note: event.target.value })} /></label></div>}
+            {emailOptIn && keepsStoredEmail && <p>{t('Using the email you entered earlier.')}</p>}
+            {emailOptIn && <div className="install-email"><label>{t('Email address')}<input type="email" autoComplete="email" required={!keepsStoredEmail} value={selection.email ?? ''} onChange={event => change({ email: event.target.value })} /></label><label>{t('Anything you’d like us to know?')}<textarea rows={2} maxLength={2000} value={selection.note ?? ''} onChange={event => change({ note: event.target.value })} /></label></div>}
           </fieldset>}
         </details>
         {catalog.reinstall && <label className="install-option install-reinstall"><input type="checkbox" checked={reinstallConfirmed} disabled={sending} onChange={event => setReinstallConfirmed(event.target.checked)} /><span>{t('Update my existing installation with these choices.')}</span></label>}

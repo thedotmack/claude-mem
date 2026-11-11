@@ -13,6 +13,11 @@ export interface SetupInstallSelection {
   telemetryEnabled: boolean;
   email?: string;
   note?: string;
+  /**
+   * Served views never carry the email or note (the worker's localhost reads are not private).
+   * True there when one is stored; the page sends it back to keep that stored email on a retry.
+   */
+  emailProvided?: boolean;
   claudeModel?: string;
   dshProfile?: string;
 }
@@ -25,6 +30,8 @@ export interface SetupInstallCatalog {
   telemetryLocked?: boolean;
   skillsLocked?: boolean;
   emailEnabled?: boolean;
+  /** An email signup is already saved in settings; its address is never put in the catalog. */
+  signupSaved?: boolean;
 }
 
 /**

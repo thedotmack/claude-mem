@@ -226,6 +226,8 @@ export const setupZh: Record<string, string> = {
   'Email me product updates': '通过电子邮件接收产品更新',
   'Optional. You can unsubscribe at any time.': '可选。您可以随时取消订阅。',
   'Email address': '电子邮件地址',
+  'You’re already signed up for product updates.': '你已订阅产品更新邮件。',
+  'Using the email you entered earlier.': '将使用你之前输入的电子邮件。',
   'Anything you’d like us to know?': '有什么想告诉我们的吗？',
   'Update my existing installation with these choices.': '使用这些选项更新现有安装。',
   'Starting installation…': '正在开始安装…',

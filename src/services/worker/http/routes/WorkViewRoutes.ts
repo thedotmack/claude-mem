@@ -306,6 +306,9 @@ const SETUP_WORK_SHOWN = 5;
 const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
 const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional(), improveProduct: z.boolean().optional() }).strict();
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
+// Request-size and abuse caps on loopback writes, set about twice what the installer offers today (measured
+// 2026-11-11: 19 agents in ide-detection.ts, 30 bundled skills, the longest id 17 characters). The email cap is RFC 5321's 254-character path
+// limit; the note and error caps match the setup page's textarea and the installer's other setup errors.
 const setupInstallId = z.string().min(1).max(80);
 const setupInstallSelectionBody = z.object({
   agents: z.array(setupInstallId).min(1).max(40),
@@ -315,6 +318,7 @@ const setupInstallSelectionBody = z.object({
   telemetryEnabled: z.boolean(),
   email: z.union([z.literal(''), z.email().max(254)]).optional(),
   note: z.string().max(2000).optional(),
+  emailProvided: z.boolean().optional(),
   claudeModel: z.string().trim().min(1).max(200).optional(),
   dshProfile: z.string().trim().min(1).max(200).optional(),
 }).strict();
@@ -326,12 +330,24 @@ const setupInstallCatalogBody = z.object({
   telemetryLocked: z.boolean().optional(),
   skillsLocked: z.boolean().optional(),
   emailEnabled: z.boolean().optional(),
+  signupSaved: z.boolean().optional(),
 }).strict();
 const setupInstallReportBody = z.object({
   status: z.enum(SETUP_INSTALL_STATUSES),
   catalog: setupInstallCatalogBody.optional(),
   error: z.string().max(2000).nullable().optional(),
 }).strict();
+/**
+ * Localhost pages can read the worker's setup state (GET /api/setup/state and the `setup-state` event frame), and
+ * the signup email and note are data no such page may read (SettingsRoutes keeps them out of /api/settings too).
+ * Only the installer reads them, from the state file.
+ */
+function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile['install'] {
+  if (!install?.selection) return install;
+  const { email, note: _note, ...selection } = install.selection;
+  return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
+}
+
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
@@ -349,6 +365,7 @@ const setupCheckoutBody = z.object({}).strict();
 const setupResumeBody = z.object({ retry: z.boolean().optional() }).strict();
 const setupCompleteBody = z.object({
   /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
+  // Abuse cap: Finish Setup lists the selected agents (19 offered today) plus 3 cloud readers, so 40 leaves room.
   tools: z.array(z.string().min(1).max(40)).max(40).optional(),
   // Checked separately so a bad analytics payload cannot block real setup.
   telemetry: z.unknown().optional(),
@@ -878,7 +895,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true }) };
+    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true }) };
   }
 
   /**
@@ -972,7 +989,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (install.catalog.emailEnabled === false && (selection.email || selection.note)) {
       res.status(400).json({ error: 'Email signup is unavailable for this installation.' }); return;
     }
-    writeSetupState({ ...state, install: { ...install, selection, status: 'installing', error: null } }, this.setupStatePath);
+    // Served views drop the email, so a retry that still wants the stored signup says so instead of resending it.
+    const { emailProvided, ...chosen } = selection;
+    const keepStoredEmail = emailProvided === true && !chosen.email && install.status === 'failed' && !!install.selection?.email;
+    const stored = keepStoredEmail ? { ...chosen, email: install.selection!.email, note: chosen.note ?? install.selection!.note } : chosen;
+    writeSetupState({ ...state, install: { ...install, selection: stored, status: 'installing', error: null } }, this.setupStatePath);
     try { await this.resumeSetup(true); } catch (error) {
       res.status(503).json({ error: error instanceof Error ? error.message : String(error) }); return;
     }
@@ -991,8 +1012,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (!state.install?.selection || state.install.status !== 'installing' || status === 'installing') {
       res.status(409).json({ error: 'Choose installation options before reporting the result.' }); return;
     }
-    // Email is needed only for the optional signup, never for future setup reads or event frames.
-    const { email: _email, note: _note, ...selection } = state.install.selection;
+    // The signup has been applied once the install is ready; a failed run keeps it on disk for the explicit retry.
+    const { email: _email, note: _note, ...withoutSignup } = state.install.selection;
+    const selection = status === 'ready' ? withoutSignup : state.install.selection;
     this.saveSetupState({ ...state, install: { ...state.install, selection, status, error: error ?? null } }, res);
   };
 

@@ -7,6 +7,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { resolveWorkerRuntimePath } from '../infrastructure/ProcessManager.js';
 import { BUN_NO_AUTO_INSTALL_FLAG } from '../../shared/bun-auto-install.js';
 import { logger } from '../../utils/logger.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
 
 interface SetupInstallerProgram { runtime: string; cli: string }
 export interface SetupInstallerResumerOptions {
@@ -32,10 +33,7 @@ export function createSetupInstallerResumer(statePath: string, options: SetupIns
   let launching: Promise<void> | null = null;
   let launchedPid: number | undefined;
   let currentChild: ReturnType<typeof spawnHidden> | null = null;
-  const isAlive = options.isAlive ?? ((pid: number) => {
-    try { process.kill(pid, 0); return true; }
-    catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
-  });
+  const isAlive = options.isAlive ?? isPidAlive;
   const recordFailure = (error: Error): void => {
     try {
       const state = readSetupState(statePath);

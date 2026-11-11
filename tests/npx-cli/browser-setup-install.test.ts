@@ -311,6 +311,36 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(questions).toEqual([]);
   });
 
+  it('offers the default model when the saved one is not allowed outside the gateway, and At Home still finishes', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ ...baseSettings, CLAUDE_MEM_MODEL: 'my-gateway-model', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' }, null, 2));
+    const installing = runInstallCommand({});
+    const waiting = await waitForInstall('waiting');
+    expect(waiting.install.catalog.defaults.claudeModel).toBe('haiku');
+    expect((await browserPost('/api/setup/install', { ...waiting.install.catalog.defaults, agents: ['claude-code'] })).status).toBe(200);
+    await waitForInstall('ready');
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await installing;
+    // The untouched default changes nothing: the saved value stays as it was, and nothing threw.
+    expect(readSettings().CLAUDE_MEM_MODEL).toBe('my-gateway-model');
+  });
+
+  it('saves the browser email signup that the worker never serves back', async () => {
+    const installing = runInstallCommand({});
+    const waiting = await waitForInstall('waiting');
+    expect(waiting.install.catalog.defaults.email).toBeUndefined();
+    const email = 'person@example.com';
+    expect((await browserPost('/api/setup/install', { ...waiting.install.catalog.defaults, agents: ['claude-code'], email, note: 'hello' })).status).toBe(200);
+    const ready = await waitForInstall('ready');
+    expect(JSON.stringify(ready)).not.toContain(email);
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email, CLAUDE_MEM_ONLINE_SIGNUP_NOTE: 'hello' });
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await installing;
+  });
+
   it('leaves all choices pending when deferred, then resumes without stopping or copying the worker', async () => {
     await runInstallCommand({ setup: 'defer' });
     const deferred = await browserState();

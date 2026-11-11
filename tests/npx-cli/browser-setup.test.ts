@@ -24,6 +24,10 @@ describe('shouldUseBrowserSetup', () => {
   it('also uses the GUI to reconfigure an existing installation', () => {
     expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true })).toBe(true);
   });
+  it('keeps the terminal for npx claude-mem update on a machine that finished setup', () => {
+    expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true, update: true })).toBe(false);
+    expect(shouldUseBrowserSetup({ ...GUI, update: true })).toBe(true);
+  });
 });
 
 const FRESH_AGENT_INSTALL = {

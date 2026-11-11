@@ -107,6 +107,48 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', {})).status).toBe(200);
   });
 
+  it('never serves the signup email or note, and keeps them on disk for a retry until the install is ready', async () => {
+    await start();
+    const frames: string[] = [];
+    (routes as unknown as { broadcast: (event: string, value: unknown) => void }).broadcast = (event, value) => {
+      if (event === 'setup-state') frames.push(JSON.stringify(value));
+    };
+    const signup = { email: 'person@example.com', note: 'private note' };
+    const onDisk = () => JSON.parse(readFileSync(statePath, 'utf8')).install.selection;
+    const served = async () => JSON.stringify(await state());
+    await post('/api/setup/install/installer', { status: 'waiting', catalog: { ...catalog, signupSaved: true } });
+    expect((await state()).install.catalog.signupSaved).toBe(true);
+    expect((await post('/api/setup/install', { ...catalog.defaults, ...signup })).status).toBe(200);
+    // installing: the installer reads the file; the page and every event frame see only that one exists.
+    expect(onDisk()).toMatchObject(signup);
+    expect((await state()).install.selection.emailProvided).toBe(true);
+    for (const body of [await served(), ...frames]) {
+      expect(body).not.toContain(signup.email);
+      expect(body).not.toContain(signup.note);
+    }
+    // failed: still on disk, so the explicit retry can use it without the page ever holding it.
+    await post('/api/setup/install/installer', { status: 'failed', error: 'Could not write configuration' });
+    expect(onDisk()).toMatchObject(signup);
+    expect(await served()).not.toContain(signup.email);
+    expect((await post('/api/setup/install', { ...catalog.defaults, emailProvided: true })).status).toBe(200);
+    expect(onDisk()).toMatchObject(signup);
+    expect(onDisk().emailProvided).toBeUndefined();
+    // ready: the signup was applied, so it leaves the file too.
+    await post('/api/setup/install/installer', { status: 'ready' });
+    expect(onDisk().email).toBeUndefined();
+    expect(onDisk().note).toBeUndefined();
+    for (const body of [await served(), ...frames]) expect(body).not.toContain(signup.email);
+  });
+
+  it('a retry that unticks the email drops the stored one', async () => {
+    await start();
+    await post('/api/setup/install/installer', { status: 'waiting', catalog });
+    await post('/api/setup/install', { ...catalog.defaults, email: 'person@example.com' });
+    await post('/api/setup/install/installer', { status: 'failed', error: 'x' });
+    expect((await post('/api/setup/install', catalog.defaults)).status).toBe(200);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).install.selection.email).toBeUndefined();
+  });
+
   it('keeps failed installation reviewable and requires an explicit retry', async () => {
     await start();
     expect((await post('/api/setup/install/installer', { status: 'waiting' })).status).toBe(400);

@@ -844,7 +844,10 @@ export function browserInstallCatalog(options: InstallOptions, reinstall: boolea
       return { id: entry.name, label: entry.name, description, required: RUNTIME_REQUIRED_SKILLS.has(entry.name) };
     }).sort((a, b) => a.id.localeCompare(b.id));
   const consent = explainTelemetryConsent(process.env, loadTelemetryConfig());
-  const signup = readStoredSignup();
+  // A saved model outside the accepted set (a gateway model after switching auth, or an old pinned id) would make
+  // the browser's At Home step throw in promptClaudeModel; offer the default instead and leave the saved value alone.
+  const savedModel = options.model ?? String(getSetting('CLAUDE_MEM_MODEL') || 'haiku');
+  const claudeModel = CLAUDE_MODEL_CHOICES.has(savedModel) || resolveClaudeAuthMethod() === 'gateway' ? savedModel : 'haiku';
   return {
     agents, skills, reinstall,
     defaults: {
@@ -854,14 +857,20 @@ export function browserInstallCatalog(options: InstallOptions, reinstall: boolea
       disableAutoMemory: options.disableAutoMemory === true
         || readJsonSafe<Record<string, any>>(claudeSettingsPath(), {}).env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1',
       telemetryEnabled: consent.enabled,
-      claudeModel: options.model ?? String(getSetting('CLAUDE_MEM_MODEL') || 'haiku'),
+      claudeModel,
       ...(options.dshProfile ? { dshProfile: options.dshProfile } : {}),
-      ...(signup ? { email: signup.email, note: signup.note } : {}),
     },
+    // The catalog is served to localhost pages, so it says only that a signup exists, never its address.
+    signupSaved: readStoredSignup() !== null,
     telemetryLocked: !!process.env.CI || consent.source === 'DO_NOT_TRACK' || consent.source === 'env',
     skillsLocked: process.env.CLAUDE_MEM_SKILLS_DISABLED !== undefined,
     emailEnabled: !process.env.CI && String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() !== 'false',
   };
+}
+
+/** The browser's model counts only when the person changed it; an untouched default keeps the saved setting. */
+function browserModelChoice(selection: SetupInstallSelection, catalog: SetupInstallCatalog, current: string | undefined): string | undefined {
+  return selection.claudeModel && selection.claudeModel !== catalog.defaults.claudeModel ? selection.claudeModel : current;
 }
 
 async function applyBrowserEmail(selection: SetupInstallSelection, version: string): Promise<void> {
@@ -1555,18 +1564,22 @@ export async function promptProvider(
   return selectedProvider;
 }
 
+/**
+ * The Claude models `--model` accepts outside the gateway. Model policy (CLAUDE.md): offer Claude Code's
+ * aliases, never dated ids, so every install follows each new and cheaper release. Pinned ids stay accepted.
+ */
+export const CLAUDE_MODEL_CHOICES: ReadonlySet<string> = new Set([
+  'haiku',
+  'sonnet',
+  'opus',
+  'claude-haiku-4-5-20251001',
+  'claude-sonnet-5',
+  'claude-opus-4-8',
+]);
+
 /** `interactive: false` keeps the defaults (or `--model`) without asking: the browser funnel's At Home branch. */
 async function promptClaudeModel(options: InstallOptions, interactive: boolean = isInteractive): Promise<void> {
-  // Model policy (CLAUDE.md): offer Claude Code's aliases, never dated ids, so every
-  // install follows each new and cheaper release. Pinned ids stay accepted for --model.
-  const allowed = new Set([
-    'haiku',
-    'sonnet',
-    'opus',
-    'claude-haiku-4-5-20251001',
-    'claude-sonnet-5',
-    'claude-opus-4-8',
-  ]);
+  const allowed = CLAUDE_MODEL_CHOICES;
   const allowCustomModel = resolveClaudeAuthMethod() === 'gateway';
 
   if (options.model && !allowCustomModel) {
@@ -3223,7 +3236,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const setupComplete = readSetupState().status === 'complete';
   const browserSetup = deferSetup || resumeSetup || options.setup === 'browser' || shouldUseBrowserSetup({
     interactive: isInteractive, provider: options.provider, noAutoStart: options.noAutoStart,
-    runtime: normalizeRuntimeFlag(options.runtime ?? 'worker') ?? 'worker', setupComplete,
+    runtime: normalizeRuntimeFlag(options.runtime ?? 'worker') ?? 'worker', setupComplete, update: options.update,
   });
   const resumedState = resumeSetup ? readSetupState() : null;
   if (resumeSetup && !resumedState?.install) throw new Error('There is no deferred setup to resume.');
@@ -3404,7 +3417,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   if (resumedState?.install?.status === 'ready' && resumedState.install.selection) {
     selectedIDEs = [...resumedState.install.selection.agents];
-    options.model = resumedState.install.selection.claudeModel ?? options.model;
+    options.model = browserModelChoice(resumedState.install.selection, resumedState.install.catalog, options.model);
   }
 
   const failedIDEs = browserSetup ? [] : await setupIDEs(selectedIDEs, summary, options.dshProfile);
@@ -3478,7 +3491,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           log,
           install: {
             catalog: installCatalog!,
-            apply: async (selection) => {
+            apply: async (served) => {
+              // The worker never serves the email or note, so read the submitted selection from the state file.
+              const stored = readSetupState().install?.selection;
+              const selection = { ...served, email: stored?.email, note: stored?.note };
               // The worker validates against this run's catalog; keep the CLI boundary safe too.
               if (!selection.agents.length || selection.agents.some(id => !installCatalog!.agents.some(agent => agent.id === id))) {
                 throw new Error('Choose at least one supported agent.');
@@ -3505,7 +3521,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               }
               summary.warnings.push(...attempt.warnings);
               selectedIDEs = [...selection.agents];
-              options.model = selection.claudeModel ?? options.model;
+              options.model = browserModelChoice(selection, installCatalog!, options.model);
               if (selectedIDEs.includes('claude-code')) {
                 autoMemoryStatus = selection.disableAutoMemory
                   ? disableClaudeAutoMemory() ? 'disabled' : 'already-disabled'
