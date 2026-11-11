@@ -55,6 +55,7 @@ export const windsurfAdapter: PlatformAdapter = {
           // hit the recursion gate while external same-named tools still run.
           toolName: typeof server === 'string' && server.length > 0 && typeof name === 'string' && name.length > 0
             ? `mcp__${server}__${name}` : name,
+          nativeToolName: typeof toolInfo.mcp_tool_name === 'string' ? toolInfo.mcp_tool_name : undefined,
           toolInput: toolInfo.mcp_tool_arguments,
           toolResponse: toolInfo.mcp_result,
         };
