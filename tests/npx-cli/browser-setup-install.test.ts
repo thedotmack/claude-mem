@@ -579,6 +579,17 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).not.toContain('Setup is waiting at');
   });
 
+  it('a deferred install with --no-auto-start leaves the worker to the caller and still succeeds', async () => {
+    fixtureWorkerResult = 'dead';
+    const previousExitCode = process.exitCode;
+    try {
+      await runInstallCommand({ setup: 'defer', noAutoStart: true });
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally { process.exitCode = previousExitCode ?? 0; }
+    expect(workerStarts).toBe(0);
+    expect(lines.join('\n')).toContain('Setup is waiting at');
+  });
+
   it('a reinstall whose worker does not start keeps a completed setup complete', async () => {
     const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' },
       installer: { stage: 'home-ready', error: null, updatedAt: 'earlier' }, checkout: null, tools: null, completedAt: 'earlier' };

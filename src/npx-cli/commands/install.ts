@@ -3410,8 +3410,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         },
       }]);
     }
-    if ((workerStartResult as WorkerStartResult) === 'dead') {
+    if (!options.noAutoStart && (workerStartResult as WorkerStartResult) === 'dead') {
       // The setup page is served by the worker, so a saved setup with no worker is not "waiting" for anyone.
+      // --no-auto-start skips the start on purpose; that run leaves the worker to the caller.
       log.error('Setup is saved, but the worker did not start, so the setup page is not available. Run npx claude-mem doctor, then retry npx claude-mem install --setup defer.');
       process.exitCode = 1;
       return;
@@ -3574,9 +3575,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         });
       }
     } catch (error) {
-      // A reinstall that fails before finishing must not leave a machine that completed onboarding reading as
-      // pending with no install hand-off: My Work and SessionStart would never point back to setup.
-      if (setupStateBeforeBrowser.status === 'complete' && readSetupState().status !== 'complete') writeSetupState(setupStateBeforeBrowser);
+      // A reinstall that fails before its install hand-off exists must not leave a machine that completed
+      // onboarding reading as pending with nothing to resume. Once the hand-off is written, keep it: My Work and
+      // SessionStart then point back to the pending choices.
+      const current = readSetupState();
+      if (setupStateBeforeBrowser.status === 'complete' && current.status !== 'complete' && !current.install) {
+        writeSetupState(setupStateBeforeBrowser);
+      }
       throw error;
     } finally {
       // Preserve saved choices and errors, but release the local-work pause on every hand-off exit.
