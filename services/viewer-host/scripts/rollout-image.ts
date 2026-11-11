@@ -20,6 +20,9 @@
  *                                       (https://docs.fly.io/machines/api/working-with-machines-api).
  *
  * Fly Machines API (https://docs.fly.io/machines/api/machines-resource):
+ *   - The target is the router machine's image pinned by digest, `registry/repository:tag@digest`
+ *     from its image_ref (pinnedImageReference), the same string cmem.ai creates account machines
+ *     with. A router machine without a digest stops the run before anything changes.
  *   - An update replaces the whole config ("we don't support partial updates"), so each
  *     update sends the machine's own config with only `image` changed. A machine whose
  *     config Fly could not read (host unreachable, `config` null) is reported as failed,
@@ -104,11 +107,44 @@ export interface RolloutSummary {
   notAttempted: string[];
 }
 
+/** Machine.image_ref (OpenAPI ImageRef): "The image the Machine runs, as resolved when it was last created or updated." */
+interface FlyImageRef {
+  registry?: string;
+  repository?: string;
+  tag?: string;
+  digest?: string;
+}
+
 interface FlyMachine {
   id: string;
   state: string;
   version?: string;
   config: (Record<string, unknown> & { image?: string }) | null;
+  image_ref?: FlyImageRef | null;
+}
+
+/** Router machines on their way out; Fly lists them until they are gone. Same set cmem.ai skips. */
+const MACHINE_GONE_STATES = new Set(['destroying', 'destroyed']);
+
+/**
+ * The image a router machine runs, pinned: `registry/repository:tag@digest`, built from
+ * Machine.image_ref, never the bare config.image tag. Reason: on staging (2026-11-11) a router
+ * deploy whose builder failed ("error releasing builder: deadline_exceeded") left config.image
+ * naming a tag the registry never received, and machine creates answered 400 MANIFEST_UNKNOWN.
+ * The same tag with its digest appended worked and the digest alone did not, so all four parts
+ * are required, and a missing one stops the run instead of guessing. cmem.ai builds the same
+ * string the same way when it creates an account machine (claude-mem-pro
+ * src/lib/viewer-host/provision.ts pinnedImageReference), so machines it created count as current.
+ */
+export function pinnedImageReference(routerFlyAppName: string, machine: Pick<FlyMachine, 'id' | 'image_ref'>): string {
+  const ref = machine.image_ref;
+  if (!ref?.digest) {
+    throw new Error(`${routerFlyAppName}/${machine.id} reports no image_ref digest, so its image cannot be pinned. Finish or redo the router deploy first.`);
+  }
+  if (!ref.registry || !ref.repository || !ref.tag) {
+    throw new Error(`${routerFlyAppName}/${machine.id} image_ref lacks its registry, repository or tag (${JSON.stringify(ref)}); a digest alone does not resolve on Fly's registry.`);
+  }
+  return `${ref.registry}/${ref.repository}:${ref.tag}@${ref.digest}`;
 }
 
 export async function rolloutImage(options: RolloutOptions): Promise<RolloutSummary> {
@@ -163,11 +199,11 @@ export async function rolloutImage(options: RolloutOptions): Promise<RolloutSumm
   }
 
   // The target is whatever the router runs, so the order is always: deploy the router, then roll out.
-  // Compared and sent as the config.image tag, not the image_ref digest: the API documents
-  // config.image only as "The docker image to run" with no digest form, the tag fly deploy writes
-  // (deployment-<id>) is new for every deploy, and cmem.ai creates account machines with this same tag.
-  const routerImages = [...new Set((await listMachines(options.routerFlyAppName)).map(machine => machine.config?.image))];
-  if (routerImages.length !== 1 || !routerImages[0]) {
+  // It is the pinned reference (pinnedImageReference), compared with each account machine's
+  // config.image and written there in that same form. A machine still on a bare tag is out of date.
+  const routerMachines = (await listMachines(options.routerFlyAppName)).filter(machine => !MACHINE_GONE_STATES.has(machine.state));
+  const routerImages = [...new Set(routerMachines.map(machine => pinnedImageReference(options.routerFlyAppName, machine)))];
+  if (routerImages.length !== 1) {
     throw new Error(`${options.routerFlyAppName} machines report images ${JSON.stringify(routerImages)}; expected exactly one. Finish the router deploy first.`);
   }
   const targetImage = routerImages[0];
