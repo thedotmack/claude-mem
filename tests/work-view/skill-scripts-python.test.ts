@@ -140,6 +140,11 @@ describe('save_goals.py', () => {
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout.toString()).writes.slice(1).map((write: { task: string }) => write.task)).toEqual(['Ask: Login']);
       expect(save({ asks: [{ title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'never typed' }] }] }).exitCode).not.toBe(0);
+      // An update stays strict for its new quotes: one bad new quote beside a good one still refuses the save.
+      expect(save({ asks: [
+        { rank: 1, title: 'Login', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'fix the login' }] },
+        { rank: 2, title: 'Made up', focus_area: null, evidence: [{ at: '2026-10-21 09:00', quote: 'never typed' }] },
+      ] }).exitCode).not.toBe(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

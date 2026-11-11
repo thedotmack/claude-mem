@@ -104,6 +104,8 @@ Saved goals with `priorities` and `open_asks` instead were sorted before the thr
 
 Keep the saved `owner-map.md`; step 3 can name it with `--map`. Quotes that aged out of the window are dropped when saving.
 
+Save the update with step 3 and add `--carried-before "<YYYY-MM-DD HH:MM>"`, the same local minute passed to `--since`, so newly written quotes stay strict.
+
 ## 3. Save to Goals
 
 ```bash
