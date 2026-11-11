@@ -19,7 +19,9 @@ const fixture = String.raw`
   const source = new SessionStore(':memory:');
   const now = Date.now();
   const old = now - 180 * 86_400_000;
-  for (const project of ['selected', 'other']) {
+  const cliProject = process.env.EXPORT_CASE === 'cli-project';
+  const selected = cliProject ? 'selected=project' : 'selected';
+  for (const project of [selected, 'other', ...(cliProject ? ['selected'] : [])]) {
     const session = source.createSDKSession(project, project, 'opening');
     source.ensureMemorySessionIdRegistered(session, project + '-memory');
     source.saveUserPrompt(project, 1, project + ' prompt', session);
@@ -30,10 +32,11 @@ const fixture = String.raw`
   }
   const ids = [];
   for (const [project, title, epoch] of [
-    ['selected', 'Archived architecture', old],
-    ['selected', 'Current design', now],
-    ['selected', 'Epoch boundary', 0],
+    [selected, 'Archived architecture', old],
+    [selected, 'Current design', now],
+    [selected, 'Epoch boundary', 0],
     ['other', 'Other project', now],
+    ...(cliProject ? [['selected', 'Wrong truncated project', now]] : []),
   ]) {
     ids.push(source.storeObservation(project + '-memory', project, {
       type: 'discovery', title, subtitle: null, narrative: title,
@@ -69,8 +72,16 @@ const fixture = String.raw`
       normalTitles = (await response.json()).observations.map(row => row.title).sort();
     }
     const output = join(process.env.CLAUDE_MEM_DATA_DIR, 'export.json');
-    await exportMemories(semantic ? 'meaning' : '', output,
-      process.env.EXPORT_CASE === 'all' ? undefined : 'selected');
+    if (cliProject) {
+      const child = Bun.spawn([process.execPath, 'scripts/export-memories.ts', '', output, '--project=' + selected], {
+        env: { ...process.env, CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN: '0' }, stdout: 'pipe', stderr: 'pipe',
+      });
+      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
+      if (code !== 0) throw new Error(stderr);
+    } else {
+      await exportMemories(semantic ? 'meaning' : '', output,
+        process.env.EXPORT_CASE === 'all' ? undefined : selected);
+    }
     const data = JSON.parse(readFileSync(output, 'utf8'));
     console.log(JSON.stringify({
       titles: data.observations.map(row => row.title).sort(),
@@ -83,7 +94,7 @@ const fixture = String.raw`
   }
 `;
 
-for (const scenario of ['all', 'project', 'semantic']) {
+for (const scenario of ['all', 'project', 'semantic', 'cli-project']) {
   it(`exports the complete ${scenario} history through the worker search route`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-export-history-'));
     try {
@@ -98,9 +109,9 @@ for (const scenario of ['all', 'project', 'semantic']) {
       expect(actual.titles).toEqual(scenario === 'all'
         ? ['Archived architecture', 'Current design', 'Epoch boundary', 'Other project']
         : ['Archived architecture', 'Current design', 'Epoch boundary']);
-      expect(actual.parents).toEqual(scenario === 'all' ? ['other', 'selected'] : ['selected']);
-      expect(actual.summaries).toBe(scenario === 'all' ? 2 : scenario === 'project' ? 1 : 0);
-      expect(actual.prompts).toBe(scenario === 'all' ? 2 : scenario === 'project' ? 1 : 0);
+      expect(actual.parents).toEqual(scenario === 'all' ? ['other', 'selected'] : [scenario === 'cli-project' ? 'selected=project' : 'selected']);
+      expect(actual.summaries).toBe(scenario === 'all' ? 2 : scenario === 'semantic' ? 0 : 1);
+      expect(actual.prompts).toBe(scenario === 'all' ? 2 : scenario === 'semantic' ? 0 : 1);
       if (scenario === 'semantic') expect(actual.normalTitles).toEqual(['Current design']);
     } finally {
       rmSync(dir, { recursive: true, force: true });

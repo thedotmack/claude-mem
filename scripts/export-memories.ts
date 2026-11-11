@@ -165,7 +165,7 @@ if (isDirectRun()) {
   }
 
   const [query, outputFile, ...flags] = args;
-  const project = flags.find(f => f.startsWith('--project='))?.split('=')[1];
+  const project = flags.find(f => f.startsWith('--project='))?.slice('--project='.length);
 
   exportMemories(query, outputFile, project).catch((error) => {
     console.error('❌ Export failed:', error);
