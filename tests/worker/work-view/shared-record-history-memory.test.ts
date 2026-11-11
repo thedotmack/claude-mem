@@ -2,7 +2,9 @@ import { afterEach, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { heapStats } from 'bun:jsc';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { canonicalJson } from '../../../src/services/sync/CanonicalContent.js';
+import { buildContentOperation, canonicalJson } from '../../../src/services/sync/CanonicalContent.js';
+import { SyncApply } from '../../../src/services/sync/SyncApply.js';
+import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { logger } from '../../../src/utils/logger.js';
 import { createSharedRecordReader, publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { createSharedBatch, createSharedEntry, sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
@@ -179,6 +181,63 @@ test('a kept reader parses only the shared rows it has not seen', () => {
   validated = 0;
   expect(read().records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'after rollback' });
   expect(validated).toBe(1);
+});
+
+// --- Pulled rows rewritten or deleted after the cache has seen them ---
+
+const REMOTE = 'device-z';
+function pulledFixture() {
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const apply = new SyncApply(db, { deviceId: DEVICE });
+  let nextLocalId = 1;
+  // Each row as the remote device's own row id and revision, the way a pull delivers it.
+  const pull = (rows: Array<{ listName: string; fields: unknown; localId?: number }>, rev = '1') => {
+    const cursor = Number(apply.getCursor());
+    const wires = rows.map((row, index) => ({ seq: String(cursor + index + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: REMOTE,
+      originLocalId: String(row.localId ?? nextLocalId++), entityRev: rev, payload: { project: 'shared', list_name: row.listName,
+        fields: row.fields, created_at: new Date(NOW).toISOString(), created_at_epoch: String(NOW) } }) }));
+    apply.applyOps(decodeChanges(wires));
+  };
+  const tombstone = (localId: number, rev = '2') => {
+    const cursor = Number(apply.getCursor());
+    apply.applyOps(decodeChanges([{ seq: String(cursor + 1), ...buildContentOperation({ kind: 'work_state', originDeviceId: REMOTE,
+      originLocalId: String(localId), entityRev: rev, payload: null, deleted: true, deletedAt: new Date(NOW).toISOString() }) }]));
+  };
+  const batch = (batchId: string, revision: string, value: unknown) => createSharedBatch([createSharedEntry({ batchId, writer: REMOTE,
+    kind: 'group', key: 'g', revision, base: null, value })], { batchId, writer: REMOTE });
+  return { db, pull, tombstone, batch };
+}
+const groupValue = (state: ReturnType<typeof readSharedRecords>) => state.records.get(sharedRecordKey('group', 'g'))?.value;
+
+test('a pulled higher revision that rewrites a row\'s content is read, not the summary kept for the old content', () => {
+  const { db, pull, batch } = pulledFixture();
+  pull(batch('b1', '1', 'A').map((row, index) => ({ ...row, localId: index + 1 })));
+  const read = createSharedRecordReader(db, { deviceId: DEVICE });
+  expect(groupValue(read())).toBe('A');
+  expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('A');
+  // SyncApply.applyWorkState rewrites the same rows in place (same ids and origin) with new fields and a higher sync_rev.
+  pull(batch('b1', '1', 'B').map((row, index) => ({ ...row, localId: index + 1 })), '2');
+  expect((db.query("SELECT COUNT(*) AS count FROM work_state_entries WHERE sync_rev = '2'").get() as { count: number }).count).toBe(3);
+  expect(groupValue(read())).toBe('B');
+  expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('B');
+});
+
+test('a pulled tombstone that deletes a row of the current batch is read', () => {
+  const { db, pull, tombstone, batch } = pulledFixture();
+  pull(batch('b1', '1', 'A'));
+  pull(batch('b2', '2', 'B'));
+  const read = createSharedRecordReader(db, { deviceId: DEVICE });
+  expect(groupValue(read())).toBe('B');
+  expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('B');
+  // SyncApply.applyOp deletes b2's entry row (remote row 4), which is not the highest id: b2 is pending again.
+  tombstone(4);
+  expect((db.query('SELECT COUNT(*) AS count FROM work_state_entries').get() as { count: number }).count).toBe(5);
+  for (const state of [read(), readSharedRecords(db, { deviceId: DEVICE })]) {
+    expect(groupValue(state)).toBe('A');
+    expect(state.diagnostics.pending).toBe(1);
+  }
 });
 
 test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {
