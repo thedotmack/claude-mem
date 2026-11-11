@@ -998,7 +998,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         200 - exportPrefix.length, kindCapture.startCol);
     }
 
-    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow, language);
+    const commentStartRow = kindCapture.tag === "c_declaration"
+      ? decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow
+      : startRow;
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, commentStartRow, language);
     const body = match.captures.find(c => c.tag === "body");
     const docstring = language === "python" && body
       ? findPythonDocstringFromLines(lines, body.startRow, endRow)
