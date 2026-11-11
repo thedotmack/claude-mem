@@ -6,7 +6,7 @@ import { loadTelemetryConfig, resolveTelemetryConsent, saveTelemetryConfig } fro
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { applyConfiguredSkillSelection } from '../../shared/skill-selection.js';
+import { applyConfiguredSkillSelection, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
 import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
@@ -916,8 +916,20 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
+/**
+ * The plugin files are already replaced when this runs, so a bad selection
+ * (invalid name, held lock, foreign parked folder) must not stop install or
+ * repair before dependencies install: warn loudly and keep the skills as they are.
+ */
 function applyInstalledSkillSelection(pluginRoot: string): void {
-  const result = applyConfiguredSkillSelection(pluginRoot);
+  let result;
+  try {
+    result = applyConfiguredSkillSelection(pluginRoot);
+  } catch (error) {
+    // [ANTI-PATTERN IGNORED]: surfaced to the user via log.warn; the skill selection is optional and install must finish.
+    log.warn(skillSelectionFailureMessage(error));
+    return;
+  }
   for (const warning of result.warnings) log.warn(warning);
 }
 

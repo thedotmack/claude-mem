@@ -31,6 +31,17 @@ copy on install, update, and repair. The published package and source checkout
 keep every skill. New skills introduced by an update remain enabled unless named
 in the list. This controls plugin skill discovery, not memory capture or MCP tools.
 
+Four skills always stay enabled, because claude-mem reads their files while it runs.
+If you list one of them, it is left in place and the installer and SessionStart
+hook print a warning naming it:
+
+| Skill              | Read by                                                        |
+|--------------------|----------------------------------------------------------------|
+| `mem-search`       | The `/api/instructions` endpoint and `install --ide codex`     |
+| `how-it-works`     | The viewer's "How it works" explainer                          |
+| `request-progress` | The My Work refresh                                            |
+| `owner-goals`      | The My Work refresh                                            |
+
 Claude Code's SessionStart hook also reapplies the list after marketplace updates
 and settings changes. When it reports that selection changed, restart Claude Code
 to reload its skill listing: the current session may have already loaded the old
@@ -47,7 +58,7 @@ update removes an upstream skill but leaves its parked copy, re-enabling it can
 restore that older copy.
 
 An invalid setting or unsafe path leaves skill content in place and reports the
-problem. Symbolic links, foreign backup directories, and incomplete skill
+problem; install and repair still finish. Symbolic links, foreign backup directories, and incomplete skill
 folders are refused. Concurrent sessions serialize changes with the empty
 `.claude-mem-skill-selection.lock` directory. If a process is killed during a
 change, close the other sessions, inspect the installed tree, remove that empty

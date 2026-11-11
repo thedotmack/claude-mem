@@ -29,28 +29,49 @@ try {
   const active = (root: string) => join(root, 'skills', 'make-plan', 'SKILL.md');
   const saved = (root: string) => join(root, '.claude-mem-disabled-skills', 'make-plan', 'SKILL.md');
   const marketplace = join(paths.marketplaceDirectory(), 'plugin');
-  await copyPluginToCache('15.15.2');
-  copyPluginToMarketplace();
-  assert(existsSync(active(paths.pluginCacheDirectory('15.15.2'))));
-  assert(existsSync(active(marketplace)));
-  writeFileSync(settings, JSON.stringify({ CLAUDE_MEM_SKILLS_DISABLED: 'make-plan' }));
-  for (const version of ['15.15.2', '15.15.3']) {
-    writeFileSync(active(plugin), `updated ${version}`);
-    await copyPluginToCache(version);
+  const scenario = process.argv[2] ?? 'boundaries';
+  if (scenario !== 'boundaries') {
+    // Install must finish even when the saved selection cannot be applied in full.
+    const warnings: string[] = [];
+    spyOn(console, 'warn').mockImplementation((message: string) => { warnings.push(String(message)); });
+    const value = scenario === 'invalid-setting' ? 'claude-mem:make-plan' : 'mem-search,make-plan';
+    writeFileSync(settings, JSON.stringify({ CLAUDE_MEM_SKILLS_DISABLED: value }));
+    await copyPluginToCache('15.15.2');
     copyPluginToMarketplace();
-    for (const installed of [paths.pluginCacheDirectory(version), marketplace]) {
-      assert(!existsSync(active(installed)));
-      assert.equal(readFileSync(saved(installed), 'utf-8'), `updated ${version}`);
-      assert(existsSync(join(installed, 'skills', 'mem-search', 'SKILL.md')));
+    for (const installed of [paths.pluginCacheDirectory('15.15.2'), marketplace]) {
+      assert(existsSync(join(installed, 'skills', 'mem-search', 'SKILL.md')), 'mem-search must stay at its runtime path');
+      assert(existsSync(join(installed, '.claude-plugin', 'plugin.json')));
+      assert.equal(existsSync(active(installed)), scenario === 'invalid-setting');
     }
-    assert(existsSync(active(plugin)), 'published package must stay intact');
+    const expected = scenario === 'invalid-setting'
+      ? 'could not apply bundled skill selection: CLAUDE_MEM_SKILLS_DISABLED contains an invalid skill name'
+      : 'Skill mem-search stays enabled: claude-mem reads it at runtime';
+    assert.equal(warnings.filter(warning => warning.includes(expected)).length, 2, `warnings: ${JSON.stringify(warnings)}`);
+    console.log(`skill install scenario ${scenario} passed`);
+  } else {
+    await copyPluginToCache('15.15.2');
+    copyPluginToMarketplace();
+    assert(existsSync(active(paths.pluginCacheDirectory('15.15.2'))));
+    assert(existsSync(active(marketplace)));
+    writeFileSync(settings, JSON.stringify({ CLAUDE_MEM_SKILLS_DISABLED: 'make-plan' }));
+    for (const version of ['15.15.2', '15.15.3']) {
+      writeFileSync(active(plugin), `updated ${version}`);
+      await copyPluginToCache(version);
+      copyPluginToMarketplace();
+      for (const installed of [paths.pluginCacheDirectory(version), marketplace]) {
+        assert(!existsSync(active(installed)));
+        assert.equal(readFileSync(saved(installed), 'utf-8'), `updated ${version}`);
+        assert(existsSync(join(installed, 'skills', 'mem-search', 'SKILL.md')));
+      }
+      assert(existsSync(active(plugin)), 'published package must stay intact');
+    }
+    writeFileSync(settings, '{"CLAUDE_MEM_SKILLS_DISABLED":""}');
+    await copyPluginToCache('15.15.3');
+    copyPluginToMarketplace();
+    assert(existsSync(active(paths.pluginCacheDirectory('15.15.3'))));
+    assert(existsSync(active(marketplace)));
+    console.log('skill install/update boundaries passed');
   }
-  writeFileSync(settings, '{"CLAUDE_MEM_SKILLS_DISABLED":""}');
-  await copyPluginToCache('15.15.3');
-  copyPluginToMarketplace();
-  assert(existsSync(active(paths.pluginCacheDirectory('15.15.3'))));
-  assert(existsSync(active(marketplace)));
-  console.log('skill install/update boundaries passed');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

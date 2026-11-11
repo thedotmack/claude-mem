@@ -6,6 +6,7 @@ import { parseJsonWithBom } from './atomic-json.js';
 import { settingsTarget } from './settings-document-shape.js';
 import { resolveDataDir } from './data-dir.js';
 import { marketplaceDirectory, pluginsDirectory } from './claude-code-plugin-paths.js';
+import { RUNTIME_REQUIRED_SKILLS } from './runtime-skills.js';
 
 export const DISABLED_SKILLS_DIRECTORY = '.claude-mem-disabled-skills';
 const SETTING = 'CLAUDE_MEM_SKILLS_DISABLED';
@@ -115,9 +116,15 @@ function skillExists(parent: string, name: string): boolean {
  */
 export function applyDisabledSkills(pluginRoot: string, disabled: ReadonlySet<string>): SkillSelectionResult {
   // Do not accept unchecked names even from another programmatic caller.
-  disabled = parseDisabledSkills([...disabled]);
+  const requested = parseDisabledSkills([...disabled]);
   pluginRoot = resolve(pluginRoot);
   const result: SkillSelectionResult = { disabled: [], enabled: [], warnings: [] };
+  // claude-mem reads these skills' files at runtime: keep them active (and
+  // restore a parked copy) so My Work, the viewer and Codex keep working.
+  disabled = new Set([...requested].filter(name => !RUNTIME_REQUIRED_SKILLS.has(name)));
+  for (const name of requested) {
+    if (RUNTIME_REQUIRED_SKILLS.has(name)) result.warnings.push(`Skill ${name} stays enabled: claude-mem reads it at runtime`);
+  }
   const parked = join(pluginRoot, DISABLED_SKILLS_DIRECTORY);
   if (disabled.size === 0 && statOrNull(parked) === null) return result;
   checkInstalledRoot(pluginRoot);
@@ -185,4 +192,9 @@ export function applyDisabledSkills(pluginRoot: string, disabled: ReadonlySet<st
 
 export function applyConfiguredSkillSelection(pluginRoot: string): SkillSelectionResult {
   return applyDisabledSkills(pluginRoot, readDisabledSkills());
+}
+
+/** The one wording for a selection that could not be applied; the skills stay as they were. */
+export function skillSelectionFailureMessage(error: unknown): string {
+  return `claude-mem: could not apply bundled skill selection: ${error instanceof Error ? error.message : String(error)}`;
 }

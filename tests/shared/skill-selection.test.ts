@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { applyConfiguredSkillSelection, applyDisabledSkills, DISABLED_SKILLS_DIRECTORY, parseDisabledSkills, readDisabledSkills } from '../../src/shared/skill-selection.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { RUNTIME_REQUIRED_SKILLS } from '../../src/shared/runtime-skills.js';
 
 let scratch: string;
 let root: string;
@@ -218,4 +219,38 @@ it.skipIf(process.platform !== 'win32')('accepts different casing of the install
   const marketplace = join(process.env.CLAUDE_CONFIG_DIR!, 'plugins', 'marketplaces', 'thedotmack', 'plugin');
   cpSync(root, marketplace, { recursive: true });
   expect(applyDisabledSkills(marketplace.toUpperCase(), selected('do')).disabled).toEqual(['do']);
+});
+
+describe('skills claude-mem reads at runtime', () => {
+  const repoRoot = join(import.meta.dir, '..', '..');
+  it('names only bundled skills, each documented in configuration.mdx', () => {
+    expect(RUNTIME_REQUIRED_SKILLS.size).toBeGreaterThan(0);
+    const docs = readFileSync(join(repoRoot, 'docs', 'public', 'configuration.mdx'), 'utf-8');
+    for (const name of RUNTIME_REQUIRED_SKILLS) {
+      expect(existsSync(join(repoRoot, 'plugin', 'skills', name, 'SKILL.md'))).toBe(true);
+      expect(docs).toContain(`| \`${name}\``);
+    }
+  });
+  for (const name of RUNTIME_REQUIRED_SKILLS) {
+    it(`refuses to disable ${name}, names it in a warning, and still disables the rest`, () => {
+      if (!existsSync(join(root, 'skills', name))) addSkill(name);
+      const result = applyDisabledSkills(root, selected(name, 'do'));
+      expect(result.disabled).toEqual(['do']);
+      expect(result.warnings).toEqual([`Skill ${name} stays enabled: claude-mem reads it at runtime`]);
+      expect(existsSync(join(root, 'skills', name, 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(parked(), name))).toBe(false);
+    });
+    it(`restores a parked copy of ${name} even while it is still listed`, () => {
+      if (!existsSync(join(root, 'skills', name))) addSkill(name);
+      applyDisabledSkills(root, selected('do'));
+      renameSync(join(root, 'skills', name), join(parked(), name));
+      expect(applyDisabledSkills(root, selected(name, 'do')).enabled).toEqual([name]);
+      expect(existsSync(join(root, 'skills', name, 'SKILL.md'))).toBe(true);
+    });
+  }
+  it('warns about a runtime-required name without touching files when nothing else is disabled', () => {
+    const name = [...RUNTIME_REQUIRED_SKILLS][0];
+    expect(applyDisabledSkills(root, selected(name)).warnings).toEqual([`Skill ${name} stays enabled: claude-mem reads it at runtime`]);
+    expect(readdirSync(root).sort()).toEqual(['.claude-plugin', 'skills']);
+  });
 });

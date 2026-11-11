@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
 import { readJsonFileWithBom, writeJsonFileAtomic, writeTextFileAtomic } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
+import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
 const CODEX_DIR = path.resolve(process.env.CODEX_HOME || path.join(homedir(), '.codex'));
@@ -32,7 +33,7 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', '.codex-plugin', 'plugin.json'),
   path.join('plugin', '.mcp.json'),
   path.join('plugin', 'hooks', 'codex-hooks.json'),
-  path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
+  path.join('plugin', 'skills', RUNTIME_SKILLS.memSearch, 'SKILL.md'),
 ];
 const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
 const MACOS_CODEX_BUNDLE_PATHS = [

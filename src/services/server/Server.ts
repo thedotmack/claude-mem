@@ -27,6 +27,7 @@ import type { ObservationQueueHealth } from '../../server/queue/queue-health-typ
 import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from './init-phase.js';
+import { RUNTIME_SKILLS } from '../../shared/runtime-skills.js';
 
 /**
  * Keep-alive comment cadence on GET /api/ready. Clients treat 5 s of silence
@@ -35,7 +36,7 @@ import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from 
  */
 const READY_STREAM_PING_INTERVAL_MS = 2000;
 
-const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
+const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills', RUNTIME_SKILLS.memSearch);
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
 const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
 

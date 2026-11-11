@@ -53,3 +53,14 @@ it('keeps the restart instruction when a list also contains an unknown name', ()
   expect(message).toContain('Restart Claude Code to reload the skill listing');
   expect(message).toContain('Unknown bundled skill: unknown');
 });
+
+it('the built hook names a runtime-required skill it refused and leaves it in place', () => {
+  mkdirSync(join(root, 'skills', 'mem-search'));
+  writeFileSync(join(root, 'skills', 'mem-search', 'SKILL.md'), '# mem-search');
+  writeFileSync(settings, '{"CLAUDE_MEM_SKILLS_DISABLED":"mem-search,do"}');
+  const message = run();
+  expect(message).toContain('Restart Claude Code to reload the skill listing');
+  expect(message).toContain('Skill mem-search stays enabled: claude-mem reads it at runtime');
+  expect(existsSync(join(root, 'skills', 'mem-search', 'SKILL.md'))).toBe(true);
+  expect(existsSync(join(root, 'skills', 'do'))).toBe(false);
+});

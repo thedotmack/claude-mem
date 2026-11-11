@@ -34,19 +34,29 @@
  *   fix. When the launcher check fails too, this notice is the one printed:
  *   its fix runs the whole installer, which places the launcher again, and the
  *   launcher failure still goes to stderr.
+ * - Also prints that one object when re-applying CLAUDE_MEM_SKILLS_DISABLED to
+ *   this installed plugin (skill-selection.ts; marketplace updates bring a
+ *   fresh skills/ folder) moved a skill, refused a name (unknown, or one in
+ *   runtime-skills.ts that claude-mem reads at runtime), or failed. When
+ *   another notice is printed too, both share the one systemMessage, one per
+ *   line, so stdout stays a single JSON object.
  * - Never exits non-zero. Diagnostics go to stderr, which for an exit-0 hook
  *   "goes to the debug log only, never the transcript" (same page).
  * - Fast when current: one `claude-mem --version` spawn plus the POSIX rc-file
  *   read and a PATH walk (no spawn), one small JSON read for the auto-update
  *   state (the install-shape checks run only for an attempt whose supervisor
- *   is gone), no Bun lookup and no PowerShell spawn.
+ *   is gone), one settings.json read for the skill selection (the install
+ *   checks and the lock run only when a skill is or was disabled), no Bun
+ *   lookup and no PowerShell spawn.
  * - Runs under plain `node`, so it imports only the light launcher modules,
  *   the installer's Bun discovery (tool-path.ts), the data-dir rule
  *   (data-dir.ts), Claude Code's install locations
- *   (claude-code-plugin-paths.ts), the install-shape checks and the
- *   auto-update state file's reader, never the worker.
+ *   (claude-code-plugin-paths.ts), the install-shape checks, the
+ *   auto-update state file's reader, and the skill selection
+ *   (skill-selection.ts, with runtime-skills.ts, settings-document-shape.ts
+ *   and atomic-json.ts), never the worker.
  */
-import { applyConfiguredSkillSelection } from '../shared/skill-selection.js';
+import { applyConfiguredSkillSelection, skillSelectionFailureMessage } from '../shared/skill-selection.js';
 import { existsSync, readFileSync, realpathSync, writeSync } from 'fs';
 import { dirname, join } from 'path';
 import {
@@ -236,7 +246,7 @@ try {
     if (messages.length) skillSelectionNotice = messages.join('\n');
   }
 } catch (error) {
-  skillSelectionNotice = `claude-mem: could not apply bundled skill selection: ${error instanceof Error ? error.message : String(error)}`;
+  skillSelectionNotice = skillSelectionFailureMessage(error);
 }
 
 let failure: EnsureLauncherFailure | null;
