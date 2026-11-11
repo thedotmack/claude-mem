@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from mcp import StdioServerParameters
 from mcp.types import CallToolResult, TextContent, Tool as MCPTool
+from mcpadapt.core import MCPAdapt
 from smolagents import Model, ToolCallingAgent
 from smolagents.models import ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction
 
@@ -103,13 +105,36 @@ class NativeSdk(unittest.TestCase):
     def test_failed_connection_is_bounded_and_cleaned_up(self):
         with tempfile.TemporaryDirectory(prefix="smol project ") as directory:
             stalled = Path(directory) / "stalled server.py"
-            stalled.write_text("import time; time.sleep(10)")
+            child_pid = Path(directory) / "child.pid"
+            stalled.write_text(
+                "import os, time\nfrom pathlib import Path\n"
+                "Path('child.pid').write_text(str(os.getpid()))\ntime.sleep(10)\n"
+            )
             params = StdioServerParameters(command=sys.executable, args=[str(stalled)], cwd=directory)
-            start = time.monotonic()
-            with patch("memory.StdioServerParameters", return_value=params), self.assertRaises(Exception):
-                with memory_tools("a", str(stalled), directory, timeout=0.1):
-                    self.fail("unresponsive server must not initialize")
-            self.assertLess(time.monotonic() - start, 3)
+            adapters = []
+
+            def native_adapter(*args, **kwargs):
+                adapter = MCPAdapt(*args, **kwargs)
+                adapters.append(adapter)
+                return adapter
+
+            try:
+                start = time.monotonic()
+                with patch("memory.StdioServerParameters", return_value=params), \
+                        patch("memory.MCPAdapt", side_effect=native_adapter), \
+                        self.assertRaises(TimeoutError):
+                    with memory_tools("a", str(stalled), directory, timeout=0.1):
+                        self.fail("unresponsive server must not initialize")
+                self.assertLess(time.monotonic() - start, 3)
+                self.assertTrue(child_pid.is_file(), "the actual stdio child must have started")
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(child_pid.read_text()), 0)
+                self.assertTrue(adapters[0].loop.is_closed(), "the native client loop must also close")
+            finally:
+                # Keep a failing cleanup regression from leaking its fixture process.
+                for adapter in adapters:
+                    if not adapter.loop.is_closed():
+                        adapter.close()
 
 
 if __name__ == "__main__":
