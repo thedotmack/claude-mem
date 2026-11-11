@@ -36,7 +36,11 @@ export const LINE_ANCHOR_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MIN_DISTINCTIVE_CHARS = 8;
 /** Longer lines are not anchored: minified or generated text. */
 const MAX_LINE_ANCHOR_CHARS = 400;
-/** The lines a Read without a limit is taken to cover, for picking an anchor from its window. */
+/**
+ * For a Read with an offset but no limit, the lines after the offset an anchor
+ * is picked from. Claude Code returns up to 2000 lines for such a Read; only
+ * the start of that window is the code the Read was aimed at.
+ */
 const DEFAULT_READ_WINDOW_LINES = 50;
 /** A cat -n line number, the form a Read result takes in a transcript: `    12→` or `    12<tab>`. */
 const READ_LINE_NUMBER_PREFIX = /^\s*\d+(?:→|\t)/;
