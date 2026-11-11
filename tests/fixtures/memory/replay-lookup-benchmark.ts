@@ -27,11 +27,19 @@ store.db.transaction(() => {
     insert.run(id, `Memory ${id}`, 'A historical observation recorded before this source replay.', metadata);
   }
 })();
+function allocatedPages() {
+  const pageCount = (store.db.query('PRAGMA page_count').get() as { page_count: number }).page_count;
+  const freePages = (store.db.query('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count;
+  const pageSize = (store.db.query('PRAGMA page_size').get() as { page_size: number }).page_size;
+  return { pageCount, freePages, pageSize, allocatedBytes: (pageCount - freePages) * pageSize };
+}
+const beforeReopen = allocatedPages();
 store.close();
 // Both versions start from an existing database without the new index.
 const openStart = performance.now();
 store = new SessionStore(databasePath);
 const reopenMs = performance.now() - openStart;
+const afterReopen = allocatedPages();
 try {
   const manager = {
     getConnection: () => store.db,
@@ -67,7 +75,8 @@ try {
   const summary = {
     rowCount, replayCount, warmups: 1, measuredRounds: 5, samplesMs,
     medianMs: [...samplesMs].sort((a, b) => a - b)[2], resultHash, reopenMs,
-    databaseBytes: statSync(databasePath).size, plan,
+    mainDatabaseFileBytes: statSync(databasePath).size,
+    beforeReopen, afterReopen, allocatedBytesAddedOnReopen: afterReopen.allocatedBytes - beforeReopen.allocatedBytes, plan,
   };
   writeFileSync(join(output, 'result.json'), JSON.stringify({ ...summary, results }, null, 2));
   console.log(JSON.stringify(summary));
