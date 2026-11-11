@@ -94,9 +94,19 @@ function extractAttachmentLabels(content: string): string[] | undefined {
 
 export const SKIP_SUMMARY_TAG = /<skip_summary(?:\s+reason\s*=\s*(?:"([^"]*)"|'([^']*)'))?\s*\/>/i;
 
-/** Hide literal/comment markup without changing offsets into the original text. */
+/**
+ * Hide markup inside CDATA sections and comments without changing offsets into
+ * the original text. An observer reply can quote XML examples in those regions;
+ * the tags they contain must not end a record or select its fields. Callers
+ * match structure on the masked view, then read field values from the original
+ * reply by offset, so each masked character is replaced one for one.
+ *
+ * Only terminated literals are masked. A bare `<!--` or `<![CDATA[` in prose
+ * (an observation about HTML, say) stays visible text, so it cannot hide every
+ * later closing tag and turn a valid reply into a parse failure that is resent.
+ */
 export function maskXmlLiteralMarkup(text: string): string {
-  return text.replace(/<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<!--[\s\S]*?(?:-->|$)/g,
+  return text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g,
     literal => literal.replace(/[<>]/g, ' '));
 }
 

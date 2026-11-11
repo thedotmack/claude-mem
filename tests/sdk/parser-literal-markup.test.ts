@@ -54,9 +54,21 @@ describe('observer XML literal markup', () => {
     expect(parsed.observations.map(row => row.title)).toEqual(['Actual title']);
   });
 
-  it('does not let an unfinished CDATA section close the observation', () => {
-    const raw = '<observation><title>Unfinished</title><narrative><![CDATA[Literal </observation>';
+  it('does not let a literal closing tag complete an unfinished observation', () => {
+    const raw = '<observation><title>X</title><narrative><![CDATA[Literal </observation>]]>';
     expect(parseAgentXml(raw)).toEqual({ valid: false });
     expect(hasUnfinishedObservationBlock(raw)).toBe(true);
+  });
+
+  it('keeps an observation whose text mentions an unterminated comment or CDATA opener', () => {
+    const narrative = 'Parser now skips <!-- markers in templates.';
+    const raw = `<observation><type>discovery</type><title>HTML comments</title><narrative>${narrative}</narrative><facts><fact>Also <![CDATA[ openers</fact></facts></observation>`;
+    const parsed = parseAgentXml(raw);
+    expect(parsed.valid).toBe(true);
+    if (!parsed.valid) throw new Error('Expected observation');
+    expect(parsed.observations).toHaveLength(1);
+    expect(parsed.observations[0]).toMatchObject({ title: 'HTML comments', narrative });
+    expect(parsed.observations[0].facts).toEqual(['Also <![CDATA[ openers']);
+    expect(hasUnfinishedObservationBlock(raw)).toBe(false);
   });
 });

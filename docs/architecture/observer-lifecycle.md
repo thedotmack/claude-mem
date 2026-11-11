@@ -34,14 +34,6 @@ fragments. A future recovery operation needs explicit authorization, a source
 position that includes valid skips, matching observer state or a specified
 reconstruction boundary, deduplication, and a known spend scope.
 
-## Parsing observer output
-
-An observer reply can include XML examples inside CDATA sections or comments.
-Tags in those regions do not end a record or select its fields. The parser
-matches structure against a view with the literal angle brackets masked, then
-reads field values from the original reply. Literal closing-tag text cannot
-make an unfinished observation complete.
-
 ## Verified trajectory
 
 Dates below use America/Los_Angeles. These are implementation changes, not
