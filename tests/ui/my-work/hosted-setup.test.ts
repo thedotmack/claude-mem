@@ -11,8 +11,10 @@ const compiled = buildSync({
       import { renderToStaticMarkup } from 'react-dom/server';
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
+      import { InstallScreen } from './src/setup/screens/install-screen';
       export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
-      export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
+      export { localSetupSource, EMPTY_SETUP_DATA, setupPending, setupToolsForInstall } from './src/setup/setup-data';
+      export const renderInstall = (install) => renderToStaticMarkup(<InstallScreen install={install} onInstall={async () => {}} />);
       export { SAMPLE_REQUESTS } from './src/data';
       export { SAMPLE_FOCUS_AREAS } from './src/data-goals';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
@@ -62,6 +64,163 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
   globalThis.EventSource = Stream as unknown as typeof EventSource;
   globalThis.fetch = ((url, init = {}) => handle(String(url), init)) as typeof fetch;
 }
+
+const installState = (status = 'waiting') => ({
+  status, error: null, selection: null,
+  catalog: {
+    agents: [
+      { id: 'claude-code', label: 'Claude Code', hint: 'recommended', detected: false },
+      { id: 'cursor', label: 'Cursor', hint: 'Hooks and MCP', detected: true },
+      { id: 'codex-cli', label: 'Codex CLI', hint: 'Native hooks', detected: true },
+    ],
+    skills: [{ id: 'how-it-works', label: 'How it works', description: 'Understand your memory.', required: true }],
+    defaults: { agents: ['cursor', 'codex-cli'], skills: ['how-it-works'], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: true, claudeModel: 'haiku' },
+    reinstall: false,
+  },
+});
+
+describe('browser installation', () => {
+  it('shows actual agents, optional preferences and a selectable installation before scanning', () => {
+    const app = fixture();
+    const html = app.renderInstall(installState());
+    expect(html).toContain('Where do you work?');
+    expect(html).toContain('Cursor');
+    expect(html).toContain('Codex CLI');
+    expect(html).toContain('Skills and preferences');
+    expect(html).toContain('Claude model');
+    expect(html).toContain('Install and continue');
+    expect(html).toMatch(/<input[^>]*checked=""[^>]*value="cursor"/);
+    expect(html).not.toContain('Install Claude Code too');
+  });
+
+  it('keeps configured integration ids and marks every installed agent connected', () => {
+    const app = fixture();
+    const state = installState('ready');
+    state.selection = state.catalog.defaults as any;
+    const tools = app.setupToolsForInstall(state);
+    expect(tools.filter((tool: any) => tool.installed).map((tool: any) => tool.id)).toEqual(['cursor', 'codex-cli']);
+    expect(tools.some((tool: any) => tool.id === 'chatgpt')).toBe(true);
+  });
+
+  it('shows install failures with an explicit retry and respects environment skill controls', () => {
+    const app = fixture();
+    const state = installState('failed');
+    state.error = 'Cursor configuration could not be saved.' as any;
+    Object.assign(state.catalog, { skillsLocked: true });
+    const html = app.renderInstall(state);
+    expect(html).toContain('Cursor configuration could not be saved.');
+    expect(html).toContain('Try installation again');
+    expect(html).toContain('Your environment controls skill selection.');
+    expect(html).toContain('<fieldset disabled="">');
+  });
+
+  it('does not replace ready integrations with a stale initial state response', async () => {
+    const app = fixture();
+    const initialState = deferred<Response>();
+    let started = 0;
+    useNetwork((url, init) => {
+      if (url === '/api/setup/state') return initialState.promise;
+      if (url === '/api/setup/scan') {
+        if (init.method === 'POST') started++;
+        return Response.json(scan(init.method === 'POST' ? { phase: 'reading' } : {}));
+      }
+      return Response.json({});
+    });
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', { status: 'pending', alreadyPro: false, install: { ...installState('ready'), selection: installState().catalog.defaults } });
+    initialState.resolve(Response.json({ status: 'pending', alreadyPro: false, install: installState() }));
+    await until(() => started === 1);
+    expect(latest.install.status).toBe('ready');
+    stop();
+  });
+
+  it('retains the saved Home choice and recovers a failed resume without failing the scan', async () => {
+    const app = fixture();
+    const home = { branch: 'home', memoryBilling: 'existing' };
+    let failResume = true;
+    let scansStarted = 0;
+    let latest: any;
+    useNetwork((url, init) => {
+      if (url === '/api/setup/state') return Response.json({ status: 'pending', alreadyPro: false, choice: home, install: installState() });
+      if (url === '/api/setup/resume') return failResume ? Response.json({ error: 'Could not start setup.' }, { status: 503 }) : Response.json({ success: true });
+      if (url === '/api/setup/scan') {
+        if (init.method === 'POST') scansStarted++;
+        return Response.json(scan(init.method === 'POST' ? { phase: 'reading' } : {}));
+      }
+      return Response.json({ success: true });
+    });
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => latest?.connectionError === 'Could not start setup.');
+    expect(latest.choice).toEqual(home);
+    expect(latest.scan.phase).toBe('idle');
+    expect(latest.scan.error).toBeNull();
+    failResume = false;
+    await app.localSetupSource.resume();
+    expect(latest.connectionError).toBeNull();
+    expect(latest.scan.phase).toBe('idle');
+    Stream.latest.send('setup-state', { status: 'pending', alreadyPro: false, choice: home, install: { ...installState('ready'), selection: installState().catalog.defaults } });
+    await until(() => scansStarted === 1 && latest.scan.phase === 'reading');
+    expect(latest.scan.phase).toBe('reading');
+    stop();
+  });
+
+  it('clears a failed startup connection when saving the installation succeeds', async () => {
+    const app = fixture();
+    let latest: any;
+    useNetwork((url, init) => {
+      if (url === '/api/setup/state') return Response.json({ status: 'pending', alreadyPro: false, install: installState() });
+      if (url === '/api/setup/resume') return Response.json({ error: 'Installer unavailable.' }, { status: 503 });
+      if (url === '/api/setup/scan') return Response.json(scan());
+      return Response.json({ success: true });
+    });
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => latest?.connectionError === 'Installer unavailable.');
+    await app.localSetupSource.configureInstall(installState().catalog.defaults);
+    expect(latest.connectionError).toBeNull();
+    expect(latest.scan.phase).toBe('idle');
+    stop();
+  });
+
+  it('opens first-use setup only for an explicit unfinished install handoff', async () => {
+    const app = fixture();
+    for (const [state, expected] of [[{ status: 'pending' }, false], [{ status: 'pending', install: installState() }, true], [{ status: 'complete', install: installState('ready') }, false]] as const) {
+      useNetwork(() => Response.json(state));
+      expect(await app.setupPending()).toBe(expected);
+    }
+  });
+
+  it('defers scanning until the selected integrations are ready and resumes a detached installer', async () => {
+    const app = fixture();
+    const calls: string[] = [];
+    const resumeRequests: unknown[] = [];
+    const selection = installState().catalog.defaults;
+    let latest: any;
+    useNetwork((url, init) => {
+      calls.push(`${init.method ?? 'GET'} ${url}`);
+      if (url === '/api/setup/state') return Response.json({ status: 'pending', alreadyPro: false, install: installState() });
+      if (url === '/api/setup/resume') { resumeRequests.push(JSON.parse(String(init.body))); return Response.json({ success: true }); }
+      if (url === '/api/setup/install') {
+        expect(JSON.parse(String(init.body))).toEqual(selection);
+        return Response.json({ success: true });
+      }
+      if (url === '/api/setup/scan') return Response.json(scan(init.method === 'POST' ? { phase: 'reading' } : {}));
+      return Response.json({});
+    });
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => calls.includes('POST /api/setup/resume'));
+    await settle();
+    expect(calls).not.toContain('POST /api/setup/scan');
+    expect(resumeRequests).toEqual([{}]);
+    await app.localSetupSource.resume();
+    expect(resumeRequests).toEqual([{}, { retry: true }]);
+    await app.localSetupSource.configureInstall(selection);
+    Stream.latest.send('setup-state', { status: 'pending', alreadyPro: false, install: { ...installState('ready'), selection } });
+    await until(() => calls.includes('POST /api/setup/scan'));
+    expect(latest.install.selection.agents).toEqual(['cursor', 'codex-cli']);
+    stop();
+  });
+});
 
 describe('hosted setup scan control', () => {
   it('prechecks usage statistics under the progress meter, and locks it only for upload', () => {

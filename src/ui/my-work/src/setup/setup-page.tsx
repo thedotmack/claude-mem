@@ -6,12 +6,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { interpolate, LOCALES, LOCALE_NAMES, useI18n, type Locale } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
-import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
-import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
+import { EMPTY_SETUP_DATA, localSetupSource, setupToolsForInstall, type SetupData, type SetupSource } from './setup-data'
+import { choiceLocked, guardStep, hydrateSetupChoice, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
 import { CheckoutScreen } from './screens/checkout-screen'
 import { ChoiceScreen } from './screens/choice-screen'
 import { FinishSetupScreen } from './screens/finish-setup-screen'
 import { ImportScreen } from './screens/import-screen'
+import { InstallScreen } from './screens/install-screen'
 import { LaunchScreen } from './screens/launch-screen'
 import { RevealScreen } from './screens/reveal-screen'
 import { SavingsScreen } from './screens/savings-screen'
@@ -130,17 +131,22 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   const [flow, setFlow] = useState<SetupFlowState>(() => initialFlowState(false))
-  const [requested, setRequested] = useState<SetupStep>('scan')
+  const choiceEdited = useRef(false)
+  const [requested, setRequested] = useState<SetupStep>('install')
   const update = (changes: Partial<SetupFlowState>, next?: SetupStep) => { setFlow((current) => ({ ...current, ...changes })); if (next) setRequested(next) }
 
   // Facts from the data, not decisions: they move the machine on as they arrive.
   const scanComplete = data.scan.done && data.scan.phase === 'done'
+  const installationComplete = data.install !== undefined && (!data.install || data.install.status === 'ready')
   const historyAvailable = !!data.history && data.history.observations > 0
   if (flow.scanComplete !== scanComplete || flow.alreadyPro !== data.alreadyPro) {
-    setFlow((current) => ({ ...current, scanComplete, alreadyPro: data.alreadyPro, branch: data.alreadyPro ? 'go' : current.branch }))
+    setFlow((current) => ({ ...current, scanComplete, alreadyPro: data.alreadyPro, branch: data.alreadyPro && !data.choice && !choiceEdited.current ? 'go' : current.branch }))
   }
+  const hydratedFlow = hydrateSetupChoice(flow, data.choice, choiceEdited.current, data.installer?.stage)
+  if (hydratedFlow !== flow) setFlow(hydratedFlow)
+  if (data.choice && !branchConfirmed && (!choiceEdited.current || choiceLocked(data.installer?.stage))) setBranchConfirmed(true)
   if (flow.importStatus === 'none' && historyAvailable) setFlow((current) => ({ ...current, importStatus: 'available' }))
-  if (requested === 'scan' && scanComplete) setRequested('reveal')
+  if ((requested === 'scan' || requested === 'install') && installationComplete && scanComplete) setRequested('reveal')
   // The terminal reports the On The Go checkout paid: Finish Setup is next.
   if (data.checkout?.state === 'paid' && !flow.checkoutReviewed) {
     setFlow((current) => ({ ...current, checkoutReviewed: true }))
@@ -156,7 +162,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setRequested('finish-setup')
   }
 
-  const step = guardStep(requested, flow)
+  const step = guardStep(requested, { ...flow, installationComplete })
   useEffect(() => { if (data.scan.phase === 'failed') telemetry.error('scan_failed') }, [data.scan.phase, telemetry])
   useEffect(() => { if (data.checkout?.state === 'failed') telemetry.error('checkout_failed') }, [data.checkout?.state, telemetry])
   useEffect(() => { if (data.installer?.stage === 'failed') telemetry.error('installer_failed') }, [data.installer?.stage, telemetry])
@@ -164,7 +170,8 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => {
     if (source?.kind === 'local') telemetry.view(step, { branch: flow.branch, branch_confirmed: branchConfirmed, importComplete: flow.importStatus === 'complete' })
   }, [source, step, flow.branch, branchConfirmed, flow.importStatus, telemetry])
-  const tools = useMemo(() => SETUP_TOOLS.filter((tool) => flow.branch === 'go' || tool.kind === 'local'), [flow.branch])
+  const availableTools = useMemo(() => setupToolsForInstall(data.install), [data.install])
+  const tools = useMemo(() => availableTools.filter((tool) => flow.branch === 'go' || tool.kind === 'local'), [availableTools, flow.branch])
   const pickedTools = useMemo(() => tools.filter((tool) => flow.finishTools.includes(tool.id)), [tools, flow.finishTools])
 
   // Each new step starts at the top, with focus on its title (PROTO renderRoute).
@@ -195,8 +202,9 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setBranchConfirmed(true)
     telemetry.action('choice_committed', { branch: merged.branch, branch_confirmed: true })
     // Detected tools come pre-ticked the first time Finish Setup opens for this branch.
-    const available = SETUP_TOOLS.filter((tool) => merged.branch === 'go' || tool.kind === 'local').map((tool) => tool.id)
-    const finishTools = merged.finishTools.length ? merged.finishTools.filter((id) => available.includes(id)) : data.detectedTools.filter((id) => available.includes(id))
+    const available = availableTools.filter((tool) => merged.branch === 'go' || tool.kind === 'local').map((tool) => tool.id)
+    const installed = availableTools.filter(tool => tool.installed).map(tool => tool.id)
+    const finishTools = merged.finishTools.length ? merged.finishTools.filter((id) => available.includes(id)) : [...new Set([...installed, ...data.detectedTools.filter((id) => available.includes(id))])]
     update({ ...changes, finishTools, savingsComplete: true }, nextAfterSavings(merged))
   }
   const finishSetup = async () => {
@@ -206,8 +214,18 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setRequested('launch')
   }
 
-  // The installer stops after a failed hand-off (e.g. On The Go sign-in could not start); only the terminal can restart it.
+  // A failed handoff can restart its installer and retry the current choice from this page.
   const installerFailed = data.installer?.stage === 'failed'
+  const [retryingSetup, setRetryingSetup] = useState(false)
+  const retrySetup = async () => {
+    if (!source || retryingSetup) return
+    setRetryingSetup(true)
+    await handOff(async () => {
+      await source.resume()
+      await source.choose({ branch: flow.branch, memoryBilling: flow.memoryBilling })
+    }, 'choice_failed')
+    setRetryingSetup(false)
+  }
   const finishAll = async () => {
     // Completion rides the successful state write before the installer can restart the worker.
     await Promise.race([telemetry.flush(), new Promise(resolve => setTimeout(resolve, 300))])
@@ -218,9 +236,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   const screens: Record<SetupStep, () => ReactNode> = {
+    install: () => <InstallScreen install={data.install} onInstall={async selection => {
+      const failed = telemetry.failure('installer_failed')
+      try { await source!.configureInstall(selection) } catch (error) { failed(); throw error }
+    }} />,
     scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError && renderUiMessage(consentError, t)} consentSending={consentSending} preferenceError={preferenceError && renderUiMessage(preferenceError, t)} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} hostedNotice={data.scan.hostedNotice} onContinue={() => update({ revealContinued: true }, 'choice')} />,
-    choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => { telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
+    choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => { choiceEdited.current = true; telemetry.action('choose_memory', { branch, branch_confirmed: false }); setBranchConfirmed(false); update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings') }} />,
     savings: () => (
       <SavingsScreen usage={data.usage} branch={flow.branch}
         onPro={() => void toFinishSetup({ branch: 'go', memoryBilling: 'hosted' })}
@@ -261,12 +283,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       </header>
       <main id="setup-main" ref={main} tabIndex={-1} className={`setup-main step-${step}${['scan', 'reveal', 'choice', 'savings', 'workspace'].includes(step) ? ' is-centered' : ''}`}>
         {handOffError && <p className="scan-error" role="alert">{handOffError}</p>}
+        {data.connectionError && <p className="scan-error" role="alert">{data.connectionError}</p>}
         {installerFailed && (
           <p className="scan-error" role="alert">
-            {interpolate(t('Setup stopped in the terminal: {error} Run {command} again to restart setup.'), {
+            {interpolate(t('Setup stopped: {error}'), {
               error: data.installer?.error ?? t('the installer did not say why.'),
-              command: 'npx claude-mem install',
             })}
+            {' '}<button type="button" className="text-action" disabled={retryingSetup} onClick={() => void retrySetup()}>{retryingSetup ? t('Retrying setup…') : t('Retry setup')}</button>
           </p>
         )}
         {screens[step]()}

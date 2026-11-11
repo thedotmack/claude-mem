@@ -134,7 +134,7 @@
 
 ## Quick Start
 
-**Installing for someone as an AI agent?** Run `npx claude-mem install --runtime worker` on their computer in an interactive terminal (enable PTY in your shell tool). It first asks in the terminal which agents to set up and, for Claude Code, whether to disable native auto-memory (and whether to overwrite an existing install). Relay each question to the user and type their answer, or pass `--ide <id>` to skip the first one. Keep the installer running. When it prints **Continue setup in your browser**, open that URL in the user's browser if the installer hasn't already opened it. Let the user go through setup and make their own choices, including the usage-analytics question the installer may ask at the end. If you can't run an interactive terminal on their computer, give them the command to run locally.
+**Installing for someone as an AI agent?** If the user is available, run `npx claude-mem install --setup browser` on their computer and keep it running. It prepares the local runtime, then opens setup in their browser; if the page doesn't open, give them the printed URL. Every choice (agents, integrations, skills, model, usage analytics, the optional email) is made by the user on that page, so there are no terminal questions to relay. If the user is away, run `npx claude-mem install --setup defer`: it prepares the runtime and leaves setup waiting for their first visit, and their next session shows them the link. Don't make their choices for them.
 
 ```bash
 npx claude-mem install
