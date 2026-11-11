@@ -305,6 +305,24 @@ function tomlTableKey(line: string): string | null {
   return parsed && !parsed.rest ? JSON.stringify(parsed.keys) : null;
 }
 
+/** Read the same semantic table/key names that the managed writer updates. */
+export function readTomlBooleanInTable(content: string, header: string, key: string): boolean | undefined {
+  const tableKey = tomlTableKey(header);
+  let inTable = false;
+  for (const line of tomlStructuralLines(content.split('\n'))) {
+    if (/^\s*\[/.test(line)) {
+      inTable = tableKey !== null && tomlTableKey(line) === tableKey;
+      continue;
+    }
+    if (!inTable) continue;
+    const parsed = tomlKeyPath(line);
+    if (parsed?.keys.length !== 1 || parsed.keys[0] !== key) continue;
+    const value = /^=\s*(true|false)\s*$/.exec(parsed.rest);
+    if (value) return value[1] === 'true';
+  }
+  return undefined;
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');

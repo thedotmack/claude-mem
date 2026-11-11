@@ -15,6 +15,9 @@ import {
 } from '../../../src/storage/postgres/index.js';
 import { logger } from '../../../src/utils/logger.js';
 import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
+import type { Summary } from '../../../src/ui/viewer/types.js';
+import { processSessionSummaryResponse } from '../../../src/server/generation/processGeneratedResponse.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -262,7 +265,7 @@ describe('ServerViewerRoutes data endpoints', () => {
     await startServer();
     const summaries = await (await get('/api/summaries', teamKey)).json() as { items: Array<Record<string, unknown>> };
     expect(summaries.items).toHaveLength(1);
-    expect(summaries.items[0]).toMatchObject({ project: 'repo-a', request: 'Fix login', completed: 'Redirect fixed', next_steps: 'Add a test' });
+    expect(summaries.items[0]).toMatchObject({ project: 'repo-a', request: 'Fix login', completed: 'Redirect fixed', next_steps: 'Add a test', notes: null });
 
     const sessions = await (await get('/api/sessions', teamKey)).json() as { sessions: Array<Record<string, unknown>>; hasMore: boolean };
     expect(sessions.sessions).toEqual([expect.objectContaining({
@@ -281,6 +284,38 @@ describe('ServerViewerRoutes data endpoints', () => {
 
     const status = await (await get('/api/processing-status', teamKey)).json();
     expect(status).toEqual({ isProcessing: false, queueDepth: 0 });
+  });
+
+  it('exposes the saved body of a summary salvaged from observation XML', async () => {
+    ModeManager.getInstance().loadMode('code');
+    const project = await storage.projects.create({ teamId, name: 'salvaged-summary' });
+    const session = await storage.sessions.create({
+      projectId: project.id, teamId, contentSessionId: 'salvaged-session', platformSource: 'claude',
+    });
+    const created = await storage.observationGenerationJobs.create({
+      projectId: project.id, teamId, sourceType: 'session_summary', sourceId: session.id,
+      serverSessionId: session.id, jobType: 'observation_generate_session_summary',
+    });
+    await storage.observationGenerationJobs.transitionStatus({
+      id: created.id, projectId: project.id, teamId, status: 'processing',
+    });
+    const job = (await storage.observationGenerationJobs.getByIdForScope({
+      id: created.id, projectId: project.id, teamId,
+    }))!;
+    const outcome = await processSessionSummaryResponse({
+      pool, job, providerLabel: 'fixed-test-provider',
+      rawText: '<observation><type>discovery</type><title>Session result</title><facts><fact>Queue drained successfully</fact></facts></observation>',
+    });
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind !== 'completed') throw new Error('summary fixture did not persist');
+    expect(outcome.observations).toHaveLength(1);
+    const saved = outcome.observations[0]!;
+    expect(saved.metadata.notes).toBeNull();
+    await startServer();
+    const page = await (await get('/api/summaries?project=salvaged-summary', teamKey)).json() as { items: Summary[] };
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.notes).toBe(saved.content);
+    expect(page.items[0]?.notes).toContain('Queue drained successfully');
   });
 
   it('opens the stream with initial_load and processing_status events', async () => {

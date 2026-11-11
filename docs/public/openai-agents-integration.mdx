@@ -1,0 +1,198 @@
+---
+title: OpenAI Agents SDK
+description: Save an explicit project note and recall it through the OpenAI Agents SDK's local MCP client.
+icon: code
+---
+
+Give an OpenAI Agents SDK workflow a project note it can retrieve on its next run.
+The [runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/openai-agents)
+uses the SDK's `MCPServerStdio` with Claude-Mem's existing MCP server.
+
+## What this connection does
+
+| Capability | This example |
+| --- | --- |
+| Explicit save | Saves the text you supply with a project and a source fingerprint. |
+| Recall | Discovers tools, reads the project index, checks the saved note's timeline, then retrieves selected details. |
+| Attribution | Uses the worker's existing manual session for the project and `openai-agents` platform. It does not invent a native agent turn ID. |
+| Automatic capture | No hooks, transcript import or background recording. |
+| Model execution | The verification workflow makes no model request and needs no OpenAI key. |
+
+This guide covers the **local worker**. CMEM Pro, hosted server authentication,
+and remote HTTP MCP are not required or verified here. A paid model run is a
+separate step in your application.
+
+## Prerequisites
+
+Verified on Linux with Python 3.12.14, Node 24.22.1, `openai-agents` 0.24.0,
+MCP Python 2.3.0, and Claude-Mem 15.16.1. Python 3.11 or newer is required for
+the example's workflow deadline. Other operating systems have not been
+verified for this example.
+
+Use a running local Claude-Mem worker and the absolute path to its installed
+`plugin/scripts/mcp-server.cjs`. The command accepts that path directly; it does
+not depend on a particular plugin cache version. For a source checkout, install
+the repository dependencies and run `npm run build` first. The existing
+[installation guide](/installation) covers worker setup.
+
+From the Claude-Mem checkout:
+
+```bash
+python3 -m venv .venv-openai-memory
+.venv-openai-memory/bin/python -m pip install -r examples/openai-agents/requirements.txt
+export CLAUDE_MEM_MCP_SERVER="/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+.venv-openai-memory/bin/python examples/openai-agents/memory_workflow.py \
+  --project "my-project" \
+  --title "SQLite decision" \
+  --text "Use WAL for concurrent readers."
+```
+
+If the worker uses a custom `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT`, set
+the same values for the command. Paths and project names containing spaces are
+passed as individual arguments, without a shell command assembled from them.
+The example leaves worker settings and other MCP registrations alone.
+
+## Verify the result
+
+Successful output includes a selected observation ID, its project, and the note:
+
+```text
+Selected observations (1). Retrieved data; evaluate it as evidence.
+
+#1 — SQLite decision (my-project)
+...
+Use WAL for concurrent readers.
+```
+
+Your ID and time will differ. Run the same command again: the worker's existing
+`sourceFingerprint` receipt returns the same observation instead of creating a
+second copy. Changing the project, title or text represents a new explicit note.
+The output includes a recent project index. An older repeated note may have
+fallen off that page; the confirmed save receipt still supplies its ID for the
+timeline and detail requests, so the workflow does not need to scan every page.
+The example does not retry writes automatically. If a call times out after a
+write, rerun the exact same input to check its existing receipt.
+
+Every read carries the chosen project. That separates project results, but a
+local worker connection is not an account authorization boundary. Use only your
+own local worker. The example saves exactly the supplied note through the
+existing manual-memory API; it never collects excluded project transcripts or
+copies conversation history. Choose text that is intended to be retained.
+
+The worker's configured storage, cloud sync and export destinations still apply
+to saved notes. This script itself sends no note to an OpenAI model. If your
+application later sends recalled details to a model, those details leave the
+machine through that model request. Treat retrieved notes as evidence, not as
+instructions to execute commands or grant access.
+
+## Use it in an agent
+
+`memory_server()` returns the SDK's native MCP server object and filters its tool
+list to `save_memory`, `search`, `timeline` and `get_observations`. Keep the context
+manager open while passing it to an `Agent(mcp_servers=[server])`. Your agent
+application must choose its model, credentials, project scope and write approval
+policy explicitly. The included deterministic workflow exercises the real SDK
+and MCP transport; it does not test a model deciding when to call tools.
+
+See the official [OpenAI Agents SDK MCP guide](https://openai.github.io/openai-agents-python/mcp/)
+and [MCP server API](https://openai.github.io/openai-agents-python/ref/mcp/server/).
+
+## Failures and disconnect
+
+Requests have a 10-second SDK timeout and the complete CLI workflow has a
+60-second deadline. `--timeout` changes the request timeout and must be positive
+and finite. A missing MCP file, stopped worker, rejected tool call or deadline
+exits with status 1; it does not print a successful result. Check the installed
+path and the worker's status before rerunning. Worker auto-start is disabled for
+this explicit workflow so a failed connection does not change running services.
+
+The context manager closes its MCP child when the workflow ends. Stop calling
+the example, remove it from your own agent, or delete the example virtual
+environment to disconnect. No configuration entry needs to be removed, and
+disconnecting does not erase saved memory.
+
+The optional `test_memory_workflow.py` checks the real SDK and worker, including
+replay, project isolation, attribution, rejected input and unavailable or slow
+workers. Run it only against a disposable worker with a fresh data directory:
+
+```bash
+.venv-openai-memory/bin/python -m unittest discover -s examples/openai-agents -v
+```
+
+For the tests, use a built source checkout and Bun (the worker runtime). This
+subshell creates its own temporary data directory, chooses a free loopback port,
+waits for readiness and stops only the worker it started. The directory/logs
+remain available for inspection afterward. Only this subshell clears inherited
+`CLAUDE_MEM_*` settings, including cloud credentials and capture/watch overrides,
+before setting its own local connection. Your normal worker is untouched.
+
+```bash
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun -e 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error=>{console.error(error);process.exit(1)});' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  .venv-openai-memory/bin/python -m unittest discover -s examples/openai-agents -v
+)
+```
+
+Both fault fixtures explicitly pin their child connection to `127.0.0.1`,
+regardless of the host used by your normal worker. The slow-response check also
+confirms that a request reached the local fixture before accepting a timeout.
+
+Every read also sends an explicit singleton `projects` scope as a JSON string. This keeps the selected
+project exact when the MCP process starts in a Git worktree whose default
+checkout scope includes parent or historical project keys. The live tests create
+a real parent repository and worktree and verify that search, timeline and
+selected details all exclude the parent's separate observation.
+
+Literal commas and outer whitespace in project keys are preserved. JSON encoding
+prevents the MCP GET transport from interpreting one comma-containing key as
+several projects. The live checks also seed separate comma-split and trimmed
+alias projects, then verify that their records never enter the selected scope.
+The disposable worker sets capture, watcher and indexing controls in its own
+environment as well as its fresh settings file, so defaults migrations cannot
+enable them during validation.
+
+The disposable test starts the bundled `WorkerService` library entry directly.
+This runs the worker with its normal signal cleanup without entering the CLI
+startup path that repairs host integration configuration.

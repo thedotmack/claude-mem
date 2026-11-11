@@ -251,6 +251,12 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // POSTMAN_API_KEY lines and `newman` / `postman` CLI commands print.
   { name: 'grafana_token',   regex: /\b(?:glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}(?!\w)|glc_[A-Za-z0-9+\/]{32,400}={0,2}(?![\w+\/=]))/g },
   { name: 'postman_key',     regex: /\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}(?!\w)/g },
+  // Pulumi access tokens (`pul-` + 40 hex), which PULUMI_ACCESS_TOKEN lines,
+  // `pulumi login` output and CI configs print. Doppler personal tokens
+  // (`dp.pt.` + 43 alphanumerics), which DOPPLER_TOKEN lines and
+  // `doppler configure` dumps print.
+  { name: 'pulumi_token',    regex: /\bpul-[a-f0-9]{40}(?!\w)/g },
+  { name: 'doppler_token',   regex: /\bdp\.pt\.[A-Za-z0-9]{43}(?!\w)/g },
   // Incoming webhook URLs carry their secret in the path, so anyone holding
   // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
   // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/

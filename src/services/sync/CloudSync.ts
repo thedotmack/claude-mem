@@ -1689,6 +1689,9 @@ export class CloudSync {
         this.emitHeadSeq(response.head_seq);
         return;
       } catch (error) {
+        // A rejected POST can settle after shutdown just like an accepted
+        // one. The stopped drain no longer owns SQLite or its outbox.
+        if (this.stopped) return;
         const next = this.dropStaleOriginDeviceIdOps(remaining, error)
           ?? this.dropPoisonOp(remaining, error);
         if (next === null) throw error;

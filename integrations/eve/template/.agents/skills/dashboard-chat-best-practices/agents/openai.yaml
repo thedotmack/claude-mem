@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dashboard Chat Best Practices"
+  short_description: "Build polished PPR chat UX"
+  default_prompt: "Use $dashboard-chat-best-practices to refine Cache Components/PPR shell behavior, hydration, optimistic messaging, and dashboard chat styling."

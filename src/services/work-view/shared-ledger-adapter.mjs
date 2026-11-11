@@ -5,8 +5,8 @@ import { readLedger } from './request-groups.mjs';
 import { activitySignature, buildAgentView, readAgentRecords } from './agent-view.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { buildSharedProjectionUpdates, applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
-import { readSharedRecords, publishSharedRecords } from './shared-record-store.mjs';
-import { sharedRecordKey, sharedValueHash } from './shared-records.mjs';
+import { createSharedRecordReader, publishSharedRecords } from './shared-record-store.mjs';
+import { sharedRecordKey, sharedValueHash, sharedWorkListSql } from './shared-records.mjs';
 import { canonicalJson } from '../sync/CanonicalContent.js';
 import { redactJsonStrings } from '../../utils/redaction.js';
 
@@ -66,7 +66,11 @@ export class SharedLedgerAdapter {
     return this.db.prepare('SELECT COUNT(*) AS count FROM my_work_file_state WHERE pending_json IS NOT NULL').get().count;
   }
 
-  shared() { return readSharedRecords(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue }); }
+  sharedReader() {
+    return this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue });
+  }
+
+  shared() { return this.sharedReader()(); }
 
   tombstoneKeys(name, shared) {
     const kinds = fileKinds(name);
@@ -192,7 +196,7 @@ export class SharedLedgerAdapter {
         if (!Object.hasOwn(prior.bases, key) && existing
           && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
       }
-      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue });
+      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader() });
       this.remember(name, value, updates, this.shared(), true, value === null);
       if (result.changed) changed = { rules: changes.some(change => change.kind === 'story') };
     })();
@@ -299,11 +303,39 @@ export class SharedLedgerAdapter {
     }
     const safe = updates;
     for (let offset = 0; offset < safe.length; offset += 512) {
-      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue }).changed;
+      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue, reader: this.sharedReader() }).changed;
     }
     if (changed) this.notify({ rules: safe.some(update => update.kind === 'story') });
     if (changed) this.lastSignature = null;
     return changed;
+  }
+
+  /**
+   * Whether this database holds a row the activity capture could publish for. With no ledger and no copy entries,
+   * buildSharedProjectionUpdates publishes provenance only for a session with a tool call, a deliverable, or an
+   * observation or prompt this device wrote (tool_uses and deliverables are never synced, so any row there is
+   * local; a pulled observation or prompt carries another device's origin). A replica that only pulls has none of
+   * them: on the cloud viewer's account, 0 of 163,082 observations and 0 of 5,598 prompts. Local rows are counted
+   * as all rows minus rows with an origin, because both counts use indexes and an IS NULL filter scans the table.
+   */
+  ownsActivity() {
+    const count = (sql, params = []) => {
+      try { return this.db.prepare(sql).get(...params).count; }
+      catch (error) { if (/no such table/i.test(String(error.message))) return 0; throw error; }
+    };
+    if (count('SELECT COUNT(*) AS count FROM (SELECT 1 FROM tool_uses LIMIT 1)') || count('SELECT COUNT(*) AS count FROM (SELECT 1 FROM deliverables LIMIT 1)')) return true;
+    return ['observations', 'user_prompts'].some(table => {
+      const total = count(`SELECT COUNT(*) AS count FROM ${table}`);
+      if (!total) return false;
+      try {
+        return total > count(`SELECT COUNT(*) AS count FROM ${table} WHERE origin_device_id IS NOT NULL`)
+          || count(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${table} WHERE origin_device_id = ? LIMIT 1)`, [this.deviceId]) > 0;
+      } catch (error) {
+        // An older database without origin columns has only local rows.
+        if (/no such column/i.test(String(error.message))) return true;
+        throw error;
+      }
+    });
   }
 
   reconcile({ captureActivity = true } = {}) {
@@ -329,6 +361,7 @@ export class SharedLedgerAdapter {
     }
     const shared = this.shared();
     let projectionSuperseded = false;
+    let activityPublishFailed = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -373,18 +406,33 @@ export class SharedLedgerAdapter {
     }
     // Legacy copy writers can finish without another memory/tool row. Their
     // semantic file hash is an independent import trigger, not activity.
-    if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash)) {
-      const entries = this.db.prepare('SELECT id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id FROM work_state_entries').all();
+    // A replica that only pulls owns no activity, and then the capture below publishes nothing (see ownsActivity),
+    // yet every pulled commit moves the activity signature. Skip its full view build there.
+    if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash) && !Object.keys(copies).length && !this.ownsActivity()) {
+      this.activity = activity;
+      this.copyHash = copyHash;
+    } else if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash)) {
+      // The reducer drops shared rows, which are most of this table on a busy replica: leave them in SQLite.
+      const entries = this.db.prepare(`SELECT id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id
+        FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
       const state = reduceWorkState(entries, { localDeviceId: this.deviceId });
       let records = readAgentRecords(this.db, { workState: state, ledger });
       records = applySharedProjection(this.db, shared, { ledger, records, deviceId: this.deviceId }).records;
       const view = decorateSharedView(buildAgentView(state, records, { ledger }), { records });
-      try {
-        this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records, view, deviceId: this.deviceId, copyEntries: copies }));
+      try { this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records, view, deviceId: this.deviceId, copyEntries: copies })); }
+      catch (error) {
+        this.errors.push({ file: 'activity', message: String(error.message) });
+        // A busy database wrote nothing, and nothing else would republish this
+        // activity, so replicas would never receive the session provenance:
+        // keep it uncaptured for the next pass. Any other error (a conflict, an
+        // invalid value) repeats until the data changes, and each pass rebuilds
+        // the whole view, so that one stays captured.
+        activityPublishFailed = String(error?.code ?? '').startsWith('SQLITE_BUSY');
+      }
+      if (!activityPublishFailed) {
         this.activity = activity;
         this.copyHash = copyHash;
       }
-      catch (error) { this.errors.push({ file: 'activity', message: String(error.message) }); }
     }
     const final = this.shared();
     if (final.revision !== this.sharedRevision) {
@@ -397,10 +445,7 @@ export class SharedLedgerAdapter {
     // Keep the database version from before capture. A concurrent connection
     // may have committed after our snapshot and still needs the next pass.
     // A skipped projection also has newer records left to materialize.
-    // Failed publication must remain eligible for the existing next pass,
-    // even if releasing a SQLite writer lock changes no source rows or files.
-    this.lastSignature = projectionSuperseded || this.errors.some(error => error.file === 'activity')
-      ? null : this.signature(captureActivity, dataVersion);
+    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

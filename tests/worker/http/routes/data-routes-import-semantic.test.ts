@@ -150,6 +150,29 @@ describe('HTTP imports enter the semantic index', () => {
     expect(documents.size).toBe(3);
   });
 
+  it.each(['Recovered legacy observation body', 0, false])('indexes an imported text-only observation from its persisted text: %s', async text => {
+    const payload = {
+      sessions: [session()],
+      observations: [{
+        memory_session_id: 'exported-claude', project: 'backup-project',
+        text, type: 'discovery', title: null, subtitle: null,
+        narrative: null, facts: null, concepts: null, files_read: null, files_modified: null,
+        prompt_number: 1, discovery_tokens: 0, created_at: new Date(NOW).toISOString(), created_at_epoch: NOW,
+      }],
+    };
+    const result = await importRows(payload);
+    expect(result.stats).toMatchObject({ observationsImported: 1, observationsRejected: 0 });
+    const row = store.db.query('SELECT id, text FROM observations').get() as { id: number; text: string };
+    ChromaSyncState.resetCacheForTests();
+    expect(ChromaSyncState.get('backup-project').observations).toBe(row.id);
+    expect(documents.get(`obs_${row.id}_text`)).toEqual({
+      text: row.text, metadata: expect.objectContaining({ sqlite_id: row.id, field_type: 'text', project: 'backup-project' }),
+    });
+    const previousWrites = writes;
+    expect((await importRows(payload)).stats.observationsSkipped).toBe(1);
+    expect(writes).toBe(previousWrites);
+  });
+
   it('keeps failed imported rows pending when a later live write advances the checkpoint', async () => {
     failWrites = true;
     const result = await importRows({ sessions: [session()], summaries: [summary()], prompts: [prompt()] });

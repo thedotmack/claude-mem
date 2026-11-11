@@ -144,6 +144,8 @@ export interface FocusChange {
   /** reorder: every live area (not dismissed, not merged), first = highest priority. */
   focusAreaIds?: string[]
   requestId?: string
+  /** Undo's saved version. The worker compares it inside the ordered read-and-write operation. */
+  expectedVersion?: string
 }
 
 /** The current owner-goals run. */

@@ -153,6 +153,27 @@ describe('actual setup screen telemetry', () => {
     assert.equal(disabled, null)
     assert.equal(attempts, 1)
   })
+  it('a hidden cloud tab retries only once it is shown again', async (t) => {
+    class FakePage extends EventTarget {
+      visibilityState = 'hidden'
+      show(state: 'visible' | 'hidden') { this.visibilityState = state; this.dispatchEvent(new Event('visibilitychange')) }
+    }
+    const page = new FakePage()
+    const browser = globalThis as { location?: unknown; document?: unknown }
+    browser.location = { hostname: 'work.cmem.ai' }
+    browser.document = page
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let attempts = 0
+    const stop = connectSetupTelemetry(() => { throw new Error('must not publish') }, async () => { attempts++; throw new Error('blocked by the cloud gate') }, 1_000)
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      for (let second = 0; second < 600; second++) { t.mock.timers.tick(1_000); await new Promise(resolve => setImmediate(resolve)) }
+      assert.equal(attempts, 1)
+      page.show('visible')
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(attempts, 2)
+    } finally { stop(); delete browser.location; delete browser.document }
+  })
   it('cancels a pending context retry on unmount', async () => {
     let attempts = 0
     const stop = connectSetupTelemetry(() => { throw new Error('must not publish') }, async () => { attempts++; throw new Error('offline') }, 20)

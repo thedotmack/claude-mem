@@ -7,10 +7,12 @@ import { ModeManager } from '../domain/ModeManager.js';
 export type ObservationTokenFields = Pick<Observation, 'title' | 'subtitle' | 'narrative' | 'facts' | 'discovery_tokens'>;
 
 export function calculateObservationTokens(obs: ObservationTokenFields): number {
+  // SQLite/context readers already return facts as JSON text. Encoding that
+  // string again counts a second set of quotes and escapes as read content.
   const obsSize = (obs.title?.length || 0) +
                   (obs.subtitle?.length || 0) +
                   (obs.narrative?.length || 0) +
-                  JSON.stringify(obs.facts || []).length;
+                  (obs.facts?.length || 0);
   return Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
 }
 

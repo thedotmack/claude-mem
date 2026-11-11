@@ -128,6 +128,9 @@ export function queryObservationsNewest(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
   const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  // Only an omitted project filter requests the house feed. An explicit list
+  // that resolves to no keys must not turn a project context into that feed.
+  if (options.projects !== undefined && projects.length === 0) return [];
   if (projects.length > PROJECT_KEYS_PER_QUERY) {
     const batches: LocalObservation[][] = [];
     for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {

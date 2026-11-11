@@ -482,6 +482,93 @@ describe('flush() — empty buckets', () => {
   });
 });
 
+describe('incremental statistics retain rollup semantics', () => {
+  const properties = (index: number) => (postHogCaptureCalls[index] as {
+    properties: Record<string, unknown>;
+  }).properties;
+
+  it('counts finite samples separately for each session average, including zero', () => {
+    telemetryBuffer.record('session_compressed', 1, { duration_ms: 0, compression_ms: 10, tokens_input: 4 });
+    telemetryBuffer.record('session_compressed', 1, { duration_ms: NaN, compression_ms: Infinity, tokens_input: NaN });
+    telemetryBuffer.record('session_compressed', 1, { duration_ms: 100, tokens_input: Infinity });
+    telemetryBuffer.record('session_compressed', 1, { duration_ms: -Infinity, compression_ms: 30, tokens_input: 6 });
+    telemetryBuffer.flushSession(1, 'session_end');
+    expect(properties(0)).toMatchObject({ count: 4, avg_duration_ms: 50, avg_compression_ms: 20, total_tokens_input: 10 });
+  });
+
+  it('counts finite context samples without using every event as the average denominator', () => {
+    telemetryBuffer.record('context_injected', null, { tokens_injected: 0, observation_count: 2, outcome: 'ok' });
+    telemetryBuffer.record('context_injected', null, { tokens_injected: NaN, observation_count: Infinity, outcome: 'error' });
+    telemetryBuffer.record('context_injected', null, { tokens_injected: 120, tokens_saved_vs_naive: 500, outcome: 'ok' });
+    telemetryBuffer.record('context_injected', null, { tokens_saved_vs_naive: -Infinity });
+    telemetryBuffer.flush();
+    expect(properties(0)).toMatchObject({ count: 4, total_tokens: 120, avg_tokens: 60,
+      total_observations_injected: 2, total_tokens_saved_vs_naive: 500, outcomes_ok: 2, outcomes_error: 1 });
+  });
+
+  it('retains first-seen frequency ties and last nonempty source values', () => {
+    telemetryBuffer.record('session_compressed', 1, {
+      model: 'first', outcome: 'aborted', abort_reason: 'idle', provider: 'claude', ide: 'claude',
+      observed_model: 'original', observed_billing: 'api_key',
+    });
+    telemetryBuffer.record('session_compressed', 1, {
+      model: 'second', outcome: 'aborted', abort_reason: 'deadline_exceeded', provider: 'openrouter',
+      observed_model: 'changed', observed_billing: 'subscription',
+    });
+    telemetryBuffer.record('session_compressed', 1, { model: 'second', provider: '', observed_model: '', observed_billing: '' });
+    telemetryBuffer.record('session_compressed', 1, { model: 'first' });
+    telemetryBuffer.flushSession(1, 'session_end');
+    expect(properties(0)).toMatchObject({ top_model: 'first', top_abort_reason: 'idle', provider: 'openrouter',
+      ide: 'claude', observed_model: 'changed', observed_billing: 'subscription' });
+  });
+
+  it('clears sums, frequencies and source fields when a safety window is rearmed', () => {
+    for (let i = 0; i < 1000; i++) telemetryBuffer.record('session_compressed', 1, {
+      outcome: 'aborted', abort_reason: 'idle', tokens_input: 20, duration_ms: 10,
+      model: 'old', provider: 'claude', observed_model: 'old', observed_billing: 'api_key', count: 2,
+    });
+    expect(postHogCaptureCalls).toHaveLength(0);
+    telemetryBuffer.safetyFlush();
+    telemetryBuffer.record('session_compressed', 1, { outcome: 'ok', tokens_input: 7 });
+    telemetryBuffer.flushSession(1, 'session_end');
+    expect(properties(1)).toMatchObject({ count: 1, window_seq: 1, outcomes_ok: 1, outcomes_aborted: 0,
+      total_tokens_input: 7, avg_duration_ms: 0, observations_created: 0,
+      observed_model: 'unknown', observed_billing: 'unknown' });
+    expect(properties(1).top_model).toBeUndefined();
+    expect(properties(1).top_abort_reason).toBeUndefined();
+    expect(properties(1).provider).toBeUndefined();
+    expect(telemetryBuffer.flushSession(1, 'session_end')).toBe(false);
+  });
+
+  it('starts the next context window with no previous samples', () => {
+    telemetryBuffer.record('context_injected', null, {
+      outcome: 'ok', tokens_injected: 900, observation_count: 12, tokens_saved_vs_naive: 1000,
+    });
+    telemetryBuffer.flush();
+    telemetryBuffer.record('context_injected', null, { outcome: 'error' });
+    telemetryBuffer.flush();
+    telemetryBuffer.flush();
+    expect(postHogCaptureCalls).toHaveLength(2);
+    expect(properties(1)).toMatchObject({ count: 1, total_tokens: 0, avg_tokens: 0,
+      total_observations_injected: 0, total_tokens_saved_vs_naive: 0, outcomes_ok: 0, outcomes_error: 1 });
+  });
+
+  it('keeps interleaved session and context totals exact until their existing flush points', () => {
+    for (let i = 0; i < 5000; i++) {
+      telemetryBuffer.record('session_compressed', i % 2, { outcome: 'ok', tokens_input: 3, count: 2 });
+      telemetryBuffer.record('context_injected', null, { outcome: 'ok', tokens_injected: 4 });
+    }
+    expect(postHogCaptureCalls).toHaveLength(0);
+    telemetryBuffer.flushSession(0, 'session_end');
+    telemetryBuffer.flush();
+    telemetryBuffer.flushSession(1, 'worker_shutdown');
+    expect(postHogCaptureCalls).toHaveLength(3);
+    expect(properties(0)).toMatchObject({ count: 2500, total_tokens_input: 7500, observations_created: 5000, window_seq: 0 });
+    expect(properties(1)).toMatchObject({ count: 5000, total_tokens: 20000, avg_tokens: 4 });
+    expect(properties(2)).toMatchObject({ count: 2500, total_tokens_input: 7500, observations_created: 5000, window_seq: 0 });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // start() / stop() interval wiring
 // ---------------------------------------------------------------------------
