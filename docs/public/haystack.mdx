@@ -99,8 +99,9 @@ reference material rather than instructions to invoke tools or change accounts.
 ## Identity and privacy
 
 Every memory call carries the chosen project. Reads also pass an explicit
-`projects=[project]` list so starting the pipeline inside a Git worktree does
-not inherit the parent checkout's notes. Saves are attributed to
+`projects=json.dumps([project])` JSON list so commas and outer whitespace
+remain part of an exact key, and starting inside a Git worktree does not
+inherit the parent checkout's notes. Saves are attributed to
 `platformSource: haystack` and use the existing manual memory session for that
 project and platform. The pipeline does not create observer sessions or install
 capture hooks. Project filters select an account's own records; they do not
@@ -140,13 +141,69 @@ Run the live checks against a disposable worker. Set
 `CLAUDE_MEM_MCP_SERVER`, `CLAUDE_MEM_WORKER_PORT` and `CLAUDE_MEM_DATA_DIR` to
 its script, port and data directory, then run from the example directory:
 
+Use the example virtual environment at `examples/haystack/.venv`, with
+`requirements.txt` installed as above. The following Bash block runs from the root of a built source checkout with
+Bun available. It clears inherited `CLAUDE_MEM_*` settings only inside the
+subshell, including cloud-sync credentials and capture overrides, then creates
+a fresh local data directory and selects a free loopback port. It waits for
+readiness and stops only the worker it started. The temporary data and logs
+remain available for inspection.
+
 ```bash
-python -m unittest discover -s . -v
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export HAYSTACK_TELEMETRY_ENABLED=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  examples/haystack/.venv/bin/python -m unittest discover -s examples/haystack -v
+)
 ```
 
-The six tests use the real Haystack packages, bundled MCP server and SQLite
+The seven tests use the real Haystack packages, bundled MCP server and SQLite
 worker. They check repeated saves, cross-client pipeline recall, project
-filtering from a real Git worktree, platform attribution, a known note older than the search page,
+filtering from a real Git worktree, literal comma/whitespace keys, platform
+attribution, a known note older than the search page,
 script paths containing spaces, native validation errors, a refused connection
 and an unresponsive worker. They leave harmless notes in uniquely named test
 projects in the disposable database for inspection.

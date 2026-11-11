@@ -92,6 +92,26 @@ class LivePipelineTests(unittest.TestCase):
             with patch.dict(os.environ, {"CLAUDE_MEM_MCP_SERVER": str(script)}):
                 self.assertRegex(save_note(self.project, "Path check", "A local explicit path check."), r"Saved memory #\d+")
 
+    def test_literal_project_keys_do_not_select_split_or_trimmed_aliases(self):
+        for kind in ("comma", "outer whitespace"):
+            alias = f"haystack-exact-{uuid.uuid4()}"
+            selected = f"{alias},web" if kind == "comma" else f" {alias} "
+            title = f"Exact project {kind} decision"
+            own = save_note(selected, title, "Only the exact project has the teal decision.")
+            other = save_note(alias, title, "The split or trimmed project has the amber decision.")
+            own_id = int(re.search(r"Saved memory #(\d+)", own)[1])
+            other_id = int(re.search(r"Saved memory #(\d+)", other)[1])
+            result = recall_note(selected, title, own_id)
+            with self.subTest(project=kind, read="search"):
+                self.assertRegex(result["index"], rf"#{own_id}\b")
+                self.assertNotRegex(result["index"], rf"#{other_id}\b")
+            with self.subTest(project=kind, read="timeline"):
+                self.assertRegex(result["timeline"], rf"#{own_id}\b")
+                self.assertNotRegex(result["timeline"], rf"#{other_id}\b")
+            with self.subTest(project=kind, read="details"):
+                self.assertIn("Only the exact project has the teal decision", result["details"])
+                self.assertNotIn("The split or trimmed project has the amber decision", result["details"])
+
     def test_refused_worker_is_reported(self):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
