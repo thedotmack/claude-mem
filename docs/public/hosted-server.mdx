@@ -109,10 +109,10 @@ is written to `audit_log` as an `observation.read` event, the same as
 
 Two routes turn "I have a server" into "Claude Code is recalling my cloud memory":
 
-- **`POST /v1/keys`** (requires `memories:write`) mints a **read-only** API key for
+- **`POST /v1/keys`** (requires `memories:read` and `memories:write`) mints a **read-only** API key for
   the caller's team and returns a paste-ready connect command. The raw key appears
-  **once**. Body: `{ "expiresInDays"?: number }`. Minting requires write scope so a
-  read-only key can't escalate itself into more keys.
+  **once**. Body: `{ "expiresInDays"?: number }`. Issuers must already have read
+  access to delegate it, and write scope prevents read-only keys from minting more keys.
 
   ```json
   {
@@ -133,7 +133,7 @@ Two routes turn "I have a server" into "Claude Code is recalling my cloud memory
 <Warning>
 **First-key bootstrap is the rough edge.** Minting a team's *very first* key still
 needs a session-gated path (a web dashboard), because `POST /v1/keys` itself
-requires a write-scoped key. better-auth's `apiKey()` plugin exists but writes to
+requires a read/write-scoped key. better-auth's `apiKey()` plugin exists but writes to
 a different store than the Postgres `api_keys` these routes authenticate against —
 wiring the better-auth org → team mapping is the remaining piece, and the biggest
 part of the devex work still ahead.
@@ -327,7 +327,7 @@ POST   /v1/context
 POST   /v1/timeline
 POST   /v1/observations/batch
 ALL    /v1/mcp                    # remote authenticated MCP recall
-POST   /v1/keys                   # mint a read-only key (write scope)
+POST   /v1/keys                   # mint a read-only key (read and write scopes)
 GET    /v1/connect                # connect command with key placeholder
 GET    /v1/usage                  # current-month usage totals
 DELETE /v1/projects/:projectId/memory   # purge a whole project
