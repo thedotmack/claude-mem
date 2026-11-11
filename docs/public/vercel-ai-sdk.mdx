@@ -84,7 +84,9 @@ region decision. Each command uses a new AI SDK MCP client, demonstrating that
 the memory survives the client session.
 
 The example passes the project on saves, searches, timeline reads and detail
-reads. Saves are attributed to `vercel-ai-sdk` and use the existing explicit
+reads. Each read also supplies `projects: [project]` so launching in a Git
+worktree cannot add the parent checkout's memory to the chosen scope.
+Saves are attributed to `vercel-ai-sdk` and use the existing explicit
 manual-memory session for that project and platform. They do not create an
 observer session. Project filters select your own work; they are not an
 authentication boundary for serving different users. Run each account against
@@ -136,7 +138,8 @@ npm test
 ```
 
 It saves harmless notes in uniquely named test projects and checks repeated
-saves, index/timeline/detail recall, project filtering, invalid input, a refused
+saves, index/timeline/detail recall, exact project filtering from a real Git
+worktree, invalid input, a refused
 connection and an unresponsive worker. The successful path uses the real AI
 SDK client and the existing worker's SQLite storage. The test leaves those
 notes in the isolated database so you can inspect the results.

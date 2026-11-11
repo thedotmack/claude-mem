@@ -14,9 +14,9 @@ if (!process.env.CLAUDE_MEM_MCP_SERVER || !process.env.CLAUDE_MEM_WORKER_PORT) {
 const script = fileURLToPath(new URL('./memory.mjs', import.meta.url));
 const project = `vercel-sdk-test-${randomUUID()}`;
 const otherProject = `${project}-other`;
-function run(args, overrides = {}) {
+function run(args, overrides = {}, cwd) {
   return spawnSync(process.execPath, [script, ...args], {
-    env: { ...process.env, ...overrides }, encoding: 'utf8', timeout: 25_000,
+    env: { ...process.env, ...overrides }, cwd, encoding: 'utf8', timeout: 25_000,
   });
 }
 function ok(args) {
@@ -53,6 +53,53 @@ test('invalid input fails before connecting or claiming a save', () => {
   }
 });
 
+test('the selected project stays exact when the client starts in a Git worktree', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'AI SDK worktree '));
+  const parentName = `vercel-parent-${randomUUID()}`;
+  const parent = join(directory, parentName);
+  const checkout = join(directory, 'checkout');
+  const selected = `${parentName}/checkout`;
+  const git = (...args) => {
+    const result = spawnSync('git', args, { encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const fromCheckout = args => run(args, {}, checkout);
+  try {
+    git('init', parent);
+    git('-C', parent, '-c', 'user.name=Memory Test', '-c', 'user.email=memory@example.invalid', 'commit', '--allow-empty', '-m', 'Fixture');
+    git('-C', parent, 'worktree', 'add', '--detach', checkout, 'HEAD');
+    const parentNote = fromCheckout(['save', parentName, 'Worktree scope decision parent', 'Parent-only amber decision.']);
+    const childNote = fromCheckout(['save', selected, 'Worktree scope decision selected', 'Selected-only teal decision.']);
+    assert.equal(parentNote.status, 0, parentNote.stderr);
+    assert.equal(childNote.status, 0, childNote.stderr);
+    const parentId = /Saved memory #(\d+)/.exec(parentNote.stdout)?.[1];
+    const selectedId = /Saved memory #(\d+)/.exec(childNote.stdout)?.[1];
+    assert.ok(parentId && selectedId);
+
+    await t.test('search does not inherit the parent project', () => {
+      const result = fromCheckout(['search', selected, 'Worktree scope decision']);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(`#${selectedId}\\b`));
+      assert.doesNotMatch(result.stdout, new RegExp(`#${parentId}\\b`));
+    });
+    await t.test('timeline does not include the parent note', () => {
+      const result = fromCheckout(['timeline', selected, selectedId]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Worktree scope decision selected/);
+      assert.doesNotMatch(result.stdout, /Worktree scope decision parent/);
+    });
+    await t.test('selected IDs cannot retrieve a parent note', () => {
+      const own = fromCheckout(['show', selected, selectedId]);
+      assert.equal(own.status, 0, own.stderr);
+      assert.match(own.stdout, /Selected-only teal decision/);
+      const result = fromCheckout(['show', selected, parentId]);
+      assert.doesNotMatch(result.stdout, /Parent-only amber decision/);
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('the MCP script can live at an absolute path containing spaces', () => {
   const directory = mkdtempSync(join(tmpdir(), 'AI SDK MCP path '));
   const target = join(directory, 'memory server.cjs');
@@ -71,7 +118,7 @@ test('a refused worker connection fails honestly without auto-start', async () =
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const result = run(['save', project, 'Unavailable worker', 'Do not report this as saved.'], { CLAUDE_MEM_WORKER_PORT: String(port) });
+  const result = run(['save', project, 'Unavailable worker', 'Do not report this as saved.'], { CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(port) });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /Memory request failed/);
@@ -87,7 +134,7 @@ test('an unresponsive worker is bounded by the AI SDK execution signal', async (
   try {
     const result = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [script, 'search', project, 'decision'], {
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(stalled.address().port) },
+        env: { ...process.env, CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(stalled.address().port) },
         stdio: ['ignore', 'pipe', 'pipe'], timeout: 25_000,
       });
       let stdout = '', stderr = '';
@@ -99,6 +146,7 @@ test('an unresponsive worker is bounded by the AI SDK execution signal', async (
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /Memory request failed/);
+    assert.ok(sockets.size > 0, 'the request reached the deliberately stalled worker');
     assert.ok(Date.now() - started < 22_000, 'the SDK abort bounds the request');
   } finally {
     for (const socket of sockets) socket.destroy();

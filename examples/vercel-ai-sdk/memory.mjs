@@ -46,9 +46,11 @@ if (!valid || !server || !isAbsolute(server) || !existsSync(server)) {
           sourceFingerprint: `vercel-ai-sdk:${createHash('sha256').update(JSON.stringify([project, ...values])).digest('hex')}`,
         },
       }],
-      search: ['search', { project, query: values[0], type: 'observations', limit: 10 }],
-      timeline: ['timeline', { project, anchor: Number(values[0]), depth_before: 2, depth_after: 2 }],
-      show: ['get_observations', { project, ids: [Number(values[0])] }],
+      // An explicit list prevents checkout inheritance from widening reads
+      // when this client is launched inside a Git worktree.
+      search: ['search', { project, projects: [project], query: values[0], type: 'observations', limit: 10 }],
+      timeline: ['timeline', { project, projects: [project], anchor: Number(values[0]), depth_before: 2, depth_after: 2 }],
+      show: ['get_observations', { project, projects: [project], ids: [Number(values[0])] }],
     };
     const [name, input] = operations[action];
     if (!tools[name]) throw new Error('Required memory tool was not discovered');
