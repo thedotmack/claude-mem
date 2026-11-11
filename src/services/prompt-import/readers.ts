@@ -59,17 +59,28 @@ export interface AgentPromptReader {
 /** Streams a file's lines without holding the file in memory. */
 export async function* readLines(path: string): AsyncGenerator<string> {
   const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 1 << 20 });
-  let pending = '';
+  let pending: string[] = [];
   for await (const chunk of stream as AsyncIterable<string>) {
-    pending += chunk;
-    let newline = pending.indexOf('\n');
+    // Search each decoded chunk once. A large tool payload may span many
+    // chunks; repeatedly joining and searching that growing line is quadratic.
+    let start = 0;
+    let newline = chunk.indexOf('\n');
     while (newline !== -1) {
-      yield pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      newline = pending.indexOf('\n');
+      const tail = chunk.slice(start, newline);
+      if (pending.length) {
+        pending.push(tail);
+        const line = pending.join('');
+        pending = [];
+        yield line;
+      } else {
+        yield tail;
+      }
+      start = newline + 1;
+      newline = chunk.indexOf('\n', start);
     }
+    if (start < chunk.length) pending.push(chunk.slice(start));
   }
-  if (pending) yield pending;
+  if (pending.length) yield pending.join('');
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
