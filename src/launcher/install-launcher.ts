@@ -501,6 +501,12 @@ export function ensureDirectoryOnWindowsUserPath(options: {
   const host = options.host ?? currentLauncherHostEnvironment();
   const runPowerShell = options.runPowerShell ?? runPowerShellHidden;
 
+  // Already on this process's PATH (inherited from the user or machine Path):
+  // nothing to edit, so no hidden PowerShell spawn, which antivirus
+  // heuristics flag (#5830).
+  const currentProcessPath = host.environmentVariables.PATH ?? '';
+  if (appendDirectoryToWindowsPathValue(currentProcessPath, directory).alreadyPresent) return 'already-on-user-path';
+
   const powerShellResult = runPowerShell(WINDOWS_USER_PATH_APPEND_SCRIPT, {
     [LAUNCHER_DIRECTORY_ENVIRONMENT_VARIABLE]: directory,
   });
@@ -519,7 +525,6 @@ export function ensureDirectoryOnWindowsUserPath(options: {
     logger.info(`Add ${directory} to your user Path (Settings → System → About → Advanced system settings → Environment Variables).`);
     return 'user-path-update-failed';
   }
-  const currentProcessPath = host.environmentVariables.PATH ?? '';
   host.environmentVariables.PATH = appendDirectoryToWindowsPathValue(currentProcessPath, directory).updatedPathValue;
   return outcome;
 }
