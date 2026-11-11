@@ -84,8 +84,9 @@ region decision. Each command uses a new AI SDK MCP client, demonstrating that
 the memory survives the client session.
 
 The example passes the project on saves, searches, timeline reads and detail
-reads. Each read also supplies `projects: [project]` so launching in a Git
-worktree cannot add the parent checkout's memory to the chosen scope.
+reads. Each read also supplies `projects: JSON.stringify([project])`, the worker's
+JSON-list form. This preserves literal commas and whitespace in a key and
+prevents a Git worktree from adding the parent checkout's memory to the chosen scope.
 Saves are attributed to `vercel-ai-sdk` and use the existing explicit
 manual-memory session for that project and platform. They do not create an
 observer session. Project filters select your own work; they are not an
@@ -130,16 +131,67 @@ the client stopped waiting. Retry the same note to reuse its fingerprint.
 
 ## Verify and disconnect
 
-The live test requires a running, isolated worker, plus `CLAUDE_MEM_MCP_SERVER`
-and `CLAUDE_MEM_WORKER_PORT` pointing to it:
+Install the test dependency from the checkout root with
+`npm install --prefix examples/vercel-ai-sdk`. The following Bash block runs from the root of a built source checkout with
+Bun available. It clears inherited `CLAUDE_MEM_*` settings only inside the
+subshell, including cloud-sync credentials and capture overrides, then creates
+a fresh local data directory and selects a free loopback port. It waits for
+readiness and stops only the worker it started. The temporary data and logs
+remain available for inspection.
 
 ```bash
-npm test
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  node --test examples/vercel-ai-sdk/memory.test.mjs
+)
 ```
 
 It saves harmless notes in uniquely named test projects and checks repeated
 saves, index/timeline/detail recall, exact project filtering from a real Git
-worktree, invalid input, a refused
+worktree, comma-containing and whitespace-containing keys, invalid input, a refused
 connection and an unresponsive worker. The successful path uses the real AI
 SDK client and the existing worker's SQLite storage. The test leaves those
 notes in the isolated database so you can inspect the results.

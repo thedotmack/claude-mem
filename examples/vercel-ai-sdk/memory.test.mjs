@@ -113,6 +113,31 @@ test('the MCP script can live at an absolute path containing spaces', () => {
   }
 });
 
+test('literal project punctuation and whitespace do not select other projects', async t => {
+  for (const kind of ['comma', 'outer whitespace']) {
+    const alias = `vercel-exact-${randomUUID()}`;
+    const selected = kind === 'comma' ? `${alias},web` : ` ${alias} `;
+    const title = `Exact project ${kind} decision`;
+    const ownId = /Saved memory #(\d+)/.exec(ok(['save', selected, title, 'Only the exact project has the teal decision.']))?.[1];
+    const aliasId = /Saved memory #(\d+)/.exec(ok(['save', alias, title, 'The split or trimmed project has the amber decision.']))?.[1];
+    assert.ok(ownId && aliasId);
+    await t.test(`${kind}: search`, () => {
+      const result = ok(['search', selected, title]);
+      assert.match(result, new RegExp(`#${ownId}\\b`));
+      assert.doesNotMatch(result, new RegExp(`#${aliasId}\\b`));
+    });
+    await t.test(`${kind}: timeline`, () => {
+      const result = ok(['timeline', selected, ownId]);
+      assert.match(result, new RegExp(`#${ownId}\\b`));
+      assert.doesNotMatch(result, new RegExp(`#${aliasId}\\b`));
+    });
+    await t.test(`${kind}: details`, () => {
+      assert.match(ok(['show', selected, ownId]), /Only the exact project has the teal decision/);
+      assert.doesNotMatch(ok(['show', selected, aliasId]), /The split or trimmed project has the amber decision/);
+    });
+  }
+});
+
 test('a refused worker connection fails honestly without auto-start', async () => {
   const probe = createServer();
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
