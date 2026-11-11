@@ -226,6 +226,24 @@ test('a pulled higher revision that rewrites a row\'s content is read, not the s
   expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('B');
 });
 
+// sync_rev is a canonical uint64 decimal (CanonicalContent), so a +1 rewrite must change the
+// reader's key above 2^53 (where a float sum rounds it away) and above 2^63 - 1 (where CAST clamps).
+for (const [label, before, after] of [
+  ['past 2^53', '18014398509481984', '18014398509481985'],
+  ['past the signed 64-bit range', '18446744073709551614', '18446744073709551615'],
+] as const) {
+  test(`a pulled rewrite one revision higher, ${label}, is read`, () => {
+    const { db, pull, batch } = pulledFixture();
+    pull(batch('b1', '1', 'A').map((row, index) => ({ ...row, localId: index + 1 })), before);
+    const read = createSharedRecordReader(db, { deviceId: DEVICE });
+    expect(groupValue(read())).toBe('A');
+    pull(batch('b1', '1', 'B').map((row, index) => ({ ...row, localId: index + 1 })), after);
+    expect((db.query('SELECT COUNT(*) AS count FROM work_state_entries WHERE sync_rev = ?').get(after) as { count: number }).count).toBe(3);
+    expect(groupValue(readSharedRecords(db, { deviceId: DEVICE }))).toBe('B');
+    expect(groupValue(read())).toBe('B');
+  });
+}
+
 test('a pulled tombstone that deletes a row of the current batch is read', () => {
   const { db, pull, tombstone, batch } = pulledFixture();
   pull(batch('b1', '1', 'A'));

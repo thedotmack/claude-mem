@@ -290,18 +290,31 @@ function entrySummary(entry, source, validateValue) {
 }
 
 /**
- * count:highest id:summed sync_rev of the work_state_entries rows matching `where`. An insert
- * raises the highest id (ids are AUTOINCREMENT), a pulled higher revision rewriting a row
- * (SyncApply.applyWorkState) raises the summed sync_rev and a pulled tombstone (SyncApply.applyOp)
- * lowers the count, so it changes with any of them. TOTAL, not SUM: a sum past the integer range
- * is an SQLite error, and this check must not fail a read.
+ * count:highest id:exact summed sync_rev of the work_state_entries rows matching `where`. An
+ * insert raises the highest id (ids are AUTOINCREMENT), a pulled higher revision rewriting a row
+ * (SyncApply.applyWorkState applies only a strictly higher revision) raises the exact sum, and a
+ * pulled tombstone (SyncApply.applyOp) lowers the count, so it changes with any of them.
+ *
+ * The sum must be exact: sync_rev is a canonical uint64 decimal (CanonicalContent), so a +1
+ * rewrite is lost in a float sum (TOTAL) past 2^53, CAST clamps every value past 2^63 - 1 to the
+ * same integer, and SUM past 2^63 - 1 is an SQLite error, which must not fail a read. So each
+ * revision is summed as its last REVISION_LOW_DIGITS digits and the digits above them: both sums
+ * are exact integers, and equal pairs mean an equal total (high * 10^10 + low). With a uint64 at
+ * most 20 digits, a part is below 10^10, so neither sum leaves SQLite's integer range before about
+ * 922 million rows (2^63 / 10^10). Both come back as text: bun:sqlite returns integers past 2^53
+ * as rounded numbers.
  */
+const REVISION_LOW_DIGITS = 10;
 export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) {
-  const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${syncRev ? ', TOTAL(CAST(sync_rev AS INTEGER)) AS revisions' : ''}
-    FROM work_state_entries WHERE ${where}`);
+  const revisionSums = syncRev
+    ? `, CAST(SUM(CAST(substr(sync_rev, -${REVISION_LOW_DIGITS}) AS INTEGER)) AS TEXT) AS low,
+       CAST(SUM(CASE WHEN length(sync_rev) > ${REVISION_LOW_DIGITS}
+         THEN CAST(substr(sync_rev, 1, length(sync_rev) - ${REVISION_LOW_DIGITS}) AS INTEGER) ELSE 0 END) AS TEXT) AS high`
+    : '';
+  const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${revisionSums} FROM work_state_entries WHERE ${where}`);
   try {
     const row = statement.get();
-    return `${row.count}:${row.id ?? 0}:${row.revisions ?? 0}`;
+    return `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
   } finally { statement.finalize(); }
 }
 

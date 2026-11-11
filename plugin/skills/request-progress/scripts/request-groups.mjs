@@ -7374,12 +7374,15 @@ function entrySummary(entry, source, validateValue) {
     source
   };
 }
+var REVISION_LOW_DIGITS = 10;
 function workStateRowsRevision(db, { where = "1", syncRev = true } = {}) {
-  const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${syncRev ? ", TOTAL(CAST(sync_rev AS INTEGER)) AS revisions" : ""}
-    FROM work_state_entries WHERE ${where}`);
+  const revisionSums = syncRev ? `, CAST(SUM(CAST(substr(sync_rev, -${REVISION_LOW_DIGITS}) AS INTEGER)) AS TEXT) AS low,
+       CAST(SUM(CASE WHEN length(sync_rev) > ${REVISION_LOW_DIGITS}
+         THEN CAST(substr(sync_rev, 1, length(sync_rev) - ${REVISION_LOW_DIGITS}) AS INTEGER) ELSE 0 END) AS TEXT) AS high` : "";
+  const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${revisionSums} FROM work_state_entries WHERE ${where}`);
   try {
     const row = statement.get();
-    return `${row.count}:${row.id ?? 0}:${row.revisions ?? 0}`;
+    return `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
   } finally {
     statement.finalize();
   }
