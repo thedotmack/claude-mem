@@ -48,6 +48,7 @@
           "usage/multi-key-rotation",
           "usage/quota-fallback",
           "usage/search-tools",
+          "claude-agent-sdk",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
