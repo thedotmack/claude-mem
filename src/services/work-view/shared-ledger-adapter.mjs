@@ -379,10 +379,12 @@ export class SharedLedgerAdapter {
       let records = readAgentRecords(this.db, { workState: state, ledger });
       records = applySharedProjection(this.db, shared, { ledger, records, deviceId: this.deviceId }).records;
       const view = decorateSharedView(buildAgentView(state, records, { ledger }), { records });
-      try { this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records, view, deviceId: this.deviceId, copyEntries: copies })); }
+      try {
+        this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records, view, deviceId: this.deviceId, copyEntries: copies }));
+        this.activity = activity;
+        this.copyHash = copyHash;
+      }
       catch (error) { this.errors.push({ file: 'activity', message: String(error.message) }); }
-      this.activity = activity;
-      this.copyHash = copyHash;
     }
     const final = this.shared();
     if (final.revision !== this.sharedRevision) {
@@ -395,7 +397,10 @@ export class SharedLedgerAdapter {
     // Keep the database version from before capture. A concurrent connection
     // may have committed after our snapshot and still needs the next pass.
     // A skipped projection also has newer records left to materialize.
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
+    // Failed publication must remain eligible for the existing next pass,
+    // even if releasing a SQLite writer lock changes no source rows or files.
+    this.lastSignature = projectionSuperseded || this.errors.some(error => error.file === 'activity')
+      ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;
