@@ -361,7 +361,7 @@ function geminiProjectDirectories(homeDirectory: string): Map<string, string> {
   return directories;
 }
 
-export async function readGeminiChat(path: string): Promise<{ header: any; messages: any[] }> {
+export async function readGeminiChat(path: string, options: { includeDiscardedMessages?: boolean } = {}): Promise<{ header: any; messages: any[] }> {
   if (!path.endsWith('.jsonl')) {
     const document = JSON.parse(readFileSync(path, 'utf8'));
     return { header: document, messages: Array.isArray(document.messages) ? document.messages : [] };
@@ -371,12 +371,42 @@ export async function readGeminiChat(path: string): Promise<{ header: any; messa
   const keep = (message: any) => {
     if (message && typeof message === 'object' && message.type) byId.set(String(message.id ?? byId.size), message);
   };
+  const patchMessage = (patch: any) => {
+    const message = byId.get(patch?.id);
+    if (!message) return;
+    if (patch.content !== undefined) message.content = patch.content;
+  };
   for await (const line of readLines(path)) {
     const record = parseLine(line);
     if (!record || typeof record !== 'object') continue;
     if (header === null) { header = record; continue; }
-    if (record.$set) for (const message of record.$set.messages ?? []) keep(message);
-    else keep(record);
+    // Native JSONL is an event log: a rewind removes its target and everything
+    // after it, and a checkpoint replaces the live message collection. Usage
+    // and provenance scans retain discarded messages: generated tokens were
+    // spent and the model still authored that text before the rewind.
+    if (typeof record.$rewindTo === 'string') {
+      if (options.includeDiscardedMessages) continue;
+      const ids = [...byId.keys()];
+      const start = ids.indexOf(record.$rewindTo);
+      if (start === -1) byId.clear();
+      else for (const id of ids.slice(start)) byId.delete(id);
+    } else if (record.$patch) {
+      if (options.includeDiscardedMessages) continue;
+      const patch = record.$patch;
+      patchMessage(patch);
+      for (const update of Array.isArray(patch.updates) ? patch.updates : []) patchMessage(update);
+      for (const id of Array.isArray(patch.removeIds) ? patch.removeIds : []) byId.delete(id);
+      const ordered = new Map<string, any>();
+      for (const id of Array.isArray(patch.orderIds) ? patch.orderIds : []) if (byId.has(id)) ordered.set(id, byId.get(id));
+      for (const id of ordered.keys()) byId.delete(id);
+      for (const [id, message] of ordered) byId.set(id, message);
+    } else if (record.$set) {
+      if (Array.isArray(record.$set.messages)) {
+        if (!options.includeDiscardedMessages) byId.clear();
+        for (const message of record.$set.messages) keep(message);
+      }
+      header = { ...header, ...record.$set };
+    } else keep(record);
   }
   return { header: header ?? {}, messages: [...byId.values()] };
 }
@@ -446,7 +476,7 @@ export function createGeminiCliReader(): AgentPromptReader {
       }
     },
     async readAgentText(transcript, add) {
-      const { messages } = await readGeminiChat(transcript.path);
+      const { messages } = await readGeminiChat(transcript.path, { includeDiscardedMessages: true });
       for (const message of messages) {
         const at = isoToEpochMs(message.timestamp);
         if (message.type !== 'gemini' || at === null) continue;

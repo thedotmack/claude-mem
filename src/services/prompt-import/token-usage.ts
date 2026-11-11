@@ -208,7 +208,7 @@ const geminiCliUsage: UsageReader = {
     const seenMessages = new Set<string>();
     for (const source of sources) {
       try {
-        const { header, messages } = await readGeminiChat(source.path);
+        const { header, messages } = await readGeminiChat(source.path, { includeDiscardedMessages: true });
         const sessionKey = typeof header.sessionId === 'string' && header.sessionId
           ? header.sessionId : source.path.replace(/\.jsonl?$/, '');
         for (const message of messages) {
