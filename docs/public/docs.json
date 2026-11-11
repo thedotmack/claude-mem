@@ -105,6 +105,7 @@
           "hermes-integration",
           "kimi-integration",
           "devin-integration",
+          "llamaindex-integration",
           "qoder-integration",
           "screenpipe-integration",
           "notion-export"
