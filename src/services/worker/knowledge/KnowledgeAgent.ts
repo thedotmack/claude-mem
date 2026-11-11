@@ -1,7 +1,7 @@
 
 import { CorpusStore } from './CorpusStore.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
-import type { CorpusFile, QueryResult } from './types.js';
+import type { CorpusFile, KnowledgeAgentCallOptions, QueryResult } from './types.js';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -79,9 +79,7 @@ function findClaudeExecutableForKnowledge(): string {
 }
 
 /** Per-call options. `abortController` is passed to the Agent SDK's `Options.abortController` (sdk.d.ts). */
-export interface KnowledgeAgentCallOptions {
-  abortController?: AbortController;
-}
+export type { KnowledgeAgentCallOptions } from './types.js';
 
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;

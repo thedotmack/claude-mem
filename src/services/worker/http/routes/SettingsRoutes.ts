@@ -338,6 +338,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
       'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
       'CLAUDE_MEM_WORK_VIEW_API_MODEL',
+      'CLAUDE_MEM_CORPUS_AGENT',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
@@ -648,6 +649,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_WORK_VIEW_AGENT !== undefined
       && !(WORK_VIEW_AGENT_CHOICES as readonly string[]).includes(settings.CLAUDE_MEM_WORK_VIEW_AGENT)) {
       return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "api", "off", or "all"' };
+    }
+    if (settings.CLAUDE_MEM_CORPUS_AGENT !== undefined
+      && !['', 'api'].includes(settings.CLAUDE_MEM_CORPUS_AGENT)) {
+      return { valid: false, error: 'CLAUDE_MEM_CORPUS_AGENT must be empty (Claude Agent SDK) or "api" (the selected openrouter / openai-compatible provider)' };
     }
     if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
       && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {

@@ -235,6 +235,14 @@ The My Work refresh (goals, grouping, review, focus and story steps) runs on one
 | `CLAUDE_MEM_WORK_VIEW_API_MODEL` | empty | Model for every refresh step on the selected API provider, such as `anthropic/claude-sonnet-4`. Empty keeps the model your provider is configured with. |
 | `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` | empty | Language for the text the refresh writes (request titles, reviews, focus areas, the story), such as `Turkish`. When set, every step except goals is told to write in it, so separate review batches never pick different languages. Empty uses the language most of your asks are written in, decided once per refresh by the grouping step (which already reads them, so it costs no extra model call) and kept for later refreshes that have nothing to group. |
 
+### Knowledge Corpus Agent
+
+`prime_corpus`, `query_corpus` and `reprime_corpus` answer through the Claude Agent SDK, which spends your Claude subscription. That does not change when you select another provider; opt in if you want the corpus on the provider you selected.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CORPUS_AGENT` | empty | Empty answers corpus questions through the Claude Agent SDK. `api` answers them over chat completions on the provider `CLAUDE_MEM_PROVIDER` selects (`openrouter` or `openai-compatible`) and spends that provider's credit. `api` with any other provider fails with an error instead of running somewhere else, and a provider refusal (401, 402, 429) fails the call without moving it to Claude. With `api`, `prime_corpus` makes no model call, and `query_corpus` sends the observations that best match the question (the most recent ones when none match), within a fixed budget of 12,000 estimated tokens that is not a setting; the reply reports `observations_sent` and `observations_matching` (and `observations_in_corpus`, which counts what a no-match fallback to the most recent observations left out) so a partial excerpt is visible. The selection is lexical, on words split at spaces and punctuation: it works best for languages that separate words with spaces, and a question in Chinese or Japanese, or a Russian word in another case, may match nothing and fall back to the most recent observations (the reply says so). An observation that alone exceeds the budget is cut to it, and the reply reports that as `observations_truncated`. The model needs a context window of at least 32,768 tokens for this (about 29,500 for the excerpt, the instructions and the 16,000-token reply reserve); a model with a smaller window, such as a small local one, refuses the request and the provider's error is returned. Corpora primed under the other agent report "not primed" until you prime them again. Any other value fails with `CORPUS_AGENT_UNAVAILABLE` and never runs the Claude agent. Read on every call, so a change applies without a restart. |
+
 ### Quota Fallback Settings
 
 | Setting | Default | Description |

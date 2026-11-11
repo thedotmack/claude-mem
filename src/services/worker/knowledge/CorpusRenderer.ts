@@ -24,7 +24,12 @@ export class CorpusRenderer {
     return sections.join('\n');
   }
 
-  private renderObservation(observation: CorpusObservation): string {
+  /**
+   * One observation as the corpus text. Public because the API corpus agent
+   * renders only the observations it selected, in the same shape the whole
+   * corpus is rendered in.
+   */
+  renderObservation(observation: CorpusObservation): string {
     const lines: string[] = [];
 
     const dateStr = new Date(observation.created_at_epoch).toISOString().split('T')[0];
