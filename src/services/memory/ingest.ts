@@ -165,7 +165,7 @@ export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontm
   // First line is the opening '---'; find the closing one.
   let close = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '---') { close = i; break; }
+    if (/^---\r?$/.test(lines[i])) { close = i; break; }
   }
   if (close === -1) return { frontmatter: {}, body: raw };
 
