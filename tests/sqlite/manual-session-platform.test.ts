@@ -25,6 +25,29 @@ describe('SessionStore manual session platform identity', () => {
     store.close();
   });
 
+  // v15.16.0 regression: manual sessions written before the content-session
+  // lookup (for example memory_session_id = content_session_id =
+  // 'manual-<project>-claude') were missed, and the INSERT of the same
+  // memory_session_id failed with a UNIQUE constraint, so every save in that
+  // project returned 500.
+  it('reuses an existing manual session whose content session id has an older shape', () => {
+    const project = 'legacy-project';
+    const legacyId = 'manual-legacy-project-claude';
+    store.db.prepare(`
+      INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, 'claude', '2026-09-10T03:30:51.852Z', 1788924651852, 'active')
+    `).run(legacyId, legacyId, project);
+
+    const session = store.getOrCreateManualSession(project, 'claude');
+    store.storeObservation(session, project, manualNote('saved after upgrade'));
+
+    expect(session).toBe(legacyId);
+    expect(store.getObservationsForSession(session, 'claude').map((row) => row.title)).toEqual(['saved after upgrade']);
+    expect(store.getOrCreateManualSession(project, 'claude')).toBe(legacyId);
+    const count = store.db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?').get(project) as { n: number };
+    expect(count.n).toBe(1);
+  });
+
   it('keeps Cursor and Codex manual saves as separate sessions in the same project', () => {
     const project = 'shared-project';
     const cursorSession = store.getOrCreateManualSession(project, 'cursor');
