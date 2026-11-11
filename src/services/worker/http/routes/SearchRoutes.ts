@@ -41,6 +41,7 @@ interface ContextInjectRender {
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
 import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { RUNTIME_SKILLS } from '../../../../shared/runtime-skills.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { currentUserSettingsSaveCount } from '../../../../shared/context-invalidation.js';
@@ -56,7 +57,7 @@ import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 import { parseProjectList } from '../../../../shared/project-list.js';
 
-const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
+const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills', RUNTIME_SKILLS.howItWorks, 'onboarding-explainer.md');
 
 // Read on first request, not at import. Hook processes share this module but
 // never serve the onboarding explainer, so caching at import made every hook
