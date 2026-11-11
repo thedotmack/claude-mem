@@ -1,10 +1,13 @@
 import asyncio
+from contextlib import chdir
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,7 +15,7 @@ import uuid
 from unittest.mock import patch
 
 from agent_framework.exceptions import ToolExecutionException
-from memory_workflow import SelectedNote, memory_connection, recall_note, save_note
+from memory_workflow import SelectedNote, memory_connection, recall_note, save_note, text_content
 
 
 class LiveWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -59,6 +62,34 @@ class LiveWorkflowTests(unittest.IsolatedAsyncioTestCase):
             with patch.dict(os.environ, {"CLAUDE_MEM_MCP_SERVER": str(script)}):
                 self.assertRegex(await save_note(self.project, "Path check", "A local explicit path check."), r"Saved memory #\d+")
 
+    async def test_worktree_recall_excludes_its_parent_project(self):
+        with tempfile.TemporaryDirectory(prefix="Framework worktree ") as directory:
+            parent = Path(directory) / self.project
+            checkout = Path(directory) / "feature checkout"
+            subprocess.run(["git", "init", "-q", str(parent)], check=True)
+            subprocess.run(["git", "-C", str(parent), "-c", "user.name=Memory Example",
+                            "-c", "user.email=memory-example@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(parent), "worktree", "add", "-qb", "feature", str(checkout)], check=True)
+            selected_project = f"{parent.name}/{checkout.name}"
+            parent_note = "This decision belongs only to the parent project."
+            title = "Framework inherited rollout"
+            with chdir(checkout), patch.dict(os.environ, {"CLAUDE_MEM_PROJECT_NAME_SOURCE": "path", "CLAUDE_MEM_PROJECT_ENVIRONMENTS": "[]"}):
+                parent_saved = await save_note(parent.name, title, parent_note)
+                parent_id = int(re.search(r"Saved memory #(\d+)", parent_saved)[1])
+                saved = await save_note(selected_project, title, "This is the worktree decision.")
+                identifier = int(re.search(r"Saved memory #(\d+)", saved)[1])
+                output = await recall_note(SelectedNote(selected_project, title, identifier))
+                self.assertNotRegex(output["index"], rf"#{parent_id}\b")
+                self.assertNotIn(parent_note, output["timeline"])
+                self.assertIn("This is the worktree decision.", output["details"])
+                async with memory_connection() as memory:
+                    foreign_details = text_content(await memory.call_tool(
+                        "get_observations", project=selected_project, projects=[selected_project], ids=[parent_id],
+                    ))
+                self.assertNotIn(parent_note, foreign_details)
+                with self.assertRaises(ToolExecutionException):
+                    await recall_note(SelectedNote(selected_project, title, parent_id))
+
     async def test_refused_worker_is_reported(self):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -84,6 +115,42 @@ class LiveWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 await writer.wait_closed()
             server.close()
             await server.wait_closed()
+
+
+class CliDiagnosticsTests(unittest.TestCase):
+    def run_failure(self, changes):
+        script = Path(__file__).with_name("memory_workflow.py")
+        result = subprocess.run(
+            [sys.executable, str(script), "save", "diagnostic-project", "private-diagnostic-title", "private-diagnostic-note"],
+            env={**os.environ, **changes}, capture_output=True, text=True, timeout=40,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("save may have committed", result.stderr)
+        self.assertNotIn("private-diagnostic-title", result.stderr)
+        self.assertNotIn("private-diagnostic-note", result.stderr)
+        self.assertNotIn("Traceback (most recent call last)", result.stderr)
+        return result.stderr
+
+    def test_missing_node_has_a_specific_cli_diagnostic(self):
+        with tempfile.TemporaryDirectory(prefix="Framework empty PATH ") as directory:
+            stderr = self.run_failure({"PATH": directory})
+        self.assertIn("FileNotFoundError", stderr)
+        self.assertIn("Node.js executable", stderr)
+
+    def test_invalid_script_has_a_specific_cli_diagnostic(self):
+        with tempfile.TemporaryDirectory(prefix="Framework missing script ") as directory:
+            stderr = self.run_failure({"CLAUDE_MEM_MCP_SERVER": str(Path(directory) / "missing.cjs")})
+        self.assertIn("FileNotFoundError", stderr)
+        self.assertIn("MCP server script", stderr)
+
+    def test_refused_worker_retains_the_native_cli_reason(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            stderr = self.run_failure({"CLAUDE_MEM_WORKER_PORT": str(port)})
+        self.assertIn("ToolExecutionException", stderr)
+        self.assertIn("worker", stderr.lower())
 
 
 if __name__ == "__main__":
