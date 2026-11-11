@@ -111,10 +111,10 @@ describe('AgentFormatter', () => {
 
   describe('renderAgentFullObservation', () => {
     it.each([
-      [{ id: 7, title: 'Full Observation' }, 'Detail content', {}, ['**7** 10:00a I **Full Observation**', 'Detail content', '~12t W 100', '']],
-      [{}, 'The detailed narrative here', {}, ['**1** 10:00a I **Test Observation**', 'The detailed narrative here', '~12t W 100', '']],
-      [{}, null, {}, ['**1** 10:00a I **Test Observation**', '~12t W 100', '']],
-      [{ discovery_tokens: 250 }, null, { showReadTokens: true, showWorkTokens: true }, ['**1** 10:00a I **Test Observation**', '~12t W 250', '']],
+      [{ id: 7, title: 'Full Observation' }, 'Detail content', {}, ['**7** 10:00a I **Full Observation**', 'Detail content', '~11t W 100', '']],
+      [{}, 'The detailed narrative here', {}, ['**1** 10:00a I **Test Observation**', 'The detailed narrative here', '~11t W 100', '']],
+      [{}, null, {}, ['**1** 10:00a I **Test Observation**', '~11t W 100', '']],
+      [{ discovery_tokens: 250 }, null, { showReadTokens: true, showWorkTokens: true }, ['**1** 10:00a I **Test Observation**', '~11t W 250', '']],
     ] as [Partial<Observation>, string | null, Partial<ContextConfig>, string[]][])('renders %j with detail %j', (observation, detail, config, expected) => {
       expect(renderAgentFullObservation(createTestObservation(observation), '10:00 AM', detail, createTestConfig(config)))
         .toEqual(expected);
