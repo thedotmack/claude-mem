@@ -12,6 +12,7 @@ import {
   readUserScopeRegisteredCacheVersions,
   workingCacheVersions,
   isDirectChildPath,
+  hostInUseCacheVersions,
   isHostProcessLive,
   readHostInUseRecords,
   DEFAULT_CACHE_RETENTION,
@@ -581,6 +582,24 @@ describe('a version a running host session is loaded from (#5970)', () => {
 
     expect(readHostInUseRecords(join(scratch, '13.24.0'))).toEqual([{ pid: process.pid }]);
     expect(prunePluginCache({ cacheRoot: scratch, keepCount: 2 }).removed).toEqual([]);
+  });
+
+  it('reads each recorded process once per sweep, however many versions record it', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-in-use-once-'));
+    const recordedStart = 'Wed Nov 11 06:05:51 2026';
+    const versions = ['13.24.0', '13.25.0', '13.26.0'];
+    for (const version of versions) {
+      mkdirSync(join(scratch, version));
+      writeHostInUseRecord(scratch, version, 4242, JSON.stringify({ pid: 4242, procStart: recordedStart }));
+    }
+    const reads = { alive: 0, startToken: 0 };
+    const probe: HostProcessProbe = {
+      isAlive: () => { reads.alive += 1; return true; },
+      startToken: () => { reads.startToken += 1; return `utc:${recordedStart}`; },
+    };
+
+    expect(hostInUseCacheVersions(scratch, versions, probe)).toEqual(versions);
+    expect(reads).toEqual({ alive: 1, startToken: 1 });
   });
 });
 

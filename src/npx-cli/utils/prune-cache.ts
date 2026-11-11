@@ -303,6 +303,23 @@ export function isHostProcessLive(record: HostInUseRecord, probe: HostProcessPro
   return isSameProcessStartToken(currentToken, record.procStart);
 }
 
+/** A probe that reads each PID once. One process is recorded under every
+ * version it loaded, and the macOS/BSD start-time read is a blocking `ps`. */
+function readOncePerPid(probe: HostProcessProbe): HostProcessProbe {
+  const alive = new Map<number, boolean>();
+  const startTokens = new Map<number, string | null>();
+  return {
+    isAlive: pid => {
+      if (!alive.has(pid)) alive.set(pid, probe.isAlive(pid));
+      return alive.get(pid)!;
+    },
+    startToken: pid => {
+      if (!startTokens.has(pid)) startTokens.set(pid, probe.startToken(pid));
+      return startTokens.get(pid)!;
+    },
+  };
+}
+
 /**
  * Cache versions a running host session is still loaded from. Claude Code
  * keeps a session on the version folder it started with after an update and
@@ -310,16 +327,18 @@ export function isHostProcessLive(record: HostInUseRecord, probe: HostProcessPro
  * directory does not exist"), so capture stops for the rest of the session
  * with nothing shown to the user (#5970). A version is kept while any process
  * recorded in its `.in_use` folder is alive, orphaned or not. Once they have
- * all exited the next sweep removes it.
+ * all exited the next sweep removes it. Each recorded process is read once per
+ * call, however many versions record it.
  */
 export function hostInUseCacheVersions(
   root: string,
   versionDirectoryNames: string[] = readCacheVersionDirectories(root),
   probe: HostProcessProbe = defaultHostProcessProbe,
 ): string[] {
+  const sweepProbe = readOncePerPid(probe);
   return versionDirectoryNames.filter(name =>
     isVersionDirectoryName(name)
-    && readHostInUseRecords(join(root, name)).some(record => isHostProcessLive(record, probe)));
+    && readHostInUseRecords(join(root, name)).some(record => isHostProcessLive(record, sweepProbe)));
 }
 
 /** Read the version names and their `.orphaned_at` state, then plan the prune.
