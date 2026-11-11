@@ -113,6 +113,21 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 120_000);
 
+  it('round trips Unicode and escaped focus payloads through Python without changing their save commitment', async () => {
+    const fixture = harness(prompts(14, 2800));
+    const title = 'İstanbul "quoted" \\ 🚀';
+    try {
+      await run(fixture, async question => {
+        const value = JSON.parse(answer(question));
+        value.goals.focus_areas[0].title = title;
+        value.goals.focus_areas[0].goal = '完成发布\\路径\n并验证。';
+        value.goals.asks[0].focus_area = title;
+        return JSON.stringify(value);
+      });
+      expect(fixture.worker.focusAreas().some(area => area.name === title && area.goal === '完成发布\\路径\n并验证。')).toBe(true);
+    } finally { fixture.close(); }
+  }, 60_000);
+
   it('keeps strict quote validation and resumes only unfinished or changed source turns in the same minute', async () => {
     const source = prompts(36, 2800);
     const fixture = harness(source);
@@ -162,6 +177,34 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 60_000);
 
+
+  it('processes restored source turns after deletion without replaying unchanged completed turns', async () => {
+    const source = prompts(28, 2800);
+    const fixture = harness(source);
+    const first: string[] = [], retained: string[] = [], restored: string[] = [];
+    let calls = 0;
+    try {
+      await expect(run(fixture, async question => {
+        if (++calls === 1) return answer(question, first);
+        throw new Error('provider interrupted');
+      })).rejects.toThrow('provider interrupted');
+      const remaining = source.slice(first.length);
+      fixture.source(remaining);
+      expect(await run(fixture, async question => {
+        retained.push(...batchInput(question).entries.map(entry => entry.turn));
+        return JSON.stringify({ map: 'No actionable goals in these remaining prompts.', goals: null });
+      })).toBe('no actionable goals found.');
+      expect(retained).toEqual(remaining.map(prompt => prompt.nativePromptId));
+      const retainedPositions = fixture.checkpoint().processed;
+      expect(fixture.checkpoint().goals).toBeNull();
+      fixture.source(source);
+      await run(fixture, async question => answer(question, restored));
+      expect(restored).toEqual(first);
+      expect(retainedPositions).toHaveLength(remaining.length);
+      expect(restored.some(turn => retained.includes(turn))).toBe(false);
+    } finally { fixture.close(); }
+  }, 60_000);
+
   it('does not repay for an entirely non-actionable window and continues the refresh', async () => {
     const fixture = harness(prompts(15, 2800));
     try {
@@ -187,6 +230,21 @@ describe('initial owner-goals batches', () => {
       expect(fixture.worker.rows).toHaveLength(0);
     } finally { fixture.close(); }
   });
+
+  it('checks for a newer saved snapshot before committing the last batch', async () => {
+    const fixture = harness(prompts(14, 2800));
+    let calls = 0;
+    try {
+      await expect(run(fixture, async question => {
+        const value = answer(question);
+        if (++calls === 2) fixture.worker.rows.push({ id: 1, project: 'home', list_name: 'owner-goals',
+          fields: JSON.stringify({ generated_at: new Date(NOW + 2000).toISOString() }), created_at_epoch: 1 });
+        return value;
+      })).rejects.toThrow('will not overwrite the newer snapshot');
+      expect(fixture.worker.focusAreas()).toHaveLength(0);
+      expect(fixture.checkpoint().save).not.toBeNull();
+    } finally { fixture.close(); }
+  }, 60_000);
 
   it('does not overwrite a snapshot saved elsewhere while the first mapping was incomplete', async () => {
     const fixture = harness(prompts(24, 2800));

@@ -6,7 +6,7 @@
  *
  * Every backend (Claude Code, Codex, Gemini, and the selected API provider)
  * runs the same way: the worker runs the skills' CLI and scripts, asks the
- * read-only agent one JSON question per step, and saves the answer through the
+ * read-only agent one JSON question per step or batch, and saves the answer through the
  * same validators the skills' CLI uses.
  */
 
@@ -293,18 +293,24 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   let exportedAt = new Date(now()).toISOString();
   const checkpointPath = ownerGoalsCheckpointPath(ledgerDir);
   let goalsCheckpoint: OwnerGoalsCheckpoint | null = null;
+  const checkMappingSnapshot = (progress: OwnerGoalsCheckpoint, generatedAt: string | null | undefined) => {
+    const current = generatedAt || null;
+    if (progress.deviceId !== options.localDeviceId()
+      || (current !== progress.baseGeneratedAt && !(progress.save && current === progress.exportedAt))) {
+      throw batchFailure('Saved owner goals or the local device changed while mapping. Checked progress remains at ' + checkpointPath + '; it will not overwrite the newer snapshot.');
+    }
+  };
+  const checkCurrentMappingSnapshot = (progress: OwnerGoalsCheckpoint) => {
+    const database = openDatabase();
+    try { checkMappingSnapshot(progress, readGoals(database).generatedAt); }
+    finally { database.close(); }
+  };
   const prepareGoals = async () => {
     const database = openDatabase();
     // A withdrawn area (a seed undo) is no match target: the owner never had it, so it is left out of the saved areas.
     try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }).filter(area => !isWithdrawnArea(area)); } finally { database.close(); }
     goalsCheckpoint = readOwnerGoalsCheckpoint(checkpointPath);
-    if (goalsCheckpoint) {
-      const current = savedGoals.generatedAt || null;
-      if (goalsCheckpoint.deviceId !== options.localDeviceId()
-        || (current !== goalsCheckpoint.baseGeneratedAt && !(goalsCheckpoint.save && current === goalsCheckpoint.exportedAt))) {
-        throw batchFailure('Saved owner goals or the local device changed while mapping. Checked progress remains at ' + checkpointPath + '; it will not overwrite the newer snapshot.');
-      }
-    }
+    if (goalsCheckpoint) checkMappingSnapshot(goalsCheckpoint, savedGoals.generatedAt);
     since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
     exportedAt = new Date(now()).toISOString();
     exported = await writeOwnerPrompts(goalsFolder, since);
@@ -465,6 +471,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             processed: [], goals: null, maps: [], save: null,
           };
           if (!goalsCheckpoint) writeOwnerGoalsCheckpoint(checkpointPath, progress);
+          const currentKeys = new Set(exported.sections.map(section => section.key));
+          if (progress.processed.some(key => !currentKeys.has(key))) {
+            // Absent/changed source positions must not suppress a later restoration of those turns.
+            // Audit maps are model prose, not quote-validated records: do not republish cached prose
+            // after its source changed, even when none of the final goal quotes used that source.
+            progress = { ...progress, maps: [],
+              processed: progress.save ? progress.processed : progress.processed.filter(key => currentKeys.has(key)) };
+            writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            goalsCheckpoint = progress;
+          }
           type CheckedGoals = { goals: Record<string, unknown>; focus_areas: { areas: Parameters<typeof ownerGoalsSaveKey>[0] } };
           const validate = async (goals: Record<string, unknown>, carriedBefore: string | null = null): Promise<CheckedGoals> => {
             const input = writeInput('check-owner-goals', { ...goals, generated_at: exportedAt, source_prompt_count: ownerPrompts });
@@ -494,6 +510,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             const processed = new Set(progress.processed);
             const focusPath = writeInput('focus-areas', savedAreas);
             while (exported.sections.some(section => !processed.has(section.key))) {
+              checkCurrentMappingSnapshot(progress);
               const previousPath = progress.goals ? writeInput('checked-owner-goals', progress.goals) : null;
               const batchPath = writeInput('owner-prompts-batch', '');
               const question = [
@@ -542,9 +559,18 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             goalsCheckpoint = progress;
           }
           if (progress.save) {
+            checkCurrentMappingSnapshot(progress);
+            // Validate current evidence before republishing local map/output artifacts as well as before
+            // worker writes. The final save repeats this check, preserving the same payload and watermark.
+            const readyInput = writeInput('ready-owner-goals', progress.goals);
+            const rechecked = JSON.parse(await runScript([paths.saveScript, '--goals', readyInput, '--prompts', promptsPath,
+              '--ledger-dir', ledgerDir, '--dry-run', '--save-key', progress.save.key])) as CheckedGoals;
+            if (ownerGoalsSaveKey(rechecked.focus_areas.areas, progress.save.key.split(':')[0]) !== progress.save.key) {
+              throw batchFailure('The checked focus payload no longer matches its retained save key.');
+            }
             writeFileSync(goalsPath, JSON.stringify(progress.goals, null, 2), { mode: 0o600 });
             const mapPath = join(goalsFolder, 'owner-map.md');
-            writeFileSync(mapPath, '# Owner goals map\n\nChecked in chronological batches; the saved goals are the cumulative result.\n\n'
+            writeFileSync(mapPath, '# Owner goals map\n\nModel-written audit notes; goal quotes are checked separately. Earlier batch maps are omitted when their source changes.\n\n'
               + progress.maps.map((map, index) => '## Batch ' + (index + 1) + '\n\n' + map).join('\n\n'), { mode: 0o600 });
             await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--map', mapPath,
               '--ledger-dir', ledgerDir, '--save-key', progress.save.key]);

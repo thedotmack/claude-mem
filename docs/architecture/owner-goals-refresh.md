@@ -31,8 +31,9 @@ validator against the full current window, then the focus route's pure
 preflight. Only after that succeeds does one atomic checkpoint advance both
 the processed source keys and the checked aggregate. The next batch keeps the
 aggregate's titles, rules, matches and evidence through the skill's update
-contract. Batch maps are retained as an audit trail but are not repeatedly
-sent to the model.
+contract. Batch maps are model-written audit notes, not quote-validated goal records, and
+are not repeatedly sent to the model. Cached maps are discarded when their
+source changes so redacted text is not republished from audit prose.
 
 Before any actionable goal has been found, a batch can return **goals: null**.
 This records no snapshot or quote claim. A later batch cannot replace an
@@ -43,7 +44,9 @@ continue, without forcing an unsupported empty snapshot through the validator.
 On another refresh, checked draft quotes are revalidated against the new
 export. The existing carried-quote cleanup may remove evidence that aged out
 or was redacted. New model answers never use that exception. Completed source
-positions survive an empty aggregate; new or changed source keys still need
+positions survive an empty aggregate while those sources are still in the
+current export. Absent or changed keys are removed so a later restoration is
+not suppressed by an obsolete position. New or changed source keys still need
 processing.
 
 ## Finishing a checked snapshot
