@@ -39,6 +39,17 @@ primary_region = "iad"
     path = "/health"
 
 [[vm]]
-  memory = "1gb"
+  # Measured 2026-11-11 on a copy of the heaviest account (836 MB database, 24,424 shared
+  # My Work rows), with pulls and shared rows arriving every 30 s:
+  # - With one My Work tab open the worker peaked at 833 MB on the fixed build (60 minutes,
+  #   1 GB container, native arm64). On a Fly machine with 1 GB the kernel kills it at about
+  #   868 MB anon (fly logs), after the gate and Fly's ssh agent (about 40 MB).
+  # - Shared history grows by about 4,500 rows a day on that account, and the worker's memory
+  #   grows with it (src/services/work-view/shared-record-store.mjs, SHARED_ROW_CACHE_CEILING).
+  # So 1 GB has no margin with a tab open. 1,536 MB leaves 703 MB above that peak, 663 MB after the
+  # gate and ssh agent, for the growth: three copies of the row cache at about 604 bytes per row use it
+  # up at about 408,091 shared rows, about 85 days of growth past the measurement.
+  # No tab open: the worker peaked at 374 MB.
+  memory = "1536mb"
   cpu_kind = "shared"
   cpus = 1

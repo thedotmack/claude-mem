@@ -33,7 +33,9 @@
 #        (moves every account machine to the router's image; sleeping ones stay asleep;
 #         a restarted machine must report its worker ready within N seconds or the run stops.
 #         N is required, with no default: the worker boot time measured in the Phase 8 staging run.
-#         Needs FLY_API_TOKEN and FLY_ORG_SLUG; --dry-run lists what would change)
+#         Needs FLY_API_TOKEN and FLY_ORG_SLUG; --dry-run lists what would change.
+#         The first rollout after the switch to digest-pinned images restarts every running
+#         account machine still on a bare tag, even one already on the same image)
 #
 # Secrets (fly secrets set …):
 #   VIEWER_LINK_SECRET   the master secret, same value as cmem.ai's CMEM_VIEWER_LINK_SECRET.
