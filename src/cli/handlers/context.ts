@@ -8,6 +8,8 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import {
   executeWithWorkerFallback,
   isWorkerFallback,
+  isWorkerUnavailableError,
+  type WorkerCallResult,
   getWorkerPort,
   getViewerBaseUrl,
   consumeWorkerOutageNotice,
@@ -485,9 +487,16 @@ export const contextHandler: EventHandler = {
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
     let workerOutageNotice: string | null = null;
-    let contextResult = serverRender
-      ? serverRender.model
-      : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    let contextResult: WorkerCallResult<string>;
+    try {
+      contextResult = serverRender
+        ? serverRender.model
+        : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    } catch (error) {
+      if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+      const notice = userNotice(await consumeWorkerOutageNotice(input.sessionId));
+      return notice ? { ...emptyResult, systemMessage: notice } : emptyResult;
+    }
     if (showLastMessage && isWorkerFallback(contextResult)) {
       const cachedFallback = readCachedRender(false);
       if (cachedFallback !== null) {
@@ -515,14 +524,19 @@ export const contextHandler: EventHandler = {
     let coloredTimeline = '';
     if (showTerminalOutput) {
       const colors = input.platform === 'claude-code';
-      const colorResult = serverRender
-        ? serverRender.terminal
-        : (showLastMessage ? null : readCachedRender(colors))
-          ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
-      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-        coloredTimeline = colorResult.trim();
-      } else if (showLastMessage && isWorkerFallback(colorResult)) {
-        coloredTimeline = readCachedRender(colors)?.trim() ?? '';
+      try {
+        const colorResult = serverRender
+          ? serverRender.terminal
+          : (showLastMessage ? null : readCachedRender(colors))
+            ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+          coloredTimeline = colorResult.trim();
+        } else if (showLastMessage && isWorkerFallback(colorResult)) {
+          coloredTimeline = readCachedRender(colors)?.trim() ?? '';
+        }
+      } catch (error) {
+        if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+        workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
       }
     }
 

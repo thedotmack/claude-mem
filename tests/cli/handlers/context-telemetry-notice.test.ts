@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as hookSettings from '../../../src/shared/hook-settings.js';
@@ -24,6 +24,8 @@ const originals = {
 };
 let showBanner = false;
 let workerUnavailable = false;
+let workerFailure: Error | null = null;
+let colorFailure: Error | null = null;
 let terminal = 'context from worker';
 let excludedProjects = '';
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -38,10 +40,15 @@ mock.module('../../../src/utils/project-name.js', () => ({
   getProjectContext: () => ({ primary: 'notice-project', allProjects: ['notice-project'], isWorktree: false }),
 }));
 mock.module('../../../src/shared/worker-utils.js', () => ({
-  executeWithWorkerFallback: async (path: string) => path.includes('colors=true') ? terminal : 'context from worker',
+  executeWithWorkerFallback: async (path: string) => {
+    if (path.includes('colors=true') && colorFailure) throw colorFailure;
+    if (workerFailure) throw workerFailure;
+    return path.includes('colors=true') ? terminal : 'context from worker';
+  },
   getWorkerPort: () => 37777,
   getViewerBaseUrl: () => 'http://localhost:37777',
   isWorkerFallback: () => workerUnavailable,
+  isWorkerUnavailableError: originals.worker.isWorkerUnavailableError,
   consumeWorkerOutageNotice: async () => 'claude-mem worker is unavailable',
 }));
 
@@ -64,6 +71,8 @@ beforeEach(() => {
   delete process.env.CLAUDE_MEM_INTERNAL;
   showBanner = false;
   workerUnavailable = false;
+  workerFailure = null;
+  colorFailure = null;
   terminal = 'context from worker';
   excludedProjects = '';
 });
@@ -154,6 +163,34 @@ describe('marketplace first-session telemetry disclosure', () => {
     expect((await sessionStart()).systemMessage).toBeUndefined();
   });
 
+  it.each(['fetch failed', 'Worker request timed out'])('discloses when the actual worker call rejects: %s', async message => {
+    workerFailure = new Error(message);
+    const first = await sessionStart();
+    expect(first.systemMessage).toContain(docs);
+    expect(first.systemMessage).toContain('claude-mem worker is unavailable');
+    expect(first.hookSpecificOutput?.additionalContext).toBe('');
+    workerFailure = null;
+    expect((await sessionStart()).systemMessage).toBeUndefined();
+  });
+
+  it('keeps completed model context when only the terminal worker read rejects', async () => {
+    showBanner = true;
+    colorFailure = new Error('ECONNRESET');
+    const result = await sessionStart();
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(result.systemMessage).toContain(docs);
+    expect(result.systemMessage).toContain('claude-mem worker is unavailable');
+  });
+
+  it('does not hide programming errors or change another host\'s error handling', async () => {
+    workerFailure = new TypeError('invalid context decoder');
+    await expect(sessionStart()).rejects.toThrow('invalid context decoder');
+    expect(loadTelemetryConfig()).toBeNull();
+    workerFailure = new Error('ECONNRESET');
+    await expect(sessionStart('antigravity-cli')).rejects.toThrow('ECONNRESET');
+    expect(loadTelemetryConfig()).toBeNull();
+  });
+
   it('keeps the context and notice available when the disclosure record cannot be written', async () => {
     // A real filesystem failure, without changing the general consent writer:
     // the config path is a directory, so writing telemetry.json fails EISDIR.
@@ -162,11 +199,27 @@ describe('marketplace first-session telemetry disclosure', () => {
     const first = await sessionStart();
     expect(first.systemMessage).toContain(docs);
     expect(first.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(existsSync(`${configPath}.lock`)).toBe(false);
     expect(() => recordTelemetryDecision(false)).toThrow();
+    expect(existsSync(`${configPath}.lock`)).toBe(false);
 
     rmSync(configPath, { recursive: true });
     expect((await sessionStart()).systemMessage).toContain(docs);
     expect((await sessionStart()).systemMessage).toBeUndefined();
+  });
+
+  it('keeps context available under lock contention and does not report a saved choice', async () => {
+    const lock = join(dataDir, 'telemetry.json.lock');
+    mkdirSync(lock);
+    const result = await sessionStart();
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(result.systemMessage).toContain(docs);
+    expect(() => recordTelemetryDecision(false)).toThrow('Telemetry configuration is locked');
+    expect(loadTelemetryConfig()).toBeNull();
+    rmSync(lock, { recursive: true });
+    recordTelemetryDecision(false);
+    expect(loadTelemetryConfig()?.enabled).toBe(false);
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('reserves space for the disclosure in the full terminal field', async () => {

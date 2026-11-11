@@ -356,3 +356,9 @@ The `enabled` field is only present once you've made an explicit choice (install
 An optional `noticeShownAt` timestamp remembers that the first-session disclosure
 was displayed. It does not enable or disable telemetry and does not create an
 install ID or record a consent decision.
+
+Config updates serialize the full read and write so a session notice cannot
+overwrite a concurrent opt-out. If a command reports that `telemetry.json.lock`
+is held, the choice was not saved: retry after the other command finishes. If
+that command was interrupted, remove its empty lock directory before retrying.
+The first-session notice still appears if recording its display fails.
