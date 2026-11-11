@@ -27,6 +27,8 @@ export function getObservationsByFilePath(
     new Set((Array.isArray(filePath) ? filePath : [filePath])
       .filter(p => typeof p === 'string' && p.length > 0)
       .flatMap(p => {
+        // Backslashes are filename characters in an absolute POSIX path.
+        if (p.startsWith('/') && !p.startsWith('//') && p.includes('\\')) return [p];
         const forward = p.replaceAll('\\', '/').replace(/^(\.\/)+/, '');
         const forms = [p, forward];
         // Read resolves away ./, but captured tool evidence keeps it verbatim.
