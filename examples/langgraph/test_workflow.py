@@ -47,7 +47,6 @@ class WorkflowTests(unittest.TestCase):
             "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH": "false",
             "CLAUDE_MEM_AUTO_UPDATE": "false",
             "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED": "false",
-            "CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS": "0",
             "CLAUDE_MEM_CLOUD_SYNC_HUB_URL": "",
             "CLAUDE_MEM_MEMORY_WATCH_ROOTS": "",
         }
