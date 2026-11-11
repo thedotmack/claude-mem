@@ -21,6 +21,25 @@ class MemoryWorkflowTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.script = os.environ["CLAUDE_MEM_MCP_SERVER"]
 
+    async def test_literal_comma_and_outer_space_project_keys(self):
+        token = uuid4().hex
+        for project in (f"api-{token},web-{token}", f" spaced-{token} "):
+            with self.subTest(project=project):
+                alias = project.split(",")[0].strip()
+                async with memory_server(self.script) as server:
+                    foreign = await remember(server, alias, "Alias note", "Unrelated alias project note.")
+                    own = await remember(server, project, "Literal key note", "Keep the literal project key.")
+                    timeline = await call(server, "timeline", {"project": project, "anchor": own["id"], "depth_before": 10, "depth_after": 10})
+                    details = await call(server, "get_observations", {"project": project, "ids": [foreign["id"]]})
+                self.assertEqual(own["project"], project)
+                self.assertIn("Keep the literal project key.", own["details"])
+                with sqlite3.connect(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "claude-mem.db") as db:
+                    self.assertEqual(db.execute("SELECT project FROM observations WHERE id=?", (own["id"],)).fetchone()[0], project)
+                for name, value in [("index", own["index"]), ("timeline", timeline), ("foreign details", details)]:
+                    with self.subTest(read=name):
+                        self.assertNotIn(f"#{foreign['id']} ", value)
+                        self.assertNotIn("Unrelated alias project note.", value)
+
     async def test_worktree_reads_stay_within_the_explicit_project(self):
         with tempfile.TemporaryDirectory(prefix="openai worktree ") as temporary:
             parent = Path(temporary) / ("parent-" + uuid4().hex)

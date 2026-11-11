@@ -139,6 +139,9 @@ before setting its own local connection. Your normal worker is untouched.
   export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
   export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
   export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=
   python3 - <<'PYSETTINGS'
 import json, os
 from pathlib import Path
@@ -177,8 +180,16 @@ Both fault fixtures explicitly pin their child connection to `127.0.0.1`,
 regardless of the host used by your normal worker. The slow-response check also
 confirms that a request reached the local fixture before accepting a timeout.
 
-Every read also sends `projects: [project]` explicitly. This keeps the selected
+Every read also sends an explicit singleton `projects` scope as a JSON string. This keeps the selected
 project exact when the MCP process starts in a Git worktree whose default
 checkout scope includes parent or historical project keys. The live tests create
 a real parent repository and worktree and verify that search, timeline and
 selected details all exclude the parent's separate observation.
+
+Literal commas and outer whitespace in project keys are preserved. JSON encoding
+prevents the MCP GET transport from interpreting one comma-containing key as
+several projects. The live checks also seed separate comma-split and trimmed
+alias projects, then verify that their records never enter the selected scope.
+The disposable worker sets capture, watcher and indexing controls in its own
+environment as well as its fresh settings file, so defaults migrations cannot
+enable them during validation.
