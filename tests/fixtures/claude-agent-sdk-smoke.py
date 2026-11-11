@@ -15,7 +15,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   if index<len(tools):
    name,args=tools[index];block={'type':'tool_use','id':f'toolu_fixture{index}','name':'mcp__claude-mem__'+name,'input':args};reason='tool_use'
   else:block={'type':'text','text':'A restore must reject snapshots missing required worker tables.'};reason='end_turn'
-  message={'id':f'msg_fixture{index}','type':'message','role':'assistant','model':body.get('model','claude-haiku-4-5-20251001'),'content':[block],'stop_reason':reason,'stop_sequence':None,'usage':{'input_tokens':100,'output_tokens':20,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}}
+  message={'id':f'msg_fixture{index}','type':'message','role':'assistant','model':body.get('model','haiku'),'content':[block],'stop_reason':reason,'stop_sequence':None,'usage':{'input_tokens':100,'output_tokens':20,'cache_creation_input_tokens':0,'cache_read_input_tokens':0}}
   if body.get('stream'):
    start={**message,'content':[],'stop_reason':None}
    events=[('message_start',{'type':'message_start','message':start}),('content_block_start',{'type':'content_block_start','index':0,'content_block':{**block,**({'input':{}} if block['type']=='tool_use' else {'text':''})}}),('content_block_delta',{'type':'content_block_delta','index':0,'delta':{'type':'input_json_delta','partial_json':json.dumps(block['input'])} if block['type']=='tool_use' else {'type':'text_delta','text':block['text']}}),('content_block_stop',{'type':'content_block_stop','index':0}),('message_delta',{'type':'message_delta','delta':{'stop_reason':reason,'stop_sequence':None},'usage':{'output_tokens':20}}),('message_stop',{'type':'message_stop'})]
@@ -40,6 +40,12 @@ try:
  assert len(calls)==5
  assert 'SDK forbidden fixture' not in json.dumps(calls)
  assert 'SDK restore fixture' in json.dumps(calls[-1])
+ # The model asked for both IDs; the get_observations result must hold the saved note and withhold the other project's.
+ details=[b for m in calls[-1]['messages'] if isinstance(m.get('content'),list) for b in m['content'] if b.get('type')=='tool_result' and b.get('tool_use_id')=='toolu_fixture3']
+ assert len(details)==1,'missing get_observations result'
+ details_text=json.dumps(details[0])
+ assert 'A restore must reject snapshots missing required worker tables.' in details_text
+ assert 'SDK forbidden fixture' not in details_text
  rows=request('/api/observations?project=fixture')['items'];assert any(r['title']=='SDK restore fixture' for r in rows)
  print('Actual SDK saved, searched, inspected timeline and fetched only the selected project memory')
 finally:

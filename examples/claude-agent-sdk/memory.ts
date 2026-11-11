@@ -16,9 +16,13 @@ export function memoryPermission(project: string, name: string, input: Record<st
   if ((input.project !== undefined && input.project !== project) || input.projectId !== undefined || input.projects !== undefined) {
     return { behavior: 'deny', message: 'This example can access only its selected local project.' };
   }
+  // Reads also name the project as a one-item JSON list. Without it, the MCP
+  // server widens a read for its own checkout's key to every key that checkout
+  // uses (a git worktree's parent included). Saves take only `project`.
   return { behavior: 'allow', updatedInput: {
     ...Object.fromEntries(FIELDS[tool].filter(key => input[key] !== undefined).map(key => [key, input[key]])),
     project,
+    ...(tool === 'save_memory' ? {} : { projects: JSON.stringify([project]) }),
   } };
 }
 
@@ -26,7 +30,8 @@ export function memoryOptions(project: string, server: string): Options {
   return {
     tools: [], settingSources: [], strictMcpConfig: true, persistSession: false,
     maxTurns: 8,
-    model: process.env.CLAUDE_MEM_EXAMPLE_MODEL || 'claude-haiku-4-5-20251001',
+    // An alias, not a dated ID, so the example always runs the newest Haiku.
+    model: process.env.CLAUDE_MEM_EXAMPLE_MODEL || 'haiku',
     mcpServers: { 'claude-mem': { command: process.execPath, args: [server], env: { CLAUDE_MEM_RUNTIME: 'worker' } } },
     // Ask rules ensure even read-only MCP tools reach the project check.
     settings: { permissions: { ask: [`${PREFIX}*`] } },
