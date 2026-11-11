@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import { rolloutImage, type RolloutOptions } from '../scripts/rollout-image.js';
+import { pinnedImageReference, rolloutImage, type RolloutOptions } from '../scripts/rollout-image.js';
 import { DEFAULT_REPLICA_FLY_APP_NAME_PREFIX } from '../src/defaults.js';
 
-const NEW_IMAGE = 'registry.fly.io/cmem-viewer:deployment-NEW';
+/** What a router machine reports: config.image is the tag `fly deploy` wrote; image_ref is what Fly resolved. */
+const NEW_IMAGE_REF = { registry: 'registry.fly.io', repository: 'cmem-viewer', tag: 'deployment-NEW', digest: 'sha256:new' };
+/** The pinned reference the rollout writes, and cmem.ai creates account machines with. */
+const NEW_IMAGE = 'registry.fly.io/cmem-viewer:deployment-NEW@sha256:new';
+/** An account machine created before pinning: a bare tag. */
 const OLD_IMAGE = 'registry.fly.io/cmem-viewer:deployment-OLD';
 
-interface FakeMachine { id: string; state: string; version: string; config: Record<string, unknown> | null }
+type FakeImageRef = { registry?: string; repository?: string; tag?: string; digest?: string };
+interface FakeMachine { id: string; state: string; version: string; config: Record<string, unknown> | null; image_ref?: FakeImageRef }
 interface Call { method: string; path: string; body: any }
 
 /** What the worker probe prints on the machine, or `412` for Fly's "machine not running". */
@@ -60,13 +65,19 @@ function fakeFly(
   return { calls, fetchImpl };
 }
 
-function machine(id: string, state: string, image: string): FakeMachine {
+/** `digest` is what Fly resolved (image_ref); by default the one config.image is pinned to, else an old one. */
+function machine(id: string, state: string, image: string, digest = image.includes('@') ? image.slice(image.lastIndexOf('@') + 1) : 'sha256:old'): FakeMachine {
   return {
     id,
     state,
     version: `v-${id}`,
+    image_ref: { registry: 'registry.fly.io', repository: 'cmem-viewer', tag: image.split(':')[1]?.split('@')[0], digest },
     config: { image, guest: { cpu_kind: 'shared', cpus: 1, memory_mb: 1024 }, mounts: [{ volume: `vol_${id}`, path: '/data' }], services: [{ internal_port: 8080, autostop: 'stop' }], env: { VIEWER_SIGN_IN_URL: 'https://cmem.ai/work' } },
   };
+}
+
+function routerMachine(id = 'router', imageRef: FakeImageRef = NEW_IMAGE_REF, state = 'started'): FakeMachine {
+  return { ...machine(id, state, `registry.fly.io/cmem-viewer:${imageRef.tag ?? 'deployment-NEW'}`, imageRef.digest), image_ref: { ...imageRef } };
 }
 
 /** A fake clock: each wait between worker checks moves it forward instead of sleeping. */
@@ -86,7 +97,7 @@ function options(fetchImpl: typeof fetch, extra: Partial<RolloutOptions> = {}): 
 
 /** Runs the script as an operator would, against the fake API served on loopback. */
 async function run(failUpdatesFor: string[], args = ['--worker-ready-timeout-seconds', '30'], machineState = 'stopped', workerAnswers: Record<string, WorkerAnswer[]> = {}) {
-  const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', machineState, OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', machineState, OLD_IMAGE)] }, { failUpdatesFor, expectedOrigin: 'http://127.0.0.1', workerAnswers });
+  const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', machineState, OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', machineState, OLD_IMAGE)] }, { failUpdatesFor, expectedOrigin: 'http://127.0.0.1', workerAnswers });
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => fly.fetchImpl(request.url, { method: request.method, headers: request.headers, body: request.method === 'POST' ? request.body : undefined, duplex: 'half' } as RequestInit) });
   try {
     const child = Bun.spawn([process.execPath, `${import.meta.dir}/../scripts/rollout-image.ts`, ...args], {
@@ -108,7 +119,7 @@ const probes = (calls: Call[]) => calls.filter(call => call.method === 'POST' &&
 describe('rollout-image', () => {
   it('updates a stopped machine with its whole config, only the image changed, and skip_launch', async () => {
     const stopped = machine('m-stopped', 'stopped', OLD_IMAGE);
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [stopped] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [stopped] });
     const summary = await rolloutImage(options(fly.fetchImpl));
     expect(summary.updated).toEqual(['cmem-vw-aaa/m-stopped']);
     const [update] = posts(fly.calls);
@@ -118,7 +129,7 @@ describe('rollout-image', () => {
   });
 
   it('lets a running machine restart on the new image and waits for that new version to start', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-running', 'started', OLD_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-running', 'started', OLD_IMAGE)] });
     const summary = await rolloutImage(options(fly.fetchImpl));
     expect(posts(fly.calls)[0].body.skip_launch).toBe(false);
     const updateIndex = fly.calls.findIndex(call => call.method === 'POST');
@@ -127,7 +138,7 @@ describe('rollout-image', () => {
   });
 
   it('asks the restarted machine\'s worker through exec, with bun and no shell, after it starts', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-running', 'started', OLD_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-running', 'started', OLD_IMAGE)] });
     await rolloutImage(options(fly.fetchImpl));
     const waitIndex = fly.calls.findIndex(call => call.path.includes('/wait'));
     const probe = fly.calls[waitIndex + 1];
@@ -138,14 +149,14 @@ describe('rollout-image', () => {
   });
 
   it('never checks the worker of a machine it kept asleep', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-stopped', 'stopped', OLD_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-stopped', 'stopped', OLD_IMAGE)] });
     await rolloutImage(options(fly.fetchImpl));
     expect(probes(fly.calls)).toEqual([]);
   });
 
   it('keeps waiting through a booting and busy worker, one check per second, and passes once it is ready', async () => {
     const fly = fakeFly(
-      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
       { workerAnswers: { 'cmem-vw-aaa': ['not-listening', 'not-listening', 'busy', 'busy', 'ready'] } },
     );
     const { clock, now, sleep } = fakeClock();
@@ -158,7 +169,7 @@ describe('rollout-image', () => {
 
   it('stops the run when a machine starts but its worker never becomes ready', async () => {
     const fly = fakeFly(
-      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
       { workerAnswers: { 'cmem-vw-aaa': ['busy'] } },
     );
     const summary = await rolloutImage(options(fly.fetchImpl, { workerReadyTimeoutSeconds: 5 }));
@@ -172,7 +183,7 @@ describe('rollout-image', () => {
 
   it('stops the run at once when the worker answered and then stopped listening', async () => {
     const fly = fakeFly(
-      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
       { workerAnswers: { 'cmem-vw-aaa': ['not-listening', 'busy', 'not-listening'] } },
     );
     const summary = await rolloutImage(options(fly.fetchImpl));
@@ -183,7 +194,7 @@ describe('rollout-image', () => {
 
   it('stops the run when the machine is no longer running for the worker check', async () => {
     const fly = fakeFly(
-      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
       { workerAnswers: { 'cmem-vw-aaa': ['412'] } },
     );
     const summary = await rolloutImage(options(fly.fetchImpl));
@@ -192,13 +203,13 @@ describe('rollout-image', () => {
   });
 
   it('refuses to run without a positive worker-ready time limit', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()] });
     await expect(rolloutImage(options(fly.fetchImpl, { workerReadyTimeoutSeconds: 0 }))).rejects.toThrow('workerReadyTimeoutSeconds must be a positive number');
     expect(fly.calls).toEqual([]);
   });
 
   it('skips a machine already on the router image', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-current', 'stopped', NEW_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-current', 'stopped', NEW_IMAGE)] });
     const summary = await rolloutImage(options(fly.fetchImpl));
     expect(summary.alreadyCurrent).toEqual(['cmem-vw-aaa/m-current']);
     expect(posts(fly.calls)).toEqual([]);
@@ -206,7 +217,7 @@ describe('rollout-image', () => {
 
   it('never touches apps without the prefix', async () => {
     const fly = fakeFly({
-      'cmem-viewer': [machine('router', 'started', NEW_IMAGE)],
+      'cmem-viewer': [routerMachine()],
       'cmem-sync-api': [machine('sync', 'started', OLD_IMAGE)],
       'other-cmem-vw-x': [machine('other', 'stopped', OLD_IMAGE)],
       'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)],
@@ -219,7 +230,7 @@ describe('rollout-image', () => {
 
   it('stops the whole run at the first failed update and lists what was not attempted', async () => {
     const fly = fakeFly({
-      'cmem-viewer': [machine('router', 'started', NEW_IMAGE)],
+      'cmem-viewer': [routerMachine()],
       'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)],
       'cmem-vw-bbb': [machine('m-b1', 'stopped', OLD_IMAGE), machine('m-b2', 'stopped', OLD_IMAGE)],
       'cmem-vw-ccc': [machine('m-c', 'stopped', OLD_IMAGE)],
@@ -237,7 +248,7 @@ describe('rollout-image', () => {
 
   it('stops the whole run when an updated machine does not start', async () => {
     const fly = fakeFly({
-      'cmem-viewer': [machine('router', 'started', NEW_IMAGE)],
+      'cmem-viewer': [routerMachine()],
       'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)],
       'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)],
     }, { failWaitsFor: ['cmem-vw-aaa'] });
@@ -281,14 +292,14 @@ describe('rollout-image', () => {
 
   it('refuses a machine whose config Fly could not read, instead of sending a partial one', async () => {
     const unreadable: FakeMachine = { id: 'm-x', state: 'stopped', version: 'v-x', config: null };
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [unreadable] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [unreadable] });
     const summary = await rolloutImage(options(fly.fetchImpl));
     expect(summary.failures).toHaveLength(1);
     expect(posts(fly.calls)).toEqual([]);
   });
 
   it('changes nothing in a dry run', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
     const lines: string[] = [];
     const summary = await rolloutImage(options(fly.fetchImpl, { dryRun: true, log: line => lines.push(line) }));
     expect(summary.wouldUpdate).toEqual(['cmem-vw-aaa/m-a']);
@@ -300,7 +311,7 @@ describe('rollout-image', () => {
 
   it('--only updates one prefixed app and refuses any other name', async () => {
     const apps = {
-      'cmem-viewer': [machine('router', 'started', NEW_IMAGE)],
+      'cmem-viewer': [routerMachine()],
       'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)],
       'cmem-vw-bbb': [machine('m-b', 'stopped', OLD_IMAGE)],
     };
@@ -310,8 +321,70 @@ describe('rollout-image', () => {
     await expect(rolloutImage(options(fakeFly(apps).fetchImpl, { onlyFlyAppName: 'cmem-viewer' }))).rejects.toThrow('is not an app with prefix');
   });
 
+  it('pins the target exactly as cmem.ai does: registry/repository:tag@digest from image_ref', () => {
+    // The same example claude-mem-pro scripts/test-cloud-viewer-provision.ts pins for a created machine.
+    const ref = { registry: 'registry.fly.io', repository: 'cmem-viewer', tag: 'deployment-01TESTROUTERDEPLOY', digest: 'sha256:abc' };
+    expect(pinnedImageReference('cmem-viewer', { id: 'router-1', image_ref: ref })).toBe('registry.fly.io/cmem-viewer:deployment-01TESTROUTERDEPLOY@sha256:abc');
+  });
+
+  it('sends the pinned reference, never the router config.image tag the registry may not have', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.targetImage).toBe(NEW_IMAGE);
+    expect(posts(fly.calls)[0].body.config.image).toBe(NEW_IMAGE);
+  });
+
+  it('updates a machine on the router\'s bare tag to the pinned reference, even when it runs the same digest', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'stopped', 'registry.fly.io/cmem-viewer:deployment-NEW', 'sha256:new')] });
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.alreadyCurrent).toEqual([]);
+    expect(summary.updated).toEqual(['cmem-vw-aaa/m-a']);
+    expect(posts(fly.calls)[0].body.config.image).toBe(NEW_IMAGE);
+  });
+
+  it('counts a machine as current when its digest matches, whatever its tag', async () => {
+    // A cache-hit router deploy gets a new tag for the same digest; that machine needs no restart.
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'started', 'registry.fly.io/cmem-viewer:deployment-EARLIER@sha256:new')] });
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.alreadyCurrent).toEqual(['cmem-vw-aaa/m-a']);
+    expect(posts(fly.calls)).toEqual([]);
+  });
+
+  it('updates a machine whose config.image names the digest but that Fly resolved to another', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine()], 'cmem-vw-aaa': [machine('m-a', 'stopped', NEW_IMAGE, 'sha256:old')] });
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.updated).toEqual(['cmem-vw-aaa/m-a']);
+    expect(posts(fly.calls)[0].body.config.image).toBe(NEW_IMAGE);
+  });
+
+  it('stops before touching anything when a router machine has no digest or an incomplete image_ref', async () => {
+    const cases: [FakeImageRef, string][] = [
+      [{ ...NEW_IMAGE_REF, digest: undefined }, 'no image_ref digest'],
+      [{ ...NEW_IMAGE_REF, tag: undefined }, 'lacks its registry, repository or tag'],
+      [{ ...NEW_IMAGE_REF, registry: undefined }, 'lacks its registry, repository or tag'],
+      [{ ...NEW_IMAGE_REF, repository: undefined }, 'lacks its registry, repository or tag'],
+    ];
+    for (const [imageRef, message] of cases) {
+      const fly = fakeFly({ 'cmem-viewer': [routerMachine('router', imageRef)], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+      await expect(rolloutImage(options(fly.fetchImpl))).rejects.toThrow(message);
+      expect(fly.calls.map(call => call.path)).toEqual(['/v1/apps/cmem-viewer/machines']);
+    }
+    const noImageRef = { ...routerMachine() };
+    delete noImageRef.image_ref;
+    const fly = fakeFly({ 'cmem-viewer': [noImageRef], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+    await expect(rolloutImage(options(fly.fetchImpl))).rejects.toThrow('no image_ref digest');
+    expect(posts(fly.calls)).toEqual([]);
+  });
+
+  it('ignores a router machine that is being destroyed', async () => {
+    const leaving = { ...routerMachine('r-old', { ...NEW_IMAGE_REF, digest: undefined }, 'destroying') };
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine('r-new'), leaving], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.updated).toEqual(['cmem-vw-aaa/m-a']);
+  });
+
   it('stops before touching anything when the router machines disagree on the image', async () => {
-    const fly = fakeFly({ 'cmem-viewer': [machine('r1', 'started', NEW_IMAGE), machine('r2', 'started', OLD_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
+    const fly = fakeFly({ 'cmem-viewer': [routerMachine('r1'), routerMachine('r2', { ...NEW_IMAGE_REF, digest: 'sha256:other' })], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)] });
     await expect(rolloutImage(options(fly.fetchImpl))).rejects.toThrow('expected exactly one');
     expect(posts(fly.calls)).toEqual([]);
   });

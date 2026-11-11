@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
+import { workStateRowsRevision } from '../../../src/services/work-view/shared-record-store.mjs';
 
 const START = Date.parse('2026-10-28T00:00:00Z');
 const POLL = { maxActivityAgeMs: 120_000 };
@@ -145,4 +146,27 @@ test('activity freshness is not renewed by a cached database-read heartbeat', ()
   expect(cached.activityCheckedAt).toBe(first.activityCheckedAt);
   setSystemTime(START + 120_000);
   expect(source.read(POLL).agentView.source.activityCheckedAt).toBe(new Date(START + 120_000).toISOString());
+});
+
+test('the work-state revision changes when one row moves one revision higher past 2^53 or past 2^63 - 1', () => {
+  writer.exec("ALTER TABLE work_state_entries ADD COLUMN sync_rev TEXT NOT NULL DEFAULT '1'");
+  const insert = writer.prepare("INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch, sync_rev) VALUES ('repo', 'notes', '{}', 1, ?)");
+  for (const [before, after] of [['18014398509481984', '18014398509481985'], ['18446744073709551614', '18446744073709551615']]) {
+    writer.exec('DELETE FROM work_state_entries');
+    for (let row = 0; row < 3; row++) insert.run(before);
+    const first = workStateRowsRevision(writer);
+    writer.prepare('UPDATE work_state_entries SET sync_rev = ? WHERE id = (SELECT MIN(id) FROM work_state_entries)').run(after);
+    expect(workStateRowsRevision(writer)).not.toBe(first);
+  }
+});
+
+test('revisions summed past the integer range do not fail the read', () => {
+  // sync_rev is a canonical decimal from another device; SUM past 2^63 - 1 is an SQLite "integer overflow" error.
+  writer.exec("ALTER TABLE work_state_entries ADD COLUMN sync_rev TEXT NOT NULL DEFAULT '1'");
+  const insert = writer.prepare("INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch, sync_rev) VALUES ('repo', 'notes', '{}', 1, ?)");
+  insert.run('9223372036854775807');
+  insert.run('9223372036854775807');
+  const snapshot = source.read();
+  expect(snapshot.source.error).toBeNull();
+  expect(snapshot.source.connected).toBe(true);
 });
