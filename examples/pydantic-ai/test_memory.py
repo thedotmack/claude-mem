@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 import sys
@@ -27,7 +28,7 @@ class ProjectArguments(unittest.TestCase):
             if name == "save_memory":
                 self.assertNotIn("projects", scoped)
             else:
-                self.assertEqual(scoped["projects"], ["owned"])
+                self.assertEqual(scoped["projects"], json.dumps(["owned"]))
             self.assertEqual(args["project"], "other")
 
     def test_repeated_save_has_a_stable_project_scoped_fingerprint(self):
@@ -66,13 +67,26 @@ class ProjectArguments(unittest.TestCase):
                     memory_toolset("a", str(server), directory, timeout=timeout)
 
 
+    def test_literal_project_keys_do_not_alias_trimmed_or_split_keys(self):
+        selected = " owned,web "
+        for name in MEMORY_TOOLS:
+            scoped = scoped_arguments(name, {"text": "Safe note", "projects": ["other"]}, selected)
+            self.assertEqual(scoped["project"], selected)
+            if name != "save_memory":
+                self.assertIsInstance(scoped["projects"], str)
+                self.assertEqual(json.loads(scoped["projects"]), [selected])
+        identity = scoped_arguments("save_memory", {"text": "Safe note"}, selected)["metadata"]
+        for alias in (selected.strip(), "owned", "web"):
+            self.assertNotEqual(identity, scoped_arguments("save_memory", {"text": "Safe note"}, alias)["metadata"])
+
+
 class NativeSdk(unittest.IsolatedAsyncioTestCase):
     async def test_exiting_toolset_stops_its_real_stdio_subprocess(self):
         with tempfile.TemporaryDirectory(prefix="pydantic lifecycle ") as directory:
             fixture = Path(directory) / "server.py"
             fixture.write_text(
                 "import os\nfrom fastmcp import FastMCP\nserver = FastMCP('lifecycle')\n"
-                "@server.tool\ndef search(query: str, project: str, projects: list[str] | None = None) -> str:\n    return str(os.getpid())\n"
+                "@server.tool\ndef search(query: str, project: str, projects: str | None = None) -> str:\n    return str(os.getpid())\n"
                 "server.run(transport='stdio', show_banner=False)\n"
             )
 
@@ -92,7 +106,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         received = []
 
         @server.tool
-        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
+        async def search(query: str, project: str, projects: str | None = None) -> str:
             received.append((query, project))
             return "Known observation #17"
 
@@ -117,7 +131,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
+        async def search(query: str, project: str, projects: str | None = None) -> str:
             raise ValueError("fixture unavailable")
 
         memory = MCPToolset(server, tool_error_behavior="error", max_retries=0)
@@ -128,7 +142,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
+        async def search(query: str, project: str, projects: str | None = None) -> str:
             await asyncio.sleep(5)
             return "late"
 
@@ -143,7 +157,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str, projects: list[str] | None = None) -> dict:
+        async def search(query: str, project: str, projects: str | None = None) -> dict:
             return {"unexpected": True}
 
         memory = MCPToolset(server, tool_error_behavior="error")

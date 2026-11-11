@@ -24,10 +24,10 @@ def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict
     """Bind every operation to the caller's project, including detail reads."""
     if name not in MEMORY_TOOLS or not project.strip():
         raise ValueError("Choose a nonempty project and one of the four memory tools.")
-    result = {**arguments, "project": project.strip()}
+    result = {**arguments, "project": project}
     if name != "save_memory":
-        # An explicit singleton prevents checkout/worktree parent inheritance.
-        result["projects"] = [project.strip()]
+        # JSON preserves commas/whitespace across GET queries and prevents inheritance.
+        result["projects"] = json.dumps([project], ensure_ascii=False)
     else:
         result.pop("projects", None)
     if name == "save_memory":
@@ -37,7 +37,7 @@ def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict
             raise ValueError("A memory needs nonempty text and an optional text title.")
         # The existing save contract deduplicates a fingerprint within project and platform.
         fingerprint = hashlib.sha256(json.dumps(
-            [project.strip(), title.strip(), text.strip()], ensure_ascii=False,
+            [project, title.strip(), text.strip()], ensure_ascii=False,
         ).encode()).hexdigest()
         result["metadata"] = {
             "integration": "pydantic-ai",
