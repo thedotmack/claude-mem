@@ -361,7 +361,23 @@ function checkPackageCompleteness(failures) {
       });
     }
     const out = `${res.stdout || ''}${res.stderr || ''}`;
-    if (MODULE_NOT_FOUND_RE.test(out)) {
+    // An entry built for a host framework (exports['./eve'] needs the consuming
+    // agent's `eve`) may miss only a package the manifest declares as a peer.
+    // Any other missing module is a broken dependency closure.
+    const missingPackage = out.match(/Cannot find (?:package|module) '([^']+)'/)?.[1];
+    const missingPackageName = missingPackage?.startsWith('@')
+      ? missingPackage.split('/').slice(0, 2).join('/')
+      : missingPackage?.split('/')[0];
+    if (
+      entry.kind !== 'bin' &&
+      missingPackageName &&
+      installedPkg.peerDependencies?.[missingPackageName]
+    ) {
+      log(
+        `  Loaded ${entry.label} up to its declared peer dependency ` +
+          `'${missingPackageName}', which the host project provides.`
+      );
+    } else if (MODULE_NOT_FOUND_RE.test(out)) {
       const firstLine = out.split('\n').find((l) => MODULE_NOT_FOUND_RE.test(l));
       failures.push(
         `published entry ${entry.label} hit a module-resolution error: ${firstLine.trim()}`
