@@ -5034,9 +5034,12 @@ export class SessionStore {
       // The base memory ID is unique, so reuse that row rather than INSERT a
       // duplicate, which failed every save in the project with a UNIQUE error.
       const existingByMemoryId = this.db.prepare(
-        'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
-      ).get(baseMemorySessionId) as { memory_session_id: string } | undefined;
-      if (existingByMemoryId) return existingByMemoryId.memory_session_id;
+        'SELECT memory_session_id, project, platform_source FROM sdk_sessions WHERE memory_session_id = ?'
+      ).get(baseMemorySessionId) as { memory_session_id: string; project: string; platform_source: string } | undefined;
+      if (existingByMemoryId?.project === project
+        && normalizePlatformSource(existingByMemoryId.platform_source) === normalizedPlatformSource) {
+        return existingByMemoryId.memory_session_id;
+      }
 
       // A deleted memory ID stays forbidden to delayed sync/backup rows. A new
       // manual save gets a fresh identity, then reuses it through the stable
@@ -5044,7 +5047,9 @@ export class SessionStore {
       const wasDeleted = this.db.prepare(
         'SELECT 1 FROM deleted_memory_sessions WHERE memory_session_id = ?'
       ).get(baseMemorySessionId);
-      const memorySessionId = wasDeleted ? `${baseMemorySessionId}-${randomUUID()}` : baseMemorySessionId;
+      // Hyphens in a project or custom source can give distinct pairs the
+      // same base ID. Never reuse another pair's session or its attribution.
+      const memorySessionId = wasDeleted || existingByMemoryId ? `${baseMemorySessionId}-${randomUUID()}` : baseMemorySessionId;
       const deletedAt = this.getSessionDeletedAtEpochMs(normalizedPlatformSource, contentSessionId);
       // This explicit save follows the deletion observed under the writer lock,
       // even when both operations share one wall-clock millisecond.
