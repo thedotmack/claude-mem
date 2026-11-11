@@ -1,5 +1,6 @@
 """Native LlamaIndex + real bundled-worker checks; no model or account needed."""
 import asyncio
+from contextlib import chdir, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -62,7 +63,8 @@ class WorkflowTests(unittest.TestCase):
             "CLAUDE_MEM_MCP_SERVER": str(REPO / "plugin/scripts/mcp-server.cjs"),
         })
         cls.output = (cls.data / "worker.log").open("w")
-        cls.worker = subprocess.Popen([bun, str(REPO / "plugin/scripts/worker-service.cjs"), "--daemon"],
+        cls.worker = subprocess.Popen([bun, "-e", 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); '
+                                      'new WorkerService().start().catch(error => { console.error(error); process.exit(1); });'],
                                       cwd=REPO, env=cls.env, stdout=cls.output, stderr=cls.output)
         cls.addClassCleanup(cls.cleanup)
         deadline = time.monotonic() + 45
@@ -103,6 +105,30 @@ class WorkflowTests(unittest.TestCase):
                           data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
         with urlopen(request, timeout=5) as response:
             return json.load(response)
+
+    @contextmanager
+    def worktree_scope(self):
+        with tempfile.TemporaryDirectory(prefix="scope-parent-", dir=self.data) as directory:
+            parent = Path(directory)
+            checkout = parent / "topic"
+            def git(*args):
+                subprocess.run(["git", *args], cwd=parent, env=self.env, check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            git("init", "-q", "--initial-branch=main")
+            git("-c", "user.name=Memory scope test", "-c", "user.email=scope@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Fixture")
+            git("worktree", "add", "-q", "--detach", str(checkout), "HEAD")
+            project = parent.name + "/topic"
+            parent_id = self.post("/api/memory/save", {
+                "project": parent.name, "title": "scopeboundarytoken parent-only marker",
+                "text": "The parent-only marker must stay outside the chosen project.",
+            })["id"]
+            child_id = self.post("/api/memory/save", {
+                "project": project, "title": "scopeboundarytoken child decision",
+                "text": "The child checkout uses the scoped decision.",
+            })["id"]
+            with chdir(checkout):
+                yield project, parent_id, child_id
 
     def state(self):
         return {"project": "llamaindex-demo", "query": "quokkaharbor", "observation_id": self.known,
@@ -152,6 +178,59 @@ class WorkflowTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM observations WHERE narrative=? OR json_extract(metadata, '$.runId')=?",
                 (state["note"], run_id),
             ).fetchone()[0], 0)
+
+    def test_worktree_scoped_recall_excludes_parent(self):
+        with self.worktree_scope() as (project, _, child_id):
+            state = {**self.state(), "project": project, "query": "scopeboundarytoken",
+                     "observation_id": child_id, "run_id": "worktree-" + uuid4().hex}
+            result = self.run_memory(state)
+            self.assertNotIn("parent-only marker", result["index"])
+            self.assertNotIn("parent-only marker", result["timeline"])
+            self.assertIn("child checkout", result["recalled"])
+
+    def test_worktree_parent_cannot_authorize_a_save(self):
+        with self.worktree_scope() as (project, parent_id, _):
+            run_id = "worktree-reject-" + uuid4().hex
+            state = {**self.state(), "project": project, "query": "scopeboundarytoken",
+                     "observation_id": parent_id, "run_id": run_id, "note": "Do not save: " + run_id}
+            with sqlite3.connect(self.data / "claude-mem.db") as db:
+                before = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+            with self.assertRaises(Exception) as raised:
+                self.run_memory(state)
+            rejection = raised.exception
+            while isinstance(rejection, ExceptionGroup):
+                self.assertEqual(len(rejection.exceptions), 1)
+                rejection = rejection.exceptions[0]
+            self.assertIsInstance(rejection, RuntimeError)
+            self.assertEqual(str(rejection), "The selected observation is absent from this project's search page")
+            with sqlite3.connect(self.data / "claude-mem.db") as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], before)
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM observations WHERE narrative=? OR json_extract(metadata, '$.runId')=?",
+                    (state["note"], run_id),
+                ).fetchone()[0], 0)
+
+    def test_verbatim_project_keys_are_isolated(self):
+        for form in ("comma", "outer-space", "json-like"):
+            with self.subTest(form=form):
+                key = "exact-key-" + uuid4().hex
+                project = key + ",other" if form == "comma" else " " + key + " " if form == "outer-space" else json.dumps([key])
+                shadows = [key, "other"] if form == "comma" else [key]
+                foreign_ids = [self.post("/api/memory/save", {
+                    "project": shadow, "title": "exactkeytoken shadow-only marker",
+                    "text": "The shadow-only marker belongs to a different project key.",
+                })["id"] for shadow in shadows]
+                known = self.post("/api/memory/save", {
+                    "project": project, "title": "exactkeytoken chosen key decision",
+                    "text": "This is the chosen project's exact key.",
+                })["id"]
+                state = {**self.state(), "project": project, "query": "exactkeytoken",
+                         "observation_id": known, "run_id": "exact-" + uuid4().hex}
+                result = self.run_memory(state)
+                self.assertEqual(result["project"], project)
+                self.assertNotIn("shadow-only marker", result["index"])
+                self.assertNotIn("shadow-only marker", result["timeline"])
+                self.assertNotIn("shadow-only marker", result["recalled"])
 
     def test_blank_project_is_rejected(self):
         with self.assertRaises(ValueError):

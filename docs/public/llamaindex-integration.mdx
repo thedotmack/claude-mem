@@ -110,17 +110,36 @@ the same run returns the same saved observation; changing the note represents a
 new save. No writes are retried automatically. After an ambiguous timeout, inspect
 the viewer or rerun with the same run ID and text.
 
+Reads additionally pass the explicit single-item `projects=json.dumps([project])` list.
+This prevents the MCP server from widening a chosen worktree's scope to its
+parent checkout. Saves receive only the `project` bound above.
+
+The project list is encoded as a JSON string so the GET query path preserves
+literal commas and JSON-looking keys. Nonempty project names retain their exact
+outer whitespace. Native checks seed separate split/trimmed-key projects and
+confirm they stay out of search, timeline, and recalled details.
+
 ## Verify with the real SDK
 
 With Bun and Node.js available, run:
 
 ```bash
-python examples/llamaindex/test_workflow.py
+(
+  unset CLAUDE_MEM_CLOUD_SYNC_TOKEN CLAUDE_MEM_CLOUD_SYNC_USER_ID CLAUDE_MEM_CLOUD_SYNC_HUB_URL
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false
+  python examples/llamaindex/test_workflow.py
+)
 ```
+
+This verification uses fresh worker settings and a restricted child-process
+environment. It imports the shipped `WorkerService` and calls `start()` directly,
+so the CLI startup path does not run host hook-configuration repairs. The
+subshell also clears inherited cloud-sync credentials; it does not change your
+normal worker's settings or saved memory.
 
 The tests start the shipped worker in a fresh temporary SQLite data directory,
 with optional capture, sync, and telemetry disabled for the fixture. They run the
-installed LlamaIndex workflow, `McpToolSpec`, and MCP transport. Six checks cover:
+installed LlamaIndex workflow, `McpToolSpec`, and MCP transport. Core checks cover:
 
 - Known observation recall, handoff persistence, and deliberate-repeat deduplication.
 - Project isolation and `llamaindex` platform/manual-session attribution in SQLite.
@@ -133,6 +152,12 @@ The verified successful run used known observation `1`, saved handoff `3`, and
 returned `3` again on repeat. The data path contained spaces. Success, isolation,
 attribution, and validation use the actual worker; the timeout test supplies the
 slow endpoint. No model provider is involved.
+
+Two further native checks create an actual Git repository and linked worktree
+and seed matching observations in its parent and child projects. Running from
+the worktree excludes the parent from the child's search and timeline, and
+rejects the parent's selected ID with no new SQLite observation. All nine
+native integration checks pass.
 
 ## Data, timeouts, and disconnect
 
