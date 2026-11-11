@@ -568,6 +568,26 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toContain('Not required (host observer)');
   });
 
+  it('a deferred install whose worker does not start fails instead of pointing at a dead setup page', async () => {
+    fixtureWorkerResult = 'dead';
+    const previousExitCode = process.exitCode;
+    try {
+      await runInstallCommand({ setup: 'defer' });
+      expect(process.exitCode).toBe(1);
+    } finally { process.exitCode = previousExitCode ?? 0; }
+    expect(lines.join('\n')).toContain('the worker did not start');
+    expect(lines.join('\n')).not.toContain('Setup is waiting at');
+  });
+
+  it('a reinstall whose worker does not start keeps a completed setup complete', async () => {
+    const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' },
+      installer: { stage: 'home-ready', error: null, updatedAt: 'earlier' }, checkout: null, tools: null, completedAt: 'earlier' };
+    writeFileSync(statePath, JSON.stringify(completed));
+    fixtureWorkerResult = 'dead';
+    await expect(runInstallCommand({})).rejects.toThrow('The setup page needs the worker');
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', completedAt: 'earlier' });
+  });
+
   it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
     fixtureWorkerResult = 'dead';
     await expect(runInstallCommand({})).rejects.toThrow('The setup page needs the worker');

@@ -3410,6 +3410,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         },
       }]);
     }
+    if ((workerStartResult as WorkerStartResult) === 'dead') {
+      // The setup page is served by the worker, so a saved setup with no worker is not "waiting" for anyone.
+      log.error('Setup is saved, but the worker did not start, so the setup page is not available. Run npx claude-mem doctor, then retry npx claude-mem install --setup defer.');
+      process.exitCode = 1;
+      return;
+    }
     log.info(`Installed. Setup is waiting at http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}/?setup=1`);
     log.info('AGENT: If the user is available, run npx claude-mem install --setup browser. Otherwise leave setup pending for their first visit.');
     return;
@@ -3468,6 +3474,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let settingsBeforeBrowserSetup: string | null = null;
   if (browserSetup) {
     startSetupSession(undefined, hasProConfiguration(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }) as unknown as Record<string, unknown>));
+    const setupStateBeforeBrowser = readSetupState();
     try {
       // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
       // so existing prompts must not launch a local agent while the browser is still opening.
@@ -3566,6 +3573,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           },
         });
       }
+    } catch (error) {
+      // A reinstall that fails before finishing must not leave a machine that completed onboarding reading as
+      // pending with no install hand-off: My Work and SessionStart would never point back to setup.
+      if (setupStateBeforeBrowser.status === 'complete' && readSetupState().status !== 'complete') writeSetupState(setupStateBeforeBrowser);
+      throw error;
     } finally {
       // Preserve saved choices and errors, but release the local-work pause on every hand-off exit.
       endSetupSession();
