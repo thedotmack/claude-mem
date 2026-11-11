@@ -1,6 +1,4 @@
 node_modules/
-# npm run build installs the operator's own (often macOS) packages here; every image installs its own.
-plugin/node_modules/
 .git/
 logs/
 .docker-claude-mem-data/

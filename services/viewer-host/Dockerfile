@@ -11,6 +11,15 @@
 #      (N is required: the worker boot time measured in the Phase 8 staging run. The first
 #      rollout after the switch to digest-pinned images restarts every running account machine
 #      still on a bare tag, even one already on the same image)
+# The built plugin without the checkout's own plugin/node_modules. `npm run build` installs
+# one on the operator's computer (801 MB of macOS packages on the Phase 8 staging checkout,
+# e.g. @img/sharp-darwin-arm64), and copying it would replace this image's Linux install.
+# Dropped in a stage, not by an ignore file: fly deploy reads only the repository-root
+# .dockerignore (or --ignorefile), which other builds share, and a stage works on any builder.
+FROM oven/bun:1.4-debian AS plugin-files
+COPY plugin /plugin
+RUN rm -rf /plugin/node_modules
+
 FROM oven/bun:1.4-debian
 
 WORKDIR /app
@@ -27,15 +36,14 @@ RUN cd plugin && bun install --production --frozen-lockfile --ignore-scripts --o
 # The worker's start check then finds it usable and downloads nothing. Right after the
 # install, so this layer stays cached until plugin/package.json, plugin/bun.lock or the
 # provisioning sources change; the plugin copy below brings no node_modules (the
-# repository-root .dockerignore leaves out plugin/node_modules, which `npm run build`
-# fills with the operator's own, often macOS, packages), so it cannot replace the CLI or
-# the Linux install. 300000 ms is the limit the worker itself gives the download
-# (TREE_SITTER_CLI_INSTALL_TIMEOUT_MS). The build fails if no working CLI results.
+# plugin-files stage removes them), so it cannot replace the CLI. 300000 ms is the limit
+# the worker itself gives the download (TREE_SITTER_CLI_INSTALL_TIMEOUT_MS). The build
+# fails if no working CLI results.
 RUN --mount=type=bind,source=src/services/smart-file-read,target=/opt/tree-sitter-provision \
     bun -e 'import { ensureTreeSitterCliBinary } from "/opt/tree-sitter-provision/tree-sitter-cli-provision.ts"; console.log("tree-sitter CLI:", await ensureTreeSitterCliBinary("/app/plugin", 300000));' \
  && /app/plugin/node_modules/tree-sitter-cli/tree-sitter --version
 
-COPY plugin ./plugin
+COPY --from=plugin-files /plugin ./plugin
 COPY services/viewer-host/src ./viewer-host/src
 
 ENV PORT=8080
