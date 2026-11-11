@@ -15,9 +15,11 @@ const UNSUPPORTED_ROW = Symbol('unsupported shared row');
  * What each committed shared row parsed to, per connection, device and validator, so a read
  * parses only the rows it has not seen. A row's content changes only when a pulled higher
  * revision rewrites it (SyncApply.applyWorkState), which changes its sync_rev; local rows are
- * only ever inserted and nothing deletes shared rows. So origin and sync_rev name a row's
- * content. Only reads outside a caller's transaction fill it: an open transaction may hold
- * rows it never commits, and a rolled-back id can be reused by different content.
+ * only ever inserted. A pulled tombstone deletes a row (SyncApply.applyOp), which only drops it
+ * from the scan, and work_state_entries ids are AUTOINCREMENT, so a committed id is never
+ * reused. So id, origin and sync_rev name a row's content. Only reads that are not inside a
+ * caller's transaction fill it: an open transaction may hold rows it never commits, and a
+ * rolled-back id can be reused by different content.
  */
 const committedRowSummaries = new WeakMap();
 
@@ -43,13 +45,17 @@ function summariesFor(db, deviceId, validateValue) {
  * row is parsed once into a summary without its value, a read parses only rows
  * it has not seen, and only the entries in the result are parsed for values.
  */
-export function readSharedRecords(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }) {
+export function readSharedRecords(db, options) {
+  return readShared(db, options, !db.inTransaction);
+}
+
+/** keep: the read runs in a transaction that cannot roll back rows it sees (its own read transaction), so it may fill the row cache. */
+function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }, keep) {
   // Preloaded rows are already in memory and must not cost another query.
   if (suppliedRows) {
     const context = { db, deviceId, validateValue, reread: row => row };
     return foldSharedRows(suppliedRows.map(row => summarizeRow(context, row, row)), context, includeHistory, new Map());
   }
-  const keep = !db.inTransaction;
   // The value re-reads below must see the same rows as the scan, so both run in one read transaction.
   const read = () => {
     let scan, byId;
@@ -217,13 +223,15 @@ function entrySummary(entry, source, validateValue) {
 }
 
 /**
- * One reader that reuses its last read until the shared rows change. They change only by an
- * insert or by a pulled higher revision rewriting a row (SyncApply.applyWorkState), and nothing
- * deletes them, so their count, highest id and summed sync revision show any change: the same
- * check data-source.mjs makes on work_state_entries. A pull that touches other tables, which on
- * a replica is almost every commit, reuses the last read instead of parsing the history again.
- * A read inside a caller's transaction may include rows it has not committed, so only a read
- * outside one is kept.
+ * One reader that reuses its last read until the shared rows change. They change by an insert,
+ * by a pulled higher revision rewriting a row (SyncApply.applyWorkState), or by a pulled
+ * tombstone deleting one (SyncApply.applyOp). An insert raises the highest id (ids are
+ * AUTOINCREMENT), a rewrite raises the summed sync revision and a delete lowers the count, so
+ * those three show any change: the same check data-source.mjs makes on work_state_entries. A
+ * pull that touches other tables, which on a replica is almost every commit, reuses the last
+ * read instead of parsing the history again. A read inside a caller's transaction may include
+ * rows it has not committed, so neither that read nor its row summaries are kept; a read in the
+ * reader's own read transaction sees only committed rows, so both are.
  */
 export function createSharedRecordReader(db, options) {
   let kept = null;
@@ -246,7 +254,7 @@ export function createSharedRecordReader(db, options) {
     return db.transaction(() => {
       const revision = revisionOf();
       if (kept && revision !== null && revision === kept.revision) return kept.state;
-      const state = readSharedRecords(db, options);
+      const state = readShared(db, options, true);
       kept = revision === null ? null : { revision, state };
       return state;
     })();

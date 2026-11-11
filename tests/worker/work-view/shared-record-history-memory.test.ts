@@ -64,7 +64,7 @@ test('reading a long shared history keeps the current objects in memory, not eve
   expect(peakLiveBytes).toBeLessThan(historyBytes / 4);
 });
 
-test('a kept reader parses the history again only after the shared rows change', () => {
+test('a kept reader reuses its last read until the shared rows change', () => {
   const db = new Database(':memory:');
   new SessionStore(db).setLocalSyncDeviceId(DEVICE);
   disposables.push(() => db.close());
@@ -115,4 +115,29 @@ test('a later read parses only the shared rows it has not seen', () => {
   const next = readSharedRecords(db, { deviceId: DEVICE, validateValue });
   expect(validated).toBe(1);
   expect(next.records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'newest' });
+});
+
+test('a kept reader parses only the shared rows it has not seen', () => {
+  // The shared-work-sync thread reads only through a kept reader, and every read it makes runs in the
+  // reader's own transaction. Those reads must fill the row cache too, or each shared change parses the
+  // whole history again.
+  const { db } = historyFixture();
+  let validated = 0;
+  const read = createSharedRecordReader(db, { deviceId: DEVICE, validateValue: () => { validated++; return true; } });
+  read();
+  expect(validated).toBe(REVISIONS);
+  publishSharedRecords(db, { deviceId: DEVICE, project: 'repo', updates: [{ kind: 'group', key: 'g', value: { title: 'newest' } }] });
+  validated = 0;
+  const next = read();
+  expect(validated).toBe(1);
+  expect(next.records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'newest' });
+  // A read inside a caller's transaction may see rows that roll back: it must not keep them.
+  db.exec('BEGIN');
+  publishSharedRecords(db, { deviceId: DEVICE, project: 'repo', updates: [{ kind: 'group', key: 'g', value: { title: 'rolled back' } }] });
+  expect(read().records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'rolled back' });
+  db.exec('ROLLBACK');
+  publishSharedRecords(db, { deviceId: DEVICE, project: 'repo', updates: [{ kind: 'group', key: 'g', value: { title: 'after rollback' } }] });
+  validated = 0;
+  expect(read().records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'after rollback' });
+  expect(validated).toBe(1);
 });
