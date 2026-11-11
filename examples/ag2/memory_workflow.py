@@ -52,6 +52,9 @@ class ProjectMemory:
             await self.discover()
         values = {**arguments, "project": self.project}
         values.pop("projects", None)
+        if name != "save_memory":
+            # Explicit list prevents implicit parent/worktree scope expansion.
+            values["projects"] = [self.project]
         if name == "save_memory":
             fingerprint = hashlib.sha256(json.dumps(
                 [self.project, values.get("title", ""), values.get("text", "")], ensure_ascii=False,
