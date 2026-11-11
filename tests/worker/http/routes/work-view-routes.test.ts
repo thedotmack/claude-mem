@@ -364,6 +364,72 @@ describe('local work view', () => {
     expect((await review(updated)).status).toBe(200);
   });
 
+  it('requires another check when a new deliverable revision is recorded for the same request', async () => {
+    seedLinkedEvidence();
+    source.exec(`CREATE TABLE deliverables (id INTEGER PRIMARY KEY, project TEXT, content_session_id TEXT,
+      platform_source TEXT, title TEXT, kind TEXT, source_path TEXT, bucket_path TEXT, created_at_epoch INTEGER)`);
+    const original = join(directory, 'viewer.html');
+    const first = join(directory, 'viewer-first.html');
+    const revised = join(directory, 'viewer-revised.html');
+    source.exec('ALTER TABLE observations ADD COLUMN files_modified TEXT');
+    source.prepare('UPDATE observations SET files_modified=? WHERE id=1').run(JSON.stringify([original]));
+    writeFileSync(first, '<h1>Original viewer</h1>');
+    writeFileSync(revised, '<h1>Revised viewer</h1>');
+    const record = source.prepare(`INSERT INTO deliverables(project, content_session_id, platform_source, title,
+      kind, source_path, bucket_path, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const at = Date.now();
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, first, at);
+    const before = (await snapshot()).humanRequests[0];
+    expect(before.workProduct.map((product: any) => product.url)).toEqual(['/api/deliverables/1/viewer-first.html']);
+    expect((await review(before)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+
+    rmSync(first);
+    await stop(); await start();
+    const missing = (await snapshot()).humanRequests[0];
+    expect(missing.workProduct[0].available).toBe(false);
+    expect(missing.workProduct).toHaveLength(2); // The uncovered original is visible again.
+    expect(missing.contentFingerprint).toBe(before.contentFingerprint);
+    expect(missing.review.checked).toBe(true);
+
+    // Stop-hook metadata can arrive after the work-state result was checked.
+    // No prompt, observation, work-state entry or lifecycle flag changes.
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, at + 1);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.workProduct.some((product: any) => product.url === '/api/deliverables/2/viewer-revised.html')).toBe(true);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+
+  });
+
+  it('requires another check when a publication is recorded without another work-state update', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const before = (await snapshot()).humanRequests[0];
+    expect(before.workProduct).toEqual([]);
+    expect((await review(before)).status).toBe(200);
+    source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+      content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+      VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+      JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+      JSON.stringify({ stdout: 'https://github.com/example/project/pull/42', exitCode: 0 }), Date.now());
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.workProduct.map((product: any) => product.url)).toEqual(['https://github.com/example/project/pull/42']);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+
+    source.prepare('UPDATE tool_uses SET tool_response=? WHERE id=2').run(JSON.stringify({
+      stdout: 'Created the requested pull request.\nhttps://github.com/example/project/pull/42', exitCode: 0,
+    }));
+    const samePublication = (await snapshot()).humanRequests[0];
+    expect(samePublication.contentFingerprint).toBe(updated.contentFingerprint);
+    expect(samePublication.review.checked).toBe(true);
+  });
+
   it('cannot mark completed child work checked without request completion', async () => {
     append({ task: 'Build the local viewer', request_complete: false });
     const request = (await snapshot()).humanRequests[0];

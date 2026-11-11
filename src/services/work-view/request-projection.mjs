@@ -1,5 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '../sync/CanonicalContent.js';
 import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
 import { NO_PROJECT, projectRoot } from './session-project.mjs';
 
@@ -294,6 +296,10 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   }
   for (const request of requests.values()) {
     const merged = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])]);
+    // Reviews cover recorded outputs too, including publications and saved
+    // copies that arrive without another work-state update. Hash before disk
+    // availability and copy coverage change which links the card displays.
+    if (merged.length) request.sourceProductHash = createHash('sha256').update(canonicalJson(merged)).digest('hex');
     // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
     // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);
