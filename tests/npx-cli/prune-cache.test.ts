@@ -12,7 +12,10 @@ import {
   readUserScopeRegisteredCacheVersions,
   workingCacheVersions,
   isDirectChildPath,
+  isHostProcessLive,
+  readHostInUseRecords,
   DEFAULT_CACHE_RETENTION,
+  type HostProcessProbe,
 } from '../../src/npx-cli/utils/prune-cache.js';
 
 /**
@@ -491,5 +494,128 @@ describe('pruneSupersededPluginCache', () => {
 
     expect(result.removed).toEqual(['15.14.0']);
     expect(existsSync(join(root, '15.5.0'))).toBe(true);
+  });
+});
+
+/** Claude Code's record that process `pid` loaded the plugin from this version folder. */
+function writeHostInUseRecord(root: string, version: string, pid: number, content: string = JSON.stringify({ pid })): void {
+  mkdirSync(join(root, version, '.in_use'), { recursive: true });
+  writeFileSync(join(root, version, '.in_use', String(pid)), content);
+}
+
+/** PID of a process that has already exited. */
+function exitedPid(): number {
+  return spawnSync(process.execPath, ['-e', '']).pid;
+}
+
+describe('a version a running host session is loaded from (#5970)', () => {
+  let scratch: string;
+
+  afterEach(() => {
+    if (scratch && existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('the worker sweep keeps an orphaned version while a recorded process is alive, and removes it once that process has exited', async () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-in-use-'));
+    const root = join(scratch, 'cache');
+    const running = writeWorkerScript(root, '15.16.1');
+    // A marketplace update stamps the folders it supersedes. One session is
+    // still open on 15.15.2; the session that used 15.15.1 has ended.
+    for (const version of ['15.15.1', '15.15.2']) {
+      writeWorkerScript(root, version);
+      writeFileSync(join(root, version, '.orphaned_at'), '');
+    }
+    writeHostInUseRecord(root, '15.15.2', process.pid);
+    const ended = exitedPid();
+    writeHostInUseRecord(root, '15.15.1', ended);
+    const sweep = () => pruneSupersededPluginCache({
+      cacheRoot: root,
+      keepCount: 2,
+      runningScriptPath: running,
+      registryPath: join(scratch, 'no-registry.json'),
+    });
+
+    const first = await sweep();
+
+    expect(first.removed).toEqual(['15.15.1']);
+    expect(first.kept).toContain('15.15.2');
+    expect(existsSync(join(root, '15.15.2', 'scripts', 'worker-service.cjs'))).toBe(true);
+
+    rmSync(join(root, '15.15.2', '.in_use', String(process.pid)));
+    writeHostInUseRecord(root, '15.15.2', ended);
+    const second = await sweep();
+
+    expect(second.removed).toEqual(['15.15.2']);
+    expect(existsSync(join(root, '15.15.2'))).toBe(false);
+  });
+
+  it('the installer prune and its preview keep it too', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-in-use-installer-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0', '13.27.0']) mkdirSync(join(scratch, version));
+    writeHostInUseRecord(scratch, '13.24.0', process.pid);
+
+    expect(planPluginCachePrune(scratch, 2)).toEqual({ keep: ['13.27.0', '13.26.0', '13.24.0'], prune: ['13.25.0'] });
+
+    const result = prunePluginCache({ cacheRoot: scratch, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.25.0']);
+    expect(existsSync(join(scratch, '13.24.0'))).toBe(true);
+  });
+
+  it('a record that names no live process protects nothing', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-in-use-stale-'));
+    for (const version of ['13.24.0', '13.26.0', '13.27.0']) mkdirSync(join(scratch, version));
+    mkdirSync(join(scratch, '13.24.0', '.in_use'));
+    writeFileSync(join(scratch, '13.24.0', '.in_use', 'notes.txt'), 'not a record');
+    writeHostInUseRecord(scratch, '13.24.0', exitedPid(), '');
+
+    const result = prunePluginCache({ cacheRoot: scratch, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.24.0']);
+  });
+
+  it('a record that cannot be parsed still protects the live process its file name names', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'claude-mem-prune-in-use-blank-'));
+    for (const version of ['13.24.0', '13.26.0', '13.27.0']) mkdirSync(join(scratch, version));
+    writeHostInUseRecord(scratch, '13.24.0', process.pid, '{ truncated');
+
+    expect(readHostInUseRecords(join(scratch, '13.24.0'))).toEqual([{ pid: process.pid }]);
+    expect(prunePluginCache({ cacheRoot: scratch, keepCount: 2 }).removed).toEqual([]);
+  });
+});
+
+describe('isHostProcessLive', () => {
+  const recordedStart = 'Wed Nov 11 06:05:51 2026';
+  function probe(alive: boolean, token: string | null): HostProcessProbe & { tokenReads: number } {
+    const calls = { tokenReads: 0 };
+    return Object.assign(calls, {
+      isAlive: () => alive,
+      startToken: () => { calls.tokenReads += 1; return token; },
+    });
+  }
+
+  it('is false for a process that has exited, without reading a start time', () => {
+    const dead = probe(false, `utc:${recordedStart}`);
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, dead)).toBe(false);
+    expect(dead.tokenReads).toBe(0);
+  });
+
+  it('is true for a live process whose start time matches the record', () => {
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, probe(true, `utc:${recordedStart}`))).toBe(true);
+  });
+
+  it('is false when the PID now belongs to a process that started at another time', () => {
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, probe(true, 'utc:Thu Nov 12 09:41:07 2026'))).toBe(false);
+  });
+
+  it('keeps a live PID when the start times cannot be compared', () => {
+    // Linux reads a numeric /proc start time, and an unreadable token is no proof.
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, probe(true, '8123456'))).toBe(true);
+    expect(isHostProcessLive({ pid: 4242, procStart: recordedStart }, probe(true, null))).toBe(true);
+    // A record without a start time, or with one in another shape, is not read at all.
+    const unread = probe(true, 'utc:Thu Nov 12 09:41:07 2026');
+    expect(isHostProcessLive({ pid: 4242 }, unread)).toBe(true);
+    expect(isHostProcessLive({ pid: 4242, procStart: '2026-11-11T06:05:51Z' }, unread)).toBe(true);
+    expect(unread.tokenReads).toBe(0);
   });
 });

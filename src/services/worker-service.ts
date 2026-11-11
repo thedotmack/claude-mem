@@ -652,7 +652,9 @@ export class WorkerService implements WorkerRef {
    * under the plugin cache and leaves the old ones there (#5681). The
    * installer only prunes when it copies a version itself (#4105), and a
    * worker that stays up never goes through that copy. Sweep once boot has
-   * settled, then hourly. The folder this process is running from is kept.
+   * settled, then hourly. The folder this process is running from is kept,
+   * and so is any folder an open Claude Code session is still loaded from
+   * (#5970).
    */
   private startPluginCachePrune(): void {
     if (this.pluginCachePruneTimer != null || this.isShuttingDown) return;
