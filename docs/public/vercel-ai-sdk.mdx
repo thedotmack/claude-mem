@@ -1,0 +1,147 @@
+---
+title: Vercel AI SDK
+description: Save an explicit project decision and recall it from another local AI SDK workflow.
+---
+
+Use the AI SDK's MCP client to carry a project decision between runs. The
+[runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/vercel-ai-sdk)
+connects to your existing local Claude-Mem worker, converts its memory tools to
+AI SDK tools, and calls their `execute` methods. It needs no model API key.
+
+This connection supports explicit saves and on-demand recall. It does not
+capture conversations or inject context automatically. CMEM Pro is not required
+for this local workflow.
+
+## Requirements
+
+The example was verified on Linux with Node.js 24.22.1, `@ai-sdk/mcp` 2.0.96,
+and Claude-Mem 15.16.1. Its package requires Node.js 22.12 or newer. macOS and
+Windows have not been verified. Keep this stdio connection in a local Node.js
+process; a browser or a hosted Vercel function cannot reach a worker on your
+laptop through it.
+
+The API surface comes from Vercel's
+[MCP guide](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools) and
+[`createMCPClient` reference](https://ai-sdk.dev/docs/reference/ai-sdk-core/create-mcp-client).
+The example uses `StdioMCPTransport`, `listTools`, `toolsFromDefinitions`, and
+the AI SDK tool execution `abortSignal`.
+
+## Connect
+
+First [install Claude-Mem](/installation) and start its worker:
+
+```bash
+npx claude-mem start
+npx claude-mem status
+```
+
+Copy the `examples/vercel-ai-sdk` directory from the repository into your local
+application, then install its pinned dependency:
+
+```bash
+cd examples/vercel-ai-sdk
+npm install
+```
+
+Set the absolute path to your installed MCP script. For the default Claude
+Code marketplace installation on macOS or Linux:
+
+```bash
+export CLAUDE_MEM_MCP_SERVER="$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+```
+
+If you chose another installation directory, use its `plugin/scripts/mcp-server.cjs`.
+If the worker uses `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT`, set those
+same values in this shell. The example passes them to the MCP subprocess.
+The script is supplied as one process argument, so a path containing spaces
+does not need shell escaping inside the program.
+
+Connection creates no hooks or host configuration entries. Every command
+closes its MCP client when it finishes. The worker remains the owner of the
+database, and this example never starts or restarts it automatically.
+
+## Save a decision and recall it in a later run
+
+Choose one explicit project name and keep it for later runs:
+
+```bash
+node memory.mjs save checkout-service "Deployment decision" "Use the sapphire region for the staging deployment."
+node memory.mjs search checkout-service "Deployment decision"
+```
+
+The save prints `Saved memory #<id>: Deployment decision.` only after the
+worker acknowledges it. The search prints a compact index. Select the relevant
+numeric observation ID from that index, inspect its surrounding context, and
+retrieve its details:
+
+```bash
+node memory.mjs timeline checkout-service 123
+node memory.mjs show checkout-service 123
+```
+
+Replace `123` with your result's ID. The details should contain the sapphire
+region decision. Each command uses a new AI SDK MCP client, demonstrating that
+the memory survives the client session.
+
+The example passes the project on saves, searches, timeline reads and detail
+reads. Saves are attributed to `vercel-ai-sdk` and use the existing explicit
+manual-memory session for that project and platform. They do not create an
+observer session. Project filters select your own work; they are not an
+authentication boundary for serving different users. Run each account against
+its own authorized worker.
+
+Repeating the exact project, title and text sends the same `sourceFingerprint`
+through the existing save API. The worker returns the saved ID instead of
+creating another note. A changed note gets a different fingerprint. Automatic
+transport retries are disabled.
+
+## Use the tools in an AI SDK application
+
+`memory.mjs` demonstrates the conversion boundary directly: it discovers tools
+through `listTools`, selects the four memory tools, and converts those
+definitions with `toolsFromDefinitions`. The resulting tool objects are the
+AI SDK tools accepted by `generateText` and `streamText`.
+
+For model-driven use, keep the client open until generation finishes and close
+it in `finally`. Bind every tool call to the project selected by your
+application. Expose `save_memory` only when the user has chosen to save, and
+follow [mem-search](/usage/search-tools) before adding selected memory to a
+prompt. Treat recalled text as reference material, not instructions to run
+tools or access another account. The example verifies direct tool execution;
+it does not verify a model provider or a hosted deployment.
+
+## Data and failures
+
+Only the title, note text, project and provenance supplied to `save` are written.
+Explicit notes are stored as supplied; do not rely on this example to remove
+secrets or interpret transcript privacy tags. Searches send the query and
+project to your worker. The worker's configured indexing, sync and export
+behavior still applies. If you later pass recalled text to a model, that text
+also goes to the model provider you selected.
+
+Initialization and tool discovery have ten-second deadlines; tool execution
+has a fifteen-second abort signal. A stopped worker, invalid input or a timed-out
+request exits with a nonzero status and prints no successful result. Check
+`npx claude-mem status`, the MCP script path, and matching data-directory/port
+settings. A save timeout is ambiguous: the worker may have committed it before
+the client stopped waiting. Retry the same note to reuse its fingerprint.
+
+## Verify and disconnect
+
+The live test requires a running, isolated worker, plus `CLAUDE_MEM_MCP_SERVER`
+and `CLAUDE_MEM_WORKER_PORT` pointing to it:
+
+```bash
+npm test
+```
+
+It saves harmless notes in uniquely named test projects and checks repeated
+saves, index/timeline/detail recall, project filtering, invalid input, a refused
+connection and an unresponsive worker. The successful path uses the real AI
+SDK client and the existing worker's SQLite storage. The test leaves those
+notes in the isolated database so you can inspect the results.
+
+To disconnect, stop using the example and remove its directory or its
+`@ai-sdk/mcp` dependency from your application. No host settings need to be
+restored. Disconnecting leaves your saved memory intact; remove any demonstration
+notes separately through the viewer if you no longer need them.
