@@ -59,17 +59,28 @@ export interface AgentPromptReader {
 /** Streams a file's lines without holding the file in memory. */
 export async function* readLines(path: string): AsyncGenerator<string> {
   const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 1 << 20 });
-  let pending = '';
+  let pending: string[] = [];
   for await (const chunk of stream as AsyncIterable<string>) {
-    pending += chunk;
-    let newline = pending.indexOf('\n');
+    // Search each decoded chunk once. A large tool payload may span many
+    // chunks; repeatedly joining and searching that growing line is quadratic.
+    let start = 0;
+    let newline = chunk.indexOf('\n');
     while (newline !== -1) {
-      yield pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      newline = pending.indexOf('\n');
+      const tail = chunk.slice(start, newline);
+      if (pending.length) {
+        pending.push(tail);
+        const line = pending.join('');
+        pending = [];
+        yield line;
+      } else {
+        yield tail;
+      }
+      start = newline + 1;
+      newline = chunk.indexOf('\n', start);
     }
+    if (start < chunk.length) pending.push(chunk.slice(start));
   }
-  if (pending) yield pending;
+  if (pending.length) yield pending.join('');
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
@@ -199,14 +210,20 @@ export function createClaudeCodeReader(): AgentPromptReader {
           && !record.isSidechain && !record.isMeta;
         const at = isoToEpochMs(record.timestamp);
         if (!text || !isOwnerTyped || at === null || at < sinceEpochMs) continue;
-        const dedupeKey = record.uuid || `${record.timestamp}\u0000${text.slice(0, 200)}`;
+        const sessionId = typeof record.sessionId === 'string' && record.sessionId
+          ? record.sessionId : basename(transcript.path, '.jsonl');
+        const uuid = typeof record.uuid === 'string' && record.uuid ? record.uuid : null;
+        // Keep the existing persisted fallback ID. Only the in-scan key needs
+        // session scope: a shared opening is not the identity of a legacy turn.
+        const nativePromptId = uuid ?? fallbackId(record.timestamp, text);
+        const dedupeKey = uuid ? `native:${uuid}` : `legacy:${fallbackId(sessionId, nativePromptId)}`;
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
         const command = claudeCommandSpellings(text);
         sink.prompt({
           agent: 'claude-code',
-          sessionId: typeof record.sessionId === 'string' && record.sessionId ? record.sessionId : basename(transcript.path, '.jsonl'),
-          nativePromptId: typeof record.uuid === 'string' && record.uuid ? record.uuid : fallbackId(record.timestamp, text),
+          sessionId,
+          nativePromptId,
           at,
           cwd: typeof record.cwd === 'string' ? record.cwd : null,
           text: command?.typed ?? text,
@@ -238,7 +255,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
 }
 
 // ---------------------------------------------------------------------------
-// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and archived_sessions/*.jsonl
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
@@ -258,7 +275,9 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
+      const profile = nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex');
+      const sessions = join(profile, 'sessions');
+      const archived = join(profile, 'archived_sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -269,7 +288,12 @@ export function createCodexReader(): AgentPromptReader {
           }
         }
       }
-      return { detected: existsSync(sessions), sources: presentSources(sources) };
+      // Archival moves the same rollout into this flat directory. It remains
+      // part of the owner's history; the existing timestamp/window rules apply.
+      for (const file of listDirectory(archived)) {
+        if (file.endsWith('.jsonl')) sources.push(source(join(archived, file)));
+      }
+      return { detected: existsSync(sessions) || existsSync(archived), sources: presentSources(sources) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;
@@ -361,7 +385,7 @@ function geminiProjectDirectories(homeDirectory: string): Map<string, string> {
   return directories;
 }
 
-export async function readGeminiChat(path: string): Promise<{ header: any; messages: any[] }> {
+export async function readGeminiChat(path: string, options: { includeDiscardedMessages?: boolean } = {}): Promise<{ header: any; messages: any[] }> {
   if (!path.endsWith('.jsonl')) {
     const document = JSON.parse(readFileSync(path, 'utf8'));
     return { header: document, messages: Array.isArray(document.messages) ? document.messages : [] };
@@ -371,12 +395,42 @@ export async function readGeminiChat(path: string): Promise<{ header: any; messa
   const keep = (message: any) => {
     if (message && typeof message === 'object' && message.type) byId.set(String(message.id ?? byId.size), message);
   };
+  const patchMessage = (patch: any) => {
+    const message = byId.get(patch?.id);
+    if (!message) return;
+    if (patch.content !== undefined) message.content = patch.content;
+  };
   for await (const line of readLines(path)) {
     const record = parseLine(line);
     if (!record || typeof record !== 'object') continue;
     if (header === null) { header = record; continue; }
-    if (record.$set) for (const message of record.$set.messages ?? []) keep(message);
-    else keep(record);
+    // Native JSONL is an event log: a rewind removes its target and everything
+    // after it, and a checkpoint replaces the live message collection. Usage
+    // and provenance scans retain discarded messages: generated tokens were
+    // spent and the model still authored that text before the rewind.
+    if (typeof record.$rewindTo === 'string') {
+      if (options.includeDiscardedMessages) continue;
+      const ids = [...byId.keys()];
+      const start = ids.indexOf(record.$rewindTo);
+      if (start === -1) byId.clear();
+      else for (const id of ids.slice(start)) byId.delete(id);
+    } else if (record.$patch) {
+      if (options.includeDiscardedMessages) continue;
+      const patch = record.$patch;
+      patchMessage(patch);
+      for (const update of Array.isArray(patch.updates) ? patch.updates : []) patchMessage(update);
+      for (const id of Array.isArray(patch.removeIds) ? patch.removeIds : []) byId.delete(id);
+      const ordered = new Map<string, any>();
+      for (const id of Array.isArray(patch.orderIds) ? patch.orderIds : []) if (byId.has(id)) ordered.set(id, byId.get(id));
+      for (const id of ordered.keys()) byId.delete(id);
+      for (const [id, message] of ordered) byId.set(id, message);
+    } else if (record.$set) {
+      if (Array.isArray(record.$set.messages)) {
+        if (!options.includeDiscardedMessages) byId.clear();
+        for (const message of record.$set.messages) keep(message);
+      }
+      header = { ...header, ...record.$set };
+    } else keep(record);
   }
   return { header: header ?? {}, messages: [...byId.values()] };
 }
@@ -446,11 +500,13 @@ export function createGeminiCliReader(): AgentPromptReader {
       }
     },
     async readAgentText(transcript, add) {
-      const { messages } = await readGeminiChat(transcript.path);
+      const { messages } = await readGeminiChat(transcript.path, { includeDiscardedMessages: true });
       for (const message of messages) {
         const at = isoToEpochMs(message.timestamp);
         if (message.type !== 'gemini' || at === null) continue;
-        const pieces = [typeof message.content === 'string' ? message.content : textOf(message.content, ['text'])];
+        // Native Gemini history stores Part[] text as { text }, without a type discriminator.
+        const content = Array.isArray(message.content) ? message.content.map((part: any) => ({ type: 'text', ...part })) : message.content;
+        const pieces = [textOf(content, ['text'])];
         for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
           const raw = JSON.stringify(call?.args ?? {});
           pieces.push(raw);

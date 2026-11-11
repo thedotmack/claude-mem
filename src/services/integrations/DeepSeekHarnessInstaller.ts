@@ -46,8 +46,13 @@ export function installDshTranscriptWatch(packageDir: string): void {
   const config = readWatchConfig();
   const schema = readJsonFileWithBom<TranscriptSchema>(join(packageDir, 'transcript-schema.json'));
   const sessions = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions');
-  // An existing DSH watch is already authoritative; do not add a second writer.
-  if (!config.watches.some(watch => watch.schema === 'dsh')) {
+  const managedWatch = config.watches.find(watch => watch.name === WATCH_NAME && watch.schema === 'dsh'
+    && (watch as typeof watch & { managedBy?: string }).managedBy === 'claude-mem');
+  // Reinstallation follows the selected host home only for our own watch.
+  // User-managed watches remain authoritative; never add a second writer.
+  if (managedWatch) {
+    managedWatch.path = sessions;
+  } else if (!config.watches.some(watch => watch.schema === 'dsh')) {
     if (config.watches.some(watch => watch.name === WATCH_NAME)) throw new Error('A different watch already uses the name dsh.');
     config.schemas ??= {};
     config.schemas.dsh ??= schema;

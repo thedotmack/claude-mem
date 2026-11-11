@@ -36,6 +36,7 @@ function spoolObservation(input: NormalizedHookInput, platformSource: string): H
     platformSource,
     telemetryPlatformSource: workStatePlatform(input.platform),
     toolName: input.toolName!,
+    nativeToolName: input.nativeToolName,
     toolInput: bounded.tool_input,
     toolResponse: bounded.tool_response,
     cwd: input.cwd,
@@ -102,7 +103,7 @@ export const observationHandler: EventHandler = {
     if (runtime.runtime === 'server') {
       // Server events never pass through worker ingest, which is where
       // CLAUDE_MEM_SKIP_TOOLS applies in worker runtime, so apply it here.
-      if (isToolSkipped(toolName, loadFromFileOnce().CLAUDE_MEM_SKIP_TOOLS)) {
+      if (isToolSkipped(toolName, loadFromFileOnce().CLAUDE_MEM_SKIP_TOOLS, input.nativeToolName)) {
         logger.debug('HOOK', 'Server runtime: tool excluded by CLAUDE_MEM_SKIP_TOOLS', { toolName });
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
       }

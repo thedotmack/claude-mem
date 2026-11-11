@@ -30,10 +30,20 @@ export function deriveCursorTranscriptPath(cwd: string | undefined, sessionId: s
   return existsSync(candidate) ? candidate : undefined;
 }
 
+// afterMCPExecution serializes its arguments and result as JSON strings.
+// Decode the host envelope once; worker ingestion owns the storage encoding.
+function decodeMcpJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); }
+  catch { return value; }
+}
+
 export const cursorAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
     const isShellCommand = !!r.command && !r.tool_name;
+    const isMcpEvent = r.result_json !== undefined || r.hook_event_name === 'afterMCPExecution'
+      || typeof r.mcp_server_name === 'string';
     const cwd = r.workspace_roots?.[0] || r.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
@@ -45,13 +55,14 @@ export const cursorAdapter: PlatformAdapter = {
     const failureMessage = typeof r.error_message === 'string' ? r.error_message : undefined;
     const toolResponse = isShellCommand
       ? { output: r.output }
-      : r.result_json ?? r.tool_output ?? (failureMessage === undefined ? undefined : { is_error: true, error: failureMessage });
+      : r.result_json !== undefined ? decodeMcpJson(r.result_json)
+        : r.tool_output ?? (failureMessage === undefined ? undefined : { is_error: true, error: failureMessage });
     return {
       sessionId,
       cwd,
       prompt: r.prompt ?? r.query ?? r.input ?? r.message,
       toolName: isShellCommand ? 'Bash' : r.tool_name,
-      toolInput: isShellCommand ? { command: r.command } : r.tool_input,
+      toolInput: isShellCommand ? { command: r.command } : isMcpEvent ? decodeMcpJson(r.tool_input) : r.tool_input,
       toolResponse,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : (typeof r.tool_call_id === 'string' ? r.tool_call_id : undefined),
       // Cursor's stop hook does not pass a transcript path on stdin, but it

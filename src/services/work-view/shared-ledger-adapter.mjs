@@ -361,6 +361,7 @@ export class SharedLedgerAdapter {
     }
     const shared = this.shared();
     let projectionSuperseded = false;
+    let activityPublishFailed = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -419,9 +420,19 @@ export class SharedLedgerAdapter {
       records = applySharedProjection(this.db, shared, { ledger, records, deviceId: this.deviceId }).records;
       const view = decorateSharedView(buildAgentView(state, records, { ledger }), { records });
       try { this.publish(buildSharedProjectionUpdates(this.db, { ledger: null, records, view, deviceId: this.deviceId, copyEntries: copies })); }
-      catch (error) { this.errors.push({ file: 'activity', message: String(error.message) }); }
-      this.activity = activity;
-      this.copyHash = copyHash;
+      catch (error) {
+        this.errors.push({ file: 'activity', message: String(error.message) });
+        // A busy database wrote nothing, and nothing else would republish this
+        // activity, so replicas would never receive the session provenance:
+        // keep it uncaptured for the next pass. Any other error (a conflict, an
+        // invalid value) repeats until the data changes, and each pass rebuilds
+        // the whole view, so that one stays captured.
+        activityPublishFailed = String(error?.code ?? '').startsWith('SQLITE_BUSY');
+      }
+      if (!activityPublishFailed) {
+        this.activity = activity;
+        this.copyHash = copyHash;
+      }
     }
     const final = this.shared();
     if (final.revision !== this.sharedRevision) {
@@ -434,7 +445,7 @@ export class SharedLedgerAdapter {
     // Keep the database version from before capture. A concurrent connection
     // may have committed after our snapshot and still needs the next pass.
     // A skipped projection also has newer records left to materialize.
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
+    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

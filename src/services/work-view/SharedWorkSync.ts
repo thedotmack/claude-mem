@@ -1,5 +1,4 @@
 import type { Database } from 'bun:sqlite';
-import type { Worker } from 'node:worker_threads';
 import { createWorkViewReadWorker } from './WorkViewReadWorkerClient.js';
 import { SharedLedgerAdapter } from './shared-ledger-adapter.mjs';
 import { registerSharedFileWriter } from './shared-file-hooks.mjs';
@@ -13,21 +12,65 @@ import { groupIdFor } from './request-groups.mjs';
 
 type SharedOptions = { databasePath: string; directory: string; deviceId: string; notify: () => void; intervalMs?: number; enabled?: boolean };
 
+/**
+ * A pass with no reply by this deadline is a hung shared-work-sync thread (#5374):
+ * the thread stays alive inside native SQLite without answering, erroring or exiting.
+ * The number matches the context reader's and My Work reader's deadlines (#5387, #5860):
+ * this worker performs ledger writes, so the pass waits out a slow-but-healthy import
+ * rather than terminating one mid-write, with SQLite's busy wait well inside it.
+ */
+export const SHARED_WORK_SYNC_PASS_TIMEOUT_MS = 120_000;
+
+/**
+ * close() and hung-thread retirement stop waiting for terminate() after this.
+ * A healthy worker closes in milliseconds; one stuck in native SQLite code may
+ * never settle (#5374).
+ */
+export const SHARED_WORK_SYNC_TERMINATE_TIMEOUT_MS = 2_000;
+
+interface SharedWorkSyncWorkerHandle {
+  postMessage(message: string): void;
+  on(event: 'message', listener: (reply: { changed?: boolean; rulesChanged?: boolean; diagnostic?: unknown }) => void): void;
+  on(event: 'error', listener: (error: Error) => void): void;
+  on(event: 'exit', listener: (code: number) => void): void;
+  ref(): void;
+  unref(): void;
+  terminate(): Promise<number>;
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  const unref = (timer as { unref?: () => void }).unref;
+  if (typeof unref === 'function') unref.call(timer);
+}
+
 /** Owns local compatibility writers and a separate background import/capture worker. */
 export class SharedWorkSync {
   private readonly adapter: SharedLedgerAdapter | null;
-  private worker: Worker | null = null;
+  private worker: SharedWorkSyncWorkerHandle | null = null;
   private pending: Promise<void> | null = null;
   private nextPass: Promise<void> | null = null;
   private finish: (() => void) | null = null;
+  private abort: ((error: Error) => void) | null = null;
+  private passTimer: ReturnType<typeof setTimeout> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopWriter: (() => void) | null = null;
   private closed = false;
   private diagnostic: unknown = null;
+  private readonly passTimeoutMs: number;
+  private readonly terminateTimeoutMs: number;
+  private readonly openWorker: () => SharedWorkSyncWorkerHandle;
 
-  constructor(private readonly db: Database, private readonly options: SharedOptions) {
+  constructor(
+    private readonly db: Database,
+    private readonly options: SharedOptions,
+    workerOptions: { passTimeoutMs?: number; terminateTimeoutMs?: number; createWorker?: () => SharedWorkSyncWorkerHandle } = {},
+  ) {
     this.adapter = options.enabled === true
       ? new SharedLedgerAdapter(db, { directory: options.directory, deviceId: options.deviceId, notify: change => this.changed(change?.rules) }) : null;
+    this.passTimeoutMs = workerOptions.passTimeoutMs ?? SHARED_WORK_SYNC_PASS_TIMEOUT_MS;
+    this.terminateTimeoutMs = workerOptions.terminateTimeoutMs ?? SHARED_WORK_SYNC_TERMINATE_TIMEOUT_MS;
+    this.openWorker = workerOptions.createWorker ?? (() => createWorkViewReadWorker({ kind: 'shared-work-sync', databasePath: this.options.databasePath,
+      directory: this.options.directory, deviceId: this.options.deviceId }));
   }
 
   start(): void {
@@ -35,9 +78,12 @@ export class SharedWorkSync {
     const adapter = this.adapter;
     this.stopWriter = registerSharedFileWriter(this.options.directory, (name, value) => adapter.beforeWrite(name, value));
     const interval = this.options.intervalMs ?? 5_000;
-    this.timer = setInterval(() => { void this.reconcile(); }, interval);
+    // A background pass that hits the deadline has already recorded its timeout
+    // in status(); the next tick opens a replacement. Interactive callers get
+    // the rejection (prepareOwnerAction awaits the same pass).
+    this.timer = setInterval(() => { this.reconcile().catch(() => {}); }, interval);
     this.timer.unref?.();
-    void this.reconcile();
+    this.reconcile().catch(() => {});
   }
 
   saveFile(name: string, value: unknown): void {
@@ -128,10 +174,9 @@ export class SharedWorkSync {
       });
       return this.nextPass;
     }
-    this.pending = new Promise(resolve => { this.finish = resolve; });
+    this.pending = new Promise((resolve, reject) => { this.finish = resolve; this.abort = reject; });
     try {
-      const worker = this.worker ?? createWorkViewReadWorker({ kind: 'shared-work-sync', databasePath: this.options.databasePath,
-        directory: this.options.directory, deviceId: this.options.deviceId });
+      const worker = this.worker ?? this.openWorker();
       if (!this.worker) {
         this.worker = worker;
         worker.on('message', (reply: { changed?: boolean; rulesChanged?: boolean; diagnostic?: unknown }) => {
@@ -145,6 +190,9 @@ export class SharedWorkSync {
         worker.on('exit', () => this.failed(worker));
       }
       worker.ref();
+      // Arm before posting: a reply delivered during postMessage settles the
+      // pass and must find the deadline already there to cancel it.
+      this.armPassTimer(worker);
       worker.postMessage('reconcile');
     } catch { this.settle(); }
     return this.pending ?? Promise.resolve();
@@ -156,8 +204,9 @@ export class SharedWorkSync {
     this.stopWriter?.();
     const worker = this.worker;
     this.worker = null;
+    this.disarmPassTimer();
     this.settle();
-    if (worker) void worker.terminate();
+    if (worker) void this.boundedTerminate(worker);
   }
 
   private changed(rules = false): void {
@@ -166,18 +215,75 @@ export class SharedWorkSync {
   }
 
   private settle(): void {
+    this.disarmPassTimer();
     const finish = this.finish;
-    this.finish = null; this.pending = null;
+    this.finish = null; this.pending = null; this.abort = null;
     finish?.();
     // The periodic check handles external/Python writers and avoids a capture
     // feedback loop from its own SQLite commits. One in-flight pass at a time.
   }
 
-  private failed(worker: Worker): void {
+  private failed(worker: SharedWorkSyncWorkerHandle): void {
     if (this.worker !== worker) return;
     this.worker = null;
+    this.disarmPassTimer();
     this.diagnostic = { error: 'Shared work could not be refreshed; retrying.' };
     this.settle();
-    void worker.terminate();
+    void this.boundedTerminate(worker);
+  }
+
+  /**
+   * The pass deadline (#5374): a thread alive but silent inside native SQLite
+   * never settles the pass by itself. Firing retires the worker and rejects the
+   * pass, so owner actions awaited through prepareOwnerAction() fail instead of
+   * hanging; the next interval tick opens a replacement worker.
+   */
+  private armPassTimer(worker: SharedWorkSyncWorkerHandle): void {
+    this.disarmPassTimer();
+    this.passTimer = setTimeout(() => {
+      if (this.worker !== worker) return;
+      this.retireWorker(worker, new Error(`Shared work sync timed out after ${this.passTimeoutMs}ms; reopening the worker.`));
+    }, this.passTimeoutMs);
+    unrefTimer(this.passTimer);
+  }
+
+  private disarmPassTimer(): void {
+    if (this.passTimer) {
+      clearTimeout(this.passTimer);
+      this.passTimer = null;
+    }
+  }
+
+  private retireWorker(worker: SharedWorkSyncWorkerHandle, error: Error): void {
+    if (this.worker !== worker) return;
+    this.worker = null;
+    this.disarmPassTimer();
+    this.diagnostic = { error: 'Shared work could not be refreshed; retrying.' };
+    // A hung pass cannot be coalesced onto: callers queued behind it via
+    // nextPass must learn of the failure, and the chain must restart fresh.
+    this.nextPass = null;
+    const abort = this.abort;
+    this.finish = null; this.pending = null; this.abort = null;
+    abort?.(error);
+    worker.unref();
+    void this.boundedTerminate(worker);
+  }
+
+  /** Mirrors the context reader: a thread stuck in native SQLite may never settle terminate(). */
+  private boundedTerminate(worker: SharedWorkSyncWorkerHandle): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, this.terminateTimeoutMs);
+      unrefTimer(timer);
+    });
+    let terminated: Promise<void>;
+    try {
+      terminated = Promise.resolve(worker.terminate()).then(() => undefined, () => undefined);
+    } catch {
+      terminated = Promise.resolve();
+    }
+    return Promise.race([terminated, timeout]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
   }
 }

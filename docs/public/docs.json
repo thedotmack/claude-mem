@@ -79,6 +79,13 @@
         ]
       },
       {
+        "group": "Gemini CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "gemini-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
@@ -109,6 +116,27 @@
           "screenpipe-integration",
           "eve-integration",
           "notion-export"
+        ]
+      },
+      {
+        "group": "Agent Frameworks",
+        "icon": "robot",
+        "pages": [
+          "ag2-integration",
+          "agno-integration",
+          "autogen-integration",
+          "claude-agent-sdk",
+          "crewai-integration",
+          "google-adk-integration",
+          "haystack",
+          "langgraph-integration",
+          "llamaindex-integration",
+          "microsoft-agent-framework",
+          "openai-agents-integration",
+          "pydantic-ai-integration",
+          "smolagents-integration",
+          "strands-agents-integration",
+          "vercel-ai-sdk"
         ]
       },
       {

@@ -48,4 +48,34 @@ export interface CorpusFile {
 export interface QueryResult {
   answer: string;
   session_id: string;
+  /**
+   * Set by the API corpus agent, which sends an excerpt of the corpus rather
+   * than the corpus: how many observations went to the model, and how many
+   * matched the question. `sent < matching` means the answer saw a partial
+   * excerpt. When nothing matches, the excerpt is the most recent
+   * observations instead, `matching` is 0, and `observations_in_corpus` says
+   * how many the corpus holds, so `sent < in_corpus` is the partial case then.
+   * Absent on the Agent SDK path, which holds the whole corpus.
+   */
+  observations_sent?: number;
+  observations_matching?: number;
+  observations_in_corpus?: number;
+  /**
+   * How many of the observations sent had their text cut to fit the budget
+   * (an observation that alone exceeds it). Set with the two counts above.
+   */
+  observations_truncated?: number;
+}
+
+/**
+ * Per-call options for a corpus agent. `abortController` reaches the caller's
+ * abort signal: the Agent SDK's `Options.abortController` on the Claude path,
+ * the request signal on the API path.
+ *
+ * It lives here, not in `KnowledgeAgent.ts`, because the module that talks to
+ * the Anthropic Agent SDK must not be reachable from the code that picks the
+ * corpus agent — an API-provider install never loads that module at all.
+ */
+export interface KnowledgeAgentCallOptions {
+  abortController?: AbortController;
 }

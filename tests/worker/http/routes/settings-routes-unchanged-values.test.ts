@@ -114,6 +114,29 @@ describe('a viewer save is judged on what it changes', () => {
 
     expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MEDIA_INFERENCE_ENABLED ?? 'false').toBe('false');
   });
+
+  it('keeps the knowledge corpus on Claude by default and saves the api opt-in', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+    expect(shown.CLAUDE_MEM_CORPUS_AGENT).toBe('');
+
+    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_CORPUS_AGENT: 'api' });
+
+    expect(saved.status()).toBe(200);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_CORPUS_AGENT).toBe('api');
+  });
+
+  it('refuses a corpus agent that is neither empty nor api', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+
+    const saved = call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_CORPUS_AGENT: 'claude' });
+
+    expect(saved.status()).toBe(400);
+    expect(String(saved.payload.error)).toContain('CLAUDE_MEM_CORPUS_AGENT');
+  });
 });
 
 // GET shows environment overrides, so the viewer posts them back with every
