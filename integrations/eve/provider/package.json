@@ -1,0 +1,18 @@
+{
+  "name": "claude-mem-eve-provider-dev",
+  "private": true,
+  "description": "Dev harness for the claude-mem/eve export. Published as part of the root claude-mem package; this package.json only installs eve for typecheck and tests.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "build:types": "tsc src/index.ts --declaration --emitDeclarationOnly --outDir types --module NodeNext --moduleResolution NodeNext --target ES2023 --strict --skipLibCheck --types node",
+    "check:types": "npm run build:types && git diff --exit-code -- types"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "eve": "0.84.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.4.3"
+  }
+}

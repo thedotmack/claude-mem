@@ -107,6 +107,7 @@
           "devin-integration",
           "qoder-integration",
           "screenpipe-integration",
+          "eve-integration",
           "notion-export"
         ]
       },
