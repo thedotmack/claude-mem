@@ -4625,19 +4625,27 @@ export class SessionStore {
    */
   updateDiscoveryTokens(observationIds: number[], summaryId: number | null, discoveryTokens: number): void {
     if (observationIds.length === 0 && summaryId === null) return;
+    const projects = new Set<string>();
     this.db.transaction(() => {
       // The assistant row may already have synced before the result corrects
       // its usage. Mark changed payloads for the existing CloudSync snapshotter,
       // which mints their next canonical revision against the acknowledged head.
       const observationStmt = this.db.prepare(`UPDATE observations SET discovery_tokens = ?,
-        synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END WHERE id = ?`);
-      for (const id of observationIds) observationStmt.run(discoveryTokens, discoveryTokens, id);
+        synced_at = CASE WHEN discovery_tokens IS NOT ? THEN NULL ELSE synced_at END
+        WHERE id = ? AND discovery_tokens IS NOT ? RETURNING project`);
+      for (const id of observationIds) {
+        const changed = observationStmt.all(discoveryTokens, discoveryTokens, id, discoveryTokens) as Array<{ project: string }>;
+        for (const row of changed) projects.add(row.project);
+      }
       if (summaryId !== null) {
         this.db.prepare(`UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?),
           synced_at = CASE WHEN COALESCE(discovery_tokens, 0) < ? THEN NULL ELSE synced_at END WHERE id = ?`)
           .run(discoveryTokens, discoveryTokens, summaryId);
       }
     })();
+    // A completed result can correct usage after the first context render.
+    // Refresh only blocks reading changed observations, after the write commits.
+    if (projects.size > 0) emitContextInvalidation({ projects: [...projects] }, 'updateDiscoveryTokens');
   }
 
   getSessionSummariesByIds(
