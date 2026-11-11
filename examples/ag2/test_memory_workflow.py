@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import socketserver
 import sqlite3
+import subprocess
+from uuid import uuid4
 import tempfile
 import threading
 import time
@@ -26,6 +28,31 @@ async def client(project, **options):
 
 
 class MemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_worktree_reads_stay_within_the_explicit_project(self):
+        with tempfile.TemporaryDirectory(prefix="ag2 worktree ") as temporary:
+            parent = Path(temporary) / ("parent-" + uuid4().hex)
+            child = Path(temporary) / "feature"
+            subprocess.run(["git", "init", "-q", str(parent)], check=True)
+            subprocess.run(["git", "-C", str(parent), "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(parent), "worktree", "add", "--detach", "-q", str(child)], check=True)
+            project = parent.name + "/feature"
+            async with client(parent.name) as memory:
+                foreign = await remember(memory, "Parent private note", "Parent-only release decision.")
+            original = Path.cwd()
+            try:
+                os.chdir(child)
+                async with client(project) as memory:
+                    own = await remember(memory, "Child decision", "Keep the child decision separate.")
+                    timeline = await call(memory, "timeline", {"anchor": own["id"], "depth_before": 10, "depth_after": 10})
+                    details = await call(memory, "get_observations", {"projects": [parent.name], "ids": [foreign["id"]]})
+            finally:
+                os.chdir(original)
+            self.assertIn("Keep the child decision separate.", own["details"])
+            for name, value in [("index", own["index"]), ("timeline", timeline), ("foreign details", details)]:
+                with self.subTest(read=name):
+                    self.assertNotIn(f"#{foreign['id']} ", value)
+                    self.assertNotIn("Parent-only release decision.", value)
+
     async def test_native_round_trip_replay_and_project_override(self):
         async with client("ag2-project-a") as first:
             saved = await remember(first, "Release decision", "Run the smoke suite before release.")
