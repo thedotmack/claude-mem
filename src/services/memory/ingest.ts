@@ -141,12 +141,28 @@ export interface MemoryFrontmatter {
   nodeType?: string;
 }
 
+const YAML_ESCAPES: Readonly<Record<string, string>> = {
+  '0': '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n',
+  v: '\v', f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"',
+  '/': '/', '\\': '\\', N: '\u0085', _: '\u00a0', L: '\u2028', P: '\u2029',
+};
+
+/** Decode the single-line scalar styles used by these known frontmatter keys. */
 function unquote(value: string): string {
   const v = value.trim();
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
-    return v.slice(1, -1);
-  }
-  return v;
+  if (v.length < 2) return v;
+  if (v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (!v.startsWith('"') || !v.endsWith('"')) return v;
+
+  // One pass: a decoded backslash must not start a second escape. Unknown or
+  // malformed escapes stay literal so a bad metadata value cannot drop a note.
+  return v.slice(1, -1).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (match, escape: string) => {
+    if (escape.length === 1) return YAML_ESCAPES[escape] ?? match;
+    const codePoint = Number.parseInt(escape.slice(1), 16);
+    return codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ? String.fromCodePoint(codePoint)
+      : match;
+  });
 }
 
 /**
