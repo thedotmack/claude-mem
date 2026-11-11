@@ -1,4 +1,4 @@
-"""Verify against a disposable worker; eight harmless observations remain stored."""
+"""Verify against a disposable worker; eleven harmless observations remain stored."""
 
 import asyncio
 import json
@@ -15,10 +15,10 @@ from memory import DEMO_NOTE, DEMO_TITLE, call_memory, demonstrate, memory_tools
 async def verify():
     run_id = uuid4().hex
     with tempfile.TemporaryDirectory(prefix="agno project ") as directory:
-        parent = Path(directory) / f"agno-verify-{run_id}"
-        checkout = Path(directory) / "checkout with spaces"
+        parent = Path(directory) / f" agno-verify-{run_id},parent-{run_id}"
+        checkout = Path(directory) / "checkout with spaces "
         subprocess.run(["git", "init", "-q", str(parent)], check=True)
-        subprocess.run(["git", "-C", str(parent), "-c", "user.name=Memory Example",
+        subprocess.run(["git", "-C", str(parent), "-c", "commit.gpgsign=false", "-c", "user.name=Memory Example",
                         "-c", "user.email=memory-example@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
         subprocess.run(["git", "-C", str(parent), "worktree", "add", "-qb", "feature", str(checkout)], check=True)
         project_a, project_b = f"{parent.name}/{checkout.name}", parent.name
@@ -42,15 +42,22 @@ async def verify():
         b = await demonstrate(project_b, server, directory)
         assert a["observation_id"] == repeated["observation_id"], "repeated save was duplicated"
         assert a["observation_id"] != b["observation_id"], "projects shared a saved observation"
+        aliases = [project_a.strip(), *(part.strip() for part in project_a.split(","))]
+        alias_results = []
+        for alias in aliases:
+            alias_results.append(await demonstrate(alias, server, directory))
+        foreign_ids = [b["observation_id"], *(result["observation_id"] for result in alias_results)]
+        assert len({a["observation_id"], *foreign_ids}) == 5, "literal project was aliased to a parent, split or trimmed key"
         async with memory_tools(project_a, server, directory) as memory:
             inherited_index = await call_memory(memory, "search", {"query": DEMO_TITLE, "type": "observations", "limit": 20})
             inherited_timeline = await call_memory(memory, "timeline", {"anchor": a["observation_id"], "depth_before": 10, "depth_after": 10})
-            foreign = await call_memory(memory, "get_observations", {"ids": [b["observation_id"]], "project": project_b})
-        assert not re.search(rf'#{b["observation_id"]}\b', inherited_index), "parent project entered the search index"
-        assert not re.search(rf'#{b["observation_id"]}\b', inherited_timeline), "parent project entered the timeline"
+            foreign = await call_memory(memory, "get_observations", {"ids": foreign_ids, "project": project_b})
+        for identifier in foreign_ids:
+            assert not re.search(rf'#{identifier}\b', inherited_index), "parent or alias project entered the search index"
+            assert not re.search(rf'#{identifier}\b', inherited_timeline), "parent or alias project entered the timeline"
         assert DEMO_NOTE not in foreign, "another project's detail was returned"
         return {"project_a": project_a, "project_b": project_b, "repeated_id": a["observation_id"], "other_project_id": b["observation_id"],
-                "project_isolation": True, "worktree_parent_isolation": True, "paths_with_spaces": True, "error_prefixed_notes": True,
+                "project_isolation": True, "worktree_parent_isolation": True, "literal_key_isolation": True, "observations_per_run": 11, "paths_with_spaces": True, "error_prefixed_notes": True,
                 "newer_notes": 6, "model_requests": 0}
 
 
