@@ -22,7 +22,7 @@ Use when users ask about PREVIOUS sessions (not the current conversation):
 
 ## 3-Layer Workflow (ALWAYS Follow)
 
-NEVER fetch full details without filtering first. This saves 10x tokens.
+NEVER fetch full details without filtering first: an index row is ~50-100 tokens, about a tenth of a ~500-1,000-token record, so filtering decides how many records you fetch, not how large each one is.
 
 ### Step 1: Search — get an index with ids
 
