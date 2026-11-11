@@ -155,7 +155,7 @@ settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS=
                 CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
 (Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
 PYSETTINGS
-  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  bun -e 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error=>{console.error(error);process.exit(1)});' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
   memory_test_pid=$!
   trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
   python3 - <<'PYREADY'
@@ -193,3 +193,7 @@ alias projects, then verify that their records never enter the selected scope.
 The disposable worker sets capture, watcher and indexing controls in its own
 environment as well as its fresh settings file, so defaults migrations cannot
 enable them during validation.
+
+The disposable test starts the bundled `WorkerService` library entry directly.
+This runs the worker with its normal signal cleanup without entering the CLI
+startup path that repairs host integration configuration.
