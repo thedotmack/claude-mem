@@ -32,7 +32,7 @@ class ProjectArguments(unittest.TestCase):
             if name == "save_memory":
                 self.assertNotIn("projects", result)
             else:
-                self.assertEqual(result["projects"], ["owned"])
+                self.assertEqual(result["projects"], json.dumps(["owned"]))
             self.assertEqual(args["project"], "other")
 
     def test_fingerprint_distinguishes_project_and_content(self):
@@ -48,6 +48,19 @@ class ProjectArguments(unittest.TestCase):
                 checked_text("search", ToolResult(content=text))
 
 
+    def test_literal_project_keys_do_not_alias_trimmed_or_split_keys(self):
+        selected = " owned,web "
+        for name in MEMORY_TOOLS:
+            scoped = scoped_arguments(name, {"text": "Safe note", "projects": ["other"]}, selected)
+            self.assertEqual(scoped["project"], selected)
+            if name != "save_memory":
+                self.assertIsInstance(scoped["projects"], str)
+                self.assertEqual(json.loads(scoped["projects"]), [selected])
+        identity = scoped_arguments("save_memory", {"text": "Safe note"}, selected)["metadata"]
+        for alias in (selected.strip(), "owned", "web"):
+            self.assertNotEqual(identity, scoped_arguments("save_memory", {"text": "Safe note"}, alias)["metadata"])
+
+
 class NativeSdk(unittest.IsolatedAsyncioTestCase):
     async def test_native_function_executor_applies_scope_and_save_identity(self):
         async with fixture_tools() as memory:
@@ -57,7 +70,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
                 "query": "release", "project": "other", "projects": ["other"],
             }).aexecute()
             self.assertEqual(execution.status, "success")
-            self.assertEqual(json.loads(execution.result.content), {"query": "release", "project": "owned", "projects": ["owned"]})
+            self.assertEqual(json.loads(execution.result.content), {"query": "release", "project": "owned", "projects": json.dumps(["owned"])})
             saved = json.loads(await call_memory(memory, "save_memory", {"text": "Safe note", "title": "Note", "project": "other"}))
             self.assertEqual(saved["project"], "owned")
             self.assertEqual(saved["metadata"]["platformSource"], "agno")
