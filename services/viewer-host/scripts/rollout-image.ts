@@ -23,6 +23,12 @@
  *   - The target is the router machine's image pinned by digest, `registry/repository:tag@digest`
  *     from its image_ref (pinnedImageReference), the same string cmem.ai creates account machines
  *     with. A router machine without a digest stops the run before anything changes.
+ *   - A machine is current when its image_ref digest is the router's and its config.image is
+ *     pinned to that digest (ends with `@<digest>`); the tag in front does not matter. Every other
+ *     machine is updated to the full pinned reference. So the first rollout after this change
+ *     restarts every running account machine whose config.image is still a bare tag (all those
+ *     created before cmem.ai pinned images), even when it already runs the same image; stopped
+ *     ones are updated and stay stopped.
  *   - An update replaces the whole config ("we don't support partial updates"), so each
  *     update sends the machine's own config with only `image` changed. A machine whose
  *     config Fly could not read (host unreachable, `config` null) is reported as failed,
@@ -199,14 +205,17 @@ export async function rolloutImage(options: RolloutOptions): Promise<RolloutSumm
   }
 
   // The target is whatever the router runs, so the order is always: deploy the router, then roll out.
-  // It is the pinned reference (pinnedImageReference), compared with each account machine's
-  // config.image and written there in that same form. A machine still on a bare tag is out of date.
+  // It is the pinned reference (pinnedImageReference), written to each machine that is not current;
+  // current means the same digest, both as Fly resolved it and in config.image (see the header).
   const routerMachines = (await listMachines(options.routerFlyAppName)).filter(machine => !MACHINE_GONE_STATES.has(machine.state));
   const routerImages = [...new Set(routerMachines.map(machine => pinnedImageReference(options.routerFlyAppName, machine)))];
   if (routerImages.length !== 1) {
     throw new Error(`${options.routerFlyAppName} machines report images ${JSON.stringify(routerImages)}; expected exactly one. Finish the router deploy first.`);
   }
   const targetImage = routerImages[0];
+  const targetDigest = routerMachines[0].image_ref!.digest!;
+  const isCurrent = (machine: FlyMachine) =>
+    machine.image_ref?.digest === targetDigest && (machine.config?.image ?? '').endsWith(`@${targetDigest}`);
   log(`target image (from ${options.routerFlyAppName}): ${targetImage}${options.dryRun ? '  [dry run: nothing will change]' : ''}`);
 
   // Without `limit`, Fly returns every app in one response (GET /v1/apps, https://docs.fly.io/machines/api/apps-resource).
@@ -239,7 +248,7 @@ export async function rolloutImage(options: RolloutOptions): Promise<RolloutSumm
         fail(label, 'Fly returned no config (host unreachable?); not updated, a partial config would replace the whole machine');
         continue;
       }
-      if (machine.config.image === targetImage) {
+      if (isCurrent(machine)) {
         summary.alreadyCurrent.push(label);
         continue;
       }

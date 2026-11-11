@@ -8,7 +8,9 @@
 #   2. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
 #   3. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N> --only <one cmem-vw- app>, check it
 #   4. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N>
-#      (N is required: the worker boot time measured in the Phase 8 staging run)
+#      (N is required: the worker boot time measured in the Phase 8 staging run. The first
+#      rollout after the switch to digest-pinned images restarts every running account machine
+#      still on a bare tag, even one already on the same image)
 # The built plugin without the checkout's own plugin/node_modules. `npm run build` installs
 # one on the operator's computer (801 MB of macOS packages on the Phase 8 staging checkout,
 # e.g. @img/sharp-darwin-arm64), and copying it would replace this image's Linux install.
