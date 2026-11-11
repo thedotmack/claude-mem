@@ -173,6 +173,64 @@ against the same worker cannot be confused by notes from an earlier verification
 It leaves eight new harmless observations per run; the ordinary demo still uses
 your selected project and deduplicates across repeated demo runs.
 
+## Disposable verification worker
+
+Run this Bash block from a source checkout with built bundles, Python 3, Git and
+Bun on `PATH`, and the example dependencies already installed. The subshell clears inherited `CLAUDE_MEM_*` variables before choosing a fresh
+data directory and free local port. It checks that cloud sync is unconfigured
+before sending any verification notes. Existing worker settings and the parent
+shell stay unchanged; the temporary worker exits when the block finishes.
+
+```bash
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun plugin/scripts/worker-service.cjs --daemon >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import json, os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+with urllib.request.urlopen("http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/sync/status", timeout=2) as response:
+    if json.load(response).get("configured") is not False:
+        raise SystemExit("The disposable worker has cloud sync configured; no test notes were sent")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  .venv-smolagents/bin/python examples/smolagents/verify_worker.py
+)
+```
+
 ## Disconnect
 
 Remove the memory tools from your agent and delete the virtual environment if
