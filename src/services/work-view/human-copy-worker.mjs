@@ -43,6 +43,7 @@ function safeFailureReason(error) {
   if (message === 'Invalid summary JSON.') return 'Invalid summary JSON';
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'Request timed out';
   if (error?.name === 'SyntaxError') return 'Invalid JSON response';
+  if (error instanceof TypeError && message) return message.endsWith('.') ? message.slice(0, -1) : message;
   return 'Summary request failed';
 }
 
@@ -112,6 +113,7 @@ export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackM
 // inside My Work's 6-hour staleness threshold (STALE_AFTER_MS, status-normalization.ts), so wording recovers after a
 // top-up or a rate window passes, before the card would read as stale.
 const MAX_RETRY_MS = 60 * 60 * 1000;
+export const MAX_VALIDATION_ATTEMPTS = 3;
 
 export class HumanCopyWorker {
   constructor({ provider, cachePath = null, persistSharedCopy = null,
@@ -281,8 +283,10 @@ export class HumanCopyWorker {
       const status = httpStatus(error);
       const previous = this.failures.get(job.id);
       const attempt = previous?.fingerprint === job.fingerprint ? previous.attempt + 1 : 1;
-      const waitForChange = status !== null && isPermanentClientError(status);
-      const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status)
+      const isValidationError = error instanceof TypeError || error instanceof SyntaxError || reason === 'Invalid summary JSON';
+      const waitForChange = (status !== null && isPermanentClientError(status))
+        || (isValidationError && attempt >= MAX_VALIDATION_ATTEMPTS);
+      const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status) || isValidationError
         ? Math.min(this.retryMs * 2 ** Math.min(attempt - 1, 20), this.maxRetryMs)
         : this.retryMs;
       const failure = { fingerprint: job.fingerprint, at, reason, attempt, waitForChange, retryAfterMs };

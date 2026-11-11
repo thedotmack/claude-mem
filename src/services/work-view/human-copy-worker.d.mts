@@ -1,6 +1,7 @@
 type HumanCopyProvider = ((input: unknown) => Promise<Record<string, unknown>>) & { isAvailable?: () => boolean; isOff?: () => boolean; getConfigKey?: () => string | null };
 export function chatCompletionsHumanCopyProvider(options: { url: string; apiKey: string; model: string; fallbackModels?: string[]; sendReasoningOff?: boolean; fetchImpl?: typeof fetch }): HumanCopyProvider;
 export function fitGeneratedCopy(output: unknown): unknown;
+export const MAX_VALIDATION_ATTEMPTS: number;
 export class HumanCopyWorker {
   revision: number;
   provider: HumanCopyProvider | null | undefined;

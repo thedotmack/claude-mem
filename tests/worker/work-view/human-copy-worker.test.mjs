@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HumanCopyWorker, chatCompletionsHumanCopyProvider, fitGeneratedCopy } from '../../../src/services/work-view/human-copy-worker.mjs';
+import { HumanCopyWorker, MAX_VALIDATION_ATTEMPTS, chatCompletionsHumanCopyProvider, fitGeneratedCopy } from '../../../src/services/work-view/human-copy-worker.mjs';
 import { createHumanCopyInput, validateHumanCopy } from '../../../src/services/work-view/human-copy.mjs';
 
 const disposals = [];
@@ -418,3 +418,63 @@ test('failed and stale snapshots do not retire pending requests', async () => {
   await waitForWorker(instance);
   assert.equal(calls, 1);
 });
+
+test('validator rejections back off exponentially and wait for change after max attempts', async () => {
+  let now = 0, calls = 0;
+  const source = request();
+  const instance = worker(async input => {
+    calls++;
+    return { output: { ...copy(input), workstreams: [{ id: 'invented-stream', title: 'Done', summary: 'Everything delivered.' }] } };
+  }, { now: () => now, retryMs: 100, maxRetryMs: 1000 });
+  disposals.push(() => instance.close());
+
+  instance.observe(view(source));
+  await settle();
+  assert.equal(calls, 1);
+  assert.equal(instance.status().failures[0].reason, 'Unknown or duplicate workstream id');
+  assert.equal(instance.failures.get(source.id).attempt, 1);
+  assert.equal(instance.failures.get(source.id).waitForChange, false);
+  assert.equal(instance.failures.get(source.id).retryAfterMs, 100);
+
+  // Attempt 2 backoff: 100ms
+  now = 99; instance.pump(); await settle(); assert.equal(calls, 1);
+  now = 100; instance.pump(); await settle(); assert.equal(calls, 2);
+  assert.equal(instance.failures.get(source.id).attempt, 2);
+  assert.equal(instance.failures.get(source.id).waitForChange, false);
+  assert.equal(instance.failures.get(source.id).retryAfterMs, 200);
+
+  // Attempt 3 backoff: 200ms (100 + 200 = 300)
+  now = 299; instance.pump(); await settle(); assert.equal(calls, 2);
+  now = 300; instance.pump(); await settle(); assert.equal(calls, 3);
+  assert.equal(instance.failures.get(source.id).attempt, 3);
+  assert.equal(instance.failures.get(source.id).waitForChange, true);
+
+  // Reached MAX_VALIDATION_ATTEMPTS (3). waitForChange is now true.
+  assert.equal(MAX_VALIDATION_ATTEMPTS, 3);
+  now = 3600 * 1000;
+  instance.pump();
+  await settle();
+  assert.equal(calls, 3, 'validator rejections stop retrying on a timer after MAX_VALIDATION_ATTEMPTS');
+
+  // New input / fingerprint resets attempt and retries
+  const updatedSource = request('request-one', 'Different progress.');
+  instance.observe(view(updatedSource));
+  now += 100;
+  instance.pump();
+  await settle();
+  assert.equal(calls, 4, 'new fingerprint triggers a new attempt');
+  assert.equal(instance.failures.get(source.id).attempt, 1);
+});
+
+test('surfaces clean validation message in failure reason', async () => {
+  const source = request();
+  const instance = worker(async input => {
+    return { output: { ...copy(input), title: '' } };
+  });
+  disposals.push(() => instance.close());
+
+  instance.observe(view(source));
+  await settle();
+  assert.equal(instance.status().failures[0].reason, 'Request title must be 1–100 characters');
+});
+
