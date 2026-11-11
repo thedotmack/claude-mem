@@ -9,6 +9,7 @@ import { createCodexReader, readLines } from '../../../src/services/prompt-impor
 import { SetupScan } from '../../../src/services/prompt-import/setup-scan.js';
 import { scanTokenUsage } from '../../../src/services/prompt-import/token-usage.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { normalizeStoredPromptText } from '../../../src/services/sqlite/prompt-storage.js';
 
 const NOW = Date.parse('2026-11-11T12:00:00Z');
 const DAY = 86400_000;
@@ -34,7 +35,7 @@ function fixture() {
 const iso = (at: number) => new Date(at).toISOString();
 const meta = (id?: string) => ({ timestamp: iso(NOW - 35 * DAY), type: 'session_meta',
   payload: { id, source: 'cli', originator: 'codex_cli_rs', cwd: '/work/fixture' } });
-const prompt = (id: string, text: string, at = NOW - 9 * DAY) => ({
+const prompt = (id: string, text: string, at = NOW - 11 * DAY) => ({
   timestamp: iso(at), type: 'response_item',
   payload: { type: 'message', role: 'user', id, content: [{ type: 'input_text', text }] },
 });
@@ -64,6 +65,7 @@ it('imports cold compressed Codex prompts into SQLite without changing the sourc
   const mtime = statSync(path).mtimeMs;
   const located = createCodexReader().locate(home);
   expect(located.sources.map(source => source.path)).toEqual([path]);
+  expect((await scanOwnerPrompts(options)).ownerPrompts.map(prompt => prompt.text)).toEqual([text]);
 
   const store = new SessionStore(':memory:', { syncOpsEnabled: false });
   try {
@@ -74,7 +76,7 @@ it('imports cold compressed Codex prompts into SQLite without changing the sourc
     expect(state.skippedSources).toBe(0);
     expect(state.added).toBe(1);
     const rows = store.db.query('SELECT prompt_text FROM user_prompts ORDER BY id').all();
-    expect(rows).toEqual([{ prompt_text: text }]);
+    expect(rows).toEqual([{ prompt_text: normalizeStoredPromptText(text) }]);
     expect(readFileSync(path)).toEqual(bytes);
     expect(statSync(path).mtimeMs).toBe(mtime);
   } finally {
@@ -94,9 +96,9 @@ it('uses compressed assistant evidence when classifying later plain prompts and 
     prompt('copied', authored), prompt('owner', owner)], false);
   const result = await scanOwnerPrompts({ ...options, memoryPrompts: [
     { id: 91, platformSource: 'codex', contentSessionId: 'hook-session',
-      promptText: authored, createdAtEpoch: NOW - 9 * DAY },
+      promptText: authored, createdAtEpoch: NOW - 11 * DAY },
     { id: 92, platformSource: 'codex', contentSessionId: 'hook-session',
-      promptText: owner, createdAtEpoch: NOW - 9 * DAY },
+      promptText: owner, createdAtEpoch: NOW - 11 * DAY },
   ] });
   expect(result.skippedSources).toEqual([]);
   expect(result.ownerPrompts.map(entry => entry.text)).toEqual([owner]);
@@ -148,14 +150,14 @@ it('keeps fallback session and prompt identities after a rollout is compressed',
   expect(after.ownerPrompts[0].sessionId).toBe('rollout-legacy');
 });
 
-for (const damaged of ['corrupt', 'truncated'] as const) {
+for (const damaged of ['corrupt', 'truncated', 'empty'] as const) {
   it('reports ' + damaged + ' compressed sources instead of presenting an unread scan as complete', async () => {
     const { directory, options } = fixture();
     const path = writeRollout(directory, 'rollout-damaged', [
       meta('damaged-session'), prompt('request', 'please retain readable history'), usage(NOW - 11 * DAY, 10, 10),
     ]);
     const bytes = readFileSync(path);
-    writeFileSync(path, damaged === 'corrupt' ? Buffer.from('not a Zstandard frame') : bytes.subarray(0, bytes.length - 1));
+    writeFileSync(path, damaged === 'corrupt' ? Buffer.from('not a Zstandard frame') : damaged === 'empty' ? Buffer.alloc(0) : bytes.subarray(0, bytes.length - 1));
     const result = await scanOwnerPrompts(options);
     expect(result.skippedSources.map(source => source.path)).toEqual([path]);
     expect((await scanTokenUsage(options)).agents[0].skippedSources).toBe(1);

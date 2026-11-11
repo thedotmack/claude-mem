@@ -15,6 +15,7 @@ import { homedir } from 'os';
 import { pipeline, type Transform } from 'node:stream';
 import * as zlib from 'node:zlib';
 import { logger } from '../../utils/logger.js';
+import { scanZstdFramesInFile } from '../transcripts/zstd-frames.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
 
@@ -66,6 +67,12 @@ export async function* readLines(path: string): AsyncGenerator<string> {
     const createZstdDecompress = (zlib as unknown as { createZstdDecompress?: () => Transform }).createZstdDecompress;
     if (typeof createZstdDecompress !== 'function') {
       throw new Error('this runtime cannot decode compressed Codex history (zlib.createZstdDecompress is missing)');
+    }
+    // Bun's streaming decoder can finish without rejecting a truncated frame.
+    // Reuse the bounded header scan so a partial history is reported as unreadable.
+    const frames = scanZstdFramesInFile(path, 0, statSync(path).size);
+    if (frames.tornStart !== null || !frames.frames.length) {
+      throw new Error('incomplete Zstandard frame in compressed Codex history');
     }
     decompressor = createZstdDecompress();
   }
