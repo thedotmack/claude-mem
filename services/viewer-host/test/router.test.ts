@@ -136,6 +136,19 @@ describe('router', () => {
     expect(logged.join('\n')).toContain('reason=timeout');
   });
 
+  it('answers a failed replay of an API call with JSON, not the HTML page', async () => {
+    const response = get('/api/work-view', {
+      cookie: session('user-a'),
+      accept: 'application/json',
+      'fly-replay-failed': 'app=cmem-vw-abc;reason=timeout',
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get('fly-replay')).toBeNull();
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({ error: 'Your viewer is not available right now. Try again in a moment.' });
+    expect(logged.join('\n')).toContain('reason=timeout');
+  });
+
   it('treats a failed-replay header without a valid token like any unauthenticated request, and logs nothing', () => {
     const response = get('/api/work-view', { 'fly-replay-failed': 'reason=timeout;app=cmem-vw-abc' });
     expect(response.status).toBe(401);

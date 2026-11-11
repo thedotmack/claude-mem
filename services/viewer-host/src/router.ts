@@ -116,7 +116,9 @@ export function createRouter(options: RouterOptions): (request: Request) => Resp
       // Fly delivered the request back here because the replay failed (fallback=force_self).
       // A fallback request cannot issue another replay (https://docs.fly.io/networking/dynamic-request-routing).
       log(`[viewer-router] replay failed: reason=${replayFailedField(replayFailed, 'reason')} app=${replayFailedField(replayFailed, 'app')}`);
-      return page(503, 'Your viewer is not available right now', `<p>Try again in a moment.</p><a href="${options.signInUrl}">Go to cmem.ai</a>`);
+      // A page for a browser, JSON for an API call, the same split as the unauthenticated answer above and the gate's own 503.
+      if (wantsHtml(request)) return page(503, 'Your viewer is not available right now', `<p>Try again in a moment.</p><a href="${options.signInUrl}">Go to cmem.ai</a>`);
+      return json(503, { error: 'Your viewer is not available right now. Try again in a moment.' });
     }
 
     if (!replayableBody(request)) return json(413, { error: 'This request is too large for your viewer.' });
