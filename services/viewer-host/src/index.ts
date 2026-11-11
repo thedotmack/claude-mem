@@ -41,10 +41,10 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createGate } from './gate.js';
-import { DEFAULT_REPLICA_FLY_APP_NAME_PREFIX, DEFAULT_VIEWER_PUBLIC_ORIGIN, DEFAULT_VIEWER_SIGN_IN_URL } from './defaults.js';
+import { ACCOUNT_WORKER_PORT, DEFAULT_REPLICA_FLY_APP_NAME_PREFIX, DEFAULT_VIEWER_PUBLIC_ORIGIN, DEFAULT_VIEWER_SIGN_IN_URL } from './defaults.js';
 import { createRouter } from './router.js';
 
-const WORKER_PORT = '37777';
+const WORKER_PORT = ACCOUNT_WORKER_PORT;
 const RESTART_DELAY_MS = 3000;
 
 function required(name: string): string {

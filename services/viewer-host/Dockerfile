@@ -6,8 +6,9 @@
 # After the router cutover (see fly.router.toml), every release is:
 #   1. npm run build
 #   2. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
-#   3. bun services/viewer-host/scripts/rollout-image.ts --only <one cmem-vw- app>, check it
-#   4. bun services/viewer-host/scripts/rollout-image.ts
+#   3. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N> --only <one cmem-vw- app>, check it
+#   4. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N>
+#      (N is required: the worker boot time measured in the Phase 8 staging run)
 FROM oven/bun:1.4-debian
 
 WORKDIR /app

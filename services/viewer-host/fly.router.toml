@@ -27,10 +27,12 @@
 #        (the image copies the built plugin/; a source-only change ships nothing)
 #   2. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
 #        (the router, and the image every account machine will run)
-#   3. Canary: bun services/viewer-host/scripts/rollout-image.ts --only <one cmem-vw- app>
+#   3. Canary: bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N> --only <one cmem-vw- app>
 #        then open that account's viewer and check it loads.
-#   4. bun services/viewer-host/scripts/rollout-image.ts
-#        (moves every account machine to the router's image; sleeping ones stay asleep.
+#   4. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N>
+#        (moves every account machine to the router's image; sleeping ones stay asleep;
+#         a restarted machine must report its worker ready within N seconds or the run stops.
+#         N is required, with no default: the worker boot time measured in the Phase 8 staging run.
 #         Needs FLY_API_TOKEN and FLY_ORG_SLUG; --dry-run lists what would change)
 #
 # Secrets (fly secrets set …):

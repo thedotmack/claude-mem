@@ -8,13 +8,22 @@ const OLD_IMAGE = 'registry.fly.io/cmem-viewer:deployment-OLD';
 interface FakeMachine { id: string; state: string; version: string; config: Record<string, unknown> | null }
 interface Call { method: string; path: string; body: any }
 
+/** What the worker probe prints on the machine, or `412` for Fly's "machine not running". */
+type WorkerAnswer = 'ready' | 'busy' | 'not-listening' | '412';
+
 /**
  * A fake Machines API: GET lists apps and machines, POST updates a machine and returns its new
- * version, GET .../wait answers when started. Apps in `failUpdatesFor` answer the update with 500,
- * apps in `failWaitsFor` answer the wait with 408.
+ * version, GET .../wait answers when started, POST .../exec answers the worker probe. Apps in
+ * `failUpdatesFor` answer the update with 500, apps in `failWaitsFor` answer the wait with 408.
+ * `workerAnswers` gives an app's probe answers in order (the last one repeats); default ready.
  */
-function fakeFly(appsWithMachines: Record<string, FakeMachine[]>, failUpdatesFor: string[] = [], expectedOrigin = 'https://api.machines.dev', failWaitsFor: string[] = []) {
+function fakeFly(
+  appsWithMachines: Record<string, FakeMachine[]>,
+  { failUpdatesFor = [], expectedOrigin = 'https://api.machines.dev', failWaitsFor = [], workerAnswers = {} }:
+    { failUpdatesFor?: string[]; expectedOrigin?: string; failWaitsFor?: string[]; workerAnswers?: Record<string, WorkerAnswer[]> } = {},
+) {
   const calls: Call[] = [];
+  const probesSeen: Record<string, number> = {};
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
@@ -37,6 +46,15 @@ function fakeFly(appsWithMachines: Record<string, FakeMachine[]>, failUpdatesFor
       if (failWaitsFor.includes(wait[1])) return Response.json({ error: 'deadline_exceeded: machine did not reach started' }, { status: 408 });
       return Response.json({ ok: true, state: 'started', version: url.searchParams.get('version') });
     }
+    const exec = url.pathname.match(/^\/v1\/apps\/([^/]+)\/machines\/([^/]+)\/exec$/);
+    if (method === 'POST' && exec) {
+      const answers = workerAnswers[exec[1]] ?? ['ready'];
+      const seen = probesSeen[exec[1]] ?? 0;
+      probesSeen[exec[1]] = seen + 1;
+      const answer = answers[Math.min(seen, answers.length - 1)];
+      if (answer === '412') return Response.json({ error: 'machine is not running' }, { status: 412 });
+      return Response.json({ exit_code: 0, exit_signal: 0, stdout: `${answer}\n`, stderr: '' });
+    }
     return new Response('unexpected', { status: 404 });
   }) as typeof fetch;
   return { calls, fetchImpl };
@@ -51,11 +69,41 @@ function machine(id: string, state: string, image: string): FakeMachine {
   };
 }
 
-function options(fetchImpl: typeof fetch, extra: Partial<RolloutOptions> = {}): RolloutOptions {
-  return { flyApiToken: 'test-token', flyOrgSlug: 'personal', routerFlyAppName: 'cmem-viewer', replicaFlyAppNamePrefix: DEFAULT_REPLICA_FLY_APP_NAME_PREFIX, dryRun: false, fetchImpl, log: () => {}, ...extra };
+/** A fake clock: each wait between worker checks moves it forward instead of sleeping. */
+function fakeClock() {
+  const clock = { milliseconds: 0, sleeps: [] as number[] };
+  return {
+    clock,
+    now: () => clock.milliseconds,
+    sleep: async (milliseconds: number) => { clock.sleeps.push(milliseconds); clock.milliseconds += milliseconds; },
+  };
 }
 
-const posts = (calls: Call[]) => calls.filter(call => call.method === 'POST');
+function options(fetchImpl: typeof fetch, extra: Partial<RolloutOptions> = {}): RolloutOptions {
+  const { now, sleep } = fakeClock();
+  return { flyApiToken: 'test-token', flyOrgSlug: 'personal', routerFlyAppName: 'cmem-viewer', replicaFlyAppNamePrefix: DEFAULT_REPLICA_FLY_APP_NAME_PREFIX, dryRun: false, workerReadyTimeoutSeconds: 30, fetchImpl, log: () => {}, now, sleep, ...extra };
+}
+
+/** Runs the script as an operator would, against the fake API served on loopback. */
+async function run(failUpdatesFor: string[], args = ['--worker-ready-timeout-seconds', '30'], machineState = 'stopped', workerAnswers: Record<string, WorkerAnswer[]> = {}) {
+  const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', machineState, OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', machineState, OLD_IMAGE)] }, { failUpdatesFor, expectedOrigin: 'http://127.0.0.1', workerAnswers });
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => fly.fetchImpl(request.url, { method: request.method, headers: request.headers, body: request.method === 'POST' ? request.body : undefined, duplex: 'half' } as RequestInit) });
+  try {
+    const child = Bun.spawn([process.execPath, `${import.meta.dir}/../scripts/rollout-image.ts`, ...args], {
+      env: { PATH: process.env.PATH ?? '', FLY_API_TOKEN: 'test-token', FLY_ORG_SLUG: 'personal', FLY_API_HOSTNAME: `http://127.0.0.1:${server.port}` },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { exitCode, stdout, stderr, posts: posts(fly.calls).length, calls: fly.calls.length };
+  } finally {
+    server.stop(true);
+  }
+}
+
+/** Machine updates, not worker checks. */
+const posts = (calls: Call[]) => calls.filter(call => call.method === 'POST' && !call.path.endsWith('/exec'));
+const probes = (calls: Call[]) => calls.filter(call => call.method === 'POST' && call.path.endsWith('/exec'));
 
 describe('rollout-image', () => {
   it('updates a stopped machine with its whole config, only the image changed, and skip_launch', async () => {
@@ -76,6 +124,77 @@ describe('rollout-image', () => {
     const updateIndex = fly.calls.findIndex(call => call.method === 'POST');
     expect(fly.calls[updateIndex + 1]).toEqual({ method: 'GET', path: '/v1/apps/cmem-vw-aaa/machines/m-running/wait?state=started&version=new-m-running', body: undefined });
     expect(summary.updated).toEqual(['cmem-vw-aaa/m-running']);
+  });
+
+  it('asks the restarted machine\'s worker through exec, with bun and no shell, after it starts', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-running', 'started', OLD_IMAGE)] });
+    await rolloutImage(options(fly.fetchImpl));
+    const waitIndex = fly.calls.findIndex(call => call.path.includes('/wait'));
+    const probe = fly.calls[waitIndex + 1];
+    expect(probe.path).toBe('/v1/apps/cmem-vw-aaa/machines/m-running/exec');
+    expect(probe.body.command.slice(0, 2)).toEqual(['bun', '-e']);
+    expect(probe.body.command[2]).toContain('http://127.0.0.1:37777/api/health');
+    expect(Object.keys(probe.body)).toEqual(['command']);
+  });
+
+  it('never checks the worker of a machine it kept asleep', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-stopped', 'stopped', OLD_IMAGE)] });
+    await rolloutImage(options(fly.fetchImpl));
+    expect(probes(fly.calls)).toEqual([]);
+  });
+
+  it('keeps waiting through a booting and busy worker, one check per second, and passes once it is ready', async () => {
+    const fly = fakeFly(
+      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { workerAnswers: { 'cmem-vw-aaa': ['not-listening', 'not-listening', 'busy', 'busy', 'ready'] } },
+    );
+    const { clock, now, sleep } = fakeClock();
+    const summary = await rolloutImage(options(fly.fetchImpl, { now, sleep }));
+    expect(summary.updated).toEqual(['cmem-vw-aaa/m-a', 'cmem-vw-bbb/m-b']);
+    expect(summary.failures).toEqual([]);
+    expect(probes(fly.calls).filter(call => call.path.includes('cmem-vw-aaa'))).toHaveLength(5);
+    expect(clock.sleeps).toEqual([1000, 1000, 1000, 1000]);
+  });
+
+  it('stops the run when a machine starts but its worker never becomes ready', async () => {
+    const fly = fakeFly(
+      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { workerAnswers: { 'cmem-vw-aaa': ['busy'] } },
+    );
+    const summary = await rolloutImage(options(fly.fetchImpl, { workerReadyTimeoutSeconds: 5 }));
+    expect(summary.updated).toEqual([]);
+    expect(summary.failures).toHaveLength(1);
+    expect(summary.failures[0]).toContain('cmem-vw-aaa/m-a');
+    expect(summary.failures[0]).toContain('worker not ready after 5s (last check: busy)');
+    expect(summary.notAttempted).toEqual(['cmem-vw-bbb']);
+    expect(fly.calls.some(call => call.path.includes('cmem-vw-bbb/machines/'))).toBe(false);
+  });
+
+  it('stops the run at once when the worker answered and then stopped listening', async () => {
+    const fly = fakeFly(
+      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { workerAnswers: { 'cmem-vw-aaa': ['not-listening', 'busy', 'not-listening'] } },
+    );
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.failures[0]).toContain('worker is down');
+    expect(probes(fly.calls)).toHaveLength(3);
+    expect(summary.notAttempted).toEqual(['cmem-vw-bbb']);
+  });
+
+  it('stops the run when the machine is no longer running for the worker check', async () => {
+    const fly = fakeFly(
+      { 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)] },
+      { workerAnswers: { 'cmem-vw-aaa': ['412'] } },
+    );
+    const summary = await rolloutImage(options(fly.fetchImpl));
+    expect(summary.failures[0]).toContain('412');
+    expect(summary.notAttempted).toEqual(['cmem-vw-bbb']);
+  });
+
+  it('refuses to run without a positive worker-ready time limit', async () => {
+    const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)] });
+    await expect(rolloutImage(options(fly.fetchImpl, { workerReadyTimeoutSeconds: 0 }))).rejects.toThrow('workerReadyTimeoutSeconds must be a positive number');
+    expect(fly.calls).toEqual([]);
   });
 
   it('skips a machine already on the router image', async () => {
@@ -104,7 +223,7 @@ describe('rollout-image', () => {
       'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)],
       'cmem-vw-bbb': [machine('m-b1', 'stopped', OLD_IMAGE), machine('m-b2', 'stopped', OLD_IMAGE)],
       'cmem-vw-ccc': [machine('m-c', 'stopped', OLD_IMAGE)],
-    }, ['cmem-vw-bbb']);
+    }, { failUpdatesFor: ['cmem-vw-bbb'] });
     const lines: string[] = [];
     const summary = await rolloutImage(options(fly.fetchImpl, { log: line => lines.push(line) }));
     expect(summary.updated).toEqual(['cmem-vw-aaa/m-a']);
@@ -121,7 +240,7 @@ describe('rollout-image', () => {
       'cmem-viewer': [machine('router', 'started', NEW_IMAGE)],
       'cmem-vw-aaa': [machine('m-a', 'started', OLD_IMAGE)],
       'cmem-vw-bbb': [machine('m-b', 'started', OLD_IMAGE)],
-    }, [], 'https://api.machines.dev', ['cmem-vw-aaa']);
+    }, { failWaitsFor: ['cmem-vw-aaa'] });
     const summary = await rolloutImage(options(fly.fetchImpl));
     expect(summary.updated).toEqual([]);
     expect(summary.failures[0]).toContain('408');
@@ -130,21 +249,6 @@ describe('rollout-image', () => {
   });
 
   it('the command exits non-zero when any machine failed, and zero when none did', async () => {
-    const run = async (failUpdatesFor: string[]) => {
-      const fly = fakeFly({ 'cmem-viewer': [machine('router', 'started', NEW_IMAGE)], 'cmem-vw-aaa': [machine('m-a', 'stopped', OLD_IMAGE)], 'cmem-vw-bbb': [machine('m-b', 'stopped', OLD_IMAGE)] }, failUpdatesFor, 'http://127.0.0.1');
-      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => fly.fetchImpl(request.url, { method: request.method, headers: request.headers, body: request.method === 'POST' ? request.body : undefined, duplex: 'half' } as RequestInit) });
-      try {
-        const child = Bun.spawn([process.execPath, `${import.meta.dir}/../scripts/rollout-image.ts`], {
-          env: { PATH: process.env.PATH ?? '', FLY_API_TOKEN: 'test-token', FLY_ORG_SLUG: 'personal', FLY_API_HOSTNAME: `http://127.0.0.1:${server.port}` },
-          stdout: 'pipe',
-          stderr: 'pipe',
-        });
-        const [exitCode, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-        return { exitCode, stdout, posts: posts(fly.calls).length };
-      } finally {
-        server.stop(true);
-      }
-    };
     const failing = await run(['cmem-vw-aaa']);
     expect(failing.exitCode).toBe(1);
     expect(failing.posts).toBe(1);
@@ -153,6 +257,26 @@ describe('rollout-image', () => {
     const clean = await run([]);
     expect(clean.exitCode).toBe(0);
     expect(clean.stdout).toContain('updated 2, already current 0, failed 0, not attempted 0');
+  });
+
+  it('the command refuses to run without --worker-ready-timeout-seconds and calls nothing', async () => {
+    const missing = await run([], []);
+    expect(missing.exitCode).toBe(2);
+    expect(missing.stderr).toContain('--worker-ready-timeout-seconds is required');
+    expect(missing.stderr).toContain('Phase 8 staging run');
+    expect(missing.calls).toBe(0);
+    const zero = await run([], ['--worker-ready-timeout-seconds', '0']);
+    expect(zero.exitCode).toBe(2);
+    expect(zero.calls).toBe(0);
+  });
+
+  it('the command exits non-zero when a machine starts but its worker never becomes ready', async () => {
+    // Real one-second spacing between checks, so a 1 s limit gives two checks and then stops.
+    const stuck = await run([], ['--worker-ready-timeout-seconds', '1'], 'started', { 'cmem-vw-aaa': ['not-listening'] });
+    expect(stuck.exitCode).toBe(1);
+    expect(stuck.posts).toBe(1);
+    expect(stuck.stdout).toContain('worker not ready after 1s (last check: not-listening)');
+    expect(stuck.stdout).toContain('not attempted: cmem-vw-bbb');
   });
 
   it('refuses a machine whose config Fly could not read, instead of sending a partial one', async () => {
