@@ -5029,6 +5029,15 @@ export class SessionStore {
       `).get(normalizedPlatformSource, contentSessionId) as { memory_session_id: string } | undefined;
       if (existing) return existing.memory_session_id;
 
+      // Manual sessions written before the content-session lookup above can
+      // carry another content_session_id shape (e.g. equal to the memory ID).
+      // The base memory ID is unique, so reuse that row rather than INSERT a
+      // duplicate, which failed every save in the project with a UNIQUE error.
+      const existingByMemoryId = this.db.prepare(
+        'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
+      ).get(baseMemorySessionId) as { memory_session_id: string } | undefined;
+      if (existingByMemoryId) return existingByMemoryId.memory_session_id;
+
       // A deleted memory ID stays forbidden to delayed sync/backup rows. A new
       // manual save gets a fresh identity, then reuses it through the stable
       // content session lookup above, including after a worker restart.
