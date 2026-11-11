@@ -152,9 +152,12 @@ function unquote(value: string): string {
 /**
  * Split leading `--- ... ---` frontmatter from the body. Returns parsed (known)
  * keys and the remaining markdown body. Files without frontmatter return `{}`
- * and the original text as body.
+ * and the original text as body, apart from a leading UTF-8 byte-order mark.
  */
 export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; body: string } {
+  // A UTF-8 signature is encoding metadata, not part of the first Markdown
+  // line. Remove it before recognizing frontmatter or deriving a heading.
+  raw = raw.replace(/^\uFEFF/, '');
   const lines = raw.split('\n');
   // The opener must be a complete `---` line at column 0 (a trailing \r is
   // tolerated for CRLF files): a `----` horizontal rule or an indented `---`
