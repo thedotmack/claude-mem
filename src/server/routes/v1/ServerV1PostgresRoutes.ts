@@ -42,7 +42,7 @@ import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { apiKeyPrefix, hashApiKeyAsync } from '../../auth/api-key-hash.js';
-import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
+import { PostgresServerSessionsRepository, type PostgresServerSession } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
@@ -346,7 +346,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           }
           if (waiting.signal.aborted) return;
           res.status(201).json({
-            event: serializeEvent(event),
+            event: serializeEvent(event, canReadMemories(req)),
             generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
             ...(waitTimedOut ? { waitTimedOut: true } : {}),
           });
@@ -357,7 +357,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
 
       res.status(201).json({
-        event: serializeEvent(event),
+        event: serializeEvent(event, canReadMemories(req)),
         ...(outbox
           ? { generationJob: serializeGenerationJob(outbox, enqueueState) }
           : {}),
@@ -446,7 +446,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           const anyTimedOut = resolved.some(r => r.timedOut);
           res.status(201).json({
             events: resolved.map(({ event, outbox, timedOut }, index) => ({
-              event: serializeEvent(event),
+              event: serializeEvent(event, canReadMemories(req)),
               generationJob: outbox
                 ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
                 : null,
@@ -462,7 +462,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
 
       res.status(201).json({
         events: inserted.map(({ event, outbox }, index) => ({
-          event: serializeEvent(event),
+          event: serializeEvent(event, canReadMemories(req)),
           ...(outbox
             ? { generationJob: serializeGenerationJob(outbox, enqueueResults[index]!) }
             : {}),
@@ -799,7 +799,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
               platformSource,
             });
             if (existing) {
-              res.status(200).json({ session: serializeSession(existing) });
+              res.status(200).json({ session: serializeSessionWriteReceipt(req, existing) });
               return;
             }
           }
@@ -833,14 +833,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
                 platformSource,
               });
               if (racedRow) {
-                res.status(200).json({ session: serializeSession(racedRow) });
+                res.status(200).json({ session: serializeSessionWriteReceipt(req, racedRow) });
                 return;
               }
             }
             throw error;
           }
           await this.auditWrite(req, 'session.write', session.id, session.projectId);
-          res.status(201).json({ session: serializeSession(session) });
+          res.status(201).json({ session: serializeSessionWriteReceipt(req, session) });
         } catch (error) {
           this.handleDbError(error, res, 'session.write');
         }
@@ -914,7 +914,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       await this.auditWrite(req, 'session.end', endedSession.id, endedSession.projectId);
 
       res.status(200).json({
-        session: serializeSession(endedSession),
+        session: serializeSessionWriteReceipt(req, endedSession),
         ...(summaryOutbox
           ? { generationJob: serializeGenerationJob(summaryOutbox, enqueueState) }
           : {}),
@@ -997,10 +997,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           await this.auditWrite(req, 'memory.write', observation.id, observation.projectId, {
             outcome: 'existing_generation_key',
           });
-          const scopes = req.authContext?.scopes ?? [];
-          const canRead = req.authContext?.mode === 'local-dev'
-            || scopes.includes('memories:read') || scopes.includes('*');
-          res.status(200).json(canRead
+          res.status(200).json(canReadMemories(req)
             ? { memory: serializeObservation(observation), existing: true }
             : { memory: { id: observation.id, projectId: observation.projectId }, existing: true });
         } catch (error) {
@@ -2276,7 +2273,32 @@ function serializeSession(session: {
   };
 }
 
-function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {
+function canReadMemories(req: Request): boolean {
+  const scopes = req.authContext?.scopes ?? [];
+  return req.authContext?.mode === 'local-dev' || scopes.includes('memories:read') || scopes.includes('*');
+}
+
+/** Mutation permission returns a receipt, not permission to recall saved prompts. */
+function serializeSessionWriteReceipt(req: Request, session: PostgresServerSession): Record<string, unknown> {
+  if (canReadMemories(req)) {
+    return serializeSession(session);
+  }
+  // Keep the identifiers the hook client uses to attach events and finish
+  // capture, plus the resulting lifecycle state. Metadata can belong to an
+  // earlier writer when start is replayed or another client ends the session.
+  return {
+    id: session.id,
+    projectId: session.projectId,
+    teamId: session.teamId,
+    externalSessionId: session.externalSessionId,
+    contentSessionId: session.contentSessionId,
+    platformSource: session.platformSource,
+    generationStatus: session.generationStatus,
+    endedAtEpoch: session.endedAtEpoch,
+  };
+}
+
+function serializeEvent(event: PostgresAgentEvent, includeContent = true): Record<string, unknown> {
   return {
     id: event.id,
     projectId: event.projectId,
@@ -2286,8 +2308,8 @@ function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {
     sourceEventId: event.sourceEventId,
     eventType: event.eventType,
     platformSource: event.platformSource,
-    payload: event.payload,
-    metadata: event.metadata,
+    // Replayed native receipts can return another writer's stored event.
+    ...(includeContent ? { payload: event.payload, metadata: event.metadata } : {}),
     occurredAtEpoch: event.occurredAtEpoch,
     receivedAtEpoch: event.receivedAtEpoch,
     createdAtEpoch: event.createdAtEpoch,

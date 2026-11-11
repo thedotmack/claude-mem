@@ -76,6 +76,21 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 > store than the Postgres `api_keys` these routes authenticate against — wiring the
 > better-auth org → Server Beta team mapping is the remaining piece.
 
+## Capture mutation receipts
+
+`POST /v1/sessions/start` and `POST /v1/sessions/:id/end` accept
+`memories:write` keys. A write-only key receives the session identifiers,
+platform, generation status and end timestamp needed to continue capture.
+The response does not include saved session metadata or opening prompts,
+including when starting an existing session or repeating its end request.
+Keys that also have `memories:read` (or `*`) receive the complete session.
+`GET /v1/sessions/:id` continues to require `memories:read`.
+
+The same distinction applies to `POST /v1/events` and `/v1/events/batch`,
+including `wait=true` responses: write-only keys receive event identifiers
+and generation status without the stored event payload or metadata. Read
+permission is required to return that captured content, even on a replay.
+
 ## Event generation semantics
 
 `POST /v1/events` accepts two query flags that control observation generation:

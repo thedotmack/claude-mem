@@ -22,6 +22,7 @@ describe('canonical event HTTP native identity', () => {
   let server: Server;
   let url: string;
   let projectId: string;
+  let teamId: string;
   let rawKey: string;
   let spies: ReturnType<typeof spyOn>[];
 
@@ -32,6 +33,7 @@ describe('canonical event HTTP native identity', () => {
     await bootstrapServerPostgresSchema(pool);
     const storage = createPostgresStorageRepositories(pool);
     const team = await storage.teams.create({ name: 'event-team' });
+    teamId = team.id;
     const project = await storage.projects.create({ teamId: team.id, name: 'event-project' });
     projectId = project.id;
     const key = newApiKey();
@@ -115,10 +117,49 @@ describe('canonical event HTTP native identity', () => {
   });
 
   for (const batch of [false, true]) {
-    it(`rejects malformed native identity before ${batch ? 'batch' : 'single'} ingestion`, async () => {
-      const response = await send(event({ sourceEventId: 42, metadata: [] }), batch);
-      expect(response.status).toBe(400);
-      expect(await counts()).toEqual({ events: 0, jobs: 0 });
-    });
+    for (const wait of [false, true]) {
+      it(`keeps native-ID replay content out of write-only ${batch ? 'batch' : 'single'} ${wait ? 'wait' : 'ordinary'} receipts`, async () => {
+        const original = await ingest(event({ sourceEventId: 'shared-native-receipt',
+          payload: { prompt: 'Owner stored prompt' }, metadata: { note: 'Owner stored metadata' } }), false);
+        const writeKey = newApiKey();
+        await createPostgresStorageRepositories(pool).auth.createApiKey({
+          keyHash: writeKey.hash, teamId, projectId, actorId: 'capture', scopes: ['memories:write'],
+        });
+        const read = await fetch(`${url}/v1/events/${original.event.id}`, {
+          headers: { Authorization: `Bearer ${writeKey.raw}` },
+        });
+        expect(read.status).toBe(403);
+        const retry = event({ sourceEventId: 'shared-native-receipt',
+          occurredAtEpoch: 1_700_000_999_000, payload: { probe: 'different payload' } });
+        const response = await fetch(`${url}/v1/events${batch ? '/batch' : ''}${wait ? '?generate=false&wait=true' : ''}`, {
+          method: 'POST', headers: { Authorization: `Bearer ${writeKey.raw}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(batch ? [retry] : retry),
+        });
+        expect(response.status).toBe(201);
+        const result = await response.json();
+        const receipt = batch ? result.events[0] : result;
+        expect(receipt.event.id).toBe(original.event.id);
+        expect(receipt.event.payload).toBeUndefined();
+        expect(receipt.event.metadata).toBeUndefined();
+        expect(await counts()).toEqual({ events: 1, jobs: 1 });
+        const ownerRead = await fetch(`${url}/v1/events/${original.event.id}`, {
+          headers: { Authorization: `Bearer ${rawKey}` },
+        });
+        const saved = (await ownerRead.json()).event;
+        expect(saved.payload).toEqual({ prompt: 'Owner stored prompt' });
+        expect(saved.metadata).toEqual({ note: 'Owner stored metadata' });
+      });
+    }
+
+    for (const invalid of [
+      { field: 'sourceEventId', values: { sourceEventId: 42, metadata: { trace: 'valid-metadata' } } },
+      { field: 'metadata', values: { sourceEventId: 'valid-native-id', metadata: [] } },
+    ]) {
+      it(`rejects malformed ${invalid.field} before ${batch ? 'batch' : 'single'} ingestion`, async () => {
+        const response = await send(event(invalid.values), batch);
+        expect(response.status).toBe(400);
+        expect(await counts()).toEqual({ events: 0, jobs: 0 });
+      });
+    }
   }
 });
