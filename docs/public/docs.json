@@ -36,6 +36,8 @@
           "introduction",
           "installation",
           "t3code-integration",
+          "vercel-ai-sdk",
+          "microsoft-agent-framework",
           "usage/getting-started",
           "usage/my-work",
           "usage/teambrain",

@@ -1,0 +1,216 @@
+---
+title: Microsoft Agent Framework
+description: Carry an explicit project decision between local Python workflows with the existing MCP server.
+---
+
+Use Microsoft Agent Framework's `MCPStdioTool` to save a project decision, then
+recall it in a later `WorkflowBuilder` run. The
+[runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/microsoft-agent-framework)
+has two executors: one fetches the project's compact search index, and the next
+reads the timeline and details of a selected observation. Both use your existing
+local Claude-Mem worker.
+
+This workflow provides explicit saves and on-demand recall. It does not install
+capture hooks or automatically inject context into agents. It needs no model
+API key, Microsoft account or CMEM Pro subscription.
+
+## Requirements
+
+Verified on Linux with Python 3.12.14, Node.js 24.22.1, Claude-Mem 15.16.1,
+`agent-framework-core` 1.25.0, `mcp` 2.3.0 and `tenacity` 9.1.4. The example
+uses Python 3.11 or newer. macOS, Windows, .NET and hosted Foundry agents have
+not been tested by this example.
+
+The implementation follows Microsoft's
+[local MCP tools guide](https://learn.microsoft.com/en-us/agent-framework/agents/tools/local-mcp-tools),
+[`MCPStdioTool` reference](https://learn.microsoft.com/en-us/python/api/agent-framework-core/agent_framework.mcpstdiotool?view=agent-framework-python-latest)
+and [workflow builder guide](https://learn.microsoft.com/en-us/agent-framework/concepts/workflows/builder-and-execution?pivots=programming-language-python).
+The two executors exchange typed `SelectedNote` messages through a native
+workflow edge and return their completed result with `yield_output`.
+
+## Connect
+
+First [install Claude-Mem](/installation) and start the local worker:
+
+```bash
+npx claude-mem start
+npx claude-mem status
+```
+
+Copy `examples/microsoft-agent-framework` from the repository into your local
+application and create an environment for its pinned dependencies:
+
+```bash
+cd examples/microsoft-agent-framework
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Set the absolute path to your installed MCP script. For the default Claude
+Code marketplace installation on macOS or Linux:
+
+```bash
+export CLAUDE_MEM_MCP_SERVER="$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+```
+
+For another installation location, use its `plugin/scripts/mcp-server.cjs`.
+If the worker uses `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT`, set those
+same values in this shell. The example passes its environment to the subprocess
+and starts Node with an argument array; paths containing spaces work without
+embedding shell quotes in the path value.
+
+Each operation opens and closes its native MCP connection. It does not change
+host settings, start the worker automatically or create a separate memory store.
+
+## Save a result, then recall it from a workflow
+
+Save one decision that the user has chosen to preserve:
+
+```bash
+python memory_workflow.py save checkout-service "Framework rollout decision" "Use the amber region for framework staging."
+```
+
+The command prints `Saved memory #<id>: Framework rollout decision.` after
+the worker acknowledges the write. Use that ID in a later command, replacing
+`123` below:
+
+```bash
+python memory_workflow.py recall checkout-service "Framework rollout decision" 123
+```
+
+The workflow first calls `search`, then calls `timeline` and
+`get_observations` for the selected ID. It prints the compact index, the
+surrounding context, and the saved amber-region decision. An older observation
+may have fallen outside the current index page; a known ID can still be read
+through the project-scoped follow-up calls.
+
+To use the workflow in your application, call
+`await recall_note(SelectedNote(project, query, observation_id))`. The returned
+dictionary has `index`, `timeline` and `details` strings. Choose the project
+and observation ID in application code, and pass selected details to an agent
+only when they are relevant. Treat retrieved memory as reference material,
+not as instructions to invoke tools or change accounts.
+
+## Identity and data handling
+
+Every save, search, timeline and detail request carries the selected project.
+Read requests also carry a JSON-encoded singleton `projects` list, so starting
+the MCP server in a Git worktree cannot inherit its parent project's notes.
+The native SDK is configured to forward these additional scope parameters.
+JSON preserves commas and outer whitespace as part of the exact project key;
+trimmed and split-name projects remain separate.
+Saves use `platformSource: microsoft-agent-framework` and the existing manual
+memory session for that project and platform. A workflow run is not an observer
+session and does not create an additional capture lifecycle.
+
+Repeating the exact project, title and text sends the same SHA-256-based
+`sourceFingerprint`; the worker returns the existing observation ID instead of
+creating another note. Changing any of those values creates a distinct note.
+The fingerprint is an identity key, not encryption of the saved content.
+
+Project selection is a filter on the account's own memory, not an authentication
+boundary. Run each account against its own authorized local worker. The example
+does not collect transcripts, parse privacy tags or infer a project from the
+current directory. Explicit notes are stored as supplied: choose nonsecret
+text before saving. The worker's indexing, sync and export settings still apply.
+Any memory later sent to a model is also visible to that selected model provider.
+
+## Failures and troubleshooting
+
+Each MCP request has a ten-second timeout. The outer asynchronous operation
+also has a budget of thirty seconds for saving and sixty seconds for recall.
+The SDK can reconnect once after a lost tool-call connection; the note
+fingerprint preserves identity if the same write is sent again. No background
+retry queue or automatic capture is added.
+
+Invalid input, a stopped worker, a wrong project/ID or a timed-out request
+produces a nonzero CLI exit and no successful result. Check the worker with
+`npx claude-mem status`, confirm the script path, and match the worker's port
+and data directory. A save timeout does not prove that the write failed: retry
+the same project, title and text to reuse the note identity.
+
+Stderr includes the exception category and its available reason. Missing Node.js
+and missing or invalid MCP script paths have separate preflight messages. The CLI
+does not print a traceback or echo the supplied project, title, note or query.
+
+The example verifies native workflow execution and MCP calls without a model.
+It does not verify model generation, Foundry deployment or an automatic
+conversation-history integration.
+
+## Verify and disconnect
+
+Run this Bash block from a source checkout with built bundles, Python 3, Git and
+Bun on `PATH`, and the example dependencies already installed. Activate the example's virtual environment so `python` selects it. The subshell clears inherited `CLAUDE_MEM_*` variables and explicitly disables
+capture, Chroma and auto-update before choosing a fresh
+data directory and free local port. It checks that cloud sync is unconfigured
+before sending any verification notes. Existing worker settings and the parent
+shell stay unchanged; the temporary worker exits when the block finishes.
+The exported worker entry starts the same HTTP/SQLite service without the CLI
+daemon wrapper that migrates existing Antigravity hooks.
+
+```bash
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun -e 'const { WorkerService } = require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error => { console.error(error); process.exit(1); });' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import json, os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+with urllib.request.urlopen("http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/sync/status", timeout=2) as response:
+    if json.load(response).get("configured") is not False:
+        raise SystemExit("The disposable worker has cloud sync configured; no test notes were sent")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  python -m unittest discover -s examples/microsoft-agent-framework -v
+)
+```
+
+The ten tests use the real SDK, worker and CLI. They verify saved-note identity,
+native workflow recall across client sessions, project filtering, SQLite
+platform attribution, a selected note older than the search page, an absolute
+script path containing spaces, invalid input, a refused connection and an
+unresponsive worker, distinct Node/script/worker failure diagnostics, and a real
+Git worktree that cannot recall its parent project's notes. They leave harmless notes in uniquely named test projects
+inside the disposable database for inspection.
+
+To disconnect, stop invoking the example and remove its virtual environment
+or dependencies from your application. No host configuration needs restoring.
+Saved memory remains in Claude-Mem; remove demonstration notes separately in
+the viewer if they are no longer useful.
