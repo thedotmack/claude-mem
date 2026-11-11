@@ -5,6 +5,8 @@ from pathlib import Path
 import socket
 import socketserver
 import sqlite3
+import subprocess
+from uuid import uuid4
 import tempfile
 import threading
 import time
@@ -18,6 +20,31 @@ from memory_workflow import MEMORY_TOOLS, call, memory_server, remember
 class MemoryWorkflowTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.script = os.environ["CLAUDE_MEM_MCP_SERVER"]
+
+    async def test_worktree_reads_stay_within_the_explicit_project(self):
+        with tempfile.TemporaryDirectory(prefix="openai worktree ") as temporary:
+            parent = Path(temporary) / ("parent-" + uuid4().hex)
+            child = Path(temporary) / "feature"
+            subprocess.run(["git", "init", "-q", str(parent)], check=True)
+            subprocess.run(["git", "-C", str(parent), "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(parent), "worktree", "add", "--detach", "-q", str(child)], check=True)
+            project = parent.name + "/feature"
+            async with memory_server(self.script) as server:
+                foreign = await remember(server, parent.name, "Parent private note", "Parent-only release decision.")
+            original = Path.cwd()
+            try:
+                os.chdir(child)
+                async with memory_server(self.script) as server:
+                    own = await remember(server, project, "Child decision", "Keep the child decision separate.")
+                    timeline = await call(server, "timeline", {"project": project, "anchor": own["id"], "depth_before": 10, "depth_after": 10})
+                    details = await call(server, "get_observations", {"project": project, "projects": [parent.name], "ids": [foreign["id"]]})
+            finally:
+                os.chdir(original)
+            self.assertIn("Keep the child decision separate.", own["details"])
+            for name, value in [("index", own["index"]), ("timeline", timeline), ("foreign details", details)]:
+                with self.subTest(read=name):
+                    self.assertNotIn(f"#{foreign['id']} ", value)
+                    self.assertNotIn("Parent-only release decision.", value)
 
     async def test_real_sdk_round_trip_and_replay(self):
         async with memory_server(self.script) as server:
