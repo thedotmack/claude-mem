@@ -300,14 +300,11 @@ export class Server {
   async close(): Promise<void> {
     if (!this.server) return;
 
-    this.server.closeAllConnections();
-
-    if (process.platform === 'win32') {
-      await new Promise(r => setTimeout(r, 500));
-    }
-
     await new Promise<void>((resolve, reject) => {
+      // Stop accepting connections before the sweep, so a reconnecting stream
+      // cannot arrive afterward and keep close() waiting indefinitely.
       this.server!.close(err => err ? reject(err) : resolve());
+      this.server!.closeAllConnections();
     });
 
     if (process.platform === 'win32') {
