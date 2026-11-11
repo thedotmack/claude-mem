@@ -83,6 +83,18 @@ const SESSION_PROJECT_LABEL = "COALESCE(NULLIF(s.metadata->>'project', ''), p.na
 // Rows without a session (manual memories, imports) have no adapter; the
 // viewer's default source is 'claude'.
 const PLATFORM_SOURCE = "COALESCE(NULLIF(s.platform_source, ''), 'claude')";
+// Canonical event ingest also accepts events without a session. Their generated
+// memories still carry the captured platform through observation_sources.
+const OBSERVATION_PLATFORM_SOURCE = `COALESCE(NULLIF(s.platform_source, ''), (
+  SELECT e.platform_source
+    FROM observation_sources source
+    JOIN agent_events e ON e.id = source.agent_event_id
+   WHERE o.server_session_id IS NULL AND source.observation_id = o.id
+     AND e.project_id = o.project_id AND e.team_id = o.team_id
+     AND NULLIF(e.platform_source, '') IS NOT NULL
+   ORDER BY source.created_at, source.id
+   LIMIT 1
+), 'claude')`;
 
 export interface ServerViewerRoutesOptions {
   /** Without a pool only the static viewer is mounted. */
@@ -372,7 +384,7 @@ async function fetchProjectCatalog(
   const sessionScope = scopeClause(scope, params, 's');
   const result = await pool.query<{ platform_source: string; project: string; last_seen: Date }>(
     `SELECT platform_source, project, max(last_seen) AS last_seen FROM (
-       SELECT ${PLATFORM_SOURCE} AS platform_source, ${OBSERVATION_PROJECT_LABEL} AS project, max(o.created_at) AS last_seen
+       SELECT ${OBSERVATION_PLATFORM_SOURCE} AS platform_source, ${OBSERVATION_PROJECT_LABEL} AS project, max(o.created_at) AS last_seen
          FROM observations o
          JOIN projects p ON p.id = o.project_id
          LEFT JOIN server_sessions s ON s.id = o.server_session_id
@@ -442,7 +454,7 @@ async function queryFeed(
   const project = queryString(req, 'project');
   if (project) where += ` AND ${OBSERVATION_PROJECT_LABEL} = ${params.add(project)}`;
   const platformSource = queryString(req, 'platformSource');
-  if (platformSource) where += ` AND ${PLATFORM_SOURCE} = ${params.add(platformSource)}`;
+  if (platformSource) where += ` AND ${OBSERVATION_PLATFORM_SOURCE} = ${params.add(platformSource)}`;
   const contentSessionId = queryString(req, 'contentSessionId');
   if (contentSessionId) {
     const id = params.add(contentSessionId);
@@ -451,7 +463,7 @@ async function queryFeed(
 
   const result = await pool.query<FeedRow>(
     `SELECT o.id, o.server_session_id, s.content_session_id,
-            ${OBSERVATION_PROJECT_LABEL} AS project, ${PLATFORM_SOURCE} AS platform_source,
+            ${OBSERVATION_PROJECT_LABEL} AS project, ${OBSERVATION_PLATFORM_SOURCE} AS platform_source,
             o.kind, o.content, o.metadata, o.created_at
        FROM observations o
        JOIN projects p ON p.id = o.project_id
