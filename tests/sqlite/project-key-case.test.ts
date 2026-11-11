@@ -37,6 +37,7 @@ describe('case-insensitive project keys (#3531)', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%nocase'")
         .all() as Array<{ name: string }>).map(row => row.name).sort();
       expect(indexes).toEqual([
+        'idx_advisor_calls_project_nocase',
         'idx_observations_merged_into_nocase',
         'idx_observations_project_nocase',
         'idx_sdk_sessions_project_nocase',

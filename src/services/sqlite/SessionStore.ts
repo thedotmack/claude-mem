@@ -2632,6 +2632,7 @@ export class SessionStore {
     this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_advisor_calls_tool_use ON advisor_calls(tool_use_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project_nocase ON advisor_calls(project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_occurred ON advisor_calls(occurred_at_epoch DESC)');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(58, new Date().toISOString());
@@ -2693,7 +2694,7 @@ export class SessionStore {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('project = ?');
+      conditions.push('project COLLATE NOCASE = ?');
       params.push(project);
     } else {
       conditions.push('project != ?');
