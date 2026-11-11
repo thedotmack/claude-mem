@@ -44,8 +44,11 @@ test.each(['server', 'worker'] as const)('%s shutdown refuses new streams while 
     expect(listener.listening).toBe(false);
   } finally {
     controller.abort();
-    await closing;
-    Object.defineProperty(process, 'platform', platform);
-    supervisor.mockRestore();
+    try {
+      await closing;
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      supervisor.mockRestore();
+    }
   }
 });
