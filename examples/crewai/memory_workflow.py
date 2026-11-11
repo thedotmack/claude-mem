@@ -26,6 +26,8 @@ event_listener.formatter.verbose = False
 
 
 async def call_memory(client: MCPClient, project: str, name: str, **values) -> str:
+    if name in ("search", "timeline", "get_observations"):
+        values["projects"] = json.dumps([project])
     result = await client.call_tool_result(name, {**values, "project": project})
     # call_tool() returns text alone; retain the MCP error flag before using it.
     if result.is_error:
