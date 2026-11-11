@@ -24,6 +24,7 @@ export interface PostgresObservation {
   teamId: string;
   serverSessionId: string | null;
   contentSessionId?: string | null;
+  platformSource?: string | null;
   kind: string;
   content: string;
   generationKey: string | null;
@@ -51,6 +52,7 @@ interface ObservationRow {
   team_id: string;
   server_session_id: string | null;
   content_session_id?: string | null;
+  platform_source?: string | null;
   kind: string;
   content: string;
   generation_key: string | null;
@@ -387,7 +389,8 @@ export class PostgresObservationRepository {
     const result = await this.client.query<ObservationRow & { matches_query?: boolean }>(
       `
         SELECT observations.*,
-          COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
+          COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id,
+          server_sessions.platform_source AS platform_source
           ${bm25MatchesAnyTerm ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
         FROM observations
         LEFT JOIN server_sessions
@@ -520,6 +523,7 @@ export class PostgresObservationRepository {
       )
       SELECT observations.*,
         COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id,
+        server_sessions.platform_source AS platform_source,
         (SELECT count(*) FROM nearest)::int AS nearest_parts_read,
         (SELECT count(*) FROM semantic)::int AS semantic_candidates
       FROM fused
@@ -769,6 +773,7 @@ function mapObservationRow(row: ObservationRow): PostgresObservation {
     teamId: row.team_id,
     serverSessionId: row.server_session_id,
     ...(row.content_session_id !== undefined ? { contentSessionId: row.content_session_id } : {}),
+    ...(row.platform_source !== undefined ? { platformSource: row.platform_source } : {}),
     kind: row.kind,
     content: row.content,
     generationKey: row.generation_key,

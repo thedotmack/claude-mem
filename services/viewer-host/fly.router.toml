@@ -1,0 +1,76 @@
+# The router behind work.cmem.ai (VIEWER_ROLE=router, src/router.ts). It checks
+# each request's signed token and answers with a fly-replay header naming that
+# account's own Fly app; Fly's proxy delivers the request there and starts the
+# machine if it is asleep (https://docs.fly.io/blueprints/connecting-to-user-machines).
+# The router holds no account data, runs no worker and has no volume.
+#
+# This file replaces fly.toml for the cmem-viewer app only at the production
+# cutover (plan Phase 9 step 5). Until then fly.toml, the single-owner viewer,
+# is what production runs. Cutover, from the repository root:
+#   0. Deploy only after cmem.ai mints per-account links. The router refuses a
+#      link signed with the master secret, which is what cmem.ai mints today.
+#   1. fly secrets unset --app cmem-viewer VIEWER_OWNER_USER_ID CLAUDE_MEM_CLOUD_SYNC_TOKEN
+#      (VIEWER_LINK_SECRET and VIEWER_PUBLIC_ORIGIN stay.)
+#   2. fly machine destroy <the old single-owner machine id> --app cmem-viewer --force
+#      Keep its volume (viewer_data): it is the rollback copy. Do not destroy it here.
+#   3. npm run build
+#   4. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
+#   5. fly scale count 2 --app cmem-viewer
+#   6. curl -s https://work.cmem.ai/health   ->  {"ok":true,"role":"router"}
+#
+# Account machines are not described here. cmem.ai creates one Fly app per
+# account (cmem-vw-<keyed hash of the user id>) through the Machines API, from
+# the image this app runs, the first time that account opens cmem.ai/work.
+#
+# Every later release, after the cutover, in this order:
+#   1. npm run build
+#        (the image copies the built plugin/; a source-only change ships nothing)
+#   2. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
+#        (the router, and the image every account machine will run)
+#   3. Canary: bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N> --only <one cmem-vw- app>
+#        then open that account's viewer and check it loads.
+#   4. bun services/viewer-host/scripts/rollout-image.ts --worker-ready-timeout-seconds <N>
+#        (moves every account machine to the router's image; sleeping ones stay asleep;
+#         a restarted machine must report its worker ready within N seconds or the run stops.
+#         N is required, with no default: the worker boot time measured in the Phase 8 staging run.
+#         Needs FLY_API_TOKEN and FLY_ORG_SLUG; --dry-run lists what would change.
+#         The first rollout after the switch to digest-pinned images restarts every running
+#         account machine still on a bare tag, even one already on the same image)
+#
+# Secrets (fly secrets set …):
+#   VIEWER_LINK_SECRET   the master secret, same value as cmem.ai's CMEM_VIEWER_LINK_SECRET.
+#                        Account machines get only their own key derived from it.
+#   Optional: VIEWER_PUBLIC_ORIGIN (default https://cmem-viewer.fly.dev, src/index.ts).
+#   It is a secret, not [env], so a custom domain survives deploys from the repo.
+
+app = "cmem-viewer"
+primary_region = "iad"
+
+[env]
+  VIEWER_ROLE = "router"
+  VIEWER_SIGN_IN_URL = "https://cmem.ai/work"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: every visit to work.cmem.ai passes through the router first.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # The router answers /health itself (src/router.ts) 22-71 ms after the process
+    # starts (5 local runs). 5s leaves room for a slow shared CPU; a check that runs
+    # too early only delays the machine being marked healthy until the next interval.
+    grace_period = "5s"
+    interval = "15s"
+    method = "GET"
+    timeout = "10s"
+    path = "/health"
+
+[[vm]]
+  # Fly's smallest machine size ($2.19 per 30 days, https://docs.fly.io/about/pricing).
+  # The router checks one token per request and keeps nothing in memory.
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -1,0 +1,5 @@
+smolagents[mcp]==1.26.0
+mcpadapt==0.1.20
+# MCPAdapt 0.1.20 imports the MCP 1.x transport names and its optional websocket module.
+mcp[ws]==1.30.0
+websockets==16.0

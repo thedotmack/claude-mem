@@ -5,7 +5,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { CorpusStore, CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
-import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
+import type { CorpusAgent } from '../../knowledge/CorpusAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
@@ -101,15 +101,16 @@ function writeSseEvent(res: Response, eventName: 'result' | 'error', data: Recor
 
 /**
  * build / rebuild / prime / reprime / query can run for minutes (an Agent SDK
- * session over a whole corpus). With `Accept: text/event-stream` the route
- * answers at once with SSE: a `: ping` comment every heartbeat interval, then
- * exactly one terminal event — `result` (data = the JSON body the JSON mode
- * returns) or `error` (data = the JSON error body plus its HTTP `status`).
- * Without that header the route keeps its single JSON response.
+ * session over a whole corpus, or a provider answering one question about
+ * it). With `Accept: text/event-stream` the route answers at once with SSE: a
+ * `: ping` comment every heartbeat interval, then exactly one terminal event
+ * — `result` (data = the JSON body the JSON mode returns) or `error` (data =
+ * the JSON error body plus its HTTP `status`). Without that header the route
+ * keeps its single JSON response.
  *
  * Either way, a client that disconnects before the work settles aborts it
- * (the AbortController reaches the Agent SDK `query()`), so nobody pays for an
- * answer nobody is waiting on.
+ * (the AbortController reaches the agent), so nobody pays for an answer
+ * nobody is waiting on.
  */
 export class CorpusRoutes extends BaseRouteHandler {
   private readonly sseHeartbeatIntervalMs: number;
@@ -118,7 +119,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   constructor(
     private corpusStore: CorpusStore,
     private corpusBuilder: CorpusBuilder,
-    private knowledgeAgent: KnowledgeAgent,
+    private knowledgeAgent: CorpusAgent,
     options: CorpusRoutesOptions = {}
   ) {
     super();
@@ -412,7 +413,17 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const { question } = req.body;
     const result = await this.knowledgeAgent.query(corpus, question, { abortController });
-    return { status: 200, body: { answer: result.answer, session_id: result.session_id } };
+    return {
+      status: 200,
+      body: {
+        answer: result.answer,
+        session_id: result.session_id,
+        ...(result.observations_sent !== undefined && { observations_sent: result.observations_sent }),
+        ...(result.observations_matching !== undefined && { observations_matching: result.observations_matching }),
+        ...(result.observations_in_corpus !== undefined && { observations_in_corpus: result.observations_in_corpus }),
+        ...(result.observations_truncated !== undefined && { observations_truncated: result.observations_truncated }),
+      },
+    };
   }));
 
   private handleReprimeCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, this.toStringParam(req.params.name), async (abortController) => {

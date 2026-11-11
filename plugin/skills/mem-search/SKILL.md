@@ -34,7 +34,7 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 
 ## Layered Workflow (ALWAYS Follow)
 
-**NEVER fetch full details without filtering first. 10x token savings.**
+**NEVER fetch full details without filtering first: an index row is ~50-100 tokens, about a tenth of a ~500-1,000-token record, so filtering decides how many records you fetch, not how large each one is.**
 
 ### Step 1: Search - Get Index with IDs
 
@@ -177,7 +177,7 @@ get_tool_uses(ids=["toolu_01ABC..."])    # only if the summary omitted the detai
 - **Full observation:** ~500-1000 tokens each
 - **Raw tool body:** up to 64 KB each — the layer you skip 95% of the time
 - **Batch fetch:** 1 HTTP request vs N individual requests
-- **10x token savings** by filtering before fetching
+- **An index row is about a tenth the size of a full record**: ~50-100 tokens vs ~500-1,000. Filtering decides how many records you fetch, not their size (a size ratio, not a measured saving).
 
 ## Knowledge Agents
 

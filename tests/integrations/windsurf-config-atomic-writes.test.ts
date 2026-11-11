@@ -38,7 +38,7 @@ describe('Windsurf writes user config atomically', () => {
       hooks: {
         pre_user_prompt: [
           { command: 'my own hook', show_output: false },
-          { command: '"bun" "worker-service.cjs" windsurf session-init', show_output: false },
+          { command: '"bun" "worker-service.cjs" hook windsurf session-init', show_output: false },
         ],
       },
     }, null, 2));

@@ -940,8 +940,8 @@ export class DataRoutes extends BaseRouteHandler {
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
           // Index the canonical string columns SQLite actually saved, including
           // accepted numeric/boolean legacy values coerced by its TEXT affinity.
-          const lists = store.db.prepare('SELECT facts, concepts FROM observations WHERE id = ?')
-            .get(id) as { facts: string | null; concepts: string | null } | undefined;
+          const lists = store.db.prepare('SELECT text, facts, concepts FROM observations WHERE id = ?')
+            .get(id) as { text: string | null; facts: string | null; concepts: string | null } | undefined;
           if (!lists) return;
           const sourceRow = store.db.prepare(`
             SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
@@ -953,6 +953,7 @@ export class DataRoutes extends BaseRouteHandler {
             ? normalizePlatformSource(obs.platform_source)
             : normalizePlatformSource(sourceRow?.platform_source);
           const parsedObs = {
+            text: lists.text,
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,

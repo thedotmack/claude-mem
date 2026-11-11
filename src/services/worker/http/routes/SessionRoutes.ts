@@ -707,6 +707,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly observationsByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
     tool_name: z.string().min(1),
+    native_tool_name: z.string().min(1).optional(),
     tool_input: z.unknown().optional(),
     tool_response: z.unknown().optional(),
     cwd: z.string().optional(),
@@ -745,6 +746,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const {
       contentSessionId,
       tool_name,
+      native_tool_name,
       tool_input,
       tool_response,
       cwd,
@@ -762,6 +764,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const result = await ingestObservation({
       contentSessionId,
       toolName: tool_name,
+      nativeToolName: native_tool_name,
       toolInput: tool_input,
       toolResponse: tool_response,
       cwd,

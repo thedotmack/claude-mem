@@ -423,3 +423,30 @@ jobs:
 
       - name: Server-runtime Docker e2e
         run: npm run e2e:server:docker
+
+  eve-provider:
+    name: eve memory provider (claude-mem/eve)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: integrations/eve/provider
+    steps:
+      - uses: actions/checkout@v4
+
+      # eve requires Node.js 24.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install eve for typecheck and tests
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck against eve
+        run: npm run typecheck
+
+      - name: Published types match the source
+        run: npm run check:types
+
+      - name: Provider tests
+        run: npm test

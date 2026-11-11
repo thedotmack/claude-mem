@@ -189,7 +189,7 @@ interface StreamChunk {
   error?: { code?: unknown; message?: unknown } | null;
   choices?: Array<{
     index?: unknown;
-    delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown; tool_calls?: unknown } | null;
+    delta?: { content?: unknown; refusal?: unknown; reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown; tool_calls?: unknown } | null;
     finish_reason?: unknown;
   }>;
 }
@@ -427,10 +427,10 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
         const delta = choice.delta ?? undefined;
         const text = deltaText(delta?.content);
         // Every choice's generated output was billed, including alternatives
-        // that are not selected for the observation. Reasoning and tool-call
+        // that are not selected for the observation. Refusal, reasoning and tool-call
         // deltas are billed output too: once any arrived, a resend would pay
         // for them again.
-        if (text || isNonEmpty(delta?.reasoning) || isNonEmpty(delta?.reasoning_content)
+        if (text || isNonEmpty(delta?.refusal) || isNonEmpty(delta?.reasoning) || isNonEmpty(delta?.reasoning_content)
           || isNonEmpty(delta?.reasoning_details) || isNonEmpty(delta?.tool_calls)) {
           outputStarted = true;
         }

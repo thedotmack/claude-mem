@@ -24,6 +24,35 @@ export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
 /**
+ * How often the "Your viewer is starting" page reloads itself (a meta refresh: the
+ * browser reloads, no script polls). The Phase 8 staging run measured worker boot to
+ * ready at 2.0-2.4 s for a normal account and 16.7-23.5 s for the largest one
+ * (.scratch/cloud-viewer-everyone/phase-8-staging.md, "Worker boot to ready"). 3 s is
+ * just past a normal account's slowest boot, so one reload finds its worker; the
+ * largest account sees at most 8 reloads, and each is answered here without
+ * touching the worker.
+ */
+export const WORKER_STARTING_RELOAD_SECONDS = 3;
+
+/**
+ * How long the starting page keeps reloading before it says the viewer could not start.
+ * About 5 times the worst worker boot measured in the Phase 8 staging run (23.5 s), so a
+ * slow but healthy boot always finishes inside it and a worker that never comes up stops
+ * the reloads instead of retrying forever.
+ */
+export const WORKER_START_GIVE_UP_SECONDS = 120;
+
+/**
+ * The query parameter the starting page's reload carries: the gate's own clock, in epoch
+ * seconds, when this page first found the worker unreachable. Removed again (a 303 to the
+ * same address without it) once the worker answers, so a later reload starts a new count.
+ */
+export const WAKE_STARTED_PARAM = 'viewer_wake_started';
+
+const escapeHtmlAttribute = (value: string) => value
+  .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
  * Read routes that would show the cloud machine's own configuration. Recovery
  * reads are local-only on the worker, but this gate makes every request look
  * local, so the worker's own check cannot stop them here.
@@ -71,7 +100,7 @@ export interface GateOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function readCookie(request: Request, name: string): string | null {
+export function readCookie(request: Request, name: string): string | null {
   for (const part of (request.headers.get('cookie') ?? '').split(';')) {
     const [key, ...rest] = part.trim().split('=');
     if (key === name) return rest.join('=');
@@ -79,18 +108,18 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}): Response {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
+export function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}, extraHead = ''): Response {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${extraHead}<title>${title}</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.55 ui-sans-serif,system-ui,sans-serif}main{width:min(30rem,calc(100vw - 32px));text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}a{display:inline-block;padding:.75rem 1.25rem;min-height:44px;box-sizing:border-box}</style>
 </head><body><main><h1>${title}</h1>${body}</main></body></html>`;
   return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders } });
 }
 
-function json(status: number, data: unknown): Response {
+export function json(status: number, data: unknown): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 }
 
-const wantsHtml = (request: Request) => request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
+export const wantsHtml = (request: Request) => request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
 
 /**
  * The path as the worker's router may read it: Express matches routes without
@@ -128,6 +157,9 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
   const secure = publicOrigin.startsWith('https:');
   // Links already traded for a session, until they expire: a link opens one session.
   const usedLinks = new Map<string, number>();
+  // Why the worker could not be reached, logged once per kind while it stays unreachable
+  // (the starting page reloads every few seconds); cleared when the worker answers.
+  const loggedWorkerFailureKinds = new Set<string>();
 
   const sessionOwner = (request: Request): boolean => {
     const token = readCookie(request, SESSION_COOKIE);
@@ -234,9 +266,35 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
         redirect: 'manual',
         signal: request.signal,
       });
-    } catch {
-      if (wantsHtml(request)) return page(503, 'Your viewer is starting', '<p>It will be ready in a moment. Reload to try again.</p>');
+    } catch (error) {
+      const kind = error instanceof Error ? String((error as { code?: unknown }).code ?? error.name) : typeof error;
+      if (!loggedWorkerFailureKinds.has(kind)) {
+        loggedWorkerFailureKinds.add(kind);
+        console.error(`[viewer-host] worker unreachable (${kind}): ${error instanceof Error ? error.message : String(error)}; answering 503 until it answers`);
+      }
+      if (wantsHtml(request)) {
+        const now = nowSeconds();
+        const carried = Number(url.searchParams.get(WAKE_STARTED_PARAM));
+        // Missing, unreadable or in the future: this is the first attempt.
+        const wakeStarted = Number.isInteger(carried) && carried > 0 && carried <= now ? carried : now;
+        if (now - wakeStarted >= WORKER_START_GIVE_UP_SECONDS) {
+          return page(503, 'Your viewer could not start', `<p>Open your viewer again from cmem.ai.</p><a href="${options.signInUrl}">Go to cmem.ai</a>`);
+        }
+        const reload = new URL(url.href);
+        reload.searchParams.set(WAKE_STARTED_PARAM, String(wakeStarted));
+        return page(503, 'Your viewer is starting', '<p>It will be ready in a moment. This page reloads by itself until it is.</p>', {},
+          `<meta http-equiv="refresh" content="${WORKER_STARTING_RELOAD_SECONDS};url=${escapeHtmlAttribute(`${reload.pathname}${reload.search}`)}">`);
+      }
       return json(503, { error: 'Your viewer is starting. Try again in a moment.' });
+    }
+    loggedWorkerFailureKinds.clear();
+
+    if (wantsHtml(request) && url.searchParams.has(WAKE_STARTED_PARAM)) {
+      // The worker answers: drop the wake marker from the address, so a reload later starts a new count.
+      await response.body?.cancel();
+      const clean = new URL(url.href);
+      clean.searchParams.delete(WAKE_STARTED_PARAM);
+      return new Response(null, { status: 303, headers: { Location: `${clean.pathname}${clean.search}`, 'Cache-Control': 'no-store' } });
     }
 
     const responseHeaders = new Headers();

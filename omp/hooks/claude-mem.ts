@@ -233,6 +233,22 @@ function textFromContent(content: unknown): string {
   return "";
 }
 
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"], ["write", "Write"], ["edit", "Edit"], ["bash", "Bash"],
+]);
+
+function fileReadInput(input: unknown, details: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || !details || typeof details !== "object") return input;
+  const fields = input as Record<string, unknown>;
+  const read = details as { resolvedPath?: unknown; isDirectory?: boolean; kind?: string };
+  // Native paths can include selectors or name URLs/directories. Use the file
+  // the host actually resolved, without reimplementing its selector parser.
+  if (read.isDirectory || read.kind === "url" || typeof read.resolvedPath !== "string" || !read.resolvedPath
+    || (typeof fields.file_path === "string" && fields.file_path)) return input;
+  return { ...fields, file_path: read.resolvedPath };
+}
+
 // Find the last message of `role` and return its text. Handles string content or
 // [{type:"text",text}] chunks. Empty when the event carries no such message.
 function lastMessageText(messages: unknown[], role: string): string {
@@ -388,24 +404,26 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
   // first).
   pi.on("tool_result", async (event, ctx) => {
     const telemetryToolEpochMs = Date.now();
-    const toolName = String(event?.toolName ?? "");
-    if (!toolName || toolName.startsWith("memory_")) return; // avoid claude-mem recursion
+    const nativeToolName = String(event?.toolName ?? "");
+    if (!nativeToolName || nativeToolName.startsWith("memory_")) return; // avoid claude-mem recursion
+    const toolName = CAPTURE_TOOL_NAMES.get(nativeToolName) ?? nativeToolName;
 
     const target = session ?? newSession();
     if (target.excluded) return;
     const response = stripPrivateBlocks(textFromContent(event?.content));
-    // isError rows are valuable — never skip them. tool_input is sent raw (the
-    // worker serializes it once); tool_response is capped to MAX_LEN after the
-    // tag strip so a cap can never sever a privacy block's closing tag.
+    const text = response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response;
+    // Preserve failed attempts as errors so they cannot become completed file
+    // evidence. Cap after stripping complete privacy blocks.
     const body: Record<string, unknown> = {
       contentSessionId: target.id,
       tool_name: toolName,
-      tool_input: event?.input,
-      tool_response: response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response,
+      tool_input: nativeToolName === "read" ? fileReadInput(event?.input, event?.details) : event?.input,
+      tool_response: event?.isError === true ? { is_error: true, error: text } : text,
       platformSource: "omp",
       telemetryToolEpochMs,
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
+    if (typeof event?.toolCallId === "string" && event.toolCallId) body.tool_use_id = event.toolCallId;
 
     const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;

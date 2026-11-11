@@ -34,6 +34,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Image as ImageIcon, X } from 'lucide-react';
 
 import { workerMediaSource } from './worker-media-source';
+import { setTimeoutThenWaitUntilCloudPageVisible } from '@/live/served-from';
 import {
   altText,
   displayState,
@@ -85,12 +86,14 @@ export interface MediaStatusResult {
  * Resolve readiness now and keep rechecking while it can still change: an image
  * is pending, or the status route failed and may recover. Returns the stop
  * function. `schedule` is the timer, so the sequence is testable without one.
+ * By default a hidden cloud tab waits until it is shown again, so it does not
+ * keep the cloud viewer's machine awake.
  */
 export function watchMediaStatus(
   ids: string[],
   status: MediaSource['status'],
   onResult: (result: MediaStatusResult) => void,
-  schedule: (recheck: () => void, ms: number) => () => void,
+  schedule: (recheck: () => void, ms: number) => () => void = setTimeoutThenWaitUntilCloudPageVisible,
 ): () => void {
   let stopped = false;
   let cancelRecheck: (() => void) | undefined;
@@ -147,10 +150,6 @@ function useMediaStates(refs: VMediaRef[]) {
       key.split(','),
       (ids) => source.status(ids),
       (result) => setStates({ key, ...result }),
-      (recheck, ms) => {
-        const timer = window.setTimeout(recheck, ms);
-        return () => window.clearTimeout(timer);
-      },
     );
   }, [key, source]);
 
