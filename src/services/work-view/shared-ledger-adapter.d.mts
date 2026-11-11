@@ -11,5 +11,7 @@ export class SharedLedgerAdapter {
   pendingMaterialization(): number;
   saveFile(name: string, value: unknown, options?: { resolveKeys?: string[]; resolutionBaseline?: unknown }): void;
   publish(updates: Array<{ kind: string; key: string; value?: unknown; deleted?: boolean }>): number;
+  /** Whether this database holds a row the activity capture could publish for (a local tool call, deliverable, observation or prompt). */
+  ownsActivity(): boolean;
   reconcile(options?: { captureActivity?: boolean }): { pending: number; invalid: number; unsupported: number; conflicts: unknown[]; files: Array<{ file: string; message: string }> };
 }

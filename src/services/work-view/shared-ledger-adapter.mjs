@@ -309,6 +309,34 @@ export class SharedLedgerAdapter {
     return changed;
   }
 
+  /**
+   * Whether this database holds a row the activity capture could publish for. With no ledger and no copy entries,
+   * buildSharedProjectionUpdates publishes provenance only for a session with a tool call, a deliverable, or an
+   * observation or prompt this device wrote (tool_uses and deliverables are never synced, so any row there is
+   * local; a pulled observation or prompt carries another device's origin). A replica that only pulls has none of
+   * them: on the cloud viewer's account, 0 of 163,082 observations and 0 of 5,598 prompts. Local rows are counted
+   * as all rows minus rows with an origin, because both counts use indexes and an IS NULL filter scans the table.
+   */
+  ownsActivity() {
+    const count = (sql, params = []) => {
+      try { return this.db.prepare(sql).get(...params).count; }
+      catch (error) { if (/no such table/i.test(String(error.message))) return 0; throw error; }
+    };
+    if (count('SELECT COUNT(*) AS count FROM (SELECT 1 FROM tool_uses LIMIT 1)') || count('SELECT COUNT(*) AS count FROM (SELECT 1 FROM deliverables LIMIT 1)')) return true;
+    return ['observations', 'user_prompts'].some(table => {
+      const total = count(`SELECT COUNT(*) AS count FROM ${table}`);
+      if (!total) return false;
+      try {
+        return total > count(`SELECT COUNT(*) AS count FROM ${table} WHERE origin_device_id IS NOT NULL`)
+          || count(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${table} WHERE origin_device_id = ? LIMIT 1)`, [this.deviceId]) > 0;
+      } catch (error) {
+        // An older database without origin columns has only local rows.
+        if (/no such column/i.test(String(error.message))) return true;
+        throw error;
+      }
+    });
+  }
+
   reconcile({ captureActivity = true } = {}) {
     const dataVersion = this.db.prepare('PRAGMA data_version').get();
     const signature = this.signature(captureActivity, dataVersion);
@@ -376,7 +404,12 @@ export class SharedLedgerAdapter {
     }
     // Legacy copy writers can finish without another memory/tool row. Their
     // semantic file hash is an independent import trigger, not activity.
-    if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash)) {
+    // A replica that only pulls owns no activity, and then the capture below publishes nothing (see ownsActivity),
+    // yet every pulled commit moves the activity signature. Skip its full view build there.
+    if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash) && !Object.keys(copies).length && !this.ownsActivity()) {
+      this.activity = activity;
+      this.copyHash = copyHash;
+    } else if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash)) {
       // The reducer drops shared rows, which are most of this table on a busy replica: leave them in SQLite.
       const entries = this.db.prepare(`SELECT id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id
         FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
