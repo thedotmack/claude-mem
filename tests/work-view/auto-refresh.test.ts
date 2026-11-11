@@ -1006,6 +1006,71 @@ describe('incremental owner goals', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it.each([0, 3])('reuses a rules-only snapshot with %i new prompts', async (newPrompts) => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-rules-only-'));
+    const database = fixtureDatabase();
+    try {
+      const generatedAt = new Date(NOW - 2 * DAY).toISOString();
+      const quoteAt = new Date(NOW - 3 * DAY).toISOString();
+      database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)')
+        .run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Keep changes reviewable.', generated_at: generatedAt }), 1);
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ preferences: [
+        { preference: 'Keep changes reviewable.', when: '', kind: 'directive', supportCount: 1, source: 'owner-goals', quotes: [{ quote: 'keep changes reviewable', at: quoteAt }] },
+        { preference: 'The story\'s own preference.', quotes: [] },
+      ] }));
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(newPrompts, sinceMinutes) });
+      await task.prepare!();
+      const prompts: string[] = [];
+      const result = await task.run(async (prompt: string) => {
+        prompts.push(prompt);
+        expect(newPrompts).toBeGreaterThan(0);
+        expect(prompt).toContain('Do "Update the saved goals"');
+        expect(prompt).toContain(`${newPrompts} prompts the owner typed since`);
+        return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8');
+      }, 'codex');
+      expect(result).toBe(newPrompts ? 'goals updated.' : 'goals unchanged.');
+      expect(prompts).toHaveLength(newPrompts ? 1 : 0);
+      expect(sinceMinutes).toEqual([new Date(generatedAt).toLocaleString('sv').slice(0, 16)]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args.slice(-2)).toEqual(['--carried-before', sinceMinutes[0]!]);
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, focus_areas: [], asks: [],
+        rules: [{ when: '', then: 'Keep changes reviewable.', times_asked: 1, latest_at: new Date(quoteAt).toLocaleString('sv').slice(0, 16),
+          evidence: [{ at: new Date(quoteAt).toLocaleString('sv').slice(0, 16), quote: 'keep changes reviewable' }] }] });
+      expect(calls[0].goals.rules).toHaveLength(1);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { name: 'missing save time', generatedAt: null, source: 'owner-goals' },
+    { name: 'invalid save time', generatedAt: 'not a timestamp', source: 'owner-goals' },
+    { name: 'unrelated story preferences', generatedAt: new Date(NOW - 2 * DAY).toISOString(), source: 'story' },
+    { name: 'list metadata without saved items', generatedAt: new Date(NOW - 2 * DAY).toISOString(), source: null },
+  ])('maps the full window for $name', async ({ generatedAt, source }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-incomplete-'));
+    const database = fixtureDatabase();
+    try {
+      database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)')
+        .run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Keep changes reviewable.', generated_at: generatedAt }), 1);
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ preferences: source ? [{ preference: 'Keep changes reviewable.', source, quotes: [] }] : [] }));
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinceMinutes) });
+      await task.prepare!();
+      let asked = 0;
+      expect(await task.run(async (prompt: string) => {
+        asked++;
+        expect(prompt).toContain('Do step 2 yourself');
+        expect(prompt).not.toContain('Do "Update the saved goals"');
+        return JSON.stringify({ map: '# Owner map', goals: { human_summary: 'Keep changes reviewable.', focus_areas: [], asks: [], rules: [{ when: '', then: 'Keep changes reviewable.' }] } });
+      }, 'codex')).toBe('goals mapped.');
+      expect(asked).toBe(1);
+      expect(sinceMinutes).toEqual([null]);
+      expect(calls[0].args).not.toContain('--carried-before');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('the goals question keeps the skill\'s own language rule even when CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-language-'));
     try {
