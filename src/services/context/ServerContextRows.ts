@@ -117,32 +117,26 @@ export async function fetchServerContextRows(
 // matching the route's NULL case. Filtering runs BEFORE the slice so an
 // excluded row cannot spend one of the observation slots.
 //
-// The concept axis only excludes rows that CARRY concepts: a row with no
-// concepts value at all (neither on the row nor in its metadata) has nothing
-// the concept filter can match against, so it passes this axis -- the type
-// axis above still applies to it in full. A row whose concepts are present
-// but match nothing (an explicit empty list, an unparseable string, only
-// other concepts) is excluded, as before.
+// The concept axis is strict, like the SQL reads: missing concepts are no
+// concepts, so a row with no concepts value at all matches nothing when a
+// concept filter is configured and is excluded -- the same rows the
+// route's SQL rejects, which require at least one matching concept.
 function matchesModeFilters(row: ServerRow, config: ContextConfig): boolean {
   if (config.observationTypes.size > 0) {
     const type = asText(pick(row, 'kind', 'type')) ?? 'discovery';
     if (!config.observationTypes.has(type)) return false;
   }
   if (config.observationConcepts.size > 0) {
-    const concepts = rowConcepts(row);
-    if (concepts !== null && !concepts.some(concept => config.observationConcepts.has(concept))) return false;
+    if (!rowConcepts(row).some(concept => config.observationConcepts.has(concept))) return false;
   }
   return true;
 }
 
 // Concepts arrive as an array (generation metadata) or as a JSON string (the
 // local schema's storage form). A value that parses as neither carries no
-// concepts, mirroring the SQLite read's json_valid guard. Returns null when
-// the row carries no concepts value at all, so the caller can tell "no
-// concept information" apart from "concepts present, none matching".
-function rowConcepts(row: ServerRow): string[] | null {
+// concepts, mirroring the SQLite read's json_valid guard.
+function rowConcepts(row: ServerRow): string[] {
   const raw = pick(row, 'concepts');
-  if (raw === null) return null;
   const values = Array.isArray(raw)
     ? raw
     : typeof raw === 'string'

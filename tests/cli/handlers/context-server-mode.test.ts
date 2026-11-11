@@ -40,12 +40,15 @@ let denseRows = false;
 
 function serverRows(project: string): Array<Record<string, unknown>> {
   const now = Date.now();
+  // Observation rows carry their generation concepts in metadata, like a
+  // current server's rows: the active mode's concept filter must match at
+  // least one of them for the row to be selected (#5972).
   if (denseRows) return Array.from({ length: 20 }, (_, i) => ({
     id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
     projectId: 'server-project-1', teamId: 'team-1',
     serverSessionId: 'b1d2c3e4-0000-4000-8000-000000000001',
     kind: 'discovery', content: 'narrative',
-    metadata: { title: 'RECORD_' + i + '_' + 'x'.repeat(440), project },
+    metadata: { title: 'RECORD_' + i + '_' + 'x'.repeat(440), concepts: ['how-it-works'], project },
     createdAtEpoch: now - (20 - i) * 60_000,
     updatedAtEpoch: now - (20 - i) * 60_000,
   })).reverse(); // /v1/context returns newest first.
@@ -57,7 +60,7 @@ function serverRows(project: string): Array<Record<string, unknown>> {
       serverSessionId: 'b1d2c3e4-0000-4000-8000-000000000001',
       kind: 'bugfix',
       content: 'Fixed the import batch abort',
-      metadata: { title: 'Import no longer aborts on a bad row', project },
+      metadata: { title: 'Import no longer aborts on a bad row', concepts: ['how-it-works'], project },
       createdAtEpoch: now - 120_000,
       updatedAtEpoch: now - 120_000,
     },
