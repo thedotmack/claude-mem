@@ -17,6 +17,14 @@ def http(base,path,payload=None,token=None,method=None,timeout=35):
 base=f'http://127.0.0.1:{port}';wb=f'http://127.0.0.1:{workerport}'
 try:
  subprocess.run([bun,'--no-install',worker,'start'],cwd=repo,env=env,check=True,timeout=40)
+ deadline=time.monotonic()+30
+ while True:
+  try:
+   with urllib.request.urlopen(wb+'/api/readiness',timeout=1) as ready:
+    if ready.status==200:break
+  except (urllib.error.URLError,TimeoutError):pass
+  if time.monotonic()>=deadline:raise TimeoutError('Worker readiness deadline expired')
+  time.sleep(.1)
  saved=http(wb,'/api/memory/save',{'project':'forge-fixture','text':'A restore must reject snapshots missing required worker tables.','title':'ContextForge fixture'})
  foreign=http(wb,'/api/memory/save',{'project':'unrelated','text':'Unrelated restore snapshots fixture must not be returned.','title':'Unrelated fixture'})
  print('Saved synthetic fixture',saved['id'],flush=True)
@@ -58,6 +66,10 @@ try:
      timeline_name=next(t['name'] for t in selected if t['originalName']=='timeline')
      timeline=await session.call_tool(timeline_name,{'anchor':saved['id'],'project':'forge-fixture','depth_before':1,'depth_after':1})
      assert not timeline.is_error,timeline
+     timeline_text=' '.join(getattr(c,'text','') for c in timeline.content)
+     assert 'ContextForge fixture' in timeline_text,timeline_text
+     assert 'Unrelated fixture' not in timeline_text,timeline_text
+     assert 'Unrelated restore snapshots fixture' not in timeline_text,timeline_text
      details=await session.call_tool(detail_name,{'ids':[saved['id'],foreign['id']],'project':'forge-fixture'})
      assert not details.is_error,details
      text=' '.join(getattr(c,'text','') for c in details.content)
