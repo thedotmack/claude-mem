@@ -56,6 +56,8 @@ describe('explicitly empty context project scope', () => {
         cwd: join(import.meta.dir, '../..'),
         env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(directory, 'data'),
           CLAUDE_CONFIG_DIR: join(directory, 'config'), CLAUDE_MEM_MODES_DIR: join(import.meta.dir, '../../plugin/modes'),
+          CLAUDE_MEM_CONTEXT_OBSERVATIONS: '10', CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: 'discovery',
+          CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: 'how-it-works',
           CLAUDE_MEM_RUNTIME: 'worker', DO_NOT_TRACK: '1' },
         stdout: 'pipe', stderr: 'pipe',
       });
