@@ -238,7 +238,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
 }
 
 // ---------------------------------------------------------------------------
-// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and archived_sessions/*.jsonl
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
@@ -258,7 +258,9 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
+      const profile = nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex');
+      const sessions = join(profile, 'sessions');
+      const archived = join(profile, 'archived_sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -269,7 +271,12 @@ export function createCodexReader(): AgentPromptReader {
           }
         }
       }
-      return { detected: existsSync(sessions), sources: presentSources(sources) };
+      // Archival moves the same rollout into this flat directory. It remains
+      // part of the owner's history; the existing timestamp/window rules apply.
+      for (const file of listDirectory(archived)) {
+        if (file.endsWith('.jsonl')) sources.push(source(join(archived, file)));
+      }
+      return { detected: existsSync(sessions) || existsSync(archived), sources: presentSources(sources) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;
