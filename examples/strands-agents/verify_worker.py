@@ -2,6 +2,9 @@
 
 import json
 import os
+from pathlib import Path
+import re
+import subprocess
 import tempfile
 from uuid import uuid4
 
@@ -10,8 +13,17 @@ from memory import DEMO_NOTE, DEMO_TITLE, call_memory, demonstrate, memory_clien
 
 def verify():
     run_id = uuid4().hex
-    project_a, project_b = f"strands-verify-{run_id}-a", f"strands-verify-{run_id}-b"
     with tempfile.TemporaryDirectory(prefix="strands project ") as directory:
+        parent = Path(directory) / f"strands-verify-{run_id}"
+        checkout = Path(directory) / "checkout with spaces"
+        subprocess.run(["git", "init", "-q", str(parent)], check=True)
+        subprocess.run(["git", "-C", str(parent), "-c", "user.name=Memory Example",
+                        "-c", "user.email=memory-example@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+        subprocess.run(["git", "-C", str(parent), "worktree", "add", "-qb", "feature", str(checkout)], check=True)
+        project_a, project_b = f"{parent.name}/{checkout.name}", parent.name
+        directory = str(checkout)
+        os.environ["CLAUDE_MEM_PROJECT_NAME_SOURCE"] = "path"
+        os.environ["CLAUDE_MEM_PROJECT_ENVIRONMENTS"] = "[]"
         server = os.environ["CLAUDE_MEM_MCP_SERVER"]
         first = memory_client(server, directory)
         a = demonstrate(first, project_a)
@@ -25,10 +37,14 @@ def verify():
         assert a["observation_id"] == repeated["observation_id"], "repeated save was duplicated"
         assert a["observation_id"] != b["observation_id"], "projects shared a saved observation"
         with first:
+            inherited_index = call_memory(first, project_a, "search", {"query": DEMO_TITLE, "type": "observations", "limit": 20})
+            inherited_timeline = call_memory(first, project_a, "timeline", {"anchor": a["observation_id"], "depth_before": 10, "depth_after": 10})
             foreign = call_memory(first, project_a, "get_observations", {"ids": [b["observation_id"]], "project": project_b})
+        assert not re.search(rf'#{b["observation_id"]}\b', inherited_index), "parent project entered the search index"
+        assert not re.search(rf'#{b["observation_id"]}\b', inherited_timeline), "parent project entered the timeline"
         assert DEMO_NOTE not in foreign, "another project's detail was returned"
         return {"project_a": project_a, "project_b": project_b, "repeated_id": a["observation_id"], "other_project_id": b["observation_id"],
-                "project_isolation": True, "paths_with_spaces": True, "newer_notes": 6, "model_requests": 0}
+                "project_isolation": True, "worktree_parent_isolation": True, "paths_with_spaces": True, "newer_notes": 6, "model_requests": 0}
 
 
 if __name__ == "__main__":
