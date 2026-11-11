@@ -198,10 +198,19 @@ function commitsFrom(command, response, out) {
 
 // The remote and destination branches named in each `git push` command.
 function pushTargets(command) {
-  // A trailing shell redirection (for example 2>&1) is not a repository argument.
-  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?!\d*[<>])(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
+  const word = String.raw`(?:[^\s"'<>;&|()]+|"[^"]*"|'[^']*')+`;
+  const redirection = String.raw`(?:\d*(?:>>?|<<?)&?|&>>?)`;
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+|${redirection}|${word})*)`, 'g');
+  const redirect = new RegExp(`^${redirection}$`);
   return [...command.matchAll(pattern)].map(([, args]) => {
-    const tokens = (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map(unquote);
+    const shellTokens = args.match(new RegExp(`${redirection}|${word}`, 'g')) ?? [];
+    const tokens = [];
+    for (let index = 0; index < shellTokens.length; index++) {
+      // Redirects may sit between Git arguments. Consume their file/fd target,
+      // then keep scanning so a later --dry-run or --delete is still respected.
+      if (redirect.test(shellTokens[index])) { index++; continue; }
+      tokens.push(unquote(shellTokens[index]));
+    }
     const positional = [];
     let dryRun = false, deleting = false, tags = false, repoOption;
     for (let index = 0; index < tokens.length; index++) {

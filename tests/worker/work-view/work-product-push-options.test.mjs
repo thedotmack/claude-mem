@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { productsFromToolUse } from '../../../src/services/work-view/work-product.mjs';
@@ -118,6 +118,57 @@ for (const inline of [false, true]) {
         tool_response: JSON.stringify({ stdout: result.stdout, stderr: result.stderr }) });
       expect(products.map(({ branch, repo, url }) => ({ branch, repo, url })))
         .toEqual([{ branch: 'main', repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/main' }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+const redirectedCases = [
+  ['dry run after a file redirection', `git push ${remoteUrl} main >push.log --dry-run`, 'dry-run'],
+  ['quiet dry run after a file redirection', `git push -q ${remoteUrl} main >push.log --dry-run`, 'dry-run'],
+  ['dry run after an fd redirection', `git push ${remoteUrl} main 2>&1 --dry-run | tail -1`, 'dry-run'],
+  ['dry run after an input redirection', `git push -q ${remoteUrl} main <input.txt --dry-run`, 'dry-run'],
+  ['deletion after a redirection', `git push -q ${remoteUrl} main 2>errors.log --delete`, 'delete'],
+  ['push option after a redirection', `git push -q ${remoteUrl} main >push.log --push-option=ci.skip`, 'push'],
+  ['flag-like output filename', `git push -q ${remoteUrl} main >--dry-run`, 'push'],
+  ['quoted output filename', `git push -q ${remoteUrl} main >'push --dry-run.log'`, 'push'],
+];
+
+for (const [name, command, operation] of redirectedCases) {
+  test(`push products respect ${name}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'push-redirection-product-'));
+    const cwd = join(dir, 'source'), remote = join(dir, 'remote.git');
+    mkdirSync(cwd);
+    const env = { ...process.env, LC_ALL: 'C', LANG: 'C' };
+    const run = (...args) => spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+    const git = (...args) => {
+      const result = run(...args);
+      if (result.status !== 0) throw new Error(result.stderr || result.error?.message);
+      return result;
+    };
+    try {
+      git('init', '-q', '--initial-branch=main');
+      git('config', 'user.name', 'Push product regression');
+      git('config', 'user.email', 'push-product@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      git('commit', '-q', '--allow-empty', '-m', 'Recorded work');
+      git('init', '-q', '--bare', remote);
+      git('--git-dir=' + remote, 'config', 'receive.advertisePushOptions', 'true');
+      git('config', `url.${remote}.insteadOf`, remoteUrl);
+      writeFileSync(join(cwd, 'input.txt'), '');
+      if (operation === 'delete') git('push', '-q', remoteUrl, 'main');
+      const result = spawnSync('bash', ['-o', 'pipefail', '-c', command], { cwd, env, encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      const ref = run('--git-dir=' + remote, 'rev-parse', '--verify', 'refs/heads/main');
+      if (operation === 'push') expect(ref.stdout).toBe(git('rev-parse', 'HEAD').stdout);
+      else expect(ref.status).not.toBe(0);
+      const products = productsFromToolUse({ id: 1, tool_name: 'Bash',
+        tool_input: JSON.stringify({ command }),
+        tool_response: JSON.stringify({ stdout: result.stdout, stderr: result.stderr }) });
+      expect(products.map(({ branch, repo, url }) => ({ branch, repo, url }))).toEqual(operation === 'push'
+        ? [{ branch: 'main', repo: 'example/push-options', url: 'https://github.com/example/push-options/tree/main' }]
+        : []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
