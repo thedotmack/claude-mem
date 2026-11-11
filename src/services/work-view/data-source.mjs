@@ -225,15 +225,16 @@ export class WorkStateSource {
     try {
       const database = this.openDatabase();
       const originColumns = ['origin_device_id', 'origin_local_id', 'sync_rev'].filter(column => this.columns.has(column));
+      // Only the My Rules list feeds the reducer. The shared rows come through the row cache, which parses only rows it has not seen.
       const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
-        FROM work_state_entries WHERE list_name = ? OR list_name GLOB '__my_work_v[0-9]*:*'`).all(MY_RULES_LIST);
+        FROM work_state_entries WHERE list_name = ?`).all(MY_RULES_LIST);
       let story = null;
       let storyError = null;
       if (this.ledgerDir) {
         try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') storyError = error; }
       }
-      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, rows: entries });
+      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
       if (storyError && ![...shared.records.values()].some(record => record.kind === 'story' && record.key === 'current')) throw storyError;
       story = applySharedProjection(database, shared, { ledger: { story }, deviceId: this.localDeviceId }).ledger.story;
       const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
