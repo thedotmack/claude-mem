@@ -301,7 +301,9 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     // availability and copy coverage change which links the card displays.
     // Local Git products have no remote URL. Match the JSON representation
     // sent to the viewer, which omits those undefined optional properties.
-    if (merged.length) request.sourceProductHash = createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest('hex');
+    // Version the empty set too: a check made before the first product arrives
+    // must not look like a pre-upgrade fingerprint eligible for adoption.
+    request.sourceProductHash = createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest('hex');
     // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
     // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);
