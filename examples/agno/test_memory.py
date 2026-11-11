@@ -29,7 +29,10 @@ class ProjectArguments(unittest.TestCase):
             args = {"project": "other", "projects": ["other"], "text": "Safe note"}
             result = scoped_arguments(name, args, "owned")
             self.assertEqual(result["project"], "owned")
-            self.assertNotIn("projects", result)
+            if name == "save_memory":
+                self.assertNotIn("projects", result)
+            else:
+                self.assertEqual(result["projects"], ["owned"])
             self.assertEqual(args["project"], "other")
 
     def test_fingerprint_distinguishes_project_and_content(self):
@@ -54,7 +57,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
                 "query": "release", "project": "other", "projects": ["other"],
             }).aexecute()
             self.assertEqual(execution.status, "success")
-            self.assertEqual(json.loads(execution.result.content), {"query": "release", "project": "owned"})
+            self.assertEqual(json.loads(execution.result.content), {"query": "release", "project": "owned", "projects": ["owned"]})
             saved = json.loads(await call_memory(memory, "save_memory", {"text": "Safe note", "title": "Note", "project": "other"}))
             self.assertEqual(saved["project"], "owned")
             self.assertEqual(saved["metadata"]["platformSource"], "agno")

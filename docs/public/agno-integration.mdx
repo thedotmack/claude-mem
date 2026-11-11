@@ -144,6 +144,13 @@ environment. A stopped worker must exit nonzero with no success JSON. Start it
 yourself before retrying. After an ambiguous write timeout, inspect the viewer;
 the same explicit-save fingerprint prevents duplication if the first save completed.
 
+The verification script requires Git and launches the real MCP process in a
+fresh Git worktree whose parent also contains a saved note. It checks that
+search, timeline and detail reads exclude that parent. Read arguments bind both
+`project` and an explicit one-element `projects` list; this prevents the worker's
+normal checkout inheritance from widening the selected scope. The verifier uses
+path-based project identity for its temporary fixture only.
+
 Each verification run uses two fresh project names with a random suffix. It
 checks repeat-save deduplication within that run, so running the script again
 against the same worker cannot be confused by notes from an earlier verification.
