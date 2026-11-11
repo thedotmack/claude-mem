@@ -114,6 +114,10 @@ const SEARCH_SCOPE_SQL = `
     OR server_sessions.platform_source = $5
     OR (
       observations.server_session_id IS NULL
+      AND observations.metadata->>'platformSource' = $5
+    )
+    OR (
+      observations.server_session_id IS NULL
       AND EXISTS (
         SELECT 1
         FROM observation_sources
