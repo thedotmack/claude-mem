@@ -56,7 +56,7 @@ export class AutoRefreshWorker {
   constructor({ dir, openDatabase, runJob, enabled = () => true, setupRunning = () => false, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
     if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
     Object.assign(this, { dir, openDatabase, runJob, enabled, setupRunning, checkMs, now, log, localDeviceId });
-    this.timer = null; this.closed = false; this.busy = false;
+    this.timer = null; this.closed = false; this.busy = false; this.repairPending = false;
   }
 
   path() { return join(this.dir, 'refresh.json'); }
@@ -77,13 +77,22 @@ export class AutoRefreshWorker {
    * At startup this worker has no run, so a "running" record no other live worker owns was cut off by a restart. Repaired
    * here whether or not scheduled refresh is on: check() stops early when it is off, and My Work would otherwise show that
    * run, with its Refresh now button disabled, forever. Not counted as a failed run, so it starts no back-off.
+   * This runs inside the worker's startup, so a failed write is logged, never thrown: on 2026-11-11 the shared-ledger
+   * write behind it hit SQLITE_BUSY (the cut-off run's agent still held the database) and the throw failed the whole
+   * worker's initialization, leaving memory down until the next restart. The record then stays "running" with a dead
+   * pid, and the next check tries this repair again first, whether or not scheduled refresh is on.
    */
   repairInterrupted() {
     let previous;
     try { previous = this.status(); }
     catch (error) { this.log('warn', 'Work view refresh status could not be read at startup', { error: String(error?.message ?? error) }); return; }
     if (previous?.state !== 'running' || this.otherWorkerIsRunning(previous)) return;
-    this.write({ ...previous, state: 'failed', error: 'The previous refresh stopped before finishing.', finishedAt: this.iso(), nextAt: this.iso(this.now() + this.checkMs) });
+    this.repairPending = false;
+    try { this.write({ ...previous, state: 'failed', error: 'The previous refresh stopped before finishing.', finishedAt: this.iso(), nextAt: this.iso(this.now() + this.checkMs) }); }
+    catch (error) {
+      this.repairPending = true;
+      this.log('warn', 'Work view refresh status could not be repaired at startup; the next check tries again', { error: String(error?.message ?? error) });
+    }
   }
 
   /** A timer check: a failure (e.g. no database yet) is logged and the next check tries again. */
@@ -105,6 +114,7 @@ export class AutoRefreshWorker {
   /** The ten-minute check: run when something is due, otherwise record that nothing is. */
   async check() {
     if (this.closed) return 'closed';
+    if (this.repairPending && !this.busy) this.repairInterrupted();
     if (!this.enabled()) return 'disabled';
     if (this.busy) return 'running';
     const previous = this.status();
