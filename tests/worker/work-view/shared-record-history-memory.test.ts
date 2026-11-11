@@ -22,6 +22,10 @@ const NOW = Date.parse('2026-11-01T00:00:00Z');
 // 240 revisions of one 40 KB object: about 9.6 MB of history for 40 KB of current state.
 const REVISIONS = 240;
 const VALUE_CHARS = 40_000;
+// Building ~9.6 MB of history and forcing three full GCs took 5,915 ms on main's CI
+// (run 43084850298) and 13,358 ms in a loaded local full suite, past bun's 5 s default.
+// 30 s is about 2x the slowest measured run.
+const LONG_HISTORY_TEST_TIMEOUT_MS = 30_000;
 
 function historyFixture() {
   const db = new Database(':memory:');
@@ -74,7 +78,7 @@ test('reading a long shared history keeps the current objects in memory, not eve
   const keptBytes = heapStats().heapSize - baseline;
   expect(heldBytes).toBeLessThan(historyBytes / 10);
   expect(keptBytes).toBeLessThan(historyBytes / 10);
-});
+}, LONG_HISTORY_TEST_TIMEOUT_MS);
 
 test('the row cache keeps a manifest\'s entry references, not its payload', () => {
   // A manifest row's payload is the JSON of its entry references; the cache keeps those references,
