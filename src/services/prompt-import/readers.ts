@@ -12,6 +12,8 @@ import { createHash } from 'crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import { homedir } from 'os';
+import { pipeline, type Transform } from 'node:stream';
+import * as zlib from 'node:zlib';
 import { logger } from '../../utils/logger.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
@@ -56,20 +58,38 @@ export interface AgentPromptReader {
 // ---------------------------------------------------------------------------
 // Shared helpers
 
-/** Streams a file's lines without holding the file in memory. */
+/** Streams plain or Codex-compressed JSONL without holding the file in memory. */
 export async function* readLines(path: string): AsyncGenerator<string> {
-  const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 1 << 20 });
-  let pending = '';
-  for await (const chunk of stream as AsyncIterable<string>) {
-    pending += chunk;
-    let newline = pending.indexOf('\n');
-    while (newline !== -1) {
-      yield pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      newline = pending.indexOf('\n');
+  let decompressor: Transform | undefined;
+  if (path.endsWith('.jsonl.zst')) {
+    // Older supported runtimes must still load this module and read plain files.
+    const createZstdDecompress = (zlib as unknown as { createZstdDecompress?: () => Transform }).createZstdDecompress;
+    if (typeof createZstdDecompress !== 'function') {
+      throw new Error('this runtime cannot decode compressed Codex history (zlib.createZstdDecompress is missing)');
     }
+    decompressor = createZstdDecompress();
   }
-  if (pending) yield pending;
+  const input = createReadStream(path, { highWaterMark: 1 << 20 });
+  // pipeline forwards input errors to the decoder and closes both streams on
+  // failure or early cancellation. The async iterator below reports the error.
+  const stream = decompressor ? pipeline(input, decompressor, () => {}) : input;
+  stream.setEncoding('utf8');
+  try {
+    let pending = '';
+    for await (const chunk of stream as AsyncIterable<string>) {
+      pending += chunk;
+      let newline = pending.indexOf('\n');
+      while (newline !== -1) {
+        yield pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf('\n');
+      }
+    }
+    if (pending) yield pending;
+  } finally {
+    stream.destroy();
+    input.destroy();
+  }
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
@@ -263,8 +283,12 @@ export function createCodexReader(): AgentPromptReader {
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
           for (const day of listDirectory(join(sessions, year, month))) {
-            for (const file of listDirectory(join(sessions, year, month, day))) {
-              if (file.endsWith('.jsonl')) sources.push(source(join(sessions, year, month, day, file)));
+            const directory = join(sessions, year, month, day);
+            for (const file of listDirectory(directory)) {
+              if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
+              // Codex reads the plain sibling while both exist during compression.
+              if (file.endsWith('.zst') && existsSync(join(directory, file.slice(0, -4)))) continue;
+              sources.push(source(join(directory, file)));
             }
           }
         }
@@ -300,7 +324,7 @@ export function createCodexReader(): AgentPromptReader {
         const text = textOf(payload.content, ['input_text']).trim();
         const at = isoToEpochMs(record.timestamp);
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
-        const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
+        const sessionId = String(meta.id ?? basename(transcript.path).replace(/\.jsonl(?:\.zst)?$/, ''));
         const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text);
         const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
