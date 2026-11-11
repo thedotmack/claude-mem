@@ -166,8 +166,9 @@ describe('Claude observer feed pacing (#4066)', () => {
   });
 
   it('a backlog far over the budget makes progress instead of recycling on an unanswered burst', async () => {
-    // A full buffer (128) x ~8k chars is ~1M chars of prompts — over twice the 400k default budget.
-    const h = createHarness(FULL_BUFFER, 8_000);
+    // A full buffer (128) x ~2k chars is ~256k chars of prompts — over twice the 100k default budget,
+    // yet each generation still holds about 40 answered turns.
+    const h = createHarness(FULL_BUFFER, 2_000);
     liveSessions.push(h.session);
     const recycleLog: Array<{ answeredTurns: number; claimed: number; history: number }> = [];
 
@@ -551,7 +552,7 @@ describe('every Claude generator start opens a new generation (#3479)', () => {
 // same generation budget. The HTTP providers get the same checks in
 // observer-measured-context.test.ts.
 describe('the measured Claude context feeds the generation budget (#2957)', () => {
-  // Past half of a 200k window: 150k tokens is 600k chars against a 400k budget.
+  // 150k tokens is 600k chars, far past the 100k-char default budget.
   const OVER_BUDGET_USAGE = { usage: { input_tokens: 12, cache_read_input_tokens: 150_000, output_tokens: 2 } };
 
   it('retires the generation before the next observation once a turn read past the budget', async () => {

@@ -82,6 +82,9 @@ class RecordingProvider extends OpenAICompatibleProvider<{ apiKey: string; model
 describe('observer requests across a long generation', () => {
   const TURNS = 200;
   const PAYLOAD_CHARS = 5_000;
+  // Pinned, not the shipped default: these tests are about long generations, so
+  // they set the budget they need and stay valid when the default moves.
+  const BUDGET_CHARS = 400_000;
   let spies: ReturnType<typeof spyOn>[] = [];
 
   beforeEach(() => {
@@ -94,6 +97,7 @@ describe('observer requests across a long generation', () => {
         ...SettingsDefaultsManager.getAllDefaults(),
         CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
         CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '200000',
+        CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: String(BUDGET_CHARS),
       })),
     ];
   });
@@ -170,7 +174,7 @@ describe('observer requests across a long generation', () => {
     expect(queue.pending).toHaveLength(0);
     expect(provider.requests).toHaveLength(TURNS);
     expect(generations).toBeGreaterThan(1);
-    expect(Math.max(...provider.requestChars)).toBeLessThan(410_000);
+    expect(Math.max(...provider.requestChars)).toBeLessThan(BUDGET_CHARS + 10_000);
     expect(new Set(provider.requests.map(request => request.generationId)).size).toBe(generations);
     for (let i = 1; i < provider.requests.length; i++) {
       const previous = provider.requests[i - 1];

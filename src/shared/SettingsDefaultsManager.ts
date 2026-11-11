@@ -139,7 +139,8 @@ export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
 
 /**
  * A shipped default that changed after installs had seeded the old one: two
- * per-request deadlines (below) and the image capture switch. Every settings.json seeded while 30000 was the default
+ * per-request deadlines (below), the image capture switch and the observer
+ * generation budget. Every settings.json seeded while 30000 was the default
  * holds it on disk, and persisted values win over DEFAULTS, so a raise could
  * never reach those installs. The move rewrites the exact string the seeders
  * wrote; any other value, including a hand-written number, is a deliberate
@@ -153,7 +154,11 @@ export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
  * other value (or the env var) keeps a short one.
  */
 interface ChangedShippedDefault {
-  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS' | 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED';
+  key:
+    | 'CLAUDE_MEM_LLM_TIMEOUT_MS'
+    | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS'
+    | 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'
+    | 'CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS';
   /** The exact string the seeders wrote while it was the default. */
   legacy: string;
   /** Names this key's marker, so each move gets its own one chance. */
@@ -180,6 +185,12 @@ const CHANGED_SHIPPED_DEFAULTS: readonly ChangedShippedDefault[] = [
   // too; typing it changed nothing while 'false' was the default. After this
   // one move, a 'false' saved by the "Keep images" switch or by hand stays.
   { key: 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED', legacy: 'false', markerTag: 'media-capture-default-on-v1', unit: '', applyOnlyWhenSaved: true },
+  // Seeded '400000' from #3800 until the default came down to 100000 (#5023):
+  // an observer turn measured about 100K tokens at 400000 and about 26K at
+  // 100000. Any other saved value is a deliberate choice and stays. A budget
+  // too long only costs tokens, so a failed rewrite may use the new default in
+  // memory, like the deadlines.
+  { key: 'CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS', legacy: '400000', markerTag: 'observer-max-conversation-chars-v1', unit: ' chars', applyOnlyWhenSaved: false },
 ];
 
 // Present ⇔ this settings file has had its one chance at the move for that key.
@@ -650,7 +661,11 @@ export class SettingsDefaultsManager {
     // plan), so capture is opt-in (Wave 3 gate R4-5).
     CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
-    CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
+    // Retire an observer conversation past this size and start a fresh generation (#3800).
+    // 100000, not the first default of 400000: #5023 measured about 100K tokens per
+    // observer turn at 400000 and about 26K at 100000. Installs seeded with '400000'
+    // move once (CHANGED_SHIPPED_DEFAULTS).
+    CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '100000',
     CLAUDE_MEM_OBSERVER_THINKING: 'disabled',  // Observer thinking param: 'disabled' (shipped) | 'adaptive' | 'enabled[:budget]' | 'omit' — an always-thinking gateway upstream rejects 'disabled' with 400/1210 (#4732)
     CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
     CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: '4096',  // max_tokens / max_completion_tokens / Gemini maxOutputTokens on every HTTP observer request (#3868)
