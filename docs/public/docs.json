@@ -106,6 +106,7 @@
           "platform-integration",
           "pydantic-ai-integration",
           "strands-agents-integration",
+          "openai-agents-integration",
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
