@@ -23,18 +23,19 @@ export function getObservationsByFilePath(
   // A Windows tool input is stored as written (`C:\proj\src\a.ts`) while
   // callers send forward-slashed forms, so each candidate also matches its
   // backslashed spelling, as folder lookups already do.
+  const paths = (Array.isArray(filePath) ? filePath : [filePath])
+    .filter(p => typeof p === 'string' && p.length > 0);
+  // An absolute POSIX filename also determines how its relative candidates read.
+  const literalBackslashes = paths.some(p => p.startsWith('/') && !p.startsWith('//') && p.includes('\\'));
   const candidatePaths = Array.from(
-    new Set((Array.isArray(filePath) ? filePath : [filePath])
-      .filter(p => typeof p === 'string' && p.length > 0)
+    new Set(paths
       .flatMap(p => {
-        // Backslashes are filename characters in an absolute POSIX path.
-        if (p.startsWith('/') && !p.startsWith('//') && p.includes('\\')) return [p];
-        const forward = p.replaceAll('\\', '/').replace(/^(\.\/)+/, '');
+        const forward = (literalBackslashes ? p : p.replaceAll('\\', '/')).replace(/^(\.\/)+/, '');
         const forms = [p, forward];
         // Read resolves away ./, but captured tool evidence keeps it verbatim.
         // Only relative paths have this equivalent current-directory spelling.
         if (forward && !/^(\/|[A-Za-z]:|~\/)/.test(forward)) forms.push(`./${forward}`);
-        return forms.flatMap(form => [form, form.replaceAll('/', '\\')]);
+        return literalBackslashes ? forms : forms.flatMap(form => [form, form.replaceAll('/', '\\')]);
       }))
   );
   if (candidatePaths.length === 0) {
