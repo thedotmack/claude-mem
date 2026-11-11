@@ -46,6 +46,7 @@
  *   (claude-code-plugin-paths.ts), the install-shape checks and the
  *   auto-update state file's reader, never the worker.
  */
+import { applyConfiguredSkillSelection } from '../shared/skill-selection.js';
 import { existsSync, readFileSync, realpathSync, writeSync } from 'fs';
 import { dirname, join } from 'path';
 import {
@@ -220,6 +221,24 @@ function runEnsureLauncher(): EnsureLauncherFailure | null {
   return ensureResultFailure(ensureResult) ?? missingDependenciesFailure(pluginRoot);
 }
 
+// Marketplace installs/updates do not run Setup. Reconcile the installed copy
+// here too, and ask for a restart because Claude Code may have already loaded
+// its skill listing before SessionStart.
+let skillSelectionNotice: string | null = null;
+try {
+  if (process.env.CLAUDE_PLUGIN_ROOT) {
+    const selection = applyConfiguredSkillSelection(process.env.CLAUDE_PLUGIN_ROOT);
+    const messages: string[] = [];
+    if (selection.disabled.length || selection.enabled.length) {
+      messages.push('claude-mem: bundled skill selection updated. Restart Claude Code to reload the skill listing.');
+    }
+    if (selection.warnings.length) messages.push(`claude-mem: ${selection.warnings.join('; ')}`);
+    if (messages.length) skillSelectionNotice = messages.join('\n');
+  }
+} catch (error) {
+  skillSelectionNotice = `claude-mem: could not apply bundled skill selection: ${error instanceof Error ? error.message : String(error)}`;
+}
+
 let failure: EnsureLauncherFailure | null;
 try {
   failure = runEnsureLauncher();
@@ -240,5 +259,6 @@ try {
 }
 if (failure !== null) writeStderrLine(failure.reason);
 const systemMessage = autoUpdateNotice ?? (failure === null ? null : launcherFailureMessage(failure));
-if (systemMessage !== null) printUserVisibleSystemMessage(systemMessage);
+const notices = [systemMessage, skillSelectionNotice].filter(Boolean);
+if (notices.length) printUserVisibleSystemMessage(notices.join('\n'));
 process.exit(0);

@@ -6,6 +6,7 @@ import { loadTelemetryConfig, resolveTelemetryConsent, saveTelemetryConfig } fro
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { applyConfiguredSkillSelection } from '../../shared/skill-selection.js';
 import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
@@ -822,7 +823,7 @@ async function promptForIDESelection(): Promise<string[]> {
   return selected;
 }
 
-function copyPluginToMarketplace(): void {
+export function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
   const packageRoot = npmPackageRootDirectory();
 
@@ -865,6 +866,7 @@ function copyPluginToMarketplace(): void {
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
   writeTrimmedMarketplaceManifest(marketplaceDir);
+  applyInstalledSkillSelection(join(marketplaceDir, 'plugin'));
 }
 
 /**
@@ -914,13 +916,19 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-async function copyPluginToCache(version: string): Promise<void> {
+function applyInstalledSkillSelection(pluginRoot: string): void {
+  const result = applyConfiguredSkillSelection(pluginRoot);
+  for (const warning of result.warnings) log.warn(warning);
+}
+
+export async function copyPluginToCache(version: string): Promise<void> {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+  applyInstalledSkillSelection(cachePath);
 
   // Prune superseded versions now that the new one has landed. Without this the
   // cache grew one directory per release forever, and every retained directory
@@ -3809,6 +3817,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
           message('Cache missing — repopulating from npm package…');
           await copyPluginToCache(version);
         }
+        applyInstalledSkillSelection(cacheDir);
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);

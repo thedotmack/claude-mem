@@ -9,6 +9,50 @@ description: "Environment variables and settings for Claude-Mem"
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
+### Choose bundled skills
+
+All bundled skills are enabled by default. To hide unwanted skills from Claude
+Code's listing and slash commands, add their folder names to `settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_SKILLS_DISABLED": "make-plan,do,smart-explore"
+}
+```
+
+A JSON array of names also works. Use bare names such as `make-plan`, not
+`claude-mem:make-plan`. Names are case-sensitive; paths and wildcards are rejected.
+The environment variable `CLAUDE_MEM_SKILLS_DISABLED` overrides the file, including
+an empty value. Save the preference in `settings.json` if it must survive updates
+started by a process that does not inherit your shell's environment.
+
+The installer applies the list to the installed version cache and marketplace
+copy on install, update, and repair. The published package and source checkout
+keep every skill. New skills introduced by an update remain enabled unless named
+in the list. This controls plugin skill discovery, not memory capture or MCP tools.
+
+Claude Code's SessionStart hook also reapplies the list after marketplace updates
+and settings changes. When it reports that selection changed, restart Claude Code
+to reload its skill listing: the current session may have already loaded the old
+list. Removing a name, or setting the list to `""`, restores that skill through
+the same flow. Other hosts may cache their own copy and need a reinstall/reload.
+
+Skills are moved, not deleted, to `.claude-mem-disabled-skills` beside the installed
+`skills` directory. If an update supplies a new copy in the same directory, the
+older copy is preserved in `.claude-mem-disabled-skills/.history`; enabling the
+skill uses the new copy. These are install-local backups, not a backup of custom
+edits across reinstalls, which already replace the installed plugin tree.
+Use the normal updater rather than overlaying a partial plugin tree: if a partial
+update removes an upstream skill but leaves its parked copy, re-enabling it can
+restore that older copy.
+
+An invalid setting or unsafe path leaves skill content in place and reports the
+problem. Symbolic links, foreign backup directories, and incomplete skill
+folders are refused. Concurrent sessions serialize changes with the empty
+`.claude-mem-skill-selection.lock` directory. If a process is killed during a
+change, close the other sessions, inspect the installed tree, remove that empty
+lock directory, and restart to finish applying the saved selection.
+
 ### Core Settings
 
 | Setting                       | Default                         | Description                           |
