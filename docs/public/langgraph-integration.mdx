@@ -1,0 +1,181 @@
+---
+title: LangGraph and LangChain
+description: Recall a project observation and explicitly save a handoff with LangGraph and Claude-Mem's existing MCP tools.
+icon: diagram-project
+---
+
+A LangGraph workflow can read what a previous session learned, then leave a note
+for the next session. The [runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/langgraph)
+uses LangChain's built-in MCP adapter and Claude-Mem's installed MCP server. It adds no
+service, database, model provider, or global configuration.
+
+## What this connection does
+
+The graph has two nodes. `recall` searches one project, checks a caller-selected
+observation ID, reads its timeline, and fetches that observation. `remember` saves
+the handoff text the caller supplied. The returned observation is evidence; it
+cannot select another project or authorize another action.
+
+| Capability | This example |
+| --- | --- |
+| Recall | `search`, `timeline`, and `get_observations`, scoped to the supplied project |
+| Explicit save | `save_memory` after recall succeeds |
+| Automatic conversation or tool capture | Not provided |
+| Automatic context injection | Not provided; the recalled text is returned to your application |
+| Model calls | None; the graph runs deterministically without a model key |
+| CMEM Pro | Not required; this guide uses the local worker runtime |
+
+Tested on Linux with Python **3.12.14**, LangGraph **1.2.20**,
+LangChain **1.4.10**, FastMCP **4.1.8**, `langchain-core` **1.7.7**, MCP Python SDK
+**2.3.0**, and Claude-Mem **15.16.1**. macOS and Windows were not verified.
+These are the versions tested, not a promise about every earlier release.
+LangChain marks `langchain.mcp` as beta and emits a warning when it is imported;
+its API can change. The example uses this maintained API, which replaces the
+archived `langchain-mcp-adapters` package.
+
+## Connect
+
+You need an installed Claude-Mem worker and MCP server, Node.js, and Python 3.11
+or later. Run these commands from a Claude-Mem repository checkout:
+
+```bash
+python -m venv .venv-langgraph
+. .venv-langgraph/bin/activate
+python -m pip install -r examples/langgraph/requirements.txt
+export CLAUDE_MEM_MCP_SERVER="/absolute/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+```
+
+Use the installed MCP script you already trust, or the shipped script in this
+checkout. The path is passed as one process argument and may contain spaces.
+Set `CLAUDE_MEM_DATA_DIR` and `CLAUDE_MEM_WORKER_PORT` only if your existing worker
+uses nondefault values. Keep them consistent with the worker you intend to use.
+The example selects the local worker runtime and disables worker autostart for its
+MCP subprocess; it does not alter saved settings or the worker's account.
+
+Check or start the worker using the existing commands from the checkout:
+
+```bash
+npm run worker:status
+npm run worker:start
+```
+
+Reinstalling the Python requirements does not register hooks or modify an MCP
+configuration file. There is no integration installation state to duplicate.
+
+## Run a handoff
+
+Choose an observation already saved in the project. For a reproducible example,
+you can explicitly save this harmless setup note to the worker first:
+
+```bash
+curl --fail-with-body "http://127.0.0.1:37777/api/memory/save" \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"shop-api","title":"Scheduler timezone","text":"The quokkaharbor scheduler writes dates in UTC."}'
+```
+
+Use the returned observation `id` below. Replace the port if yours differs.
+The project name is the same exact key used by the worker and viewer; use the
+key for your actual checkout when sharing memory with a coding agent.
+
+```bash
+python examples/langgraph/memory_workflow.py \
+  --project shop-api \
+  --query quokkaharbor \
+  --observation-id 123 \
+  --run-id scheduler-handoff-1 \
+  --note "Next run: keep the scheduler export in UTC."
+```
+
+The command prints the recalled observation, the worker's save confirmation, and
+the saved ID. It exits nonzero if the selected ID is absent from this project's
+first 20 search results, recall fails, or the worker does not confirm the save.
+Choose a narrower query when the selected result is outside that page.
+
+The core connection uses LangChain's built-in adapter and an explicit stdio
+transport:
+
+```python
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
+from langchain.mcp import MCPAdapter
+
+client = Client(
+    StdioTransport(command="node", args=[str(script)], env=env, keep_alive=False),
+    timeout=10,
+    init_timeout=10,
+)
+async with MCPAdapter(client) as adapter:
+    tools = await adapter.list_tools()
+    # Build and run the StateGraph while this adapter is open.
+```
+
+The complete example calls each tool with a LangChain `ToolCall` envelope and
+checks the returned `ToolMessage.status`. An MCP execution error cannot be
+mistaken for a successful result. It filters discovery to the four memory tools
+it uses and supplies `project` for every call.
+
+## Identity and repeated runs
+
+LangGraph state contains the project, selected observation ID, and caller's
+`run_id`. Claude-Mem stores explicit notes in its existing manual session for that
+project and `langgraph` platform. This example does not create or impersonate
+captured LangGraph sessions.
+The note records `integration: "langgraph"` and `runId` as metadata.
+
+A fingerprint of the integration, project, run ID, and note text uses the worker's
+existing `sourceFingerprint` deduplication. Deliberately running the same handoff
+again returns the same observation ID; changing the note produces a new save.
+There are no automatic write retries. If a request times out after a possible
+save, inspect the viewer or rerun with the same run ID and text.
+
+## Verification
+
+The native integration checks start the shipped worker with a temporary SQLite
+data directory, disable optional capture, sync, and telemetry for that fixture,
+and call the installed LangGraph and MCP adapter. They need Bun and Node.js:
+
+```bash
+python examples/langgraph/test_workflow.py
+```
+
+The verified run passed five checks: recall and save with repeat deduplication,
+foreign-project ID rejection, blank-project rejection, a stopped-worker failure,
+and a bounded slow-worker response. The successful run recalled observation `1`,
+saved handoff `3`, and returned `3` again on the deliberate repeat. The data
+folder contained spaces. The timeout case uses a controlled slow HTTP endpoint;
+success and project isolation use the real bundled worker and SQLite.
+
+## Data and failure handling
+
+The project, explicit query, selected ID, note, and provenance metadata are sent
+to the local worker.
+The recalled text is returned to the Python application. This example sends
+nothing to a model. Existing worker settings still govern any enabled cloud sync
+or exports of saved notes. If you add a model or framework tracing to your own
+application, review where that application sends recalled text.
+
+Do not put credentials in a note or use this example as an automatic capture
+hook. Project filters select memory within the current local user's worker; they
+are not a multiuser authentication boundary. The example uses the current MCP
+manual-save contract and does not import conversations or change privacy settings.
+
+Each MCP request has a 10-second timeout. An 80-second outer bound also covers
+session setup and the complete graph. The command reports a short failure without
+echoing tool arguments or transport exceptions. Check the worker status, the script
+path, and the selected project and ID before retrying. A missing worker is not
+started behind your back.
+
+## Disconnect
+
+Stop running the script or remove the call to `run_workflow` from your application.
+The context manager closes its MCP subprocess when the graph ends. You can delete
+the dedicated Python virtual environment. No hooks, user configuration, or saved
+memory are removed.
+
+## Official references
+
+- [LangChain MCP integration](https://docs.langchain.com/oss/python/langchain/mcp)
+- [Migration from the archived adapter](https://docs.langchain.com/oss/python/migrate/langchain-mcp-adapters)
+- [MCP tool status handling](https://docs.langchain.com/oss/python/langchain/mcp/tools)
+- [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)
+- [Claude-Mem search workflow](/usage/search-tools)
