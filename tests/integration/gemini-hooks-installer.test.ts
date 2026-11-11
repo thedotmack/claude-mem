@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
@@ -76,4 +76,16 @@ describe('Gemini capture setup', () => {
     expect(geminiSettingsPath({})).toBe(path.join(homedir(), '.gemini', 'settings.json'));
     expect(geminiSettingsPath({ GEMINI_CLI_HOME: '  ' })).toBe(path.join(homedir(), '.gemini', 'settings.json'));
   });
+  it('resolves a dependency-complete cache-only installation outside the checkout', () => {
+    const p = file();
+    const cacheRoot = path.join(scratch!, 'cache');
+    const version = path.join(cacheRoot, '15.17.0');
+    mkdirSync(path.join(version, 'scripts'), { recursive: true });
+    writeFileSync(path.join(version, 'scripts', 'worker-service.cjs'), '// fixture');
+    writeFileSync(path.join(version, 'package.json'), JSON.stringify({ version: '15.17.0', dependencies: {} }));
+    const roots = { cacheRoot, marketplaceRoot: path.join(scratch!, 'absent'), cwd: path.join(scratch!, 'ordinary-project') };
+    expect(manageGeminiHooks('install', p, roots)).toBe(0);
+    expect(read(p).hooks.AfterTool[0].hooks[0].command).toContain(path.join(version, 'scripts', 'worker-service.cjs'));
+  });
+
 });
