@@ -114,6 +114,24 @@ Claude-Mem stores the handoff through its manual-save contract with
 ADK session is discarded after the run; the explicitly saved note remains in the
 worker. No transcript or native tool-event capture is claimed.
 
+## Worktree project boundaries
+
+Reads send both the selected `project` and an explicit `projects=json.dumps([project])`
+list. This prevents the MCP server from automatically widening a worktree's
+read scope to its parent checkout. `save_memory` receives only the selected
+`project`.
+
+The native tests create a real Git repository and linked worktree, seed matching
+observations in the parent and child projects, and run the SDK from that
+worktree. The chosen project's results exclude the parent record. A parent ID
+cannot authorize a handoff save, and SQLite verifies that rejected recalls add
+no observation.
+
+The project list is encoded as a JSON string so the GET query path preserves
+literal commas and JSON-looking keys. Nonempty project names retain their exact
+outer whitespace. Native checks seed separate split/trimmed-key projects and
+confirm they stay out of search, timeline, and recalled details.
+
 ## Repeated runs and failures
 
 The example fingerprints the integration, project, run ID, and note text using
@@ -122,9 +140,13 @@ same inputs returns the same saved ID. Changing the note represents a new save.
 It does not retry writes automatically. If a timeout leaves the outcome unclear,
 inspect the viewer or rerun with the same run ID and text.
 
-Each MCP request has a 10-second timeout. An 80-second outer deadline covers the
-runner, connection setup, calls, and cleanup. A missing script, stopped worker,
-rejected tool call, or deadline returns a nonzero CLI exit with a short diagnostic.
+Each MCP request has a 10-second timeout (`--timeout` selects another positive
+number of seconds). The outer deadline is eight times that value, 80 seconds
+by default, and covers the runner, connection setup, calls, and cleanup.
+Missing configuration, a missing script, a stopped worker, a rejected tool call,
+or a deadline returns a nonzero CLI exit. Expected failures have distinct,
+content-free reasons; unrecognized native errors are not echoed with their
+arguments or response data.
 No successful save is assumed from an error response. Check the worker status,
 script path, project key, and selected ID before retrying.
 
@@ -133,15 +155,27 @@ script path, project key, and selected ID before retrying.
 With Bun and Node.js available, run:
 
 ```bash
-python examples/google-adk/test_workflow.py
+(
+  unset CLAUDE_MEM_CLOUD_SYNC_TOKEN CLAUDE_MEM_CLOUD_SYNC_USER_ID CLAUDE_MEM_CLOUD_SYNC_HUB_URL
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false
+  python examples/google-adk/test_workflow.py
+)
 ```
 
-The five native integration checks start the shipped worker and a fresh SQLite
+This verification uses fresh worker settings and a restricted child-process
+environment. It imports the shipped `WorkerService` and calls `start()` directly,
+so the CLI startup path does not run host hook-configuration repairs. The
+subshell also clears inherited cloud-sync credentials; it does not change your
+normal worker's settings or saved memory.
+
+The nine native integration checks start the shipped worker and a fresh SQLite
 database, with optional capture, sync, and telemetry disabled for the fixture.
 They run the actual ADK runner, agent, toolset, and MCP transport. Checks cover
 known-note recall and save, repeated-run deduplication, project isolation, platform
 and manual-session attribution, the actual ADK session ID, blank project input,
-a stopped worker, and a controlled slow HTTP response. The timeout fixture is the
+a stopped worker, and a controlled slow HTTP response. Actual CLI checks cover
+missing configuration, a nonexistent script, an unavailable selected ID, and a
+timeout without printing the supplied note. The timeout fixture is the
 only substituted endpoint; successful storage and recall use the real worker.
 
 The verified run recalled ID `1`, saved ID `3`, and returned `3` on repeat. Its

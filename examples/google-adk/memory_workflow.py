@@ -42,12 +42,18 @@ class MemoryAgent(BaseAgent):
             state = self.memory_input
 
             async def call(name, **values):
+                args = {**values, "project": state["project"]}
+                if name in ("search", "timeline", "get_observations"):
+                    args["projects"] = json.dumps([state["project"]])
                 result = await tools[name].run_async(
-                    args={**values, "project": state["project"]},
+                    args=args,
                     tool_context=ToolContext(context, function_call_id="memory-" + name),
                 )
                 # ADK returns the MCP envelope as a dict, and may also return
                 # a graceful error dict for transport failures. Neither is success.
+                error = result.get("error")
+                if error == "MCP tool execution failed: Request 'tools/call' timed out":
+                    raise TimeoutError("The MCP request timed out")
                 if result.get("isError") or result.get("is_error") or "error" in result:
                     raise RuntimeError("Claude-Mem reported a failed " + name + " request")
                 return "\n".join(block["text"] for block in result.get("content", []) if block.get("type") == "text")
@@ -110,17 +116,46 @@ async def run_workflow(state: dict, *, timeout: float = 10) -> dict:
             await runner.close()
 
 
+def failure_reason(error: BaseException) -> str:
+    if isinstance(error, KeyError) and error.args == ("CLAUDE_MEM_MCP_SERVER",):
+        return "CLAUDE_MEM_MCP_SERVER is not set. Select the installed MCP script."
+    if isinstance(error, FileNotFoundError):
+        return "The configured MCP script was not found. Check its path."
+    if isinstance(error, TimeoutError):
+        return "A memory request or the workflow timed out. Check worker responsiveness."
+    if isinstance(error, KeyboardInterrupt):
+        return "The workflow was cancelled."
+    safe_messages = {
+        "project, query, note and run_id must be nonempty",
+        "observation_id and timeout must be positive and finite",
+        "The selected Claude-Mem worker MCP tools are unavailable",
+        "The selected observation is absent from this project's search page",
+        "The selected observation is unavailable in this project",
+        "Claude-Mem did not confirm that the handoff was saved",
+        "The ADK runner did not return a completed handoff",
+        *("Claude-Mem reported a failed " + name + " request" for name in MEMORY_TOOLS),
+    }
+    # Only known, content-free messages reach stderr. Native exceptions can
+    # contain arguments, paths, or returned data that should not be echoed.
+    if isinstance(error, (ValueError, RuntimeError)) and str(error) in safe_messages:
+        return str(error) + "."
+    return "The native ADK/MCP workflow did not complete. Check worker connectivity."
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("project", "query", "note", "run-id"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--observation-id", type=int, required=True)
+    parser.add_argument("--timeout", type=float, default=10, help="Seconds per MCP request (default: 10)")
     args = parser.parse_args()
+    state = vars(args)
+    timeout = state.pop("timeout")
     try:
-        result = asyncio.run(run_workflow(vars(args)))
-    except (Exception, KeyboardInterrupt):
-        print("Memory workflow failed. Check the worker, MCP script path, project and selected ID; "
-              "no successful save is assumed. Inspect your worker logs before retrying the same run ID.", file=sys.stderr)
+        result = asyncio.run(run_workflow(state, timeout=timeout))
+    except (Exception, KeyboardInterrupt) as error:
+        print("Memory workflow failed: " + failure_reason(error) +
+              " No successful save is assumed; inspect saved notes before retrying the same run ID.", file=sys.stderr)
         return 1
     print(json.dumps({key: result[key] for key in ("project", "recalled", "saved", "saved_id", "adk_session_id")}, ensure_ascii=False, indent=2))
     return 0
