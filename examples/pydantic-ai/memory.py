@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -46,8 +47,8 @@ def memory_toolset(project: str, server: str, cwd: str, *, timeout: float = 30) 
     """Use an installed Claude-Mem MCP bundle and an already-running local worker."""
     if not project.strip() or not Path(server).is_file() or not Path(cwd).is_dir():
         raise ValueError("Set a project, an existing MCP server file and a working directory.")
-    if timeout <= 0:
-        raise ValueError("The request timeout must be positive.")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("The request timeout must be finite and positive.")
 
     async def process_tool_call(_ctx, call_tool, name, arguments):
         return await call_tool(name, scoped_arguments(name, arguments, project))

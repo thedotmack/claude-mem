@@ -48,6 +48,14 @@ class ProjectArguments(unittest.TestCase):
             self.assertEqual(transport.args, [str(server)])
             self.assertEqual(transport.cwd, directory)
 
+    def test_request_timeout_rejects_nonfinite_and_nonpositive_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = Path(directory) / "server.cjs"
+            server.touch()
+            for timeout in (float("nan"), float("inf"), float("-inf"), 0, -1):
+                with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "finite and positive"):
+                    memory_toolset("a", str(server), directory, timeout=timeout)
+
 
 class NativeSdk(unittest.IsolatedAsyncioTestCase):
     async def test_agent_calls_the_native_mcp_toolset_with_bound_project(self):
