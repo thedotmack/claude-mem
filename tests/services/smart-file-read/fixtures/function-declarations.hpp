@@ -15,6 +15,7 @@ public:
 Widget& remoteFetch();
 int tally(int count);
 int tally(double count);
+/** Stabilizes violetneedle payloads. */
 template<typename T>
 auto identity(
   T value

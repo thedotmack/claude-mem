@@ -96,4 +96,18 @@ describe('native C and C++ function declarations', () => {
     expect(unfolded).not.toContain('c_linkage');
     expect(file.symbols.find(symbol => symbol.name === 'c_linkage')?.kind).toBe('function');
   }, 120000);
+
+  test('retains searchable documentation above a C++ template header', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'owned-template-docs-'));
+    try {
+      writeFileSync(join(directory, 'public.hpp'), cppSource);
+      const results = await searchCodebase(directory, 'violetneedle');
+      expect(results.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['api.identity']);
+      expect(results.matchingSymbols[0].matchReason).toContain('jsdoc');
+      const api = parseFile(cppSource, 'owned.hpp').symbols.find(symbol => symbol.name === 'api')!;
+      const identity = api.children!.find(symbol => symbol.name === 'identity')!;
+      expect(identity.jsdoc).toContain('Stabilizes violetneedle payloads');
+      expect(cppSource.split('\n')[identity.lineStart]).toBe('template<typename T>');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 120000);
 });
