@@ -9,7 +9,8 @@ import { activitySignature, buildAgentView, readAgentRecords, readEvidence } fro
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
-import { readSharedRecords } from './shared-record-store.mjs';
+import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
+import { sharedWorkListSql } from './shared-records.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 
@@ -113,11 +114,11 @@ export class WorkStateSource {
       const dataVersion = database.prepare('PRAGMA data_version').get().data_version;
       let revision = this.workStateRevision;
       if (!revision || dataVersion !== this.workStateDataVersion) {
-        revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
+        revision = workStateRowsRevision(database, { syncRev: this.columns.has('sync_rev') });
         this.workStateRevision = revision;
         this.workStateDataVersion = dataVersion;
       }
-      const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
+      const signature = `${revision}:${this.localDeviceId}`;
       const previousTitles = this.titleCacheSignature;
       const previousLedger = this.ledgerSignature;
       this.readTitleCache();
@@ -142,7 +143,9 @@ export class WorkStateSource {
           const sharedLedger = applySharedProjection(database, this.sharedState, { ledger: this.ledger, deviceId: this.localDeviceId }).ledger;
           if (signature !== this.signature || !this.source.connected) {
             const originColumns = ['origin_device_id', 'origin_local_id'].filter(column => this.columns.has(column));
-            const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''} FROM work_state_entries`).all();
+            // The reducer drops shared rows, which are most of this table on a busy replica: leave them in SQLite.
+            const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
+              FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
             const currentProjectScope = resolveReadScope(database, [this.parentProject, this.currentProject]);
             const requested = new Set([this.parentProject, this.currentProject].map(normalizedKey));
             // Match worker's scope_project only for directly requested legacy keys.
@@ -222,15 +225,16 @@ export class WorkStateSource {
     try {
       const database = this.openDatabase();
       const originColumns = ['origin_device_id', 'origin_local_id', 'sync_rev'].filter(column => this.columns.has(column));
+      // Only the My Rules list feeds the reducer. The shared rows come through the row cache, which parses only rows it has not seen.
       const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
-        FROM work_state_entries WHERE list_name = ? OR list_name GLOB '__my_work_v[0-9]*:*'`).all(MY_RULES_LIST);
+        FROM work_state_entries WHERE list_name = ?`).all(MY_RULES_LIST);
       let story = null;
       let storyError = null;
       if (this.ledgerDir) {
         try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') storyError = error; }
       }
-      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, rows: entries });
+      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
       if (storyError && ![...shared.records.values()].some(record => record.kind === 'story' && record.key === 'current')) throw storyError;
       story = applySharedProjection(database, shared, { ledger: { story }, deviceId: this.localDeviceId }).ledger.story;
       const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
