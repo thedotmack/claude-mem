@@ -30,17 +30,32 @@ export const isPlaceableFocusArea = (area: FocusArea) => (area.status === 'kept'
  * Null when the id is unknown, dismissed, or caught in a merge loop: the request then reads "Sorting…" until the
  * next refresh places it, never a guessed area.
  */
-export function resolveFocusAreaId(focusAreaId: string | null | undefined, areas: readonly FocusArea[]): string | null {
-  if (!focusAreaId) return null
-  if (focusAreaId === OTHER_FOCUS_AREA_ID) return OTHER_FOCUS_AREA_ID
+export function createFocusAreaResolver(areas: readonly FocusArea[]): (focusAreaId: string | null | undefined) => string | null {
   const byId = new Map(areas.map((area) => [area.id, area]))
-  const seen = new Set<string>()
-  let area = byId.get(focusAreaId)
-  while (area?.mergedInto && byId.has(area.mergedInto) && !seen.has(area.mergedInto)) {
-    seen.add(area.id)
-    area = byId.get(area.mergedInto)
+  const resolved = new Map<string, string | null>()
+  return (focusAreaId) => {
+    if (!focusAreaId) return null
+    if (focusAreaId === OTHER_FOCUS_AREA_ID) return OTHER_FOCUS_AREA_ID
+    if (resolved.has(focusAreaId)) return resolved.get(focusAreaId)!
+    const seen = new Set<string>()
+    let id = focusAreaId
+    let result: string | null = null
+    while (!seen.has(id)) {
+      if (resolved.has(id)) { result = resolved.get(id)!; break }
+      seen.add(id)
+      const area = byId.get(id)
+      if (!area) break
+      if (!area.mergedInto) { result = area.status !== 'dismissed' ? area.id : null; break }
+      id = area.mergedInto
+    }
+    // Keep one lookup per placement or merge chain within this model, not one area map per request.
+    for (const visited of seen) resolved.set(visited, result)
+    return result
   }
-  return area && !area.mergedInto && area.status !== 'dismissed' ? area.id : null
+}
+
+export function resolveFocusAreaId(focusAreaId: string | null | undefined, areas: readonly FocusArea[]): string | null {
+  return createFocusAreaResolver(areas)(focusAreaId)
 }
 
 /** What a Suggested card shows for an edit saved from its Rename / Merge dialog. A merge decides the suggestion: the card
@@ -72,9 +87,11 @@ export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, mine
     mergedInto: area.mergedInto, evidence: area.evidence,
     timesAsked: null, latestAt: null, quotes: [], asks: [],
   })).sort(byFocusPriority)
+  const resolveArea = createFocusAreaResolver(areas)
+  const byId = new Map(areas.map((area) => [area.id, area]))
   const liveArea = (focusAreaId: string | null) => {
-    const placed = resolveFocusAreaId(focusAreaId, areas)
-    return placed && placed !== OTHER_FOCUS_AREA_ID ? areas.find((entry) => entry.id === placed) : undefined
+    const placed = resolveArea(focusAreaId)
+    return placed && placed !== OTHER_FOCUS_AREA_ID ? byId.get(placed) : undefined
   }
   for (const item of minedAreas) {
     const area = liveArea(item.focusAreaId)

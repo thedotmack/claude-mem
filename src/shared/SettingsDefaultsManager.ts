@@ -761,7 +761,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
     CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     CLAUDE_MEM_WORK_VIEW_API_MODEL: '', // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
-    CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. Never detected by a model; empty lets the skills pick the owner's language
+    CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: '', // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours

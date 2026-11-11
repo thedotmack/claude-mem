@@ -16,8 +16,14 @@ function subscribeToClock(listener: (now: number) => void) {
 }
 
 /** The current time, updated every 15 seconds. */
-export function useNow() {
+export function useNow(enabled = true) {
   const [now, setNow] = useState(() => Date.now())
-  useEffect(() => subscribeToClock(setNow), [])
+  const [wasEnabled, setWasEnabled] = useState(enabled)
+  // Re-read the clock in the render that turns it on, so the first live paint is never stale.
+  if (enabled !== wasEnabled) {
+    setWasEnabled(enabled)
+    if (enabled) setNow(Date.now())
+  }
+  useEffect(() => enabled ? subscribeToClock(setNow) : undefined, [enabled])
   return now
 }

@@ -53,6 +53,50 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100) {
 }
 
 describe('compact local source', () => {
+  it('reuses unchanged compact requests while renewing connection health', async () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const shown: WorkModel[] = []
+    const connections: string[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), connection => connections.push(connection.lastSuccessfulCheckAt!))
+    try {
+      const first = overview()
+      streams[0].emit('work-view-overview', first)
+      const requests = shown[0].requests
+      const unchanged = overview(SECOND)
+      unchanged.model = first.model
+      unchanged.source = { ...first.source, lastCheckedAt: new Date(Date.now() + 1000).toISOString() }
+      streams[0].emit('work-view-overview', unchanged)
+      assert.equal(shown.length, 1)
+      assert.equal(connections.at(-1), unchanged.source.lastCheckedAt)
+      assert.equal((await local.loadWorkModel()).requests, requests)
+    } finally { stop() }
+  })
+
+  it('publishes changed clock labels and device metadata even with the same revision', () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const shown: WorkModel[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+    try {
+      const first = overview()
+      streams[0].emit('work-view-overview', first)
+      const aged = structuredClone(first)
+      aged.model.requests[0].progress.reviewedAt = 'A minute ago'
+      streams[0].emit('work-view-overview', aged)
+      assert.equal(shown.at(-1)?.requests[0].progress.reviewedAt, 'A minute ago')
+      const renamed = structuredClone(aged)
+      renamed.model.devices[0].name = 'Renamed computer'
+      streams[0].emit('work-view-overview', renamed)
+      assert.equal(shown.length, 3)
+      assert.equal(shown.at(-1)?.devices[0].name, 'Renamed computer')
+      // A sharing notice can change without any request changing.
+      const sharing = structuredClone(renamed)
+      sharing.model.sharedState = { enabled: true, pending: 2 }
+      streams[0].emit('work-view-overview', sharing)
+      assert.equal(shown.length, 4)
+      assert.deepEqual(shown.at(-1)?.sharedState, { enabled: true, pending: 2 })
+    } finally { stop() }
+  })
+
   it('accepts omitted empty chart history without falling back and preserves recorded readings', () => {
     let gets = 0
     const { local, streams } = harness(async () => { gets++; return json(snapshot()) })

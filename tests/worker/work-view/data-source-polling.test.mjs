@@ -65,6 +65,44 @@ test('work-state writes bypass the activity window', () => {
   expect(next.entryCount).toBe(1);
 });
 
+test('idle reads reuse the work-state aggregate until another connection commits', () => {
+  const database = source.openDatabase();
+  const prepare = database.prepare.bind(database);
+  let aggregateReads = 0;
+  database.prepare = (sql) => {
+    if (sql.includes('SELECT COUNT(*) AS count, MAX(id) AS id')) aggregateReads++;
+    return prepare(sql);
+  };
+  const initial = source.read(POLL);
+  expect(aggregateReads).toBe(1);
+  for (let second = 1; second <= 5; second++) {
+    setSystemTime(START + second * 1000);
+    const next = source.read(POLL);
+    expect(next.entryCount).toBe(initial.entryCount);
+    expect(next.agentView.revision).toBe(initial.agentView.revision);
+  }
+  expect(aggregateReads).toBe(1);
+  writer.prepare('INSERT INTO work_state_entries VALUES (1, ?, ?, ?, ?)')
+    .run('project', 'work', JSON.stringify({ task: 'Review the result', status: 'todo' }), START);
+  expect(source.read(POLL).entryCount).toBe(1);
+  expect(aggregateReads).toBe(2);
+  writer.exec('DELETE FROM work_state_entries');
+  expect(source.read(POLL).entryCount).toBe(0);
+  expect(aggregateReads).toBe(3);
+});
+
+test('synced edits with the same row id invalidate the cached work-state aggregate', () => {
+  writer.exec('ALTER TABLE work_state_entries ADD COLUMN sync_rev INTEGER DEFAULT 1');
+  writer.prepare('INSERT INTO work_state_entries (id, project, list_name, fields, created_at_epoch) VALUES (1, ?, ?, ?, ?)')
+    .run('project', 'work', JSON.stringify({ task: 'Review the result', status: 'todo' }), START);
+  const initial = source.read(POLL);
+  writer.prepare('UPDATE work_state_entries SET fields = ?, sync_rev = sync_rev + 1 WHERE id = 1')
+    .run(JSON.stringify({ task: 'Review the result', status: 'done' }));
+  const edited = source.read(POLL);
+  expect(edited.agentView.revision).toBe(initial.agentView.revision + 1);
+  expect(edited.lists[0].tasks[0].status).toBe('done');
+});
+
 test('title-cache changes bypass the activity window', () => {
   const initial = source.read(POLL).agentView.revision;
   writeFileSync(titleCachePath, JSON.stringify({ request: 'Updated title' }));

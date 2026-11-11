@@ -28,15 +28,22 @@ const errors: string[] = [];
 try {
   const { default: register } = await import(process.env.CLAUDE_MEM_OPENCLAW_MODULE || '../../../openclaw/src/index.ts');
   const hooks = new Map<string, Function>();
-  register({ id: 'owned', name: 'owned', source: 'owned', config: {}, pluginConfig: { workerHost: configuredHost, workerPort: server.port, syncMemoryFile: true }, logger: { info() {}, warn(message: string) { errors.push(message); }, error(message: string) { errors.push(message); } }, runtime: { channel: {} }, registerService() {}, registerCommand() {}, on(name: string, handler: Function) { hooks.set(name, handler); } } as any);
+  register({ id: 'owned', name: 'owned', source: 'owned', config: {}, pluginConfig: { workerHost: configuredHost, workerPort: server.port, syncMemoryFile: true }, logger: { info() {}, warn(message: string) { errors.push(message); }, error(message: string) { errors.push(message); } }, runtime: { version: '2026.11.2', channel: {} }, registerService() {}, registerCommand() {}, on(name: string, handler: Function) { hooks.set(name, handler); } } as any);
   const ctx = { sessionKey: 'owned-ipv6-session', agentId: 'owned-agent', workspaceDir: process.env.CLAUDE_MEM_DATA_DIR! };
-  await hooks.get('before_agent_start')!({ prompt: 'owned IPv6 prompt' }, ctx);
-  const context = await hooks.get('before_prompt_build')!({ prompt: 'owned IPv6 prompt', messages: [] }, ctx);
+  // OpenClaw 2026.11.2 has no before_agent_start; before_prompt_build records the prompt.
+  assert.equal(hooks.has('before_agent_start'), false);
+  const promptEvent = { prompt: '[history]\nowned IPv6 prompt', currentUserMessage: 'owned IPv6 prompt', currentUserMessageId: 'owned-admission-1', messages: [] };
+  const context = await hooks.get('before_prompt_build')!(promptEvent, ctx);
+  // A rebuild of the same admitted request must not record a second prompt.
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  await hooks.get('before_prompt_build')!(promptEvent, ctx);
   const sessions = store.db.query('SELECT project,user_prompt FROM sdk_sessions').all();
-  console.log(JSON.stringify({ scenario, requests, sessions, context, errors }));
-  assert.deepEqual(requests, ['/api/sessions/init', '/api/context/inject']);
+  const prompts = store.db.query('SELECT prompt_text,native_prompt_id FROM user_prompts').all();
+  console.log(JSON.stringify({ scenario, requests, sessions, prompts, context, errors }));
+  assert.deepEqual([...requests].sort(), ['/api/context/inject', '/api/sessions/init', '/api/sessions/init']);
   assert.equal(sessions.length, 1);
   assert.equal((sessions[0] as any).user_prompt, 'owned IPv6 prompt');
+  assert.deepEqual(prompts, [{ prompt_text: 'owned IPv6 prompt', native_prompt_id: 'owned-admission-1' }]);
   assert.equal((sessions[0] as any).project, 'openclaw-owned-agent');
   assert.equal(context.appendSystemContext, 'owned IPv6 context');
   assert.equal(errors.length, 0);

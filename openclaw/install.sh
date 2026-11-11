@@ -593,6 +593,21 @@ resolve_extension_dir() {
 
 CLAUDE_MEM_EXTENSION_DIR=""
 
+# Newer OpenClaw asks before installing from any source outside ClawHub and,
+# with no terminal to answer (curl | bash), cancels unless --force confirms the
+# source. A local copy also needs --accept-capabilities. Running this installer
+# is the request to install this build, so confirm both. Older OpenClaw rejects
+# either flag as unknown, so print only the ones its CLI lists, one per line.
+openclaw_install_confirmation_flags() {
+  local install_help flag
+  install_help="$(run_openclaw plugins install --help 2>&1)" || true
+  for flag in --force --accept-capabilities; do
+    if grep -qE -- "(^|[[:space:],])${flag}([[:space:],]|$)" <<<"$install_help"; then
+      echo "$flag"
+    fi
+  done
+}
+
 install_plugin() {
   check_git
 
@@ -670,10 +685,19 @@ install_plugin() {
     " 2>/dev/null) || true
   fi
 
+  local -a install_flags=()
+  local flag
+  while IFS= read -r flag; do
+    install_flags+=("$flag")
+  done < <(openclaw_install_confirmation_flags)
+
   info "Installing claude-mem plugin into OpenClaw..."
-  if ! run_openclaw plugins install "$installable_dir" 2>&1; then
+  if [[ ${#install_flags[@]} -gt 0 ]]; then
+    info "Confirming this claude-mem build from ${CLAUDE_MEM_REPO} (${CLAUDE_MEM_BRANCH}) with: ${install_flags[*]}"
+  fi
+  if ! run_openclaw plugins install ${install_flags[@]+"${install_flags[@]}"} "$installable_dir" 2>&1; then
     error "Failed to install claude-mem plugin"
-    error "Try manually: ${OPENCLAW_PATH} plugins install <path>"
+    error "Try manually: ${OPENCLAW_PATH} plugins install ${install_flags[*]+"${install_flags[*]} "}<path>"
     exit 1
   fi
 
@@ -831,6 +855,29 @@ configure_memory_slot() {
   "
 
   success "Memory slot set to claude-mem in ${config_file}"
+}
+
+# Newer OpenClaw blocks before_prompt_build and agent_end for plugins that are
+# not bundled with it unless the plugin's entry allows conversation access.
+# Those hooks record the prompt, inject context and summarize the session, so
+# claude-mem does nothing useful without the grant. Older OpenClaw has no such
+# gate and rejects the key, so let OpenClaw's own config validation decide.
+allow_conversation_hooks() {
+  local grant_key="plugins.entries.claude-mem.hooks.allowConversationAccess"
+  local output
+  if output="$(run_openclaw config set "$grant_key" true 2>&1)"; then
+    success "Allowed claude-mem's conversation hooks (${grant_key})"
+    return 0
+  fi
+  if grep -qF 'plugins.entries.claude-mem: Unrecognized key: "hooks"' <<<"$output"; then
+    info "This OpenClaw version does not gate conversation hooks; nothing to allow"
+    return 0
+  fi
+  echo "$output" >&2
+  error "Could not allow claude-mem's conversation hooks"
+  error "Without this, OpenClaw blocks prompt capture, context injection and session summaries."
+  error "Run: ${OPENCLAW_PATH} config set ${grant_key} true"
+  exit 1
 }
 
 AI_PROVIDER=""
@@ -1531,6 +1578,7 @@ main() {
   echo ""
   info "${COLOR_BOLD}[4/8]${COLOR_RESET} Configuring memory slot..."
   configure_memory_slot
+  allow_conversation_hooks
 
   echo ""
   info "${COLOR_BOLD}[5/8]${COLOR_RESET} AI provider setup..."

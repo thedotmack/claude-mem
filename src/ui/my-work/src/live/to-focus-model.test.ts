@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { focusAreaLabel, resolveFocusAreaId, suggestionEditDecision } from './to-focus-model.ts'
+import { createFocusAreaResolver, focusAreaLabel, resolveFocusAreaId, suggestionEditDecision } from './to-focus-model.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { WorkViewFocusArea, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
@@ -81,6 +81,35 @@ test('a merge loop, a dismissed area or an unknown area reads "Sorting…" until
 test('a done area keeps its requests', () => {
   const model = mapFocus([area('fa_done', { status: 'done', name: 'Done one' })], [placed('r1', 'fa_done')])
   assert.equal(model.requests[0].focusAreaId, 'fa_done')
+})
+
+test('a model resolver reuses area indexing and resolved merge chains across many requests', () => {
+  const model = mapFocus([area('old', { mergedInto: 'middle' }), area('middle', { mergedInto: 'live' }), area('live')], [])
+  let indexReads = 0
+  let mergeReads = 0
+  for (const entry of model.focusAreas) {
+    const { id, mergedInto } = entry
+    Object.defineProperty(entry, 'id', { get: () => { indexReads++; return id } })
+    Object.defineProperty(entry, 'mergedInto', { get: () => { mergeReads++; return mergedInto } })
+  }
+  const resolve = createFocusAreaResolver(model.focusAreas)
+  assert.equal(resolve('old'), 'live')
+  const firstIndexReads = indexReads
+  const firstMergeReads = mergeReads
+  for (let index = 0; index < 10_000; index++) {
+    assert.equal(resolve(index % 2 ? 'old' : 'middle'), 'live')
+  }
+  assert.equal(indexReads, firstIndexReads, 'request count must not cause more area indexing')
+  assert.equal(mergeReads, firstMergeReads, 'request count must not retraverse a resolved merge chain')
+})
+
+test('separate model resolvers see changed placement and cannot keep an old merge decision', () => {
+  const old = mapFocus([area('old', { mergedInto: 'first' }), area('first'), area('second')], []).focusAreas
+  const resolveOld = createFocusAreaResolver(old)
+  assert.equal(resolveOld('old'), 'first')
+  const next = old.map((entry) => entry.id === 'old' ? { ...entry, mergedInto: 'second' } : entry)
+  assert.equal(createFocusAreaResolver(next)('old'), 'second')
+  assert.equal(resolveOld('old'), 'first')
 })
 
 test('an area carries its own owner-goals quotes; asks go under their area (following merges), the rest under Other', () => {

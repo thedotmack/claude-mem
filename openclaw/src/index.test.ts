@@ -22,7 +22,15 @@ async function unusedPort(): Promise<number> {
   return port;
 }
 
-function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
+// The hook set depends on the host: 2026.2.9 predates before_prompt_build;
+// 2026.2.17 through 2026.7.35 have both; 2026.8.1 on no longer know
+// before_agent_start.
+const CURRENT_OPENCLAW_HOST = "2026.11.2";
+const LEGACY_OPENCLAW_HOST = "2026.2.9";
+const BOTH_HOOKS_OPENCLAW_HOST = "2026.6.1";
+
+// Pass null for a host that reports no version.
+function createMockApi(pluginConfigOverride: Record<string, any> = {}, openClawHostVersion: string | null = CURRENT_OPENCLAW_HOST) {
   const logs: string[] = [];
   const sentMessages: Array<{ to: string; text: string; channel: string; opts?: any }> = [];
 
@@ -56,6 +64,7 @@ function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
       eventHandlers.get(event)!.push(callback);
     },
     runtime: {
+      version: openClawHostVersion ?? undefined,
       channel: {
         telegram: {
           sendMessageTelegram: async (to: string, text: string) => {
@@ -164,17 +173,22 @@ describe("worker request deadlines", () => {
     } finally { clearTimeout(timer); }
   }
 
-  for (const hook of ["before_agent_start", "before_prompt_build"]) {
+  // The legacy hook only inits the session; before_prompt_build inits and
+  // fetches context concurrently.
+  for (const [hook, hostVersion, expectedRequests] of [
+    ["before_agent_start", LEGACY_OPENCLAW_HOST, 1],
+    ["before_prompt_build", CURRENT_OPENCLAW_HOST, 2],
+  ] as const) {
     for (const stage of ["headers", "body"] as const) {
       it(`releases ${hook} when the worker stalls its ${stage}`, async () => {
         const server = await stalledWorker(stage);
-        const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1", syncMemoryFile: true });
+        const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1", syncMemoryFile: true }, hostVersion);
         claudeMemPlugin(api);
         const pending = fireEvent(hook, { prompt: "A public prompt" }, { sessionKey: "deadline", agentId: "main" });
         try {
           await bounded(pending);
-          await waitFor(() => server.closed() === 1);
-          assert.equal(server.requests(), 1);
+          await waitFor(() => server.closed() === expectedRequests);
+          assert.equal(server.requests(), expectedRequests);
           assert.ok(logs.some(line => line.includes("failed:")));
         } finally {
           await server.close();
@@ -198,7 +212,7 @@ describe("worker request deadlines", () => {
 
   it("counts stalled successful bodies as consecutive breaker failures", async () => {
     const server = await stalledWorker("body");
-    const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1" });
+    const { api, fireEvent, logs } = createMockApi({ workerPort: server.port, workerHost: "127.0.0.1" }, LEGACY_OPENCLAW_HOST);
     claudeMemPlugin(api);
     let pending: Promise<unknown> | undefined;
     try {
@@ -687,7 +701,7 @@ describe("before_prompt_build context injection", () => {
   it("does not write MEMORY.md or fetch context during capture", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "claude-mem-test-"));
     try {
-      const { api, fireEvent } = createMockApi({ workerPort });
+      const { api, fireEvent } = createMockApi({ workerPort }, LEGACY_OPENCLAW_HOST);
       claudeMemPlugin(api);
       const ctx = { sessionKey: "tool-sync", workspaceDir: tmpDir };
       await fireEvent("before_agent_start", { prompt: "Help me write a function" }, ctx);
@@ -770,6 +784,123 @@ describe("before_prompt_build context injection", () => {
     const url = decodeURIComponent(contextRequest!.url!);
     assert.ok(url.includes("openclaw,openclaw-debugger"), "should include both base and agent-scoped projects");
   });
+
+  for (const [hostVersion, registersLegacyHook] of [
+    [CURRENT_OPENCLAW_HOST, false],
+    ["2026.8.1", false],
+    ["2026.8.1-beta.1", false],
+    ["2026.7.35", true],
+    [BOTH_HOOKS_OPENCLAW_HOST, true],
+    ["2026.2.17", true],
+    [LEGACY_OPENCLAW_HOST, true],
+  ] as const) {
+    it(`${registersLegacyHook ? "registers" : "does not register"} before_agent_start on OpenClaw ${hostVersion}`, () => {
+      const { api, getEventHandlers } = createMockApi({ workerPort }, hostVersion);
+      claudeMemPlugin(api);
+      assert.equal(getEventHandlers("before_agent_start").length, registersLegacyHook ? 1 : 0);
+      assert.equal(getEventHandlers("before_prompt_build").length, 1);
+    });
+  }
+
+  // OpenClaw 2026.2.9 passes "unknown" as its runtime version.
+  for (const hostVersion of ["unknown", null] as const) {
+    it(`keeps before_agent_start when the host version is ${hostVersion === null ? "missing" : `"${hostVersion}"`}`, () => {
+      const { api, logs, getEventHandlers } = createMockApi({ workerPort }, hostVersion);
+      claudeMemPlugin(api);
+      assert.equal(getEventHandlers("before_agent_start").length, 1);
+      assert.equal(getEventHandlers("before_prompt_build").length, 1);
+      assert.ok(logs.some((line) => line.includes("host version") && line.includes("unreadable")));
+    });
+  }
+
+  // Hosts with both hooks hand before_prompt_build a prompt that can include
+  // rebuilt history; the raw prompt comes from before_agent_start.
+  for (const hostVersion of [BOTH_HOOKS_OPENCLAW_HOST, "unknown"] as const) {
+    it(`records only before_agent_start's raw prompt on OpenClaw ${hostVersion}`, async () => {
+      const { api, fireEvent } = createMockApi({ workerPort }, hostVersion);
+      claudeMemPlugin(api);
+      const ctx = { sessionKey: `both-hooks-${hostVersion}`, agentId: "main" };
+      const injected = await fireEvent("before_prompt_build", { prompt: "[history] earlier turn\nFix the login bug", messages: [] }, ctx);
+      await fireEvent("before_agent_start", { prompt: "Fix the login bug", messages: [] }, ctx);
+      const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+      assert.deepEqual(initRequests.map((r) => r.body.prompt), ["Fix the login bug"]);
+      assert.ok(injected?.appendSystemContext, "context injection is unchanged");
+    });
+  }
+
+  it("records before_prompt_build's explicit request even when before_agent_start is registered", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort }, BOTH_HOOKS_OPENCLAW_HOST);
+    claudeMemPlugin(api);
+    await fireEvent("before_prompt_build", {
+      prompt: "[history]\nFix the login bug", currentUserMessage: "Fix the login bug", currentUserMessageId: "msg-7", messages: [],
+    }, { sessionKey: "explicit-on-both", agentId: "main" });
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 1);
+    assert.equal(initRequests[0].body.prompt, "Fix the login bug");
+    assert.equal(initRequests[0].body.nativePromptId, "msg-7");
+  });
+
+  it("records the host's explicit request and its native ID as the session prompt", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    await fireEvent("before_prompt_build", {
+      prompt: "[history] earlier turn\nFix the login bug",
+      currentUserMessage: "Fix the login bug",
+      currentUserMessageId: "msg-42",
+      messages: [],
+    }, { sessionKey: "explicit-request", agentId: "main" });
+
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 1);
+    assert.equal(initRequests[0].body.prompt, "Fix the login bug");
+    assert.equal(initRequests[0].body.nativePromptId, "msg-42");
+    assert.equal(initRequests[0].body.platformSource, "openclaw");
+  });
+
+  for (const [label, event, expectedPrompt] of [
+    ["no explicit request", { prompt: "Help me", messages: [] }, "Help me"],
+    ["an ID the worker would refuse", { prompt: "Help me", currentUserMessage: "Help me", currentUserMessageId: "has space", messages: [] }, "Help me"],
+  ] as const) {
+    it(`records the prompt without a native ID for ${label}`, async () => {
+      const { api, fireEvent } = createMockApi({ workerPort });
+      claudeMemPlugin(api);
+      await fireEvent("before_prompt_build", event, { sessionKey: `no-native-${label}` });
+      const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
+      assert.ok(initRequest);
+      assert.equal(initRequest.body.prompt, expectedPrompt);
+      assert.equal(Object.hasOwn(initRequest.body, "nativePromptId"), false);
+    });
+  }
+
+  // OpenClaw sends an explicit empty currentUserMessage for image-only input or
+  // a continuation without a retained request; it must not fall back to history.
+  for (const [label, currentUserMessage] of [["empty", ""], ["blank", "  \n"]] as const) {
+    for (const hostVersion of [CURRENT_OPENCLAW_HOST, BOTH_HOOKS_OPENCLAW_HOST] as const) {
+      it(`records no prompt when the explicit request is ${label} on OpenClaw ${hostVersion}, and still injects context`, async () => {
+        const { api, fireEvent } = createMockApi({ workerPort }, hostVersion);
+        claudeMemPlugin(api);
+        const injected = await fireEvent("before_prompt_build", {
+          prompt: "[history] earlier turn", currentUserMessage, currentUserMessageId: "msg-continuation", messages: [],
+        }, { sessionKey: `no-text-${label}-${hostVersion}`, agentId: "main" });
+        assert.equal(receivedRequests.filter((r) => r.url === "/api/sessions/init").length, 0);
+        assert.ok(injected?.appendSystemContext, "context injection is unchanged");
+      });
+    }
+  }
+
+  for (const [label, config, agentId] of [
+    ["injection is disabled", { syncMemoryFile: false }, "main"],
+    ["the agent is excluded from injection", { syncMemoryFileExclude: ["snarf"] }, "snarf"],
+  ] as const) {
+    it(`still records the prompt when ${label}`, async () => {
+      const { api, fireEvent } = createMockApi({ workerPort, ...config });
+      claudeMemPlugin(api);
+      const result = await fireEvent("before_prompt_build", { prompt: "Help me", messages: [] }, { sessionKey: `record-${agentId}`, agentId });
+      assert.equal(result, undefined);
+      assert.equal(receivedRequests.filter((r) => r.url === "/api/sessions/init").length, 1);
+      assert.ok(!receivedRequests.some((r) => r.url?.startsWith("/api/context/inject")));
+    });
+  }
 });
 
 describe("SSE stream integration", () => {
@@ -1007,7 +1138,7 @@ describe("circuit breaker", () => {
       }
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const { api, fireEvent } = createMockApi({ workerPort: (server.address() as { port: number }).port });
+    const { api, fireEvent } = createMockApi({ workerPort: (server.address() as { port: number }).port }, LEGACY_OPENCLAW_HOST);
     claudeMemPlugin(api);
     const realDateNow = Date.now;
     let now = realDateNow();
@@ -1056,7 +1187,7 @@ describe("circuit breaker", () => {
   });
 
   it("logs individual failures while circuit is closed, then disabling when it opens", async () => {
-    const { api, logs, fireEvent } = createMockApi({ workerPort: await unusedPort() });
+    const { api, logs, fireEvent } = createMockApi({ workerPort: await unusedPort() }, LEGACY_OPENCLAW_HOST);
     claudeMemPlugin(api);
     await fireEvent("gateway_start", {}, {});
     const logsAfterReset = logs.length;

@@ -22,7 +22,7 @@ describe('My Work skills write in the owner\'s language', () => {
     expect(review).toMatch(/^> .*in <owner's language>/m);
     // The automatic refresh names the language in each question (refresh-task.ts); a step told nothing decides it alone.
     expect(review).toContain('if this task names none');
-    expect(text).toContain('names it in each question when `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` is set');
+    expect(text).toContain('names it in each question: `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` when it is set, otherwise the language its grouping step found in the asks');
   });
 
   it('request-progress keeps the wording My Rules and open requests key on', () => {

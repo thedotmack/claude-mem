@@ -1,5 +1,30 @@
 # Focus-area concept artwork
 
+## Current generation brief
+
+Use these prompts for the next artwork revision. The bundled images below still use the original November 8 briefs; changing a brief does not regenerate an image. Generation is an explicit authoring step, never a viewer request.
+
+The My Work shell uses warm paper (`#f7f1e9`), off-white cards (`#fffdf9`), cocoa ink (`#1f1a17`) and orange actions (`#fd6500`). The original lilac studio backgrounds and detailed miniature interfaces compete with that design. Keep the tactile paper-and-ceramic character, but make the subjects simpler and the palette warmer. Artwork is supporting content: the area name, goal and live status remain the focus.
+
+Build each prompt from the following shared direction, followed by exactly one subject brief. Keep the same direction for all eight images so they read as a family.
+
+> Create one decorative concept illustration for the My Work focus-area viewer. Use a restrained tactile editorial still life: warm ivory paper, matte off-white ceramic, soft stone and cocoa edges, with one small muted terracotta-orange accent inspired by #fd6500. Keep most of the image neutral; orange must not dominate or resemble an action button. Use a single compact, clearly recognizable silhouette made from no more than three main objects, with broad shapes and enough separation to read at 80 pixels. Give the objects quiet depth with soft diffuse light from the upper left and a short, subtle contact shadow. Compose on a landscape 3:2 canvas, centered with generous clear space on every side; keep the complete subject within the central 60% of the width and 70% of the height so it also works in a square thumbnail and a narrow side panel. Use a transparent background with clean antialiased edges; no opaque floor, studio wall, horizon, vignette or baked-in border. The illustration must sit comfortably on both cream and dark cocoa UI surfaces. No text, letters, numbers, logos, watermarks, people, screens, UI controls, checkboxes, dashboards, charts with axes, diagram overlays, orbital guide lines, tiny decorative marks, neon, purple or lilac color cast, glossy plastic, dramatic shadows, confetti or success badges. Show only the subject below, without depicting a user's records or claiming progress.
+
+| Asset | Subject brief to append |
+| --- | --- |
+| `workspace.webp` | Two gently overlapping upright ivory paper panels and one small terracotta tab, suggesting bringing scattered work into one view. Panels are plain sculptural paper shapes with a folded corner, not miniature application windows. |
+| `sync.webp` | Two rounded ivory ceramic tiles linked by one broad folded paper ribbon with a small terracotta joint, suggesting continuity across devices. Keep both tiles blank and close together, with no screens, arrows or floating particles. |
+| `knowledge.webp` | One small open ivory archive box holding three broad paper cards and one simple terracotta index tab, suggesting useful knowledge kept within reach. No writing, tiny rules, magnifying-glass lens or extra desk accessories. |
+| `collaboration.webp` | Three simple ivory ceramic arches meeting around one small terracotta connector, suggesting separate contributors working together. Use a compact grouping with clear gaps; no connecting-line network, compass or additional platform. |
+| `metrics.webp` | Three broad matte ceramic columns of different heights standing closely together, with a restrained terracotta cap on one column, suggesting comparison and measurement. Keep the heights neutral, without an upward trend, axes, ticks, numbers, arrow or measuring tool. |
+| `storytelling.webp` | One folded ivory paper strip opening into three broad panels, with one simple terracotta geometric shape on the middle panel, suggesting an idea taking shape as a story. No pictures within pictures, film perforations, prism, play button or extra frames. |
+| `momentum.webp` | Three low ivory ceramic stepping stones with one small terracotta connecting piece, suggesting a steady path through work. Keep the path open-ended and level in tone; no finish line, flags, checkmarks, rocket, trophy or implication of completion. |
+| `wellbeing.webp` | One simple ivory ceramic cup beside one small softly shaped sage leaf, with a tiny terracotta accent on the cup, suggesting a sustainable everyday rhythm. No steam filigree, clocks, medical symbols or extra desk accessories. |
+
+Set transparent-background generation explicitly when the image tool provides that option. Inspect every result at 80×80 and in the full overview and selected-area header, in both themes. Reject cropped silhouettes, illegible small details, opaque background rectangles, faux UI, or accents that compete with the live text. Export to WebP preserving transparency; keep the existing 1000×667 maximum size and compare transfer size against the original asset before replacement. Reuse one accepted image per stable subject. Do not regenerate for request counts, status changes, theme changes or artwork-density settings.
+
+## Original bundled artwork and provenance
+
 Generated on 2026-11-08 with the built-in image generation tool. These images illustrate broad concepts; they are decorative and do not constitute evidence of progress, success, or the contents of a person's actual work.
 
 All eight originals were visually inspected after generation. Accepted: consistent tactile ivory/lilac/copper palette, identifiable subjects, no text or branding, and clear cropped compositions. Source images are 1536×1024 PNG; bundled files are resized to 1000×667 WebP (quality 86) to reduce transfer and decode cost. No remote runtime dependency or automatic image-generation calls are introduced.
