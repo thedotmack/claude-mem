@@ -177,7 +177,7 @@ The observation feed shows `disconnected` because we haven't configured it yet. 
 
 Have an agent do some work. The plugin automatically records observations through these OpenClaw events:
 
-1. **`before_prompt_build`** — Records the user's prompt in a claude-mem session and injects the observation timeline into the agent's system prompt (cached for 60s). OpenClaw older than 2026.2.17 has no `before_prompt_build`, so there the prompt is recorded on `before_agent_start`.
+1. **`before_prompt_build`** — Records the user's prompt in a claude-mem session and injects the observation timeline into the agent's system prompt (cached for 60s). OpenClaw before 2026.8.1 still has `before_agent_start`, which carries the raw user prompt, so there the prompt is recorded on `before_agent_start` instead.
 2. **`after_tool_call`** — Records each tool use (Read, Write, Bash, etc.) as an observation
 3. **`agent_end`** — Summarizes the session and marks it complete
 
@@ -408,7 +408,7 @@ Every tool use (Read, Write, Bash, etc.) is sent to the claude-mem worker as an 
 
 ### Session lifecycle
 
-- **`before_prompt_build`** — Records the user's request in the worker session, and fetches the observation timeline to return as `appendSystemContext`. Cached for 60s. On OpenClaw older than 2026.2.17, `before_agent_start` records the prompt instead.
+- **`before_prompt_build`** — Records the user's request in the worker session, and fetches the observation timeline to return as `appendSystemContext`. Cached for 60s. On OpenClaw before 2026.8.1, `before_agent_start` records the raw prompt instead.
 - **`after_tool_call`** — Records observation (fire-and-forget) from the call's params and result; a failed call's response starts with its error text. Tool responses are truncated to 1000 characters.
 - **`agent_end`** — Sends the last assistant message for summarization, then completes the session. Both fire-and-forget.
 - **`gateway_start`** — Clears all session tracking (session IDs, context cache) so agents start fresh.

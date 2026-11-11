@@ -161,20 +161,20 @@ interface OpenClawPluginApi {
   };
 }
 
-// OpenClaw 2026.2.17 added before_prompt_build, which carries the user prompt
-// and replaces before_agent_start. Hosts from 2026.8.1 on reject
-// before_agent_start as an unknown typed hook, so it is registered only for
-// hosts older than this (which have no other hook that carries the prompt) and
-// for hosts whose version is unreadable.
-const FIRST_OPENCLAW_VERSION_WITH_BEFORE_PROMPT_BUILD = [2026, 2, 17] as const;
+// OpenClaw's validated hook set has before_agent_start through 2026.7.35 and
+// drops it from 2026.8.1-beta.1 on, where registering it only produces an
+// "unknown typed hook" warning. While a host has it, it carries the raw user
+// prompt; before_prompt_build's `prompt` there may include rebuilt history.
+const FIRST_OPENCLAW_VERSION_WITHOUT_BEFORE_AGENT_START = [2026, 8, 1] as const;
 
-function openClawHostLacksBeforePromptBuild(hostVersion: string | undefined): boolean | null {
+/** null when the host's version is unreadable (OpenClaw 2026.2.9 reports "unknown"). */
+function openClawHostHasBeforeAgentStart(hostVersion: string | undefined): boolean | null {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(hostVersion ?? "");
   if (!match) return null;
   const hostParts = match.slice(1, 4).map(Number);
   for (let i = 0; i < hostParts.length; i++) {
-    const required = FIRST_OPENCLAW_VERSION_WITH_BEFORE_PROMPT_BUILD[i];
-    if (hostParts[i] !== required) return hostParts[i] < required;
+    const boundary = FIRST_OPENCLAW_VERSION_WITHOUT_BEFORE_AGENT_START[i];
+    if (hostParts[i] !== boundary) return hostParts[i] < boundary;
   }
   return false;
 }
@@ -818,7 +818,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   // Centralized session-init POST. session_start, after_compaction, and the
-  // prompt hook (before_prompt_build, or before_agent_start on old hosts) each
+  // prompt hook (before_agent_start while the host has it, else before_prompt_build) each
   // call this; the 2s dedup guard (shouldSkipDuplicatePromptInit) collapses the
   // redundant inits a single user-message flow produces into one prompt record,
   // while still ensuring a session is initialized even on flows that never
@@ -857,25 +857,26 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await initSessionOnce(ctx, "after compaction", "after_compaction");
   });
 
-  // OpenClaw 2026.2.9 through at least 2026.3.2 report their version as
-  // "unknown". Such a host may predate before_prompt_build, so keep
-  // before_agent_start too. A host with both runs them back to back with the
-  // same prompt, and the duplicate-init guard records it once.
-  const hostLacksBeforePromptBuild = openClawHostLacksBeforePromptBuild(api.runtime?.version);
-  if (hostLacksBeforePromptBuild === null) {
-    api.logger.info(`[claude-mem] OpenClaw host version "${api.runtime?.version ?? ""}" is unreadable; recording prompts on both before_prompt_build and before_agent_start`);
+  // Record each prompt from the cleanest source the host has: the raw prompt on
+  // before_agent_start while the host still has that hook (2026.2.9 through at
+  // least 2026.3.2 report their version as "unknown", and those all have it),
+  // otherwise the explicit request on before_prompt_build.
+  const hostHasBeforeAgentStart = openClawHostHasBeforeAgentStart(api.runtime?.version);
+  const recordPromptOnBeforeAgentStart = hostHasBeforeAgentStart !== false;
+  if (hostHasBeforeAgentStart === null) {
+    api.logger.info(`[claude-mem] OpenClaw host version "${api.runtime?.version ?? ""}" is unreadable; recording prompts on before_agent_start`);
   }
-  if (hostLacksBeforePromptBuild !== false) {
+  if (recordPromptOnBeforeAgentStart) {
     api.on("before_agent_start", async (event, ctx) => {
       await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
     });
   }
 
-  // On hosts without before_prompt_build this never fires; before_agent_start
-  // records the prompt there instead.
   api.on("before_prompt_build", async (event, ctx) => {
-    // Prefer the host's explicit request: `prompt` may contain reconstructed history.
+    // `prompt` may contain reconstructed history, so it is a prompt source only
+    // when the host has no before_agent_start.
     const hasExplicitRequest = typeof event.currentUserMessage === "string";
+    const recordPrompt = hasExplicitRequest || !recordPromptOnBeforeAgentStart;
     const promptText = (hasExplicitRequest ? event.currentUserMessage : event.prompt) || "agent run";
     const nativePromptId = hasExplicitRequest && typeof event.currentUserMessageId === "string"
       && WORKER_ACCEPTED_NATIVE_PROMPT_ID.test(event.currentUserMessageId)
@@ -883,7 +884,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       : undefined;
 
     const [, contextText] = await Promise.all([
-      initSessionOnce(ctx, promptText, "before_prompt_build", nativePromptId),
+      recordPrompt ? initSessionOnce(ctx, promptText, "before_prompt_build", nativePromptId) : Promise.resolve(),
       shouldInjectContext(ctx) ? getContextForPrompt(ctx) : Promise.resolve(null),
     ]);
     if (contextText) {

@@ -42,7 +42,7 @@ OpenClaw Gateway
   <Step title="Prompt recorded and context injected (before_prompt_build)">
     Before the agent's prompt is built, the plugin sends the user's request to `POST /api/sessions/init` so the worker can create or continue the session. When OpenClaw supplies a request ID, a rebuilt or retried request keeps it, so the worker does not record the prompt twice. At the same time it fetches the observation timeline from the worker's `/api/context/inject` endpoint and returns it as `appendSystemContext`. This injects cross-session context directly into the agent's system prompt without writing any files.
 
-    OpenClaw older than 2026.2.17 has no `before_prompt_build`. There the plugin records the prompt on `before_agent_start` instead.
+    OpenClaw before 2026.8.1 still has `before_agent_start`, which carries the raw user prompt, so there the plugin records the prompt on `before_agent_start` instead. On those versions the `prompt` that `before_prompt_build` receives can include rebuilt history.
 
     The context is cached for 60 seconds to avoid re-fetching on every LLM turn within a session.
   </Step>
