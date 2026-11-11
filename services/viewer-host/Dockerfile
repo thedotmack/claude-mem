@@ -1,6 +1,13 @@
-# Cloud viewer host. Build from the repository root, so the built plugin/ is in
-# the context:
+# Cloud viewer host: one image for the router and every account's viewer
+# machine (src/index.ts, VIEWER_ROLE). Build from the repository root, so the
+# built plugin/ is in the context. Today production runs fly.toml (one owner):
+#   npm run build
 #   fly deploy --config services/viewer-host/fly.toml --dockerfile services/viewer-host/Dockerfile .
+# After the router cutover (see fly.router.toml), every release is:
+#   1. npm run build
+#   2. fly deploy --config services/viewer-host/fly.router.toml --dockerfile services/viewer-host/Dockerfile .
+#   3. bun services/viewer-host/scripts/rollout-image.ts --only <one cmem-vw- app>, check it
+#   4. bun services/viewer-host/scripts/rollout-image.ts
 FROM oven/bun:1.4-debian
 
 WORKDIR /app

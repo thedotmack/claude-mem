@@ -71,7 +71,7 @@ export interface GateOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function readCookie(request: Request, name: string): string | null {
+export function readCookie(request: Request, name: string): string | null {
   for (const part of (request.headers.get('cookie') ?? '').split(';')) {
     const [key, ...rest] = part.trim().split('=');
     if (key === name) return rest.join('=');
@@ -79,18 +79,18 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}): Response {
+export function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.55 ui-sans-serif,system-ui,sans-serif}main{width:min(30rem,calc(100vw - 32px));text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}a{display:inline-block;padding:.75rem 1.25rem;min-height:44px;box-sizing:border-box}</style>
 </head><body><main><h1>${title}</h1>${body}</main></body></html>`;
   return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders } });
 }
 
-function json(status: number, data: unknown): Response {
+export function json(status: number, data: unknown): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 }
 
-const wantsHtml = (request: Request) => request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
+export const wantsHtml = (request: Request) => request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
 
 /**
  * The path as the worker's router may read it: Express matches routes without

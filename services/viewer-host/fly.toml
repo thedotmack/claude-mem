@@ -13,6 +13,7 @@ app = "cmem-viewer"
 primary_region = "iad"
 
 [env]
+  VIEWER_ROLE = "account"
   VIEWER_SIGN_IN_URL = "https://cmem.ai/work"
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL = "https://sync.cmem.ai"
 
