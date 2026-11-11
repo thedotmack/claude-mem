@@ -1,7 +1,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { hasStorableTitle } from '../../sqlite/observations/store.js';
-import { parseAgentXml, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { maskXmlLiteralMarkup, parseAgentXml, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
   isAnthropicVerificationHoldObserverOutput,
@@ -637,7 +637,7 @@ export function isOutputCapFinishReason(finishReason: string | null | undefined)
  * close after it, so it begins the cut-off tail.
  */
 export function hasUnfinishedObservationBlock(text: string): boolean {
-  const outsideWholeBlocks = text
+  const outsideWholeBlocks = maskXmlLiteralMarkup(text)
     .replace(/<observation>[\s\S]*?<\/observation>/gi, '')
     .replace(/<summary>[\s\S]*?<\/summary>/gi, '')
     .replace(new RegExp(SKIP_SUMMARY_TAG.source, 'gi'), '');
