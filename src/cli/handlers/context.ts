@@ -8,9 +8,12 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import {
   executeWithWorkerFallback,
   isWorkerFallback,
+  isWorkerUnavailableError,
+  type WorkerCallResult,
   getWorkerPort,
   getViewerBaseUrl,
   consumeWorkerOutageNotice,
+  recordWorkerUnreachable,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -37,6 +40,7 @@ import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
+import { consumeTelemetryNotice } from '../../services/telemetry/consent.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -102,8 +106,8 @@ export function sessionStartBannerFooter(viewerUrl: string, timelineRowCount: nu
 }
 
 /**
- * The user-visible SessionStart `systemMessage`: the once-per-session
- * worker-outage notice and the header lines, the terminal preview, then a
+ * The user-visible SessionStart `systemMessage`: any worker-outage or first-use
+ * telemetry notice and the header lines, the terminal preview, then a
  * blank line and the closing viewer line with the count of rows shown. Claude
  * Code replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
  * (#5079), and neither the notice nor a server-runtime viewer URL is bounded by
@@ -117,11 +121,11 @@ export function composeSessionStartSystemMessage(
   preview: string | null,
   bannerHeader: string,
   viewerUrl: string,
-  workerOutageNotice: string | null,
+  userNotice: string | null,
   limit: number = CONTEXT_OUTPUT_LIMIT,
 ): string | undefined {
-  if (preview === null) return workerOutageNotice ?? undefined;
-  const top = [workerOutageNotice, bannerHeader].filter(Boolean).map(part => `${part}\n\n`).join('');
+  if (preview === null) return userNotice ?? undefined;
+  const top = [userNotice, bannerHeader].filter(Boolean).map(part => `${part}\n\n`).join('');
   let fittedPreview = preview.replace(/^\n+/, '').trimEnd();
   // Measured with every row counted; cutting rows only shortens the count.
   const longestBottom = `\n\n${sessionStartBannerFooter(viewerUrl, countTerminalTimelineRows(fittedPreview))}`;
@@ -324,6 +328,14 @@ export const contextHandler: EventHandler = {
       return emptyResult;
     }
 
+    // Disclosures belong to the user, including with the timeline banner off.
+    // Consume only when returning a result, so a failed async read cannot mark
+    // an undelivered disclosure as shown. Other hosts use their installer flow.
+    const userNotice = (workerNotice: string | null = null): string | null => [
+      workerNotice,
+      input.platform === 'claude-code' ? consumeTelemetryNotice() : null,
+    ].filter(Boolean).join('\n\n') || null;
+
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
@@ -476,9 +488,17 @@ export const contextHandler: EventHandler = {
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
     let workerOutageNotice: string | null = null;
-    let contextResult = serverRender
-      ? serverRender.model
-      : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    let contextResult: WorkerCallResult<string>;
+    try {
+      contextResult = serverRender
+        ? serverRender.model
+        : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    } catch (error) {
+      if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+      await recordWorkerUnreachable();
+      const notice = userNotice(await consumeWorkerOutageNotice(input.sessionId));
+      return notice ? { ...emptyResult, systemMessage: notice } : emptyResult;
+    }
     if (showLastMessage && isWorkerFallback(contextResult)) {
       const cachedFallback = readCachedRender(false);
       if (cachedFallback !== null) {
@@ -489,7 +509,7 @@ export const contextHandler: EventHandler = {
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
-      const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      const outageNotice = userNotice(await consumeWorkerOutageNotice(input.sessionId));
       return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
     }
 
@@ -500,20 +520,26 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-      return emptyResult;
+      return { ...emptyResult, systemMessage: userNotice() ?? undefined };
     }
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
       const colors = input.platform === 'claude-code';
-      const colorResult = serverRender
-        ? serverRender.terminal
-        : (showLastMessage ? null : readCachedRender(colors))
-          ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
-      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-        coloredTimeline = colorResult.trim();
-      } else if (showLastMessage && isWorkerFallback(colorResult)) {
-        coloredTimeline = readCachedRender(colors)?.trim() ?? '';
+      try {
+        const colorResult = serverRender
+          ? serverRender.terminal
+          : (showLastMessage ? null : readCachedRender(colors))
+            ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+          coloredTimeline = colorResult.trim();
+        } else if (showLastMessage && isWorkerFallback(colorResult)) {
+          coloredTimeline = readCachedRender(colors)?.trim() ?? '';
+        }
+      } catch (error) {
+        if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+        await recordWorkerUnreachable();
+        workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
       }
     }
 
@@ -555,7 +581,7 @@ export const contextHandler: EventHandler = {
       showsBanner ? displayContent : null,
       sessionStartBannerHeader(trialDaysLine, teamBrainDiscoveryLine, settings.CLAUDE_MEM_PRO_PLAN),
       viewerUrl,
-      workerOutageNotice,
+      userNotice(workerOutageNotice),
     );
 
     return {

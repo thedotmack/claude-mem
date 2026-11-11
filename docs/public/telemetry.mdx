@@ -5,6 +5,11 @@ description: "Anonymous usage analytics — on by default, fully documented, one
 
 # Telemetry
 
+Marketplace installs show a one-time disclosure in the first Claude Code session,
+with the collected data categories, opt-out controls, and a link to this page.
+It is a user-visible notice, not model context or a consent decision. Installs
+with an explicit telemetry choice in the environment or config do not repeat it.
+
 Claude-mem includes anonymous usage analytics (via PostHog) to help prioritize fixes and features.
 
 **It is on by default (opt-out).** Events are anonymous, identified only by a random install UUID, and every analytics property passes a strict whitelist — see [What is collected](#what-is-collected) and [What is NEVER collected](#what-is-never-collected) below. Turning it off is one command:
@@ -347,3 +352,13 @@ Consent and the anonymous install ID are stored in `telemetry.json` inside the c
 ```
 
 The `enabled` field is only present once you've made an explicit choice (installer prompt, `telemetry enable`, or `telemetry disable`). A file with just an `installId` means no decision was recorded and the default (on) applies. Delete the file to reset completely — a fresh install ID is generated on next use.
+
+An optional `noticeShownAt` timestamp remembers that the first-session disclosure
+was displayed. It does not enable or disable telemetry and does not create an
+install ID or record a consent decision.
+
+Config updates serialize the full read and write so a session notice cannot
+overwrite a concurrent opt-out. If a command reports that `telemetry.json.lock`
+is held, the choice was not saved: retry after the other command finishes. If
+that command was interrupted, remove its empty lock directory before retrying.
+The first-session notice still appears if recording its display fails.
