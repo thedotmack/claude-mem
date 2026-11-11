@@ -8,7 +8,7 @@ server = FastMCP("Strands memory test")
 
 
 @server.tool
-async def search(query: str, project: str, projects: list[str] | None = None) -> str:
+async def search(query: str, project: str, projects: str | None = None) -> str:
     if query == "error":
         raise ValueError("fixture unavailable")
     if query == "stall":
@@ -22,12 +22,12 @@ async def save_memory(text: str, title: str, project: str, metadata: dict) -> st
 
 
 @server.tool
-async def timeline(anchor: int, project: str, projects: list[str] | None = None) -> str:
+async def timeline(anchor: int, project: str, projects: str | None = None) -> str:
     return str(anchor)
 
 
 @server.tool
-async def get_observations(ids: list[int], project: str, projects: list[str] | None = None) -> str:
+async def get_observations(ids: list[int], project: str, projects: str | None = None) -> str:
     return json.dumps({"ids": ids, "project": project})
 
 
