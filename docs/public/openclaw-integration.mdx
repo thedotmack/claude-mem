@@ -21,8 +21,7 @@ OpenClaw's embedded runner (`pi-embedded`) calls the Anthropic API directly with
 ```plaintext
 OpenClaw Gateway
   │
-  ├── before_agent_start ───→ Init session
-  ├── before_prompt_build ──→ Inject context into system prompt
+  ├── before_prompt_build ──→ Record prompt + inject context into system prompt
   ├── after_tool_call ──────→ Record observation
   ├── agent_end ────────────→ Summarize + Complete session
   └── gateway_start ────────→ Reset session tracking + context cache
@@ -40,11 +39,10 @@ OpenClaw Gateway
 ### Event Lifecycle
 
 <Steps>
-  <Step title="Agent starts (before_agent_start)">
-    When an OpenClaw agent starts, the plugin initializes a session by sending the user prompt to `POST /api/sessions/init` so the worker can create a new session and start processing.
-  </Step>
-  <Step title="Context injected (before_prompt_build)">
-    Before each LLM call, the plugin fetches the observation timeline from the worker's `/api/context/inject` endpoint and returns it as `appendSystemContext`. This injects cross-session context directly into the agent's system prompt without writing any files.
+  <Step title="Prompt recorded and context injected (before_prompt_build)">
+    Before the agent's prompt is built, the plugin sends the user's request to `POST /api/sessions/init` so the worker can create or continue the session. When OpenClaw supplies a request ID, a rebuilt or retried request keeps it, so the worker does not record the prompt twice. At the same time it fetches the observation timeline from the worker's `/api/context/inject` endpoint and returns it as `appendSystemContext`. This injects cross-session context directly into the agent's system prompt without writing any files.
+
+    OpenClaw before 2026.8.1 still has `before_agent_start`, which carries the raw user prompt, so there the plugin records the prompt on `before_agent_start` instead. On those versions the `prompt` that `before_prompt_build` receives can include rebuilt history.
 
     The context is cached for 60 seconds to avoid re-fetching on every LLM turn within a session.
   </Step>
@@ -197,14 +195,16 @@ Add the `observationFeed` block to your claude-mem plugin config in your OpenCla
 ```json
 {
   "plugins": {
-    "claude-mem": {
-      "enabled": true,
-      "config": {
-        "project": "my-project",
-        "observationFeed": {
-          "enabled": true,
-          "channel": "telegram",
-          "to": "123456789"
+    "entries": {
+      "claude-mem": {
+        "enabled": true,
+        "config": {
+          "project": "my-project",
+          "observationFeed": {
+            "enabled": true,
+            "channel": "telegram",
+            "to": "123456789"
+          }
         }
       }
     }
@@ -263,6 +263,8 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 The installer handles dependency checks (Bun, uv), plugin installation, memory slot configuration, AI provider setup, worker startup, and optional observation feed configuration.
 
+Newer OpenClaw asks before installing a plugin from outside ClawHub, and cancels the install when no terminal can answer, as with `curl | bash`. The installer builds claude-mem from this repository and confirms that install with `--force` and `--accept-capabilities` on OpenClaw versions that offer those flags. It then allows the plugin's conversation hooks (see [Manual Configuration](#manual-configuration)). On older OpenClaw, which has neither the flags nor the gate, it skips both.
+
 You can also pre-select options:
 
 ```bash
@@ -283,22 +285,29 @@ Add `claude-mem` to your OpenClaw gateway's plugin configuration:
 ```json
 {
   "plugins": {
-    "claude-mem": {
-      "enabled": true,
-      "config": {
-        "project": "my-project",
-        "syncMemoryFile": true,
-        "workerPort": 37777,
-        "observationFeed": {
-          "enabled": true,
-          "channel": "telegram",
-          "to": "your-chat-id"
+    "entries": {
+      "claude-mem": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true },
+        "config": {
+          "project": "my-project",
+          "syncMemoryFile": true,
+          "workerPort": 37777,
+          "observationFeed": {
+            "enabled": true,
+            "channel": "telegram",
+            "to": "your-chat-id"
+          }
         }
       }
     }
   }
 }
 ```
+
+On OpenClaw versions that gate conversation hooks, a plugin installed from outside the bundled set must be allowed to use them. Without `hooks.allowConversationAccess`, OpenClaw loads claude-mem but blocks `before_prompt_build` and `agent_end`, so no prompts, context or summaries are recorded. The installer sets this for you; by hand, run `openclaw config set plugins.entries.claude-mem.hooks.allowConversationAccess true`. Older OpenClaw without the gate, such as 2026.2.9, rejects the `hooks` key as an unrecognized key, so leave it out there.
+
+Check what OpenClaw registered with `openclaw plugins inspect claude-mem --runtime --json`: `typedHooks` should list `before_prompt_build` and `agent_end`, and `diagnostics` should be empty. (Older OpenClaw has no `inspect`; use `openclaw plugins info claude-mem --json`.)
 
 <Note>
 The claude-mem worker service must be running on the same machine as the OpenClaw gateway. The plugin communicates with it via HTTP on `localhost:37777`.

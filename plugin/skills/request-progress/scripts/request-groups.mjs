@@ -1028,6 +1028,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
         CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(defaultSessionInitRequestTimeoutMs()),
         // 10s; 7s on Windows, whose hook start-up the budget never sees
+        CLAUDE_MEM_HOOK_HANDOFF_TIMEOUT_MS: "250",
         // Worker idle exit (opt-in; minimum 60): after this many seconds with no
         // session activity, no queued work, no open or recent requests and no AI
         // interaction, the worker shuts itself down through the graceful stop
@@ -1354,8 +1355,10 @@ var init_SettingsDefaultsManager = __esm({
         // #5164 — same for Codex; empty keeps the per-step table
         CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: "",
         // #5164 — same for Gemini; empty keeps flash-lite/flash per step
+        CLAUDE_MEM_WORK_VIEW_API_MODEL: "",
+        // Model for every My Work refresh step on the selected API provider; empty keeps the provider's configured model
         CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE: "",
-        // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. Never detected by a model; empty lets the skills pick the owner's language
+        // Language for My Work's generated text (titles, reviews, story), such as 'Turkish'. No extra model call; empty uses the language the grouping step finds in the owner's asks, decided once per run (#5660)
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
         CLAUDE_MEM_BACKUP_ENABLED: "false",
         CLAUDE_MEM_BACKUP_INTERVAL_HOURS: "24",
@@ -1733,6 +1736,15 @@ function urlsIn(value, found = []) {
   }
   return found;
 }
+function commitShaResolver(shas) {
+  const prefixes = /* @__PURE__ */ new Map();
+  for (const sha of shas) for (let length = 7; length <= sha.length; length++) {
+    const prefix = sha.slice(0, length), known = prefixes.get(prefix);
+    if (known === void 0 || known !== null && sha.startsWith(known)) prefixes.set(prefix, sha);
+    else if (known !== null && !known.startsWith(sha)) prefixes.set(prefix, null);
+  }
+  return (sha) => prefixes.has(sha) ? prefixes.get(sha) : sha;
+}
 function githubRepo(remote) {
   const match = typeof remote === "string" ? remote.trim().match(GITHUB_REMOTE) : null;
   return match ? `${match[1]}/${match[2]}` : null;
@@ -1761,9 +1773,8 @@ function commitSubjects(command2) {
 function commitsFrom(command2, response, out) {
   const commits = /* @__PURE__ */ new Map();
   const add = (sha, branch, subject) => {
-    const key = sha.slice(0, 7);
-    const known = commits.get(key);
-    commits.set(key, { sha: known?.sha.length > sha.length ? known.sha : sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
+    const known = commits.get(sha);
+    commits.set(sha, { sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
   };
   const recorded = response?.gitOperation?.commit;
   const subjects = commitSubjects(command2);
@@ -1783,7 +1794,13 @@ function commitsFrom(command2, response, out) {
       }
     }
   }
-  return [...commits.values()];
+  const resolveSha = commitShaResolver([...commits.keys()]);
+  const unique = /* @__PURE__ */ new Map();
+  for (const commit of commits.values()) {
+    const sha = resolveSha(commit.sha) ?? commit.sha, known = unique.get(sha);
+    unique.set(sha, { ...commit, sha, branch: commit.branch ?? known?.branch ?? null, subject: commit.subject ?? known?.subject ?? null });
+  }
+  return [...unique.values()];
 }
 function pushTargets(command2) {
   const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, "g");
@@ -1848,8 +1865,12 @@ function pushesFrom(command2, response, out) {
   return [...pushes.values()];
 }
 function createdBranchesFrom(command2, out) {
-  if (/^fatal:/m.test(out)) return [];
-  return [...command2.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, "g"))].map((match) => ({ branch: unquote(match[1]), repo: null, heads: [] }));
+  const requested = [...new Set([...command2.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, "g"))].map((match) => unquote(match[1])))];
+  const confirmed = new Set([...out.matchAll(/^(?:Switched to a new branch|Switched to and reset branch|Reset branch) '(.+)'\r?$/gm)].map((match) => match[1]));
+  if (confirmed.size > 0 || /^(?:fatal:|error:|Already on ')/m.test(out)) {
+    return requested.filter((branch) => confirmed.has(branch)).map((branch) => ({ branch, repo: null, heads: [] }));
+  }
+  return requested.filter((branch) => out.includes(`'${branch}'`)).map((branch) => ({ branch, repo: null, heads: [] }));
 }
 function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRef2 }) {
   if (!/(?:^|[;&|(\n])\s*(?:rtk\s+)?gh\s+pr\s+create\b/.test(command2)) return [];
@@ -1860,12 +1881,35 @@ function pullRequestFrom(command2, response, out, { atEpoch, sourceRef: sourceRe
   const titleText = title?.[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, "$1") ?? title?.[2] ?? title?.[3];
   return [{ kind: "pull-request", title: short(titleText) ?? `PR #${url.split("/").at(-1)}`, url, atEpoch, sourceRef: sourceRef2 }];
 }
+function pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 }) {
+  const repoPart = (value) => typeof value === "string" && /^[\w.-]+$/.test(value);
+  const numericId = (value) => typeof value === "string" && /^[1-9]\d*$/.test(value) || Number.isSafeInteger(value) && value > 0;
+  if (!repoPart(input.owner) || !repoPart(input.repo)) return [];
+  const refused = (value) => value?.isError === true || value?.is_error === true || value?.error != null || value?.status === "awaiting_user_submission";
+  if (refused(response) || refused(response?.structuredContent)) return [];
+  const blocks = Array.isArray(response) ? response : response?.content;
+  const candidates = [
+    response?.structuredContent,
+    response,
+    ...Array.isArray(blocks) ? blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => parse(block.text)) : []
+  ];
+  for (const result of candidates) {
+    if (!result || typeof result !== "object" || refused(result) || !numericId(result.id)) continue;
+    const url = safeWebUrl(result.html_url ?? result.url);
+    if (!url) continue;
+    const parsed = new URL(url), path4 = /^\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.port || parsed.search || parsed.hash || !path4 || path4[1].toLowerCase() !== input.owner.toLowerCase() || path4[2].toLowerCase() !== input.repo.toLowerCase() || result.number !== void 0 && (!numericId(result.number) || String(result.number) !== path4[3])) continue;
+    return [{ kind: "pull-request", title: short(result.title ?? input.title) ?? `PR #${path4[3]}`, url, atEpoch, sourceRef: sourceRef2 }];
+  }
+  return [];
+}
 function gitProductsFromCommand(command2, response, out, { atEpoch = null, sourceRef: sourceRef2 = null } = {}) {
   const pushes = pushesFrom(command2, response, out);
   const branches = [...createdBranchesFrom(command2, out).filter((created) => !pushes.some((pushed) => pushed.branch === created.branch)), ...pushes];
   const products = [];
   for (const commit of commitsFrom(command2, response, out)) {
-    const pushed = commit.branch && pushes.find((push) => push.branch === commit.branch) || pushes.find((push) => push.heads.some((head) => head.startsWith(commit.sha.slice(0, 7)))) || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
+    const matchingPushes = pushes.filter((push) => push.heads.some((head) => matchingCommitSha(head, commit.sha)));
+    const pushed = commit.branch && pushes.find((push) => push.branch === commit.branch) || (matchingPushes.length === 1 ? matchingPushes[0] : null) || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
     products.push({ kind: "commit", title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef: sourceRef2 });
   }
   for (const branch of branches) products.push({ kind: "branch", title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef: sourceRef2 });
@@ -1875,6 +1919,7 @@ function productsFromToolUse(call) {
   const input = parse(call.tool_input) ?? {}, response = parse(call.tool_response);
   const sourceRef2 = { kind: "tool-use", id: call.id };
   const atEpoch = call.created_at_epoch ?? null;
+  if (GITHUB_PULL_REQUEST_TOOL.test(call.tool_name)) return pullRequestFromGitHubTool(input, response, { atEpoch, sourceRef: sourceRef2 });
   if (call.tool_name === "Bash" && typeof input.command === "string") {
     const out = outputText(call, response);
     return [...pullRequestFrom(input.command, response, out, { atEpoch, sourceRef: sourceRef2 }), ...gitProductsFromCommand(input.command, response, out, { atEpoch, sourceRef: sourceRef2 })];
@@ -1924,25 +1969,35 @@ function localProductId(ref) {
   return `local_${createHash2("sha256").update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest("hex")}`;
 }
 function mergeProducts(lists, limit = 60) {
-  const products = lists.flat();
+  const recorded = lists.flat();
+  const resolveSha = commitShaResolver(recorded.flatMap((product) => product.kind === "commit" && product.sha ? [product.sha] : product.heads ?? []));
+  const products = recorded.map((product) => product.kind === "commit" && product.sha ? { ...product, sha: resolveSha(product.sha) ?? product.sha } : product);
   const pushesByBranch = /* @__PURE__ */ new Map(), repoByHead = /* @__PURE__ */ new Map(), repoBySource = /* @__PURE__ */ new Map();
   for (const product of products) if (product.kind === "branch" && product.repo) {
     if (!pushesByBranch.has(product.branch)) pushesByBranch.set(product.branch, []);
     pushesByBranch.get(product.branch).push(product);
-    for (const head of product.heads ?? []) repoByHead.set(head.slice(0, 7), product.repo);
+    for (const head of product.heads ?? []) {
+      const sha = resolveSha(head);
+      if (sha === null) continue;
+      if (!repoByHead.has(sha)) repoByHead.set(sha, /* @__PURE__ */ new Set());
+      repoByHead.get(sha).add(product.repo);
+    }
   }
   const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
   const pushedAfter = (product) => {
     const repos = new Set((pushesByBranch.get(product.branch) ?? []).filter((push) => product.kind === "branch" || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0)).map((push) => push.repo));
     return repos.size === 1 ? [...repos][0] : null;
   };
-  const repoOf = (product) => product.repo ?? pushedAfter(product) ?? (product.sha ? repoByHead.get(product.sha.slice(0, 7)) : void 0) ?? null;
+  const repoOf = (product) => {
+    const repos = product.sha ? repoByHead.get(product.sha) : null;
+    return product.repo ?? pushedAfter(product) ?? (repos?.size === 1 ? [...repos][0] : null);
+  };
   for (const product of products) if (product.kind === "commit" && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
   const unique = /* @__PURE__ */ new Map();
   for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
     const isGit = product.kind === "commit" || product.kind === "branch";
     const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === "commit" ? repoBySource.get(sourceKey(product)) : null) : null;
-    const resolved = repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product;
+    const resolved = repo || isGit && product.repo ? { ...product, ...repo ? { repo } : {}, url: gitUrl({ ...product, repo: repo ?? product.repo }) } : product;
     const key = productKey(resolved);
     if (!unique.has(key)) unique.set(key, resolved);
   }
@@ -2053,7 +2108,7 @@ function readProductRecords(read, sinceEpoch, limit = 2e3, { database } = {}) {
     FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   return { productCalls, productObservations, productDeliverables };
 }
-var FILE_KINDS, PUBLISHING_TOOLS, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, BASH_DOUBLE_QUOTE_ESCAPE, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
+var FILE_KINDS, PUBLISHING_TOOLS, GITHUB_PULL_REQUEST_TOOL, WORK_PRODUCT_FIELDS, LEGACY_KINDS, MAX_TITLE, short, GIT_PREFIX, gitPattern, GITHUB_REMOTE, SHA, unquote, matchingCommitSha, BASH_DOUBLE_QUOTE_ESCAPE, productKey, FILE_EXTENSION_PATTERN, PUBLISHING_PRODUCT_PREDICATE, GIT_PRODUCT_PREDICATE, productIndexes;
 var init_work_product = __esm({
   "src/services/work-view/work-product.mjs"() {
     "use strict";
@@ -2082,6 +2137,7 @@ var init_work_product = __esm({
       { match: /chatgpt_space__create_page$/, kind: "page" },
       { match: /sites__save_version_and_deploy/, kind: "deployment" }
     ];
+    GITHUB_PULL_REQUEST_TOOL = /(?:^|__)create_pull_request$/;
     WORK_PRODUCT_FIELDS = /* @__PURE__ */ new Set(["work_product", "work_products", "deliverable", "deliverables"]);
     LEGACY_KINDS = { docs_url: "documentation", documentation_url: "documentation", promo_url: "promotion", announcement_url: "promotion", pr_url: "pull-request", deck_url: "deck", artifact_url: "artifact" };
     MAX_TITLE = 140;
@@ -2094,11 +2150,13 @@ var init_work_product = __esm({
     GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
     SHA = "[0-9a-f]{7,40}";
     unquote = (token) => token.replace(/^(["'])(.*)\1$/, "$2");
+    matchingCommitSha = (left, right) => left.startsWith(right) || right.startsWith(left);
     BASH_DOUBLE_QUOTE_ESCAPE = /\\([$`"\\])/g;
-    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha.slice(0, 7)}` : product.kind === "branch" && product.branch ? `branch:${product.repo ?? ""}:${product.branch}` : product.productId ?? product.url ?? product.path;
+    productKey = (product) => product.kind === "commit" && product.sha ? `commit:${product.sha}` : product.kind === "branch" && product.branch ? `branch:${product.repo ?? ""}:${product.branch}` : product.productId ?? product.url ?? product.path;
     FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
     PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
   OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
+  OR tool_name = 'create_pull_request' OR tool_name GLOB '*__create_pull_request'
   OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
     GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
   AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
@@ -2474,9 +2532,15 @@ function submoduleLeaf(info, repoRoot) {
   return relative.split(path2.sep).join("/");
 }
 function getProjectContext(cwd, platform = process.platform) {
+  return getProjectContextWithRoot(cwd, platform).context;
+}
+function getProjectContextWithRoot(cwd, platform = process.platform) {
   if (!cwd || cwd.trim() === "") {
     const fallback = getProjectName(cwd, platform);
-    return { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: "path" };
+    return {
+      context: { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: "path" },
+      repoRoot: null
+    };
   }
   const expandedCwd = expandHome(cwd, platform);
   const repoRoot = findGitRepoRoot(expandedCwd);
@@ -2484,7 +2548,10 @@ function getProjectContext(cwd, platform = process.platform) {
   const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
   const derivedContext = slug ? withPrimaryKey(pathContext, slug, "git-remote") : pathContext;
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment.name, "environment", environment.inherit) : derivedContext;
+  return {
+    context: environment ? withPrimaryKey(derivedContext, environment.name, "environment", environment.inherit) : derivedContext,
+    repoRoot
+  };
 }
 function withPrimaryKey(context, primary, keySource, readKeys = context.allProjects) {
   return {
@@ -2870,7 +2937,7 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
   const addProject = (request, project) => {
     if (typeof project === "string" && project && !request.projects.includes(project)) request.projects.push(project);
   };
-  for (const [key, session] of sessionsByKey) {
+  for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
     const original = originalFor(session, prompts);
     if (!original) continue;
@@ -2954,7 +3021,11 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
     if (!request.agentIds.length) {
       for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);
     }
-    request.scopeUpdates = related.filter((prompt) => !(request.original.source === "user-prompt" && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber)).sort((a, b) => (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || b.id - a.id).slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
+    request.scopeUpdates = related.filter((prompt) => !(request.original.source === "user-prompt" && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber)).sort((a, b) => {
+      const first = conversationKey(sessions.get(a.session_db_id)) ?? "";
+      const second = conversationKey(sessions.get(b.session_db_id)) ?? "";
+      return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || (first < second ? 1 : first > second ? -1 : 0) || b.id - a.id;
+    }).slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
     const streams = /* @__PURE__ */ new Map();
     for (const item of request.items) {
       const id = item.listId ?? JSON.stringify(["agent-session", item.agentId]);
@@ -3824,7 +3895,7 @@ function parseSharedRow(row, localDeviceId2, { redactionReceipt = null } = {}) {
   }
   fail("unknown record type");
 }
-var SHARED_WORK_PREFIX, SHARED_WORK_MAX_VALUE_BYTES, SHARED_WORK_MAX_MANIFEST_BYTES, SHARED_WORK_MAX_ROW_BYTES, SHARED_WORK_MAX_UPDATES, SHARED_WORK_MAX_PARTS, isSharedWorkList, sharedRecordKey, sharedValueHash, fail, text, hash, bytes, verifiedRedactionReference, exact, sharedEntryRef;
+var SHARED_WORK_PREFIX, SHARED_WORK_MAX_VALUE_BYTES, SHARED_WORK_MAX_MANIFEST_BYTES, SHARED_WORK_MAX_ROW_BYTES, SHARED_WORK_MAX_UPDATES, SHARED_WORK_MAX_PARTS, isSharedWorkList, sharedWorkListSql, sharedRecordKey, sharedValueHash, fail, text, hash, bytes, verifiedRedactionReference, exact, sharedEntryRef;
 var init_shared_records = __esm({
   "src/services/work-view/shared-records.mjs"() {
     "use strict";
@@ -3836,6 +3907,8 @@ var init_shared_records = __esm({
     SHARED_WORK_MAX_UPDATES = 512;
     SHARED_WORK_MAX_PARTS = 32;
     isSharedWorkList = (value) => typeof value === "string" && /^__my_work_v\d+:/.test(value);
+    sharedWorkListSql = (expression) => `(COALESCE(${expression}, '') GLOB '__my_work_v[0-9]*:*'
+  AND substr(${expression}, 12, instr(substr(${expression}, 12), ':') - 1) NOT GLOB '*[^0-9]*')`;
     sharedRecordKey = (kind, key) => canonicalJson([kind, key]);
     sharedValueHash = (kind, key, value, deleted = false) => sha256Base64Url(canonicalJson({ kind, key, value: deleted ? null : value, deleted }));
     fail = (message) => {
@@ -5639,7 +5712,11 @@ function harnessSetting(dataDir = dataDirectory()) {
     settings2 = nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
   } catch {
   }
-  return (key, fallback) => process.env[key] || (typeof settings2[key] === "string" && settings2[key] ? String(settings2[key]) : fallback);
+  return (key, fallback) => {
+    const value = settings2[key];
+    const saved = typeof value === "string" || typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+    return process.env[key] || saved || fallback;
+  };
 }
 function resolveHarnessWorkerUrl() {
   const dataDir = dataDirectory();
@@ -5680,6 +5757,7 @@ var isMyRulesList = (name) => name === MY_RULES_LIST;
 var ruleIdForPreference = (preference2) => `pref_${createHash5("sha256").update(String(preference2)).digest("hex").slice(0, 12)}`;
 var text3 = (value) => typeof value === "string" ? value.trim() : "";
 var count = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+var quoteCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 var shortQuote = (quote2) => quote2.length > MAX_QUOTE_CHARS ? `${quote2.slice(0, MAX_QUOTE_CHARS - 1)}\u2026` : quote2;
 function parseQuoteLines(value, kind) {
   if (typeof value !== "string") return [];
@@ -5719,7 +5797,8 @@ function suggestionsFromStory(story) {
 }
 function buildRules(state, ledger) {
   const rules = new Map(suggestionsFromStory(ledger?.story).map((rule) => [rule.ruleId, rule]));
-  const ruleTasks = state.lists.filter((list2) => isMyRulesList(list2.name)).flatMap((list2) => list2.tasks).filter((task) => task.name.startsWith(RULE_TASK_PREFIX)).sort((a, b) => (a.updatedAtEpoch ?? 0) - (b.updatedAtEpoch ?? 0) || (a.latestEntryId ?? 0) - (b.latestEntryId ?? 0));
+  const writeOrder = new Map((state.events ?? []).map((event, index) => [event.id, index]));
+  const ruleTasks = state.lists.filter((list2) => isMyRulesList(list2.name)).flatMap((list2) => list2.tasks).filter((task) => task.name.startsWith(RULE_TASK_PREFIX)).sort((a, b) => (a.updatedAtEpoch ?? 0) - (b.updatedAtEpoch ?? 0) || (writeOrder.get(b.latestEntryId) ?? 0) - (writeOrder.get(a.latestEntryId) ?? 0));
   for (const task of ruleTasks) {
     const fields = task.fields;
     const ruleId = text3(fields.rule_id) || task.name.slice(RULE_TASK_PREFIX.length);
@@ -5742,6 +5821,7 @@ function buildRules(state, ledger) {
     };
     const scopeTier = RULE_SCOPE_TIERS.includes(fields.scope_tier) ? fields.scope_tier : base.scopeTier;
     const savedQuotes = parseQuoteLines(fields.quotes, base.kind);
+    const quotesTotal = quoteCount(fields.quotes_total);
     rules.set(ruleId, {
       ...base,
       scopeTier,
@@ -5753,7 +5833,10 @@ function buildRules(state, ledger) {
       source: text3(fields.source) || base.source,
       timesSeen: count(fields.times_seen) ?? base.timesSeen,
       latestAt: text3(fields.latest_at) || base.latestAt,
-      quotes: savedQuotes.length ? savedQuotes : base.quotes,
+      quotes: savedQuotes.length && !(quotesTotal > savedQuotes.length && base.quotes.length > savedQuotes.length) ? savedQuotes : base.quotes,
+      // The local story may still supply quotes that did not fit in the synced row.
+      quotesTotal: quotesTotal ?? (savedQuotes.length || base.quotes.length),
+      quotesOmitted: quotesTotal === null ? 0 : Math.max(0, quotesTotal - savedQuotes.length),
       replacedBy: text3(fields.replaced_by) || null,
       replacedAt: text3(fields.replaced_at) || null,
       savedAt: task.updatedAt
@@ -5841,6 +5924,7 @@ var stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new
 var fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 var callKey = (project, list2, fields) => JSON.stringify([PROJECT_KEY(project), list2, fingerprint(fields)]);
 var agentKey = (platform, session, agent) => JSON.stringify(["session", platform ?? "unknown", String(session ?? ""), agent ?? "unidentified"]);
+var lifecycleKey = (platform, session, agent) => JSON.stringify([platform ?? null, session, agent]);
 function compactText(value, max = 260) {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return null;
   const text5 = String(value).replace(/\s+/g, " ").trim();
@@ -5935,7 +6019,11 @@ function readAgentRecords(database, { observationLimit = 300, summaryLimit = 100
   const sessionIds = sessions.map((session) => session.id);
   const prompts = sessionIds.length ? safeRead(database, `SELECT id, session_db_id, prompt_number, substr(prompt_text, 1, 1200) AS prompt_text, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${sessionIds.map(() => "?")}) ORDER BY id DESC LIMIT 12000`, sessionIds) : [];
-  const contentIds = [...new Set([...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id))];
+  const subagentMemoryIds = new Set(observations.filter((row) => row.agent_id && row.memory_session_id).map((row) => row.memory_session_id));
+  const contentIds = [.../* @__PURE__ */ new Set([
+    ...[...observations, ...calls].filter((row) => row.agent_id && row.content_session_id).map((row) => row.content_session_id),
+    ...sessions.filter((session) => subagentMemoryIds.has(session.memory_session_id) && session.content_session_id).map((session) => session.content_session_id)
+  ])];
   const contentArgs = contentIds.map(() => "?").join(", ");
   const agentLaunches = contentIds.length ? safeRead(database, `SELECT id, session_db_id, content_session_id, platform_source, prompt_number, created_at_epoch,
     json_extract(tool_response, '$.agentId') AS agent_id, json_extract(tool_response, '$.status') AS status,
@@ -5944,8 +6032,8 @@ function readAgentRecords(database, { observationLimit = 300, summaryLimit = 100
     substr(coalesce(json_extract(tool_input, '$.prompt'), json_extract(tool_response, '$.prompt')), 1, 600) AS prompt
     FROM tool_uses WHERE tool_name IN ('Agent', 'Task') AND json_valid(tool_response) AND json_valid(coalesce(tool_input, '{}'))
     AND content_session_id IN (${contentArgs}) ORDER BY id DESC LIMIT 2000`, contentIds) : [];
-  const agentToolActivity = contentIds.length ? safeRead(database, `SELECT content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
-    FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY content_session_id, agent_id`, contentIds) : [];
+  const agentToolActivity = contentIds.length ? safeRead(database, `SELECT platform_source, content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
+    FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY platform_source, content_session_id, agent_id`, contentIds) : [];
   return { calls, observations, summaries, sessions, prompts, productCalls, productObservations, productDeliverables, agentLaunches, agentToolActivity };
 }
 function readAgentLaunches(rows) {
@@ -5953,7 +6041,7 @@ function readAgentLaunches(rows) {
   for (const row of rows) {
     const agentId = typeof row.agent_id === "string" && row.agent_id ? row.agent_id : null;
     if (!agentId || !row.content_session_id) continue;
-    const key = JSON.stringify([row.content_session_id, agentId]);
+    const key = lifecycleKey(row.platform_source, row.content_session_id, agentId);
     if (launches.has(key)) continue;
     const isAsync = row.is_async === 1 || row.is_async === true || row.status === "async_launched";
     launches.set(key, {
@@ -5977,7 +6065,7 @@ function launchRequest(launch) {
 function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
-  const lastToolEpochs = new Map(agentToolActivity.map((row) => [JSON.stringify([row.content_session_id, row.agent_id]), Number(row.last_epoch) || 0]));
+  const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
   const stops = readAgentStops(state);
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const sessionsByMemory = new Map(sessions.filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
@@ -6086,7 +6174,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
         // sets agent_id only inside a subagent; other hosts (Codex) also tag
         // the main thread, so their groups keep the per-prompt layout.
         isSubagent: Boolean(session && agentId && platform === "claude"),
-        launch: session && agentId ? launches.get(JSON.stringify([session.content_session_id, agentId])) ?? null : null,
+        launch: session && agentId ? launches.get(lifecycleKey(platform, session.content_session_id, agentId)) ?? null : null,
         work: [],
         activity: [],
         lastActivityEpoch: 0
@@ -6236,7 +6324,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     }
   }
   function subagentFinish(group) {
-    const lastToolEpoch = lastToolEpochs.get(JSON.stringify([group.contentSessionId, group.agentId])) ?? 0;
+    const lastToolEpoch = lastToolEpochs.get(lifecycleKey(group.platformSource, group.contentSessionId, group.agentId)) ?? 0;
     const lastActive = Math.max(group.lastActivityEpoch, lastToolEpoch);
     const evidence2 = [];
     const stop = agentStopFor(stops, group.platformSource, group.contentSessionId, group.agentId);
@@ -6787,8 +6875,8 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
       }
     }
     const products = [...productsByIdentity.values()];
-    const launches = (records2.agentLaunches ?? []).filter((row) => row.content_session_id === session.content_session_id && typeof row.agent_id === "string").map((row) => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === "string" ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
-    const activity = (records2.agentToolActivity ?? []).filter((row) => row.content_session_id === session.content_session_id).map((row) => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
+    const launches = (records2.agentLaunches ?? []).filter((row) => conversationKey(row) === key && typeof row.agent_id === "string").map((row) => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === "string" ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
+    const activity = (records2.agentToolActivity ?? []).filter((row) => conversationKey(row) === key).map((row) => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
     const sessionValue = Object.fromEntries(sessionFields.map((field) => [field, clean2(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some((prompt) => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
@@ -6903,8 +6991,8 @@ function applySharedProjection(database, shared, { ledger = null, records: recor
         if (id != null) merged.sharedAttributions.set(id, { ...attribution, session_db_id: session.id, memory_session_id: session.memory_session_id, content_session_id: session.content_session_id, agent_id: attribution.agentId, agent_type: attribution.agentType, prompt_number: attribution.promptNumber, created_at_epoch: attribution.atEpoch, shared: true });
       }
       merged.sharedProducts.push({ conversationKey: key, products: (value.products ?? []).filter((product) => sharedProduct(product) && (product.availability !== "origin-only" || product.originDeviceId === record.writer)) });
-      for (const launch of value.launches ?? []) if (!merged.agentLaunches.some((row) => row.content_session_id === session.content_session_id && row.agent_id === launch.agent_id)) merged.agentLaunches.push({ ...launch, content_session_id: session.content_session_id, shared: true });
-      for (const activity of value.activity ?? []) if (!merged.agentToolActivity.some((row) => row.content_session_id === session.content_session_id && row.agent_id === activity.agent_id)) merged.agentToolActivity.push({ ...activity, content_session_id: session.content_session_id });
+      for (const launch of value.launches ?? []) if (!merged.agentLaunches.some((row) => conversationKey(row) === key && row.agent_id === launch.agent_id)) merged.agentLaunches.push({ ...launch, platform_source: session.platform_source, content_session_id: session.content_session_id, shared: true });
+      for (const activity of value.activity ?? []) if (!merged.agentToolActivity.some((row) => conversationKey(row) === key && row.agent_id === activity.agent_id)) merged.agentToolActivity.push({ ...activity, platform_source: session.platform_source, content_session_id: session.content_session_id });
     }
   }
   const referencedGroups = new Set(Object.values(next.groups.conversations));
@@ -7304,7 +7392,7 @@ var SharedLedgerAdapter = class {
       };
     }
   }
-  signature(captureActivity) {
+  signature(captureActivity, dataVersion = this.db.prepare("PRAGMA data_version").get()) {
     const names = [...fixedFiles, "human-copy.json"];
     try {
       names.push(...readdirSync2(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
@@ -7318,7 +7406,7 @@ var SharedLedgerAdapter = class {
         return [name, "missing"];
       }
     });
-    return JSON.stringify([this.db.prepare("PRAGMA data_version").get(), captureActivity, files]);
+    return JSON.stringify([dataVersion, captureActivity, files]);
   }
   updatesForFile(name, value) {
     const kinds = fileKinds(name);
@@ -7503,7 +7591,8 @@ var SharedLedgerAdapter = class {
     return changed;
   }
   reconcile({ captureActivity = true } = {}) {
-    const signature = this.signature(captureActivity);
+    const dataVersion = this.db.prepare("PRAGMA data_version").get();
+    const signature = this.signature(captureActivity, dataVersion);
     if (signature === this.lastSignature && this.lastDiagnostic) return this.lastDiagnostic;
     this.errors = [];
     const names = [.../* @__PURE__ */ new Set([...fixedFiles, ...this.db.prepare("SELECT name FROM my_work_file_state").all().map((row) => row.name)])];
@@ -7596,7 +7685,7 @@ var SharedLedgerAdapter = class {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity);
+    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;
@@ -7609,6 +7698,7 @@ init_shared_file_hooks();
 // src/services/sync/local-device-identity.ts
 init_SettingsDefaultsManager();
 init_settings_document();
+init_shared_records();
 import { randomUUID as randomUUID3 } from "node:crypto";
 function validIdentity(value) {
   if (!value.trim() || Buffer.byteLength(value, "utf8") > 128 || value.includes("\0")) {
@@ -7624,7 +7714,7 @@ function ensureLocalDeviceIdentity(db, settingsPath, configuredId = "") {
     const identities = new Set([pinned, configuredId, settingsId].filter((value) => Boolean(value)).map(validIdentity));
     try {
       const writers2 = db.query(`SELECT DISTINCT json_extract(fields, '$.writer') AS writer FROM work_state_entries
-        WHERE origin_device_id IS NULL AND list_name GLOB '__my_work_v[0-9]*:*' AND json_valid(fields)`).all();
+        WHERE origin_device_id IS NULL AND ${sharedWorkListSql("list_name")} AND json_valid(fields)`).all();
       for (const { writer } of writers2) {
         if (typeof writer !== "string") throw new Error("Native shared work has an invalid device identity");
         identities.add(validIdentity(writer));
