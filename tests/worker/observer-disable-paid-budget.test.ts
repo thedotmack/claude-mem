@@ -5,8 +5,16 @@ import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider
 import { paidSendBudgetForClaimedBatch, type PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import * as contextGenerator from '../../src/services/context-generator.js';
+import { startGeneratorWithProvider } from '../../src/services/worker/session/GeneratorRunner.js';
+import { CAPTURE_DISABLED_ABORT_REASON, normalizeAbortReason } from '../../src/services/worker/session/abort-reason.js';
 
 class LocalProvider extends OpenRouterProvider {
+  protected getConfig() {
+    return { apiKey: 'fixture-key', apiKeys: ['fixture-key'], model: 'fixture-model', fallbackModels: [], apiUrl: 'http://127.0.0.1' } as never;
+  }
+  protected async resolveContextWindow() { return 128_000; }
   ask(url: string, budget: PaidSendBudget) {
     return this.query([{ role: 'user', content: 'observe this' }], {
       apiKey: 'fixture-key', apiKeys: ['fixture-key'], model: 'fixture-model', fallbackModels: [], apiUrl: url,
@@ -17,17 +25,20 @@ class LocalProvider extends OpenRouterProvider {
 afterEach(() => { mock.restore(); });
 
 describe('observer disable preserves spent-batch identity', () => {
-  for (const boundary of ['route', 'iterator'] as const) {
+  for (const boundary of ['route', 'iterator', 'init'] as const) {
     it(`does not resend old tool IDs after disable/re-enable at the ${boundary} boundary`, async () => {
-      const enabled = SettingsDefaultsManager.getAllDefaults();
+      const enabled = { ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_OBSERVE_BARE_PROMPTS: boundary === 'init' ? 'true' : 'false' };
       const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(enabled);
+      spyOn(contextGenerator, 'generateContext').mockResolvedValue('');
+      ModeManager.getInstance().loadMode('code');
       for (const level of ['info', 'warn', 'error'] as const) spyOn(logger, level).mockImplementation(() => {});
-      const manager = new SessionManager({
+      const db = {
         getSessionById: () => ({ content_session_id: 'content-disabled', project: 'project', platform_source: 'claude',
-          user_prompt: 'prompt', memory_session_id: null }),
+          user_prompt: 'prompt', memory_session_id: 'memory-disabled' }),
         getSessionStore: () => ({ getPromptNumberFromUserPrompts: () => 1 }),
         getChromaSync: () => undefined,
-      } as never);
+      };
+      const manager = new SessionManager(db as never);
       const session = manager.initializeSession(71, 'prompt', 1);
       const buffer = manager.getMessageBuffer();
       const enqueue = (toolUseId: string) => manager.queueObservation(71, {
@@ -39,7 +50,7 @@ describe('observer disable preserves spent-batch identity', () => {
         return sends <= 2 ? new Response('ambiguous upstream failure', { status: 503 })
           : Response.json({ choices: [{ message: { content: '<observation/>' }, finish_reason: 'stop' }] });
       } });
-      const provider = new LocalProvider({} as never, manager);
+      const provider = new LocalProvider(db as never, manager);
       try {
         const confirmed = enqueue('confirmed');
         expect(manager.claimNextObservation(71, () => true)?._persistentId).toBe(confirmed);
@@ -66,8 +77,28 @@ describe('observer disable preserves spent-batch identity', () => {
           expect(buffer.getMessagesByIds(71, [inflight!])).toHaveLength(1);
           await manager.confirmClaimedMessages(71);
         } else {
-          const iterator = manager.getMessageIterator(71);
-          expect((await iterator.next()).done).toBe(true);
+          // Drive the provider and the runner's finally, not just next() on
+          // the iterator: an ordinary exit would dispose the session's dedup.
+          const finalizeSession = mock(async () => {});
+          const resume = mock(async () => {});
+          const discard = spyOn(manager, 'clearPendingForSession');
+          await startGeneratorWithProvider(session, 'openrouter', 'observation', null, null, {
+            sessionManager: manager, openRouterAgent: provider, workerService: {} as never,
+            sdkAgent: {} as never, geminiAgent: {} as never,
+            completionHandler: { finalizeSession } as never, ensureGeneratorRunning: resume,
+            maybeSelfHealStaleClaudeSpawn: () => false,
+          });
+          await session.generatorPromise;
+          expect(discard).toHaveBeenCalledTimes(1);
+          expect(manager.getSession(71) === session).toBe(true);
+          expect(finalizeSession).not.toHaveBeenCalled();
+          expect(resume).not.toHaveBeenCalled();
+          expect(session.generatorPromise).toBeNull();
+          expect(session.currentProvider).toBeNull();
+          expect(session.pausedReason).toBe(CAPTURE_DISABLED_ABORT_REASON);
+          expect(normalizeAbortReason(session.pausedReason)).toBe(CAPTURE_DISABLED_ABORT_REASON);
+          expect(manager.getResumableSessionIds(true)).toEqual([]);
+          session.abortController = new AbortController();
         }
 
         settings.mockReturnValue(enabled);
@@ -86,6 +117,11 @@ describe('observer disable preserves spent-batch identity', () => {
         expect(freshBudget).not.toBe(budget);
         expect((await provider.ask(server.url.href, freshBudget)).content).toBe('<observation/>');
         expect(sends).toBe(3);
+        // A real session end still forgets its identities; disabling capture
+        // must not change explicit disposal into a permanent receipt cache.
+        manager.removeSessionImmediate(71);
+        expect(manager.getSession(71)).toBeUndefined();
+        expect(buffer.enqueue(71, { type: 'observation', toolUseId: 'paid' })).toBeGreaterThan(0);
       } finally { session.abortController.abort(); buffer.dispose(71); server.stop(true); }
     });
   }
