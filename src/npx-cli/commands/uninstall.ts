@@ -485,6 +485,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallCopilotCliMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
       return uninstallCopilotCliMcpIntegration();
     }},
+    { label: 'Warp MCP server', fn: async () => {
+      const { uninstallWarpMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallWarpMcpIntegration();
+    }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
