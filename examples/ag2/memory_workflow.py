@@ -23,7 +23,7 @@ class ProjectMemory:
     def __init__(self, script, project, *, timeout=10, env=None):
         if not project.strip() or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("A project and finite positive timeout are required")
-        self.project, self.timeout = project.strip(), timeout
+        self.project, self.timeout = project, timeout
         script = Path(script).expanduser().resolve(strict=True)
         keys = {"PATH", "LANG", "LC_ALL", "TMPDIR", "SystemRoot", "WINDIR", "DO_NOT_TRACK",
                 "CLAUDE_MEM_DATA_DIR", "CLAUDE_MEM_WORKER_HOST", "CLAUDE_MEM_WORKER_PORT",
@@ -53,8 +53,9 @@ class ProjectMemory:
         values = {**arguments, "project": self.project}
         values.pop("projects", None)
         if name != "save_memory":
-            # Explicit list prevents implicit parent/worktree scope expansion.
-            values["projects"] = [self.project]
+            # JSON keeps literal commas exact across the MCP query-string transport.
+            # The explicit list also prevents parent/worktree scope expansion.
+            values["projects"] = json.dumps([self.project])
         if name == "save_memory":
             fingerprint = hashlib.sha256(json.dumps(
                 [self.project, values.get("title", ""), values.get("text", "")], ensure_ascii=False,
