@@ -336,6 +336,7 @@ def main():
     ledger_dir = args.ledger_dir or os.path.join(data_dir(), "work-view")
 
     goals = json.load(open(args.goals))
+    checked_input = json.dumps(goals, sort_keys=True) if args.save_key else None
     problems = shape_problems(goals)
     if problems:
         sys.exit("the goals JSON is not in the saved shape:\n- " + "\n- ".join(problems))
@@ -358,6 +359,8 @@ def main():
     problems = unverified_quotes(goals, prompts)
     if problems:
         sys.exit("these quotes are not the owner's words at that time; fix them in the goals JSON:\n- " + "\n- ".join(problems))
+    if checked_input is not None and json.dumps(goals, sort_keys=True) != checked_input:
+        sys.exit("owner prompt evidence changed since this checked save; no writes were made, and the mapping checkpoint is retained")
     titles = [f'{KIND_LABELS["focus-area"]}: {str(area["title"]).strip()}' for area in areas] + [f'{KIND_LABELS["ask"]}: {str(ask["title"]).strip()}' for ask in asks]
     if len(set(titles)) != len(titles):
         sys.exit("two items share a title; give each focus area and ask its own title")

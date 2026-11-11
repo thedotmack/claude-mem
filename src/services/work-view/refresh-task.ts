@@ -484,13 +484,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               // Recheck the full current window. Only this previously validated draft may drop quotes
               // whose source was redacted or removed; every new answer below is checked strictly.
               checked = await validate(progress.goals, checkedGoalsQuoteBoundary(progress.goals));
-              progress = { ...progress, goals: checked.goals, exportedAt };
-              if (ownerPrompts && ['focus_areas', 'asks', 'rules'].every(key => !(checked!.goals[key] as unknown[] | undefined)?.length)) {
-                // The window/source changed until none of the checked evidence remains. Its old aggregate
-                // cannot describe this window; map the current evidence instead of saving an unsupported empty answer.
-                progress = { ...progress, goals: null, processed: [], maps: [] };
-                checked = null;
-              }
+              const hasItems = ['focus_areas', 'asks', 'rules'].some(key => (checked!.goals[key] as unknown[] | undefined)?.length);
+              progress = { ...progress, goals: hasItems ? checked.goals : null, exportedAt };
+              // An aggregate may age out without invalidating the completed source positions. A changed
+              // prompt has a different fingerprint and will still be read; unchanged batches are not replayed.
+              if (!hasItems) checked = null;
               writeOwnerGoalsCheckpoint(checkpointPath, progress);
             }
             const processed = new Set(progress.processed);
@@ -504,7 +502,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                 previousPath
                   ? 'The checked cumulative goals are in ' + previousPath + '. Apply "Update the saved goals" using this batch, keeping prior areas, asks, rules and quotes unless the new prompts show they are done or replaced. Keep titles, rule wording and matches as the skill requires.'
                   : 'Do step 2 using this batch. Later batches will update the checked goals, so do not guess what the rest of the window says.',
-                'The next prompts, oldest first, are in ' + batchPath + '. Return only {"map": "<the map of this batch, with dated quotes>", "goals": <the complete cumulative owner-goals.json object>}. The worker checks every quote against the full window, keeps this batch map for audit and saves the final cumulative snapshot after all batches.',
+                'The next prompts, oldest first, are in ' + batchPath + '. Return only {"map": "<the map of this batch, with dated quotes>", "goals": <the complete cumulative owner-goals.json object>}. The worker checks every quote against the full window, keeps this batch map for audit and saves the final cumulative snapshot after all batches. If there have been no actionable goals at all so far, use "goals": null; do not invent an item just to fill a batch. Never replace a nonempty checked draft with null.',
                 focusAreasNote(focusPath),
               ].join('\n\n');
               const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - Buffer.byteLength(expandedQuestion(question), 'utf8'));
@@ -515,11 +513,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               questionByteLimit = OWNER_GOALS_QUESTION_BYTES;
               try {
                 await step('goals', question, async answer => {
-                  if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object' || Array.isArray(answer.goals)) {
-                    throw new Error('Answer needs "map" (markdown) and "goals" (object).');
+                  if (typeof answer.map !== 'string' || !(answer.goals === null || (answer.goals && typeof answer.goals === 'object' && !Array.isArray(answer.goals)))) {
+                    throw new Error('Answer needs "map" (markdown) and "goals" (object, or null before any actionable goals).');
                   }
-                  checked = await validate(answer.goals);
-                  const next: OwnerGoalsCheckpoint = { ...progress, exportedAt, goals: checked.goals,
+                  if (answer.goals === null && progress.goals) throw new Error('A checked cumulative goal snapshot cannot be replaced with null.');
+                  // Null is a batch with no snapshot/evidence claims, not an unverified empty snapshot to save.
+                  checked = answer.goals === null ? null : await validate(answer.goals);
+                  if (checked && ['focus_areas', 'asks', 'rules'].every(key => !(checked!.goals[key] as unknown[] | undefined)?.length)) {
+                    throw new Error('No checked items remain in that answer. Use null only before any actionable goals; otherwise keep the checked cumulative snapshot.');
+                  }
+                  const next: OwnerGoalsCheckpoint = { ...progress, exportedAt, goals: checked?.goals ?? null,
                     processed: [...processed, ...batch.map(section => section.key)], maps: [...progress.maps, answer.map] };
                   writeOwnerGoalsCheckpoint(checkpointPath, next);
                   progress = next;
@@ -528,25 +531,31 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                 });
               } finally { questionByteLimit = null; }
             }
-            checked ??= await validate({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] });
-            // Freeze the checked payload and evidence together before any write. A save interrupted after
-            // focus/items/rules can finish with the same key without paying for those batches again.
-            progress = { ...progress, goals: checked.goals, exportedAt,
-              save: { key: ownerGoalsSaveKey(checked.focus_areas.areas), prompts: readFileSync(promptsPath, 'utf8') } };
-            writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            if (!checked && !ownerPrompts) checked = await validate({ generated_at: exportedAt, window_days: 31,
+              human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] });
+            if (checked) {
+              // Freeze the checked payload/key before any write. Retrying uses the current prompt export:
+              // --save-key refuses both invalid quotes and aged-out mutations before it writes anything.
+              progress = { ...progress, goals: checked.goals, exportedAt, save: { key: ownerGoalsSaveKey(checked.focus_areas.areas) } };
+              writeOwnerGoalsCheckpoint(checkpointPath, progress);
+            }
             goalsCheckpoint = progress;
           }
-          const ready = progress.save!;
-          writeFileSync(goalsPath, JSON.stringify(progress.goals, null, 2), { mode: 0o600 });
-          const mapPath = join(goalsFolder, 'owner-map.md');
-          writeFileSync(mapPath, '# Owner goals map\n\nChecked in chronological batches; the saved goals are the cumulative result.\n\n'
-            + progress.maps.map((map, index) => '## Batch ' + (index + 1) + '\n\n' + map).join('\n\n'), { mode: 0o600 });
-          const checkedPromptsPath = writeInput('checked-owner-prompts', ready.prompts);
-          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', checkedPromptsPath, '--map', mapPath,
-            '--ledger-dir', ledgerDir, '--save-key', ready.key]);
-          rmSync(checkpointPath, { force: true });
-          goalsCheckpoint = null;
-          done.push('goals mapped');
+          if (progress.save) {
+            writeFileSync(goalsPath, JSON.stringify(progress.goals, null, 2), { mode: 0o600 });
+            const mapPath = join(goalsFolder, 'owner-map.md');
+            writeFileSync(mapPath, '# Owner goals map\n\nChecked in chronological batches; the saved goals are the cumulative result.\n\n'
+              + progress.maps.map((map, index) => '## Batch ' + (index + 1) + '\n\n' + map).join('\n\n'), { mode: 0o600 });
+            await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--map', mapPath,
+              '--ledger-dir', ledgerDir, '--save-key', progress.save.key]);
+            rmSync(checkpointPath, { force: true });
+            goalsCheckpoint = null;
+            done.push('goals mapped');
+          } else {
+            // No actionable goals in the completed batches. Keep their source positions without saving
+            // an unsupported empty snapshot, and let grouping/review continue. Only new sources need inference.
+            done.push('no actionable goals found');
+          }
         } else if (!ownerPrompts) {
           // No evidence needs no model call. Save the validated empty snapshot so
           // the scheduler can continue grouping and will not retry every check.

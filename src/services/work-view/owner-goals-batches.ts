@@ -21,8 +21,8 @@ export interface OwnerGoalsCheckpoint {
   processed: string[];
   goals: Record<string, unknown> | null;
   maps: string[];
-  /** Once ready, both the checked payload and its evidence are immutable until saving succeeds. */
-  save: { key: string; prompts: string } | null;
+  /** Once ready, the checked payload/key are immutable; saving still checks the current source export. */
+  save: { key: string } | null;
 }
 
 export function batchFailure(message: string): Error {
@@ -42,7 +42,7 @@ export function readOwnerGoalsCheckpoint(path: string): OwnerGoalsCheckpoint | n
     || !Array.isArray(value.maps) || !value.maps.every((map: unknown) => typeof map === 'string')
     || !(value.goals === null || object(value.goals))
     || !(value.save === null || (object(value.save) && typeof value.save.key === 'string'
-      && /^[a-f0-9]{24}:[a-f0-9]{64}$/.test(value.save.key) && typeof value.save.prompts === 'string' && object(value.goals)))) {
+      && /^[a-f0-9]{24}:[a-f0-9]{64}$/.test(value.save.key) && object(value.goals)))) {
     throw batchFailure('Invalid checked owner-goals progress at ' + path + '. It has not been replaced.');
   }
   return value as OwnerGoalsCheckpoint;
@@ -59,7 +59,7 @@ export function writeOwnerGoalsCheckpoint(path: string, progress: OwnerGoalsChec
   } catch (error) {
     throw batchFailure('Could not retain the checked owner-goals answer at ' + path + ': ' + String(error));
   } finally {
-    rmSync(temporary, { force: true });
+    try { rmSync(temporary, { force: true }); } catch { /* Preserve the original checkpoint-write failure. */ }
   }
 }
 
