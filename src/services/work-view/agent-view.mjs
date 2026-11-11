@@ -10,7 +10,9 @@ import { withDerivedProjects } from './session-project.mjs';
 import { observationMediaFromMetadata } from '../media/feed.js';
 import { isClosedWorkStateStatus } from './work-state-status.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
-const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
+// Live Gemini CLI hooks record `gemini`; the Gemini CLI importer records `gemini-cli`. Both are one host.
+const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
+export const platformLabel = (platform) => PLATFORMS[platform] ?? compactText(platform, 48) ?? 'Unassigned';
 const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 const callKey = (project, list, fields) => JSON.stringify([PROJECT_KEY(project), list, fingerprint(fields)]);
@@ -261,10 +263,10 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const platform = session?.platform_source ?? null;
     const id = session ? agentKey(platform, session.id, agentId) : JSON.stringify([owner ? 'owner' : 'unassigned', PROJECT_KEY(project), owner, agentId]);
     if (!groups.has(id)) {
-      const platformLabel = PLATFORMS[platform] ?? compactText(platform, 48) ?? 'Unassigned';
+      const label = platformLabel(platform);
       groups.set(id, {
         id, kind: session ? 'session' : owner ? 'recorded-owner' : 'unassigned',
-        label: session ? platformLabel : owner ? compactText(owner, 70) : 'Unassigned work',
+        label: session ? label : owner ? compactText(owner, 70) : 'Unassigned work',
         platformSource: platform, agentId, agentType,
         sessionId: session?.id ?? null, contentSessionId: session?.content_session_id ?? null,
         sessionTitle: compactText(session?.custom_title, 120), recordedSessionStatus: session?.status ?? null,

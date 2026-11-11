@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
-import { buildGeminiHooks, manageGeminiHooks, removeGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
+import { buildGeminiHooks, geminiSettingsPath, manageGeminiHooks, removeGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
 let scratch: string | undefined;
 afterEach(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 const file = () => { scratch = mkdtempSync(path.join(tmpdir(), 'gemini setup ')); return path.join(scratch, 'settings.json'); };
@@ -44,5 +44,36 @@ describe('Gemini capture setup', () => {
     const foreign = { ...ours.AfterTool[0].hooks![0], command: 'echo do not remove me' };
     expect(removeGeminiHooks({ AfterTool: [{ hooks: [foreign, ...ours.AfterTool[0].hooks!] }] }))
       .toEqual({ AfterTool: [{ hooks: [foreign] }] });
+  });
+  it('removes hooks older claude-mem releases wrote, so nothing is captured twice', () => {
+    const p = file();
+    const legacyGemini = { name: 'claude-mem', type: 'command', timeout: 10000,
+      command: '"/Users/me/.bun/bin/bun" "/Users/me/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs" hook gemini-cli observation' };
+    const legacyWindows = { name: 'claude-mem', type: 'command', timeout: 10000,
+      command: '"C:\\\\Users\\\\me\\\\.bun\\\\bin\\\\bun.exe" "C:\\\\Users\\\\me\\\\plugin\\\\scripts\\\\worker-service.cjs" hook gemini-cli context' };
+    const legacyAntigravity = { name: 'claude-mem', type: 'command', timeout: 10000,
+      command: '"/opt/bun" "/opt/plugin/scripts/worker-service.cjs" hook antigravity-cli session-init' };
+    const user = { type: 'command', command: 'echo audit hook gemini-cli observation' };
+    writeFileSync(p, JSON.stringify({ hooks: {
+      SessionStart: [{ matcher: '*', hooks: [legacyWindows] }],
+      BeforeAgent: [{ matcher: '*', hooks: [legacyAntigravity] }],
+      BeforeTool: [{ matcher: '*', hooks: [legacyGemini] }],
+      AfterTool: [{ matcher: '*', hooks: [legacyGemini, user] }],
+    } }));
+    expect(manageGeminiHooks('install', p)).toBe(0);
+    const hooks = read(p).hooks;
+    const commands = Object.values(hooks).flatMap((rules: any) => rules.flatMap((rule: any) => rule.hooks.map((hook: any) => hook.command)));
+    expect(commands.some((command: string) => / hook (gemini-cli|antigravity-cli) /.test(command) && command !== user.command)).toBe(false);
+    expect(hooks.BeforeTool).toBeUndefined();
+    expect(hooks.AfterTool).toHaveLength(2);
+    expect(hooks.AfterTool[0].hooks).toEqual([user]);
+    expect(hooks.AfterTool[1].hooks[0].command).toEndWith('hook gemini observation');
+    expect(manageGeminiHooks('uninstall', p)).toBe(0);
+    expect(read(p).hooks).toEqual({ AfterTool: [{ matcher: '*', hooks: [user] }] });
+  });
+  it('follows GEMINI_CLI_HOME, which names the parent of .gemini', () => {
+    expect(geminiSettingsPath({ GEMINI_CLI_HOME: '/profiles/work' })).toBe(path.join(path.resolve('/profiles/work'), '.gemini', 'settings.json'));
+    expect(geminiSettingsPath({})).toBe(path.join(homedir(), '.gemini', 'settings.json'));
+    expect(geminiSettingsPath({ GEMINI_CLI_HOME: '  ' })).toBe(path.join(homedir(), '.gemini', 'settings.json'));
   });
 });

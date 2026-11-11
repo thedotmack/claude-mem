@@ -6,6 +6,8 @@ icon: terminal
 
 Gemini CLI can record live prompt and tool events through Claude-Mem, then receive saved memory when a new session starts. This integration is separate from the Gemini model provider and the Antigravity CLI adapter.
 
+Using Antigravity CLI (`agy`) instead? It has its own setup: `npx claude-mem install --ide antigravity` (see [Antigravity CLI](/antigravity-cli/setup)).
+
 ## Connect
 
 Install Claude-Mem and Bun first. Configure the observer provider you want to use. Automatic observations and summaries use that provider and can spend its credits.
@@ -15,9 +17,9 @@ npx claude-mem gemini install
 npx claude-mem gemini status
 ```
 
-Restart Gemini CLI after setup. The installer adds named hooks to `~/.gemini/settings.json`. It preserves other settings, hooks and MCP servers, and saves the original file as `settings.json.claude-mem.bak` before the first change. Repeated installation replaces only Claude-Mem's capture hooks.
+Restart Gemini CLI after setup. The installer adds named hooks to `~/.gemini/settings.json` (or `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is set). It preserves other settings, hooks and MCP servers, and saves the original file as `settings.json.claude-mem.bak` before the first change. Repeated installation replaces only Claude-Mem's capture hooks. Install and uninstall also remove the `hook gemini-cli` and `hook antigravity-cli` entries that older Claude-Mem releases wrote to the same file, so tool calls are not captured twice; `status` reports any that are left.
 
-The existing CMEM Pro remote MCP recall configuration is unchanged. This command installs capture hooks only. MCP tool access remains a separate configuration.
+The existing CMEM Pro remote MCP recall configuration is unchanged. This command installs capture hooks only. MCP tool access remains a separate configuration. Results from Claude-Mem's own recall tools (a `cmem` or `claude-mem` MCP server) are not observed again.
 
 ## What is captured
 

@@ -4,10 +4,12 @@ import { join } from 'path';
 import { HOOK_TIMEOUTS, hookProcessOverheadMs } from '../../src/shared/hook-constants.js';
 import {
   ANTIGRAVITY_HOOK_TIMEOUT_MS,
+  GEMINI_HOOK_TIMEOUT_MS,
   SESSION_START_HOOK_LIMIT_MS,
   serverSessionStartBudgetMs,
 } from '../../src/shared/host-hook-limits.js';
 import { buildAntigravityHooksConfig } from '../../src/services/integrations/AntigravityCliHooksInstaller.js';
+import { buildGeminiHooks } from '../../src/services/integrations/GeminiHooksInstaller.js';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..');
 const originalPlatform = process.platform;
@@ -53,6 +55,16 @@ describe('SESSION_START_HOOK_LIMIT_MS', () => {
     const contextHook = agyHooks['claude-mem'].SessionStart[0];
     expect(contextHook.command).toEndWith('hook antigravity-cli context');
     expect(contextHook.timeout).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000);
+  });
+
+  it('uses the per-hook timeout the Gemini CLI installer writes', () => {
+    // Gemini CLI reads `timeout` in milliseconds; its SessionStart hook runs `context`.
+    const geminiHooks = buildGeminiHooks('/usr/local/bin/bun', '/opt/plugin/scripts/worker-service.cjs');
+    const contextHook = geminiHooks.SessionStart[0].hooks![0];
+    expect(contextHook.command).toEndWith('hook gemini context');
+    expect(contextHook.timeout).toBe(SESSION_START_HOOK_LIMIT_MS.gemini);
+    expect(SESSION_START_HOOK_LIMIT_MS.gemini).toBe(GEMINI_HOOK_TIMEOUT_MS);
+    for (const rules of Object.values(geminiHooks)) expect(rules[0].hooks![0].timeout).toBe(GEMINI_HOOK_TIMEOUT_MS);
   });
 });
 
