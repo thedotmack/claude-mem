@@ -353,6 +353,34 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
+  // Pulumi access tokens and Doppler personal tokens; split for push
+  // protection too.
+  const PULUMI_BODY = '0123456789abcdef0123' + '456789abcdef01234567';
+  const DOPPLER_BODY = 'aBcDeFgHiJkLmNoPqRsTu' + 'VwXyZ0123456789aBcDeFg';
+  it.each([
+    ['pulumi_token', 'export PULUMI_ACCESS_TOKEN=' + 'pu' + 'l-' + PULUMI_BODY + ' tail', PULUMI_BODY],
+    ['pulumi_token', '{"accessToken": "' + 'pu' + 'l-' + PULUMI_BODY + '"} tail', PULUMI_BODY],
+    ['doppler_token', 'DOPPLER_TOKEN=' + 'dp' + '.pt.' + DOPPLER_BODY + ' tail', DOPPLER_BODY],
+    ['doppler_token', 'doppler configure set token ' + 'dp' + '.pt.' + DOPPLER_BODY + ' tail', DOPPLER_BODY],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'pul-short',
+    'pu' + 'l-' + '0123456789abcdef0123456789abcdef0123456G',
+    'pu' + 'l-' + '0123456789abcdef0123456789abcdef012345678',
+    'dp.pt.short',
+    'dp' + '.pt.' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeF',
+    'dp' + '.st.' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFg',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
