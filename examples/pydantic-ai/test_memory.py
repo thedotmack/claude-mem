@@ -1,9 +1,13 @@
 import asyncio
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastmcp import FastMCP
+from fastmcp.client.transports import StdioTransport
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
@@ -58,6 +62,26 @@ class ProjectArguments(unittest.TestCase):
 
 
 class NativeSdk(unittest.IsolatedAsyncioTestCase):
+    async def test_exiting_toolset_stops_its_real_stdio_subprocess(self):
+        with tempfile.TemporaryDirectory(prefix="pydantic lifecycle ") as directory:
+            fixture = Path(directory) / "server.py"
+            fixture.write_text(
+                "import os\nfrom fastmcp import FastMCP\nserver = FastMCP('lifecycle')\n"
+                "@server.tool\ndef search(query: str, project: str) -> str:\n    return str(os.getpid())\n"
+                "server.run(transport='stdio', show_banner=False)\n"
+            )
+
+            def native_transport(**kwargs):
+                return StdioTransport(**{**kwargs, "command": sys.executable, "args": [str(fixture)]})
+
+            with patch("memory.StdioTransport", side_effect=native_transport):
+                memory = memory_toolset("owned", str(fixture), directory)
+                async with memory:
+                    child = int(await call_memory(memory, "owned", "search", {"query": "pid"}))
+                    os.kill(child, 0)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
+
     async def test_agent_calls_the_native_mcp_toolset_with_bound_project(self):
         server = FastMCP("fixture")
         received = []

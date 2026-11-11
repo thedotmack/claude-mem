@@ -118,6 +118,8 @@ Connection and individual MCP requests have a 30-second deadline. The demo and
 the agent example also bound the entire operation to 60 seconds. Tool errors are
 raised, so an unavailable worker is not mistaken for an empty search or a
 successful save. The example does not start or restart the worker automatically.
+Exiting the toolset context closes its MCP subprocess; it does not keep a child
+process alive between connections. The independently running worker is unchanged.
 
 ## Verification and troubleshooting
 
@@ -135,7 +137,8 @@ spaces. These eight harmless observations remain in the selected worker.
 
 The tests exercise the real Pydantic AI toolset and agent runner with a deterministic
 `FunctionModel`, a test MCP server, project binding, replay fingerprints, paths
-with spaces, invalid responses and a stalled tool. The runnable demonstration
+with spaces, invalid responses and a stalled tool. A native subprocess lifecycle
+test also confirms that the child exits when the toolset context ends. The demonstration
 above uses the real Claude-Mem worker, its built MCP server and SQLite. Neither
 verification makes a paid model request; model-generated behavior is not claimed.
 

@@ -55,7 +55,7 @@ def memory_toolset(project: str, server: str, cwd: str, *, timeout: float = 30) 
 
     return MCPToolset(
         StdioTransport(
-            command="node", args=[str(Path(server).resolve())], cwd=str(Path(cwd).resolve()),
+            command="node", args=[str(Path(server).resolve())], cwd=str(Path(cwd).resolve()), keep_alive=False,
             env={**os.environ, "CLAUDE_MEM_RUNTIME": "worker", "CLAUDE_MEM_WORKER_AUTOSTART": "false"},
         ),
         id="claude-mem", init_timeout=timeout, read_timeout=timeout,
