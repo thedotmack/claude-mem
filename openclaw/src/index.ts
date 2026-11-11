@@ -31,6 +31,10 @@ interface BeforeAgentStartEvent {
 
 interface BeforePromptBuildEvent {
   prompt: string;
+  /** The user's request before history projection; newer hosts only. An empty string means no textual request. */
+  currentUserMessage?: string;
+  /** Stable across rebuilds and retries of one admitted request; newer hosts only. */
+  currentUserMessageId?: string;
   messages: unknown[];
 }
 
@@ -151,9 +155,33 @@ interface OpenClawPluginApi {
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
+    /** The OpenClaw host version, e.g. "2026.11.2". */
+    version?: string;
     channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
   };
 }
+
+// OpenClaw 2026.2.17 added before_prompt_build, which carries the user prompt
+// and replaces before_agent_start. Hosts from 2026.8.1 on reject
+// before_agent_start as an unknown typed hook, so it is registered only for
+// hosts older than this (which have no other hook that carries the prompt) and
+// for hosts whose version is unreadable.
+const FIRST_OPENCLAW_VERSION_WITH_BEFORE_PROMPT_BUILD = [2026, 2, 17] as const;
+
+function openClawHostLacksBeforePromptBuild(hostVersion: string | undefined): boolean | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(hostVersion ?? "");
+  if (!match) return null;
+  const hostParts = match.slice(1, 4).map(Number);
+  for (let i = 0; i < hostParts.length; i++) {
+    const required = FIRST_OPENCLAW_VERSION_WITH_BEFORE_PROMPT_BUILD[i];
+    if (hostParts[i] !== required) return hostParts[i] < required;
+  }
+  return false;
+}
+
+// The worker refuses a native prompt ID longer than 256 characters or one that
+// contains whitespace or control characters (SessionStore.saveNativeUserPrompt).
+const WORKER_ACCEPTED_NATIVE_PROMPT_ID = /^[^\s\x00-\x1f\x7f]{1,256}$/;
 
 interface ObservationSSEPayload {
   id: number;
@@ -789,12 +817,14 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  // Centralized session-init POST. session_start, after_compaction, and
-  // before_agent_start each call this; the 2s dedup guard
-  // (shouldSkipDuplicatePromptInit) collapses the redundant inits a single
-  // user-message flow produces into one prompt record, while still ensuring a
-  // session is initialized even on flows that never reach before_agent_start.
-  async function initSessionOnce(ctx: EventContext, promptText: string, via: string): Promise<void> {
+  // Centralized session-init POST. session_start, after_compaction, and the
+  // prompt hook (before_prompt_build, or before_agent_start on old hosts) each
+  // call this; the 2s dedup guard (shouldSkipDuplicatePromptInit) collapses the
+  // redundant inits a single user-message flow produces into one prompt record,
+  // while still ensuring a session is initialized even on flows that never
+  // reach the prompt hook. A native prompt ID lets the worker recognize a
+  // rebuilt or retried request as the prompt it already recorded.
+  async function initSessionOnce(ctx: EventContext, promptText: string, via: string, nativePromptId?: string): Promise<void> {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
 
@@ -808,6 +838,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       project: projectName,
       prompt: promptText,
       platformSource: PLATFORM_SOURCE,
+      ...(nativePromptId ? { nativePromptId } : {}),
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -819,21 +850,42 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
   api.on("message_received", async (event, ctx) => {
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
+    api.logger.info(`[claude-mem] Message received — prompt capture deferred to the agent prompt hook: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
   });
 
   api.on("after_compaction", async (_event, ctx) => {
     await initSessionOnce(ctx, "after compaction", "after_compaction");
   });
 
-  api.on("before_agent_start", async (event, ctx) => {
-    await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
-  });
+  // OpenClaw 2026.2.9 through at least 2026.3.2 report their version as
+  // "unknown". Such a host may predate before_prompt_build, so keep
+  // before_agent_start too. A host with both runs them back to back with the
+  // same prompt, and the duplicate-init guard records it once.
+  const hostLacksBeforePromptBuild = openClawHostLacksBeforePromptBuild(api.runtime?.version);
+  if (hostLacksBeforePromptBuild === null) {
+    api.logger.info(`[claude-mem] OpenClaw host version "${api.runtime?.version ?? ""}" is unreadable; recording prompts on both before_prompt_build and before_agent_start`);
+  }
+  if (hostLacksBeforePromptBuild !== false) {
+    api.on("before_agent_start", async (event, ctx) => {
+      await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
+    });
+  }
 
-  api.on("before_prompt_build", async (_event, ctx) => {
-    if (!shouldInjectContext(ctx)) return;
+  // On hosts without before_prompt_build this never fires; before_agent_start
+  // records the prompt there instead.
+  api.on("before_prompt_build", async (event, ctx) => {
+    // Prefer the host's explicit request: `prompt` may contain reconstructed history.
+    const hasExplicitRequest = typeof event.currentUserMessage === "string";
+    const promptText = (hasExplicitRequest ? event.currentUserMessage : event.prompt) || "agent run";
+    const nativePromptId = hasExplicitRequest && typeof event.currentUserMessageId === "string"
+      && WORKER_ACCEPTED_NATIVE_PROMPT_ID.test(event.currentUserMessageId)
+      ? event.currentUserMessageId
+      : undefined;
 
-    const contextText = await getContextForPrompt(ctx);
+    const [, contextText] = await Promise.all([
+      initSessionOnce(ctx, promptText, "before_prompt_build", nativePromptId),
+      shouldInjectContext(ctx) ? getContextForPrompt(ctx) : Promise.resolve(null),
+    ]);
     if (contextText) {
       api.logger.info(`[claude-mem] Context injected via system prompt for agent=${ctx.agentId ?? "unknown"}`);
       return { appendSystemContext: contextText };
