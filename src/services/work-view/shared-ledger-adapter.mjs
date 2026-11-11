@@ -427,7 +427,7 @@ export class SharedLedgerAdapter {
         // keep it uncaptured for the next pass. Any other error (a conflict, an
         // invalid value) repeats until the data changes, and each pass rebuilds
         // the whole view, so that one stays captured.
-        activityPublishFailed = error?.code === 'SQLITE_BUSY';
+        activityPublishFailed = String(error?.code ?? '').startsWith('SQLITE_BUSY');
       }
       if (!activityPublishFailed) {
         this.activity = activity;
