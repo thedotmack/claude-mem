@@ -41,6 +41,7 @@
           "usage/teambrain",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "gemini-cli",
           "usage/openai-compatible-provider",
           "usage/multi-key-rotation",
           "usage/quota-fallback",

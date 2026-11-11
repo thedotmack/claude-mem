@@ -152,6 +152,7 @@ import {
   handleAntigravityCliCommand,
   healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
+import { handleGeminiCommand } from './integrations/GeminiHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexChanges, stopGrokBotIndexChanges } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -2287,6 +2288,11 @@ export async function main() {
       const subcommand = process.argv[3];
       const memoryResult = await runMemoryCommand(subcommand, process.argv.slice(4));
       process.exit(memoryResult);
+      break;
+    }
+
+    case 'gemini': {
+      process.exit(await handleGeminiCommand(process.argv[3]));
       break;
     }
 

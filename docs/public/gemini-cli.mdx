@@ -1,0 +1,50 @@
+---
+title: Gemini CLI
+description: Capture Gemini CLI work and recall saved memories in later sessions.
+icon: terminal
+---
+
+Gemini CLI can record live prompt and tool events through Claude-Mem, then receive saved memory when a new session starts. This integration is separate from the Gemini model provider and the Antigravity CLI adapter.
+
+## Connect
+
+Install Claude-Mem and Bun first. Configure the observer provider you want to use. Automatic observations and summaries use that provider and can spend its credits.
+
+```bash
+npx claude-mem gemini install
+npx claude-mem gemini status
+```
+
+Restart Gemini CLI after setup. The installer adds named hooks to `~/.gemini/settings.json`. It preserves other settings, hooks and MCP servers, and saves the original file as `settings.json.claude-mem.bak` before the first change. Repeated installation replaces only Claude-Mem's capture hooks.
+
+The existing CMEM Pro remote MCP recall configuration is unchanged. This command installs capture hooks only. MCP tool access remains a separate configuration.
+
+## What is captured
+
+| Gemini event | Claude-Mem behavior |
+| --- | --- |
+| SessionStart | Inject saved project context |
+| BeforeAgent | Record the current prompt and initialize its session |
+| AfterTool | Send the current tool input and result to the observer |
+| AfterAgent | Request a summary using the final response |
+| SessionEnd | Record session completion metadata |
+
+The adapter keeps Gemini's session ID and working directory, with platform `gemini`. The shared privacy filters, excluded-project settings and observer-capture switch apply. Captured text and tool results go to your configured observer provider. Saved memories follow your existing sync settings.
+
+Capture uses the existing bounded live handoff. Events missed while the worker is unavailable are not replayed automatically. Gemini CLI 0.44.1 does not supply a tool-call ID in AfterTool, so the integration cannot promise duplicate-event identification across externally repeated hook deliveries. It does not invent IDs from tool arguments.
+
+## Verify
+
+In a disposable project, ask Gemini CLI to read a harmless file containing a distinctive fact. Check the saved observation in the Claude-Mem viewer or search tools. Start a new Gemini session in the same project and confirm its initial memory context contains that observation.
+
+The hook format is based on the [official Gemini CLI hook reference](https://geminicli.com/docs/hooks/reference/). Verification uses Gemini CLI 0.44.1 on macOS, isolated synthetic projects and local fake model endpoints. It exercises the actual CLI and rebuilt worker without paid calls. Real Google model behavior and Windows/Linux execution are not established by this test.
+
+## Troubleshooting and disconnect
+
+If no memory appears, run `npx claude-mem gemini status`, check that the worker and selected observer provider are available, and check your privacy exclusions. A missing tool-call ID is a host limitation, not a setup error.
+
+```bash
+npx claude-mem gemini uninstall
+```
+
+Uninstall removes only the managed capture hooks. It preserves memories, MCP configuration and unrelated Gemini settings. To stop automatic observation and summary calls without removing hooks, set `CLAUDE_MEM_OBSERVER_ENABLED=false` in your Claude-Mem settings.
