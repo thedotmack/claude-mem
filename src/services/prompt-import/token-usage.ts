@@ -246,7 +246,9 @@ const openCodeUsage: UsageReader = {
             ${layout.current ? 'AND NOT EXISTS (SELECT 1 FROM session_message current WHERE current.id = m.id)' : ''}`);
           if (layout.current) queries.push(`SELECT time_created AS createdAt, json_extract(data, '$.tokens') AS tokens
             FROM session_message WHERE type = 'assistant'`);
-          const rows = database.prepare(queries.join('\nUNION ALL\n')).all() as Array<{ createdAt: number; tokens: string | null }>;
+          // The database contains the whole agent history. Consume one row at
+          // a time so counting usage does not retain every token payload.
+          const rows = database.prepare(queries.join('\nUNION ALL\n')).iterate() as Iterable<{ createdAt: number; tokens: string | null }>;
           for (const row of rows) {
             const tokens = row.tokens ? parseLine(row.tokens) : null;
             if (!tokens) continue;
