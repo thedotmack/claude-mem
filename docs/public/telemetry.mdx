@@ -44,6 +44,8 @@ About the observed IDE session's identity, claude-mem collects only its model id
 - **`observer_turn_rollup`** — a **per-session** accumulator. Every compression in a session folds into one running rollup that is emitted **once, at session end** (instead of one `session_compressed` event per turn). It carries a `rollup_reason` explaining why it flushed (`session_end` | `worker_shutdown` | `safety_flush`) and a `window_seq` partial-flush counter (`0` for a normal one-shot session; `0,1,2,…` only when a long-lived session trips the periodic safety sweep).
 - **`context_injected_rollup`** — a **5-minute time-window** accumulator for context injections.
 
+The accumulators update counts, sums and sample counts as events arrive. They retain model/reason frequencies and the latest source fields needed by the summary, without keeping an object for every turn or context injection until the next flush.
+
 This rollup model is what cut the high-volume event stream by roughly 99.9%. There is no longer any code path that emits raw `session_compressed` or `context_injected` events directly — the only path to PostHog for that activity is the rollup.
 
 Every event property passes through a strict whitelist scrubber — any key not in this table is silently dropped before sending:
