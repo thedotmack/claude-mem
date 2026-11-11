@@ -104,6 +104,7 @@
           "development",
           "troubleshooting",
           "platform-integration",
+          "pydantic-ai-integration",
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
