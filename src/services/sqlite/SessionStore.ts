@@ -17,7 +17,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
+import { computeObservationContentHash, computeObservationDetailsHash, hasStorableTitle, type ObservationDetails } from './observations/store.js';
 import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
@@ -4410,8 +4410,9 @@ export class SessionStore {
         RETURNING id
       `);
       const lookupExistingStmt = this.db.prepare(
-        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+        'SELECT id, type, subtitle, facts, concepts FROM observations WHERE memory_session_id = ? AND content_hash = ?'
       );
+      type ExistingObservation = ObservationDetails & { id: number };
 
       for (const observation of observations) {
         // Skip observations with an empty title (see hasStorableTitle). The worker
@@ -4421,7 +4422,18 @@ export class SessionStore {
           continue;
         }
 
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const detailsHash = computeObservationDetailsHash(legacyHash, observation);
+        let contentHash = legacyHash;
+        // A variant keeps its identity even if the row occupying the legacy
+        // hash was subsequently deleted. Check it before choosing a free hash.
+        const detailedRetry = lookupExistingStmt.get(memorySessionId, detailsHash) as ExistingObservation | null;
+        if (detailedRetry) {
+          reinforceObservation(this.db, detailedRetry.id, reconfirmedOn);
+          observationIds.push(detailedRetry.id);
+          mergedIntoExisting.push(false);
+          continue;
+        }
         const titleNormKey = computeTitleNormKey(
           project,
           sessionPlatform,
@@ -4434,7 +4446,11 @@ export class SessionStore {
         if (dedup.enabled) {
           // Retry idempotency: identical (session, content_hash) redelivery returns
           // the existing row without bumping occurrence_count (same as ON CONFLICT).
-          const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+          let retry = lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+          if (retry && computeObservationDetailsHash(legacyHash, retry) !== detailsHash) {
+            contentHash = detailsHash;
+            retry = null;
+          }
           if (retry) {
             reinforceObservation(this.db, retry.id, reconfirmedOn);
             observationIds.push(retry.id);
@@ -4454,7 +4470,7 @@ export class SessionStore {
           }
         }
 
-        const inserted = (obsStmt.all(
+        const insertObservation = () => (obsStmt.all(
           memorySessionId,
           project,
           observation.type,
@@ -4479,6 +4495,17 @@ export class SessionStore {
           reinforcementSeed.lastReinforced
         ) as { id: number }[])[0] ?? null;
 
+        let inserted = insertObservation();
+        let existing = inserted ? null : lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+        // Equal title/narrative can still carry different structured content.
+        // Keep the legacy row's id/hash and store the other details separately.
+        if (existing && contentHash === legacyHash
+          && computeObservationDetailsHash(legacyHash, existing) !== detailsHash) {
+          contentHash = detailsHash;
+          inserted = insertObservation();
+          existing = inserted ? null : lookupExistingStmt.get(memorySessionId, contentHash) as ExistingObservation | null;
+        }
+
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           this.indexObservationFiles(inserted.id, observation.files_read, observation.files_modified);
@@ -4488,7 +4515,6 @@ export class SessionStore {
           continue;
         }
 
-        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
         if (!existing) {
           throw new Error(
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
@@ -4613,7 +4639,9 @@ export class SessionStore {
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
-    const stored = storeTx();
+    // Identity reads and their writes share the writer lock, avoiding a stale
+    // read snapshot if another connection commits before our first insert.
+    const stored = storeTx.immediate();
     // A later stop replaces the same prompt's summary, including clearing
     // completed next steps. Do not serve that previous text while rendering.
     emitContextInvalidation({ projects: [project] }, 'storeObservations', stored.summaryUpdated ? 'removal' : 'additive');
