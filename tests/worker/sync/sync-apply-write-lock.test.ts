@@ -87,7 +87,9 @@ describe('SyncApply.applyOps and another connection holding the write lock', () 
     const apply = new SyncApply(db, { deviceId: 'device-self', now: () => REMOTE_EPOCH });
     const holdMs = 400;
     const { released, worker } = await holdWriteLock(path, holdMs);
-    const startedAt = performance.now();
+    // No elapsed-time check: the hold starts before 'held' reaches this thread, so a late
+    // message would shorten it. Applying at all is the proof: a deferred transaction failed
+    // here at once with "database is locked".
     try {
       const result = apply.applyOps([observationOp(1), observationOp(2)]);
       expect(result.applied).toBe(2);
@@ -96,8 +98,6 @@ describe('SyncApply.applyOps and another connection holding the write lock', () 
       await released;
       await worker.terminate();
     }
-    // It waited for the other writer's commit rather than failing at once.
-    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(holdMs - 50);
     expect(apply.getCursor()).toBe('2');
     expect((db.prepare("SELECT v FROM sync_state WHERE k = 'other_writer'").get() as { v: string }).v).toBe('held');
   });
