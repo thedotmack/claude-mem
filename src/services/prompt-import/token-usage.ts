@@ -125,14 +125,12 @@ interface UsageReader {
   retentionDays?(homeDirectory: string): number;
 }
 
-function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
+function claudeCodeUsage(): UsageReader {
   return {
     retentionDays: claudeRetentionDays,
     async read(sources, sinceEpochMs, usage, skip) {
       const messages = new Map<string, { at: number; tokens: number }>();
       for (const source of sources) {
-        const projectFolder = basename(source.holdsPrompts ? dirname(source.path) : dirname(dirname(dirname(source.path))));
-        if (excludedFolders.has(projectFolder)) continue;
         try {
           for await (const line of readLines(source.path)) {
             if (!line.includes('"usage"') || !/"type"\s*:\s*"assistant"/.test(line)) continue;
@@ -266,21 +264,27 @@ export async function scanTokenUsage(options: TokenUsageScanOptions): Promise<{ 
   const windowDays = options.windowDays ?? PROMPT_SCAN_WINDOW_DAYS;
   const excludedFolders = new Set((options.excludedClaudeCwds ?? [OBSERVER_SESSIONS_DIR]).map(claudeProjectFolder));
   const usageReaders: Partial<Record<PromptAgentId, UsageReader>> = {
-    'claude-code': claudeCodeUsage(excludedFolders), codex: codexUsage, 'gemini-cli': geminiCliUsage, opencode: openCodeUsage,
+    'claude-code': claudeCodeUsage(), codex: codexUsage, 'gemini-cli': geminiCliUsage, opencode: openCodeUsage,
   };
   const agents: AgentTokenUsage[] = [];
   for (const reader of createPromptReaders().filter(entry => !options.agents || options.agents.includes(entry.id))) {
     const { detected, sources } = reader.locate(homeDirectory);
+    // Observer history is neither personal usage nor evidence that the person's
+    // history covers the window, including files too old to read for tokens.
+    const usageSources = reader.id === 'claude-code' ? sources.filter(source => {
+      const projectFolder = basename(source.holdsPrompts ? dirname(source.path) : dirname(dirname(dirname(source.path))));
+      return !excludedFolders.has(projectFolder);
+    }) : sources;
     const usageReader = usageReaders[reader.id];
     const usage: UsageTally = { tokens: 0, firstRecordAt: null };
     let skippedSources = 0;
     if (usageReader) {
-      await usageReader.read(sources.filter(source => source.mtimeMs >= options.sinceEpochMs), options.sinceEpochMs, usage, (source, error) => {
+      await usageReader.read(usageSources.filter(source => source.mtimeMs >= options.sinceEpochMs), options.sinceEpochMs, usage, (source, error) => {
         skippedSources++;
         logger.warn('IMPORT', 'Skipped an unreadable transcript while counting tokens', { path: source.path, reason: error instanceof Error ? error.message : String(error) });
       });
     }
-    const olderSources = sources.some(source => source.mtimeMs < options.sinceEpochMs);
+    const olderSources = usageSources.some(source => source.mtimeMs < options.sinceEpochMs);
     agents.push({
       id: reader.id, label: reader.label, detected, recordsTokens: !!usageReader, tokens: usage.tokens,
       historyStartsBeforeWindow: !!usageReader && (olderSources || (usage.firstRecordAt !== null && usage.firstRecordAt <= options.sinceEpochMs)),
