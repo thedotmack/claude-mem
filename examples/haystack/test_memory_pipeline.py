@@ -61,7 +61,7 @@ class LivePipelineTests(unittest.TestCase):
             def git(*args):
                 subprocess.run(["git", *map(str, args)], check=True, capture_output=True, timeout=10)
             git("init", parent)
-            git("-C", parent, "-c", "user.name=Memory Test", "-c", "user.email=memory@example.invalid", "commit", "--allow-empty", "-m", "Fixture")
+            git("-C", parent, "-c", "user.name=Memory Test", "-c", "user.email=memory@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Fixture")
             git("-C", parent, "worktree", "add", "--detach", checkout, "HEAD")
             selected = f"{parent.name}/checkout"
             previous = Path.cwd()
