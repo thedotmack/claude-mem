@@ -108,6 +108,7 @@
           "strands-agents-integration",
           "openai-agents-integration",
           "agno-integration",
+          "smolagents-integration",
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
