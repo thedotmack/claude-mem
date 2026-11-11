@@ -73,7 +73,7 @@ beforeAll(() => {
         CLAUDE_MEM_DATA_DIR: join(directory, 'data'), CLAUDE_CONFIG_DIR: join(directory, 'config'),
         CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_TELEMETRY_ENABLED: 'false',
       },
-      stdout: 'pipe', stderr: 'pipe',
+      stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
     });
     if (child.exitCode !== 0) throw new Error(new TextDecoder().decode(child.stderr));
     result = JSON.parse(new TextDecoder().decode(child.stdout).trim().split('\n').at(-1)!);
