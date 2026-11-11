@@ -83,6 +83,7 @@ inclusive-minute incremental export.
 
 The checkpoint is private to this workflow and is removed only after the save
 succeeds. A different saved snapshot or local device during mapping refuses
-recovery rather than overwriting that newer state. It is not an exactly-once
-billing guarantee for an unanswered in-flight provider request: only completed,
+recovery rather than overwriting that newer state. These snapshot checks guard
+each batch and final save; they are not an atomic cross-process compare-and-set
+across the separate HTTP writes. It is not an exactly-once billing guarantee for an unanswered in-flight provider request: only completed,
 validated answers can be reused.
