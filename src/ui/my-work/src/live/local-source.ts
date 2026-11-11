@@ -217,7 +217,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   }
 
   /** POSTs to an origin-guarded work-view route that answers with the snapshot after the change. Anything else throws its reason. */
-  async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<RuleSaveResult> {
+  async function postForWorkModel(url: string, body: unknown, whatWasSaved: string, keepReceipt = false): Promise<RuleSaveResult> {
     const versionBeforeSave = modelVersion
     const syncBeforeSave = syncVersion
     const generation = streamGeneration
@@ -237,12 +237,15 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       throw new Error(message)
     }
     if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
-    const model = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
-      ? withConnection(latestModel) : acceptSnapshot(answer, false, syncBeforeSave)
+    const newerModel = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration) ? latestModel : null
+    const model = newerModel ? withConnection(newerModel) : acceptSnapshot(answer, false, syncBeforeSave)
     lastDeliveredSignature = modelSignature(model)
+    // Undo needs this write's receipt, even if the live model has already moved on. Mapping the
+    // receipt separately must not replace the newer model used by the screen or detail reads.
+    const receipt = keepReceipt && newerModel ? withConnection(toWorkModel(answer, Date.now())) : model
     const { savedRuleId } = answer as { savedRuleId?: unknown }
     const save = readSaveReceipt(answer)
-    return { model, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
+    return { model: receipt, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
   }
 
   const localSource: WorkDataSource = {
@@ -377,7 +380,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     },
 
     saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
-    saveFocusChange: async (change) => (await postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change')).model,
+    saveFocusChange: async (change) => (await postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change', true)).model,
     loadRulesInClaudeCode: async () => (await postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code')).model,
     async refreshWork() {
       const response = await fetchImpl(WORK_VIEW_REFRESH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })

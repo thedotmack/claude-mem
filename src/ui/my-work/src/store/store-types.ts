@@ -150,7 +150,7 @@ export interface RulesSlice {
 
 // ---------- Focus: the last My Focus changes, for the saved note and Undo ----------
 
-export interface FocusChangeRecord { text: string; undo: FocusChange[] | null; expectedVersion?: string | null }
+export interface FocusChangeRecord { text: string; undo: FocusChange[] | null; expectedVersions?: string[] | null }
 
 export interface FocusState {
   history: FocusChangeRecord[]

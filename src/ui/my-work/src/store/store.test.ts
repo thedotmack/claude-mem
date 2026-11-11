@@ -2,7 +2,8 @@
 // display preferences, and one save at a time with receipts for the version saved.
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { SaveRefusedError } from '../data.ts'
+import { SaveRefusedError, type FocusChange } from '../data.ts'
+import { focusChangeVersion } from '../../../../shared/focus-change-version.ts'
 import type { OwnerRule } from '../data-rules.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import { sampleSource } from '../live/sample-source.ts'
@@ -461,8 +462,9 @@ describe('My Focus saves', () => {
     const { store } = testStore()
     const area = LOCAL_MODEL.focusAreas[0]
     const sent: string[] = []
+    const changes: FocusChange[] = []
     const gate = deferred<WorkModel>()
-    const { source, feed } = fakeSource({ saveFocusChange: (change) => { sent.push(change.action); return sent.length === 1 ? gate.promise : Promise.resolve(LOCAL_MODEL) } })
+    const { source, feed } = fakeSource({ saveFocusChange: (change) => { sent.push(change.action); changes.push(change); return sent.length === 1 ? gate.promise : Promise.resolve(LOCAL_MODEL) } })
     store.getState().startWorkSource(source)
     feed.onModel(LOCAL_MODEL)
     const first = store.getState().applyFocusChange({ action: 'keep', focusAreaId: area.id }, { text: 'Kept A', undo: [{ action: 'restore-suggestion', focusAreaId: area.id }] })
@@ -472,6 +474,7 @@ describe('My Focus saves', () => {
     assert.equal(store.getState().focus.history.at(-1)?.text, 'Kept A')
     assert.equal(await store.getState().undoLastFocusChange(), true)
     assert.deepEqual(sent, ['keep', 'restore-suggestion'])
+    assert.equal(changes[1].expectedVersion, focusChangeVersion(changes[1], LOCAL_MODEL.focusAreas, LOCAL_MODEL.requests))
     assert.equal(store.getState().focus.history.length, 0)
   })
 
