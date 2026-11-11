@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
-import { recordedFile, bucketFileAvailable } from './work-product.mjs';
+import { recordedFile, bucketFileAvailable, copyCoversSource, servableFile } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
 import { sharedWorkListSql } from './shared-records.mjs';
@@ -20,6 +20,16 @@ export { reduceWorkState } from './work-state-reduce.mjs';
 export { readFocus, readFocusAreas } from './my-focus.mjs';
 
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+// Compare against the observations used to build the view, not a second stat
+// after rendering: a file can change while linked evidence is being read.
+// Saved copies also retain the coverage decision for their suppressed source.
+function productFilesChanged(files) {
+  return files.some(({ product, available, coversSource }) => {
+    const current = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+    return current !== available || coversSource !== null && copyCoversSource(product, product.sourcePath) !== coversSource;
+  });
+}
 
 // Expand the same inherited read keys as SessionStore.getProjectReadKeys. A
 // worktree's older lists may be stored under a previously merged project key.
@@ -72,6 +82,7 @@ export class WorkStateSource {
     this.databaseIdentity = null;
     this.cachedState = reduceWorkState([], { currentProject, currentProjectScope: [parentProject, currentProject] });
     this.agentView = buildAgentView(this.cachedState, {});
+    this.productFiles = [];
     this.agentRevision = 0;
     this.activitySignature = null;
     this.activityCheckedAt = null;
@@ -134,7 +145,8 @@ export class WorkStateSource {
         && now - this.activityCheckedAt < maxActivityAgeMs;
       const activity = reuseActivity ? this.activitySignature
         : `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
-      if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
+      const filesChanged = !reuseActivity && productFilesChanged(this.productFiles);
+      if (signature !== this.signature || activity !== this.activitySignature || filesChanged || !this.source.connected) {
         database.exec('BEGIN');
         try {
           // Resolve shared evidence only when rebuilding. A cached poll needs
@@ -155,7 +167,11 @@ export class WorkStateSource {
           this.agentRevision++;
           const records = readAgentRecords(database, { workState: this.cachedState, ledger: sharedLedger });
           const shared = applySharedProjection(database, this.sharedState, { ledger: this.ledger, records, deviceId: this.localDeviceId });
-          this.agentView = { ...decorateSharedView(buildAgentView(this.cachedState, shared.records, { titleCache: this.titleCache, ledger: shared.ledger }), { ...shared, database, deviceId: this.localDeviceId }), revision: this.agentRevision };
+          const productFiles = [];
+          this.agentView = { ...decorateSharedView(buildAgentView(this.cachedState, shared.records, {
+            titleCache: this.titleCache, ledger: shared.ledger,
+            onProductFile: (product, available, coversSource) => productFiles.push({ product, available, coversSource }),
+          }), { ...shared, database, deviceId: this.localDeviceId }), revision: this.agentRevision };
           this.projectedLedger = shared.ledger;
           this.agentView.sharedState = { revision: this.sharedState.revision, ...shared.diagnostics };
           // Hash full linked evidence without sending its potentially large raw
@@ -199,6 +215,7 @@ export class WorkStateSource {
           }
           this.signature = signature;
           this.activitySignature = activity;
+          this.productFiles = productFiles;
           database.exec('COMMIT');
         } catch (error) {
           database.exec('ROLLBACK');

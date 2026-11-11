@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-15.17.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-15.17.1-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%5E20.19%20%7C%7C%20%3E%3D22.12-brightgreen.svg" alt="Node">
@@ -311,7 +311,7 @@ Search runs through three MCP tools in a token-efficient three-step workflow. Th
 - Start with `search` to get an index of results
 - Use `timeline` to see what was happening around specific observations
 - Use `get_observations` to fetch full details for relevant IDs
-- **~10x token savings** by filtering before fetching details
+- **Index rows are about a tenth the size of a full record**: ~50-100 tokens versus ~500-1,000. Filtering decides how many records you pay to fetch, not how large each one is; the workflow's total cost also includes the timeline and the selected details. The ratio is not a measured recall or end-to-end saving ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
 
 **Available MCP Tools:**
 

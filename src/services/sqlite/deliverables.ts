@@ -81,7 +81,7 @@ export function createDeliverablesSchema(db: Database): void {
   db.run('CREATE INDEX IF NOT EXISTS idx_deliverables_created ON deliverables(created_at_epoch DESC)');
 }
 
-/** Inserts the row, or finds the one already recorded for this session and bucket copy. */
+/** Inserts the row, or finds the same copy and promotes inferred metadata to an explicit attachment. */
 export function recordDeliverable(db: Database, input: RecordDeliverableInput): { id: number; inserted: boolean } {
   const createdAtEpoch = input.createdAtEpoch ?? Date.now();
   const result = db.prepare(`
@@ -98,6 +98,21 @@ export function recordDeliverable(db: Database, input: RecordDeliverableInput): 
     const id = Number(result.lastInsertRowid);
     logger.debug('DB', 'Deliverable recorded', { id, project: input.project, bucketPath: input.bucketPath });
     return { id, inserted: true };
+  }
+  if (input.declared) {
+    // A later turn can explicitly attach bytes an earlier Stop inferred.
+    // Keep the stored copy and its URL, but retain the agent's title and
+    // attachment provenance. Replayed inferred rows cannot undo this, and
+    // repeated explicit declarations remain idempotent.
+    db.prepare(`
+      UPDATE deliverables SET declared = 1, title = ?, kind = ?, agent_id = ?,
+        source_path = ?, list_name = ?, field = ?, tool_use_id = ?, occurred_at_epoch = ?
+      WHERE platform_source = ? AND content_session_id = ? AND bucket_path = ? AND declared = 0
+    `).run(
+      input.title, input.kind, input.agentId ?? null, input.sourcePath, input.listName ?? null,
+      input.field ?? null, input.toolUseId ?? null, input.occurredAtEpoch,
+      input.platformSource, input.contentSessionId, input.bucketPath,
+    );
   }
   const existing = db.prepare('SELECT id FROM deliverables WHERE platform_source = ? AND content_session_id = ? AND bucket_path = ?')
     .get(input.platformSource, input.contentSessionId, input.bucketPath) as { id: number } | undefined;

@@ -42,10 +42,11 @@ export class PostgresDataDeletionRepository {
         );
         return res.rowCount ?? 0;
       };
-      // Observations first (their sources cascade). Jobs/events next — deleting
-      // agent_events cascades its jobs + sources, so the job count is a floor.
-      const observations = await del('observations');
+      // Generation commits lock their job before inserting observations. Delete
+      // jobs first so any current commit finishes before the observation sweep;
+      // otherwise its new row can survive with created_by_job_id set to NULL.
       const jobs = await del('observation_generation_jobs');
+      const observations = await del('observations');
       const agentEvents = await del('agent_events');
       const sessions = await del('server_sessions');
       return { observations, agentEvents, sessions, jobs };

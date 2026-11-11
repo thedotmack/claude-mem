@@ -146,6 +146,40 @@ test('a concurrent native write after a full activity capture remains visible to
   expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
 });
 
+// bun:sqlite reports a held writer lock as SQLITE_BUSY; WAL snapshot and recovery conflicts carry extended busy codes.
+test.each(['SQLITE_BUSY', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_BUSY_RECOVERY'])('an activity publish that hits a busy database (%s) is retried by the next pass, not dropped', code => {
+  const f = fixture();
+  const owned = f.store.createSDKSession('owned', 'repo', 'Work this device did');
+  f.store.saveUserPrompt('owned', 1, 'Work this device did', owned);
+  const publish = f.adapter.publish.bind(f.adapter);
+  let failures = 0;
+  f.adapter.publish = updates => {
+    if (failures++ === 0) throw Object.assign(new Error('database is locked'), { code });
+    return publish(updates);
+  };
+  const provenance = () => [...state(f).records.values()].filter(record => record.kind === 'provenance');
+  const diagnostic = f.adapter.reconcile();
+  expect(diagnostic.files).toEqual([{ file: 'activity', message: 'database is locked' }]);
+  expect(provenance()).toHaveLength(0);
+  // Nothing changed in the database since the failed pass; the retry must still happen.
+  f.adapter.reconcile();
+  expect(provenance()).toHaveLength(1);
+  expect(provenance()[0].value).toMatchObject({ session: { content_session_id: 'owned', project: 'repo' } });
+});
+
+test('an activity publish that fails for a lasting reason is not rebuilt on every pass', () => {
+  // A conflict or an invalid value repeats until the data changes, and each capture rebuilds the whole view.
+  const f = fixture();
+  const owned = f.store.createSDKSession('owned', 'repo', 'Work this device did');
+  f.store.saveUserPrompt('owned', 1, 'Work this device did', owned);
+  let attempts = 0;
+  f.adapter.publish = () => { attempts++; throw new Error('Shared My Work has a conflicting decision; retained the previous complete state'); };
+  f.adapter.reconcile();
+  f.adapter.reconcile();
+  f.adapter.reconcile();
+  expect(attempts).toBe(1);
+});
+
 test('formatting and object-key order do not become a new imported generation', () => {
   const f = fixture(); f.adapter.saveFile('request-groups.json', groups('a'));
   f.adapter.reconcile({ captureActivity: false });

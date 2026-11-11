@@ -152,6 +152,7 @@ import {
   handleAntigravityCliCommand,
   healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
+import { handleGeminiCommand } from './integrations/GeminiHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexChanges, stopGrokBotIndexChanges } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -218,7 +219,7 @@ import { applyPendingRestore } from './backup/restore-swap.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
-import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
+import { createCorpusAgent } from './worker/knowledge/CorpusAgent.js';
 import { cliFlagValue } from '../shared/cli-flag-value.js';
 
 export interface StatusOutput {
@@ -652,7 +653,9 @@ export class WorkerService implements WorkerRef {
    * under the plugin cache and leaves the old ones there (#5681). The
    * installer only prunes when it copies a version itself (#4105), and a
    * worker that stays up never goes through that copy. Sweep once boot has
-   * settled, then hourly. The folder this process is running from is kept.
+   * settled, then hourly. The folder this process is running from is kept,
+   * and so is any folder an open Claude Code session is still loaded from
+   * (#5970).
    */
   private startPluginCachePrune(): void {
     if (this.pluginCachePruneTimer != null || this.isShuttingDown) return;
@@ -1305,8 +1308,11 @@ export class WorkerService implements WorkerRef {
         searchManager.getOrchestrator(),
         this.corpusStore
       );
-      const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
-      this.corpusRoutes = new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent);
+      // The corpus agent is the Claude Agent SDK unless CLAUDE_MEM_CORPUS_AGENT
+      // is "api". The setting is read on every call, so this one instance
+      // serves a change without a restart (see knowledge/CorpusAgent.ts).
+      const corpusAgent = await createCorpusAgent(this.corpusStore);
+      this.corpusRoutes = new CorpusRoutes(this.corpusStore, corpusBuilder, corpusAgent);
       this.server.registerRoutes(this.corpusRoutes);
       logger.info('WORKER', 'CorpusRoutes registered');
 
@@ -2287,6 +2293,11 @@ export async function main() {
       const subcommand = process.argv[3];
       const memoryResult = await runMemoryCommand(subcommand, process.argv.slice(4));
       process.exit(memoryResult);
+      break;
+    }
+
+    case 'gemini': {
+      process.exit(await handleGeminiCommand(process.argv[3]));
       break;
     }
 

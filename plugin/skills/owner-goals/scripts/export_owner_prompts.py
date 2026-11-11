@@ -88,7 +88,8 @@ def text_of(content, text_types):
 
 
 def normalize(text):
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    # Unicode letters and numbers, matching the TypeScript importer's property escapes.
+    return re.sub(r"[\W_]+", " ", text.lower()).strip()
 
 
 def recent_files(pattern, cutoff_seconds):
