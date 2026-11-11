@@ -52,11 +52,33 @@ export class AutoRefreshWorker {
    * @param {() => boolean} [options.setupRunning]  setup is running, so no refresh may spend tokens, not even one the owner asks for
    * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
    *   rows replay in its order; required
+   * @param {(() => Promise<object | null>) | null} [options.labelWorkState] Jev labels for open work-state items
+   *   (work-state-labels.mjs labelOpenWorkState); null when the install has no Jev. Runs on every check while refresh is on.
    */
-  constructor({ dir, openDatabase, runJob, enabled = () => true, setupRunning = () => false, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
+  constructor({ dir, openDatabase, runJob, enabled = () => true, setupRunning = () => false, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId, labelWorkState = null }) {
     if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
-    Object.assign(this, { dir, openDatabase, runJob, enabled, setupRunning, checkMs, now, log, localDeviceId });
-    this.timer = null; this.closed = false; this.busy = false;
+    Object.assign(this, { dir, openDatabase, runJob, enabled, setupRunning, checkMs, now, log, localDeviceId, labelWorkState });
+    this.timer = null; this.closed = false; this.busy = false; this.labeling = null;
+  }
+
+  /**
+   * Labels open work-state items with Jev beside the agent run, which it never waits for or blocks: it needs no
+   * logged-in agent. One labeling run at a time; a check that finds one still going starts no other. Returns the
+   * run's promise, which never rejects: a failure is logged and the next check runs again.
+   */
+  labelInBackground() {
+    if (!this.labelWorkState || this.labeling) return this.labeling;
+    this.labeling = Promise.resolve()
+      .then(() => this.labelWorkState())
+      .then((result) => {
+        if (result?.failed) this.log('warn', 'Work state labeling stopped at a failed Jev call', { result });
+        else if (result?.serviceFailure) this.log('warn', 'Work state labeling paused: Jev refused or failed a call; the rest is asked at the next check', { result });
+        else if (result?.labeled) this.log('info', 'Work state labeled', { result });
+        return result;
+      })
+      .catch((error) => { this.log('warn', 'Work state labeling failed', { error: String(error?.message ?? error) }); return null; })
+      .finally(() => { this.labeling = null; });
+    return this.labeling;
   }
 
   path() { return join(this.dir, 'refresh.json'); }
@@ -106,6 +128,7 @@ export class AutoRefreshWorker {
   async check() {
     if (this.closed) return 'closed';
     if (!this.enabled()) return 'disabled';
+    this.labelInBackground();
     if (this.busy) return 'running';
     const previous = this.status();
     if (this.otherWorkerIsRunning(previous)) return 'running';

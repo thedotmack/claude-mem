@@ -23,6 +23,8 @@ export interface WorkViewItem {
   kind: 'work-state' | 'session-request'
   title: string
   status: string
+  /** The recorded status Jev's label stands for (work-state-labels.mjs), when it may replace `status`. Older workers leave it out. */
+  judgedStatus?: string | null
   nextStep: WorkViewTextField | null
   lastUpdateEpoch: number
   sourceRefs: WorkViewSourceRef[]

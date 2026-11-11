@@ -38,7 +38,8 @@ import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
-import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
+import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
+import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -466,6 +467,14 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
         judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
       return { ...(await runAgentTask(task)), steps: task.steps };
+    },
+    // Jev labels open work-state items on every check; read from settings each time, like the judges.
+    labelWorkState: async () => {
+      const client = jevClientFromSettings(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }));
+      if (!client) return null;
+      const database = openDatabase();
+      try { return await labelOpenWorkState({ dir: ledgerDir, database, client }); }
+      finally { database.close(); }
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
     localDeviceId,

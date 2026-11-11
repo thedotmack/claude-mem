@@ -11,6 +11,7 @@ import { recordedFile, bucketFileAvailable, copyCoversSource, servableFile } fro
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
 import { sharedWorkListSql } from './shared-records.mjs';
+import { readWorkStateLabels, WORK_STATE_LABELS_FILE } from './work-state-labels.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 
@@ -78,6 +79,8 @@ export class WorkStateSource {
     this.ledgerDir = ledgerDir;
     this.ledger = null;
     this.ledgerSignature = null;
+    this.workStateLabels = null;
+    this.labelsSignature = null;
     this.database = null;
     this.databaseIdentity = null;
     this.cachedState = reduceWorkState([], { currentProject, currentProjectScope: [parentProject, currentProject] });
@@ -132,19 +135,21 @@ export class WorkStateSource {
       const signature = `${revision}:${this.localDeviceId}`;
       const previousTitles = this.titleCacheSignature;
       const previousLedger = this.ledgerSignature;
+      const previousLabels = this.labelsSignature;
       this.readTitleCache();
       this.readLedger();
+      this.readWorkStateLabels();
       if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
       const now = Date.now();
       // Only background polling opts into this window. Direct reads (including
       // review writes) must still notice evidence edits that retain row IDs.
       // Owner edits and generated copy bypass it, even during a busy session.
       const reuseActivity = this.source.connected && signature === this.signature
-        && previousTitles === this.titleCacheSignature && previousLedger === this.ledgerSignature
+        && previousTitles === this.titleCacheSignature && previousLedger === this.ledgerSignature && previousLabels === this.labelsSignature
         && this.activityCheckedAt !== null && now >= this.activityCheckedAt
         && now - this.activityCheckedAt < maxActivityAgeMs;
       const activity = reuseActivity ? this.activitySignature
-        : `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
+        : `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}|labels:${this.labelsSignature}`;
       const filesChanged = !reuseActivity && productFilesChanged(this.productFiles);
       if (signature !== this.signature || activity !== this.activitySignature || filesChanged || !this.source.connected) {
         database.exec('BEGIN');
@@ -169,7 +174,7 @@ export class WorkStateSource {
           const shared = applySharedProjection(database, this.sharedState, { ledger: this.ledger, records, deviceId: this.localDeviceId });
           const productFiles = [];
           this.agentView = { ...decorateSharedView(buildAgentView(this.cachedState, shared.records, {
-            titleCache: this.titleCache, ledger: shared.ledger,
+            titleCache: this.titleCache, ledger: shared.ledger, workStateLabels: this.workStateLabels,
             onProductFile: (product, available, coversSource) => productFiles.push({ product, available, coversSource }),
           }), { ...shared, database, deviceId: this.localDeviceId }), revision: this.agentRevision };
           this.projectedLedger = shared.ledger;
@@ -292,6 +297,21 @@ export class WorkStateSource {
       this.titleCache = {};
     }
     this.titleCacheSignature = signature;
+  }
+
+  /** Jev's work-state labels (work-state-labels.mjs), reread when the file changes. Unreadable: no labels, and
+   * the error is kept on the source so the snapshot reports it instead of showing items as if never labeled. */
+  readWorkStateLabels() {
+    let signature = 'disabled';
+    if (this.ledgerDir) {
+      try { const stat = statSync(join(this.ledgerDir, WORK_STATE_LABELS_FILE)); signature = `${stat.mtimeMs}:${stat.size}`; }
+      catch (error) { signature = error?.code === 'ENOENT' ? 'missing' : `unreadable:${error?.code ?? 'error'}`; }
+    }
+    if (signature === this.labelsSignature) return;
+    this.labelsSignature = signature;
+    this.source.labelsError = null;
+    try { this.workStateLabels = this.ledgerDir ? readWorkStateLabels(this.ledgerDir) : null; }
+    catch (error) { this.workStateLabels = null; this.source.labelsError = String(error?.message ?? error).slice(0, 300); }
   }
 
   readLedger() {
