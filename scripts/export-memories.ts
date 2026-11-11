@@ -57,7 +57,10 @@ export async function exportMemories(query: string, outputFile: string, project?
   const params = new URLSearchParams({
     query,
     format: 'json',
-    limit: '999999'
+    limit: '999999',
+    // Exports include saved history, independent of interactive search recency.
+    // The explicit range also permits the documented empty-query full export.
+    dateStart: '1970-01-01T00:00:00.000Z'
   });
   if (project) params.set('project', project);
 

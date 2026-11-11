@@ -26,6 +26,10 @@ Searches the database using **hybrid search** (combines ChromaDB vector embeddin
 
 Output is a portable JSON file that can be shared.
 
+Exports include older matches even when `CLAUDE_MEM_SEARCH_RECENCY_DAYS` limits
+interactive semantic search. An empty query exports all saved history, restricted
+to the selected project when `--project` is provided.
+
 > **Privacy Note:** Export files contain all matching memory data in plain text. Review exports before sharing to ensure no sensitive information (API keys, passwords, private paths) is included.
 
 ### Import Script
