@@ -281,12 +281,20 @@ export async function setupV2(
     await register(() =>
       hook("execute.after", async (event) => {
         const sessionID = event.sessionID;
-        const tool = event.tool;
+        let tool = event.tool;
         if (!sessionID || !tool) return;
         trackSession(sessionID);
+        // Current V2 built-ins use these names; the core keeps V1's vocabulary.
+        if (tool === "patch") tool = "apply_patch";
+        if (tool === "shell") tool = "bash";
         // v2 names the argument bag `input`; `args` is tolerated because the
         // beta shape has moved before.
-        const args = (event.input ?? event.args) as Record<string, unknown> | undefined;
+        let args = (event.input ?? event.args) as Record<string, unknown> | undefined;
+        if (tool === "read" && typeof args?.path === "string"
+          && args.file_path === undefined && args.filePath === undefined) {
+          const { path, ...rest } = args;
+          args = { ...rest, file_path: path };
+        }
         // A failed tool still ran, and its error message is the interesting
         // part; v1 received the same string through `output`.
         const result = event.result;
