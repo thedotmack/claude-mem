@@ -406,6 +406,7 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
       telemetryToolEpochMs,
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
+    if (typeof event?.toolCallId === "string" && event.toolCallId) body.tool_use_id = event.toolCallId;
 
     const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;
