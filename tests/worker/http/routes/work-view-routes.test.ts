@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -428,6 +429,49 @@ describe('local work view', () => {
     const samePublication = (await snapshot()).humanRequests[0];
     expect(samePublication.contentFingerprint).toBe(updated.contentFingerprint);
     expect(samePublication.review.checked).toBe(true);
+  });
+
+  it.each(['commit', 'branch'] as const)('versions a recorded local Git %s without a remote URL', async kind => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+
+    const repository = join(directory, 'local repository');
+    mkdirSync(repository);
+    const gitConfig = join(directory, 'empty-gitconfig');
+    writeFileSync(gitConfig, '');
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: repository, encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitConfig } });
+      expect(result.status).toBe(0);
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: result.status };
+    };
+    git(['init', '-q']);
+    git(['config', 'user.name', 'Work View Fixture']);
+    git(['config', 'user.email', 'fixture@example.invalid']);
+    const commit = git(['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Local viewer']);
+    const response = kind === 'commit' ? commit : git(['switch', '-c', 'local-viewer']);
+    const command = kind === 'commit' ? 'git commit --allow-empty -m "Local viewer"' : 'git switch -c local-viewer';
+    source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+      content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+      VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+      JSON.stringify({ command }), JSON.stringify(response), Date.now());
+
+    const read = await fetch(`${origin}/api/work-view`);
+    expect(read.status).toBe(200);
+    const updated = (await read.json()).humanRequests[0];
+    expect(updated.workProduct).toHaveLength(1);
+    expect(updated.workProduct[0].kind).toBe(kind);
+    expect(updated.workProduct[0].url).toBeUndefined();
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect((await review(before)).status).toBe(409);
+    expect((await review(updated)).status).toBe(200);
+    await stop(); await start();
+    const restored = (await snapshot()).humanRequests[0];
+    expect(restored.contentFingerprint).toBe(updated.contentFingerprint);
+    expect(restored.review.checked).toBe(true);
   });
 
   it('cannot mark completed child work checked without request completion', async () => {
