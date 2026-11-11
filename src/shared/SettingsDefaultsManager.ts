@@ -320,6 +320,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_AUTO_CLEAR_ENABLED: string;
   CLAUDE_MEM_AUTO_CLEAR_PERCENT: string;
   CLAUDE_MEM_FILE_READ_GATE_ENABLED: string;
+  CLAUDE_MEM_LINE_ANCHORS_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
   CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
   CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  
@@ -636,6 +637,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false', // Claude Code mod (plugin/hooks/auto-clear.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and "continue" is sent. Off unless set to 'true'. Needs work state on
     CLAUDE_MEM_AUTO_CLEAR_PERCENT: '33',    // Context window use (1-95) that starts the auto-clear
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: 'true',  // 'false' = never block a full-file Read; the file's observation timeline is still added as context
+    CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'false',  // #4943, opt-in: the worker records line anchors in observation metadata and the file-context timeline shows where that code is now (@L123) or "(code changed since)". Only 'true' turns it on
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
     CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true',

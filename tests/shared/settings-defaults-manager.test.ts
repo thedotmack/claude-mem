@@ -79,6 +79,14 @@ describe('SettingsDefaultsManager', () => {
     expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
   });
 
+  it('ships line anchors off until settings.json turns them on (#4943)', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LINE_ANCHORS_ENABLED).toBe('false');
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_LINE_ANCHORS_ENABLED).toBe('false');
+
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'true' }));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_LINE_ANCHORS_ENABLED).toBe('true');
+  });
+
   describe('loadFromFile', () => {
     describe('file does not exist', () => {
       it('should create file with defaults when file does not exist', () => {

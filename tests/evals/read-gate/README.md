@@ -11,6 +11,7 @@ Run from the repo root:
 ```bash
 npm run build                                # the runner refuses a worker built without the gate, and an async Read hook
 npm run eval:read-gate -- --preflight-only   # no model: the real hook against both workers
+npm run eval:read-gate -- --preflight-only --line-anchors   # the same, with line anchors on in both arms
 npm run eval:read-gate                       # 3 cases x 3 runs on claude-sonnet-5-5
 npm run eval:read-gate -- --runs 1 --case gate-on-edits-file
 ```
@@ -23,6 +24,7 @@ npm run eval:read-gate -- --runs 1 --case gate-on-edits-file
 | `--max-cost-usd <usd>` | `10` | Passed to `claude plugin eval`: no new run starts once the list-price estimate reaches it |
 | `--case <glob>` | all cases | Passed through as `--case`; verdicts for cases that did not run are reported as not run |
 | `--preflight-only` | off | Stop after the pre-flight; no model is called |
+| `--line-anchors` | off | Both arms run with `CLAUDE_MEM_LINE_ANCHORS_ENABLED` on, so the large file's two seeded observations end their timeline rows with `@L908` and `@L523`. See [Line anchors](#line-anchors) |
 
 The suite lives in `tests/evals/read-gate/`, outside `plugin/`, because marketplace installs copy `plugin/` from git and none of them needs it. `claude plugin eval --eval-dir` only reads a directory below the plugin, so the runner copies the suite to `plugin/evals-read-gate/` (gitignored) for each run and removes it afterwards.
 
@@ -50,6 +52,7 @@ The workers' settings keep the eval to the gate:
 
 - `CLAUDE_MEM_SKIP_TOOLS` lists every tool a session can call, claude-mem's MCP tools included, so no run queues observer work.
 - Chroma is off, semantic injection is off, telemetry is off, and logs are at DEBUG in `data/logs/`.
+- `CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH` is off. The workers keep your real HOME, and My Work's scheduled refresh would scan your transcripts and start a Claude Code agent run on your account about ten seconds after boot.
 
 The real MCP server runs (`--mocks off`). The runner grants `mcp__plugin_claude-mem_mcp-search__*`, `Edit` and `ToolSearch` with `--allow-tools`. A grant applies to every case, so the question cases can see Edit too, and with it Write and NotebookEdit, which Claude Code grants along with Edit. They are not asked to edit.
 
@@ -61,7 +64,18 @@ Before any model is called, the pre-flight checks four things. The first is D9's
 
 It records each hook call's wall time. A failed check stops the run before any model is called.
 
+Every check also looks at line anchors: timeline rows ending in `@L` numbers or `(code changed since)`, and the hook's line directions. Paths are not searched, so a checkout under a directory such as `@Labs` does not count. Without `--line-anchors`, no output may show any. With it, every output that lists the large file's two anchored seeds (the gate-ON deny reason, the targeted Read's context and the gate-OFF context) must end their rows with their lines, and the small file's context, whose seeds have none, must show none. See [Line anchors](#line-anchors).
+
 Both workers are always stopped, including on Ctrl-C. The sandboxes `--keep-temp` keeps are removed once their traces are copied into the report.
+
+## Line anchors
+
+Line anchors (`CLAUDE_MEM_LINE_ANCHORS_ENABLED`, off by default; see `docs/public/file-read-gate.mdx`) record where in a file an observation's work is, and the file's timeline then says where that code is now. The two seeds about `carrier-tariffs.ts` carry line anchors in their metadata, the way the worker stores them: the `quoteCarrierRate` discovery on line 908 and the lithium battery surcharge on line 523, both `export function` declaration lines. No anchor is on a line that holds a graded number (`3.15`, `22.40`).
+
+- **Without `--line-anchors`** (the default) the arms' `settings.json` leaves the setting out, so it is off and the hook never reads the seeded anchors. The pre-flight checks that no output shows line anchors, and runs compare with earlier ones.
+- **With `--line-anchors`** both arms set `CLAUDE_MEM_LINE_ANCHORS_ENABLED` to `"true"`. The pre-flight checks that the gate-ON deny reason, the targeted Read's context and the gate-OFF arm's context end those two rows with ` @L908` and ` @L523`, and that the small file's context shows no line anchors; the deny reason must still carry the marker, as in every run. `preflight.json` and `summary.json` carry `"lineAnchors": true`, and the summary header says `line anchors on`.
+
+`CLAUDE_MEM_SKIP_TOOLS` keeps every eval run from creating observations, so the flag measures what the hook shows from stored anchors, not the worker recording them. The worker side is covered by `tests/worker/agents/response-processor.test.ts` and `tests/shared/line-anchors.test.ts`.
 
 ## The tree-sitter CLI (D9)
 
