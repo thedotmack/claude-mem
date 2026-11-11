@@ -12,7 +12,10 @@ import { createHash } from 'crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import { homedir } from 'os';
+import { pipeline, type Transform } from 'node:stream';
+import * as zlib from 'node:zlib';
 import { logger } from '../../utils/logger.js';
+import { scanZstdFramesInFile } from '../transcripts/zstd-frames.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
 
@@ -56,31 +59,55 @@ export interface AgentPromptReader {
 // ---------------------------------------------------------------------------
 // Shared helpers
 
-/** Streams a file's lines without holding the file in memory. */
+/** Streams plain or Codex-compressed JSONL without holding the file in memory. */
 export async function* readLines(path: string): AsyncGenerator<string> {
-  const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 1 << 20 });
-  let pending: string[] = [];
-  for await (const chunk of stream as AsyncIterable<string>) {
-    // Search each decoded chunk once. A large tool payload may span many
-    // chunks; repeatedly joining and searching that growing line is quadratic.
-    let start = 0;
-    let newline = chunk.indexOf('\n');
-    while (newline !== -1) {
-      const tail = chunk.slice(start, newline);
-      if (pending.length) {
-        pending.push(tail);
-        const line = pending.join('');
-        pending = [];
-        yield line;
-      } else {
-        yield tail;
-      }
-      start = newline + 1;
-      newline = chunk.indexOf('\n', start);
+  let decompressor: Transform | undefined;
+  if (path.endsWith('.jsonl.zst')) {
+    // Older supported runtimes must still load this module and read plain files.
+    const createZstdDecompress = (zlib as unknown as { createZstdDecompress?: () => Transform }).createZstdDecompress;
+    if (typeof createZstdDecompress !== 'function') {
+      throw new Error('this runtime cannot decode compressed Codex history (zlib.createZstdDecompress is missing)');
     }
-    if (start < chunk.length) pending.push(chunk.slice(start));
+    // Bun's streaming decoder can finish without rejecting a truncated frame.
+    // Reuse the bounded header scan so a partial history is reported as unreadable.
+    const frames = scanZstdFramesInFile(path, 0, statSync(path).size);
+    if (frames.tornStart !== null || !frames.frames.length) {
+      throw new Error('incomplete Zstandard frame in compressed Codex history');
+    }
+    decompressor = createZstdDecompress();
   }
-  if (pending.length) yield pending.join('');
+  const input = createReadStream(path, { highWaterMark: 1 << 20 });
+  // pipeline forwards input errors to the decoder and closes both streams on
+  // failure or early cancellation. The async iterator below reports the error.
+  const stream = decompressor ? pipeline(input, decompressor, () => {}) : input;
+  stream.setEncoding('utf8');
+  try {
+    let pending: string[] = [];
+    for await (const chunk of stream as AsyncIterable<string>) {
+      // Search each decoded chunk once. A large tool payload may span many
+      // chunks; repeatedly joining and searching that growing line is quadratic.
+      let start = 0;
+      let newline = chunk.indexOf('\n');
+      while (newline !== -1) {
+        const tail = chunk.slice(start, newline);
+        if (pending.length) {
+          pending.push(tail);
+          const line = pending.join('');
+          pending = [];
+          yield line;
+        } else {
+          yield tail;
+        }
+        start = newline + 1;
+        newline = chunk.indexOf('\n', start);
+      }
+      if (start < chunk.length) pending.push(chunk.slice(start));
+    }
+    if (pending.length) yield pending.join('');
+  } finally {
+    stream.destroy();
+    input.destroy();
+  }
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
@@ -256,6 +283,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
 
 // ---------------------------------------------------------------------------
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and archived_sessions/*.jsonl
+// (either may be .jsonl.zst for cold sessions)
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
@@ -266,6 +294,18 @@ export function codexForkThreadId(meta: any): string | null {
     && typeof meta.forked_from_id === 'string' && meta.forked_from_id
     && typeof meta.cli_version === 'string' && Bun.semver.satisfies(meta.cli_version, '>=0.154.0')
     ? meta.id : null;
+}
+
+/** Rollouts in one Codex directory, plain or compressed. */
+function codexRollouts(directory: string): Array<TranscriptSource | null> {
+  const rollouts: Array<TranscriptSource | null> = [];
+  for (const file of listDirectory(directory)) {
+    if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
+    // Codex reads the plain sibling while both exist during compression.
+    if (file.endsWith('.zst') && existsSync(join(directory, file.slice(0, -4)))) continue;
+    rollouts.push(source(join(directory, file)));
+  }
+  return rollouts;
 }
 
 export function createCodexReader(): AgentPromptReader {
@@ -282,17 +322,14 @@ export function createCodexReader(): AgentPromptReader {
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
           for (const day of listDirectory(join(sessions, year, month))) {
-            for (const file of listDirectory(join(sessions, year, month, day))) {
-              if (file.endsWith('.jsonl')) sources.push(source(join(sessions, year, month, day, file)));
-            }
+            sources.push(...codexRollouts(join(sessions, year, month, day)));
           }
         }
       }
-      // Archival moves the same rollout into this flat directory. It remains
-      // part of the owner's history; the existing timestamp/window rules apply.
-      for (const file of listDirectory(archived)) {
-        if (file.endsWith('.jsonl')) sources.push(source(join(archived, file)));
-      }
+      // Archival moves the same rollout into this flat directory, and Codex
+      // compresses it there too. It remains part of the owner's history; the
+      // existing timestamp/window rules apply.
+      sources.push(...codexRollouts(archived));
       return { detected: existsSync(sessions) || existsSync(archived), sources: presentSources(sources) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
@@ -324,7 +361,7 @@ export function createCodexReader(): AgentPromptReader {
         const text = textOf(payload.content, ['input_text']).trim();
         const at = isoToEpochMs(record.timestamp);
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
-        const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
+        const sessionId = String(meta.id ?? basename(transcript.path).replace(/\.jsonl(?:\.zst)?$/, ''));
         const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text);
         const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
