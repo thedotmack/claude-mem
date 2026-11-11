@@ -248,10 +248,38 @@ function readScope(config: ResolvedOptions, scope: MemoryScope): { project?: str
 
 type HistoryMessage = MemoryTurnStartedContext["messages"][number];
 
+/**
+ * Whether a user-role message is text a person sent. `turn.input` is the run
+ * of user-role messages at the end of eve's history, and eve writes its own
+ * notes into that run as user-role messages: the catalog announcement ("look
+ * for one with eve__search, which searches your own catalog, not the web",
+ * listing each `<connection>__<tool>` connection) just ahead of the person's
+ * message, and instruction notes just after it (0.84.0
+ * dist/src/harness/current-messages.js addAnnouncements and
+ * harness/step/context.js takeUserInstructionMessages; 1.0.0-rc.9
+ * dist/src/definitions/messages.js announce and definitions/instructions.js).
+ * eve tags every user-role message with `kind`: "user" for a person's
+ * message, anything else for its own (eve 0.84.0 and 1.0.0-rc.9
+ * dist/src/harness/messages.d.ts:8-15, and `isFrameworkUserMessage` in
+ * harness/messages.js, which eve's compaction uses the same way). A user
+ * message seeded from session `history` rather than typed in a turn carries
+ * metadata `eve.imported` (IMPORTED_MESSAGE_METADATA_KEY, same file). The
+ * public HistoryMessage type declares neither field, so they are read here.
+ * eve rejects a user-role message without `kind`
+ * (validateHarnessModelMessages), so one without it comes from outside eve's
+ * harness and is taken as the person's.
+ */
+function isPersonsMessage(message: HistoryMessage & { role: "user" }): boolean {
+  const { kind, metadata } = message as { kind?: unknown; metadata?: Record<string, unknown> };
+  if (kind !== undefined && kind !== "user") return false;
+  return metadata?.["eve.imported"] !== true;
+}
+
+/** The person's own text in a turn's input, without eve's user-role notes. */
 function userTextOf(input: readonly HistoryMessage[]): string {
   return input
     .flatMap((message) => {
-      if (message.role !== "user") return [];
+      if (message.role !== "user" || !isPersonsMessage(message)) return [];
       if (typeof message.content === "string") return [message.content];
       return message.content.flatMap((part) =>
         part.type === "text" && typeof part.text === "string" ? [part.text] : [],
@@ -516,8 +544,18 @@ interface ToolResultLike {
  * rule eve uses to derive `turn.input`).
  */
 function turnToolCalls(messages: readonly HistoryMessage[]): Array<{ call: ToolCallLike; result: ToolResultLike | undefined }> {
+  // The turn starts after the person's last message. eve's own user-role notes
+  // (a task.result or a continuation, say) can land mid-turn, so stopping at
+  // any user-role message would drop this turn's earlier tool calls. With no
+  // person's message in history, the last user-role message bounds the turn.
+  const isTurnStart = (message: HistoryMessage) =>
+    message.role === "user" && isPersonsMessage(message as HistoryMessage & { role: "user" });
   let start = messages.length;
-  while (start > 0 && messages[start - 1]!.role !== "user") start -= 1;
+  while (start > 0 && !isTurnStart(messages[start - 1]!)) start -= 1;
+  if (start === 0) {
+    start = messages.length;
+    while (start > 0 && messages[start - 1]!.role !== "user") start -= 1;
+  }
   const calls: ToolCallLike[] = [];
   const results = new Map<string, ToolResultLike>();
   for (const message of messages.slice(start)) {

@@ -277,6 +277,89 @@ test("a turn with no user text runs no search but still gets session context", a
   assert.deepEqual(result!.messages.map((message) => message.id), ["claude-mem-session-context"]);
 });
 
+// A turn's input as eve 0.84.0 and 1.0.0-rc.9 hand it to memory: the trailing
+// user-role run of history (activeTurn), every message tagged with `kind`
+// (harness/messages.js createUserMessage). eve places the catalog announcement
+// just ahead of the turn's input (harness/current-messages.js
+// addAnnouncements; its text is execution/catalog/listing.js renderListing
+// for an agent with linear, notion and sentry connections) and appends an
+// instructions note after it (harness/step/context.js
+// takeUserInstructionMessages). Seeded history ending on a user message
+// carries `eve.imported`. The announcement placement was reproduced with
+// eve's own harness code.
+const EVE_CATALOG_ANNOUNCEMENT = [
+  "Your connections have more tools than are loaded here. Before saying you have no tool for a task, look for one with eve__search, which searches your own catalog, not the web. Call them with eve__tool({ name, input }).",
+  'Connections, whose tools are named <connection>__<tool>; search one connection\'s tools with "<connection>__":',
+  "- linear",
+  "- notion",
+  "- sentry",
+].join("\n");
+const HUMAN_TEXT = "Run `uname -a` and `date` in your sandbox, then fetch https://example.com and tell me the page title.";
+function eveTurnInput(turnId: string) {
+  return [
+    { role: "user", kind: "user", content: "an earlier conversation's last question", metadata: { "eve.imported": true } },
+    { role: "user", kind: "context.state", content: EVE_CATALOG_ANNOUNCEMENT },
+    { role: "user", kind: "user", content: HUMAN_TEXT, metadata: { "eve.turn": turnId } },
+    { role: "user", kind: "context.instruction", content: [{ type: "text", text: "Answer in French." }] },
+  ];
+}
+
+test("recall searches for the person's message only, not eve's catalog announcement or other notes", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const input = eveTurnInput("turn_0");
+  await provider.recall["turn.started"]({
+    abortSignal: new AbortController().signal,
+    memory: { scope, slot: "memory" },
+    messages: input,
+    operationId: "eve-memory-operation-v1:session-1:0:turn_0:turn.started:memory",
+    session: { id: "session-1" },
+    turn: { id: "turn_0", sequence: 0, input },
+  } as never);
+  assert.equal(callNamed("dumb_search").arguments.query, HUMAN_TEXT);
+});
+
+test("capture's prompt is the person's message only, not eve's catalog announcement or other notes", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const input = eveTurnInput("turn_0");
+  await capture(provider, {
+    abortSignal: new AbortController().signal,
+    memory: { scope, slot: "memory" },
+    messages: [
+      ...input,
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1", toolName: "bash", input: { command: "uname -a && date" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1", toolName: "bash", output: { type: "text", value: "Linux" } }] },
+      { role: "assistant", content: "page title: Example Domain" },
+    ],
+    operationId: "eve-memory-operation-v1:session-1:0:turn_0:turn.completed:memory",
+    session: { id: "session-1" },
+    turn: { id: "turn_0", sequence: 0, input },
+  } as never);
+  const init = sentEnvelopes().find((envelope) => envelope.event === "session-init")!;
+  assert.equal(init.payload.prompt, HUMAN_TEXT);
+  assert.doesNotMatch(JSON.stringify(sentEnvelopes()), /eve__search|<connection>__|Answer in French|earlier conversation/);
+  assert.deepEqual(
+    sentEnvelopes().filter((envelope) => envelope.event === "observation").map((envelope) => envelope.payload.tool_use_id),
+    ["turn_0:call_1"],
+  );
+});
+
+test("a turn whose input is only eve's notes sends no prompt and runs no search", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const input = eveTurnInput("turn_0").filter((message) => message.content !== HUMAN_TEXT);
+  const context = {
+    abortSignal: new AbortController().signal,
+    memory: { scope, slot: "memory" },
+    messages: input,
+    operationId: "eve-memory-operation-v1:session-1:0:turn_0:turn.started:memory",
+    session: { id: "session-1" },
+    turn: { id: "turn_0", sequence: 0, input },
+  } as never;
+  await provider.recall["turn.started"](context);
+  assert.deepEqual(calls.map((call) => call.name), ["timeline"]);
+  await capture(provider, context);
+  assert.equal(sentEnvelopes().find((envelope) => envelope.event === "session-init")!.payload.prompt, undefined);
+});
+
 test("an unreachable memory service tells the model and logs instead of failing the turn", async () => {
   reply = (_call, res) => {
     res.writeHead(500, { "content-type": "text/plain" });
@@ -426,6 +509,24 @@ test("capture records only this turn's tool calls, never earlier turns' history"
   );
   const observations = sentEnvelopes().filter((envelope) => envelope.event === "observation");
   assert.deepEqual(observations.map((envelope) => envelope.payload.tool_use_id), ["turn_2:new"]);
+});
+
+test("an eve note landing mid-turn does not hide the turn's earlier tool calls", async () => {
+  const provider = claudeMem({ apiKey: "k", baseUrl });
+  const context = completedContext("second", [{ id: "before", name: "bash", input: {}, output: { type: "text", value: "x" } }], {
+    sequence: 2,
+    earlier: [userMessage("first"), { role: "assistant", content: "ok" }],
+  }) as unknown as { messages: unknown[] };
+  const done = context.messages.pop();
+  context.messages.push(
+    { role: "user", kind: "task.result", content: [{ type: "text", text: "task finished" }] },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "after", toolName: "bash", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "after", toolName: "bash", output: { type: "text", value: "y" } }] },
+    done,
+  );
+  await capture(provider, context as never);
+  const observations = sentEnvelopes().filter((envelope) => envelope.event === "observation");
+  assert.deepEqual(observations.map((envelope) => envelope.payload.tool_use_id), ["turn_2:before", "turn_2:after"]);
 });
 
 test("a tool call without a result is skipped with a warning", async () => {
