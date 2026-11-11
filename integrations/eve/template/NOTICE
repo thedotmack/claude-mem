@@ -1,0 +1,9 @@
+eve
+Copyright 2026 Vercel, Inc. and contributors
+
+This product includes software developed at Vercel, Inc.
+(https://vercel.com/).
+
+This template is derived from apps/templates/eve-chat-template in
+https://github.com/vercel/eve (Apache-2.0) and was modified by the
+claude-mem authors to use claude-mem memory.
