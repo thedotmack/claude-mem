@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../../../src/shared/paths.js';
@@ -109,6 +109,8 @@ let claimedMessages: Array<{
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: unknown;
+  tool_response?: unknown;
+  cwd?: string;
   toolUseId?: string;
 }> = [];
 let mockGetClaimedMessages: ReturnType<typeof mock>;
@@ -581,6 +583,177 @@ describe('ResponseProcessor', () => {
       const [, , observations] = mockStoreObservations.mock.calls[0];
       expect(observations[0].files_read).toEqual(['supabase/functions/edge/index.ts', 'src/other.ts']);
       expect(observations[0].files_modified).toEqual([]);
+    });
+  });
+
+  describe('line anchors (#4943)', () => {
+    const CHARGE_LINES = [
+      "import { retry } from './retry';",
+      '',
+      'export const MAX_CHARGE_RETRIES = 4;',
+      '',
+      'export function chargeCard(card: Card) {',
+      '  if (!card.token) {',
+      "    throw new ChargeDeclined('missing token');",
+      '  }',
+      '  return retry(() => gateway.charge(card), MAX_CHARGE_RETRIES);',
+      '}',
+    ];
+    let anchorDirectory: string;
+    let chargeFile: string;
+
+    beforeEach(() => {
+      anchorDirectory = mkdtempSync(join(tmpdir(), 'response-processor-anchors-'));
+      chargeFile = join(anchorDirectory, 'charge.ts');
+      writeFileSync(chargeFile, `${CHARGE_LINES.join('\n')}\n`);
+      extraMockSettings = { CLAUDE_MEM_LINE_ANCHORS_ENABLED: 'true' };
+    });
+
+    afterEach(() => {
+      rmSync(anchorDirectory, { recursive: true, force: true });
+    });
+
+    /** What the worker stores for a Claude Code Read: the tool response as JSON text. */
+    const storedReadResponse = (lines: string[]) =>
+      JSON.stringify({ type: 'text', file: { filePath: chargeFile, content: lines.join('\n'), numLines: lines.length } });
+
+    const raiseLimit = () => ({
+      type: 'observation' as const,
+      tool_name: 'Edit',
+      tool_input: { file_path: chargeFile, old_string: 'export const MAX_CHARGE_RETRIES = 3;', new_string: CHARGE_LINES[2] },
+    });
+
+    async function storeOneObservation(session = createMockSession()): Promise<Record<string, unknown>> {
+      const responseText = `
+        <observation>
+          <type>bugfix</type>
+          <title>Raised the charge retry limit</title>
+          <narrative>Four tries before a card charge fails.</narrative>
+          <facts><fact>MAX_CHARGE_RETRIES is 4</fact></facts>
+          <concepts><concept>payments</concept></concepts>
+          <files_read><file>${chargeFile}</file></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+      await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      return observations[0];
+    }
+
+    const storedMetadata = (observation: Record<string, unknown>) => JSON.parse((observation.metadata as string | undefined) ?? 'null');
+
+    it('stores an Edit\'s line anchor in metadata under cmem_line_anchors_v1', async () => {
+      claimedMessages = [raiseLimit()];
+
+      expect(storedMetadata(await storeOneObservation())).toEqual({
+        cmem_line_anchors_v1: [{ path: chargeFile, line: 3, text: 'export const MAX_CHARGE_RETRIES = 4;' }],
+      });
+    });
+
+    it.each([
+      ['claude', true],
+      ['devin', false],
+      ['codex', false],
+    ])('anchors only in Claude Code sessions, though other hosts name their tools Edit and Read too: platform %p', async (platformSource, anchored) => {
+      claimedMessages = [raiseLimit()];
+      const observation = await storeOneObservation(createMockSession({ platformSource }));
+
+      expect('metadata' in observation).toBe(anchored);
+    });
+
+    it('stores a targeted Read\'s line when the stored tool_response holds it', async () => {
+      claimedMessages = [{
+        type: 'observation', tool_name: 'Read',
+        tool_input: { file_path: chargeFile, offset: 5, limit: 3 },
+        tool_response: storedReadResponse(CHARGE_LINES.slice(4, 7)),
+      }];
+
+      expect(storedMetadata(await storeOneObservation())).toEqual({
+        cmem_line_anchors_v1: [{ path: chargeFile, line: 5, text: 'export function chargeCard(card: Card) {' }],
+      });
+    });
+
+    it('skips a Read line the stored tool_response lacks (stripped, redacted or changed since)', async () => {
+      // Line 5 is not in the stored response, as when <private> stripping removed it.
+      claimedMessages = [{
+        type: 'observation', tool_name: 'Read',
+        tool_input: { file_path: chargeFile, offset: 5, limit: 3 },
+        tool_response: storedReadResponse(['', CHARGE_LINES[5], CHARGE_LINES[6]]),
+      }];
+
+      expect(storedMetadata(await storeOneObservation())).toEqual({
+        cmem_line_anchors_v1: [{ path: chargeFile, line: 6, text: '  if (!card.token) {' }],
+      });
+    });
+
+    it('ignores a failed Edit, anchoring only the batch\'s successful one', async () => {
+      claimedMessages = [
+        {
+          type: 'observation', tool_name: 'Edit',
+          tool_input: { file_path: chargeFile, old_string: 'not in the file', new_string: CHARGE_LINES[6] },
+          tool_response: JSON.stringify({ is_error: true, error: 'String to replace not found in file.' }),
+        },
+        raiseLimit(),
+      ];
+
+      expect(storedMetadata(await storeOneObservation())).toEqual({
+        cmem_line_anchors_v1: [{ path: chargeFile, line: 3, text: CHARGE_LINES[2] }],
+      });
+    });
+
+    it('stores no metadata key for a whole-file Read or a Read from line 1', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: chargeFile }, tool_response: storedReadResponse(CHARGE_LINES) },
+        {
+          type: 'observation', tool_name: 'Read',
+          tool_input: { file_path: chargeFile, offset: 1, limit: 5 },
+          tool_response: storedReadResponse(CHARGE_LINES.slice(0, 5)),
+        },
+      ];
+
+      expect(await storeOneObservation()).not.toHaveProperty('metadata');
+    });
+
+    it.each([undefined, 'false', 'TRUE', '1'])('stores no metadata key with the setting %p, even for an Edit it would anchor', async (setting) => {
+      extraMockSettings = setting === undefined ? {} : { CLAUDE_MEM_LINE_ANCHORS_ENABLED: setting };
+      claimedMessages = [raiseLimit()];
+
+      expect(await storeOneObservation()).not.toHaveProperty('metadata');
+    });
+
+    it('stores the batch without anchors when capturing them throws', async () => {
+      claimedMessages = [{
+        type: 'observation', tool_name: 'Edit',
+        tool_input: {
+          file_path: chargeFile,
+          get new_string(): string { throw new Error('unreadable tool input'); },
+        },
+      }];
+
+      expect(await storeOneObservation()).not.toHaveProperty('metadata');
+      const debugMessages = (loggerSpies[1] as ReturnType<typeof spyOn>).mock.calls.map((call: unknown[]) => call[1]);
+      expect(debugMessages).toContain('Line anchors skipped for this batch');
+    });
+
+    it('reads no file for anchors when the batch stores no observation', async () => {
+      // Capturing would read new_string, and this one throws: the debug line would say so.
+      claimedMessages = [{
+        type: 'observation', tool_name: 'Edit',
+        tool_input: {
+          file_path: chargeFile,
+          get new_string(): string { throw new Error('capture ran'); },
+        },
+      }];
+
+      await processAgentResponse(
+        '<observation><type>discovery</type><narrative>No title, so nothing is stored.</narrative></observation>',
+        createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent',
+      );
+
+      const debugMessages = (loggerSpies[1] as ReturnType<typeof spyOn>).mock.calls.map((call: unknown[]) => call[1]);
+      expect(debugMessages).toContain('Dropped observations without a title before storage');
+      expect(debugMessages).not.toContain('Line anchors skipped for this batch');
     });
   });
 

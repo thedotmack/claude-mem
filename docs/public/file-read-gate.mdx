@@ -112,11 +112,52 @@ The titles below are history from earlier sessions, not the file's current conte
 42301 2:15p 🔴 Fixed rounding error in multi-currency invoice totals
 ```
 
-Each timeline line is `<id> <time> <type> <title>`, grouped by day, oldest first. Type icons: 🔴 bugfix, 🟣 feature, 🔄 refactor, 🔵 discovery, ⚖️ decision, ✅ change.
+Each timeline line is `<id> <time> <type> <title>`, grouped by day, oldest first. Type icons: 🔴 bugfix, 🟣 feature, 🔄 refactor, 🔵 discovery, ⚖️ decision, ✅ change. With [line anchors](#line-anchors) on, a line can end with where that observation's code is now (`@L212`) or `(code changed since)`.
 
 <Note>
 The block goes to Claude, not to you. There is no approval prompt to click through. To let whole-file Reads through, [turn the gate off](#how-to-turn-it-off).
 </Note>
+
+---
+
+## Line Anchors
+
+Off by default. With `CLAUDE_MEM_LINE_ANCHORS_ENABLED` set to `true`, the timeline also says where in the file past work is now, so Claude can Read those lines with `offset` and `limit` instead of the whole file:
+
+```
+### Oct 3, 2026
+42298 1:50p 🔄 Split invoice totals into calculateSubtotal and applyTaxes @L212,L340
+42301 2:15p 🔴 Fixed rounding error in multi-currency invoice totals @L388 (some code changed since)
+42305 3:02p 🟣 Added a late fee to overdue invoices (code changed since)
+42310 4:40p 🔵 Looked into how invoices are numbered
+```
+
+| A line ending in | Means |
+|------------------|-------|
+| `@L212` or `@L212,L340` | Every line recorded for that observation was found in the file as it is now, at these lines |
+| `@L388 (some code changed since)` | Some were found, at these lines; the rest are gone |
+| `(code changed since)` | None was found: that code changed or was removed |
+| nothing | No line was recorded for that observation in this file |
+
+When a line was found, the context adds a direction to Read around the `@L` number, and a block adds one before the timeline. The direction names Claude Code's `Read` with `offset` and `limit`. Only Claude Code sessions record lines, so another host shows these rows only when its timeline includes Claude Code's observations (`CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES`).
+
+**How lines are recorded.** When the worker stores an observation, it takes lines from the tool calls of the same batch, never from model output, and only in Claude Code sessions. For each `Edit` or `MultiEdit` edit it takes at most one line, inside the text that edit wrote, preferring the lines it changed, and only while that text occurs exactly once in the file. For each `Read` with an `offset` above 1 it takes at most one line of the window (its `limit`, or 50 lines), and only a line the stored tool response holds as a whole line, so `<private>` content and lines changed after the Read are never recorded. A line counts only with at least 8 letters or digits, at most 400 characters, and exactly one occurrence in the file at that moment, also when whitespace is ignored, so finding it again ignoring whitespace never lands on a copy that was already there. Failed or denied calls, whole-file Reads, `Write`, and files over 2 MB or holding binary data are skipped. Each observation keeps at most 3 lines, from the files it names, one per file before a second for any, in its `metadata` (`cmem_line_anchors_v1`), with no schema change. The recorded text is source code and goes wherever the observation goes, Cloud Sync included. Secrets are left out only when [auto-redaction](/usage/auto-redaction) (`CLAUDE_MEM_REDACT_ENABLED`, off by default) is on: lines are then compared with the redacted tool input and response, so a line holding a secret it recognizes is never recorded.
+
+**How lines are found again.** Before each Read, every line recorded for this file is looked up in the file as it is now: by its exact text, then by its text with whitespace squashed, so a re-indented line still counts. Found exactly once, the row shows its current number. Found nowhere, or in two or more places, the row says `(code changed since)`: a line number is never guessed. Lines recorded for other files are ignored, and a file over 2 MB is not looked up, so its rows end with nothing.
+
+**Files modified since their history.** Without line anchors, a file modified after its newest observation gets nothing added (see [How It Works](#how-it-works)). With them, the timeline lists the observations that have lines recorded in the file, each marked as above, under the note `The file changed after these observations: …`. Observations without recorded lines stay hidden, and such a Read is never blocked.
+
+**Turning it on.** In `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_LINE_ANCHORS_ENABLED": "true"
+}
+```
+
+It applies from the next Read and the next stored observation, with no restart. Only the value `true` turns it on, and observations stored while it was off have no recorded lines. An environment variable of the same name overrides the settings file, but the worker reads its environment only when it starts.
+
+**Cost.** No model calls, no new dependencies. With it on, the worker reads each file an `Edit`, `MultiEdit` or targeted `Read` touched once per batch that stores an observation, and the hook reads the file once per Read when its timeline has a recorded line in it. A row grows by a few characters, plus one direction line when a line was found.
 
 ---
 

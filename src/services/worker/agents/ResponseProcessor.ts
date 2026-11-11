@@ -38,6 +38,8 @@ import { logChromaWriteFailure } from '../search/errors.js';
 import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
 import { observationMediaFromMetadata } from '../../media/feed.js';
 import { captureOnlyLinkWrites, hasWaitingCaptureOnlyEvents, skippedTurnCaptureOnlyLinkWrites, withWaitingCaptureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import { deriveLineAnchors, lineAnchorsForObservation, withLineAnchors, type LineAnchor } from '../../../shared/line-anchors.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import type { Database } from 'bun:sqlite';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
@@ -107,6 +109,33 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
 function toolResponseIndicatesError(toolResponse: unknown): boolean {
   const record = maybeParseObject(toolResponse);
   return record !== null && (record.is_error === true || record.isError === true);
+}
+
+/**
+ * Line anchors (#4943), opt-in with CLAUDE_MEM_LINE_ANCHORS_ENABLED: where in
+ * each file the batch's successful Edit, MultiEdit and targeted Read calls
+ * landed (src/shared/line-anchors.ts). Claude Code sessions only: other hosts'
+ * adapters rename their own tools to these names. Off, no source file is
+ * read. Runs outside the storage transaction, and a failure stores the batch
+ * without anchors: it must never fail or retry a batch.
+ */
+function captureLineAnchors(
+  messages: ReadonlyArray<PendingMessage>,
+  sessionDbId: number,
+  platformSource: string | undefined,
+): LineAnchor[] {
+  try {
+    if (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_LINE_ANCHORS_ENABLED !== 'true') return [];
+    if (normalizePlatformSource(platformSource) !== 'claude') return [];
+    // A denied or failed call changed nothing, as with file evidence above.
+    return deriveLineAnchors(messages.filter(message => !toolResponseIndicatesError(message.tool_response)));
+  } catch (error) {
+    logger.debug('DB', 'Line anchors skipped for this batch', {
+      sessionId: sessionDbId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
@@ -1016,11 +1045,21 @@ export async function processAgentResponse(
       dropped: sanitizedObservations.length - storableObservations.length,
     });
   }
-  const labeledObservations = storableObservations.map(({ attachments: _attachmentLabels, ...obs }) => ({
-    ...obs,
-    agent_type: context.pendingAgentType,
-    agent_id: context.pendingAgentId
-  }));
+  // Line anchors (#4943): an observation without any gets no metadata key,
+  // so with the setting off (the default) every row is stored as before. A
+  // batch that stores no observation reads no file for them.
+  const lineAnchors = storableObservations.length > 0
+    ? captureLineAnchors(claimedMessages, session.sessionDbId, session.platformSource)
+    : [];
+  const labeledObservations = storableObservations.map(({ attachments: _attachmentLabels, ...obs }) => {
+    const anchors = lineAnchorsForObservation(obs, lineAnchors);
+    return {
+      ...obs,
+      agent_type: context.pendingAgentType,
+      agent_id: context.pendingAgentId,
+      ...(anchors.length > 0 ? { metadata: withLineAnchors(null, anchors) } : {}),
+    };
+  });
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
   let mediaLinkResult: MediaLinkageWriteResult | null = null;
