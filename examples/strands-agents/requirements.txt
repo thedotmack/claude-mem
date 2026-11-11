@@ -1,0 +1,2 @@
+strands-agents==1.64.0
+mcp==2.3.0
