@@ -12,8 +12,25 @@ import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
+function openClawHome(): string {
+  const override = process.env.OPENCLAW_HOME?.trim();
+  const home = override && override !== 'null' && override !== 'undefined' ? override : homedir();
+  return path.resolve(home.replace(/^~(?=$|[\\/])/, () => homedir()));
+}
+
+function openClawUserPath(value: string): string {
+  return path.resolve(value.trim().replace(/^~(?=$|[\\/])/, () => openClawHome()));
+}
+
+// Match OpenClaw's src/config/state-dir.ts and src/config/paths.ts: extensions
+// belong to the selected state directory, while the config may live elsewhere.
 export function getOpenClawConfigDirectory(): string {
-  return path.join(homedir(), '.openclaw');
+  const override = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (override) return openClawUserPath(override);
+  const profile = process.env.OPENCLAW_PROFILE?.trim();
+  const suffix = profile && profile.toLowerCase() !== 'default' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile)
+    ? `-${profile}` : '';
+  return path.join(openClawHome(), `.openclaw${suffix}`);
 }
 
 export function getOpenClawExtensionsDirectory(): string {
@@ -25,7 +42,8 @@ export function getOpenClawClaudeMemExtensionDirectory(): string {
 }
 
 export function getOpenClawConfigFilePath(): string {
-  return path.join(getOpenClawConfigDirectory(), 'openclaw.json');
+  const override = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  return override ? openClawUserPath(override) : path.join(getOpenClawConfigDirectory(), 'openclaw.json');
 }
 
 const OPENCLAW_MARKETPLACE_ROOTS = [
@@ -83,9 +101,9 @@ function readOpenClawConfig(): Record<string, any> {
 }
 
 function writeOpenClawConfig(config: Record<string, any>): void {
-  const configDirectory = getOpenClawConfigDirectory();
-  mkdirSync(configDirectory, { recursive: true });
-  writeJsonFileAtomic(getOpenClawConfigFilePath(), config);
+  const configFilePath = getOpenClawConfigFilePath();
+  mkdirSync(path.dirname(configFilePath), { recursive: true });
+  writeJsonFileAtomic(configFilePath, config);
 }
 
 function registerPluginInOpenClawConfig(

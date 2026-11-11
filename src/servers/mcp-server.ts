@@ -586,7 +586,7 @@ const tools: McpToolDefinition[] = [
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch selected details ONLY for filtered IDs
 Exceptional follow-up: get_tool_uses([IDs]) for raw tool_input/tool_response, ONLY when the summary is not enough
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first: an index row is ~50-100 tokens, about a tenth of a ~500-1,000-token record, so filtering decides how many records you fetch, not how large each one is.`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -617,7 +617,7 @@ Use the original three-step mem-search workflow. Reason about the index and time
    \`get_tool_uses(ids=[...])\`
    Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
 
-**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for raw tool I/O before the three-step workflow.
+**Why:** an index row is ~50-100 tokens, about a tenth of a ~500-1,000-token record, so filtering decides how many records you fetch, not their size. Never fetch full details without filtering first, and never reach for raw tool I/O before the three-step workflow.
 
 Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.`
       }]

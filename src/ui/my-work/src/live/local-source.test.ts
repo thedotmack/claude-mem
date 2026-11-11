@@ -512,6 +512,27 @@ describe('compact local source', () => {
     })
   }
 
+  it('a focus save keeps its own receipt when a newer live model arrives', async () => {
+    const held = deferred<Response>()
+    const saved = snapshot(SECOND)
+    saved.focusAreas = [{ focusAreaId: 'area-a', name: 'Saved area', goal: null, status: 'suggested',
+      priorityRank: 1, ownerRank: null, source: 'seed', mergedInto: null, evidence: null, decidedBy: 'owner-restore', savedAt: null }]
+    const newer = structuredClone(saved)
+    newer.focusAreas = saved.focusAreas.map(area => ({ ...area, status: 'done' as const }))
+    const { local, streams } = harness(async (_url, init) => init?.method === 'POST' ? held.promise : json(newer))
+    const shown: WorkModel[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+    try {
+      streams[0].emit('work-view', saved)
+      const saving = local.saveFocusChange({ action: 'restore-suggestion', focusAreaId: 'area-a' })
+      streams[0].emit('work-view', newer)
+      held.resolve(json(saved))
+      const receipt = await saving
+      assert.equal(receipt.focusAreas[0].status, 'suggested', 'Undo must use the state its own write saved')
+      assert.equal(shown.at(-1)?.focusAreas[0].status, 'done', 'the newer live decision remains on screen')
+    } finally { stop() }
+  })
+
   it('a late review response cannot replace a newer model used by detail reads', async () => {
     const held = deferred<Response>()
     const { local, streams } = harness(async (_url, init) => init?.method === 'POST'

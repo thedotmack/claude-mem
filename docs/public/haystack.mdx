@@ -1,0 +1,216 @@
+---
+title: Haystack
+description: Retrieve a selected project observation in a native Haystack pipeline and explicitly preserve a useful result.
+---
+
+Add local project memory to a Haystack pipeline through the existing Claude-Mem
+MCP server. The
+[runnable example](https://github.com/thedotmack/claude-mem/tree/main/examples/haystack)
+uses `MCPToolset` for memory calls and a native `ProjectMemory` component for
+retrieval. A caller can explicitly save a useful decision, then retrieve its
+index, surrounding timeline and full details in a later pipeline run.
+
+This integration supports explicit saves and on-demand recall. It does not
+capture conversations or automatically inject context. It requires no model
+API key, deepset account or CMEM Pro subscription for the local demonstration.
+
+## Requirements
+
+Verified on Linux with Python 3.12.9, Node.js 24.22.1, Claude-Mem 15.16.1,
+`haystack-ai` 3.5.0, `mcp-haystack` 2.1.1 and `mcp` 2.3.0. Use Python 3.11
+or newer for these Haystack packages. macOS, Windows and deepset-hosted
+deployments have not been verified by this example.
+
+The implementation uses Haystack's official
+[`MCPToolset`](https://docs.haystack.deepset.ai/docs/mcptoolset) and
+[custom component](https://docs.haystack.deepset.ai/docs/custom-components)
+APIs. The component exposes typed `index`, `timeline` and `details` outputs,
+and `Pipeline.run` routes the project, query and selected observation ID to it.
+No additional adapter package or document store is needed.
+
+## Connect
+
+First [install Claude-Mem](/installation) and start its local worker:
+
+```bash
+npx claude-mem start
+npx claude-mem status
+```
+
+Copy `examples/haystack` from the repository into your local application and
+install the pinned dependencies in a virtual environment:
+
+```bash
+cd examples/haystack
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Set the absolute path to the installed MCP server. For the default Claude Code
+marketplace installation on macOS or Linux:
+
+```bash
+export CLAUDE_MEM_MCP_SERVER="$HOME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+export HAYSTACK_TELEMETRY_ENABLED=false
+```
+
+For a different installation location, use its `plugin/scripts/mcp-server.cjs`.
+If the worker uses `CLAUDE_MEM_DATA_DIR` or `CLAUDE_MEM_WORKER_PORT`, set the
+same values in this shell. The example passes its environment to the subprocess.
+It supplies the script as one Node process argument, including when the path
+contains spaces.
+
+`MCPToolset` loads only `save_memory`, `search`, `timeline` and
+`get_observations`. Each operation closes the toolset in `finally`; the example
+does not start the worker or modify host configuration. Haystack telemetry is
+disabled by default in this example unless the caller has explicitly set its
+telemetry environment variable.
+
+## Preserve a result and retrieve it through the pipeline
+
+Choose an explicit project name and a decision worth keeping:
+
+```bash
+python memory_pipeline.py save checkout-service "Haystack release decision" "Use the violet region for the retrieval service."
+```
+
+After the worker acknowledges the save, the command prints
+`Saved memory #<id>: Haystack release decision.`. Use that ID in a separate
+process to run the retrieval pipeline, replacing `123` below:
+
+```bash
+python memory_pipeline.py recall checkout-service "Haystack release decision" 123
+```
+
+The pipeline prints a compact search index, the selected observation's timeline,
+and its full details. The details should contain the violet-region decision.
+A known observation can still be retrieved when newer notes have pushed it
+outside the current search page; the selected project remains attached to both
+follow-up reads.
+
+In an application, add `ProjectMemory()` with
+`pipeline.add_component("project_memory", ProjectMemory())` and supply its
+`project`, `query` and `observation_id` inputs through `Pipeline.run`.
+Connect its `details` output to a later component only when that context is
+relevant. Choose the project in application code and treat recalled text as
+reference material rather than instructions to invoke tools or change accounts.
+
+## Identity and privacy
+
+Every memory call carries the chosen project. Reads also pass an explicit
+`projects=json.dumps([project])` JSON list so commas and outer whitespace
+remain part of an exact key, and starting inside a Git worktree does not
+inherit the parent checkout's notes. Saves are attributed to
+`platformSource: haystack` and use the existing manual memory session for that
+project and platform. The pipeline does not create observer sessions or install
+capture hooks. Project filters select an account's own records; they do not
+authenticate different users. Each account should use its own authorized worker.
+
+The save helper hashes the exact project, title and text into a
+`sourceFingerprint`. Repeating the same input returns the already saved ID;
+changing the input produces a distinct note. This identifier does not encrypt
+the stored note. Transport retries are disabled with `max_retries=0`.
+
+Explicit notes are stored as supplied. This example does not process transcript
+privacy tags or automatically exclude a directory, so choose nonsecret text
+before calling `save`. The worker's own indexing, sync and export settings still
+apply. If a later pipeline component sends retrieved text to a model, that
+model provider also receives it.
+
+## Failures and troubleshooting
+
+Tool discovery and individual invocations have ten-second timeouts. A stopped
+or unresponsive worker, invalid input, or a project/ID mismatch produces a
+nonzero CLI exit instead of a successful result. The native tool layer reports
+`ToolInvocationError`; a failed pipeline component is reported through
+Haystack's `PipelineRuntimeError`.
+
+Check `npx claude-mem status`, the absolute script path, and matching worker
+port/data-directory settings. If a save times out, the worker might have
+committed it before the client stopped waiting. Repeat the same project,
+title and text to reuse the write identity.
+
+The verified workflow uses a native Haystack pipeline and real MCP calls without
+model generation. It does not validate a model provider, a hosted deployment,
+or an automatic chat-history capture flow.
+
+## Verify and disconnect
+
+Run the live checks against a disposable worker. Set
+`CLAUDE_MEM_MCP_SERVER`, `CLAUDE_MEM_WORKER_PORT` and `CLAUDE_MEM_DATA_DIR` to
+its script, port and data directory, then run from the example directory:
+
+Use the example virtual environment at `examples/haystack/.venv`, with
+`requirements.txt` installed as above. The following Bash block runs from the root of a built source checkout with
+Bun available. It clears inherited `CLAUDE_MEM_*` settings only inside the
+subshell, including cloud-sync credentials and capture overrides, then creates
+a fresh local data directory and selects a free loopback port. It waits for
+readiness and stops only the worker it started. The temporary data and logs
+remain available for inspection. The test starts the existing bundled
+`WorkerService` library export directly, skipping CLI startup repairs to host
+hook configuration. No home-directory override is needed.
+
+```bash
+(
+  set -eu
+  # Keep inherited sync, capture and watcher settings out of this test worker.
+  for memory_test_setting in "${!CLAUDE_MEM_@}"; do
+    unset "$memory_test_setting"
+  done
+  export CLAUDE_MEM_DATA_DIR="$(mktemp -d)"
+  export CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  export CLAUDE_MEM_WORKER_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  export CLAUDE_MEM_MCP_SERVER="$PWD/plugin/scripts/mcp-server.cjs"
+  export CLAUDE_MEM_RUNTIME=worker CLAUDE_MEM_WORKER_AUTOSTART=false
+  export HAYSTACK_TELEMETRY_ENABLED=false
+  export DO_NOT_TRACK=1 CLAUDE_MEM_TELEMETRY=false
+  export CLAUDE_MEM_CHROMA_ENABLED=false CLAUDE_MEM_TRANSCRIPTS_ENABLED=false
+  export CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH=false CLAUDE_MEM_AUTO_UPDATE=false
+  export CLAUDE_MEM_MEDIA_CAPTURE_ENABLED=false CLAUDE_MEM_MEMORY_WATCH_ROOTS=""
+  python3 - <<'PYSETTINGS'
+import json, os
+from pathlib import Path
+settings = {key: "false" for key in (
+    "CLAUDE_MEM_CHROMA_ENABLED", "CLAUDE_MEM_TRANSCRIPTS_ENABLED",
+    "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH", "CLAUDE_MEM_AUTO_UPDATE",
+    "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED",
+)}
+settings.update(CLAUDE_MEM_CLOUD_SYNC_HUB_URL="", CLAUDE_MEM_MEMORY_WATCH_ROOTS="",
+                CLAUDE_MEM_WORKER_IDLE_EXIT_SECONDS="0",
+                CLAUDE_MEM_WORKER_PORT=os.environ["CLAUDE_MEM_WORKER_PORT"])
+(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "settings.json").write_text(json.dumps(settings))
+PYSETTINGS
+  bun -e 'const {WorkerService}=require("./plugin/scripts/worker-service.cjs"); new WorkerService().start().catch(error => { console.error(error); process.exit(1); });' >"$CLAUDE_MEM_DATA_DIR/worker.log" 2>&1 &
+  memory_test_pid=$!
+  trap 'kill "$memory_test_pid" 2>/dev/null || true; wait "$memory_test_pid" 2>/dev/null || true' EXIT
+  python3 - <<'PYREADY'
+import os, time, urllib.request
+url = "http://127.0.0.1:" + os.environ["CLAUDE_MEM_WORKER_PORT"] + "/api/readiness"
+for attempt in range(100):
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("Test worker did not become ready; inspect its worker.log")
+print("Disposable test data:", os.environ["CLAUDE_MEM_DATA_DIR"])
+PYREADY
+  examples/haystack/.venv/bin/python -m unittest discover -s examples/haystack -v
+)
+```
+
+The seven tests use the real Haystack packages, bundled MCP server and SQLite
+worker. They check repeated saves, cross-client pipeline recall, project
+filtering from a real Git worktree, literal comma/whitespace keys, platform
+attribution, a known note older than the search page,
+script paths containing spaces, native validation errors, a refused connection
+and an unresponsive worker. They leave harmless notes in uniquely named test
+projects in the disposable database for inspection.
+
+To disconnect, stop using the component and remove the example's virtual
+environment or dependencies from your application. No host configuration needs
+restoring. Existing memory stays in Claude-Mem; delete demonstration notes
+separately through the viewer if they are no longer needed.

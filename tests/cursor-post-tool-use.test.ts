@@ -44,7 +44,7 @@ describe('cursorAdapter: postToolUse payloads', () => {
       tool_output: '{"ignored":true}',
     } as any);
 
-    expect(normalized.toolResponse).toBe('{"ok":true}');
+    expect(normalized.toolResponse).toEqual({ ok: true });
   });
 });
 
