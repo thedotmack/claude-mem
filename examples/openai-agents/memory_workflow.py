@@ -35,6 +35,12 @@ def memory_server(script: str, timeout: float = 10, env=None) -> MCPServerStdio:
 
 
 async def call(server: MCPServerStdio, name: str, arguments: dict) -> str:
+    if name in {"search", "timeline", "get_observations"}:
+        project = arguments.get("project")
+        if not isinstance(project, str) or not project.strip():
+            raise ValueError("Choose an explicit project for memory reads")
+        # Prevent the MCP checkout helper from adding parent/worktree read keys.
+        arguments = {**arguments, "projects": [project]}
     result = await server.call_tool(name, arguments)
     if result.is_error:
         raise RuntimeError(f"{name} failed; check the worker connection and arguments")
