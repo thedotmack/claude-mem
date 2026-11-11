@@ -63,17 +63,30 @@ export const ORPHANED_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
  * back to the marker's mtime (Claude Code writes its own marker). Returns null
  * when nothing readable is there, which callers treat as "keep it".
  */
-export function readOrphanedAtMs(root: string, name: string): number | null {
+/** A marker time this far past the clock is treated as unreadable: a corrupt
+ * value must not keep a folder on disk forever. */
+const ORPHANED_MARKER_FUTURE_SLACK_MS = 24 * 60 * 60 * 1000;
+
+export function readOrphanedAtMs(root: string, name: string, now = Date.now()): number | null {
   const marker = join(root, name, '.orphaned_at');
+  const plausible = (time: number | null): time is number =>
+    time !== null && Number.isFinite(time) && time <= now + ORPHANED_MARKER_FUTURE_SLACK_MS;
   try {
     const value = Number(readFileSync(marker, 'utf-8').trim());
-    if (Number.isInteger(value) && value >= 1e12) return value;
-    if (Number.isInteger(value) && value >= 1e9) return value * 1000;
+    const stamped = Number.isInteger(value) && value >= 1e12
+      ? value
+      : Number.isInteger(value) && value >= 1e9
+        ? value * 1000
+        : null;
+    if (plausible(stamped)) return stamped;
   } catch {
     // Unreadable marker: fall back to its mtime below.
   }
   try {
-    return statSync(marker).mtimeMs;
+    const markerMtime = statSync(marker).mtimeMs;
+    // A future mtime is clock skew, not an orphan time: read it as "now" so the
+    // folder is kept rather than deleted on a bad clock.
+    return plausible(markerMtime) ? markerMtime : now;
   } catch {
     return null;
   }

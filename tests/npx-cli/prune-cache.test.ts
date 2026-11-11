@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, symlinkSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, symlinkSync, readFileSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import path, { join } from 'path';
 import { spawnSync } from 'node:child_process';
@@ -181,6 +181,34 @@ describe('prunePluginCache', () => {
 
     expect(result.removed).toEqual([]);
     expect(existsSync(join(root, '13.26.0'))).toBe(true);
+  });
+
+  it('accepts a seconds-precision orphan time', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-seconds-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), String(Math.floor(Date.now() / 1000)));
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual([]);
+    expect(existsSync(join(root, '13.26.0'))).toBe(true);
+  });
+
+  it('treats a marker far in the future as unreadable and falls back to its mtime', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-future-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    const marker = join(root, '13.26.0', '.orphaned_at');
+    writeFileSync(marker, String(Date.now() + 1e15));
+    const old = new Date(Date.now() - ORPHANED_CACHE_RETENTION_MS - 60_000);
+    utimesSync(marker, old, old);
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.26.0']);
   });
 
   it('keeps an orphaned directory whose marker carries no time', () => {

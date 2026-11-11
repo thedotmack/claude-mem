@@ -12,7 +12,9 @@
  * worker resolver would launch, and the newest version whose dependencies are
  * complete, so it never removes the directory a running worker was launched
  * from, the one Claude Code loads, or the only copy that can still start a
- * worker. When a worker is present but its version cannot be read, every
+ * worker. It also keeps folders Claude Code orphaned within the last 14 days,
+ * because a session that started before the update still loads its hooks from
+ * one until it restarts (#5970). When a worker is present but its version cannot be read, every
  * version is retained. `--dry-run` reports the plan without deleting. `--keep <n>`
  * overrides how many newest usable versions to retain.
  */
