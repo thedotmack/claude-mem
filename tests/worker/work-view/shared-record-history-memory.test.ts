@@ -273,6 +273,26 @@ test('a kept summary that no longer matches its row clears the row cache and rea
   } finally { errors.mockRestore(); }
 });
 
+test('a publish reuses only a kept reader of its own database, device and validator', () => {
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const other = new Database(':memory:');
+  new SessionStore(other).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => other.close());
+  const validateValue = () => true;
+  const publish = (reader: unknown) => publishSharedRecords(db, { deviceId: DEVICE, project: 'repo', validateValue,
+    updates: [{ kind: 'group', key: 'g', value: Math.random() }], reader: reader as any });
+  for (const reader of [
+    createSharedRecordReader(db, { deviceId: 'device-b', validateValue }),
+    createSharedRecordReader(db, { deviceId: DEVICE }),
+    createSharedRecordReader(db, { deviceId: DEVICE, validateValue: () => true }),
+    createSharedRecordReader(other, { deviceId: DEVICE, validateValue }),
+    () => readSharedRecords(db, { deviceId: DEVICE, validateValue }),
+  ]) expect(() => publish(reader)).toThrow('the reader reads another database, device or validator');
+  expect(publish(createSharedRecordReader(db, { deviceId: DEVICE, validateValue })).changed).toBe(1);
+});
+
 test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {
   // The ceiling (599,925 rows, shared-record-store.mjs) is where the kept summaries in two threads would use the
   // margin the cloud viewer's 1,536 MB leaves. Rows of an unsupported version are the cheapest shared rows to scan.

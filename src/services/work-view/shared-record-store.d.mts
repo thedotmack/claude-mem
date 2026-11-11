@@ -23,9 +23,10 @@ export function publishSharedRecords(db: Database, options: {
   updates: Array<{ kind: string; key: string; value?: unknown; deleted?: boolean; expectedHash?: string | null }>;
   now?: number;
   validateValue?: SharedValueValidator;
-  /** Must read the same deviceId and validateValue this call names. */
-  readState?: () => SharedRecordState;
+  /** A reader from createSharedRecordReader for this database, deviceId and validateValue; any other throws. */
+  reader?: SharedRecordReader;
 }): { changed: number; rowIds: number[]; batchId: string | null };
-export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): () => SharedRecordState;
+export type SharedRecordReader = () => SharedRecordState;
+export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): SharedRecordReader;
 /** count:highest id:summed sync_rev of the work_state_entries rows matching the SQL condition `where`. */
 export function workStateRowsRevision(db: Database, options?: { where?: string; syncRev?: boolean }): string;

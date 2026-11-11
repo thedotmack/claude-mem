@@ -303,6 +303,9 @@ export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) 
   } finally { statement.finalize(); }
 }
 
+/** Each reader createSharedRecordReader made, with the database, device and validator it reads. */
+const sharedRecordReaders = new WeakMap();
+
 /**
  * One reader that reuses its last read until the shared rows change (workStateRowsRevision). A
  * pull that touches other tables, which on a replica is almost every commit, reuses the last read
@@ -319,7 +322,7 @@ export function createSharedRecordReader(db, options) {
       throw error;
     }
   };
-  return () => {
+  const reader = () => {
     if (db.inTransaction) {
       const revision = revisionOf();
       return kept && revision !== null && revision === kept.revision ? kept.state : readSharedRecords(db, options);
@@ -332,17 +335,26 @@ export function createSharedRecordReader(db, options) {
       return state;
     })();
   };
+  sharedRecordReaders.set(reader, { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null });
+  return reader;
 }
 
 /** Atomic local commit; callers emit notifications only after this returns. */
-export function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, readState }) {
+export function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, reader }) {
   sharedWriter(deviceId);
+  // A kept reader (createSharedRecordReader) saves a read, but only one of this database, device and validator
+  // sees the records this publish must build on.
+  if (reader !== undefined) {
+    const reads = sharedRecordReaders.get(reader);
+    if (!reads || reads.db !== db || reads.deviceId !== deviceId || reads.validateValue !== (validateValue ?? null)) {
+      throw new TypeError('Shared My Work: the reader reads another database, device or validator');
+    }
+  }
   if (typeof project !== 'string' || !project.trim() || project.length > 1_024) throw new TypeError('Shared My Work: invalid project');
   if (!Array.isArray(updates) || updates.length > SHARED_WORK_MAX_UPDATES) throw new RangeError('Shared My Work: too many updates');
   if (!Number.isSafeInteger(now) || now < 0 || !Number.isFinite(new Date(now).getTime())) throw new TypeError('Shared My Work: invalid timestamp');
   return db.transaction(() => {
-    // readState lets a caller that already keeps a reader (createSharedRecordReader) reuse it.
-    const state = readState ? readState() : readSharedRecords(db, { deviceId, validateValue });
+    const state = reader ? reader() : readSharedRecords(db, { deviceId, validateValue });
     const batchId = randomUUID();
     const entries = [], seen = new Set();
     for (const update of updates) {

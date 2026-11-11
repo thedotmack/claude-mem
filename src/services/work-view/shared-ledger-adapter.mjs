@@ -66,10 +66,11 @@ export class SharedLedgerAdapter {
     return this.db.prepare('SELECT COUNT(*) AS count FROM my_work_file_state WHERE pending_json IS NOT NULL').get().count;
   }
 
-  shared() {
-    this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue });
-    return this.readShared();
+  sharedReader() {
+    return this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue });
   }
+
+  shared() { return this.sharedReader()(); }
 
   tombstoneKeys(name, shared) {
     const kinds = fileKinds(name);
@@ -195,7 +196,7 @@ export class SharedLedgerAdapter {
         if (!Object.hasOwn(prior.bases, key) && existing
           && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
       }
-      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, readState: () => this.shared() });
+      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader() });
       this.remember(name, value, updates, this.shared(), true, value === null);
       if (result.changed) changed = { rules: changes.some(change => change.kind === 'story') };
     })();
@@ -302,7 +303,7 @@ export class SharedLedgerAdapter {
     }
     const safe = updates;
     for (let offset = 0; offset < safe.length; offset += 512) {
-      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue, readState: () => this.shared() }).changed;
+      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue, reader: this.sharedReader() }).changed;
     }
     if (changed) this.notify({ rules: safe.some(update => update.kind === 'story') });
     if (changed) this.lastSignature = null;
