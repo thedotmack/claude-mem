@@ -111,6 +111,7 @@
           "devin-integration",
           "langgraph-integration",
           "llamaindex-integration",
+          "google-adk-integration",
           "qoder-integration",
           "screenpipe-integration",
           "eve-integration",
