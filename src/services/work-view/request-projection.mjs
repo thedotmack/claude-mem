@@ -304,6 +304,10 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     // Version the empty set too: a check made before the first product arrives
     // must not look like a pre-upgrade fingerprint eligible for adoption.
     request.sourceProductHash = createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest('hex');
+    // Legacy checks did not record this hash. Carry one forward only when all
+    // current products have known source times that predate the check.
+    request.sourceProductRecordedAtEpoch = merged.every((product) => Number.isFinite(product.atEpoch) && product.atEpoch > 0)
+      ? merged.reduce((latest, product) => Math.max(latest, product.atEpoch), 0) : null;
     // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
     // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);

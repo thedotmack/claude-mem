@@ -381,7 +381,7 @@ describe('local work view', () => {
     const before = (await snapshot()).humanRequests[0];
     const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
     expect(before.contentFingerprint).not.toBe(prior);
-    const checkedAt = at - 1000;
+    const checkedAt = at + 1;
     const sidecar = new Database(reviewPath);
     try {
       sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
@@ -396,7 +396,7 @@ describe('local work view', () => {
       await stop(); await start();
       expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
 
-      record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, at + 1);
+      record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, at + 2);
       const updated = (await snapshot()).humanRequests[0];
       expect(updated.contentFingerprint).not.toBe(adopted.contentFingerprint);
       expect(updated.review.checked).toBe(false);
@@ -448,10 +448,11 @@ describe('local work view', () => {
     append({ task: 'Build the local viewer', work_product: ['https://github.com/example/project/pull/42'] });
     const before = (await snapshot()).humanRequests[0];
     const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const checkedAt = before.workProduct[0].atEpoch + 1;
     const sidecar = new Database(reviewPath);
     try {
-      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, 1234, 'local-user');
-      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 1, 1234, null);
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 1, checkedAt, null);
       sidecar.exec(`CREATE TRIGGER refuse_override_adoption BEFORE UPDATE ON work_view_review_overrides
         BEGIN SELECT RAISE(ABORT, 'forced adoption failure'); END`);
       expect((await snapshot()).source.connected).toBe(true);
@@ -460,7 +461,56 @@ describe('local work view', () => {
           .toEqual({ content_fingerprint: prior });
       }
       sidecar.exec('DROP TRIGGER refuse_override_adoption');
-      expect((await snapshot()).humanRequests[0].review).toMatchObject({ checked: true, checkedAtEpoch: 1234 });
+      expect((await snapshot()).humanRequests[0].review).toMatchObject({ checked: true, checkedAtEpoch: checkedAt });
+    } finally { sidecar.close(); }
+  });
+
+  it.each([
+    { kind: 'deliverable', time: 'later' },
+    { kind: 'publication', time: 'later' },
+    { kind: 'deliverable', time: 'same' },
+    { kind: 'deliverable', time: 'unknown' },
+  ])('does not adopt a check over output added before the first upgraded snapshot: %j', async ({ kind, time }) => {
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET created_at_epoch=? WHERE id=1').run(at - 20_000);
+    seedLinkedEvidence();
+    source.exec(`CREATE TABLE deliverables (id INTEGER PRIMARY KEY, project TEXT, content_session_id TEXT,
+      platform_source TEXT, title TEXT, kind TEXT, source_path TEXT, bucket_path TEXT, created_at_epoch INTEGER)`);
+    source.exec('ALTER TABLE tool_uses ADD COLUMN tool_response TEXT');
+    const original = join(directory, 'viewer.html');
+    const first = join(directory, 'viewer-first.html');
+    const revised = join(directory, 'viewer-revised.html');
+    writeFileSync(first, '<h1>Original viewer</h1>');
+    writeFileSync(revised, '<h1>Revised viewer</h1>');
+    const record = source.prepare(`INSERT INTO deliverables(project, content_session_id, platform_source, title,
+      kind, source_path, bucket_path, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, first, at - 10_000);
+    const before = (await snapshot()).humanRequests[0];
+    const prior = contentFingerprint({ ...before, sourceProductHash: undefined });
+    const checkedAt = at - 5000;
+    const sidecar = new Database(reviewPath);
+    try {
+      sidecar.prepare('INSERT INTO work_view_reviews VALUES (?, ?, ?, ?)').run(before.id, prior, checkedAt, 'local-user');
+      sidecar.prepare('INSERT INTO work_view_review_overrides VALUES (?, ?, ?, ?, ?)').run(before.id, prior, 1, checkedAt, null);
+      // The old client checked the first product. More output arrives before
+      // the new client gets its first opportunity to adopt that old check.
+      const recordedAt = time === 'same' ? checkedAt : time === 'unknown' ? 'unknown' : at - 1000;
+      if (kind === 'deliverable') {
+        record.run('example-project', 'conversation', 'codex', 'Local viewer', 'page', original, revised, recordedAt);
+      } else {
+        source.prepare(`INSERT INTO tool_uses(id, project, platform_source, session_db_id, memory_session_id,
+          content_session_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch)
+          VALUES(2,?,?,?,?,?,?,?,?,?,?)`).run('example-project', 'codex', 1, 'memory', 'conversation', 1, 'Bash',
+          JSON.stringify({ command: 'gh pr create --title "Local viewer"' }),
+          JSON.stringify({ stdout: 'https://github.com/example/project/pull/42', exitCode: 0 }), recordedAt);
+      }
+      const updated = (await snapshot()).humanRequests[0];
+      expect(updated.workProduct).toHaveLength(2);
+      expect(contentFingerprint({ ...updated, sourceProductHash: undefined })).toBe(prior);
+      expect(updated.review.checked).toBe(false);
+      expect((await review({ ...before, contentFingerprint: prior })).status).toBe(409);
+      expect((await review(updated)).status).toBe(200);
+      expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
     } finally { sidecar.close(); }
   });
 

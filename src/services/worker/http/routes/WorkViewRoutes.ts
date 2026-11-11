@@ -1014,7 +1014,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
         let legacy = this.reviews.read(request.id, legacyFingerprint);
         if (request.sourceProductHash && (!legacy.checked || !override)) {
           const prior = priorContentFingerprint(request);
-          if (this.reviews.read(request.id, prior).checked || this.reviews.readOverride(request.id, prior, shared?.hash ?? null)) {
+          const priorReview = this.reviews.read(request.id, prior);
+          const priorOverride = this.reviews.readOverride(request.id, prior, shared?.hash ?? null);
+          const productsAt = request.sourceProductRecordedAtEpoch;
+          // Products can arrive after the old check but before the first
+          // upgraded read. Unknown or equal timestamps cannot prove order.
+          const productsPredateChecks = [priorReview, priorOverride].every(review => !review?.checked ||
+            (typeof productsAt === 'number' && Number.isFinite(productsAt) &&
+              typeof review.checkedAtEpoch === 'number' && productsAt < review.checkedAtEpoch));
+          if ((priorReview.checked || priorOverride) && productsPredateChecks) {
             this.reviews.adoptFingerprint(request.id, prior, legacyFingerprint);
             legacy = this.reviews.read(request.id, legacyFingerprint);
             override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
