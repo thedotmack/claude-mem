@@ -15,7 +15,7 @@ Instead of fetching all historical data upfront (expensive), claude-mem uses a p
 2. **Timeline** → Get context around interesting results
 3. **Get Observations** → Fetch full details ONLY for filtered IDs
 
-This achieves **~10x token savings** compared to traditional RAG approaches.
+This reads ~50-100-token index rows and fetches full ~500-1,000-token records only for the selected IDs: up to ~10x less context per result than fetching full details upfront. It is a size ratio, not a measured recall or end-to-end saving ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
 
 ## The 3-Layer Workflow
 

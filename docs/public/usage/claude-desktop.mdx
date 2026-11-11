@@ -104,7 +104,7 @@ The skill provides three core MCP tools following a 3-layer workflow pattern:
 2. **Timeline** → Get context around interesting results
 3. **Get Observations** → Fetch full details ONLY for filtered IDs
 
-This 3-layer approach provides ~10x token savings compared to fetching full details upfront.
+This 3-layer approach reads ~50-100-token index rows and fetches ~500-1,000-token records only for the selected IDs, which is up to ~10x less context per result than fetching full details upfront. That is a size ratio, not a measured saving.
 
 ## Troubleshooting
 
