@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { createGate, isAllowed, SESSION_COOKIE } from '../src/gate.js';
+import { createGate, isAllowed, SESSION_COOKIE, WORKER_STARTING_RELOAD_SECONDS } from '../src/gate.js';
 import { signToken, verifyToken } from '../src/token.js';
 
 const SECRET = 'x'.repeat(40);
@@ -241,5 +241,39 @@ describe('gate', () => {
     const page = await down(new Request(`${PUBLIC_ORIGIN}/`, { headers: { Cookie: sessionCookie(), Accept: 'text/html' } }));
     expect(page.status).toBe(503);
     expect(await page.text()).toContain('starting');
+  });
+
+  it('a full-page wake reloads itself until the worker answers; JSON callers keep the JSON 503', async () => {
+    // A port nothing listens on yet: the worker of a machine that has just woken.
+    const probe = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() });
+    const workerPort = probe.port;
+    probe.stop(true);
+    const waking = createGate({ ownerUserId: OWNER, secret: SECRET, upstreamOrigin: `http://127.0.0.1:${workerPort}`, publicOrigin: PUBLIC_ORIGIN, signInUrl: SIGN_IN });
+    const navigation = () => new Request(`${PUBLIC_ORIGIN}/`, { headers: { Cookie: sessionCookie(), Accept: 'text/html,application/xhtml+xml' } });
+
+    const starting = await waking(navigation());
+    expect(starting.status).toBe(503);
+    expect(starting.headers.get('cache-control')).toBe('no-store');
+    const html = await starting.text();
+    expect(WORKER_STARTING_RELOAD_SECONDS).toBe(3);
+    expect(html).toContain('<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="3"><title>');
+    expect(html).not.toContain('<script');
+
+    const api = await waking(new Request(`${PUBLIC_ORIGIN}/api/work-view`, { headers: { Cookie: sessionCookie(), Accept: 'application/json' } }));
+    expect(api.status).toBe(503);
+    expect(api.headers.get('content-type')).toBe('application/json');
+    expect(await api.json()).toEqual({ error: 'Your viewer is starting. Try again in a moment.' });
+
+    // The worker binds its port; the reload the refresh sends is the same request.
+    const worker = Bun.serve({ hostname: '127.0.0.1', port: workerPort, fetch: () => new Response('<!doctype html><title>My Work</title>', { headers: { 'Content-Type': 'text/html' } }) });
+    try {
+      const reloaded = await waking(navigation());
+      expect(reloaded.status).toBe(200);
+      const body = await reloaded.text();
+      expect(body).toContain('My Work');
+      expect(body).not.toContain('http-equiv="refresh"');
+    } finally {
+      worker.stop(true);
+    }
   });
 });

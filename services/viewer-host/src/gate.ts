@@ -24,6 +24,17 @@ export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
 /**
+ * How often the "Your viewer is starting" page reloads itself (a meta refresh: the
+ * browser reloads, no script polls). The Phase 8 staging run measured worker boot to
+ * ready at 2.0-2.4 s for a normal account and 16.7-23.5 s for the largest one
+ * (.scratch/cloud-viewer-everyone/phase-8-staging.md, "Worker boot to ready"). 3 s is
+ * just past a normal account's slowest boot, so one reload finds its worker; the
+ * largest account sees at most 8 reloads, and each is answered here without
+ * touching the worker.
+ */
+export const WORKER_STARTING_RELOAD_SECONDS = 3;
+
+/**
  * Read routes that would show the cloud machine's own configuration. Recovery
  * reads are local-only on the worker, but this gate makes every request look
  * local, so the worker's own check cannot stop them here.
@@ -79,8 +90,8 @@ export function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-export function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}): Response {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
+export function page(status: number, title: string, body: string, extraHeaders: Record<string, string> = {}, extraHead = ''): Response {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${extraHead}<title>${title}</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.55 ui-sans-serif,system-ui,sans-serif}main{width:min(30rem,calc(100vw - 32px));text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}a{display:inline-block;padding:.75rem 1.25rem;min-height:44px;box-sizing:border-box}</style>
 </head><body><main><h1>${title}</h1>${body}</main></body></html>`;
   return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders } });
@@ -235,7 +246,10 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
         signal: request.signal,
       });
     } catch {
-      if (wantsHtml(request)) return page(503, 'Your viewer is starting', '<p>It will be ready in a moment. Reload to try again.</p>');
+      if (wantsHtml(request)) {
+        return page(503, 'Your viewer is starting', '<p>It will be ready in a moment. This page reloads by itself until it is.</p>', {},
+          `<meta http-equiv="refresh" content="${WORKER_STARTING_RELOAD_SECONDS}">`);
+      }
       return json(503, { error: 'Your viewer is starting. Try again in a moment.' });
     }
 
