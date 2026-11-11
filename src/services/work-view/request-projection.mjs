@@ -115,6 +115,11 @@ export function originalFor(session, prompts) {
 export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
+  const promptsBySession = new Map();
+  for (const prompt of prompts) {
+    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
+    promptsBySession.get(prompt.session_db_id).push(prompt);
+  }
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
   const subagentIds = new Set((view.agents ?? []).filter((agent) => agent.isSubagent).map((agent) => agent.id));
   const activityPool = new Map();
@@ -209,7 +214,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   for (const [key, session] of [...sessionsByKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     // Its work is filed under the request ids the producer recorded.
     if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
-    const original = originalFor(session, prompts);
+    const original = originalFor(session, promptsBySession.get(session.id) ?? []);
     if (!original) continue;
     const groupId = groupFor(key, session);
     addProject(requestFor(groupId ? JSON.stringify(['overall-request', groupId]) : key, { key, original, groupId }), session.project);
@@ -234,7 +239,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       unlinkedWork.push({ ...item, reason: 'multiple-explicit-requests-without-item-link' });
       continue;
     }
-    let original = session ? originalFor(session, prompts) : null;
+    let original = session ? originalFor(session, promptsBySession.get(session.id) ?? []) : null;
     const explicitText = isHumanActionRequest(item.requestText) ? requestText(item.requestText) : null;
     if (!original && explicit && explicitText) original = { text: explicitText, source: 'explicit-work-state-request', sourceId: item.id, url: item.url, promptNumber: null, atEpoch: item.lastUpdateEpoch ?? null };
     if (!original || (!key && !explicit)) {
@@ -283,14 +288,10 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     if (session) attach(session, record.products ?? []);
   }
 
-  const sessionIdsByKey = new Map(), promptsBySession = new Map();
+  const sessionIdsByKey = new Map();
   for (const session of sessions.values()) {
     const key = conversationKey(session);
     if (key) sessionIdsByKey.set(key, [...(sessionIdsByKey.get(key) ?? []), session.id]);
-  }
-  for (const prompt of prompts) {
-    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
-    promptsBySession.get(prompt.session_db_id).push(prompt);
   }
   for (const request of requests.values()) {
     const merged = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])]);
