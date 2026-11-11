@@ -27,7 +27,7 @@ const childScript = `
       concepts: ['how-it-works'], files_read: ['src/shared.ts'], files_modified: [],
     }, 1, 0, 1_700_000_000_000 + id);
     store.storeSummary(memory, project, {
-      request: title, investigated: 'i', learned: 'l', completed: 'c', next_steps: 'n', notes: null,
+      request: title.replaceAll('_', ' '), investigated: 'i', learned: 'l', completed: 'c', next_steps: 'n', notes: null,
     }, 1, 0, 1_700_000_000_000 + id);
     if (mergedInto) {
       store.db.query('UPDATE observations SET merged_into_project = ? WHERE memory_session_id = ?').run(mergedInto, memory);
@@ -77,10 +77,14 @@ describe('recall after repeated whole-project merges', () => {
   beforeAll(() => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-merge-chain-'));
     try {
+      const env = { ...process.env };
+      // The fixture tests project recall with known counts and filters, not
+      // the contributor's context preferences. Preserve test tripwires.
+      for (const key of Object.keys(env)) if (key.startsWith('CLAUDE_MEM_CONTEXT_')) delete env[key];
       const child = Bun.spawnSync([process.execPath, '-e', childScript], {
         cwd: process.cwd(),
         env: {
-          ...process.env,
+          ...env,
           CLAUDE_MEM_DATA_DIR: dataDir,
           CLAUDE_CONFIG_DIR: dataDir,
           CLAUDE_MEM_CHROMA_ENABLED: 'false',
@@ -100,7 +104,7 @@ describe('recall after repeated whole-project merges', () => {
 
   it('finds observations and summaries through the complete merge chain', () => {
     expect(result.observations).toEqual(expected);
-    expect(result.summaries).toEqual(expected);
+    expect(result.summaries).toEqual(expected.map(title => title.replaceAll('_', ' ')));
     expect(result.keys).toContain('repo/feature');
   });
 
@@ -114,7 +118,7 @@ describe('recall after repeated whole-project merges', () => {
     for (const hidden of ['PARTIAL_PRIVATE', 'PARTIAL_DESCENDANT', 'UNRELATED_RECORD']) {
       expect(result.text).not.toContain(hidden);
       expect(result.observations).not.toContain(hidden);
-      expect(result.summaries).not.toContain(hidden);
+      expect(result.summaries).not.toContain(hidden.replaceAll('_', ' '));
       expect(result.files).not.toContain(hidden);
     }
   });
