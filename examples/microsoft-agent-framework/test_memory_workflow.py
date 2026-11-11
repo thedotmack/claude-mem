@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import chdir
+import json
 import os
 from pathlib import Path
 import re
@@ -67,7 +68,7 @@ class LiveWorkflowTests(unittest.IsolatedAsyncioTestCase):
             parent = Path(directory) / self.project
             checkout = Path(directory) / "feature checkout"
             subprocess.run(["git", "init", "-q", str(parent)], check=True)
-            subprocess.run(["git", "-C", str(parent), "-c", "user.name=Memory Example",
+            subprocess.run(["git", "-C", str(parent), "-c", "commit.gpgsign=false", "-c", "user.name=Memory Example",
                             "-c", "user.email=memory-example@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], check=True)
             subprocess.run(["git", "-C", str(parent), "worktree", "add", "-qb", "feature", str(checkout)], check=True)
             selected_project = f"{parent.name}/{checkout.name}"
@@ -84,11 +85,34 @@ class LiveWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("This is the worktree decision.", output["details"])
                 async with memory_connection() as memory:
                     foreign_details = text_content(await memory.call_tool(
-                        "get_observations", project=selected_project, projects=[selected_project], ids=[parent_id],
+                        "get_observations", project=selected_project, projects=json.dumps([selected_project]), ids=[parent_id],
                     ))
                 self.assertNotIn(parent_note, foreign_details)
                 with self.assertRaises(ToolExecutionException):
                     await recall_note(SelectedNote(selected_project, title, parent_id))
+
+    async def test_comma_and_outer_whitespace_project_keys_are_exact(self):
+        selected = f" {self.project},topic "
+        aliases = [self.project, "topic", selected.strip()]
+        title = "Literal project rollout"
+        identifiers = []
+        for project in [*aliases, selected]:
+            saved = await save_note(project, title, "A decision with exact project identity.")
+            identifiers.append(int(re.search(r"Saved memory #(\d+)", saved)[1]))
+        self.assertEqual(len(set(identifiers)), 4)
+        result = await recall_note(SelectedNote(selected, title, identifiers[-1]))
+        self.assertRegex(result["index"], rf"#{identifiers[-1]}\b")
+        for identifier in identifiers[:-1]:
+            self.assertNotRegex(result["index"], rf"#{identifier}\b")
+            self.assertNotRegex(result["timeline"], rf"#{identifier}\b")
+        self.assertIn("A decision with exact project identity.", result["details"])
+        async with memory_connection() as memory:
+            foreign = text_content(await memory.call_tool(
+                "get_observations", project=selected, projects=json.dumps([selected]), ids=identifiers[:-1],
+            ))
+        self.assertNotIn("A decision with exact project identity.", foreign)
+        with sqlite3.connect(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "claude-mem.db") as db:
+            self.assertEqual(db.execute("SELECT project FROM observations WHERE id=?", (identifiers[-1],)).fetchone()[0], selected)
 
     async def test_refused_worker_is_reported(self):
         with socket.socket() as probe:
