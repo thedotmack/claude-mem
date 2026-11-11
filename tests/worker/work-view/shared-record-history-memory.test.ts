@@ -1,8 +1,9 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { heapStats } from 'bun:jsc';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { canonicalJson } from '../../../src/services/sync/CanonicalContent.js';
+import { logger } from '../../../src/utils/logger.js';
 import { createSharedRecordReader, publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { createSharedBatch, createSharedEntry, sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
 
@@ -62,6 +63,31 @@ test('reading a long shared history keeps the current objects in memory, not eve
   // Holding every row and parsed value at once costs about three times the history (about 29 MB
   // here); streaming it costs one row. A quarter of the history separates the two by far.
   expect(peakLiveBytes).toBeLessThan(historyBytes / 4);
+});
+
+test('the row cache keeps a manifest\'s entry references, not its payload', () => {
+  // A manifest row's payload is the JSON of its entry references; the cache keeps those references,
+  // which cost about as much as the payload. Keeping the payload as well, or the parsed reference
+  // objects, at least doubles that. The entries are left out so that only manifests and commits are kept.
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const insert = db.prepare('INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) VALUES (?,?,?,?,?)');
+  let payloadBytes = 0;
+  for (let batch = 0; batch < 40; batch++) {
+    const batchId = `batch-${batch}`;
+    const entries = Array.from({ length: 400 }, (_, index) => createSharedEntry({ batchId, writer: DEVICE, kind: 'group', key: `g-${batch}-${index}`, revision: '1', value: index }));
+    for (const row of createSharedBatch(entries, { batchId, writer: DEVICE })) {
+      if (row.fields.record === 'entry') continue;
+      payloadBytes += row.fields.payload.length;
+      insert.run('repo', row.listName, canonicalJson(row.fields), new Date(NOW).toISOString(), NOW);
+    }
+  }
+  Bun.gc(true);
+  const baseline = heapStats().heapSize;
+  expect(readSharedRecords(db, { deviceId: DEVICE }).diagnostics.pending).toBe(40);
+  Bun.gc(true);
+  expect(heapStats().heapSize - baseline).toBeLessThan(payloadBytes * 2);
 });
 
 test('a kept reader reuses its last read until the shared rows change', () => {
@@ -144,4 +170,22 @@ test('a kept reader parses only the shared rows it has not seen', () => {
   validated = 0;
   expect(read().records.get(sharedRecordKey('group', 'g'))?.value).toEqual({ title: 'after rollback' });
   expect(validated).toBe(1);
+});
+
+test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {
+  // The ceiling (599,925 rows, shared-record-store.mjs) is where the kept summaries in two threads would use the
+  // margin the cloud viewer's 1,536 MB leaves. Rows of an unsupported version are the cheapest shared rows to scan.
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const rows = 600_000;
+  db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+    INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) SELECT 'repo', '__my_work_v2:entry', '{}', '', 0 FROM n`).run(rows);
+  const errors = spyOn(logger, 'error').mockImplementation(() => {});
+  try {
+    expect(readSharedRecords(db, { deviceId: DEVICE }).diagnostics.unsupported).toBe(rows);
+    expect(readSharedRecords(db, { deviceId: DEVICE }).diagnostics.unsupported).toBe(rows);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(errors.mock.calls[0][2]).toMatchObject({ rows, ceiling: 599_925 });
+  } finally { errors.mockRestore(); }
 });

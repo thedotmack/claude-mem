@@ -3,6 +3,7 @@ import { canonicalJson, compareCanonicalDecimals, incrementCanonicalDecimal, sha
 import { SHARED_WORK_MAX_UPDATES, sharedIdentity, sharedWriter, sharedValueHash, sharedEntryRef,
   sharedRecordKey, createSharedEntry, createSharedBatch, parseSharedRow, isSharedWorkList, sharedWorkListSql } from './shared-records.mjs';
 import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue } from './shared-redaction.mjs';
+import { logger } from '../../utils/logger.js';
 
 const compareText = (a, b) => a === b ? 0 : a < b ? -1 : 1;
 
@@ -20,8 +21,34 @@ const UNSUPPORTED_ROW = Symbol('unsupported shared row');
  * reused. So id, origin and sync_rev name a row's content. Only reads that are not inside a
  * caller's transaction fill it: an open transaction may hold rows it never commits, and a
  * rolled-back id can be reused by different content.
+ *
+ * A summary keeps no payload: an entry keeps what the fold compares, a manifest its entry
+ * references (each as the canonical string an entry's own reference is compared with) and a
+ * commit its hash, count and part hashes (the part hashes say which manifest is missing or
+ * wrong, so a pending batch still reads as pending and a bad one as invalid).
  */
 const committedRowSummaries = new WeakMap();
+
+/**
+ * Measured 2026-11-11 (.scratch/review-fixes/per-row-cost.ts, Bun 1.3.9, JSC heap after a full GC)
+ * on a history shaped like the cloud viewer's heavy account (24,399 rows: 9,136 entries with
+ * 4.4 KB payloads, 7,633 manifests, 7,630 commits, 1,587 current objects), as the slope between
+ * one and two copies of that history: the summaries cost SHARED_ROW_SUMMARY_BYTES per row, against
+ * 757 before manifests and commits dropped their payloads (by row type: entries about 1,020 both
+ * times; manifests 1,019 then 625; commits 546 then 444).
+ */
+const SHARED_ROW_SUMMARY_BYTES = 604;
+/**
+ * The history size the cloud viewer's machine was sized for. services/viewer-host/fly.toml gives it
+ * 1,536 MB: with one My Work tab open the heavy account's worker peaked at 833 MB at 24,424 shared
+ * rows, and the gate and Fly's ssh agent take about 40 MB, which leaves 663 MB for the history to
+ * grow into. Two threads keep these summaries (the My Work reader and shared-work sync), so the
+ * margin is used up at 24,424 + 663 MB / (2 x SHARED_ROW_SUMMARY_BYTES) rows (599,925; at about 4,500
+ * new rows a day that is about 128 days past the measurement). Past it that size no longer holds;
+ * nothing is dropped, and the error says so, because a larger machine or compacting superseded
+ * shared history (a sync design change) is the remedy.
+ */
+const SHARED_ROW_CACHE_CEILING = 24_424 + Math.floor(663 * 2 ** 20 / (2 * SHARED_ROW_SUMMARY_BYTES));
 
 function summariesFor(db, deviceId, validateValue) {
   let byValidator = committedRowSummaries.get(db);
@@ -29,7 +56,7 @@ function summariesFor(db, deviceId, validateValue) {
   let byDevice = byValidator.get(validateValue ?? null);
   if (!byDevice) byValidator.set(validateValue ?? null, byDevice = new Map());
   let summaries = byDevice.get(deviceId);
-  if (!summaries) byDevice.set(deviceId, summaries = { rows: new Map(), values: new Map() });
+  if (!summaries) byDevice.set(deviceId, summaries = { rows: new Map(), values: new Map(), ceilingReported: false });
   return summaries;
 }
 
@@ -87,7 +114,15 @@ function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHi
       }
       const values = new Map();
       const state = foldSharedRows(items, context, includeHistory, values, summaries.values);
-      if (fillCacheFromOwnTransaction) { summaries.rows = seen; summaries.values = values; }
+      if (fillCacheFromOwnTransaction) {
+        summaries.rows = seen;
+        summaries.values = values;
+        if (seen.size > SHARED_ROW_CACHE_CEILING && !summaries.ceilingReported) {
+          summaries.ceilingReported = true;
+          logger.error('WORKER', 'Shared My Work history is past the size the cloud viewer machine was sized for; nothing was dropped, but resize from a new measurement or compact superseded history', {
+            rows: seen.size, ceiling: SHARED_ROW_CACHE_CEILING, bytesPerRow: SHARED_ROW_SUMMARY_BYTES });
+        }
+      }
       return state;
     } finally { scan.finalize(); byId.finalize(); }
   };
@@ -117,7 +152,12 @@ function summarizeRow(context, row, source) {
   if (parsed === INVALID_ROW) return INVALID_ROW;
   if (!parsed) return SKIPPED_ROW;
   if (parsed.unsupported) return UNSUPPORTED_ROW;
-  return parsed.record === 'entry' ? entrySummary(parsed, source, context.validateValue) : parsed;
+  if (parsed.record === 'entry') return entrySummary(parsed, source, context.validateValue);
+  if (parsed.record === 'manifest') {
+    return { record: 'manifest', batch: parsed.batch, writer: parsed.writer, part: parsed.part, hash: parsed.hash,
+      refs: parsed.refs.map(ref => canonicalJson(ref)) };
+  }
+  return { record: 'commit', batch: parsed.batch, writer: parsed.writer, count: parsed.count, hash: parsed.hash, parts: parsed.parts };
 }
 
 function foldSharedRows(items, context, includeHistory, values, previousValues = new Map()) {
@@ -160,15 +200,20 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
     const commit = [...batch.commits.values()][0];
     if (!commit) { diagnostics.pending++; continue; }
     const entries = [];
-    let incomplete = false, invalid = false;
+    let incomplete = false, invalid = false, byRef;
     for (let index = 0; index < commit.parts.length; index++) {
       const manifest = batch.manifests.get(index);
       if (!manifest) { incomplete = true; break; }
       if (manifest.hash !== commit.parts[index]) { invalid = true; break; }
       for (const ref of manifest.refs) {
-        const entry = batch.entries.get(sharedRecordKey(ref.kind, ref.key));
-        if (!entry) { incomplete = true; break; }
-        if (entry.ref !== canonicalJson(ref)) { invalid = true; break; }
+        byRef ??= new Map([...batch.entries.values()].map(entry => [entry.ref, entry]));
+        const entry = byRef.get(ref);
+        if (!entry) {
+          // No entry with this reference: one with the same identity is a different entry (invalid), none is still pending.
+          const { kind, key } = JSON.parse(ref);
+          if (batch.entries.has(sharedRecordKey(kind, key))) invalid = true; else incomplete = true;
+          break;
+        }
         entries.push(entry);
       }
     }
