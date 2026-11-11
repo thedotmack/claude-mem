@@ -168,3 +168,9 @@ PYREADY
 Both fault fixtures explicitly pin their child connection to `127.0.0.1`,
 regardless of the host used by your normal worker. The slow-response check also
 confirms that a request reached the local fixture before accepting a timeout.
+
+Every read also sends `projects: [project]` explicitly. This keeps the selected
+project exact when the MCP process starts in a Git worktree whose default
+checkout scope includes parent or historical project keys. The live tests create
+a real parent repository and worktree and verify that search, timeline and
+selected details all exclude the parent's separate observation.
