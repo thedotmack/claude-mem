@@ -311,7 +311,7 @@ Search runs through three MCP tools in a token-efficient three-step workflow. Th
 - Start with `search` to get an index of results
 - Use `timeline` to see what was happening around specific observations
 - Use `get_observations` to fetch full details for relevant IDs
-- **Smaller detail fetches, not a measured saving**: an index row is ~50-100 tokens and a full record ~500-1,000, so fetching details only for the IDs the index selected is up to ~10x less context per result than reading every record. That is a per-result size ratio, not a measured recall or end-to-end saving ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
+- **Index rows are about a tenth the size of a full record**: ~50-100 tokens versus ~500-1,000. Filtering decides how many records you pay to fetch, not how large each one is; the workflow's total cost also includes the timeline and the selected details. The ratio is not a measured recall or end-to-end saving ([#4138](https://github.com/thedotmack/claude-mem/issues/4138)).
 
 **Available MCP Tools:**
 
