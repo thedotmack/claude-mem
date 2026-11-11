@@ -130,7 +130,7 @@ process alive between connections. The independently running worker is unchanged
 
 For repeated-save and project-isolation checks, point the example at a disposable
 worker and run `examples/pydantic-ai/verify_worker.py` with the same Python. It
-saves a note in each of `pydantic-sdk-verify-a` and `pydantic-sdk-verify-b`, adds six
+saves a note in each of two temporary verification projects, adds six
 newer notes with the same title, repeats the first save, and confirms that the first project cannot retrieve the second
 project's note. It also launches the MCP process from a directory containing
 spaces. These eight harmless observations remain in the selected worker.
@@ -147,6 +147,12 @@ selected worker data directory. A stopped worker must produce a failure and no
 success JSON. Start the worker yourself before retrying. For a timeout, inspect
 the viewer before retrying another explicit save; the same example fingerprint
 prevents duplicate storage if the first save completed but its reply was lost.
+
+Each verification run uses two fresh project names with a random suffix. It
+checks repeat-save deduplication within that run, so running the script again
+against the same worker cannot be confused by notes from an earlier verification.
+It leaves eight new harmless observations per run; the ordinary demo still uses
+your selected project and deduplicates across repeated demo runs.
 
 ## Disconnect
 

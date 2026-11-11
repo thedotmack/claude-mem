@@ -3,11 +3,13 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from fastmcp import FastMCP
 from fastmcp.client.transports import StdioTransport
+from mcp.shared.exceptions import MCPError
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
@@ -128,8 +130,11 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
             return "late"
 
         memory = MCPToolset(server, read_timeout=0.05, tool_error_behavior="error", max_retries=0)
-        with self.assertRaises(Exception):
+        started = time.monotonic()
+        with self.assertRaises(MCPError) as raised:
             await asyncio.wait_for(call_memory(memory, "owned", "search", {"query": "release"}), 1)
+        self.assertEqual(raised.exception.error.code, -32001)
+        self.assertLess(time.monotonic() - started, 0.5)
 
     async def test_nontext_result_is_not_accepted_as_a_saved_memory(self):
         server = FastMCP("fixture")
