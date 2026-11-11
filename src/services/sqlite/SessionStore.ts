@@ -386,6 +386,9 @@ export class SessionStore {
       }
       this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_native_identity
         ON user_prompts(session_db_id, native_prompt_id) WHERE native_prompt_id IS NOT NULL`);
+      // The feed checks only the next legacy retry window, not the whole session.
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_user_prompts_legacy_window
+        ON user_prompts(session_db_id, created_at_epoch) WHERE native_prompt_id IS NULL`);
     }).immediate();
   }
 
