@@ -47,12 +47,11 @@ test('reading a long shared history keeps the current objects in memory, not eve
   const baseline = heapStats().heapSize;
   let validated = 0;
   let peakLiveBytes = 0;
-  // The validator runs inside the read; a full collection there leaves only what the read still holds.
-  const state = readSharedRecords(db, { deviceId: DEVICE, validateValue: () => {
-    if (++validated % 40 === 0) {
-      Bun.gc(true);
-      peakLiveBytes = Math.max(peakLiveBytes, heapStats().heapSize - baseline);
-    }
+  // The validator runs inside the read once per row; a full collection there leaves only what the read still holds.
+  let state: ReturnType<typeof readSharedRecords> | null = readSharedRecords(db, { deviceId: DEVICE, validateValue: () => {
+    validated++;
+    Bun.gc(true);
+    peakLiveBytes = Math.max(peakLiveBytes, heapStats().heapSize - baseline);
     return true;
   } });
 
@@ -63,6 +62,16 @@ test('reading a long shared history keeps the current objects in memory, not eve
   // Holding every row and parsed value at once costs about three times the history (about 29 MB
   // here); streaming it costs one row. A quarter of the history separates the two by far.
   expect(peakLiveBytes).toBeLessThan(historyBytes / 4);
+  // After the read, the result and the kept row summaries hold the current 40 KB object and one
+  // payload-free summary per row (about 0.6 MB here). Keeping each row's payload would hold the
+  // whole history again; a tenth of it separates the two.
+  Bun.gc(true);
+  const heldBytes = heapStats().heapSize - baseline;
+  state = null;
+  Bun.gc(true);
+  const keptBytes = heapStats().heapSize - baseline;
+  expect(heldBytes).toBeLessThan(historyBytes / 10);
+  expect(keptBytes).toBeLessThan(historyBytes / 10);
 });
 
 test('the row cache keeps a manifest\'s entry references, not its payload', () => {
