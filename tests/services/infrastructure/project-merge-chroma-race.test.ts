@@ -126,7 +126,7 @@ function run(kind: string): any {
     const result = Bun.spawnSync([process.execPath, '-e', fixture], {
       cwd: join(import.meta.dir, '../../..'),
       env: { ...process.env, CLAUDE_MEM_DATA_DIR: dir,
-        CLAUDE_CONFIG_DIR: join(dir, 'config'), MERGE_KIND: kind },
+        CLAUDE_CONFIG_DIR: join(dir, 'config'), CLAUDE_MEM_CHROMA_ENABLED: 'true', MERGE_KIND: kind },
       stdout: 'pipe', stderr: 'pipe'
     });
     if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
