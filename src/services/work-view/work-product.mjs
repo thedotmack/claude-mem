@@ -101,7 +101,9 @@ function urlsIn(value, found = []) {
 // command that only mentions it (a search, a quoted string) made nothing.
 const GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
 const gitPattern = (subcommand, flags = '') => new RegExp(GIT_PREFIX + subcommand, flags);
-const GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+// Git's successful push output removes SSH usernames (for example, `To github.com:owner/repo.git`).
+// Accept those recorded spellings as well as configured remotes and GitHub's documented SSH-over-443 endpoint.
+const GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|(?:git@)?github\.com:|ssh:\/\/(?:git@)?(?:github\.com(?::22)?|ssh\.github\.com:443)\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
 const SHA = '[0-9a-f]{7,40}';
 const unquote = (token) => token.replace(/^(["'])(.*)\1$/, '$2');
 
