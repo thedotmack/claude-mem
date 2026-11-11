@@ -200,15 +200,40 @@ function commitsFrom(command, response, out) {
 function pushTargets(command) {
   const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`, 'g');
   return [...command.matchAll(pattern)].map(([, args]) => {
-    const tokens = args.trim().split(/\s+/).filter(Boolean).map(unquote);
-    const [remote, ...refspecs] = tokens.filter(token => !token.startsWith('-'));
+    const tokens = (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map(unquote);
+    const positional = [];
+    let dryRun = false, deleting = false, tags = false;
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token === '--') { positional.push(...tokens.slice(index + 1)); break; }
+      // These options consume the next word; that value is neither a remote,
+      // a refspec nor a flag, even when it is literally "--dry-run".
+      if (/^--(?:push-option|receive-pack|exec|recurse-submodules|repo)$/.test(token)) { index++; continue; }
+      if (token.startsWith('--')) {
+        if (token === '--dry-run' || token === '--no-dry-run') dryRun = token === '--dry-run';
+        if (token === '--delete' || token === '--no-delete') deleting = token === '--delete';
+        if (token === '--tags' || token === '--no-tags') tags = token === '--tags';
+        continue; // --option=value carries its value in this same word.
+      }
+      if (token.startsWith('-')) {
+        let flags = token.slice(1);
+        const valueAt = flags.indexOf('o');
+        if (valueAt !== -1) {
+          if (valueAt === flags.length - 1) index++;
+          flags = flags.slice(0, valueAt); // -qoVALUE: only q is a flag.
+        }
+        if (flags.includes('n')) dryRun = true;
+        if (flags.includes('d')) deleting = true;
+        continue;
+      }
+      positional.push(token);
+    }
+    const [remote, ...refspecs] = positional;
     const destinations = refspecs.map(spec => spec.startsWith(':') ? '' : spec.replace(/^\+/, '').split(':').at(-1));
-    const deleting = tokens.some(token => ['-d', '--delete'].includes(token));
     const branches = deleting ? [] : destinations.map(ref =>
       ref && ref !== 'HEAD' && (!ref.startsWith('refs/') || ref.startsWith('refs/heads/')) ? ref.replace(/^refs\/heads\//, '') : null);
-    const deletesOrTags = deleting || tokens.includes('--tags') || destinations.some(ref => ref.startsWith('refs/tags/'));
-    return { repo: githubRepo(remote), branches,
-      dryRun: tokens.some(token => token === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token)), deletesOrTags };
+    const deletesOrTags = deleting || tags || destinations.some(ref => ref.startsWith('refs/tags/'));
+    return { repo: githubRepo(remote), branches, dryRun, deletesOrTags };
   });
 }
 
