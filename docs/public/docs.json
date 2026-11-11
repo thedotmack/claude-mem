@@ -38,6 +38,7 @@
           "t3code-integration",
           "vercel-ai-sdk",
           "microsoft-agent-framework",
+          "haystack",
           "usage/getting-started",
           "usage/my-work",
           "usage/teambrain",
