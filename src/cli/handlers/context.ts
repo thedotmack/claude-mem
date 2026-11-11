@@ -13,6 +13,7 @@ import {
   getWorkerPort,
   getViewerBaseUrl,
   consumeWorkerOutageNotice,
+  recordWorkerUnreachable,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -494,6 +495,7 @@ export const contextHandler: EventHandler = {
         : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     } catch (error) {
       if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+      await recordWorkerUnreachable();
       const notice = userNotice(await consumeWorkerOutageNotice(input.sessionId));
       return notice ? { ...emptyResult, systemMessage: notice } : emptyResult;
     }
@@ -536,6 +538,7 @@ export const contextHandler: EventHandler = {
         }
       } catch (error) {
         if (input.platform !== 'claude-code' || !isWorkerUnavailableError(error)) throw error;
+        await recordWorkerUnreachable();
         workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
       }
     }

@@ -49,6 +49,7 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
   getViewerBaseUrl: () => 'http://localhost:37777',
   isWorkerFallback: () => workerUnavailable,
   isWorkerUnavailableError: originals.worker.isWorkerUnavailableError,
+  recordWorkerUnreachable: async () => 1,
   consumeWorkerOutageNotice: async () => 'claude-mem worker is unavailable',
 }));
 
