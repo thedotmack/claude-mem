@@ -112,7 +112,7 @@ export function originalFor(session, prompts) {
 // producer recorded it directly. A group with a recorded project root keeps
 // every conversation the ledger assigned to it; a group whose root is unknown
 // stays inside the one its members show.
-export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
+export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
@@ -297,9 +297,14 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
     // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
     const copies = merged.filter((product) => product.deliverable && product.sourcePath);
-    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
+    const coverage = new Map(copies.map(copy => [copy, copyCoversSource(copy, copy.sourcePath)]));
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
     request.workProduct = merged.filter((product) => !covered(product))
-      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
+      .map((product) => {
+        const available = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+        if (product.path || product.bucketPath) onProductFile?.(product, available, coverage.get(product) ?? null);
+        return { ...product, fileUrl: fileUrl(product), available };
+      });
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
     // A new ask is activity on its request, even before any agent records work.
