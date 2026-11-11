@@ -226,6 +226,8 @@ My Work can generate readable card wording using the configured OpenRouter or Op
 
 The My Work refresh (goals, grouping, review, focus and story steps) runs on one agent: Claude Code, Codex, Gemini, or the API provider you selected (see `CLAUDE_MEM_WORK_VIEW_AGENT` below for which one). By default the light steps (grouping, focus) use a small model and the others a stronger one: `haiku`/`sonnet` on Claude Code, `flash-lite`/`flash` on Gemini, and Codex's CLI default for the careful steps. On Claude Code the refresh runs on your Claude subscription, so set a model here to cap it, for example `haiku`. Each setting puts every step of that agent on one model and is read at the start of every refresh.
 
+The goals step updates a saved snapshot from new owner prompts, including a snapshot that contains only rules. When no new prompts need processing, it validates and saves the existing snapshot without a model call for goals. Other refresh steps may still need the selected agent.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `CLAUDE_MEM_WORK_VIEW_AGENT` | empty | Which agent runs the My Work refresh. Empty uses the agent `CLAUDE_MEM_PROVIDER` names (`claude` → Claude Code, `codex` → Codex, `gemini` → Gemini) and only that one, so a failed run never moves to another agent's quota. A provider that is an API endpoint (`openrouter`, `openai-compatible`, `cmem`) uses the first logged-in agent and only that one. Set `api` to run the refresh on the selected API provider; this spends that provider's credit every refresh. Set `claude-code`, `codex` or `gemini` to pick a local agent, `off` to run no agent, or `all` to let a failed run fall through to every other logged-in agent. |
