@@ -14,6 +14,8 @@ const cases = [
   ['receive-pack program', ['-q', '--receive-pack', 'git-receive-pack']],
   ['exec program', ['-q', '--exec', 'git-receive-pack']],
   ['submodule mode', ['-q', '--recurse-submodules', 'no']],
+  ['overridden repo option', ['-q', '--repo', 'unused-repository']],
+  ['overridden inline repo option', ['-q', '--repo=unused-repository']],
   ['dry-run text as a value', ['-q', '-o', '--dry-run']],
   ['delete text as a value', ['-q', '-o', '--delete']],
   ['attached short value', ['-qodone']],
