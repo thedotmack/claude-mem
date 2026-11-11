@@ -223,3 +223,19 @@ it.skipIf(!existsSync('/proc/self/fd'))('closes the compressed input when a line
   for (let attempt = 0; attempt < 100 && descriptors().length; attempt++) await Bun.sleep(10);
   expect(descriptors()).toEqual([]);
 });
+
+// Codex compresses archived_sessions/ as well as sessions/ (compression.rs
+// walks both), so an archived cold rollout is a .jsonl.zst in the flat folder.
+it('imports compressed archived Codex rollouts and prefers their plain sibling', async () => {
+  const { home, options } = fixture();
+  const archived = join(home, '.codex', 'archived_sessions');
+  mkdirSync(archived, { recursive: true });
+  const cold = writeRollout(archived, 'rollout-archived-cold', [meta('archived-cold'), prompt('archived', 'please keep the archived request')]);
+  writeRollout(archived, 'rollout-archived-transition', [meta('archived-transition'), prompt('stale', 'please drop the stale archived request')]);
+  const plain = writeRollout(archived, 'rollout-archived-transition', [meta('archived-transition'), prompt('current', 'please keep the current archived request')], false);
+  expect(createCodexReader().locate(home).sources.map(source => source.path).sort()).toEqual([cold, plain].sort());
+  const result = await scanOwnerPrompts(options);
+  expect(result.skippedSources).toEqual([]);
+  expect(result.ownerPrompts.map(entry => entry.text).sort())
+    .toEqual(['please keep the archived request', 'please keep the current archived request']);
+});

@@ -290,6 +290,18 @@ export function codexForkThreadId(meta: any): string | null {
     ? meta.id : null;
 }
 
+/** Rollouts in one Codex directory, plain or compressed. */
+function codexRollouts(directory: string): Array<TranscriptSource | null> {
+  const rollouts: Array<TranscriptSource | null> = [];
+  for (const file of listDirectory(directory)) {
+    if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
+    // Codex reads the plain sibling while both exist during compression.
+    if (file.endsWith('.zst') && existsSync(join(directory, file.slice(0, -4)))) continue;
+    rollouts.push(source(join(directory, file)));
+  }
+  return rollouts;
+}
+
 export function createCodexReader(): AgentPromptReader {
   const seenKeys = new Set<string>();
   return {
@@ -304,21 +316,14 @@ export function createCodexReader(): AgentPromptReader {
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
           for (const day of listDirectory(join(sessions, year, month))) {
-            const directory = join(sessions, year, month, day);
-            for (const file of listDirectory(directory)) {
-              if (!file.endsWith('.jsonl') && !file.endsWith('.jsonl.zst')) continue;
-              // Codex reads the plain sibling while both exist during compression.
-              if (file.endsWith('.zst') && existsSync(join(directory, file.slice(0, -4)))) continue;
-              sources.push(source(join(directory, file)));
-            }
+            sources.push(...codexRollouts(join(sessions, year, month, day)));
           }
         }
       }
-      // Archival moves the same rollout into this flat directory. It remains
-      // part of the owner's history; the existing timestamp/window rules apply.
-      for (const file of listDirectory(archived)) {
-        if (file.endsWith('.jsonl')) sources.push(source(join(archived, file)));
-      }
+      // Archival moves the same rollout into this flat directory, and Codex
+      // compresses it there too. It remains part of the owner's history; the
+      // existing timestamp/window rules apply.
+      sources.push(...codexRollouts(archived));
       return { detected: existsSync(sessions) || existsSync(archived), sources: presentSources(sources) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
