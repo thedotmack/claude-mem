@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as hookSettings from '../../../src/shared/hook-settings.js';
@@ -151,6 +151,21 @@ describe('marketplace first-session telemetry disclosure', () => {
     expect(first.systemMessage).toContain(docs);
     expect(first.hookSpecificOutput?.additionalContext).toBe('');
     workerUnavailable = false;
+    expect((await sessionStart()).systemMessage).toBeUndefined();
+  });
+
+  it('keeps the context and notice available when the disclosure record cannot be written', async () => {
+    // A real filesystem failure, without changing the general consent writer:
+    // the config path is a directory, so writing telemetry.json fails EISDIR.
+    const configPath = join(dataDir, 'telemetry.json');
+    mkdirSync(configPath);
+    const first = await sessionStart();
+    expect(first.systemMessage).toContain(docs);
+    expect(first.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(() => recordTelemetryDecision(false)).toThrow();
+
+    rmSync(configPath, { recursive: true });
+    expect((await sessionStart()).systemMessage).toContain(docs);
     expect((await sessionStart()).systemMessage).toBeUndefined();
   });
 

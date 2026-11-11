@@ -147,12 +147,19 @@ export function consumeTelemetryNotice(): string | null {
   const consent = explainTelemetryConsent(process.env, existing);
   if (!consent.enabled || consent.source !== 'default' || existing?.noticeShownAt) return null;
 
-  saveTelemetryConfig({
-    ...existing,
-    installId: existing?.installId ?? '',
-    decidedAt: existing?.decidedAt ?? '',
-    noticeShownAt: new Date().toISOString(),
-  });
+  try {
+    saveTelemetryConfig({
+      ...existing,
+      installId: existing?.installId ?? '',
+      decidedAt: existing?.decidedAt ?? '',
+      noticeShownAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    // This records a display, not a choice. A failed write must not discard
+    // the session's context or hide the notice; a later session can record it.
+    logger.warn('HOOK', 'Could not record the first-session telemetry disclosure', undefined,
+      error instanceof Error ? error : new Error(String(error)));
+  }
   return '[claude-mem] Telemetry is on by default: anonymous feature-usage, performance and token-count statistics, plus redacted error messages and stack traces. '
     + 'Turn it off: npx claude-mem telemetry disable, DO_NOT_TRACK=1, or CLAUDE_MEM_TELEMETRY=0. '
     + 'Details: https://docs.claude-mem.ai/telemetry';
