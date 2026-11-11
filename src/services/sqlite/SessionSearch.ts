@@ -86,6 +86,10 @@ export const SESSION_SUMMARIES_FTS_TRIGGERS_SQL = `
   END;
 `;
 
+// Keep the query tokenizer identical to both persistent memory indexes, including unicode61's default
+// remove_diacritics=1 behavior. No schema migration is needed: existing indexes already use this default.
+const MEMORY_FTS_TOKENIZER = 'unicode61';
+
 type AnyTermFtsTable = 'observations_fts' | 'session_summaries_fts';
 
 /** Rows of an FTS table holding a word, and the table's row count, for one any-term query. */
@@ -287,7 +291,8 @@ export class SessionSearch {
           facts,
           concepts,
           content='observations',
-          content_rowid='id'
+          content_rowid='id',
+          tokenize='${MEMORY_FTS_TOKENIZER}'
         );
       `);
 
@@ -310,7 +315,8 @@ export class SessionSearch {
           next_steps,
           notes,
           content='session_summaries',
-          content_rowid='id'
+          content_rowid='id',
+          tokenize='${MEMORY_FTS_TOKENIZER}'
         );
       `);
 
@@ -497,7 +503,10 @@ export class SessionSearch {
     } else if (length < SessionSearch.ANY_TERM_MEDIUM_PROMPT_CHARS) {
       picked = SessionSearch.pickRareTokens(tokens, docFrequency, SessionSearch.ANY_TERM_MEDIUM_PROMPT_CAP);
     } else {
-      picked = SessionSearch.pickRareWords(query, docFrequency);
+      const words = this.indexedQueryWords(query);
+      picked = words === null
+        ? SessionSearch.dedupeTokens(tokens).slice(0, SessionSearch.ANY_TERM_LONG_PROMPT_CAP)
+        : SessionSearch.pickRareWords(words, docFrequency);
     }
 
     if (picked.length === 0) {
@@ -530,7 +539,8 @@ export class SessionSearch {
 
   /**
    * A document-frequency reader for one query: `(word) => rows holding it`, plus the row count. Null when the
-   * vocabulary is unavailable. Words are folded the way unicode61 indexes them (lowercase, no diacritics).
+   * vocabulary is unavailable. The lookup accepts the exact indexed spelling; JavaScript Unicode folding
+   * differs from unicode61 for Greek accents/final sigma, Cyrillic breve and compound Latin accents.
    */
   private termDocFrequency(ftsTable: AnyTermFtsTable): DocFrequency | null {
     if (!this.vocabLookups.has(ftsTable)) {
@@ -551,8 +561,7 @@ export class SessionSearch {
       const contentTable = SessionSearch.ANY_TERM_CONTENT_TABLES[ftsTable];
       const total = (this.db.prepare(`SELECT count(*) AS n FROM ${contentTable}`).get() as { n: number }).n;
       const cache = new Map<string, number>();
-      const rows = (word: string): number => {
-        const term = word.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+      const rows = (term: string): number => {
         let doc = cache.get(term);
         if (doc === undefined) {
           doc = (lookup.get(term) as { doc: number } | null)?.doc ?? 0;
@@ -568,10 +577,49 @@ export class SessionSearch {
     }
   }
 
+  private queryWordReader: { clear: Statement; insert: Statement; read: Statement } | null | undefined;
+
+  /**
+   * Read the words SQLite actually indexes, in their original order. NFD accent stripping is not unicode61:
+   * it keeps non-Latin accents, folds final sigma, and preserves compound Latin accents in its default mode.
+   * The one-document contentless index lives only in this connection's temp schema, including on read-only
+   * database opens. Clear it after every query so neither indexed query words nor content accumulate.
+   */
+  private indexedQueryWords(query: string): string[] | null {
+    try {
+      if (this.queryWordReader === undefined) {
+        this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS temp._any_term_words
+          USING fts5(text, content='', tokenize='${MEMORY_FTS_TOKENIZER}')`);
+        this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS temp._any_term_words_vocab
+          USING fts5vocab(temp, '_any_term_words', 'instance')`);
+        this.queryWordReader = {
+          clear: this.db.prepare("INSERT INTO temp._any_term_words(_any_term_words) VALUES ('delete-all')"),
+          insert: this.db.prepare('INSERT INTO temp._any_term_words(rowid, text) VALUES (1, ?)'),
+          read: this.db.prepare('SELECT term FROM temp._any_term_words_vocab ORDER BY offset'),
+        };
+      }
+      const reader = this.queryWordReader;
+      if (!reader) return null;
+      try {
+        reader.insert.run(query);
+        return (reader.read.all() as { term: string }[]).map(row => row.term);
+      } finally {
+        reader.clear.run();
+      }
+    } catch (error) {
+      this.queryWordReader = null;
+      logger.debug('DB', 'FTS5 query tokenizer unavailable; any-term queries are capped without frequencies', {}, error instanceof Error ? error : undefined);
+      return null;
+    }
+  }
+
   /** A token is as common as its rarest word: FTS splits `qa-hub,` into `qa` and `hub`, and a phrase needs both. */
   private static tokenRows(token: string, docFrequency: DocFrequency): number {
     const words = token.match(/[\p{L}\p{N}]+/gu) ?? [];
-    return words.length === 0 ? 0 : Math.min(...words.map(word => docFrequency.rows(word)));
+    // Preserve the short/medium selection contract and its conservative non-ASCII admission cost (#4956).
+    // Long prompts use indexedQueryWords instead: they require a proven positive frequency to retain a word.
+    return words.length === 0 ? 0 : Math.min(...words.map(word =>
+      docFrequency.rows(word.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, ''))));
   }
 
   /**
@@ -618,7 +666,7 @@ export class SessionSearch {
       .sort((a, b) => a.rows - b.rows);
     for (const { token, rows } of excluded) {
       if (matching.length === cap) break;
-      // The frequency reader's Unicode folding is approximate: unicode61 preserves some non-Latin accents.
+      // Short/medium tokenRows folding is approximate: unicode61 preserves some non-Latin accents.
       // Charge non-ASCII tokens for the whole store so a different indexed spelling cannot exceed the budget.
       const candidates = /[^\x00-\x7F]/.test(token) ? docFrequency.total : rows;
       if (documents + candidates > SessionSearch.ANY_TERM_MATCHING_DOCUMENT_BUDGET) continue;
@@ -628,13 +676,10 @@ export class SessionSearch {
     return matching;
   }
 
-  private static pickRareWords(query: string, docFrequency: DocFrequency): string[] {
+  private static pickRareWords(indexedWords: string[], docFrequency: DocFrequency): string[] {
     const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_LONG_PROMPT_MAX_SHARE);
-    const words = new Set(
-      (query.match(/[\p{L}\p{N}]+/gu) ?? [])
-        .filter(word => [...word].length >= SessionSearch.ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS)
-        .map(word => word.toLowerCase()),
-    );
+    const words = new Set(indexedWords.filter(word =>
+      [...word].length >= SessionSearch.ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS));
     const kept: string[] = [];
     for (const word of words) {
       const rows = docFrequency.rows(word);
