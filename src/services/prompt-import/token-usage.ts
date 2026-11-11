@@ -9,10 +9,10 @@
  *   Tokens = input + cache creation + cache read + output.
  *   claude-mem's own observer sessions (OBSERVER_SESSIONS_DIR) are not the
  *   person's usage and are left out.
- * - Codex: `event_msg` lines with `payload.type: "token_count"` carry the
- *   session's running `info.total_token_usage.total_tokens` (input, which
- *   includes cached input, plus output). The same total is often repeated, so
- *   a session's usage is the sum of its increases.
+ * - Codex: `event_msg` lines with `payload.type: "token_count"` carry running
+ *   `info.total_token_usage` input (including cached input) and output counts.
+ *   `total_tokens` can instead hold a synthetic context-window estimate. The
+ *   same counters are often repeated, so usage is the sum of their increases.
  * - Gemini CLI: `gemini` messages carry `tokens.total` (input incl. cached,
  *   output, thoughts, tool).
  * - OpenCode: assistant messages carry `tokens` {input, output, reasoning,
@@ -157,6 +157,16 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
   };
 }
 
+/** Actual usage fields exclude Codex's synthetic full-window/history estimates. */
+function codexReportedTokens(usage: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown } | null | undefined): number {
+  if (typeof usage?.input_tokens === 'number' && typeof usage?.output_tokens === 'number') {
+    // Cached input and reasoning output are subsets, not additional usage.
+    return count(usage.input_tokens) + count(usage.output_tokens);
+  }
+  // Preserve older records that carry only total_tokens.
+  return count(usage?.total_tokens);
+}
+
 const codexUsage: UsageReader = {
   async read(sources, sinceEpochMs, usage, skip) {
     for (const source of sources) {
@@ -191,10 +201,10 @@ const codexUsage: UsageReader = {
             continue;
           }
           const info = record?.payload?.type === 'token_count' ? record.payload.info : null;
-          const total = info?.total_token_usage?.total_tokens;
-          if (record?.type !== 'event_msg' || typeof total !== 'number') continue;
+          if (record?.type !== 'event_msg' || typeof info?.total_token_usage?.total_tokens !== 'number') continue;
+          const total = codexReportedTokens(info.total_token_usage);
           // The first count in a file may continue an earlier session's running total; only its own turn is new.
-          const increase = previousTotal === null ? count(info.last_token_usage?.total_tokens) : Math.max(0, total - previousTotal);
+          const increase = previousTotal === null ? codexReportedTokens(info.last_token_usage) : Math.max(0, total - previousTotal);
           previousTotal = total;
           if (!awaitingForkSettings) tally(usage, isoToEpochMs(record.timestamp), increase, sinceEpochMs);
         }
