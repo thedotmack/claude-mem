@@ -1,4 +1,5 @@
 import { SETUP_STEPS, isSetupId, type SetupAction, type SetupError, type SetupEvent, type SetupStep, type SetupTelemetryContext } from '../../../../shared/setup-funnel.ts'
+import { setTimeoutThenWaitUntilCloudPageVisible } from '../live/served-from.ts'
 
 export interface VisitState { branch: 'home' | 'go'; branch_confirmed: boolean; importComplete?: boolean }
 type PendingEvent = Omit<SetupEvent, 'setup_flow_id' | 'already_pro'>
@@ -91,13 +92,14 @@ export async function readSetupTelemetryContext(): Promise<SetupTelemetryContext
 export function connectSetupTelemetry(ready: (context: SetupTelemetryContext | null) => void,
   read = readSetupTelemetryContext, retryMs = 1_000): () => void {
   let stopped = false
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancelRetry: (() => void) | undefined
   const connect = async () => {
     try { const context = await read(); if (!stopped) ready(context) }
-    catch { if (!stopped) timer = setTimeout(() => void connect(), retryMs) }
+    // A hidden cloud tab retries once it is shown again, so it does not keep the cloud viewer's machine awake.
+    catch { if (!stopped) cancelRetry = setTimeoutThenWaitUntilCloudPageVisible(() => void connect(), retryMs) }
   }
   void connect()
-  return () => { stopped = true; clearTimeout(timer) }
+  return () => { stopped = true; cancelRetry?.() }
 }
 
 export async function sendSetupEvent(event: SetupEvent): Promise<void> {
