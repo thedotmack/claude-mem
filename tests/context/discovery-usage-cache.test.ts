@@ -107,7 +107,7 @@ function run(scenario: string) {
         CLAUDE_MEM_DEDUP_ENABLED: 'false',
         CLAUDE_MEM_MODES_DIR: join(import.meta.dir, '../../plugin/modes'),
       },
-      stdout: 'pipe', stderr: 'pipe',
+      stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
     });
     if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
     return JSON.parse(new TextDecoder().decode(result.stdout).trim().split('\n').at(-1)!);
