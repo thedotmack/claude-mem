@@ -15,6 +15,7 @@ import { createHumanCopyInput, humanCopyFingerprint } from '../../../src/service
 import { buildContentOperation } from '../../../src/services/sync/CanonicalContent.js';
 import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
+import { upsertToolUse } from '../../../src/services/sqlite/tool-uses.js';
 
 const disposals: Array<() => void> = [];
 afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
@@ -144,6 +145,45 @@ test('a concurrent native write after a full activity capture remains visible to
   const provenance = [...state(f).records.values()].find(record => record.kind === 'provenance'
     && (record.value as { session: { content_session_id: string } }).session.content_session_id === 'after-capture');
   expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
+});
+
+test('a failed activity publication is retried after an unchanged SQLite writer releases its lock', () => {
+  const f = fixture(), receiver = fixture('device-b');
+  const session = f.store.createSDKSession('locked-capture', 'repo', 'Keep shared work visible');
+  f.store.updateMemorySessionId(session, 'locked-capture-memory');
+  f.store.saveUserPrompt('locked-capture', 1, 'Keep shared work visible', session);
+  const at = Date.now(), fields = { task: 'Publish shared result', status: 'doing' };
+  f.store.appendWorkStateEntry({ project: 'repo', listName: 'release', fields, createdAtEpoch: at });
+  upsertToolUse(f.store.db, { toolUseId: 'locked-call', contentSessionId: 'locked-capture',
+    sessionDbId: session, memorySessionId: 'locked-capture-memory', project: 'repo', platformSource: 'claude',
+    toolName: 'work_state_write', toolInput: JSON.stringify({ list: 'release', fields }), createdAtEpoch: at });
+  f.adapter.saveFile('request-groups.json', groups('locked-capture'));
+  const lock = new Database(f.databasePath);
+  disposals.push(() => lock.close());
+  f.store.db.exec('PRAGMA busy_timeout = 1');
+  const version = f.store.db.query('PRAGMA data_version').get();
+  lock.exec('BEGIN IMMEDIATE');
+  try {
+    expect(f.adapter.reconcile().files).toEqual([expect.objectContaining({ file: 'activity' })]);
+    expect([...state(f).records.values()].filter(record => record.kind === 'provenance')).toHaveLength(0);
+  } finally {
+    // A writer can roll back without changing data_version. No new source
+    // row or file edit should be needed to publish the already captured work.
+    lock.exec('ROLLBACK');
+  }
+  expect(f.store.db.query('PRAGMA data_version').get()).toEqual(version);
+  expect(f.adapter.reconcile().files).toEqual([]);
+  const provenance = [...state(f).records.values()].find(record => record.kind === 'provenance');
+  expect(provenance?.value).toMatchObject({ session: { content_session_id: 'locked-capture' },
+    attributions: [expect.objectContaining({ work: expect.objectContaining({ device: f.deviceId }) })] });
+  replicate(f, receiver);
+  const source = new WorkStateSource({ databasePath: receiver.databasePath, localDeviceId: receiver.deviceId });
+  disposals.push(() => source.close());
+  const request = source.read().agentView.humanRequests.find((item: any) => item.groupId === groupIdFor(key('locked-capture')));
+  expect(request?.items.map((item: any) => item.title)).toEqual(['Publish shared result']);
+  const saved = count(f);
+  f.adapter.reconcile();
+  expect(count(f)).toBe(saved);
 });
 
 // bun:sqlite reports a held writer lock as SQLITE_BUSY; WAL snapshot and recovery conflicts carry extended busy codes.
