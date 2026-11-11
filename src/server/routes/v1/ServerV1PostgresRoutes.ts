@@ -54,6 +54,14 @@ import {
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
+// The canonical Postgres event carries native receipt identity and metadata
+// in addition to the shared SQLite event shape. Validate both HTTP forms
+// before ingestion so parsing cannot erase the repository's replay key.
+const CreatePostgresAgentEventSchema = CreateAgentEventSchema.extend({
+  sourceEventId: z.string().min(1).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const MCP_SERVER_VERSION =
   typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -288,7 +296,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const generate = parsedQuery.data.generate !== 'false';
       const wait = parsedQuery.data.wait === 'true';
 
-      const result = CreateAgentEventSchema.safeParse(req.body);
+      const result = CreatePostgresAgentEventSchema.safeParse(req.body);
       if (!result.success) {
         res.status(400).json({ error: 'ValidationError', issues: result.error.issues });
         return;
@@ -372,7 +380,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const generate = parsedQuery.data.generate !== 'false';
       const wait = parsedQuery.data.wait === 'true';
 
-      const batchSchema = z.array(CreateAgentEventSchema).min(1).max(500);
+      const batchSchema = z.array(CreatePostgresAgentEventSchema).min(1).max(500);
       const result = batchSchema.safeParse(req.body);
       if (!result.success) {
         res.status(400).json({ error: 'ValidationError', issues: result.error.issues });
@@ -1432,7 +1440,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return null;
   }
 
-  private toAgentEventInput(body: z.infer<typeof CreateAgentEventSchema>, teamId: string): CreatePostgresAgentEventInput {
+  private toAgentEventInput(body: z.infer<typeof CreatePostgresAgentEventSchema>, teamId: string): CreatePostgresAgentEventInput {
     const sourceAdapter = body.sourceType ?? SOURCE_ADAPTER_DEFAULT;
     const occurredAtEpoch = typeof body.occurredAtEpoch === 'number' ? body.occurredAtEpoch : Date.now();
     return {
@@ -1441,16 +1449,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       serverSessionId: body.serverSessionId ?? null,
       contentSessionId: body.contentSessionId ?? null,
       sourceAdapter,
-      sourceEventId: typeof (body as Record<string, unknown>).sourceEventId === 'string'
-        ? ((body as Record<string, unknown>).sourceEventId as string)
-        : null,
+      sourceEventId: body.sourceEventId ?? null,
       eventType: body.eventType,
       platformSource: normalizePlatformSourceOrNull(body.platformSource),
       payload: (body.payload ?? {}) as object,
-      metadata: typeof (body as Record<string, unknown>).metadata === 'object'
-        && (body as Record<string, unknown>).metadata !== null
-        ? ((body as Record<string, unknown>).metadata as Record<string, unknown>)
-        : {},
+      metadata: body.metadata ?? {},
       occurredAt: new Date(occurredAtEpoch),
     };
   }
