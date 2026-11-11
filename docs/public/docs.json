@@ -45,6 +45,7 @@
           "usage/multi-key-rotation",
           "usage/quota-fallback",
           "usage/search-tools",
+          "contextforge",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",

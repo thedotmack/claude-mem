@@ -1,0 +1,74 @@
+---
+title: ContextForge
+description: Recall local Claude-Mem observations through a private ContextForge connection.
+icon: network-wired
+---
+
+ContextForge can expose Claude-Mem's existing search, timeline and observation-retrieval tools through a private virtual server. This connection provides recall only. It does not capture conversations or make automatic model calls.
+
+This guide targets ContextForge 1.1.1 on the same workstation as Claude-Mem. The local MCP listener binds to loopback. A remotely hosted gateway cannot reach it through `localhost`.
+
+## Connect the existing tools
+
+1. Build Claude-Mem, start your configured worker, and start the local HTTP MCP transport:
+
+```bash
+npm run build
+bun plugin/scripts/mcp-server.cjs --http --host 127.0.0.1 --port 37790
+```
+
+2. Use an authenticated ContextForge instance bound to loopback. Its documented local-server setting must permit the loopback MCP address. Keep gateway authentication enabled. Obtain your existing gateway token through its supported authentication flow and supply it as an `Authorization` header, never in a URL or model prompt.
+
+3. Check `GET /v1/gateways` before registering. Reuse an existing private registration with the same name and URL. Otherwise, send this body to `POST /v1/gateways`:
+
+```json
+{
+  "name": "claude-mem-local",
+  "url": "http://127.0.0.1:37790/mcp",
+  "transport": "STREAMABLEHTTP",
+  "visibility": "private"
+}
+```
+
+4. Read `GET /v1/tools` with the same token. Select the entries belonging to the returned gateway ID whose `originalName` is `search`, `timeline` or `get_observations`. Use their returned IDs to create a private virtual server through `POST /v1/servers`:
+
+```json
+{
+  "server": {
+    "name": "claude-mem-recall",
+    "associated_tools": ["SEARCH_TOOL_ID", "TIMELINE_TOOL_ID", "DETAIL_TOOL_ID"]
+  },
+  "visibility": "private"
+}
+```
+
+On repeated setup, list `GET /v1/servers` and reuse the matching private server instead of creating another one. Do not associate write tools or raw tool-history tools with this recall-only connection.
+
+## Recall a known memory
+
+Connect an authenticated MCP client to `/servers/SERVER_ID/mcp` on the gateway. This MCP path is separate from the versioned `/v1` administration API. Discover the tools instead of assuming their names: ContextForge prefixes and normalizes upstream names.
+
+Call the discovered search tool with `query` and your exact `project`. Inspect the index, call timeline with the selected `anchor` and the same project, then call observation retrieval with the selected `ids` and project. Check the returned observation text, not just whether the tool returned without an error.
+
+The project argument narrows results; it is not a multi-user authorization boundary for the local worker. Keep this owner-local virtual server private. Sharing it grants access through your worker's existing local trust model. ContextForge stores gateway configuration and tool metadata. Requested memory content passes through the gateway to its caller. Credentials stay in authentication headers and the gateway's own credential storage.
+
+## Repeat the verified walkthrough
+
+The included test creates temporary credentials, an authenticated loopback gateway and a separate Claude-Mem database. It explicitly saves synthetic notes, discovers only the three published recall tools, follows search and timeline, retrieves the exact note while excluding another project, rejects an unauthenticated API request, then removes the created connection without deleting memory.
+
+```bash
+python3.12 -m venv /tmp/claude-mem-contextforge
+/tmp/claude-mem-contextforge/bin/python -m pip install \
+  -r examples/contextforge/requirements.txt
+/tmp/claude-mem-contextforge/bin/python tests/fixtures/contextforge-smoke.py
+```
+
+Run after building, with Bun on PATH. The test pins ContextForge 1.1.1, MCP Python client 2.3.0 and httpx2 2.16.0. It mints a short-lived development token only for its newly created test instance. It never uses your account or starts a paid model request. Verified on macOS with Python 3.12. Windows/Linux and shared production gateways were not tested.
+
+## Disconnect and troubleshoot
+
+Delete only your created virtual-server ID using `DELETE /v1/servers/SERVER_ID`, then its gateway ID using `DELETE /v1/gateways/GATEWAY_ID`. Stop the local MCP listener when you no longer need it. These operations do not delete saved Claude-Mem observations or change other gateway registrations.
+
+For connection errors, check that the worker and local MCP listener are running, the gateway permits that local address, the transport is `STREAMABLEHTTP`, and the request carries the correct gateway token. For empty recall, check the exact project and observation ID. Do not disable authentication to fix a rejected request.
+
+See ContextForge's [official project](https://github.com/IBM/mcp-context-forge) and [API guide](https://github.com/IBM/mcp-context-forge/blob/main/llms/api.md). API paths in this page were checked against the installed 1.1.1 OpenAPI schema.
