@@ -12,6 +12,8 @@ const fixture = String.raw`
   import { contextCacheKeys, readContextCache } from './src/shared/context-cache.ts';
   import { onContextInvalidation } from './src/shared/context-invalidation.ts';
   import { DB_PATH } from './src/shared/paths.ts';
+  import { ModeManager } from './src/services/domain/ModeManager.ts';
+  ModeManager.getInstance().loadMode('code');
   const scenario = process.env.FIXTURE_SCENARIO;
   const human = scenario === 'human';
   const project = scenario === 'adopted' ? 'legacy-project' : 'usage-project';
@@ -102,6 +104,7 @@ function run(scenario: string) {
         CLAUDE_MEM_DATA_DIR: join(directory, 'data'), CLAUDE_CONFIG_DIR: join(directory, 'config'),
         CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_TELEMETRY_ENABLED: 'false',
         CLAUDE_MEM_DEDUP_ENABLED: 'false',
+        CLAUDE_MEM_MODES_DIR: join(import.meta.dir, '../../plugin/modes'),
       },
       stdout: 'pipe', stderr: 'pipe',
     });
