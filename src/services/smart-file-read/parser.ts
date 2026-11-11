@@ -191,6 +191,10 @@ const QUERIES: Record<string, string> = {
   java: `
 (method_declaration name: (identifier) @name) @method
 (constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
+(record_declaration
+  parameters: (formal_parameters) @parameters
+  body: (class_body
+    (compact_constructor_declaration name: (identifier) @name) @ctor))
 (class_declaration name: (identifier) @name) @cls
 (record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
