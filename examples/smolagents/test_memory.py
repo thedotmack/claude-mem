@@ -50,7 +50,7 @@ class ProjectArguments(unittest.TestCase):
             if name == "save_memory":
                 self.assertNotIn("projects", result)
             else:
-                self.assertEqual(result["projects"], ["owned"])
+                self.assertEqual(result["projects"], json.dumps(["owned"]))
             self.assertEqual(args["project"], "other")
         first = scoped_arguments("save_memory", {"text": "Safe note"}, "a")["metadata"]
         self.assertEqual(first, scoped_arguments("save_memory", {"text": "Safe note"}, "a")["metadata"])
@@ -74,6 +74,19 @@ class ProjectArguments(unittest.TestCase):
             with self.subTest(seconds=seconds), self.assertRaises(ValueError):
                 with memory_tools("a", __file__, str(Path(__file__).parent), timeout=seconds):
                     self.fail("invalid deadline was accepted")
+
+
+    def test_literal_project_keys_do_not_alias_trimmed_or_split_keys(self):
+        selected = " owned,web "
+        for name in MEMORY_TOOLS:
+            scoped = scoped_arguments(name, {"text": "Safe note", "projects": ["other"]}, selected)
+            self.assertEqual(scoped["project"], selected)
+            if name != "save_memory":
+                self.assertIsInstance(scoped["projects"], str)
+                self.assertEqual(json.loads(scoped["projects"]), [selected])
+        identity = scoped_arguments("save_memory", {"text": "Safe note"}, selected)["metadata"]
+        for alias in (selected.strip(), "owned", "web"):
+            self.assertNotEqual(identity, scoped_arguments("save_memory", {"text": "Safe note"}, alias)["metadata"])
 
 
 class NativeSdk(unittest.TestCase):
