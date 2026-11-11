@@ -28,6 +28,26 @@ async def client(project, **options):
 
 
 class MemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_literal_comma_and_outer_space_project_keys(self):
+        token = uuid4().hex
+        for project in (f"api-{token},web-{token}", f" spaced-{token} "):
+            with self.subTest(project=project):
+                alias = project.split(",")[0].strip()
+                async with client(alias) as memory:
+                    foreign = await remember(memory, "Alias note", "Unrelated alias project note.")
+                async with client(project) as memory:
+                    own = await remember(memory, "Literal key note", "Keep the literal project key.")
+                    timeline = await call(memory, "timeline", {"anchor": own["id"], "depth_before": 10, "depth_after": 10})
+                    details = await call(memory, "get_observations", {"ids": [foreign["id"]]})
+                self.assertEqual(own["project"], project)
+                self.assertIn("Keep the literal project key.", own["details"])
+                with sqlite3.connect(Path(os.environ["CLAUDE_MEM_DATA_DIR"]) / "claude-mem.db") as db:
+                    self.assertEqual(db.execute("SELECT project FROM observations WHERE id=?", (own["id"],)).fetchone()[0], project)
+                for name, value in [("index", own["index"]), ("timeline", timeline), ("foreign details", details)]:
+                    with self.subTest(read=name):
+                        self.assertNotIn(f"#{foreign['id']} ", value)
+                        self.assertNotIn("Unrelated alias project note.", value)
+
     async def test_worktree_reads_stay_within_the_explicit_project(self):
         with tempfile.TemporaryDirectory(prefix="ag2 worktree ") as temporary:
             parent = Path(temporary) / ("parent-" + uuid4().hex)
