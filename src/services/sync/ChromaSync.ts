@@ -1459,7 +1459,10 @@ export class ChromaSync {
     sourceIds: number[],
     existingIds: Set<number>
   ): { watermark: number; pending: number[] } {
-    const watermark = existingIds.size ? Math.max(...existingIds) : 0;
+    let watermark = 0;
+    for (const id of existingIds) {
+      if (id > watermark) watermark = id;
+    }
     return {
       watermark,
       // Every unindexed row is pending, including rows above the watermark:
