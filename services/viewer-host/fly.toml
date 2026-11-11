@@ -39,6 +39,12 @@ primary_region = "iad"
     path = "/health"
 
 [[vm]]
+  # Measured 2026-11-11 on a copy of the heaviest account (836 MB database, 24,424 shared
+  # My Work rows), with pulls and shared rows arriving every 30 s. The kernel kills the worker
+  # here at about 868 MB anon (fly logs); the gate and Fly's ssh agent use about 40 MB.
+  # No tab open: the worker peaks at 556 MB resident (it peaked at 881 MB and was killed
+  # before the shared-history read fix).
+  # One My Work tab open: it peaks at 868 MB, so 1 GB has no margin yet (1,657 MB before the fix).
   memory = "1gb"
   cpu_kind = "shared"
   cpus = 1

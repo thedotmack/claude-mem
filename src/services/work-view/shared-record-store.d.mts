@@ -23,4 +23,7 @@ export function publishSharedRecords(db: Database, options: {
   updates: Array<{ kind: string; key: string; value?: unknown; deleted?: boolean; expectedHash?: string | null }>;
   now?: number;
   validateValue?: SharedValueValidator;
+  /** Must read the same deviceId and validateValue this call names. */
+  readState?: () => SharedRecordState;
 }): { changed: number; rowIds: number[]; batchId: string | null };
+export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): () => SharedRecordState;

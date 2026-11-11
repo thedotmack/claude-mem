@@ -5,8 +5,8 @@ import { readLedger } from './request-groups.mjs';
 import { activitySignature, buildAgentView, readAgentRecords } from './agent-view.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { buildSharedProjectionUpdates, applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
-import { readSharedRecords, publishSharedRecords } from './shared-record-store.mjs';
-import { sharedRecordKey, sharedValueHash } from './shared-records.mjs';
+import { createSharedRecordReader, publishSharedRecords } from './shared-record-store.mjs';
+import { sharedRecordKey, sharedValueHash, sharedWorkListSql } from './shared-records.mjs';
 import { canonicalJson } from '../sync/CanonicalContent.js';
 import { redactJsonStrings } from '../../utils/redaction.js';
 
@@ -66,7 +66,10 @@ export class SharedLedgerAdapter {
     return this.db.prepare('SELECT COUNT(*) AS count FROM my_work_file_state WHERE pending_json IS NOT NULL').get().count;
   }
 
-  shared() { return readSharedRecords(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue }); }
+  shared() {
+    this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue });
+    return this.readShared();
+  }
 
   tombstoneKeys(name, shared) {
     const kinds = fileKinds(name);
@@ -192,7 +195,7 @@ export class SharedLedgerAdapter {
         if (!Object.hasOwn(prior.bases, key) && existing
           && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
       }
-      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue });
+      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, readState: () => this.shared() });
       this.remember(name, value, updates, this.shared(), true, value === null);
       if (result.changed) changed = { rules: changes.some(change => change.kind === 'story') };
     })();
@@ -299,7 +302,7 @@ export class SharedLedgerAdapter {
     }
     const safe = updates;
     for (let offset = 0; offset < safe.length; offset += 512) {
-      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue }).changed;
+      changed += publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: safe.slice(offset, offset + 512), validateValue: isSharedProjectionValue, readState: () => this.shared() }).changed;
     }
     if (changed) this.notify({ rules: safe.some(update => update.kind === 'story') });
     if (changed) this.lastSignature = null;
@@ -374,7 +377,9 @@ export class SharedLedgerAdapter {
     // Legacy copy writers can finish without another memory/tool row. Their
     // semantic file hash is an independent import trigger, not activity.
     if (captureActivity && (activity !== this.activity || copyHash !== this.copyHash)) {
-      const entries = this.db.prepare('SELECT id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id FROM work_state_entries').all();
+      // The reducer drops shared rows, which are most of this table on a busy replica: leave them in SQLite.
+      const entries = this.db.prepare(`SELECT id, project, list_name, fields, created_at_epoch, origin_device_id, origin_local_id
+        FROM work_state_entries WHERE NOT ${sharedWorkListSql('list_name')}`).all();
       const state = reduceWorkState(entries, { localDeviceId: this.deviceId });
       let records = readAgentRecords(this.db, { workState: state, ledger });
       records = applySharedProjection(this.db, shared, { ledger, records, deviceId: this.deviceId }).records;
