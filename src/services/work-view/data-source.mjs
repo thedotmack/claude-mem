@@ -9,7 +9,7 @@ import { activitySignature, buildAgentView, readAgentRecords, readEvidence } fro
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
-import { readSharedRecords } from './shared-record-store.mjs';
+import { readSharedRecords, workStateRowsRevision } from './shared-record-store.mjs';
 import { sharedWorkListSql } from './shared-records.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
@@ -114,11 +114,11 @@ export class WorkStateSource {
       const dataVersion = database.prepare('PRAGMA data_version').get().data_version;
       let revision = this.workStateRevision;
       if (!revision || dataVersion !== this.workStateDataVersion) {
-        revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
+        revision = workStateRowsRevision(database, { syncRev: this.columns.has('sync_rev') });
         this.workStateRevision = revision;
         this.workStateDataVersion = dataVersion;
       }
-      const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
+      const signature = `${revision}:${this.localDeviceId}`;
       const previousTitles = this.titleCacheSignature;
       const previousLedger = this.ledgerSignature;
       this.readTitleCache();

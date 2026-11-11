@@ -27,3 +27,5 @@ export function publishSharedRecords(db: Database, options: {
   readState?: () => SharedRecordState;
 }): { changed: number; rowIds: number[]; batchId: string | null };
 export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): () => SharedRecordState;
+/** count:highest id:summed sync_rev of the work_state_entries rows matching the SQL condition `where`. */
+export function workStateRowsRevision(db: Database, options?: { where?: string; syncRev?: boolean }): string;

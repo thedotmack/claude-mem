@@ -80,7 +80,11 @@ test('a kept reader reuses its last read until the shared rows change', () => {
   expect(second.records.get(sharedRecordKey('group', 'g'))?.value).toBe('B');
   // A pulled higher revision rewrites a row in place (SyncApply.applyWorkState): that is a change too.
   db.prepare("UPDATE work_state_entries SET sync_rev = '7' WHERE id = (SELECT MIN(id) FROM work_state_entries WHERE list_name GLOB '__my_work_v[0-9]*:*')").run();
-  expect(read()).not.toBe(second);
+  const third = read();
+  expect(third).not.toBe(second);
+  // A list that only looks like a shared one (its version is not a number) is not a shared row: it is no change either.
+  db.prepare("INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) VALUES ('repo','__my_work_v1x:notes','{}',?,?)").run(new Date(NOW).toISOString(), NOW);
+  expect(read()).toBe(third);
 });
 
 test('a kept reader never keeps rows a transaction rolled back', () => {

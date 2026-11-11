@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson, compareCanonicalDecimals, incrementCanonicalDecimal, sha256Base64Url } from '../sync/CanonicalContent.js';
 import { SHARED_WORK_MAX_UPDATES, sharedIdentity, sharedWriter, sharedValueHash, sharedEntryRef,
-  sharedRecordKey, createSharedEntry, createSharedBatch, parseSharedRow, isSharedWorkList } from './shared-records.mjs';
+  sharedRecordKey, createSharedEntry, createSharedBatch, parseSharedRow, isSharedWorkList, sharedWorkListSql } from './shared-records.mjs';
 import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue } from './shared-redaction.mjs';
 
 const compareText = (a, b) => a === b ? 0 : a < b ? -1 : 1;
@@ -49,8 +49,11 @@ export function readSharedRecords(db, options) {
   return readShared(db, options, !db.inTransaction);
 }
 
-/** keep: the read runs in a transaction that cannot roll back rows it sees (its own read transaction), so it may fill the row cache. */
-function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }, keep) {
+/**
+ * fillCacheFromOwnTransaction: the read runs in a transaction that cannot roll back rows it sees
+ * (its own read transaction), so it may fill the row cache.
+ */
+function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }, fillCacheFromOwnTransaction) {
   // Preloaded rows are already in memory and must not cost another query.
   if (suppliedRows) {
     const context = { db, deviceId, validateValue, reread: row => row };
@@ -60,7 +63,7 @@ function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHi
   const read = () => {
     let scan, byId;
     try {
-      scan = db.prepare("SELECT id, origin_device_id, sync_rev FROM work_state_entries WHERE list_name GLOB '__my_work_v[0-9]*:*'");
+      scan = db.prepare(`SELECT id, origin_device_id, sync_rev FROM work_state_entries WHERE ${sharedWorkListSql('list_name')}`);
       byId = db.prepare(`SELECT ${SHARED_ROW_COLUMNS} FROM work_state_entries WHERE id = ?`);
     } catch (error) {
       scan?.finalize();
@@ -84,7 +87,7 @@ function readShared(db, { deviceId, validateValue, rows: suppliedRows, includeHi
       }
       const values = new Map();
       const state = foldSharedRows(items, context, includeHistory, values, summaries.values);
-      if (keep) { summaries.rows = seen; summaries.values = values; }
+      if (fillCacheFromOwnTransaction) { summaries.rows = seen; summaries.values = values; }
       return state;
     } finally { scan.finalize(); byId.finalize(); }
   };
@@ -200,9 +203,7 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
       diagnostics.conflicts.push({ kind: latest.kind, key: latest.key, revision: latest.revision,
         writers: [...new Set(sameRevision.map(entry => entry.writer))].sort() });
     }
-    records.set(identity, { kind: current.kind, key: current.key, value: current.value, deleted: current.deleted,
-      revision: current.revision, writer: current.writer, hash: current.hash,
-      valueHash: current.valueHash, batchId: current.batchId, base: current.base });
+    records.set(identity, current);
   }
   diagnostics.conflicts.sort((a, b) => compareText(sharedRecordKey(a.kind, a.key), sharedRecordKey(b.kind, b.key)));
   const revision = sha256Base64Url(canonicalJson([...records].sort(([a], [b]) => compareText(a, b))
@@ -223,25 +224,33 @@ function entrySummary(entry, source, validateValue) {
 }
 
 /**
- * One reader that reuses its last read until the shared rows change. They change by an insert,
- * by a pulled higher revision rewriting a row (SyncApply.applyWorkState), or by a pulled
- * tombstone deleting one (SyncApply.applyOp). An insert raises the highest id (ids are
- * AUTOINCREMENT), a rewrite raises the summed sync revision and a delete lowers the count, so
- * those three show any change: the same check data-source.mjs makes on work_state_entries. A
- * pull that touches other tables, which on a replica is almost every commit, reuses the last
- * read instead of parsing the history again. A read inside a caller's transaction may include
- * rows it has not committed, so neither that read nor its row summaries are kept; a read in the
- * reader's own read transaction sees only committed rows, so both are.
+ * count:highest id:summed sync_rev of the work_state_entries rows matching `where`. An insert
+ * raises the highest id (ids are AUTOINCREMENT), a pulled higher revision rewriting a row
+ * (SyncApply.applyWorkState) raises the summed sync_rev and a pulled tombstone (SyncApply.applyOp)
+ * lowers the count, so it changes with any of them. TOTAL, not SUM: a sum past the integer range
+ * is an SQLite error, and this check must not fail a read.
+ */
+export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) {
+  const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${syncRev ? ', TOTAL(CAST(sync_rev AS INTEGER)) AS revisions' : ''}
+    FROM work_state_entries WHERE ${where}`);
+  try {
+    const row = statement.get();
+    return `${row.count}:${row.id ?? 0}:${row.revisions ?? 0}`;
+  } finally { statement.finalize(); }
+}
+
+/**
+ * One reader that reuses its last read until the shared rows change (workStateRowsRevision). A
+ * pull that touches other tables, which on a replica is almost every commit, reuses the last read
+ * instead of parsing the history again. A read inside a caller's transaction may include rows it
+ * has not committed, so neither that read nor its row summaries are kept; a read in the reader's
+ * own read transaction sees only committed rows, so both are.
  */
 export function createSharedRecordReader(db, options) {
   let kept = null;
   const revisionOf = () => {
-    try {
-      // TOTAL, not SUM: a sum past the integer range is an SQLite error, and this check must not fail a read.
-      const row = db.query(`SELECT COUNT(*) AS count, MAX(id) AS id, TOTAL(CAST(sync_rev AS INTEGER)) AS revisions
-        FROM work_state_entries WHERE list_name GLOB '__my_work_v[0-9]*:*'`).get();
-      return `${row.count}:${row.id ?? 0}:${row.revisions ?? 0}`;
-    } catch (error) {
+    try { return workStateRowsRevision(db, { where: sharedWorkListSql('list_name') }); }
+    catch (error) {
       if (/no such (table|column)/i.test(String(error.message))) return null;
       throw error;
     }

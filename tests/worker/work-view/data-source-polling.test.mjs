@@ -146,3 +146,14 @@ test('activity freshness is not renewed by a cached database-read heartbeat', ()
   setSystemTime(START + 120_000);
   expect(source.read(POLL).agentView.source.activityCheckedAt).toBe(new Date(START + 120_000).toISOString());
 });
+
+test('revisions summed past the integer range do not fail the read', () => {
+  // sync_rev is a canonical decimal from another device; SUM past 2^63 - 1 is an SQLite "integer overflow" error.
+  writer.exec("ALTER TABLE work_state_entries ADD COLUMN sync_rev TEXT NOT NULL DEFAULT '1'");
+  const insert = writer.prepare("INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch, sync_rev) VALUES ('repo', 'notes', '{}', 1, ?)");
+  insert.run('9223372036854775807');
+  insert.run('9223372036854775807');
+  const snapshot = source.read();
+  expect(snapshot.source.error).toBeNull();
+  expect(snapshot.source.connected).toBe(true);
+});
