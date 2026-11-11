@@ -59,17 +59,28 @@ export interface AgentPromptReader {
 /** Streams a file's lines without holding the file in memory. */
 export async function* readLines(path: string): AsyncGenerator<string> {
   const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 1 << 20 });
-  let pending = '';
+  let pending: string[] = [];
   for await (const chunk of stream as AsyncIterable<string>) {
-    pending += chunk;
-    let newline = pending.indexOf('\n');
+    // Search each decoded chunk once. A large tool payload may span many
+    // chunks; repeatedly joining and searching that growing line is quadratic.
+    let start = 0;
+    let newline = chunk.indexOf('\n');
     while (newline !== -1) {
-      yield pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      newline = pending.indexOf('\n');
+      const tail = chunk.slice(start, newline);
+      if (pending.length) {
+        pending.push(tail);
+        const line = pending.join('');
+        pending = [];
+        yield line;
+      } else {
+        yield tail;
+      }
+      start = newline + 1;
+      newline = chunk.indexOf('\n', start);
     }
+    if (start < chunk.length) pending.push(chunk.slice(start));
   }
-  if (pending) yield pending;
+  if (pending.length) yield pending.join('');
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
@@ -238,7 +249,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
 }
 
 // ---------------------------------------------------------------------------
-// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+// Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and archived_sessions/*.jsonl
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
@@ -258,7 +269,9 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
+      const profile = nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex');
+      const sessions = join(profile, 'sessions');
+      const archived = join(profile, 'archived_sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -269,7 +282,12 @@ export function createCodexReader(): AgentPromptReader {
           }
         }
       }
-      return { detected: existsSync(sessions), sources: presentSources(sources) };
+      // Archival moves the same rollout into this flat directory. It remains
+      // part of the owner's history; the existing timestamp/window rules apply.
+      for (const file of listDirectory(archived)) {
+        if (file.endsWith('.jsonl')) sources.push(source(join(archived, file)));
+      }
+      return { detected: existsSync(sessions) || existsSync(archived), sources: presentSources(sources) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;

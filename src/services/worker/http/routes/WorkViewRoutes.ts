@@ -35,6 +35,7 @@ import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js'
 import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
+import { FOCUS_CHANGED_MESSAGE, focusChangeVersion } from '../../../../shared/focus-change-version.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
@@ -150,6 +151,7 @@ const focusBody = z.object({
   /** reorder: every area in the owner's order, first = highest priority. */
   focusAreaIds: z.array(focusAreaIdField).min(1).optional(),
   requestId: z.string().min(1).max(2000).optional(),
+  expectedVersion: z.string().min(1).optional(),
 }).strict();
 
 // The focus areas owner-goals mined from the owner's prompts (save_goals.py). Same name and goal bounds as
@@ -1158,12 +1160,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The owner's focus decisions, saved as my-focus rows. Owner rows are never overridden by a refresh. */
   private saveFocus = async (req: Request, res: Response): Promise<void> => {
-    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId } = req.body as z.infer<typeof focusBody>;
+    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     // Moving a request looks the request up, and a request can be minutes old: that check reads fresh.
     const snapshot = await (action === 'move-request' ? this.snapshot() : this.ownerStateSnapshot());
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing focus areas.' }); return; }
     const areas = (snapshot.focusAreas ?? []) as FocusArea[];
+    // ownerEdit serializes this fresh read, version check and every row below with other owner writes.
+    if (expectedVersion !== undefined && expectedVersion !== focusChangeVersion(req.body, areas, snapshot.humanRequests)) {
+      res.status(409).json({ error: FOCUS_CHANGED_MESSAGE, snapshot }); return;
+    }
     const areaById = new Map(areas.map(area => [area.focusAreaId, area]));
     const ownRow = (area: FocusArea, change: Partial<FocusArea>) => focusAreaRowFields({ ...area, ...change, decidedBy: 'owner' });
     const rows: Record<string, string | number | boolean | null>[] = [];

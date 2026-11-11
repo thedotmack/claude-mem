@@ -305,7 +305,7 @@ export async function setupV2(
           event.status === "error"
             ? errorMessage(event.error ?? "")
             : extractResultText(result);
-        await core.captureTool({ tool, sessionID, args, output,
+        await core.captureTool({ tool, sessionID, args, output, failed: event.status === "error",
           ...(tool !== event.tool ? { nativeToolName: event.tool } : {}),
         });
       }),

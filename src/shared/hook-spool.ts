@@ -42,6 +42,8 @@ export interface SpooledObservationPayload {
   /** Preserve missing host attribution separately from the legacy DB default. */
   telemetryPlatformSource?: string;
   toolName: string;
+  /** Exact host tool name before normalization, retained for configured exclusions. */
+  nativeToolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
   cwd?: string;

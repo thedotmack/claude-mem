@@ -1,7 +1,7 @@
 // My Work's port of PR #265's observation gallery (src/ui/my-work/src/components/observation-media):
 // the worker URLs it builds, the readiness polling (including PR #265's "status failures never retry"
 // review thread), the status batching, and server-rendered markup for cards, drawers and image-free rows.
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, jest } from 'bun:test';
 import { buildSync } from 'esbuild';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
@@ -121,6 +121,36 @@ describe('readiness polling', () => {
     await settle();
     while (queue.length > 0) { queue.shift()!(); await settle(); }
     expect(calls).toBe(21);
+  });
+
+  it('a hidden cloud tab rechecks a pending image only once it is shown again', async () => {
+    class FakePage extends EventTarget {
+      visibilityState = 'hidden';
+      show(state: 'visible' | 'hidden') { this.visibilityState = state; this.dispatchEvent(new Event('visibilitychange')); }
+    }
+    const page = new FakePage();
+    const browser = globalThis as { location?: unknown; document?: unknown };
+    const saved = { location: browser.location, document: browser.document };
+    browser.location = { hostname: 'work.cmem.ai' };
+    browser.document = page;
+    jest.useFakeTimers();
+    const flush = async () => { for (let turn = 0; turn < 5; turn++) await Promise.resolve(); };
+    let calls = 0;
+    // No `schedule`: the strip's own timer, as useMediaStates runs it.
+    const stop = gallery.watchMediaStatus([uuid(1)], async () => { calls += 1; return new Map([[uuid(1), 'pending']]); }, () => {});
+    try {
+      await flush();
+      for (let minute = 0; minute < 10; minute++) { jest.advanceTimersByTime(60_000); await flush(); }
+      expect(calls).toBe(1);
+      page.show('visible');
+      await flush();
+      expect(calls).toBe(2);
+    } finally {
+      stop();
+      jest.useRealTimers();
+      browser.location = saved.location;
+      browser.document = saved.document;
+    }
   });
 
   it('reports nothing after the strip unmounts', async () => {

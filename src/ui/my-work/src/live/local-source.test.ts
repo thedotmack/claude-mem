@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { describe, it } from 'node:test'
-import { createLocalSource } from './local-source.ts'
+import { describe, it, type TestContext } from 'node:test'
+import { createLocalSource, type LocalSourceOptions } from './local-source.ts'
 import { sampleSource } from './sample-source.ts'
 import type { MappedWorkModel, WorkModel } from './work-data-source.ts'
 import type { WorkViewOverview } from './work-view-overview.ts'
@@ -44,10 +44,10 @@ class FakeStream {
   emit(type: string, value: unknown) { this.handlers.get(type)?.({ data: JSON.stringify(value) }) }
   close() { this.closed = true; this.readyState = 2 }
 }
-function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100) {
+function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility'> = {}) {
   const streams: FakeStream[] = []
   const urls: string[] = []
-  const local = createLocalSource({ hostname: 'localhost', fetchImpl: fetcher, bootstrapTimeoutMs,
+  const local = createLocalSource({ hostname: 'localhost', ...page, fetchImpl: fetcher, bootstrapTimeoutMs,
     eventSourceFactory: (url) => { urls.push(url); const stream = new FakeStream(); streams.push(stream); return stream as unknown as EventSource } })
   return { local, streams, urls }
 }
@@ -512,6 +512,27 @@ describe('compact local source', () => {
     })
   }
 
+  it('a focus save keeps its own receipt when a newer live model arrives', async () => {
+    const held = deferred<Response>()
+    const saved = snapshot(SECOND)
+    saved.focusAreas = [{ focusAreaId: 'area-a', name: 'Saved area', goal: null, status: 'suggested',
+      priorityRank: 1, ownerRank: null, source: 'seed', mergedInto: null, evidence: null, decidedBy: 'owner-restore', savedAt: null }]
+    const newer = structuredClone(saved)
+    newer.focusAreas = saved.focusAreas.map(area => ({ ...area, status: 'done' as const }))
+    const { local, streams } = harness(async (_url, init) => init?.method === 'POST' ? held.promise : json(newer))
+    const shown: WorkModel[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+    try {
+      streams[0].emit('work-view', saved)
+      const saving = local.saveFocusChange({ action: 'restore-suggestion', focusAreaId: 'area-a' })
+      streams[0].emit('work-view', newer)
+      held.resolve(json(saved))
+      const receipt = await saving
+      assert.equal(receipt.focusAreas[0].status, 'suggested', 'Undo must use the state its own write saved')
+      assert.equal(shown.at(-1)?.focusAreas[0].status, 'done', 'the newer live decision remains on screen')
+    } finally { stop() }
+  })
+
   it('a late review response cannot replace a newer model used by detail reads', async () => {
     const held = deferred<Response>()
     const { local, streams } = harness(async (_url, init) => init?.method === 'POST'
@@ -642,5 +663,131 @@ describe('compact local source', () => {
       await settle()
       assert.equal(gets, 2)
     } finally { stop?.(); performance.now = originalNow }
+  })
+})
+
+describe('a hidden cloud tab', () => {
+  class FakePage extends EventTarget {
+    visibilityState = 'visible'
+    listeners = 0
+    override addEventListener(...args: Parameters<EventTarget['addEventListener']>) { this.listeners++; super.addEventListener(...args) }
+    override removeEventListener(...args: Parameters<EventTarget['removeEventListener']>) { this.listeners--; super.removeEventListener(...args) }
+    show(state: 'visible' | 'hidden') { this.visibilityState = state; this.dispatchEvent(new Event('visibilitychange')) }
+  }
+  /** Simulated time: every timer the source starts, and performance.now(), follow `tick`. */
+  function simulatedClock(t: TestContext) {
+    t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: Date.now() })
+    const originalNow = performance.now
+    performance.now = () => Date.now()
+    return {
+      async minutes(count: number) { for (let minute = 0; minute < count; minute++) { t.mock.timers.tick(60_000); await settle() } },
+      tick: (ms: number) => t.mock.timers.tick(ms),
+      restore: () => { performance.now = originalNow },
+    }
+  }
+
+  it('closes its stream, makes no request for 10 minutes, and reconnects when shown', async (t) => {
+    const clock = simulatedClock(t)
+    const page = new FakePage()
+    const fetched: string[] = []
+    const { local, streams, urls } = harness(async (url) => { fetched.push(String(url)); return json(overview(SECOND)) }, 100, { hostname: 'work.cmem.ai', visibility: page })
+    const shown: WorkModel[] = []
+    const stop = local.subscribeToLiveUpdates((model) => shown.push(model), () => {})
+    try {
+      streams[0].emit('work-view-overview', overview())
+      page.show('hidden')
+      assert.equal(streams[0].closed, true)
+      // Unhealthy without its stream, the page would otherwise fall back to an HTTP read every two minutes.
+      await clock.minutes(10)
+      assert.deepEqual(fetched, [])
+      assert.equal(streams.length, 1)
+      page.show('visible')
+      assert.equal(streams.length, 2)
+      assert.equal(streams[1].closed, false)
+      assert.equal(urls[1], '/api/work-view/events?view=overview')
+      // The worker sends the current overview as every new stream's first event, so showing reads nothing over HTTP.
+      await settle()
+      assert.deepEqual(fetched, [])
+      streams[1].emit('work-view-overview', overview(SECOND))
+      assert.equal(shown.at(-1)?.requests[0].contentFingerprint, SECOND)
+      // A second "shown" while the stream is open opens nothing more.
+      page.show('visible')
+      assert.equal(streams.length, 2)
+    } finally { stop(); clock.restore() }
+    assert.equal(page.listeners, 0)
+  })
+
+  it('does not reopen a stream that dropped just before the tab was hidden', async (t) => {
+    const clock = simulatedClock(t)
+    const page = new FakePage()
+    const { local, streams } = harness(async () => json(overview()), 100, { hostname: 'work.cmem.ai', visibility: page })
+    const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+    try {
+      streams[0].readyState = 2
+      streams[0].onerror?.()
+      page.show('hidden')
+      await clock.minutes(10)
+      assert.equal(streams.length, 1)
+    } finally { stop(); clock.restore() }
+  })
+
+  it('opens no stream while it starts hidden, and connects when first shown', async (t) => {
+    const clock = simulatedClock(t)
+    const page = new FakePage()
+    page.visibilityState = 'hidden'
+    const { local, streams } = harness(async () => json(overview()), 100, { hostname: 'work.cmem.ai', visibility: page })
+    const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+    try {
+      await clock.minutes(10)
+      assert.equal(streams.length, 0)
+      page.show('visible')
+      assert.equal(streams.length, 1)
+    } finally { stop(); clock.restore() }
+  })
+
+  it('recovers from the gate 503 while a woken machine boots, without a reload', async (t) => {
+    const clock = simulatedClock(t)
+    const page = new FakePage()
+    const fetched: string[] = []
+    const { local, streams } = harness(async (url) => { fetched.push(String(url)); return json({ error: 'Your viewer is starting' }, 503) }, 100, { hostname: 'work.cmem.ai', visibility: page })
+    const shown: WorkModel[] = []
+    const connections: boolean[] = []
+    const stop = local.subscribeToLiveUpdates((model) => shown.push(model), (connection) => connections.push(connection.isLive))
+    try {
+      streams[0].emit('work-view-overview', overview())
+      page.show('hidden')
+      await clock.minutes(10)
+      page.show('visible')
+      await settle()
+      // The gate answers the stream with an HTTP error, which ends an EventSource for good.
+      streams[1].readyState = 2
+      streams[1].onerror?.()
+      assert.equal(shown.at(-1)?.requests[0].contentFingerprint, FIRST)
+      clock.tick(1000)
+      assert.equal(streams.length, 3)
+      streams[2].emit('work-view-overview', overview(SECOND))
+      assert.equal(shown.at(-1)?.requests[0].contentFingerprint, SECOND)
+      assert.equal(connections.at(-1), true)
+      assert.deepEqual(fetched, [])
+    } finally { stop(); clock.restore() }
+  })
+
+  it('changes nothing on this computer: the stream stays open and the fallback read still runs', async (t) => {
+    const clock = simulatedClock(t)
+    const page = new FakePage()
+    const fetched: string[] = []
+    const { local, streams } = harness(async (url) => { fetched.push(String(url)); return json(overview(SECOND)) }, 100, { hostname: 'localhost', visibility: page })
+    const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+    try {
+      streams[0].emit('work-view-overview', overview())
+      streams[0].onerror?.()
+      page.show('hidden')
+      assert.equal(page.listeners, 0)
+      assert.equal(streams[0].closed, false)
+      await clock.minutes(10)
+      assert.equal(streams.length, 1)
+      assert.equal(streams[0].closed, false)
+      assert.equal(fetched.length, 5)
+    } finally { stop(); clock.restore() }
   })
 })

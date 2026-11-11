@@ -15,7 +15,7 @@ describe("WindsurfHooksInstaller reads Windsurf's hooks.json", () => {
     mkdirSync(hooksDir, { recursive: true });
     writeFileSync(hooksPath, '\uFEFF' + JSON.stringify({
       hooks: {
-        pre_user_prompt: [otherHook, { command: '"bun" "worker-service.cjs" windsurf session-init', show_output: false }],
+        pre_user_prompt: [otherHook, { command: '"bun" "worker-service.cjs" hook windsurf session-init', show_output: false }],
       },
     }));
     const script = join(home, 'uninstall-child.mjs');
