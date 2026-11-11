@@ -7,7 +7,7 @@
 // The live wiring copies claude-mem v15.0.1 plugin/ui/work-view/app.js:180-261 (`accept`, `refresh`, the
 // EventSource handlers, the 1s connection timer and the 60s aging timer). The check copies app.js:125-138 (`saveReview`).
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
-import { isServedFromCloud } from './served-from.ts'
+import { browserHostname, browserVisibility, isServedFromCloud, type PageVisibility } from './served-from.ts'
 import { conflictReason, readReviewResponse, readSaveReceipt, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
@@ -26,6 +26,8 @@ export interface LocalSourceOptions {
   bootstrapTimeoutMs?: number
   requestTimeoutMs?: number
   activityOptions?: Omit<ViewerActivityOptions, 'fetchImpl' | 'enabled'>
+  /** Whether the tab is on screen (default `document`). Only a cloud page reads it; see subscribeToLiveUpdates. */
+  visibility?: PageVisibility
 }
 
 /** Separate instances make the actual transport/race behavior testable without shared browser globals. */
@@ -47,11 +49,15 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
   const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
   const CONNECTION_TICK_MS = 1000
-  const SOURCE_KIND = isServedFromCloud(options.hostname ?? (globalThis as { location?: { hostname: string } }).location?.hostname ?? 'localhost') ? 'cloud' : 'local'
+  const SOURCE_KIND = isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
   const AGING_TICK_MS = 60_000
   const STALE_FALLBACK_INTERVAL_MS = 120_000
   /** The worker's SSE `retry: 1000`. */
   const STREAM_REOPEN_AFTER_MS = 1000
+  // A cloud viewer's machine sleeps only while nothing reaches it, so a hidden cloud tab holds no stream and makes no
+  // timed request. The page on this computer never reads visibility: its behaviour does not change.
+  const visibility = SOURCE_KIND === 'cloud' ? options.visibility ?? browserVisibility() : undefined
+  const pageHidden = () => visibility?.visibilityState === 'hidden'
 
   /** The evidence getConnectionStatus reads. Times are performance.now(); see connection-status.ts. */
   const connectionEvidence = {
@@ -410,7 +416,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       }
       publishModel = sendIfChanged
 
-      let stream: EventSource
+      let stream: EventSource | null = null
       let reopenTimer: ReturnType<typeof setTimeout> | undefined
       const openStream = () => {
         if (generation !== streamGeneration) return
@@ -473,16 +479,37 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           reportConnection()
           // EventSource retries a dropped connection by itself, but gives up for good after an HTTP error response
           // (the Vite proxy answers 500 while the worker is down). Reopen it at the server's retry interval.
-          if (stream.readyState === 2 /* EventSource.CLOSED */) reopenTimer = setTimeout(openStream, STREAM_REOPEN_AFTER_MS)
+          if (currentStream.readyState === 2 /* EventSource.CLOSED */) reopenTimer = setTimeout(openStream, STREAM_REOPEN_AFTER_MS)
         }
       }
-      openStream()
+      if (!pageHidden()) openStream()
+
+      // Cloud only. Hidden: close the stream and cancel a pending reopen (so none can open while hidden); the aging
+      // timer below skips its read. Shown: reopen the stream, whose first event is the current overview
+      // (WorkViewRoutes sends it on every new stream). No delay and no threshold: a quick tab switch just reconnects,
+      // and Fly takes minutes to stop a machine. A machine that slept answers 503 through the gate while its worker
+      // boots; the stream's error handler reopens it until the worker answers.
+      const followVisibility = () => {
+        if (generation !== streamGeneration) return
+        if (pageHidden()) {
+          clearTimeout(reopenTimer)
+          stream?.close()
+          stream = null
+          connectionEvidence.transportConnected = false
+          connectionEvidence.reconnecting = true
+          reportConnection()
+          return
+        }
+        if (!stream) openStream()
+      }
+      visibility?.addEventListener('visibilitychange', followVisibility)
 
       // Re-reads connection freshness every second: "live" expires on its own when messages stop.
       const connectionTimer = setInterval(reportConnection, CONNECTION_TICK_MS)
       // Legacy snapshots contain epochs we can age locally. Compact streams already send minute remaps;
       // an HTTP fallback is only needed while the feed is unhealthy, at most once per cache window.
       const agingTimer = setInterval(() => {
+        if (pageHidden()) return
         if (latestSnapshot) sendIfChanged(withConnection(toWorkModel(latestSnapshot, Date.now())))
         else if (latestModel && !currentConnectionStatus().isLive && performance.now() - lastOverviewReadAt >= STALE_FALLBACK_INTERVAL_MS) {
           void readOverview().then((model) => { if (generation === streamGeneration) sendIfChanged(model) }).catch(() => { /* Keep the last model; event freshness remains independent. */ })
@@ -492,7 +519,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       return () => {
         waiting.resolve(null)
         clearTimeout(reopenTimer)
-        stream.close()
+        visibility?.removeEventListener('visibilitychange', followVisibility)
+        stream?.close()
         clearInterval(connectionTimer)
         clearInterval(agingTimer)
         stopActivity()
