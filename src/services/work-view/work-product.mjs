@@ -199,13 +199,16 @@ function commitsFrom(command, response, out) {
 // The remote and destination branches named in each `git push` command.
 function pushTargets(command) {
   const word = String.raw`(?:[^\s"'<>;&|()]+|"[^"]*"|'[^']*')+`;
-  const redirection = String.raw`(?:\d*(?:>>?|<<?)&?|&>>?)`;
-  const pattern = gitPattern(String.raw`push\b((?:[ \t]+|${redirection}|${word})*)`, 'g');
+  const redirection = String.raw`(?:\d*(?:>>?|<{1,3})&?|&>>?)`;
+  // Consume a comment to end of line, including separators or command text.
+  const pattern = gitPattern(String.raw`push\b((?:[ \t]+(?:#[^\n]*)?|${redirection}|${word})*)`, 'g');
   const redirect = new RegExp(`^${redirection}$`);
   return [...command.matchAll(pattern)].map(([, args]) => {
     const shellTokens = args.match(new RegExp(`${redirection}|${word}`, 'g')) ?? [];
     const tokens = [];
     for (let index = 0; index < shellTokens.length; index++) {
+      // Only an unquoted # at the start of a shell word opens a comment.
+      if (shellTokens[index].startsWith('#')) break;
       // Redirects may sit between Git arguments. Consume their file/fd target,
       // then keep scanning so a later --dry-run or --delete is still respected.
       if (redirect.test(shellTokens[index])) { index++; continue; }

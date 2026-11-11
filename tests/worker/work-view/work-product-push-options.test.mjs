@@ -133,6 +133,15 @@ const redirectedCases = [
   ['push option after a redirection', `git push -q ${remoteUrl} main >push.log --push-option=ci.skip`, 'push'],
   ['flag-like output filename', `git push -q ${remoteUrl} main >--dry-run`, 'push'],
   ['quoted output filename', `git push -q ${remoteUrl} main >'push --dry-run.log'`, 'push'],
+  ['flag text in a here-string', `git push -q ${remoteUrl} main <<<"--dry-run"`, 'push'],
+  ['delete text in an fd here-string', `git push -q ${remoteUrl} main 0<<<"--delete"`, 'push'],
+  ['real dry run after a here-string', `git push -q ${remoteUrl} main <<<"input only" --dry-run`, 'dry-run'],
+  ['dry-run text in a shell comment', `git push -q ${remoteUrl} main >push.log # --dry-run`, 'push'],
+  ['delete text in a shell comment', `git push -q ${remoteUrl} main # --delete`, 'push'],
+  ['another command inside a shell comment', `git push -q ${remoteUrl} main # later; git push --dry-run ${remoteUrl} main`, 'push'],
+  ['quoted hash in a push option', `git push -q -o '# --dry-run' ${remoteUrl} main`, 'push'],
+  ['embedded hash in a push option', `git push -q --push-option=label#--dry-run ${remoteUrl} main`, 'push'],
+  ['embedded hash in a redirected filename', `git push -q ${remoteUrl} main >push#--dry-run.log`, 'push'],
 ];
 
 for (const [name, command, operation] of redirectedCases) {
