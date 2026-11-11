@@ -49,7 +49,7 @@ class ProjectArguments(unittest.TestCase):
             if name == "save_memory":
                 self.assertNotIn("projects", result)
             else:
-                self.assertEqual(result["projects"], ["owned"])
+                self.assertEqual(result["projects"], json.dumps(["owned"]))
             self.assertEqual(args["project"], "other")
 
     def test_replay_fingerprint_distinguishes_project_and_content(self):
@@ -76,6 +76,19 @@ class ProjectArguments(unittest.TestCase):
                 response_text(result)
 
 
+    def test_literal_project_keys_do_not_alias_trimmed_or_split_keys(self):
+        selected = " owned,web "
+        for name in MEMORY_TOOLS:
+            scoped = scoped_arguments(name, {"text": "Safe note", "projects": ["other"]}, selected)
+            self.assertEqual(scoped["project"], selected)
+            if name != "save_memory":
+                self.assertIsInstance(scoped["projects"], str)
+                self.assertEqual(json.loads(scoped["projects"]), [selected])
+        identity = scoped_arguments("save_memory", {"text": "Safe note"}, selected)["metadata"]
+        for alias in (selected.strip(), "owned", "web"):
+            self.assertNotEqual(identity, scoped_arguments("save_memory", {"text": "Safe note"}, alias)["metadata"])
+
+
 class NativeSdk(unittest.TestCase):
     def test_agent_executor_runs_the_project_hook_and_only_memory_tools(self):
         with fixture_client() as client:
@@ -83,7 +96,7 @@ class NativeSdk(unittest.TestCase):
             self.assertEqual({tool.tool_name for tool in tools}, MEMORY_TOOLS)
             agent = Agent(model=NoModelRequests(), tools=tools, hooks=[ProjectMemoryHook("owned")], callback_handler=None)
             result = agent.tool.search(query="release", project="other", projects=["other"])
-            self.assertEqual(json.loads(response_text(result)), {"query": "release", "project": "owned", "projects": ["owned"]})
+            self.assertEqual(json.loads(response_text(result)), {"query": "release", "project": "owned", "projects": json.dumps(["owned"])})
             saved = json.loads(response_text(agent.tool.save_memory(text="Safe note", title="Note", project="other")))
             self.assertEqual(saved["project"], "owned")
             self.assertEqual(saved["metadata"]["platformSource"], "strands-agents")

@@ -33,10 +33,10 @@ def positive_seconds(value: float) -> float:
 def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict[str, Any]:
     if name not in MEMORY_TOOLS or not project.strip():
         raise ValueError("Choose a nonempty project and one of the four memory tools.")
-    result = {**arguments, "project": project.strip()}
+    result = {**arguments, "project": project}
     if name != "save_memory":
-        # An explicit singleton prevents checkout/worktree parent inheritance.
-        result["projects"] = [project.strip()]
+        # JSON preserves commas/whitespace across GET queries and prevents inheritance.
+        result["projects"] = json.dumps([project], ensure_ascii=False)
     else:
         result.pop("projects", None)
     if name == "save_memory":
@@ -44,7 +44,7 @@ def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict
         if not isinstance(text, str) or not text.strip() or not isinstance(title, str):
             raise ValueError("A memory needs nonempty text and an optional text title.")
         fingerprint = hashlib.sha256(json.dumps(
-            [project.strip(), title.strip(), text.strip()], ensure_ascii=False,
+            [project, title.strip(), text.strip()], ensure_ascii=False,
         ).encode()).hexdigest()
         result["metadata"] = {"integration": "strands-agents", "platformSource": "strands-agents",
                               "sourceFingerprint": f"strands-example-v1:{fingerprint}"}
@@ -57,7 +57,7 @@ class ProjectMemoryHook(HookProvider):
     def __init__(self, project: str):
         if not project.strip():
             raise ValueError("Choose a nonempty project.")
-        self.project = project.strip()
+        self.project = project
 
     def register_hooks(self, registry: HookRegistry, **kwargs) -> None:
         registry.add_callback(BeforeToolCallEvent, self.before_tool)
