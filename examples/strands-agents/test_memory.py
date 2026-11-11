@@ -46,7 +46,10 @@ class ProjectArguments(unittest.TestCase):
             args = {"project": "other", "projects": ["other"], "text": "Safe note"}
             result = scoped_arguments(name, args, "owned")
             self.assertEqual(result["project"], "owned")
-            self.assertNotIn("projects", result)
+            if name == "save_memory":
+                self.assertNotIn("projects", result)
+            else:
+                self.assertEqual(result["projects"], ["owned"])
             self.assertEqual(args["project"], "other")
 
     def test_replay_fingerprint_distinguishes_project_and_content(self):
@@ -80,7 +83,7 @@ class NativeSdk(unittest.TestCase):
             self.assertEqual({tool.tool_name for tool in tools}, MEMORY_TOOLS)
             agent = Agent(model=NoModelRequests(), tools=tools, hooks=[ProjectMemoryHook("owned")], callback_handler=None)
             result = agent.tool.search(query="release", project="other", projects=["other"])
-            self.assertEqual(json.loads(response_text(result)), {"query": "release", "project": "owned"})
+            self.assertEqual(json.loads(response_text(result)), {"query": "release", "project": "owned", "projects": ["owned"]})
             saved = json.loads(response_text(agent.tool.save_memory(text="Safe note", title="Note", project="other")))
             self.assertEqual(saved["project"], "owned")
             self.assertEqual(saved["metadata"]["platformSource"], "strands-agents")
