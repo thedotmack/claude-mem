@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { setupV2, type V2ToolExecuteAfterEvent } from '../../src/integrations/opencode-plugin/v2.js';
+import { createCore } from '../../src/integrations/opencode-plugin/core.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
-import { ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
+import { setIngestContext } from '../../src/services/worker/http/shared.js';
+import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
+import type { Request as ExpressRequest, RequestHandler, Response as ExpressResponse } from 'express';
 import { extractObservationFileEvidence } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
@@ -16,7 +19,8 @@ describe('OpenCode V2 native tool vocabulary through local ingestion', () => {
   let settings: ReturnType<typeof spyOn>;
   let cleanup: () => Promise<void>;
   let capture: (event: V2ToolExecuteAfterEvent) => Promise<void>;
-  let results: Awaited<ReturnType<typeof ingestObservation>>[];
+  let results: Array<{ status: string; reason?: string }>;
+  let generatorStarts: number;
   const originalFetch = globalThis.fetch;
 
   beforeEach(async () => {
@@ -31,19 +35,35 @@ describe('OpenCode V2 native tool vocabulary through local ingestion', () => {
     manager = new SessionManager(dbManager as never);
     setIngestContext({ dbManager: dbManager as never, sessionManager: manager,
       eventBroadcaster: { broadcastObservationQueued() {} } as never,
-      ensureGeneratorRunning: async () => {},
+      ensureGeneratorRunning: async () => { generatorStarts++; },
     });
+    generatorStarts = 0;
     results = [];
-    // All worker requests terminate at owned local SQLite; no provider starts.
+    const routes = new SessionRoutes(manager, dbManager as never, {} as never, {} as never,
+      {} as never, {} as never, {} as never, {} as never);
+    let observationHandlers: RequestHandler[] = [];
+    routes.setupRoutes({ get() {}, post(path: string, ...handlers: RequestHandler[]) {
+      if (path === '/api/sessions/observations') observationHandlers = handlers;
+    } } as never);
+    // Run the real HTTP validation/handler chain, ending at owned SQLite and
+    // the RAM buffer. Every fetch is intercepted and no provider is started.
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       expect(new URL(String(url)).pathname).toBe('/api/sessions/observations');
       const body = JSON.parse(String(init?.body));
-      const result = await ingestObservation({ contentSessionId: body.contentSessionId,
-        platformSource: body.platform_source, cwd: body.cwd, toolName: body.tool_name,
-        toolInput: body.tool_input, toolResponse: body.tool_response,
+      return new Promise<Response>((resolve, reject) => {
+        let status = 200;
+        const req = { body, headers: {}, query: {}, ip: '127.0.0.1', path: '/api/sessions/observations' } as ExpressRequest;
+        const res = { status(code: number) { status = code; return this; }, json(result: { status: string }) {
+          results.push(result);
+          resolve(Response.json(result, { status }));
+        } } as ExpressResponse;
+        let index = 0;
+        const next = (error?: unknown) => {
+          if (error) { reject(error); return; }
+          try { observationHandlers[index++]!(req, res, next); } catch (error) { reject(error); }
+        };
+        next();
       });
-      results.push(result);
-      return Response.json(result);
     }) as typeof fetch;
     cleanup = await setupV2({ directory: process.cwd(), tool: {
       hook: async (_name, callback) => { capture = callback; return { dispose: async () => {} }; },
@@ -116,14 +136,40 @@ describe('OpenCode V2 native tool vocabulary through local ingestion', () => {
 
   it('applies configured command exclusions to the native shell tool', async () => {
     const message = await completed('shell', { command: 'python3 scripts/emit_memory.py' });
-    expect(results).toEqual([{ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' }]);
+    expect(results).toEqual([{ status: 'skipped', reason: 'bash_pattern_excluded' }]);
     expect(message).toBeNull();
   });
 
   it('continues capturing shell commands outside the excluded pattern', async () => {
     const message = (await completed('shell', { command: 'git status' }))!;
     expect(JSON.parse(message.tool_input!)).toEqual({ command: 'git status' });
-    expect(results[0].ok).toBe(true);
+    expect(results[0].status).toBe('queued');
+  });
+
+  it.each([
+    ['patch', 'patch'], ['patch', ' PATCH '], ['patch', 'apply_patch'],
+    ['shell', 'shell'], ['shell', ' SHELL '], ['shell', 'Bash'],
+  ])('honors %s exclusions configured as %s through the worker route', async (tool, excluded) => {
+    settings.mockReturnValue({ ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false', CLAUDE_MEM_SKIP_TOOLS: excluded,
+    });
+    const input = tool === 'patch'
+      ? { patchText: '*** Begin Patch\n*** Add File: src/excluded.ts\n+private work\n*** End Patch' }
+      : { command: 'echo private-work' };
+    expect(await completed(tool, input)).toBeNull();
+    expect(results).toEqual([{ status: 'skipped', reason: 'tool_excluded' }]);
+    expect(generatorStarts).toBe(0);
+  });
+
+  it('does not treat native shell exclusions as aliases for V1 bash', async () => {
+    settings.mockReturnValue({ ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false', CLAUDE_MEM_SKIP_TOOLS: 'shell',
+    });
+    await createCore({ directory: process.cwd() }).captureTool({ tool: 'bash',
+      sessionID: 'opencode-native-tools', args: { command: 'git status' }, output: 'Clean.' });
+    const message = manager.getMessageBuffer().claimNextMatching(sessionId, () => true);
+    expect(message?.tool_name).toBe('Bash');
+    expect(results).toEqual([{ status: 'queued' }]);
   });
 
   it('retains earlier V2 filePath input and does not override a canonical path', async () => {
