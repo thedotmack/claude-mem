@@ -113,6 +113,7 @@ const QUERIES: Record<string, string> = {
 (abstract_class_declaration name: (type_identifier) @name) @cls
 (method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name body: (_) @signature_body) @method @native_signature
 (abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method @native_signature
+(class_body (abstract_method_signature) @terminated_signature . (comment)* . [";" ","] @signature_terminator)
 (public_field_definition name: (_) @name value: [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)]) @method @native_signature
 (public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function body: (_) @signature_body) (function_expression body: (_) @signature_body) (generator_function body: (_) @signature_body)])) @method @native_signature
 (interface_declaration name: (type_identifier) @name) @iface
@@ -781,6 +782,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // the whole-group match a member also produces is dropped.
   const goTypeGroups = new Set<string>();
   const decoratedRanges = new Map<string, RawCapture>();
+  const signatureTerminators = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const haskellSignatures = new Set<CodeSymbol>();
@@ -793,6 +795,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "haskell_default") haskellDefaults.push(cap);
+      if (cap.tag === "terminated_signature") {
+        const terminator = match.captures.find(c => c.tag === "signature_terminator");
+        if (terminator) signatureTerminators.set(`${cap.startRow}:${cap.startCol}`, terminator);
+      }
       if (cap.tag === "exp") {
         exportRanges.push(cap);
       }
@@ -960,9 +966,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         const start = match.captures.find(c => c.tag === "signature_start") ?? kindCapture;
         const body = match.captures.find(c => c.tag === "signature_body");
         const prefix = match.captures.find(c => c.tag === "signature_prefix");
+        // TypeScript keeps an abstract method's explicit terminator beside
+        // the signature node. Preserve that token without taking a neighbour.
+        const end = signatureTerminators.get(`${start.startRow}:${start.startCol}`) ?? start;
         const header = captureText(lines, body
           ? { ...start, endRow: body.startRow, endCol: body.startCol }
-          : start);
+          : { ...start, endRow: end.endRow, endCol: end.endCol });
         // Each comma-separated function variable starts at its own declarator,
         // while retaining the shared const/let/var keyword and export prefix.
         signature = exportPrefix + (prefix ? captureText(lines, prefix) + " " : "") + header;

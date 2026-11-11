@@ -45,7 +45,27 @@ describe('native function signature boundaries', () => {
       const found = symbols(source, `owned.${extension}`);
       expect(found.get('build')?.signature).toBe('export function build( options: { key: string } = { key: "{" } ): { result: string }');
       expect(found.get('typed')?.signature).toBe('export const typed = ({ key }: { key: string }): { result: string } =>');
-      expect(found.get('read')?.signature).toContain('read(options: { key: string }): { result: string }');
+      expect(found.get('read')?.signature).toBe('abstract read(options: { key: string }): { result: string };');
+    }, 120000);
+  }
+
+  for (const extension of ['ts', 'tsx']) {
+    test(`keeps explicit abstract terminators without consuming an adjacent member in .${extension}`, () => {
+      const source = [
+        'abstract class Endings {',
+        '  abstract first(): { value: string }; abstract second(): void;',
+        '  abstract newline(): { value: string }',
+        '  abstract after(): void;',
+        '  abstract commented(): void /* trailing ; */;',
+        '}',
+      ].join('\n');
+      const found = symbols(source, `owned.${extension}`);
+      expect([...found.keys()]).toEqual(['Endings', 'first', 'second', 'newline', 'after', 'commented']);
+      expect(found.get('first')?.signature).toBe('abstract first(): { value: string };');
+      expect(found.get('second')?.signature).toBe('abstract second(): void;');
+      expect(found.get('newline')?.signature).toBe('abstract newline(): { value: string }');
+      expect(found.get('after')?.signature).toBe('abstract after(): void;');
+      expect(found.get('commented')?.signature).toBe('abstract commented(): void /* trailing ; */;');
     }, 120000);
   }
 
