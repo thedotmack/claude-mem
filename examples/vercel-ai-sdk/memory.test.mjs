@@ -66,7 +66,7 @@ test('the selected project stays exact when the client starts in a Git worktree'
   const fromCheckout = args => run(args, {}, checkout);
   try {
     git('init', parent);
-    git('-C', parent, '-c', 'user.name=Memory Test', '-c', 'user.email=memory@example.invalid', 'commit', '--allow-empty', '-m', 'Fixture');
+    git('-C', parent, '-c', 'user.name=Memory Test', '-c', 'user.email=memory@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'Fixture');
     git('-C', parent, 'worktree', 'add', '--detach', checkout, 'HEAD');
     const parentNote = fromCheckout(['save', parentName, 'Worktree scope decision parent', 'Parent-only amber decision.']);
     const childNote = fromCheckout(['save', selected, 'Worktree scope decision selected', 'Selected-only teal decision.']);
