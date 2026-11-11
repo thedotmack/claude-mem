@@ -241,6 +241,9 @@ async function readAnswer(response: Response, target: ApiTarget): Promise<string
   if (choice?.finish_reason === 'length') {
     throw new Error(`${providerLabel(target.provider)} stopped at the ${MAX_OUTPUT_TOKENS}-token answer limit (finish reason: length); the answer is incomplete.`);
   }
+  if (choice?.finish_reason === 'content_filter') {
+    throw new Error(`${providerLabel(target.provider)} omitted content from the answer (finish reason: content_filter); the answer is incomplete.`);
+  }
   const raw = choice?.message?.content;
   const content = typeof raw === 'string' ? raw
     : Array.isArray(raw) ? raw.filter((part: any) => part?.type === 'text').map((part: any) => part?.text ?? '').join('')
