@@ -19,6 +19,8 @@ letter or digit replaced by `-` (e.g. `/home/you/code/my_app` →
 
 `claude-mem memory ingest` imports those topic files **directly** into your
 memory database as observations.
+UTF-8 files with a byte-order mark are supported, including frontmatter and
+Markdown headings. A file containing only frontmatter is skipped as empty.
 
 ## Why it doesn't cost anything
 
