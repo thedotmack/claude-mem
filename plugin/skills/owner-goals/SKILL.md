@@ -90,6 +90,13 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --print-focus-areas > "<fold
 >
 > Rank focus areas by recency × repetition × intensity, and asks by position in section 5. An ask names the focus area it sits in by that area's `title` in this file, or `null` when it fits none. Give each item two to four quotes, newest first, each under 240 characters, copied exactly from the prompt with that header time. Use `...` between pieces when skipping words.
 
+My Work's automatic refresh performs a large first mapping in bounded batches. It
+keeps checked cumulative goals and exact completed source positions between
+batches, then saves one final snapshot. Its batch maps form the full audit map;
+an interrupted final save reuses the checked payload and focus ids. The
+[initial mapping contract](../../../docs/architecture/owner-goals-refresh.md)
+describes the budgets, quote checks and recovery boundaries.
+
 ## Or update the saved goals
 
 When Goals were saved before (the saved `owner-goals.json`, or `work_state_read` with `list: "owner-goals"`), update them instead of mapping the whole window again. In step 1, add `--since "<YYYY-MM-DD HH:MM>"`, the saved `generated_at` as a local minute: the script also writes `new-owner-prompts.md` with only the prompts from that minute on. If it holds no prompts, save the saved goals again with a new `generated_at`. Otherwise save `focus-areas.json` as in step 2, read only `new-owner-prompts.md` and update the saved goals JSON:
