@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
+import { OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES } from '../../src/services/work-view/owner-goals-batches.js';
 import { promptMinute, writeOwnerPromptsFile } from '../../src/services/prompt-import/owner-prompts-file.js';
 import type { OwnerPrompt } from '../../src/services/prompt-import/index.js';
 import { fakeOwnerGoalsWorker } from '../helpers/fake-owner-goals-worker.js';
@@ -54,8 +55,9 @@ function harness(initial: OwnerPrompt[], afterWrite?: NonNullable<Parameters<typ
   };
 }
 
-function batchInput(question: string) {
-  const match = /The next prompts, oldest first, are in (.+?\.json)\./.exec(question);
+function batchInput(question: string, single = false) {
+  const match = single ? /Step 1 is done: the owner's prompts are in (.+?owner-prompts\.md)\./.exec(question)
+    : /The next prompts, oldest first, are in (.+?\.json)\./.exec(question);
   if (!match) throw new Error('The model received the whole window instead of a bounded batch.');
   const markdown = readFileSync(match[1], 'utf8');
   const entries = [...markdown.matchAll(/^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · [^\n]+\nsession [^\n]+\n\nTURN: ([^\n]+)/gm)]
@@ -65,8 +67,8 @@ function batchInput(question: string) {
 }
 
 /** A deterministic model answer; quote checking and every save below use the real Python script and HTTP. */
-function answer(question: string, seen: string[] = []) {
-  const input = batchInput(question);
+function answer(question: string, seen: string[] = [], single = false) {
+  const input = batchInput(question, single);
   seen.push(...input.entries.map(entry => entry.turn));
   const first = input.previous?.focus_areas?.[0]?.evidence?.[0] ?? input.entries[0];
   const last = input.entries.at(-1)!;
@@ -83,28 +85,48 @@ function answer(question: string, seen: string[] = []) {
   });
 }
 
-const run = async (fixture: ReturnType<typeof harness>, ask: (question: string) => Promise<string>) => {
+const run = async (fixture: ReturnType<typeof harness>, ask: (question: string) => Promise<string>, agent: 'api' | 'claude-code' = 'api') => {
   const task = fixture.task();
   await task.prepare!();
-  return task.run(ask, 'api');
+  return task.run(ask, agent);
 };
 const watermarks = (fixture: ReturnType<typeof harness>) => fixture.worker.rows
   .filter(row => row.list_name === 'owner-goals' && !JSON.parse(row.fields).task);
 
 describe('initial owner-goals batches', () => {
-  it('bounds all 5,922 prompts without dropping either end of the window', async () => {
+  for (const count of [600, 1500]) for (const agent of ['api', 'claude-code'] as const) {
+    it(`keeps a roughly ${count === 600 ? 200 : 500} KB first window on one ${agent} call without a checkpoint`, async () => {
+      const fixture = harness(prompts(count));
+      const seen: string[] = [];
+      let calls = 0;
+      try {
+        expect(await run(fixture, async question => {
+          calls++;
+          expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+          expect(question).not.toContain('bounded batch');
+          if (agent === 'api') expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+          return answer(question, seen, true);
+        }, agent)).toBe('goals mapped.');
+        expect(calls).toBe(1);
+        expect(seen).toHaveLength(count);
+        expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+      } finally { fixture.close(); }
+    }, 60_000);
+  }
+
+  for (const agent of ['api', 'claude-code'] as const) it(`bounds all 5,922 prompts without dropping either end of the window for ${agent}`, async () => {
     const fixture = harness(prompts(5922));
     const seen: string[] = [];
     let calls = 0;
     try {
       expect(await run(fixture, async question => {
         calls++;
-        expect(Buffer.byteLength(question)).toBeLessThanOrEqual(96 * 1024);
-        expect(Buffer.byteLength(batchInput(question).markdown)).toBeLessThanOrEqual(32 * 1024);
+        expect(Buffer.byteLength(question)).toBeLessThanOrEqual(OWNER_GOALS_QUESTION_BYTES);
+        expect(Buffer.byteLength(batchInput(question).markdown)).toBeLessThanOrEqual(OWNER_GOALS_BATCH_BYTES);
         expect(watermarks(fixture)).toHaveLength(0);
         return answer(question, seen);
-      })).toBe('goals mapped.');
-      expect(calls).toBeGreaterThan(1);
+      }, agent)).toBe('goals mapped.');
+      expect(calls).toBe(4);
       expect(seen).toEqual(Array.from({ length: 5922 }, (_, index) => String(index)));
       expect(fixture.worker.focusAreas()).toHaveLength(2);
       expect(watermarks(fixture)).toHaveLength(1);
@@ -114,7 +136,7 @@ describe('initial owner-goals batches', () => {
   }, 120_000);
 
   it('round trips Unicode and escaped focus payloads through Python without changing their save commitment', async () => {
-    const fixture = harness(prompts(14, 2800));
+    const fixture = harness(prompts(300, 2800));
     const title = 'İstanbul "quoted" \\ 🚀';
     try {
       await run(fixture, async question => {
@@ -128,20 +150,77 @@ describe('initial owner-goals batches', () => {
     } finally { fixture.close(); }
   }, 60_000);
 
-  it('keeps strict quote validation and resumes only unfinished or changed source turns in the same minute', async () => {
-    const source = prompts(36, 2800);
+  it('reports fresh quote drops after a successful save without retaining unverified evidence', async () => {
+    const fixture = harness(prompts(300, 2800));
+    let calls = 0;
+    try {
+      expect(await run(fixture, async question => {
+        const value = JSON.parse(answer(question));
+        if (++calls === 1) value.goals.asks[0].evidence[0].quote = 'Not present in any prompt.';
+        else expect(fixture.checkpoint().droppedUnverifiedQuotes).toHaveLength(1);
+        return JSON.stringify(value);
+      })).toBe('goals mapped (1 unverified quotes dropped).');
+      expect(calls).toBe(2);
+      expect(existsSync(checkpointFile(fixture.ledgerDir))).toBe(false);
+      expect(JSON.stringify(fixture.worker.rows)).not.toContain('Not present in any prompt.');
+    } finally { fixture.close(); }
+  }, 60_000);
+
+  it('refuses a fresh batch answer when every item loses all verified evidence', async () => {
+    const fixture = harness(prompts(300, 2800));
+    let calls = 0;
+    try {
+      await expect(run(fixture, async question => {
+        calls++;
+        const value = JSON.parse(answer(question));
+        for (const key of ['focus_areas', 'asks', 'rules']) for (const item of value.goals[key]) {
+          for (const evidence of item.evidence) evidence.quote = 'Not present in any prompt.';
+        }
+        return JSON.stringify(value);
+      })).rejects.toThrow('every item was dropped');
+      expect(calls).toBe(2);
+      expect(fixture.checkpoint().processed).toHaveLength(0);
+      expect(fixture.worker.rows).toHaveLength(0);
+    } finally { fixture.close(); }
+  }, 60_000);
+
+  it('recovers a version 1 checkpoint written before quote-drop reporting was added', async () => {
+    const fixture = harness(prompts(300, 2800));
+    const first: string[] = [], resumed: string[] = [];
+    let calls = 0;
+    try {
+      await expect(run(fixture, async question => {
+        if (++calls === 1) return answer(question, first);
+        throw new Error('provider interrupted');
+      })).rejects.toThrow('provider interrupted');
+      const old = fixture.checkpoint();
+      delete old.droppedUnverifiedQuotes;
+      writeFileSync(checkpointFile(fixture.ledgerDir), JSON.stringify(old));
+      expect(await run(fixture, async question => answer(question, resumed))).toBe('goals mapped.');
+      expect(resumed.some(turn => first.includes(turn))).toBe(false);
+      expect(first.length + resumed.length).toBe(300);
+    } finally { fixture.close(); }
+  }, 60_000);
+
+  it('checkpoints a mixed-validity answer after reporting its dropped quote and resumes only unfinished or changed source turns', async () => {
+    const source = prompts(600, 2800);
     const fixture = harness(source);
     let calls = 0;
     const first: string[] = [], resumed: string[] = [];
     try {
       await expect(run(fixture, async question => {
-        if (++calls === 1) return answer(question, first);
-        const invalid = JSON.parse(answer(question));
-        invalid.goals.asks[0].evidence[0].quote = 'These words were never in an owner prompt.';
-        return JSON.stringify(invalid);
-      })).rejects.toThrow("quotes are not the owner's words");
+        if (++calls > 1) throw new Error('provider interrupted');
+        const mixed = JSON.parse(answer(question, first));
+        mixed.goals.asks[0].evidence[0].quote = 'These words were never in an owner prompt.';
+        return JSON.stringify(mixed);
+      })).rejects.toThrow('provider interrupted');
       const checked = fixture.checkpoint();
       expect(checked.processed).toHaveLength(first.length);
+      expect(first.length).toBeGreaterThan(0);
+      expect(calls).toBe(2);
+      expect(checked.droppedUnverifiedQuotes).toEqual(['Ship the release: ' + promptMinute(NOW - 30_000)]);
+      expect(checked.goals.asks[0].evidence).toHaveLength(1);
+      expect(JSON.stringify(checked.goals)).not.toContain('These words were never');
       expect(checked.save).toBeNull();
       expect(fixture.worker.rows).toHaveLength(0);
       // An edit to a completed turn and two equal-text turns with distinct native identities all count.
@@ -159,7 +238,8 @@ describe('initial owner-goals batches', () => {
   }, 60_000);
 
   it('retains a completed no-goal batch without replaying it after a later model failure', async () => {
-    const fixture = harness(prompts(28, 2800));
+    const source = prompts(450, 2800);
+    const fixture = harness(source);
     const first: string[] = [], resumed: string[] = [];
     let calls = 0;
     try {
@@ -173,13 +253,13 @@ describe('initial owner-goals batches', () => {
       expect(fixture.checkpoint().processed).toHaveLength(first.length);
       expect(fixture.checkpoint().goals).toBeNull();
       await run(fixture, async question => answer(question, resumed));
-      expect(resumed).toEqual(Array.from({ length: 28 - first.length }, (_, index) => String(index + first.length)));
+      expect(resumed).toEqual(Array.from({ length: source.length - first.length }, (_, index) => String(index + first.length)));
     } finally { fixture.close(); }
   }, 60_000);
 
 
   it('processes restored source turns after deletion without replaying unchanged completed turns', async () => {
-    const source = prompts(28, 2800);
+    const source = prompts(450, 2800);
     const fixture = harness(source);
     const first: string[] = [], retained: string[] = [], restored: string[] = [];
     let calls = 0;
@@ -206,23 +286,23 @@ describe('initial owner-goals batches', () => {
   }, 60_000);
 
   it('does not repay for an entirely non-actionable window and continues the refresh', async () => {
-    const fixture = harness(prompts(15, 2800));
+    const fixture = harness(prompts(300, 2800));
     try {
       expect(await run(fixture, async () => JSON.stringify({ map: 'No actionable goals.', goals: null }))).toBe('no actionable goals found.');
-      expect(fixture.checkpoint().processed).toHaveLength(15);
+      expect(fixture.checkpoint().processed).toHaveLength(300);
       expect(await run(fixture, async () => { throw new Error('completed empty batches must not be asked again'); })).toBe('no actionable goals found.');
       expect(fixture.worker.rows).toHaveLength(0);
     } finally { fixture.close(); }
   });
 
   it('keeps progress when the whole question including the carried answer exceeds the budget', async () => {
-    const fixture = harness(prompts(24, 2800));
+    const fixture = harness(prompts(450, 2800));
     let calls = 0;
     try {
       await expect(run(fixture, async question => {
         calls++;
         const value = JSON.parse(answer(question));
-        value.goals.human_summary = 'large checked aggregate '.repeat(6000);
+        value.goals.human_summary = 'large checked aggregate '.repeat(50_000);
         return JSON.stringify(value);
       })).rejects.toThrow('question budget');
       expect(calls).toBe(1);
@@ -232,7 +312,7 @@ describe('initial owner-goals batches', () => {
   });
 
   it('checks for a newer saved snapshot before committing the last batch', async () => {
-    const fixture = harness(prompts(14, 2800));
+    const fixture = harness(prompts(300, 2800));
     let calls = 0;
     try {
       await expect(run(fixture, async question => {
@@ -247,7 +327,7 @@ describe('initial owner-goals batches', () => {
   }, 60_000);
 
   it('does not overwrite a snapshot saved elsewhere while the first mapping was incomplete', async () => {
-    const fixture = harness(prompts(24, 2800));
+    const fixture = harness(prompts(450, 2800));
     let calls = 0;
     try {
       await expect(run(fixture, async question => {
@@ -265,7 +345,7 @@ describe('checked owner-goals final save recovery', () => {
   for (const phase of ['focus', 'focus-reply', 'item', 'rules', 'watermark'] as const) {
     it('finishes after a lost ' + phase + ' write reply without inference, duplicate IDs, or an early watermark', async () => {
       let fail = true;
-      const fixture = harness(prompts(14, 2800), (written) => {
+      const fixture = harness(prompts(300, 2800), (written) => {
         if (fail && written === phase) { fail = false; throw new Error('reply lost after ' + phase); }
       });
       try {
@@ -295,7 +375,7 @@ describe('checked owner-goals final save recovery', () => {
 
   for (const change of ['delete', 'redact', 'empty-window'] as const) {
     it('refuses a checked save whose current evidence was changed: ' + change, async () => {
-      const source = prompts(14, 2800);
+      const source = prompts(300, 2800);
       let fail = true;
       const fixture = harness(source, phase => {
         if (fail && phase === 'focus-reply') { fail = false; throw new Error('lost focus reply'); }
@@ -314,7 +394,7 @@ describe('checked owner-goals final save recovery', () => {
   }
 
   it('can finish its old checked snapshot when new prompts were added without changing its evidence', async () => {
-    const source = prompts(14, 2800);
+    const source = prompts(300, 2800);
     let fail = true;
     const fixture = harness(source, phase => { if (fail && phase === 'item') { fail = false; throw new Error('lost item reply'); } });
     try {
@@ -323,7 +403,7 @@ describe('checked owner-goals final save recovery', () => {
       fixture.now(NOW + 1000);
       await run(fixture, async () => { throw new Error('must only finish the checked save'); });
       const saved = JSON.parse(watermarks(fixture).at(-1)!.fields);
-      expect(saved).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 14 });
+      expect(saved).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: source.length });
       // The next normal incremental export begins at that old inclusive minute, so the added turn is still due.
       const next = writeOwnerPromptsFile({ folder: join(fixture.ledgerDir, 'next'), now: NOW + 1000,
         sinceMinute: promptMinute(NOW),

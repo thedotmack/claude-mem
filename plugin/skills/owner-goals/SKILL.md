@@ -90,13 +90,6 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --print-focus-areas > "<fold
 >
 > Rank focus areas by recency × repetition × intensity, and asks by position in section 5. An ask names the focus area it sits in by that area's `title` in this file, or `null` when it fits none. Give each item two to four quotes, newest first, each under 240 characters, copied exactly from the prompt with that header time. Use `...` between pieces when skipping words.
 
-My Work's automatic refresh performs a large first mapping in bounded batches. It
-keeps checked cumulative goals and exact completed source positions between
-batches, then saves one final snapshot. Its batch maps form the full audit map;
-an interrupted final save reuses the checked payload and focus ids. The
-[initial mapping contract](../../../docs/architecture/owner-goals-refresh.md)
-describes the budgets, quote checks and recovery boundaries.
-
 ## Or update the saved goals
 
 When Goals were saved before (the saved `owner-goals.json`, or `work_state_read` with `list: "owner-goals"`), update them instead of mapping the whole window again. In step 1, add `--since "<YYYY-MM-DD HH:MM>"`, the saved `generated_at` as a local minute: the script also writes `new-owner-prompts.md` with only the prompts from that minute on. If it holds no prompts, save the saved goals again with a new `generated_at`. Otherwise save `focus-areas.json` as in step 2, read only `new-owner-prompts.md` and update the saved goals JSON:
@@ -111,6 +104,8 @@ Saved goals with `priorities` and `open_asks` instead were sorted before the thr
 
 Keep the saved `owner-map.md`; step 3 can name it with `--map`. Quotes that aged out of the window are dropped when saving.
 
+Save the update with step 3 and add `--carried-before "<YYYY-MM-DD HH:MM>"`, the same local minute passed to `--since`, so newly written quotes stay strict.
+
 ## 3. Save to Goals
 
 ```bash
@@ -119,7 +114,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --goals "<folder>/owner-goal
 
 For a date range, add the same `--start YYYY-MM-DD --end YYYY-MM-DD` used in step 1.
 
-The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote; if every item ages out, the goals are cleared. It refuses the old `priorities` / `open_asks` shape, a focus area without `goal` or `matches`, a `matches` id that is not a saved area, and an ask whose `focus_area` is not one of the file's focus areas. `--dry-run` shows the writes without saving.
+The script checks every quote against the prompt typed at that minute. On a fresh save (step 3 as written above, with no `--carried-before`), a quote that fails is dropped, and so is an item left with no quote; the result names the dropped quotes, and the save is refused only when no verified item remains. On an update saved with `--carried-before`, a newly written quote that fails stops the save and is listed; correct its wording or time from `owner-prompts.md` and run it again, while a carried quote that no longer matches is dropped as below. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote; if every item ages out, the goals are cleared. It refuses the old `priorities` / `open_asks` shape, a focus area without `goal` or `matches`, a `matches` id that is not a saved area, and an ask whose `focus_area` is not one of the file's focus areas. `--dry-run` shows the writes without saving.
 
 It saves through the local claude-mem worker:
 

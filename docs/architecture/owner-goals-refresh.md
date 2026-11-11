@@ -13,12 +13,28 @@ again through the existing privacy and owner-authorship filters.
 
 ## Input and progress
 
-Each batch contains at most 32 KiB of exported prompt sections. The complete
-question, including instructions, saved focus areas, the cumulative goal draft
-and any refused answer, must fit 96 KiB of UTF-8 input. This is a byte budget,
-not a promise about every provider's token window. If the checked aggregate
-and one prompt no longer fit, the run stops with its progress retained. It
-does not silently remove goals or skip source prompts to make them fit.
+A first map uses the existing single-call path when its complete question fits
+640 KiB of UTF-8 input. This includes the inlined skill and the prompt and focus
+files the agent must read, even when Claude Code receives file paths instead of
+inline file contents. No mapping checkpoint is created for that path.
+
+The limit is a byte heuristic based on the observations in
+[#5969](https://github.com/thedotmack/claude-mem/issues/5969): per-quote misses
+stayed roughly flat through 177k input tokens and rose at 289k and 444k. At a
+nominal four UTF-8 bytes per token, 640 KiB is about 164k tokens. That conversion
+is not a tokenizer guarantee or a provider maximum: text, language and model
+change token density, and the report used one run per range. It is a reason to
+bound unusually large maps, not evidence that a normal 200–500 KB window needs
+many calls.
+
+Above that complete-question limit, each batch contains at most 512 KiB of
+exported prompt sections, reserving 128 KiB for the roughly 12 KB skill, saved
+focus areas and cumulative draft. The actual remaining question space may
+shrink a batch further. Every batch question and any retry with a refused answer
+must still fit 640 KiB. If the checked aggregate and one prompt no longer fit,
+the run stops with its progress retained. It does not silently remove goals or
+skip source prompts to make them fit. These limits do not change provider
+selection or the number of permitted attempts.
 
 A source key commits to the agent, session, native message id, exact timestamp,
 project context and full filtered prompt text. Equal text in different turns,
@@ -26,14 +42,21 @@ new turns in the same minute and edits to a processed turn remain distinguishabl
 The minute in an exported heading is still the quote verifier's timestamp; it
 is not the batch cursor.
 
-Every nonempty cumulative answer passes the same strict Python quote/shape
-validator against the full current window, then the focus route's pure
-preflight. Only after that succeeds does one atomic checkpoint advance both
-the processed source keys and the checked aggregate. The next batch keeps the
+Every nonempty cumulative answer uses the Python fresh-save rule against the
+full current window: without `--carried-before`, unverified quotes and items
+left without evidence are dropped; an answer with no surviving verified item
+is refused. Shape checks and the focus route's pure preflight still apply.
+Only after those succeed does one atomic checkpoint advance the processed
+source keys, the cleaned aggregate and the reported `droppedUnverifiedQuotes`
+(item labels and quote times, not the unverified words). The completed run
+reports the drop count; the details remain available while its checkpoint
+exists and are removed with that checkpoint after a successful save.
+The next batch keeps the
 aggregate's titles, rules, matches and evidence through the skill's update
 contract. Batch maps are model-written audit notes, not quote-validated goal records, and
-are not repeatedly sent to the model. Cached maps are discarded when their
-source changes so redacted text is not republished from audit prose.
+are not repeatedly sent to the model. Cached maps and descriptive quote-drop
+reports are discarded when their source changes so redacted text is not
+republished from audit prose.
 
 Before any actionable goal has been found, a batch can return **goals: null**.
 This records no snapshot or quote claim. A later batch cannot replace an
@@ -43,7 +66,9 @@ continue, without forcing an unsupported empty snapshot through the validator.
 
 On another refresh, checked draft quotes are revalidated against the new
 export. The existing carried-quote cleanup may remove evidence that aged out
-or was redacted. New model answers never use that exception. Completed source
+or was redacted. This carried-quote boundary is separate from a fresh answer's
+reported cleanup; a normal incremental update still refuses invalid new quotes.
+Completed source
 positions survive an empty aggregate while those sources are still in the
 current export. Absent or changed keys are removed so a later restoration is
 not suppressed by an obsolete position. New or changed source keys still need

@@ -14,10 +14,13 @@ Input is the goals JSON the map step writes:
   }
 
 Every evidence quote is checked against owner-prompts.md: it has to appear in a prompt headed with that
-minute. Quotes may skip words with "..." between the pieces. Unverified quotes stop the save and are listed.
-A quote dated before the first prompt in owner-prompts.md has aged out of the window (an updated snapshot
-carries older quotes forward): it is dropped, and so is an item left with no quote. With no prompts in the file,
-every quote has aged out. When every item ages out, the snapshot is saved empty, which clears the old goals.
+minute. Quotes may skip words with "..." between the pieces. On a fresh save (no --carried-before), an
+unverified quote is dropped, and so is an item left with no quote; the dropped quotes are reported, and
+the save is still refused when no verified item remains. On an update saved with --carried-before, a
+newly written quote that fails stops the save and is listed. A quote dated before the first prompt in owner-prompts.md has aged out of
+the window (an updated snapshot carries older quotes forward): it is dropped, and so is an item left
+with no quote. With no prompts in the file, every quote has aged out. When every item ages out, the
+snapshot is saved empty, which clears the old goals.
 
 Where each kind goes, all through the local worker:
   focus areas  "owner-goals" rows (task "Focus area: <title>", goal_kind focus-area), and, for an area that
@@ -158,6 +161,28 @@ def drop_unverifiable_carried_quotes(goals, prompts, carried_before):
             quotes = item.get("evidence") or []
             item["evidence"] = [quote for quote in quotes
                                 if str(quote.get("at", ""))[:16] >= carried_before or not unverified_quotes({"asks": [{"evidence": [quote]}]}, prompts)]
+            dropped += [f'{label(item)}: {quote.get("at")}' for quote in quotes if quote not in item["evidence"]]
+            if not quotes or item["evidence"]:
+                kept.append(item)
+        goals[kind_key] = kept
+    return dropped
+
+
+def drop_unverifiable_fresh_quotes(goals, prompts):
+    """Drop unverified quotes from a fresh map, and items they leave without one. Returns what was dropped.
+
+    A save without --carried-before holds only quotes this answer wrote. Verbatim quoting gets less
+    accurate as a first map's window grows, so one inexact quote must not refuse every verified quote
+    beside it. No unverified words are saved: each item still needs a quote that checks out. With
+    --carried-before, an update's new quotes stay strict, while drop_unverifiable_carried_quotes
+    handles the old ones."""
+    dropped = []
+    for kind_key in ITEM_KEYS:
+        kept = []
+        for item in goals.get(kind_key, []):
+            quotes = item.get("evidence") or []
+            item["evidence"] = [quote for quote in quotes
+                                if not unverified_quotes({"asks": [{"evidence": [quote]}]}, prompts)]
             dropped += [f'{label(item)}: {quote.get("at")}' for quote in quotes if quote not in item["evidence"]]
             if not quotes or item["evidence"]:
                 kept.append(item)
@@ -343,7 +368,11 @@ def main():
     prompts = prompts_by_minute(args.prompts)
     aged_out = drop_aged_quotes(goals, prompts)
     dropped_carried = drop_unverifiable_carried_quotes(goals, prompts, args.carried_before) if args.carried_before else []
+    fresh_problems = [] if args.carried_before else unverified_quotes(goals, prompts)
+    dropped_unverified = [] if args.carried_before else drop_unverifiable_fresh_quotes(goals, prompts)
     areas, asks, rules = goals.get("focus_areas", []), goals.get("asks", []), goals.get("rules", [])
+    if dropped_unverified and not areas and not asks and not rules:
+        sys.exit("these quotes are not the owner's words at that time, and every item was dropped with them; fix them in the goals JSON:\n- " + "\n- ".join(fresh_problems))
     # An ask whose area aged out of the window keeps its words but no longer names an area; it is reported.
     kept_titles = {str(area["title"]).strip() for area in areas}
     unlinked_asks = [ask.get("title") for ask in asks if ask.get("focus_area") is not None and ask["focus_area"] not in kept_titles]
@@ -398,7 +427,8 @@ def main():
         # The ids a save would give new areas are not known until the worker writes them.
         area_ids = [area["matches"] for area in focus_request["areas"]] if focus_request else [None] * len(areas)
         print(json.dumps({"list": list_name, "goals": goals, "focus_areas": focus_request, "writes": writes_for(area_ids),
-                          "rules": preferences, "unlinked_asks": unlinked_asks}, indent=2))
+                          "rules": preferences, "dropped_unverified_quotes": dropped_unverified,
+                          "unlinked_asks": unlinked_asks}, indent=2))
         return
     view = json.loads(worker_request(base_url, "/api/work-view"))
     if "goals" not in view or "focusAreas" not in view or (history and "goalHistory" not in view):
@@ -421,6 +451,7 @@ def main():
     print(json.dumps({"saved_focus_areas": len(areas), "saved_asks": len(asks), "saved_rules": len(preferences),
                       "new_focus_areas": sum(1 for area in areas if area["matches"] is None) if not history else 0,
                       "dropped_previous_items": len(stale_tasks), "aged_out_items": aged_out, "dropped_carried_quotes": dropped_carried,
+                      "dropped_unverified_quotes": dropped_unverified,
                       "unlinked_asks": unlinked_asks, "rules_file": story_path, "rules_not_saved_for_past_month": len(rules) if history else 0,
                       "view": f"{base_url}/#cards", "list": list_name, "history": history}))
 

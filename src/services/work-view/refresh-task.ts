@@ -311,7 +311,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }).filter(area => !isWithdrawnArea(area)); } finally { database.close(); }
     goalsCheckpoint = readOwnerGoalsCheckpoint(checkpointPath);
     if (goalsCheckpoint) checkMappingSnapshot(goalsCheckpoint, savedGoals.generatedAt);
-    since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
+    // A valid snapshot can contain only rules, which live in the story rather than the owner-goals list.
+    const hasSavedItems = savedGoals.goals.length > 0
+      || (readLedger(ledgerDir).story?.preferences ?? []).some((preference: { source?: string }) => preference.source === 'owner-goals');
+    const generatedAt = Date.parse(savedGoals.generatedAt ?? '');
+    since = hasSavedItems && Number.isFinite(generatedAt) ? localMinute(generatedAt) : null;
     exportedAt = new Date(now()).toISOString();
     exported = await writeOwnerPrompts(goalsFolder, since);
   };
@@ -327,8 +331,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     const refused = (error: Error) => { answerWasRefused = true; return Object.assign(error, { answerRefused: true }); };
     const stepModels = resolveStepModels(dataDir);
     const inlineEvidence = new Map<string, string>();
-    // Gemini and the API agent have no file tools, so the input files travel with the question.
-    if ((agent === 'gemini' || agent === 'api') && needs.goalsStale) {
+    // Count the files an agent must read when budgeting goals input, including tool-capable agents.
+    // Only Gemini and the API agent actually receive these contents inlined in the question below.
+    if (needs.goalsStale) {
       for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
         const path = join(goalsFolder, name);
         if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
@@ -464,11 +469,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--ledger-dir', ledgerDir, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
-        if (goalsCheckpoint || (!since && exported.sections && Buffer.byteLength(readFileSync(promptsPath, 'utf8'), 'utf8') > OWNER_GOALS_BATCH_BYTES)) {
+        const focusPath = writeInput('focus-areas', savedAreas);
+        // Reuse the real single-map question for the size decision, including the skill and files.
+        // A normal first map below this budget keeps the existing one-call path and no checkpoint.
+        const initialQuestion = [
+          inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+          `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
+          focusAreasNote(focusPath),
+        ].join('\n\n');
+        if (goalsCheckpoint || (!since && ownerPrompts > 0 && Buffer.byteLength(expandedQuestion(initialQuestion), 'utf8') > OWNER_GOALS_QUESTION_BYTES)) {
           if (!exported.sections) throw batchFailure('The prompt export has no source identities for the checked owner-goals progress.');
           let progress: OwnerGoalsCheckpoint = goalsCheckpoint ?? {
             version: 1, deviceId: localDeviceId, baseGeneratedAt: saved.generatedAt || null, exportedAt,
-            processed: [], goals: null, maps: [], save: null,
+            processed: [], goals: null, maps: [], droppedUnverifiedQuotes: [], save: null,
           };
           if (!goalsCheckpoint) writeOwnerGoalsCheckpoint(checkpointPath, progress);
           const currentKeys = new Set(exported.sections.map(section => section.key));
@@ -476,12 +489,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             // Absent/changed source positions must not suppress a later restoration of those turns.
             // Audit maps are model prose, not quote-validated records: do not republish cached prose
             // after its source changed, even when none of the final goal quotes used that source.
-            progress = { ...progress, maps: [],
+            progress = { ...progress, maps: [], droppedUnverifiedQuotes: [],
               processed: progress.save ? progress.processed : progress.processed.filter(key => currentKeys.has(key)) };
             writeOwnerGoalsCheckpoint(checkpointPath, progress);
             goalsCheckpoint = progress;
           }
-          type CheckedGoals = { goals: Record<string, unknown>; focus_areas: { areas: Parameters<typeof ownerGoalsSaveKey>[0] } };
+          type CheckedGoals = { goals: Record<string, unknown>; focus_areas: { areas: Parameters<typeof ownerGoalsSaveKey>[0] }; dropped_unverified_quotes?: string[] };
           const validate = async (goals: Record<string, unknown>, carriedBefore: string | null = null): Promise<CheckedGoals> => {
             const input = writeInput('check-owner-goals', { ...goals, generated_at: exportedAt, source_prompt_count: ownerPrompts });
             const checked = JSON.parse(await runScript([paths.saveScript, '--goals', input, '--prompts', promptsPath, '--ledger-dir', ledgerDir,
@@ -497,8 +510,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           if (!progress.save) {
             let checked: CheckedGoals | null = null;
             if (progress.goals) {
-              // Recheck the full current window. Only this previously validated draft may drop quotes
-              // whose source was redacted or removed; every new answer below is checked strictly.
+              // Recheck the full current window with carried-quote cleanup for this checked draft.
+              // Fresh batch answers below use fresh-save cleanup, reporting any unverified drops.
               checked = await validate(progress.goals, checkedGoalsQuoteBoundary(progress.goals));
               const hasItems = ['focus_areas', 'asks', 'rules'].some(key => (checked!.goals[key] as unknown[] | undefined)?.length);
               progress = { ...progress, goals: hasItems ? checked.goals : null, exportedAt };
@@ -508,7 +521,6 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               writeOwnerGoalsCheckpoint(checkpointPath, progress);
             }
             const processed = new Set(progress.processed);
-            const focusPath = writeInput('focus-areas', savedAreas);
             while (exported.sections.some(section => !processed.has(section.key))) {
               checkCurrentMappingSnapshot(progress);
               const previousPath = progress.goals ? writeInput('checked-owner-goals', progress.goals) : null;
@@ -540,6 +552,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
                     throw new Error('No checked items remain in that answer. Use null only before any actionable goals; otherwise keep the checked cumulative snapshot.');
                   }
                   const next: OwnerGoalsCheckpoint = { ...progress, exportedAt, goals: checked?.goals ?? null,
+                    droppedUnverifiedQuotes: [...progress.droppedUnverifiedQuotes, ...(checked?.dropped_unverified_quotes ?? [])],
                     processed: [...processed, ...batch.map(section => section.key)], maps: [...progress.maps, answer.map] };
                   writeOwnerGoalsCheckpoint(checkpointPath, next);
                   progress = next;
@@ -576,7 +589,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               '--ledger-dir', ledgerDir, '--save-key', progress.save.key]);
             rmSync(checkpointPath, { force: true });
             goalsCheckpoint = null;
-            done.push('goals mapped');
+            done.push('goals mapped' + (progress.droppedUnverifiedQuotes.length ? ` (${progress.droppedUnverifiedQuotes.length} unverified quotes dropped)` : ''));
           } else {
             // No actionable goals in the completed batches. Keep their source positions without saving
             // an unsupported empty snapshot, and let grouping/review continue. Only new sources need inference.
@@ -588,11 +601,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] }, null);
           done.push('goals empty');
         } else if (!since) {
-          await step('goals', [
-            inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-            `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
-            focusAreasNote(writeInput('focus-areas', savedAreas)),
-          ].join('\n\n'), async answer => {
+          await step('goals', initialQuestion, async answer => {
             if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
             writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
             await save({ ...answer.goals, generated_at: exportedAt }, join(goalsFolder, 'owner-map.md'));
