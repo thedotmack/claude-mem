@@ -154,7 +154,7 @@ function commitSubjects(command) {
     if (substituted) return short(substituted[1]);
     const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
     const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
-    const text = inline ? (inline[1] ?? inline[2]).replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') : heredoc?.[1];
+    const text = inline ? inline[1]?.replace(BASH_DOUBLE_QUOTE_ESCAPE, '$1') ?? inline[2] : heredoc?.[1];
     return short(text?.split('\n')[0]);
   });
 }
