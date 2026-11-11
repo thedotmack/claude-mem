@@ -154,6 +154,17 @@ const WARP_CONFIG: McpInstallerConfig = {
   contextPath: path.join(process.cwd(), 'WARP.md'),
 };
 
+/** Remove claude-mem from Warp's global MCP servers so Warp stops launching a deleted MCP server. Returns 0 when an entry was removed. */
+export function uninstallWarpMcpIntegration(): number {
+  const { configPath } = WARP_CONFIG;
+  const config = readJsonSafe<Record<string, any>>(configPath, {});
+  if (!config.mcpServers?.['claude-mem']) return 1;
+  delete config.mcpServers['claude-mem'];
+  writeJsonFileAtomic(configPath, config);
+  console.log(`  Removed claude-mem from the Warp MCP servers in: ${configPath}`);
+  return 0;
+}
+
 /** Goose reads config.yaml from %APPDATA%\Block\goose\config on Windows and ~/.config/goose on macOS and Linux (crates/goose/src/config/paths.rs). */
 export function getGooseConfigPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
   if (platform === 'win32') {
