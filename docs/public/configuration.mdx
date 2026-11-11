@@ -384,6 +384,10 @@ Optional. Copies each new observation into a Notion database as it is stored. Se
 
 Opt-in (off by default) dedup of observations whose titles describe the same recurring
 work but are worded slightly differently, so `content_hash` (byte-identical only) misses them.
+With this setting off, different facts, subtitles, types or concepts remain separate
+observations even when their title and narrative match. Repeating the same content
+reuses the original observation, including observations saved before an upgrade.
+
 Two deterministic tiers:
 
 - **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
@@ -398,7 +402,7 @@ Two deterministic tiers:
 
 | Setting                              | Default | Description                           |
 |--------------------------------------|---------|---------------------------------------|
-| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = byte-identical legacy behavior |
+| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = exact content deduplication only |
 | `CLAUDE_MEM_DEDUP_COSINE_THRESHOLD`  | `0.80`  | Min IDF-weighted cosine for a Tier-1 candidate |
 | `CLAUDE_MEM_DEDUP_IDF_VETO_DF`       | `10`    | A title token in ≤ N project rows is "discriminating" and vetoes a merge |
 | `CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS` | `2`     | Require ≥ N shared tokens before scoring (kills sparse-vector noise) |
