@@ -450,7 +450,9 @@ export function createGeminiCliReader(): AgentPromptReader {
       for (const message of messages) {
         const at = isoToEpochMs(message.timestamp);
         if (message.type !== 'gemini' || at === null) continue;
-        const pieces = [typeof message.content === 'string' ? message.content : textOf(message.content, ['text'])];
+        // Native Gemini history stores Part[] text as { text }, without a type discriminator.
+        const content = Array.isArray(message.content) ? message.content.map((part: any) => ({ type: 'text', ...part })) : message.content;
+        const pieces = [textOf(content, ['text'])];
         for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
           const raw = JSON.stringify(call?.args ?? {});
           pieces.push(raw);
