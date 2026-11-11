@@ -205,7 +205,7 @@ export function toLocalObservationShape(
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
     content_session_id: asText(pick(row, 'contentSessionId', 'content_session_id')) ?? undefined,
-    platform_source: platformSource ?? '',
+    platform_source: asText(pick(row, 'platformSource', 'platform_source')) ?? platformSource ?? '',
     type: asText(pick(row, 'kind', 'type')) ?? 'discovery',
     title: asText(pick(row, 'title')) ?? firstLine,
     subtitle: asText(pick(row, 'subtitle')),
@@ -232,7 +232,7 @@ export function toLocalSummaryShape(
   return {
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
-    platform_source: platformSource ?? '',
+    platform_source: asText(pick(row, 'platformSource', 'platform_source')) ?? platformSource ?? '',
     request: asText(pick(row, 'request')),
     investigated: asText(pick(row, 'investigated')),
     learned: asText(pick(row, 'learned')),
