@@ -148,6 +148,13 @@ success JSON. Start the worker yourself before retrying. For a timeout, inspect
 the viewer before retrying another explicit save; the same example fingerprint
 prevents duplicate storage if the first save completed but its reply was lost.
 
+The verification script requires Git and launches the real MCP process in a
+fresh Git worktree whose parent also contains a saved note. It checks that
+search, timeline and detail reads exclude that parent. Read arguments bind both
+`project` and an explicit one-element `projects` list; this prevents the worker's
+normal checkout inheritance from widening the selected scope. The verifier uses
+path-based project identity for its temporary fixture only.
+
 Each verification run uses two fresh project names with a random suffix. It
 checks repeat-save deduplication within that run, so running the script again
 against the same worker cannot be confused by notes from an earlier verification.

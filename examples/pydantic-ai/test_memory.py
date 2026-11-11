@@ -24,7 +24,10 @@ class ProjectArguments(unittest.TestCase):
             args = {"project": "other", "projects": ["other"], "text": "A safe note"}
             scoped = scoped_arguments(name, args, "owned")
             self.assertEqual(scoped["project"], "owned")
-            self.assertNotIn("projects", scoped)
+            if name == "save_memory":
+                self.assertNotIn("projects", scoped)
+            else:
+                self.assertEqual(scoped["projects"], ["owned"])
             self.assertEqual(args["project"], "other")
 
     def test_repeated_save_has_a_stable_project_scoped_fingerprint(self):
@@ -69,7 +72,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
             fixture = Path(directory) / "server.py"
             fixture.write_text(
                 "import os\nfrom fastmcp import FastMCP\nserver = FastMCP('lifecycle')\n"
-                "@server.tool\ndef search(query: str, project: str) -> str:\n    return str(os.getpid())\n"
+                "@server.tool\ndef search(query: str, project: str, projects: list[str] | None = None) -> str:\n    return str(os.getpid())\n"
                 "server.run(transport='stdio', show_banner=False)\n"
             )
 
@@ -89,7 +92,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         received = []
 
         @server.tool
-        async def search(query: str, project: str) -> str:
+        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
             received.append((query, project))
             return "Known observation #17"
 
@@ -114,7 +117,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str) -> str:
+        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
             raise ValueError("fixture unavailable")
 
         memory = MCPToolset(server, tool_error_behavior="error", max_retries=0)
@@ -125,7 +128,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str) -> str:
+        async def search(query: str, project: str, projects: list[str] | None = None) -> str:
             await asyncio.sleep(5)
             return "late"
 
@@ -140,7 +143,7 @@ class NativeSdk(unittest.IsolatedAsyncioTestCase):
         server = FastMCP("fixture")
 
         @server.tool
-        async def search(query: str, project: str) -> dict:
+        async def search(query: str, project: str, projects: list[str] | None = None) -> dict:
             return {"unexpected": True}
 
         memory = MCPToolset(server, tool_error_behavior="error")

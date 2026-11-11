@@ -25,7 +25,11 @@ def scoped_arguments(name: str, arguments: dict[str, Any], project: str) -> dict
     if name not in MEMORY_TOOLS or not project.strip():
         raise ValueError("Choose a nonempty project and one of the four memory tools.")
     result = {**arguments, "project": project.strip()}
-    result.pop("projects", None)
+    if name != "save_memory":
+        # An explicit singleton prevents checkout/worktree parent inheritance.
+        result["projects"] = [project.strip()]
+    else:
+        result.pop("projects", None)
     if name == "save_memory":
         text = result.get("text")
         title = result.get("title", "")
