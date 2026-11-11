@@ -116,6 +116,36 @@ test('a concurrent native write after activity capture remains visible to the ne
   expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
 });
 
+test('a concurrent native write after a full activity capture remains visible to the next pass', () => {
+  // This device already owns a session, so the pass builds the view and publishes; the write lands right after that publish.
+  const f = fixture();
+  const writer = new SessionStore(f.databasePath);
+  disposals.push(() => writer.close());
+  const owned = writer.createSDKSession('owned', 'repo', 'Work this device did');
+  writer.saveUserPrompt('owned', 1, 'Work this device did', owned);
+  const publish = f.adapter.publish.bind(f.adapter);
+  let inserted = false;
+  f.adapter.publish = updates => {
+    const changed = publish(updates);
+    if (!inserted) {
+      inserted = true;
+      const id = writer.createSDKSession('after-capture', 'repo', 'Keep concurrent work');
+      writer.saveUserPrompt('after-capture', 1, 'Keep concurrent work', id);
+    }
+    return changed;
+  };
+  const sessions = () => [...state(f).records.values()].filter(record => record.kind === 'provenance')
+    .map(record => (record.value as { session: { content_session_id: string } }).session.content_session_id).sort();
+  f.adapter.reconcile();
+  expect(inserted).toBe(true);
+  expect(sessions()).toEqual(['owned']);
+  f.adapter.reconcile();
+  expect(sessions()).toEqual(['after-capture', 'owned']);
+  const provenance = [...state(f).records.values()].find(record => record.kind === 'provenance'
+    && (record.value as { session: { content_session_id: string } }).session.content_session_id === 'after-capture');
+  expect(provenance?.value).toMatchObject({ session: { content_session_id: 'after-capture', project: 'repo' } });
+});
+
 test('formatting and object-key order do not become a new imported generation', () => {
   const f = fixture(); f.adapter.saveFile('request-groups.json', groups('a'));
   f.adapter.reconcile({ captureActivity: false });
