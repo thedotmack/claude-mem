@@ -568,10 +568,10 @@ export class SessionManager {
       session.claimedMessageIds = [];
       session.earliestPendingTimestamp = null;
     }
-    return this.buffer.clear(sessionDbId);
+    return this.buffer.discardKeepingDedup(sessionDbId);
   }
 
-  /** Discard a session's buffered work for good: unlike clearPendingForSession, nothing in it can be re-enqueued. */
+  /** Discard a session's buffered work without permitting old tool IDs to re-enter. */
   discardBufferedWork(sessionDbId: number): number {
     const session = this.sessions.get(sessionDbId);
     if (session) {
@@ -933,8 +933,8 @@ export class SessionManager {
     })) {
       // Re-check at every message boundary so a settings-file edit made while
       // a generator is already alive takes effect after its current request.
-      // Clear the RAM-only queue: transcript replay remains the durable
-      // recovery path if capture is enabled again later.
+      // Drop buffered payloads but keep delivery identities: enabling capture
+      // again permits fresh work, not a replay of these discarded events.
       if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
         const discarded = await this.clearPendingForSession(sessionDbId);
         logger.info('SESSION', 'Observer capture disabled at message boundary; discarding buffered work', {
