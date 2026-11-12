@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { backfillProjectDedup, bumpTokenDf, getProjectDocCount } from '../../src/services/sqlite/dedup-store.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 function insert(db: Database, title: string) {
   db.prepare(`INSERT INTO observations
@@ -20,7 +21,7 @@ function seed(store: SessionStore) {
 }
 
 describe('dedup rebuild snapshot', () => {
-  it('does not replace an intervening writer\'s IDF increments with an older snapshot', () => {
+  it('does not replace an intervening writer\'s IDF increments with an older snapshot', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'claude-mem-dedup-snapshot-'));
     const path = join(directory, 'memory.db');
     const store = new SessionStore(path);
@@ -76,7 +77,7 @@ describe('dedup rebuild snapshot', () => {
     } finally {
       writer.close();
       store.close();
-      rmSync(directory, { recursive: true, force: true });
+      await removeTempDir(directory);
     }
   });
 
