@@ -1,10 +1,11 @@
 import { expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { computeTitleNormKey } from '../../src/services/sqlite/dedup-store.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const observation = (title: string) => ({ type: 'discovery', title, subtitle: null, narrative: title,
   facts: [], concepts: [], files_read: [], files_modified: [] });
@@ -13,7 +14,7 @@ function legacyKey(title: string, platform = 'claude', agent = 'main') {
   return createHash('sha256').update(`project\x00${platform}\x00${agent}\x00${normalized}`).digest('hex').slice(0, 32);
 }
 
-it('rebuilds old Unicode keys before storage can merge a distinct incoming title', () => {
+it('rebuilds old Unicode keys before storage can merge a distinct incoming title', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cm-unicode-upgrade-'));
   const saved = process.env.CLAUDE_MEM_DEDUP_ENABLED;
   let store: SessionStore | undefined;
@@ -45,7 +46,7 @@ it('rebuilds old Unicode keys before storage can merge a distinct incoming title
     store.close(); store = new SessionStore(path);
     expect(store.db.query('SELECT id, title_norm_key, occurrence_count FROM observations ORDER BY id').all()).toEqual(before);
   } finally {
-    store?.close(); rmSync(root, { recursive: true, force: true });
+    store?.close(); await removeTempDir(root);
     if (saved === undefined) delete process.env.CLAUDE_MEM_DEDUP_ENABLED; else process.env.CLAUDE_MEM_DEDUP_ENABLED = saved;
   }
 });

@@ -9,10 +9,11 @@
 // column list.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const ISO = '2025-07-01T00:00:00.000Z';
 const EPOCH = 1751328000000;
@@ -202,9 +203,9 @@ function hasTableLevelUniqueConstraint(db: Database): boolean {
 describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () => {
   let tempDir: string;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (tempDir && existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeTempDir(tempDir);
     }
   });
 

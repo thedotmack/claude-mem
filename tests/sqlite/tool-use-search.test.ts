@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { configureToolUseIndex, configureToolUseIndexAsync, searchToolUses, toolUseIndexStatus } from '../../src/services/sqlite/tool-use-search.js';
 import { MAX_TOOL_PAYLOAD_BYTES, purgeLinkedToolUses } from '../../src/services/sqlite/tool-uses.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const stores: SessionStore[] = [];
 const directories: string[] = [];
-afterEach(() => { stores.splice(0).forEach(s => s.close()); directories.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });
+afterEach(async () => {
+  stores.splice(0).forEach(s => s.close());
+  for (const directory of directories.splice(0)) await removeTempDir(directory);
+});
 function fixture(file = ':memory:') {
   const store = new SessionStore(file); stores.push(store);
   const write = (id: string, response: string | null = 'DB_CONN_1042 pool size 30', extra: Record<string, unknown> = {}) => store.upsertToolUse({
