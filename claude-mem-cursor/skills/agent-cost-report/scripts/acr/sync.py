@@ -22,12 +22,16 @@ def destinations(repo_root=REPO_ROOT, house=HOUSE_COPY):
 
 
 def shipped_files(root=SKILL_DIR):
-    """Relative paths of every shipped file: SKILL.md plus scripts/** (no tests, caches or checksum file)."""
+    """Relative paths of every shipped file: SKILL.md plus scripts/** (no tests, caches or checksum file).
+
+    Always POSIX-separated: CHECKSUMS.txt is sha256sum-compatible and the mirrors are byte copies,
+    so a Windows run must not write `scripts\\acr.py` where the committed manifest says `scripts/acr.py`.
+    """
     out = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and (dirpath != root or d == "scripts"))
         for f in sorted(files):
-            rel = os.path.relpath(os.path.join(dirpath, f), root)
+            rel = os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/")
             if dirpath == root and f not in ("SKILL.md",): continue
             if f in SKIP_FILES or f.endswith(".pyc"): continue
             out.append(rel)
