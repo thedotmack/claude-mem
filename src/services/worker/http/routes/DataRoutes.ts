@@ -256,19 +256,25 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
     const result = this.paginationHelper.getObservations(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
 
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
     const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
 
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const page = this.parsePaginationParams(req, res);
+    if (!page) return;
+    const { offset, limit, project, platformSource, contentSessionId } = page;
     const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
@@ -350,6 +356,12 @@ export class DataRoutes extends BaseRouteHandler {
 
     const toolName = asString(req.query.tool_name ?? req.query.toolName);
 
+    const requestedOffset = asNumber(req.query.offset);
+    if (requestedOffset !== undefined && (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0 || requestedOffset > DataRoutes.MAX_LISTING_OFFSET)) {
+      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+      return;
+    }
+
     const rows = store.queryToolUseIndex({
       project: BaseRouteHandler.firstString(req.query.project),
       contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
@@ -360,7 +372,7 @@ export class DataRoutes extends BaseRouteHandler {
       dateStart: asNumber(req.query.dateStart),
       dateEnd: asNumber(req.query.dateEnd),
       limit: asNumber(req.query.limit),
-      offset: asNumber(req.query.offset),
+      offset: requestedOffset,
       orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
     });
 
@@ -629,6 +641,10 @@ export class DataRoutes extends BaseRouteHandler {
     const project = BaseRouteHandler.firstString(req.query.project);
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
     const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
+    if (Number.isFinite(requestedOffset) && requestedOffset > DataRoutes.MAX_LISTING_OFFSET) {
+      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+      return;
+    }
     // { sessions, hasMore }: the viewer pages through older sessions with offset.
     res.json(store.getSessionCatalog({
       project,
@@ -784,10 +800,20 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
+  /** Same ceiling as the jobs listing and the server-plane viewer feeds: a deep
+   * OFFSET makes SQLite scan and discard every skipped row, so one read-scoped
+   * request must not be able to demand an unbounded walk (#5495's delete burst
+   * showed how one caller can starve everything else; #5330 set the pattern). */
+  private static readonly MAX_LISTING_OFFSET = 10_000;
+
+  private parsePaginationParams(req: Request, res: Response): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } | null {
     const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
     const requestedLimit = parseInt(req.query.limit as string, 10) || 20;
     const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
+    if (offset > DataRoutes.MAX_LISTING_OFFSET) {
+      this.badRequest(res, `offset must be at most ${DataRoutes.MAX_LISTING_OFFSET}; narrow the listing with filters to reach older rows`);
+      return null;
+    }
     // SQLite interprets a negative LIMIT as unbounded, including limit + 1
     // used by PaginationHelper to detect whether another page exists.
     const limit = Math.min(Math.max(requestedLimit, 1), 100);
