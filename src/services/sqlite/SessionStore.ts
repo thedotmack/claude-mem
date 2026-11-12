@@ -5125,7 +5125,15 @@ export class SessionStore {
   }
 
   close(): void {
-    this.db.close();
+    // bun keeps a prepared statement — and with it the connection, its WAL index mapping and the
+    // database file — alive until the statement is finalized or collected, so a plain `db.close()`
+    // releases nothing while this store still holds its cache. Finalize the cached statements first,
+    // the way initializeOwnedDatabase does, because older supported Bun versions reject a strict
+    // close while any statement is still outstanding; then close strict, which Windows needs before
+    // the file or its directory can be renamed or removed.
+    for (const statement of this.statementCache.values()) statement.finalize();
+    this.statementCache.clear();
+    this.db.close(true);
   }
 
   /**
