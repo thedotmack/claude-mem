@@ -4,8 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
-import { readLocalApiToken } from '../../shared/hook-settings.js';
-import { localApiTokenHeaders } from '../../shared/local-api-token.js';
+import { localApiTokenHeaders, normalizeLocalApiToken } from '../../shared/local-api-token.js';
 import { isLoopbackHostname } from '../../shared/worker-url.js';
 
 function getWorkerHost(): string {
@@ -37,7 +36,9 @@ function localWorkerOrigin(port: number): string {
  * it, and never for an explicit CLAUDE_MEM_WORKER_URL: that worker is not ours to hand it to.
  */
 function localWorkerAuthHeaders(): Record<string, string> {
-  const token = readLocalApiToken();
+  const token = normalizeLocalApiToken(
+    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false, { readOnly: true }).CLAUDE_MEM_LOCAL_API_TOKEN,
+  );
   if (!token || !isLoopbackHostname(getWorkerHost())) return {};
   return localApiTokenHeaders(token);
 }
